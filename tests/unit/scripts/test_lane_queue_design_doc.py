@@ -290,6 +290,54 @@ def test_the_build_plan_is_a_table_of_lanes():
     assert len(lanes) >= 6, "the phased plan lost lanes"
 
 
+def test_reviewed_after_a_fix_has_a_rereview_and_a_failed_transition():
+    """compile_plan has no review after `fix`, so a lane whose review said NOT_YET
+    could never be READY unless the design says what "reviewed" means after it."""
+    ready = _body("### 5.2 ")
+    for needle in ("rereview", "final review", "review.round", "NOT_YET", "issueci._merge"):
+        assert needle in ready, needle
+    states = _body("### 2.2 ")
+    assert "final review NOT_YET" in states, "CHECKING has no way out when the final review says NOT_YET"
+    assert "`round`" in _body("## 9. "), "the data model lost review.round"
+
+
+def test_a_retried_dependency_returns_its_blocked_dependants_to_waiting():
+    assert "BLOCKED  --its blocked_by lane retried" in _body("### 2.2 ")
+
+
+def test_a_failed_lane_keeps_its_lock_while_its_pull_request_is_open():
+    assert "keeps its lock while its pull request is open" in _body("### 4.2 ")
+    row = re.search(r"^\| `FAILED` \|.*$", _body("### 2.2 "), flags=re.M)
+    assert row and "while its pull request is open" in row.group(0)
+
+
+def test_build_lanes_that_edit_the_same_file_are_serialised():
+    """CLAUDE.md: two issues that edit the same file are one lane, or run one after the other."""
+    rows = {}
+    for line in _body("## 15. ").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) == 4 and re.fullmatch(r"LQ\d+", cells[0]):
+            rows[cells[0]] = (set(re.findall(r"`([^`]+)`", cells[2])), cells[3])
+
+    def ancestors(lane: str) -> set[str]:
+        seen: set[str] = set()
+        todo = [lane]
+        while todo:
+            for dep in re.findall(r"LQ\d+", rows[todo.pop()][1]):
+                if dep not in seen:
+                    seen.add(dep)
+                    todo.append(dep)
+        return seen
+
+    names = sorted(rows)
+    assert len(names) >= 6
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            shared = {f for f in rows[a][0] & rows[b][0] if "." in f}
+            if shared:
+                assert a in ancestors(b) or b in ancestors(a), (a, b, shared)
+
+
 def test_the_design_doc_links_its_mockups():
     assert "web-ui/mockups/lane-queue.html" in _text(DESIGN)
 

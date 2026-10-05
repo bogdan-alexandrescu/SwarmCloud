@@ -120,7 +120,7 @@ states.
 | `MERGED` | GitHub says merged; `merge_commit_sha` recorded | nothing (released) |
 | `VERIFIED` | a verify-only lane, or `allow_empty_diff` with nothing to change, finished | nothing (released) |
 | `BLOCKED` | a dependency can no longer merge (failed, cancelled, closed without merging) | nothing |
-| `FAILED` | the workflow, a round, or the cap failed; the pull request was closed | nothing (released) |
+| `FAILED` | the workflow, a round, the cap, the final review or the merge failed; `error` says which | territory lock while its pull request is open (§4.2); nothing once it is closed |
 | `CANCELLED` | a person cancelled it | nothing (released) |
 
 Transitions, each a Firestore transaction that re-checks the state it moves
@@ -136,11 +136,18 @@ from, as `IssueRuns.transition` does:
     CHECKING --red, rounds left | merge conflict on a seam--> FIXING
     FIXING   --the round's continuation ended---------------> CHECKING
     CHECKING --green, reviewed MERGE, keyword written-------> READY
+    CHECKING --green, final review NOT_YET (§5.2)-----------> FAILED (pull request left open)
     READY    --GitHub says merged---------------------------> MERGED
     READY    --head moved / CI turned red / label removed---> CHECKING
     any live --pull request closed without merging----------> FAILED
     FAILED | BLOCKED --POST :retry--------------------------> WAITING | QUEUED
+    BLOCKED  --its blocked_by lane retried (§3)-------------> WAITING
+    FAILED   --its pull request closed or merged------------> FAILED (lock released)
     any live --POST :cancel---------------------------------> CANCELLED
+
+`BLOCKED → WAITING` needs no request on the dependant: the transaction that
+retries the lane named in its `blocked_by` moves every dependant `BLOCKED` on
+it back to `WAITING` in the same commit.
 
 `MERGED`, `VERIFIED` and `CANCELLED` are terminal. `FAILED` is ended but
 retryable: `:retry` starts a new lane attempt on the same document
@@ -206,7 +213,7 @@ any, with "from the plan, once planned".
 A lane's territory is the union of:
 
 * every plan step's `files` (`PlanStep.files`,
-  `apps/swarm-api/swarm_api/issueruns.py:352` — "a plan, not a fence"), and
+  `apps/swarm-api/swarm_api/issueruns.py:357` — "a plan, not a fence"), and
 * the paths the lane was given at submission (`territory`), which a `brief`
   lane always has.
 
@@ -238,9 +245,16 @@ repository serialises launches in that repository, which at lane rates (a
 few a minute) is the point, not a cost; at 40 lanes × 60 entries it stays far
 under Firestore's 1 MiB.
 
-The lock is held from launch until the lane is `MERGED`, `VERIFIED`,
-`FAILED` or `CANCELLED`, and is **released** in the same transaction that
-moves it there. Not at `READY`: until GitHub merges, the branch can still go
+The lock is held from launch until the lane is `MERGED`, `VERIFIED` or
+`CANCELLED`, or is `FAILED` with no open pull request, and is **released** in
+the same transaction that moves it there. A `FAILED` lane does **not** close
+its pull request: like `issueci._merge` today, a CI cap, a final review of
+`NOT_YET` or a refused merge leaves the pull request open and green for a
+person, and a lock released beside it would let a sibling start on the same
+files. So a `FAILED` lane keeps its lock while its pull request is open, and
+the tick releases it in the visit that reads the pull request closed or
+merged. `POST :cancel` closes the lane's pull request with a comment, then
+releases. Not at `READY`: until GitHub merges, the branch can still go
 red and be fixed, and a sibling that started on the same file in the
 meantime would conflict exactly as #589 did.
 
@@ -314,14 +328,41 @@ the same visit:
 
 1. every required check is green at the head (`green_sha`, as `issueci` sets
    it);
-2. the review's `verdict.json` says `MERGE`
-   (`issueci._review_verdict`), and its `findings` (blockers and majors) are
-   empty after the last fix;
+2. the **final review** says `MERGE` (see "Reviewed after a fix" below);
 3. the keyword block is written on the pull request body
    (`issuesync.sync_pull_request`,
    `apps/swarm-api/swarm_api/issuesync.py:232`);
 4. no `territory_breach`, and under T2 the lane holds the merge token of
    every seam its diff touched.
+
+**Reviewed after a fix.** `compile_plan` today builds implement → `review` →
+`fix`, with `fix` gated on `review` saying `NOT_YET` and no review after it,
+so the one `verdict.json` an issue run has is never re-written after the fix
+and `issueci._merge` FAILs any run whose review said `NOT_YET` — the usual
+reason the fix step exists. The lane decides it this way (option (a) of the
+LQD review):
+
+* a lane's workflow compiles a fourth step, `rereview`, after `fix`:
+  `depends_on: [fix]`, `builds_on: fix`, `input_from: {review: verdict.json,
+  fix: swarm-work.patch}`, gated on the fix having run, and told to write its
+  own `verdict.json` judging the branch against the plan AND whether the fix
+  addressed every finding of the first review. It does not edit files and
+  publishes nothing; `fix` stays the workflow's one publisher;
+* the **final review** is `rereview` when `fix` ran and `review` when it was
+  skipped (`review` said `MERGE`). `review.round` on the lane records which
+  (1 or 2) and `review.task_id` the task whose `verdict.json` was read;
+* final review `MERGE` → condition 2 holds. Final review `NOT_YET` → the lane
+  goes `FAILED` with `error` "the re-review after the fix still says NOT_YET",
+  its findings on the lane, the pull request left open for a person — today's
+  `issueci._merge` rule kept, now reached only after one fix and one
+  re-review instead of on every lane that needed a fix. There is no second
+  fix round inside the workflow: two disagreeing agents looping is a person's
+  call, and `:retry` is how a person makes it;
+* a CI-fix round (§5.1) changes the branch after the final review. It is
+  bounded to making the required checks pass ("change nothing else"), so the
+  verdict stands for the reviewed change, as it does for `issueci` today; a
+  CI round whose diff touches a file outside the reviewed patch's files sets
+  `unexpected_diff` and holds `READY` for a person.
 
 Then the lane acts on its `merge` setting:
 
@@ -481,9 +522,9 @@ the same 404 as a missing document. None goes through `store.py` or
 | `workflow_id`, `workflows[]` | | the main workflow; every workflow the lane submitted (CI rounds, rebase rounds, merge), for the ledger |
 | `pr_task_id`, `pull_request`, `ci_fix_round`, `ci_fix_workflows`, `ci_round_sha`, `green_sha`, `failure_excerpt` | | the `issueci` protocol (§5.1) |
 | `pull_request.changed_files`, `pull_request.merge_commit_sha`, `pull_request.merged_at` | | read from GitHub |
-| `review` | `{verdict, findings[], minors_count, requirements_met, requirements_unmet[]}` | from `verdict.json` |
+| `review` | `{round, task_id, verdict, findings[], minors_count, requirements_met, requirements_unmet[]}` | from the final review's `verdict.json` (§5.2); `round` 1 = `review`, 2 = `rereview` |
 | `ci_reds` | map check name → count | §5.1 |
-| `territory_breach`, `unexpected_diff` | bool | §4.2, §6 |
+| `territory_breach`, `unexpected_diff` | bool | §4.2, §5.2, §6 |
 
 **`lane_territories/{tenant_id}:{repo_key}`** — `holders: {lane_id:
 {paths, seams, acquired_at}}`, `seam_tokens: {path: lane_id}` (T2 only), and
@@ -704,7 +745,7 @@ the lane's end.
 | `waiting.capacity_seconds` | per task, first attempt's `created_at` − task `created_at`, plus parked spans | a task never admitted |
 | `waiting.ci_seconds` | `CHECKING` with checks pending | no pull request |
 | `waiting.merge_seconds` | `READY` → `MERGED` | not merged |
-| `review.verdict`, `review.findings` (≤ 20, redacted), `review.minors_count`, `review.requirements_met` | `verdict.json` | the review never ran |
+| `review.round`, `review.verdict`, `review.findings` (≤ 20, redacted), `review.minors_count`, `review.requirements_met` | the final review's `verdict.json` (§5.2) | the review never ran |
 | `pull_request` (`number`, `url`) | the lane | no pull request |
 | `ci_reds` | `{check name: red readings}` | no pull request |
 | `ci_fix_rounds`, `rebase_rounds` | the lane | never (0 is measured) |
@@ -785,9 +826,9 @@ build itself does not need §4.
 | LQ1 | lane document, `LaneState` machine, `POST`/`GET /v1/lanes`, `brief` lanes compiled through `compile_plan`; no dependencies or locks yet | `swarm_api/lanes.py` (new), `routes/lanes.py` (new), `schemas.py`, `main.py`, unit tests | picks |
 | LQ2 | `depends_on` (lanes and external pull requests), `BLOCKED`, `:retry`, `:edit`; the advance tick and its admin route; the Cloud Scheduler job | `lanes.py`, `routes/lanes.py`, `routes/admin.py`, `terraform/modules/scheduler/jobs.tf` (Track C) | LQ1 merged |
 | LQ3 | territory locks, the picked seam policy, `territory_breach`, the rebase round; the worker fetches the base in a continuation | `lanes_territory.py` (new), `agent_worker/continuation.py` (Track B) | LQ2 merged |
-| LQ4 | `issueci` over a protocol; `READY`; `ready` label (`forgewrite` gains `add_labels`); merge step path; issue comments; verify-only lanes and `allow_empty_diff` interim | `issueci.py`, `forgewrite.py`, `lanes.py` | LQ3 merged |
-| LQ5 | the review's `minors`; `lane_minors`; posting to the group's epic | `lanes_minors.py` (new), `issueruns.py` (review prompt) | LQ4 merged |
-| LQ6 | the lane ledger: derive, write, drift, `GET /v1/lanes/ledger` | `lanes_ledger.py` (new), `routes/lanes.py` | LQ4 merged |
+| LQ4 | `issueci` over a protocol; the `rereview` step and the final-review rule (§5.2); `READY`; `ready` label (`forgewrite` gains `add_labels`); merge step path; issue comments; verify-only lanes and `allow_empty_diff` interim | `issueci.py`, `issueruns.py` (`compile_plan`), `forgewrite.py`, `lanes.py` | LQ3 merged |
+| LQ5 | the review's `minors`; `lane_minors`; posting to the group's epic | `lanes_minors.py` (new), `issueruns.py` (review prompt), `lanes.py` (lane-ending transition), `routes/lanes.py` (minors routes) | LQ4 merged |
+| LQ6 | the lane ledger: derive, write, drift, `GET /v1/lanes/ledger` | `lanes_ledger.py` (new), `lanes.py` (lane-ending transition), `routes/lanes.py` (ledger route) | LQ5 merged: both edit `lanes.py` and `routes/lanes.py`, so they are serialised, not parallel |
 | LQ7 | console: Work › Lanes — board, lane detail, add-lanes form, ledger tab (the picked variants) | `apps/swarm-ui/src/` lanes screens, `App.tsx` | LQ5, LQ6 merged |
 | LQ8 | issue runs become lanes; `/v1/runs` a view; `issue_run_advance` removed; MCP `swarm_lanes_add`/`swarm_lanes`; the runbook retiring the laptop pieces | `routes/runs.py`, `issueruns.py`, `apps/swarm-mcp/`, `jobs.tf`, `docs/runbooks/` | LQ7 merged |
 

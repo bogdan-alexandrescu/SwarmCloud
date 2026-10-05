@@ -379,7 +379,7 @@ svg.dag{display:block}
 <div class="lc"><b>Console: lanes board</b><span class="dep">Territory: waiting for <code>web/src/App.tsx</code></span><span class="mu">held by <a>Console: runs filters</a> · Seam · policy T2</span></div>
 </div>
 <div class="kcol"><h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span>Running <em>1</em></h5>
-<div class="lc"><b>Console: runs filters</b><span class="mu">implement › <b>review</b> › fix · 41 min</span><span class="lk"><svg class="ic"><use href="#i-lock"/></svg>3 paths · Seam <code>web/src/App.tsx</code></span></div>
+<div class="lc"><b>Console: runs filters</b><span class="mu">implement › <b>review</b> › fix › re-review · 41 min</span><span class="lk"><svg class="ic"><use href="#i-lock"/></svg>3 paths · Seam <code>web/src/App.tsx</code></span></div>
 </div>
 <div class="kcol"><h5><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span>Checking / fixing <em>1</em></h5>
 <div class="lc"><b>Dependencies and the tick</b><span>PR <a>#705</a> · CI fix round 1 of 3</span><span class="mu">red: <code>format / unit tests</code></span><span class="dep">Depends on <a>Lane document and routes</a> · merged <code>a1b2c3d</code></span></div>
@@ -483,7 +483,7 @@ svg.dag{display:block}
 </div>
 <div class="card"><div class="ch"><b>CI fix round 1 of 3</b><div class="r"><a class="more">Workflow</a></div></div>
 <div class="meta col"><span>continues the integrator's branch, as issue runs do (#545)</span><span>started 3 min ago · <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>running</span></span></span><span>CI reds by job so far: <code>format / unit tests</code> 1</span></div>
-<p class="sub">When it pushes, CI is read at the new head. Ready needs green, the review's MERGE, and the keyword block on the pull request.</p>
+<p class="sub">When it pushes, CI is read at the new head. Ready needs green, the final review's MERGE (the re-review when the fix ran), and the keyword block on the pull request.</p>
 </div>
 </div>
 </main></div></div></figure>
@@ -504,7 +504,7 @@ svg.dag{display:block}
 <div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg></span><em>10:09</em><b>Ready</b><small>review MERGE · Closes #639 written · label <code>ready</code> added · merge token for app/main.py</small><em>6 min</em></div>
 <div class="run"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><em>next</em><b>Merged</b><small>GitHub merges at green (auto-merge.yml)</small><em><span class="dash" title="Not merged yet; merge time is unknown until GitHub reports it">—</span></em></div>
 </div>
-<div class="pane"><h4>Review</h4><div class="meta col"><span>verdict <b>MERGE</b> · 0 blockers · 2 requirements met of 2</span><span>Review minors: 1, kept on the board (no epic for wave-8)</span></div>
+<div class="pane"><h4>Review</h4><div class="meta col"><span>final review: re-review after the fix (round 2) · verdict <b>MERGE</b> · 0 blockers · 2 requirements met of 2</span><span>Review minors: 1, kept on the board (no epic for wave-8)</span></div>
 <h4>Territory</h4><div class="tl"><code>app/ledger/</code><span class="mu">prefix</span></div><div class="tl"><code>app/main.py</code><span class="mu">Seam · merge token held</span></div>
 <h4>Issue</h4><div class="meta col"><span><code>example-org/example-api#639</code></span><span>pull request says <b>Closes #639</b>; GitHub closes it on merge</span><span>status comment edited 6 min ago</span></div>
 <h4>Cost</h4><div class="meta col"><span><b>$4.47</b> over 4 attempts, all reported</span><span>Waiting 37 min · working 27 min</span></div>
