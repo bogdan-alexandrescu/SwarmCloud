@@ -1391,6 +1391,8 @@ export interface LeaseRow {
  */
 export interface LeasePage {
   leases: LeaseRow[]
+  /** The next page's token, or null on the last page (#632 F8: leases page past 200). */
+  next_page_token: string | null
   thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
   evaluated_at: string
   active_only: boolean
