@@ -141,3 +141,87 @@ def test_a_carried_reference_outside_the_task_is_not_carried(db, worker_factory)
     assert _resume(db, worker_factory, write=None) == ExitCode.FAILED
     task = db.doc("tasks/task_1")
     assert task["result_summary"]["expected_outputs_missing"] == ["notes.md"]
+
+
+def _park_with(
+    db: Any, worker_factory: Any, *, attempt: int, files: dict[str, str], expected: list[str]
+) -> None:
+    """Attempt `attempt`: its agent writes `files`, meets a 429, and the attempt parks.
+
+    `attempt_count` stays 1: a park does not spend an attempt, and the mock
+    parks on `quota_exhausted` only while the task is on its first.
+    """
+    attempt_id, lease_id = f"att_{attempt}", f"lease_{attempt}"
+    seed_attempt(
+        db,
+        attempt_id=attempt_id,
+        lease_id=lease_id,
+        task_input={
+            "prompt": "write the notes",
+            "steps": 1,
+            "sleep_seconds": 0.01,
+            "quota_exhausted": True,
+            "retry_after_seconds": 1800,
+        },
+        simulated={"provider": "anthropic"},
+    )
+    db.doc("tasks/task_1")["metadata"] = {"expected_outputs": expected}
+    worker, _, _ = worker_factory(attempt_id=attempt_id, lease_id=lease_id)
+    upload = worker._upload_outputs
+
+    def written_then_upload(**kwargs: Any) -> dict[str, Any]:
+        for name, text in files.items():
+            (worker.ws.artifacts / name).write_text(text)
+        return upload(**kwargs)
+
+    worker._upload_outputs = written_then_upload  # type: ignore[method-assign]
+    assert worker.run() == ExitCode.PARKED
+
+
+def test_every_earlier_park_is_carried_and_the_later_park_wins(db, store, worker_factory):
+    """EARLIER PARKED ATTEMPTS', plural: not only the most recent park. A name
+    two parks uploaded points at the later park's object, which holds what the
+    agent wrote last; a name only the first park uploaded is still listed."""
+    expected = ["notes.md", "plan.md"]
+    _park_with(
+        db, worker_factory, attempt=1, expected=expected,
+        files={"plan.md": "the plan\n", "notes.md": "first notes\n"},
+    )
+    _park_with(
+        db, worker_factory, attempt=2, expected=expected,
+        files={"notes.md": "the later notes\n"},
+    )
+    seed_attempt(
+        db, attempt_id="att_3", lease_id="lease_3", attempt_count=2,
+        task_input={"prompt": "finish", "steps": 1, "sleep_seconds": 0.01},
+    )
+    db.doc("tasks/task_1")["metadata"] = {"expected_outputs": expected}
+    worker, _, _ = worker_factory(attempt_id="att_3", lease_id="lease_3")
+
+    assert worker.run() == ExitCode.OK
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value, task.get("last_error")
+    assert _entry(db, "plan.md")["carried_from"] == "att_1"
+    notes = _entry(db, "notes.md")
+    assert notes["carried_from"] == "att_2"
+    assert "/attempts/att_2/artifacts/notes.md" in notes["uri"]
+    assert notes["bytes"] == len("the later notes\n")
+    names = [e["name"] for e in task["result_summary"]["artifacts"]]
+    assert names.count("notes.md") == 1
+    assert "expected_outputs_missing" not in task["result_summary"]
+
+
+def test_a_parked_upload_no_longer_in_the_bucket_is_not_carried(db, store, worker_factory):
+    """A reference is listed only while its object exists: a dependant could
+    not stage a deleted one, so the check reports the name missing instead of
+    passing on a reference to nothing."""
+    _park_after_writing(db, worker_factory)
+    store.delete(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/notes.md")
+
+    assert _resume(db, worker_factory, write=None) == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["result_summary"]["expected_outputs_missing"] == ["notes.md"]
+    assert not any(
+        e.get("carried_from") for e in task["result_summary"]["artifacts"]
+        if isinstance(e, dict)
+    )
