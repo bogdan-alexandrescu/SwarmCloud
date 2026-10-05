@@ -229,6 +229,8 @@ describe('no element of the detail is covered by a log element, at any split wid
     serve(task)
     const r = render(<Routed start={start} onGo={() => {}} />)
     await waitFor(() => expect(document.querySelector('.ag-head-facts')).not.toBeNull())
+    // Details draws its pane from a second read (loadAgentRun); wait for it, or a loaded runner asserts on "Reading…".
+    if (start === 'detail') await waitFor(() => expect(document.querySelector('.ag-loglast')).not.toBeNull())
     return r
   }
 

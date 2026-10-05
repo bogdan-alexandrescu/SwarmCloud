@@ -298,6 +298,8 @@ function groups(rows: readonly PermissionRow[]): { repo_id: string; name: string
     }
     g.rows.push(r)
   }
+  // The token a task would use leads its repository; the probe order is per token, not per repository.
+  for (const g of out) g.rows.sort((a, b) => Number(b.resolves) - Number(a.resolves))
   return out
 }
 
