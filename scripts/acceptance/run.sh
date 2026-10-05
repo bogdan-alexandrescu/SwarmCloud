@@ -26,19 +26,28 @@
 # `./scripts/verify-remote.sh acceptance/<group>`, one swarm-verify execution
 # per group (scripts/acceptance/<group>.sh), because the job's 30-minute
 # timeout would not hold them all. Anywhere that can reach the API also works,
-# with the caller's own identity and tenant.
+# with the caller's own identity -- in the `smoke` tenant either way.
+#
+# WHERE ITS TASKS GO (#628). Every submission is made for the `smoke` tenant
+# (X-Swarm-Tenant) and clones the PRIVATE sandbox repository, both from
+# scripts/acceptance/config.sh. Before any group runs, the suite proves both:
+# the API must resolve it to smoke, and an anonymous read of the repository
+# must be a 404. Either failing stops the run -- it never falls back to the
+# caller's default tenant or to another repository.
 #
 # WHAT IT SPENDS. The claude-code group and the workflow group's integrate
 # chain run six claude-code tasks on one- or two-sentence prompts, against the
-# caller's tenant's subscription. The direct-pr and integrate checks open real
-# pull requests on this repository; each check closes its own when this run
-# holds a GitHub token (SWARM_ACCEPTANCE_GITHUB_TOKEN, GH_TOKEN or
-# GITHUB_TOKEN), and the release sweeps them afterwards otherwise
+# smoke tenant's credential. The direct-pr and integrate checks open real
+# pull requests on the sandbox; each check closes its own when this run holds
+# a GitHub token that can write there (SWARM_ACCEPTANCE_GITHUB_TOKEN, GH_TOKEN
+# or GITHUB_TOKEN), and the release sweeps them afterwards otherwise
 # (scripts/acceptance/github-cleanup.sh).
 #
-# Environment: SWARM_ACCEPTANCE_REF (default main), SWARM_ACCEPTANCE_TIMEOUT
-# (900), SWARM_ACCEPTANCE_ADMIT_WAIT (300), SWARM_ACCEPTANCE_ISSUE (77) and
-# SWARM_ACCEPTANCE_ISSUE_EXPECT (bootstrap.sh).
+# Environment: see config.sh for SWARM_ACCEPTANCE_TENANT (smoke),
+# SWARM_ACCEPTANCE_REPOSITORY_URL (the sandbox), SWARM_ACCEPTANCE_REF (main),
+# SWARM_ACCEPTANCE_ISSUE (1) and SWARM_ACCEPTANCE_ISSUE_EXPECT
+# (sandbox-probe.sh); and SWARM_ACCEPTANCE_TIMEOUT (900) and
+# SWARM_ACCEPTANCE_ADMIT_WAIT (300).
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -141,7 +150,9 @@ if [[ "${SELECTED[*]}" == "${SELFTEST_CRASH_GROUP}" ]]; then
   info "selftest: skipping require_platform -- this group talks to nothing"
 else
   require_platform
-  info "api ${API_URL:-$(api_url)}; fixtures ${ACC_REPOSITORY_URL} @ ${ACC_REF}"
+  info "api ${API_URL:-$(api_url)}; tenant ${ACC_TENANT}; fixtures ${ACC_REPOSITORY_URL} @ ${ACC_REF}"
+  acc_require_private_repository
+  acc_require_tenant
 fi
 acc_init
 

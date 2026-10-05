@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Acceptance group `generic`: every command in the generic runner's catalogue
 # (GENERIC_COMMANDS, apps/agent-worker/agent_worker/runners/generic.py), run
-# for real against tests/acceptance/fixtures/generic in a clone of this
-# repository, and judged by its OUTPUT: the command the runner recorded, its
+# for real against tests/acceptance/fixtures/generic in a clone of the
+# private sandbox (config.sh; sandbox-sync.sh keeps its fixtures equal to the
+# released commit's), and judged by its OUTPUT: the command the runner recorded, its
 # exit code, and the marker the fixture prints. Then the door: arguments the
 # runner would refuse must be refused by swarm-api before any task exists.
 

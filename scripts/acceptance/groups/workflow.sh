@@ -281,7 +281,12 @@ _wf_check_integrate() {
   # answer text, which named the still-unfixed line by number).
   acc_assert_eq "MERGE" "${verdict}" "the review judged the implement step's fix" "${review}"
 
-  if [[ -n "${number}" ]] && pr="$(acc_github GET "/repos/${ACC_GITHUB_REPO}/pulls/${number}")"; then
+  if [[ -z "${number}" ]]; then
+    acc_fail "no pull request to read back (number 'none')" "${fix}"
+  elif ! acc_github_can_read; then
+    # The pull request's body and diff live on the private sandbox.
+    acc_skip "PR #${number}'s merged-branch list and diff: $(acc_github_skip_reason)" "${fix}"
+  elif pr="$(acc_github GET "/repos/${ACC_GITHUB_REPO}/pulls/${number}")"; then
     merged="$(jq -r '.body // ""' <<<"${pr}" | acc_merged_branches | tr '\n' ' ')"
     if [[ "${merged}" == *"swarm/${implement}"* ]]; then
       acc_pass "PR #${number} integrates the implement step's branch" "${fix}"
@@ -296,7 +301,7 @@ _wf_check_integrate() {
       acc_fail "PR #${number}'s diff does not remove the bug line" "${fix}"
     fi
   else
-    acc_fail "no pull request to read back (number '${number:-none}')" "${fix}"
+    acc_fail "could not read PR #${number} back from ${ACC_GITHUB_REPO}" "${fix}"
   fi
   acc_close_pr "${number}" "${branch}" "swarm/${implement}" "swarm/${review}"
 }
