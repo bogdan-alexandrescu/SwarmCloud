@@ -645,6 +645,73 @@ def _update_pull_request(
 
 
 # ---------------------------------------------------------------------------
+# Issue comments: a review's minor findings on the tenant's wave epic (#638)
+# ---------------------------------------------------------------------------
+
+#: The most pages of an epic's comments read before refusing to file. The
+#: dedup has to see EVERY comment: one it never read is a finding filed twice.
+#: 30 pages of 100 is GitHub's own cap on a list read elsewhere in this module.
+MAX_COMMENT_PAGES = 30
+COMMENTS_PER_PAGE = 100
+
+
+def _issue_comments_url(ref: RepoRef, number: int) -> str:
+    if ref is None or not may_receive_forge_token(ref.host):
+        # Asked where the token would leave, as `open_pull_request` asks (#307).
+        raise ForgeError(
+            "refusing to send the tenant's git credential to "
+            f"{getattr(ref, 'host', None)}: it is sent only to github.com"
+        )
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise ForgeError(f"{number!r} is not an issue number")
+    return f"{ref.api_base}/repos/{ref.owner}/{ref.name}/issues/{number}/comments"
+
+
+def list_issue_comments(*, ref: RepoRef, token: str, number: int) -> list[str]:
+    """The body of every comment on issue `number`, oldest first. GETs only.
+
+    Raises `ForgeUnavailable` on an outage and `ForgeError` on anything else
+    -- an issue that does not exist, a token that cannot read it, or more
+    comments than `MAX_COMMENT_PAGES` pages -- because a partial list read as
+    whole would let a finding be filed twice.
+    """
+    url = _issue_comments_url(ref, number)
+    bodies: list[str] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        status, data = _request(f"{url}?per_page={COMMENTS_PER_PAGE}&page={page}", token=token)
+        if status != 200 or not isinstance(data, list):
+            message = _message_of(data)
+            failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+            raise failure(
+                f"could not read the comments of issue #{number} ({status})"
+                + (f": {message}" if message else "")
+            )
+        bodies += [str(c.get("body") or "") for c in data if isinstance(c, dict)]
+        if len(data) < COMMENTS_PER_PAGE:
+            return bodies
+    raise ForgeError(
+        f"issue #{number} has more than {MAX_COMMENT_PAGES * COMMENTS_PER_PAGE} comments; "
+        "they were not all read, so nothing is filed on it"
+    )
+
+
+def create_issue_comment(*, ref: RepoRef, token: str, number: int, body: str) -> int:
+    """Post one comment on issue `number`; its id. Never retried by this module:
+    a POST whose answer was lost may have made the comment, and the caller's
+    dedup on its next run is what finds it."""
+    status, data = _request(
+        _issue_comments_url(ref, number), token=token, method="POST", payload={"body": body}
+    )
+    if status == 201 and isinstance(data, dict):
+        return int(data.get("id") or 0)
+    message = _message_of(data)
+    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    raise failure(
+        f"could not comment on issue #{number} ({status})" + (f": {message}" if message else "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # The pinned forge client: the merge and post-verdict worker actions (#295)
 # ---------------------------------------------------------------------------
 #

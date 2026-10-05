@@ -189,6 +189,7 @@ from .errors import (
     TenantMismatchError,
     WorkerError,
 )
+from . import findings_epic as findings_epic_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import post_verdict as post_verdict_mod
@@ -653,6 +654,10 @@ class Worker:
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
+        # The findings that verdict marked minor, which this step files on the
+        # tenant's wave epic after its own work is done (#638).
+        self._verdict_minors: tuple[verdict_mod.MinorFinding, ...] = ()
+        self._verdict_minors_dropped = 0
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -2385,6 +2390,10 @@ class Worker:
                 # The owner's words for it (2026-10-05): on MERGE, no fix
                 # agent; the step only published the reviewed work.
                 summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+            if result.exit_code != EXIT_TERMINATED:
+                # After the publish, so the epic hears of a review only once
+                # the step it gated has done its own work; never on a stop.
+                summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
         if self._pr_text_from is not None:
             summary["pull_request_text_from"] = dict(self._pr_text_from)
         self._export_metrics()
@@ -3710,6 +3719,8 @@ class Worker:
             "findings": list(read.findings),
             "findings_dropped": read.findings_dropped,
         }
+        self._verdict_minors = read.minors
+        self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
             "verdict gate read: the agent runs" if runs
             else "verdict gate read: the agent does not run; the step still publishes",
@@ -3719,6 +3730,89 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _file_review_minors(self) -> dict[str, Any]:
+        """File the verdict's minor findings on the tenant's wave epic (#638).
+
+        See `agent_worker.findings_epic`. The epic is the signed
+        `dispatch.findings_epic`; the token is the tenant's own `-git` one,
+        read here by the worker after the agent ended and handed only to the
+        two forge calls. Never raises: what was filed, or why nothing was, is
+        the result, under `result_summary.findings_epic`.
+        """
+        minors = self._verdict_minors
+        extra: dict[str, Any] = {}
+        if self._verdict_minors_dropped:
+            extra["minors_dropped"] = self._verdict_minors_dropped
+        try:
+            epic = findings_epic_mod.epic_from_dispatch(self._dispatch_block())
+        except ValueError as exc:
+            return findings_epic_mod.not_filed(None, len(minors), str(exc), **extra)
+        if epic is None:
+            return findings_epic_mod.not_filed(
+                None, len(minors),
+                f"no findings_epic is configured for this tenant, so the {len(minors)} "
+                "minor finding(s) in the verdict were not posted",
+                **extra,
+            )
+        if not minors:
+            return {"epic": epic, "minors": 0, "filed": [], "already_filed": 0, **extra}
+        ref = forge_mod.parse_repo(self._repo_url or self.cfg.repository_url or "")
+        if ref is None or not forge_mod.may_receive_forge_token(ref.host):
+            return findings_epic_mod.not_filed(
+                epic, len(minors),
+                "this step's repository is not on github.com, where the tenant's git "
+                "credential may be sent, so the minor findings were not posted",
+                **extra,
+            )
+        refusal = self._git_token_refusal()
+        if refusal:
+            return findings_epic_mod.not_filed(
+                epic, len(minors), f"refusing to read the tenant git token: {refusal}", **extra
+            )
+        token = self._git_token()
+        if not token:
+            return findings_epic_mod.not_filed(
+                epic, len(minors),
+                "no git credential is registered for this tenant, so the minor findings "
+                "were not posted",
+                **extra,
+            )
+        self.log.register_secret(token)
+        verdict = self._verdict or {}
+        workflow_id = str((self._task or {}).get("workflow_id") or "")
+        found_by = f"found by review `{verdict.get('task_id')}`" + (
+            f" of workflow `{workflow_id}`" if workflow_id else ""
+        )
+        result = findings_epic_mod.file_minors(
+            minors=minors,
+            epic=epic,
+            ref=ref,
+            # Reads are retried on an outage; the POST is not, since one whose
+            # answer was lost may have made the comment (the dedup finds it).
+            list_comments=lambda number: forge_mod.retry_transient(
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                policy=self._forge_retry(),
+                what="the findings epic's comments",
+            ),
+            post_comment=lambda number, body: forge_mod.create_issue_comment(
+                ref=ref, token=token, number=number, body=body
+            ),
+            found_by=found_by,
+            clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
+        )
+        del token
+        result.update(extra)
+        self.log.info(
+            "review minors filed on the findings epic" if not result.get("not_filed")
+            else "review minors not all filed on the findings epic",
+            epic=epic,
+            filed=len(result["filed"]),
+            already_filed=result["already_filed"],
+            minors=len(minors),
+            reason=result.get("not_filed"),
+        )
+        return result
 
     def _finish_without_agent(self) -> Outcome:
         """End a step whose verdict gate stayed shut: no agent, same ending (#264).
