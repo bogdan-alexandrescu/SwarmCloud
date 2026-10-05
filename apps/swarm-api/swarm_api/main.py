@@ -32,6 +32,7 @@ from .routes import (
     leases,
     outcomes,
     platform,
+    repositories,
     runs,
     tasks,
     tenants,
@@ -100,6 +101,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(runs.router)
     # The issue preview, read with the caller's tenant's forge token (#454 1A).
     app.include_router(issues.router)
+    # Registered repositories (docs/repo-index.md §1, lane RI1). Tenant-scoped;
+    # the document is `repositories`'s own, and the registration reads the
+    # forge once with the caller's tenant's token.
+    app.include_router(repositories.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
