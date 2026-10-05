@@ -296,13 +296,13 @@ describe('E: the overlaps card follows how many need action', () => {
     const { container } = await mount(run({ plan: { ...run().plan, overlaps } }))
     const card = container.querySelector('.rn-overlaps')!
     expect(card.classList.contains('is-found')).toBe(false)
-    expect(visible(card.querySelector('h3, h2, .c-card-title'))).toContain('5 checked · 0 need action')
+    expect(visible(card.querySelector('h3, h2, .c-card-title'))).toContain('5 checked · none need action')
     const rows = card.querySelectorAll('details.rn-overlap')
     expect(rows.length).toBe(5)
     const summary = rows[0]!.querySelector('summary')!
     expect(summary.querySelector('a')).not.toBeNull()
     expect(visible(summary)).toMatch(/issue/)
-    expect(visible(summary)).toMatch(/No action/)
+    expect(visible(summary)).toMatch(/Not in this run/)
     expect(visible(summary)).not.toMatch(/different file/)
     expect(visible(rows[0]!.querySelector('.rn-overlap-note'))).toMatch(/touches a different file/)
   })
@@ -323,10 +323,10 @@ describe('E: the overlaps card follows how many need action', () => {
   })
 
   it('reads the verdict off the planner\'s note', () => {
-    expect(overlapVerdict(undefined as unknown as string).needs).toBe(true)
-    expect(overlapVerdict('No action: different file.').needs).toBe(false)
-    expect(overlapVerdict('no action -- unrelated').needs).toBe(false)
-    expect(overlapVerdict('Rebase onto it.').needs).toBe(true)
+    expect(overlapVerdict({ note: undefined as unknown as string }).needs).toBe(true)
+    expect(overlapVerdict({ note: 'No action: different file.' }).needs).toBe(false)
+    expect(overlapVerdict({ note: 'no action -- unrelated' }).needs).toBe(false)
+    expect(overlapVerdict({ note: 'Rebase onto it.' }).needs).toBe(true)
   })
 })
 

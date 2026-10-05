@@ -975,7 +975,7 @@ FULL_PLAN = {
     "summary": "Make the widget list sortable by name.",
     "mode": "workflow",
     "requirements": ["The Name header sorts the list", "The sort survives a reload"],
-    "overlaps": [{"ref": "saga-xyz/widgets#9", "kind": "pull_request",
+    "overlaps": [{"ref": "saga-xyz/widgets#9", "kind": "pull_request", "action": "required",
                   "note": "PR #9 adds sort helpers; step 1 builds on them."}],
     "estimate": "2 agent-hours",
     "steps": [
@@ -1058,6 +1058,99 @@ def test_a_single_mode_plan_compiles_to_the_same_shape_with_one_implementer():
     spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
     assert [s.step_id for s in spec.steps] == ["impl-all", "review", "fix"]
     assert spec.strategy == "integrate"
+
+
+# --------------------------------------------------------------------------
+# #587: an overlap says whether anyone must act on it, as a field
+# --------------------------------------------------------------------------
+
+#: A plan as stored before #587: its overlaps carry ref, kind and note, and no
+#: `action`. Its digest is the one it was stored (and approved) with.
+LEGACY_PLAN = {
+    **{k: v for k, v in FULL_PLAN.items() if k != "overlaps"},
+    "overlaps": [
+        {"ref": "saga-xyz/widgets#9", "kind": "pull_request",
+         "note": "PR #9 adds sort helpers; step 1 builds on them."},
+        {"ref": "saga-xyz/widgets#7", "kind": "issue",
+         "note": "Edits the list's styles. No action: different file."},
+    ],
+}
+#: The canonical JSON bytes `plan_digest` hashes, pinned: an `action` default
+#: added to the model would put a key into these and change every old digest.
+LEGACY_DIGEST = plan_digest(json.loads(json.dumps(LEGACY_PLAN)))
+
+
+@pytest.mark.parametrize("missing", [{}, {"action": None}])
+def test_a_planner_plan_whose_overlap_has_no_action_is_refused_naming_it(missing):
+    overlap = {"ref": "saga-xyz/widgets#9", "kind": "pull_request", "note": "n", **missing}
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_plan({**FULL_PLAN, "overlaps": [overlap]})
+    assert "overlaps.0" in refused.value.message
+    assert "saga-xyz/widgets#9" in refused.value.message
+    assert "action" in refused.value.message
+
+
+@pytest.mark.parametrize("action", ["maybe", "", "None"])
+def test_an_overlap_action_is_none_or_required(action):
+    overlap = {**FULL_PLAN["overlaps"][0], "action": action}
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_plan({**FULL_PLAN, "overlaps": [overlap]})
+    assert "action" in refused.value.message
+
+
+def test_a_planner_plan_missing_an_overlap_action_fails_the_run(client, db, objects):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, LEGACY_PLAN)
+    read = _run(client, run["id"]).json()["run"]
+    assert read["state"] == "FAILED"
+    assert "saga-xyz/widgets#9" in read["error"] and "action" in read["error"]
+    assert not _docs(db, "workflows")
+
+
+def test_an_overlap_action_round_trips_and_is_in_the_digest():
+    none = {**FULL_PLAN, "overlaps": [{**FULL_PLAN["overlaps"][0], "action": "none"}]}
+    assert issueruns.parse_plan(none) == none
+    assert plan_digest(issueruns.parse_plan(none)) != plan_digest(issueruns.parse_plan(FULL_PLAN))
+
+
+def test_a_stored_legacy_plan_reads_unchanged_and_its_digest_still_matches():
+    stored = issueruns.parse_plan(LEGACY_PLAN, stored=True)
+    assert stored == LEGACY_PLAN
+    assert "action" not in json.dumps(stored)
+    assert plan_digest(stored) == plan_digest(LEGACY_PLAN) == LEGACY_DIGEST
+    assert issueruns.plan_shape(LEGACY_PLAN) is not None
+    spec = compile_plan(_stored_run(plan=LEGACY_PLAN, plan_digest=LEGACY_DIGEST,
+                                    approved_digest=LEGACY_DIGEST))
+    assert [s.step_id for s in spec.steps][-2:] == ["review", "fix"]
+
+
+def test_a_stored_legacy_plan_is_served_and_approves_against_its_stored_digest(
+    client, db, objects
+):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, FULL_PLAN)
+    assert _run(client, run["id"]).json()["run"]["state"] == "PLANNED"
+    # The run as it was stored before #587: the plan and its digest, untouched.
+    stored = db.docs[f"{issueruns.RUNS_COLLECTION}/{run['id']}"]
+    stored["plan"] = json.loads(json.dumps(LEGACY_PLAN))
+    stored["plan_digest"] = LEGACY_DIGEST
+    planned = _run(client, run["id"]).json()["run"]
+    assert planned["state"] == "PLANNED"
+    assert planned["plan"] == LEGACY_PLAN
+    assert planned["plan_digest"] == LEGACY_DIGEST == plan_digest(planned["plan"])
+    assert planned["plan_shape"] is not None
+    approved = _approve(client, run["id"], LEGACY_DIGEST)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["run"]["state"] == "RUNNING"
+    assert approved.json()["run"]["approved_digest"] == LEGACY_DIGEST
+
+
+def test_the_planner_is_told_every_overlap_needs_an_action():
+    prompt = issueruns.planner_prompt(parse_issue_ref(REF), run_id="run_x", open_work={})
+    assert '"action": "none" or "required"' in prompt
+    assert '"action" is mandatory' in prompt
+    assert '"none" when this plan does nothing about it' in prompt
+    assert '"required" when this plan or a person must act' in prompt
 
 
 def test_a_plan_with_the_new_fields_is_served_and_approvable(client, db, objects):
