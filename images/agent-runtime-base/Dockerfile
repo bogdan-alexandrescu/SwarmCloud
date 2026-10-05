@@ -71,13 +71,24 @@ ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 # the result is linked with the Go above, which also clears the stdlib CVEs.
 # The build then reads each binary's own module list (`go version -m`) and
 # fails if a bump did not land, so a pin that stops applying is loud.
-# Raising a pin: take the "fixed version" trivy prints, and check the
-# module's go.mod `go` line is not newer than GO_VERSION (GOTOOLCHAIN=local).
-ARG GOPLS_VERSION=0.23.0
+# Raising a pin: take the "fixed version" trivy prints, then read the pinned
+# modules' OWN requirements on the proxy (curl proxy.golang.org/<mod>/@v/<v>.mod):
+# the x/* modules require each other, so a pin below what another pin needs
+# fails `go get` ("x/mod@v0.40.0 indirectly requires x/text@v0.41.0", main
+# 3ed3305, 2026-10-05). Check every `go` line is not newer than GO_VERSION.
+#
+# gopls is v0.24.0-pre.1 (2026-09-30), not v0.23.0: x/mod >= 0.40 requires
+# x/tools 0.49, and gopls is compiled against x/tools internals, so forcing
+# 0.23.0 (x/tools 0.47.1 snapshot) onto a newer x/tools risks not compiling.
+# 0.24.0-pre.1 already requires x/mod 0.41.0, x/text 0.42.0 and x/tools
+# 0.50.1-pre, so its two pins below are no-ops kept for the linked-version
+# check. Move to v0.24.0 when it is released. terraform-ls takes x/tools
+# 0.48 -> 0.49 through the raised x/mod and x/text; it uses x/tools' public API.
+ARG GOPLS_VERSION=0.24.0-pre.1
 ARG TERRAFORM_LS_VERSION=0.39.0
 ARG X_CRYPTO_VERSION=0.55.0
-ARG X_MOD_VERSION=0.40.0
-ARG X_TEXT_VERSION=0.39.0
+ARG X_MOD_VERSION=0.41.0
+ARG X_TEXT_VERSION=0.42.0
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
@@ -108,6 +119,7 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
  && build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
       "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/mod@v${X_MOD_VERSION}" \
+      "golang.org/x/text@v${X_TEXT_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
  && /usr/local/bin/gopls version && /usr/local/bin/terraform-ls version
 
