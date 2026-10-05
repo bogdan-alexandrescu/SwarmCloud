@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from swarm_common.states import TaskState
 
 from ..agent_output import AgentOutputService
+from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, cascade_children
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
@@ -252,13 +253,20 @@ def get_task(
     waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
     accounts = accounts_for(ctx.db, tenant_id, [task])
     beats = heartbeats_for_page(ctx.db, tenant_id, [task], core=ctx.settings.core)
+    # EVERY ATTEMPT'S SPEND AND TIME beside the last attempt's (owner decision
+    # 2026-10-05, lane review P1): the task document describes only the attempt
+    # that ended last. One attempt query; see `swarm_api.attempt_totals`.
+    totals = totals_for(ctx.db, tenant_id, [task.id])
     return {
-        "task": task_to_api(
-            task,
-            waiting.get(task.id),
-            account=accounts.get(task.id),
-            console_url=ctx.settings.console_url,
-            heartbeat=beats.get(task.id),
+        "task": with_totals(
+            task_to_api(
+                task,
+                waiting.get(task.id),
+                account=accounts.get(task.id),
+                console_url=ctx.settings.console_url,
+                heartbeat=beats.get(task.id),
+            ),
+            totals,
         )
     }
 

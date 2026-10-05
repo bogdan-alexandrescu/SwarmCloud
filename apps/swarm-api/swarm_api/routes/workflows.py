@@ -27,6 +27,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 
 from ..auth import AuthContext
+from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
@@ -165,6 +166,7 @@ def get_workflow(
         workflow, tasks.items, complete=tasks.next_page_token is None
     )
     accounts = accounts_for(ctx.db, tenant_id, tasks.items)
+    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
 
     return {
         # The step copies of each input are masked by the tasks' own maskers,
@@ -180,9 +182,15 @@ def get_workflow(
         # frozen `Workflow` dataclass has no metadata field to hold them. The
         # list route has no equivalent because it loads no tasks.
         "dispatch": workflow_dispatch(tasks.items),
-        # #379: each step's account, one bounded query per 30 steps.
+        # #379: each step's account, one bounded query per 30 steps. And each
+        # step's totals across every attempt (lane review P1), which the
+        # console's Workflows cost columns show, read the same bounded way
+        # (`attempt_totals.totals_for`).
         "tasks": [
-            task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url)
+            with_totals(
+                task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url),
+                totals,
+            )
             for t in tasks.items
         ],
     }
