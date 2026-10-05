@@ -10,6 +10,134 @@ made by the **worker**, with a credential no agent can reach. The
 frozen-contract half is contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); the example spec is
 in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request).
+**Superseded in part on 2026-10-04: the merge step is built, on the tenant's
+`-git` token -- the next section says what changed and why.**
+
+## Revised 2026-10-04 (owner)
+
+**Status: BUILT for the merge itself, on new terms.** The owner decided on
+2026-10-04 (recorded on #295; contract request 47 in
+[contract-change-requests.md](contract-change-requests.md)) that merging moves
+off the GitHub-side App (`.github/workflows/auto-merge.yml` and the
+`swarmcloud-merge` App) into a workflow `merge` step. The trigger was #569:
+the App merged #564 and #562 and left #72 and #560 open although GitHub listed
+both as their closing references. #342 (signed step specs) is closed, so the
+gate this document set in §0 consequence 4 and §10 is lifted. The decisions,
+and what each one overrides below:
+
+1. **The credential is the tenant's EXISTING `-git` token**
+   (`swarm-tenant-<tenant>-git`), not a merge App's installation token.
+   Overrides §2.1 (the App key, `-git-merge`, and the minted, revoked
+   installation token), §1.3's own service account for the merge Job (it now
+   runs as the tenant's worker account, `terraform/infra/locals.tf`), and
+   requirement 3 of the list below. **Why:** the owner accepted, on #476, that
+   an agent holding `-git` can also merge. That token already pushes the
+   branch; a separate merge identity bought no isolation from an agent that
+   holds it, at the cost of an App per tenant that was never created. **What
+   §2.2 keeps:** the #219 ordering. The token is read at merge time only,
+   after the reap and every check that needs no credential, is registered
+   with the log redaction before use, travels only in the Authorization
+   header, and is never written to the workspace, a file, an agent's
+   environment, an event, a log line or `result_summary`
+   (`tests/unit/worker/test_merge_token_isolation.py` runs the production
+   worker and looks for it everywhere).
+2. **Any repository a workflow runs on.** Owner and repo are parsed from the
+   workflow's own `repository_url`, which the signed spec covers. Overrides
+   §2.1b's Terraform-rendered `FORGE_HOST`/`FORGE_OWNER`/`FORGE_REPO` on the
+   Job (the merge Job carries none now); `post-verdict` keeps them. The one
+   forge served is GitHub (`agent_worker.merge.GitHubMerger`, the only
+   `ForgeMerger`), on github.com, the only host the tenant's token is ever
+   sent to (#307). Another host is refused at SUBMISSION
+   (`validation.refuse_unmergeable_forge`), never at merge time.
+3. **It closes the issues the pull request closes.** After a merge -- or on
+   finding the pull request already merged at the pinned head, so a lost
+   attempt's issues are not left open -- it reads GitHub's
+   `closingIssuesReferences` (GraphQL) and closes each one in the same
+   repository that is still open, with the comment
+   `Closed by #<pr>, merged by SwarmCloud task <task_id>`. A `part of #N`
+   pull request names no closing reference, so it closes nothing. New; §5.4
+   only recorded the merging task.
+4. **An opt-in final step, a platform default or per job.** `merge_by_default`
+   (Firestore `control/settings`, served and set by `/v1/admin/settings`,
+   default **off**), and a workflow's `metadata.merge` `"on"` | `"off"`,
+   absent meaning the platform default. When the choice is on, the spec states
+   no merge step and the workflow opens ONE pull request (an `integrate`
+   workflow, or a one-step `direct-pr` one), swarm-api appends one `merge`
+   step before signing, depending on the step that opens the pull request and
+   on the review when there is one. **The rule for a stated step:** it is
+   honoured unless `metadata.merge` is `"off"`, which contradicts it and is
+   refused; `"on"` beside it appends nothing more. Overrides §1's `single-pr`
+   chain (implement, review, post-verdict, fix, proof, merge) as the only way
+   to merge: that chain stays proposed and disabled, with `post-verdict` and
+   `claude-code-review`. [workflows.md](workflows.md#ending-in-a-merge-the-merge-step)
+   has the table and the example spec.
+
+What the built step checks, and how this differs from §4-§5:
+
+* **Which pull request (§3, §4.1).** The signed dispatch block
+  `merge_target` names the task that opened it -- the integrator, or the one
+  `direct-pr` step -- and the review. The number and the pushed head are that
+  task's recorded result: claims, so the live pull request must be that
+  task's own `swarm/<id>` branch (or the branch it continues), from no fork.
+  No `merges` block, no proof step.
+* **The pinned sha (§4.2).** The head the opening step pushed. The pull
+  request's head must equal it (`head_moved` otherwise, and on a 409 from
+  the merge call), and the squash merge sends it as `sha`.
+* **The verdict (§4.3, §5.2a).** The review's verdict FILE, staged by the
+  merge step from the review exactly as the gated step stages it (#264), must
+  say `MERGE`; `NOT_YET` is `verdict_not_merge`. It is not an App's
+  GitHub review: there is no review App. This is the weaker anchor §4.3
+  rejected -- the file is written under the tenant identity -- and it is
+  accepted with the `-git` decision: an agent that could forge the file
+  holds a token that can already merge.
+* **The checks (§5.2).** The required set is the base branch's rulesets
+  (`rules/branches/{base}`) AND its classic protection (`branches/{base}`),
+  because a repository may use either. Each required check must be success
+  or skipped at the pinned head (neutral is not); a rule that pins an App
+  (`integration_id`) is matched to that App's runs. **M5 is relaxed:** a
+  required check with no App is matched by name -- check runs and commit
+  statuses -- rather than refused, because a repository that is not
+  SwarmCloud's commonly requires checks that way. A base branch that requires
+  NO check needs every reported check green (success, skipped or neutral) and
+  at least one to exist.
+* **Waiting for CI (invariants 1 and 4).** A required check still running, no
+  check reported yet on an unprotected branch, or mergeability not computed
+  fails the ATTEMPT retryably; the step waits READY for 300 s, holding
+  nothing, and reads every fact again. The step gets 10 attempts
+  (`MERGE_STEP_MAX_ATTEMPTS`). Every other refusal is final.
+* **The merge (§5.3).** Squash, the pull request's title as
+  `<title> (#<n>)`, `sha` pinned. Never resent: a merge call that did not
+  answer ends `merge_unanswered`, MERGE_FAILED, because whether it merged is
+  GitHub's to say. 405/422 are `not_mergeable`; 401/403/404 are
+  `token_lacks_rights`.
+* **The record (§5.4).** A pull request comment, `Merged by SwarmCloud task
+  <task_id> ...`, the same text as the squash commit's body, with no
+  attribution line.
+
+What these decisions remove, and the residuals that follow:
+
+* **The protected-path refusal (§5.1, §7 T6, M4) is gone.** It refused a pull
+  request touching `.github/`, `scripts/`, `terraform/` and the build files of
+  SwarmCloud's own repository; in an arbitrary repository it would refuse
+  ordinary work, and with `-git` it was never a barrier to an agent. The
+  repository's own branch protection is what holds a sensitive change.
+* **The human gate (B13r) is not wired into this step.** A person who wants
+  to merge by hand sets `metadata.merge` to `"off"`.
+* **The platform default is a Firestore document.** `control/settings` sits
+  beside `control/dispatch`, and like it is writable by any identity with
+  project-level Firestore write, tenant worker accounts included (Firestore
+  has no document-level IAM, §1.3). Such an identity could turn
+  `merge_by_default` on for workflows submitted afterwards. A job that says
+  `metadata.merge: "off"` is unaffected, and a merge still needs the
+  workflow's own review verdict and green required checks. Recorded here
+  rather than closed.
+* **`auto-merge.yml` stays until the step is proven**, then is retired
+  ([ci.md](ci.md#a-ready-pull-request-is-merged-by-github-not-by-a-session)).
+  Its parity cases still hold `title_is_placeholder`, `other_check_blocks`
+  and `required_check_state`, which the new step uses.
+
+The sections below are the design as accepted on 2026-09-29, and stand
+except where this section overrides them.
 
 **Revised 2026-09-29, four times.** Round 1: against a security review's two
 blockers and five majors. Round 2, same day: B1 was found not yet closed by
