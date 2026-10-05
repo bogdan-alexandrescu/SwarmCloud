@@ -336,6 +336,27 @@ function AttemptCard({
               <b>att</b>
               <span className="mono">{a.attempt_id}</span>
             </li>
+            {/* THE LEASE AND THE EXECUTION LIVE HERE (agent-details-v3.html
+                A): per-attempt ids are this tab's subject, and Details
+                printed them as three mono lines on every attempt card. */}
+            <li className="ctl-fact">
+              <b>lease</b>
+              <span className="mono">{a.lease_id}</span>
+            </li>
+            <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
+              <b>exec</b>
+              {a.execution_name === null ? (
+                <>
+                  <Em />{' '}
+                  <Mark
+                    kind="zero"
+                    say="This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record."
+                  />
+                </>
+              ) : (
+                <span className="mono">{a.execution_name}</span>
+              )}
+            </li>
             <li className={`ctl-fact${ranText === null ? ' is-absent' : ''}`}>
               <b>ran</b>
               {ranText ?? (

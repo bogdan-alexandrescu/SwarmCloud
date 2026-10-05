@@ -7,6 +7,7 @@ import { CONCURRENCY_STATES, TERMINAL_STATES } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
+import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import type {
@@ -41,12 +42,10 @@ export async function loadCapacity(options: { frame?: boolean } = {}): Promise<R
   return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0, { frame: options.frame === true })
 }
 
-/**
- * The largest page `GET /v1/tasks` serves. Page size caps at 200 server-side
- * (deps.py:194-199); asking for more is silently clamped, which would make
- * "200 tasks" look like the whole truth.
- */
-export const TASK_PAGE_LIMIT = 200
+// `TASK_PAGE_LIMIT` lives in `pageLimits.ts`: the check layer (checks.ts)
+// names it, and importing it from here dragged this client -- and Vite's
+// `import.meta.env` -- into a layer the node test loader runs bare.
+export { TASK_PAGE_LIMIT }
 
 /**
  * A page of the task list. `limit` is the full page unless a caller has a

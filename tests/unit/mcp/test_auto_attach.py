@@ -317,40 +317,30 @@ _TWO = {
 }
 
 
-def test_attach_all_lists_once_and_starts_one_row_per_unfinished_step_across_workflows(tmp_path):
+def test_attach_all_lists_once_and_hands_back_one_attach_call_per_workflow(tmp_path):
+    """ONE RUN PER WORKFLOW (owner, 2026-10-04). This run attached every
+    workflow inside itself, so one /workflows counter covered several
+    SwarmCloud workflows (measured: 11 agents for two 3-step workflows). It now
+    lists them and hands back the exact call that attaches each in a run of
+    its own; it attaches nothing and starts no row."""
     got = _run_all(tmp_path, _TWO)
     assert "error" not in got, got.get("error")
-    first = [c["prompt"].split("\n")[0] for c in got["calls"]]
-    assert first.count("LIST") == 1 and first[0] == "LIST"
-    assert "SUBMIT" not in first and "READ SPEC" not in first
-    attaches = [c["prompt"] for c in got["calls"] if c["prompt"].startswith("ATTACH")]
-    assert attaches == ["ATTACH\nworkflow_id: wf_a", "ATTACH\nworkflow_id: wf_b"]
-    rows = sorted(
-        (line.split(": ", 1)[1] for c in got["calls"] if c["agentType"] == "sc:step"
-         for line in c["prompt"].split("\n") if line.startswith("step_id: ")),
-    )
-    # `implement` had finished before the attach: no row for it.
-    assert rows == ["fix", "review", "scan"]
-    # Each row is named by its workflow's label.
-    labels = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
-    assert any("label-wf_a" in label for label in labels) and any("label-wf_b" in label for label in labels)
-    assert got["result"]["state"] == "ATTACHED"
-    assert [w["workflow_id"] for w in got["result"]["workflows"]] == ["wf_a", "wf_b"]
-    assert got["result"]["not_followed"] == []
+    assert [c["prompt"] for c in got["calls"]] == ["LIST"]
+    result = got["result"]
+    assert result["state"] == "LISTED"
+    assert result["attach_calls"] == [
+        {"attach": "wf_a", "title": "label-wf_a"}, {"attach": "wf_b", "title": "label-wf_b"},
+    ]
+    assert [w["workflow_id"] for w in result["workflows"]] == ["wf_a", "wf_b"]
+    assert result["not_followed"] == []
 
 
 def test_attach_all_follows_at_most_the_cap_and_lists_the_rest(tmp_path):
     ids = [f"wf_{n:02d}" for n in range(12)]
-    answers = {"LIST": _listed(*ids), "STATUS": _TWO["STATUS"], "step:work": _step("SUCCEEDED")}
-    for workflow_id in ids:
-        answers[f"ATTACH\nworkflow_id: {workflow_id}"] = _attached(workflow_id, [
-            {"step_id": "work", "task_id": f"t_{workflow_id}", "depends_on": [], "state": "RUNNING", "console": None},
-        ])
-    got = _run_all(tmp_path, answers)
+    got = _run_all(tmp_path, {"LIST": _listed(*ids)})
     assert "error" not in got, got.get("error")
-    attached = [c["prompt"].split(": ", 1)[1] for c in got["calls"] if c["prompt"].startswith("ATTACH")]
-    assert attached == ids[:10], "the newest ten, in the order the bridge listed them"
-    assert len([c for c in got["calls"] if c["agentType"] == "sc:step"]) == 10
+    calls = [call["attach"] for call in got["result"]["attach_calls"]]
+    assert calls == ids[:10], "the newest ten, in the order the bridge listed them"
     assert [w["workflow_id"] for w in got["result"]["not_followed"]] == ids[10:]
     said = " ".join(got["logs"])
     for workflow_id in ids[10:]:
@@ -370,40 +360,37 @@ def test_attach_all_reports_a_failed_list_verbatim(tmp_path):
     assert got["result"]["error"] == failed["error"]
 
 
-def test_one_workflow_that_cannot_be_attached_does_not_stop_the_others(tmp_path):
-    answers = dict(_TWO)
-    answers["ATTACH\nworkflow_id: wf_a"] = {**_attached("wf_a", []), "error": "GET /v1/workflows/wf_a -> 404"}
-    got = _run_all(tmp_path, answers)
-    by_id = {w["workflow_id"]: w for w in got["result"]["workflows"]}
-    assert by_id["wf_a"]["state"] == "NOT_ATTACHED"
-    assert by_id["wf_b"]["state"] == "SUCCEEDED"
-
-
-def test_attach_all_sets_the_result_phase_once_after_every_workflow(tmp_path):
+def test_attach_all_stays_in_the_attach_phase(tmp_path):
     got = _run_all(tmp_path, _TWO)
-    assert got["phases"] == ["Attach", "Result"], got["phases"]
-    results = [c for c in got["calls"] if c["prompt"].startswith("STATUS")]
-    assert len(results) == 2 and all(c["phase"] == "Result" for c in results)
+    assert got["phases"] == ["Attach"], got["phases"]
 
 
-def test_attach_all_tells_apart_two_workflows_with_the_same_label(tmp_path):
-    answers = dict(_TWO)
+def test_two_workflows_with_the_same_label_are_two_calls_by_id(tmp_path):
+    """Each is its own run, and each run's Result row carries its workflow id,
+    so a shared label no longer needs an id tail to be told apart."""
     listed = _listed("wf_aaaaaaaa1111", "wf_bbbbbbbb2222")
     for entry in listed["workflows"]:
         entry["label"] = "nightly scan"
-    answers["LIST"] = listed
-    answers["ATTACH\nworkflow_id: wf_aaaaaaaa1111"] = _TWO["ATTACH\nworkflow_id: wf_a"]
-    answers["ATTACH\nworkflow_id: wf_bbbbbbbb2222"] = _TWO["ATTACH\nworkflow_id: wf_b"]
-    got = _run_all(tmp_path, answers)
-    labels = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
-    assert len(labels) == len(set(labels)) == 3, labels
-    assert any("aaaa1111" in label for label in labels) and any("bbbb2222" in label for label in labels)
+    got = _run_all(tmp_path, {"LIST": listed})
+    assert got["result"]["attach_calls"] == [
+        {"attach": "wf_aaaaaaaa1111", "title": "nightly scan"},
+        {"attach": "wf_bbbbbbbb2222", "title": "nightly scan"},
+    ]
 
 
-def test_attach_all_keeps_a_unique_label_as_it_is(tmp_path):
-    got = _run_all(tmp_path, _TWO)
-    labels = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
-    assert all("[SwarmCloud] label-wf_" in label for label in labels), labels
+def test_an_attach_run_names_its_first_row_after_the_title_it_was_launched_with(tmp_path):
+    harness = tmp_path / "harness.cjs"
+    harness.write_text(_BY_PROMPT)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"args": {"attach": "wf_a", "title": "label-wf_a"}, "answers": _TWO}))
+    done = subprocess.run(
+        [_node(), str(harness), str(_RUN_JS), str(fixture)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    got = json.loads(done.stdout)
+    assert "error" not in got, got.get("error")
+    assert got["calls"][0]["label"] == "[SwarmCloud] label-wf_a · setup · attach"
+    assert got["calls"][-1]["label"] == "[SwarmCloud] label-wf_a · 2 steps · wf_a · setup · result"
 
 
 def test_the_cap_is_stated_with_its_reason():

@@ -165,36 +165,64 @@
    at 17% the 24-character run id was cut, and the Issue column -- what is
    left -- cut `owner/repo#N`. Run is the id's own width (24 mono characters
    and the padding); Workflow and By give up a few points, cut with titles. */
-.rn-table th[data-col='run'] { width: 224px; }
+.rn-table th[data-col='run'] { width: 190px; }
 .rn-table th[data-col='state'] { width: 112px; }
-.rn-table th[data-col='approval'] { width: 104px; }
-.rn-table th[data-col='workflow'] { width: 11%; }
-.rn-table th[data-col='created'] { width: 80px; }
-.rn-table th[data-col='by'] { width: 10%; }
+.rn-table th[data-col='approval'] { width: 76px; }
+/* SIZED TO WHAT THEY HOLD (owner QA R11, 2026-10-04): at 11% and 10% the
+   Workflow id read 'wf_3c66d93…' and By 'bogdan@sag…' while the Issue column
+   had room to give. Every id in a row is drawn at the micro size and every
+   cell keeps 8px a side, so at 1056px the run id (24 mono characters), the
+   workflow id (23), the issue reference (34) and an operator's address
+   (about 20 sans) are all whole; Plan approval ('required') and Created
+   ('59m ago') are their words' width. */
+.rn-table th[data-col='workflow'] { width: 182px; }
+.rn-table th[data-col='created'] { width: 72px; }
+.rn-table th[data-col='by'] { width: 160px; }
 .rn-cut { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rn-issue-ref { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 /* The run page wraps its frame (`.rn-run`) only to say whether its heading is
    a reference: it draws nothing of its own. */
 .rn-run { display: contents; }
 .rn-run.is-ref .c-phead h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; min-width: 0; }
-/* THE HEADING TAKES THE ROW BEFORE THE META (browser QA D11, 2026-10-04): the
-   reference was cut at 323px while the meta beside it -- which repeats the
-   reference -- kept a basis as wide as its own text. A zero basis gives the
-   meta only what the heading leaves; it is cut with its title. */
-.rn-run .c-phead > .sub { flex: 1 1 0; }
+/* THE TITLE HAS A ROW OF ITS OWN (owner QA B and R2, 2026-10-04). A long
+   issue title wrapped beside the `?`, the meta chip and the freshness, and
+   pushed them past the column (.ctl-scroll 1322 wide in 1120; 'newest read ·
+   refresh' at x=1589). The head's title block steps out of the way
+   (`display: contents`), the title takes the whole first row -- two lines,
+   then cut, whole in its title (names.css) -- and the `?`, the meta and the
+   freshness share the second. On a phone the `?` beside the reference cost
+   it '54' of '#454' (D11); alone on its row the reference fits. */
+.rn-run .c-phead { flex-wrap: wrap; }
+.rn-run .c-phead > div.head { display: contents; }
+.rn-run .c-phead > div.head > h1 { flex: 1 0 100%; }
+/* THE META TAKES WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
+   with its title, and never wider than the column. */
+.rn-run .c-phead > .sub { flex: 1 1 0; min-width: 0; max-width: 100%; }
+/* The chip is a button that opens it whole on a tap (owner QA F): drawn as
+   the chip's own text until it is open. */
+.rn-meta {
+  display: inline-block; max-width: 100%; margin: 0; padding: 0;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom;
+  cursor: pointer;
+}
+.rn-meta.is-open { white-space: normal; overflow-wrap: anywhere; }
+.rn-meta:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+
 .rn-read-none { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
 .rn-table th {
-  text-align: left; padding: 6px 10px;
+  text-align: left; padding: 6px 8px;
   border-bottom: 1px solid var(--line);
   font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
 }
 .rn-row > td {
-  height: 32px; padding: 4px 10px;
+  height: 32px; padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
   white-space: nowrap;
 }
 .rn-row a { color: var(--sk-ac); }
+.rn-row .mono { font-size: var(--t-micro); }
 .rn-more { margin: 0; }
 
 /* ---- one run --------------------------------------------------------------- */
@@ -210,6 +238,7 @@
 .rn-state-t { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .rn-error { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); overflow-wrap: anywhere; }
 .rn-wait {
+  display: grid; gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
@@ -244,13 +273,20 @@
    insides are laid out here. Found overlaps take the warn edge: the issue's
    acceptance test is that the plan names them, so they are not quiet. */
 .rn-overlaps.is-found { border-color: var(--warn-ink); }
-.rn-overlap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.rn-overlap {
-  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
-  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+/* ONE COMPACT ROW EACH (owner QA E, 2026-10-04): the link, its kind and the
+   verdict on a 32px row; the planner's reasoning opens under it. */
+.rn-overlap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.rn-overlap-list > li + li { border-top: 1px solid var(--line); }
+.rn-overlap { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.rn-overlap > summary {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 32px;
+  cursor: pointer;
 }
+.rn-overlap > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.rn-overlap-v { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.rn-overlap.is-needs .rn-overlap-v { color: var(--warn-ink); font-weight: 600; }
 .rn-overlap a, .rn-ci a { color: var(--sk-ac); }
-.rn-overlap-note { overflow-wrap: anywhere; color: var(--text-dim); }
+.rn-overlap-note { margin: 0 0 8px; overflow-wrap: anywhere; color: var(--text-dim); }
 .rn-plan-facts { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .rn-sub { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
 .rn-reqs-wrap { display: grid; gap: 4px; }
@@ -260,6 +296,16 @@
 .rn-excerpt { min-width: 0; overflow-x: auto; }
 
 .rn-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rn-wait-t { margin: 0; }
+/* THE PLAN'S OWN FOOT CARRIES THE ACTIONS AGAIN, STUCK TO THE BOTTOM EDGE
+   (owner QA D): a reader at the end of a long plan does not scroll back up
+   to act on it. */
+.rn-actbar {
+  position: sticky; bottom: 0; z-index: 1;
+  margin: 0 -14px -12px; padding: 10px 14px;
+  border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--surface);
+}
 
 .rn-history ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .rn-history li {
@@ -276,18 +322,23 @@
 }
 /* A CARD SHRINKS TO ITS TRACK (browser QA D3, 2026-10-04): a grid item's
    min-width is its content's, so one nowrap id widened the card past the
-   300px column (x1448 in a card ending at 1408). Each id is one line, cut,
-   whole in its title -- never broken mid-name and never over the edge. */
+   300px column (x1448 in a card ending at 1408). */
 .rn-side > .rn-card { min-width: 0; overflow: hidden; }
 .rn-card .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
-.rn-card .ctl-fact { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
-.rn-card .ctl-fact > b { flex: none; white-space: nowrap; }
-/* A LABEL IS NEVER CUT, A VALUE IS (D3): one line, an ellipsis, its whole
-   text in its title. The issue-read card's values are prose and wrap. */
-.rn-links .ctl-fact > :not(b),
-.rn-chosen .ctl-fact > :not(b) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+/* EACH LABEL ABOVE ITS VALUE (owner QA A, 2026-10-04). A 300px card cannot
+   hold a label|value row: the values sat at x>=1409 past the card's edge at
+   1408, so the issue's state 'open', its label 'bug', its '2' comments and
+   the PR link were not drawn at all, and the title was cut at both ends. The
+   value takes the card's whole width under its label and wraps -- at a space,
+   or at the `<wbr>` `breakAt` puts after `/`, `#`, `_` and `::`, never mid
+   identifier (`overflow-wrap` stays normal). */
+.rn-card .ctl-fact { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; min-width: 0; }
+.rn-card .ctl-fact > b { white-space: nowrap; }
+.rn-card .ctl-fact > :not(b) { min-width: 0; text-align: left; white-space: normal; overflow-wrap: normal; word-break: normal; }
+/* A SINGLE-TOKEN ID (a task or workflow id, an address) is the one value cut:
+   one line, an ellipsis, its whole text in its title. */
+.rn-card .ctl-fact > .rn-id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rn-card a { color: var(--sk-ac); }
-.rn-card .ctl-fact > a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The plan editor and the rejection, in place of the plan and the actions. */
 .rn-edit, .rn-reject { display: grid; gap: 10px; }

@@ -93,7 +93,7 @@ async function renderRun(t: Task): Promise<HTMLElement> {
     classesRouteMissing: false,
   }
   const { container } = render(<Run run={run} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull())
   return container as HTMLElement
 }
 

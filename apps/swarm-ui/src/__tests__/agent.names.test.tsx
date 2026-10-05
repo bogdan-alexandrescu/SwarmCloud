@@ -32,6 +32,11 @@ const api = vi.hoisted(() => ({
   loadTaskLogs: vi.fn(),
   loadWorkflow: vi.fn(),
   loadArtifactContent: vi.fn(),
+  loadTask: vi.fn(),
+  loadChildren: vi.fn(),
+  loadAttempts: vi.fn(),
+  loadTranscript: vi.fn(),
+  loadResourceClasses: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -40,7 +45,29 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { AgentsScreen } = await import('../Agents')
-const { AgentDetailScreen, Run, agentName } = await import('../AgentDetail')
+const { AgentDetailScreen, agentName } = await import('../AgentDetail')
+const { AgentSplit } = await import('../AgentSplit')
+
+/**
+ * The split's header for `t`: the id and the workflow are said there, once
+ * (walkthrough B), in the meta line (agent-details-v3.html A).
+ */
+async function header(t: Task): Promise<HTMLElement> {
+  quietPanels()
+  const ok = <T,>(data: T) => ({ status: 'ok' as const, data, fetchedAt: Date.now() })
+  api.loadTask.mockResolvedValue(ok(t))
+  api.loadChildren.mockResolvedValue(ok({ tasks: [] }))
+  api.loadAttempts.mockResolvedValue(ok({ attempts: [] }))
+  api.loadTranscript.mockReturnValue(new Promise(() => {}))
+  api.loadResourceClasses.mockReturnValue(new Promise(() => {}))
+  api.loadAgentRun.mockReturnValue(new Promise(() => {}))
+  render(<AgentSplit taskId={t.id} pane="attempts" artifact={null} closeTo="work/running/live" go={() => {}} base={`work/task/${t.id}`} />)
+  return waitFor(() => {
+    const h = document.querySelector<HTMLElement>('.ag-head')
+    expect(h?.querySelector('.ag-head-facts li')).toBeTruthy()
+    return h!
+  })
+}
 
 afterEach(() => vi.clearAllMocks())
 
@@ -113,34 +140,31 @@ describe('#94: the inspector is headed by the step, with the id kept and copyabl
     expect(screen.queryByRole('heading', { name: STEP.id })).toBeNull()
   })
 
-  it('keeps the whole task id as a fact with a copy control beside it', async () => {
-    quietPanels()
-    const { container } = render(<Run run={run(STEP)} />)
-    await waitFor(() => expect(container.querySelector('.ctl-facts')).not.toBeNull())
-    const fact = container.querySelector<HTMLElement>('.ctl-fact.ad-id')
-    expect(fact, 'no id fact').not.toBeNull()
-    expect(fact!.textContent).toContain(STEP.id)
-    const copy = fact!.querySelector('button')
-    expect(copy?.getAttribute('aria-label')).toBe(`Copy task id ${STEP.id}`)
+  it('keeps the whole task id behind a copy control in the header', async () => {
+    const head = await header(STEP)
+    const copy = head.querySelector<HTMLButtonElement>('.ag-head-idcopy')
+    expect(copy, 'no id copy').not.toBeNull()
+    expect(copy!.title).toContain(STEP.id)
+    expect(copy!.getAttribute('aria-label')).toBe(`Copy task id ${STEP.id}`)
     const write = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
     fireEvent.click(copy!)
     expect(write).toHaveBeenCalledWith(STEP.id)
-    await waitFor(() => expect(fact!.textContent).toContain('task id copied'))
+    await waitFor(() => expect(head.querySelector('.ag-head-said')?.textContent).toBe('task id copied'))
   })
 
-  it('draws no id fact for a standalone task, whose heading already is the id', async () => {
-    quietPanels()
-    const { container } = render(<Run run={run(runTask({ state: 'SUCCEEDED', started_at: at(1), completed_at: at(10) }))} />)
-    await waitFor(() => expect(container.querySelector('.ctl-facts')).not.toBeNull())
-    expect(container.querySelector('.ctl-fact.ad-id')).toBeNull()
+  it('prints the id nowhere for a standalone task either: it is the copy button’s', async () => {
+    const t = runTask({ state: 'SUCCEEDED', started_at: at(1), completed_at: at(10) })
+    const head = await header(t)
+    const shown = head.cloneNode(true) as HTMLElement
+    shown.querySelector('.ag-head-title')?.remove()
+    expect(shown.textContent).not.toContain(t.id)
+    expect(head.querySelector<HTMLButtonElement>('.ag-head-idcopy')!.title).toContain(t.id)
   })
 
   it("links the workflow id to that workflow's page", async () => {
-    quietPanels()
-    const { container } = render(<Run run={run(STEP)} />)
-    await waitFor(() => expect(container.querySelector('.ctl-facts')).not.toBeNull())
-    const link = [...container.querySelectorAll<HTMLAnchorElement>('.ctl-facts a')].find((a) =>
+    const head = await header(STEP)
+    const link = [...head.querySelectorAll<HTMLAnchorElement>('.ag-head-facts a')].find((a) =>
       a.textContent?.includes('wf_a25f6eb11a5b40bd8b58'),
     )
     expect(link, 'the workflow id is not a link').toBeTruthy()

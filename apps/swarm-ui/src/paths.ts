@@ -58,6 +58,19 @@ const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
   Object.entries(FIXED).map(([a, p]) => [p, a]),
 )
 
+/**
+ * A SECTION'S ROOT OPENS ITS FIRST PAGE (owner QA R14, 2026-10-04): `/capacity`
+ * and `/admin` said "No page at /capacity", though each is a section the spine
+ * names. One way only -- the address goes back to the page's own path, so the
+ * bar is rewritten to `/capacity/pools` (App's one-time redirect) and no page
+ * has two spellings. `/agents` and `/overview` are pages already.
+ */
+export const SECTION_ROOTS: Readonly<Record<string, string>> = {
+  '/work': 'work/running',
+  '/capacity': 'capacity/pools',
+  '/admin': 'admin/limits',
+}
+
 const GROUP_IDS: readonly string[] = HELP_GROUPS.map((g) => g.id)
 
 /** The Help group a topic is drawn under, or null for a topic this build lacks. */
@@ -180,7 +193,7 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(topic !== '' ? `${HELP_ROUTE}/${topic}` : `${HELP_ROUTE}/${seg.slice(1).join('/')}`)
   }
 
-  const fixed = FIXED_BACK[path]
+  const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null
   return plain(query === '' ? fixed : `${fixed}?${query}`)
 }

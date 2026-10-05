@@ -24,6 +24,7 @@ import {
   type GapUnknown,
   type WindowAt,
 } from './logLines'
+import { MarkdownInline } from './ArtifactViewer'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'
@@ -113,18 +114,38 @@ async function readFeed(task: Task, attemptId: string | null): Promise<Result<Lo
   return { status: 'ok', data: { task, attemptId, transcript, logs }, fetchedAt: Date.now() }
 }
 
-/** The newest line a view holds in a read, or null when the window has none. */
+/**
+ * The newest line a view holds in a read, or null when the window has none.
+ * A BLANK LINE IS NO LINE (owner QA R9, 2026-10-04): a window ending in an
+ * empty line drew the Details strip with nothing in it, which reads as a
+ * line nobody can see rather than as no line at all.
+ */
 export function lastLineOf(feed: LogFeed | null, view: LogView): string | null {
   if (feed === null) return null
   if (view === 'transcript') {
     const steps = okFeed(feed.transcript)?.steps ?? []
     const s = steps[steps.length - 1]
-    return s === undefined ? null : `${s.kind} ${(s.text ?? s.tool?.name ?? '').split('\n')[0]}`
+    if (s === undefined) return null
+    const first = (s.text ?? s.tool?.name ?? '').split('\n').find((l) => l.trim() !== '') ?? ''
+    return `${s.kind} ${first}`.trim()
   }
   const names = view === 'stdout' ? ['agent_stdout'] : streamsOf(view)
   const rows = (okFeed(feed.logs)?.streams ?? []).filter((s) => names.includes(s.stream))
-  const lines = linesOf(rows.map((s) => s.content ?? '').join('\n'))
+  const lines = linesOf(rows.map((s) => s.content ?? '').join('\n')).filter((l) => l.trim() !== '')
   return lines.length === 0 ? null : lines[lines.length - 1]!
+}
+
+/**
+ * BRING `target` TO THE MIDDLE OF THE LOG'S OWN BODY, AND MOVE NOTHING ELSE
+ * (owner QA R3, 2026-10-04: the no-jump rule). `scrollIntoView` scrolls every
+ * scrolling ancestor, so Enter in the search moved the PAGE 0 -> 148.5 and
+ * slid the agent list and the header up. Only the body's `scrollTop` is set.
+ */
+export function scrollWithin(body: HTMLElement, target: HTMLElement): void {
+  const b = body.getBoundingClientRect()
+  const t = target.getBoundingClientRect()
+  const top = body.scrollTop + (t.top - b.top) - (body.clientHeight - t.height) / 2
+  body.scrollTop = Math.max(0, top)
 }
 
 /**
@@ -202,18 +223,26 @@ export function AgentLogs({ task }: { task: Task }) {
     null,
   )
   const attemptRows = okFeed(attempts.state)?.attempts ?? null
-  const picked = attemptRows?.find((a) => a.attempt_id === attemptId) ?? null
+  // THE DEFAULT IS THE CURRENT GENERATION (owner QA R9, 2026-10-04): the
+  // picker said `gen 1` under a header that said `gen 2` (59d1cff5), because
+  // "latest" was whatever attempt the log route found newest. With the
+  // attempts read, the default reads the attempt minted at the task's
+  // `current_generation`, by id, and says its generation; before they are
+  // read, or when no attempt carries that generation yet, it is "latest".
+  const currentRow = attemptRows?.find((a) => a.generation === task.current_generation) ?? null
+  const readId = attemptId ?? currentRow?.attempt_id ?? null
+  const picked = attemptRows?.find((a) => a.attempt_id === readId) ?? null
   const latestRunning = attemptId === null && !finished
 
   // THE READ. One transcript read and one polled-streams read per tick, for
   // the picked attempt. Each keeps its own answer.
-  const readKey = `${attemptId ?? 'latest'}:${tick}`
-  const held = useRead<LogFeed>(() => readFeed(task, attemptId), taskId, readKey, null)
+  const readKey = `${readId ?? 'latest'}:${tick}`
+  const held = useRead<LogFeed>(() => readFeed(task, readId), taskId, readKey, null)
   // ONLY A READ OF THE PICKED ATTEMPT IS ITS LOG. `useRead` keeps the last
   // answer on screen until the next lands, which for a new pick is the
   // previous attempt's -- so that one is "reading", never shown as this one.
   const landed = okFeed(held.state)
-  const latest = landed !== null && landed.attemptId === attemptId ? landed : null
+  const latest = landed !== null && landed.attemptId === readId ? landed : null
   const latestAt = latest !== null && held.state.status === 'ok' ? held.state.fetchedAt : null
   // THE TASK ON THE FEED IS ALWAYS THE ONE ON SCREEN: the views read its
   // state to tell "not yet" from "never", and the split re-reads it.
@@ -247,9 +276,9 @@ export function AgentLogs({ task }: { task: Task }) {
     // On the switch, and on the first read of a newly picked attempt; `feedNow`
     // is rebuilt each render, so its identity is not the dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [follow, latest === null, attemptId])
+  }, [follow, latest === null, readId])
   const shown =
-    follow || frozen === null || frozen.feed.attemptId !== attemptId ? feedNow : { ...frozen.feed, task }
+    follow || frozen === null || frozen.feed.attemptId !== readId ? feedNow : { ...frozen.feed, task }
   const shownAt = follow || frozen === null ? latestAt : frozen.at
 
   // GAPS, COMPARED READ BY READ, per stream, for this attempt. A gap is kept
@@ -261,7 +290,7 @@ export function AgentLogs({ task }: { task: Task }) {
     // KEYED ON THE ATTEMPT THE READ RETURNED, not on the pick: with the picker
     // on "latest", a new attempt's first tail compared with the previous
     // attempt's last window would be drawn as output missing between them.
-    const key = okFeed(latest.logs)?.attempt_id ?? attemptId ?? 'latest'
+    const key = okFeed(latest.logs)?.attempt_id ?? readId ?? 'latest'
     const now = positions(latest)
     const prev = last.current !== null && last.current.attempt === key ? last.current.at : null
     if (prev === null) setGaps({})
@@ -274,7 +303,7 @@ export function AgentLogs({ task }: { task: Task }) {
       if (Object.keys(found).length > 0) setGaps((cur) => ({ ...cur, ...found }))
     }
     last.current = { attempt: key, at: Object.fromEntries(Object.entries(now).map(([k, v]) => [k, v.at])) }
-  }, [latest, attemptId])
+  }, [latest, readId])
 
   // WHAT ARRIVED SINCE THE PAUSE, for the view on screen.
   const arrived: Arrived | null = useMemo(() => {
@@ -340,8 +369,9 @@ export function AgentLogs({ task }: { task: Task }) {
       const next = list[(i + 1) % list.length]!
       setCurrent(next)
       setFollow(false)
-      const target = [...(body.current?.querySelectorAll<HTMLElement>('[data-log-key]') ?? [])].find((n) => n.dataset.logKey === next)
-      target?.scrollIntoView?.({ block: 'center' })
+      const el = body.current
+      const target = [...(el?.querySelectorAll<HTMLElement>('[data-log-key]') ?? [])].find((n) => n.dataset.logKey === next)
+      if (el !== null && target !== undefined) scrollWithin(el, target)
     },
     [current],
   )
@@ -470,7 +500,7 @@ export function AgentLogs({ task }: { task: Task }) {
       disabled={targets.errors.length === 0}
       aria-keyshortcuts="E"
       onClick={() => jump(targets.errors)}
-      title={`Matches a transcript tool result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
+      title={`Matches a transcript tool result or final result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
     >
       <LogWords
         long={targets.errors.length === 0 ? 'No error matched' : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}
@@ -490,10 +520,11 @@ export function AgentLogs({ task }: { task: Task }) {
         }}
         aria-label="Attempt, by generation"
       >
-        <option value="">latest</option>
+        <option value="">{currentRow === null ? 'latest' : `current · gen ${currentRow.generation} · ${currentRow.attempt_id} · ${attemptEnd(currentRow)}`}</option>
         {(attemptRows ?? [])
           .slice()
           .sort((a, b) => b.generation - a.generation)
+          .filter((a) => a !== currentRow)
           .map((a) => (
             <option key={a.attempt_id} value={a.attempt_id}>
               gen {a.generation} · {a.attempt_id} · {attemptEnd(a)}
@@ -530,6 +561,7 @@ export function AgentLogs({ task }: { task: Task }) {
               type="search"
               value={needle}
               placeholder="Search this window"
+              title="Search this window: the lines this read holds, not the whole stream"
               aria-label="Search this window"
               onChange={(e) => {
                 setNeedle(e.target.value)
@@ -660,19 +692,27 @@ export function LogLastLine({ task, onOpen }: { task: Task; onOpen: () => void }
     }, ARTIFACTS_POLL_MS)
     return () => clearInterval(id)
   }, [moving])
-  const line = lastLineOf(feed, defaultView(task.runner_profile))
+  const view = defaultView(task.runner_profile)
+  const line = lastLineOf(feed, view)
+  // AN HONEST LINE WHEN THERE IS NONE (owner QA R9): the strip was empty.
+  // A live agent has written nothing YET; a finished one wrote nothing this
+  // read holds.
   const said =
     line ??
     (held.state.status === 'loading'
       ? 'reading…'
       : held.state.status === 'error'
         ? 'the log was not read'
-        : 'no line in this window')
+        : TERMINAL_STATES.has(task.state)
+          ? 'no log lines in this read'
+          : 'no log lines yet')
   return (
     <button type="button" className="ag-loglast" onClick={onOpen}>
       <b>Last log line</b>
       <span className={`ag-loglast-line${line === null ? ' is-absent' : ' mono'}`} title={line ?? undefined}>
-        {said}
+        {/* A transcript line is the agent's markdown: its code spans are
+            drawn as code, never as raw backticks (owner QA R9). */}
+        {line !== null && view === 'transcript' ? <MarkdownInline text={line} /> : said}
       </span>
       <span className="ag-loglast-open">Open logs ›</span>
     </button>

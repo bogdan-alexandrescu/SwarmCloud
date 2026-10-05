@@ -197,7 +197,12 @@ describe('the landing screen is a lead, a band and five panels', () => {
       for (const n of [...clone.querySelectorAll('[data-help-description], button')]) n.remove()
       return (clone.textContent ?? '').trim()
     })
-    expect(titles).toEqual(['Running now', 'Cost so far', 'Waiting, and why', 'Headroom', 'Pools', 'Recent failures'])
+    // IN DOCUMENT ORDER, BY COLUMN (U12 N17/D19, owner QA 2026-10-04): the
+    // left column stacks Running now, Waiting and Recent failures, the right
+    // Cost so far and Headroom, so no column is blank beside a taller card;
+    // the pools are the full-width row under both. On a phone the sheet draws
+    // them in O1's order (qa.u12.overview.test.tsx).
+    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent failures', 'Cost so far', 'Headroom', 'Pools'])
     expect(el.querySelectorAll('.ov-headroom .ov-group').length).toBe(0)
   })
 })

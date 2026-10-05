@@ -157,17 +157,31 @@ export const FINISH_NOT_RECORDED: Absence = {
 // ---------------------------------------------------------------------------
 
 /**
- * Money.
+ * Money: ONE FORMAT FOR EVERY WORKFLOW FIGURE (owner QA R10, 2026-10-04).
  *
- * Two decimal places is the readable form, but a real cost of $0.004 printed
- * as "$0.00" is the absent-measurement lie arriving by a different door -- it
- * claims a run was free when it was not. Anything under a cent therefore keeps
- * four places. An EXACT zero is a measurement and renders as a digit.
+ * Two decimal places from a dollar up. Below a dollar, THREE SIGNIFICANT
+ * FIGURES: a real cost of $0.004 printed as "$0.00" is the absent-measurement
+ * lie arriving by a different door -- it claims a run was free when it was not
+ * -- and a single attempt is routinely worth $0.0312. Zeros past the second
+ * decimal say nothing and are dropped ($0.50, not $0.500). The Workflows list
+ * printed '$0.4950', '$7.6778' and '$12.92' side by side; it now prints
+ * '$0.495', '$7.68' and '$12.92'. An EXACT zero is a measurement and renders
+ * as a digit.
  */
+/** The smallest cost usd() prints in figures; below it, "<$0.000001". */
+const USD_FLOOR = 0.000001
+
 export function usd(n: number): string {
   if (n === 0) return '$0.00'
-  if (Math.abs(n) < 0.01) return `$${n.toFixed(4)}`
-  return `$${n.toFixed(2)}`
+  const a = Math.abs(n)
+  if (a >= 1) return `$${n.toFixed(2)}`
+  // THE FLOOR: three significant figures of a cost this small would need more
+  // places than anyone reads, and toFixed stops at 20, where a real cost of
+  // 1e-21 rounds to two zeros -- free, which it was not. It says "under".
+  if (a < USD_FLOOR) return `${n < 0 ? '-' : ''}<$${USD_FLOOR.toFixed(6)}`
+  // Decimal places for three significant figures: 0.6024 -> 3, 0.0312 -> 4.
+  const places = Math.max(2, 2 - Math.floor(Math.log10(a)))
+  return `$${n.toFixed(places).replace(/(\.\d\d\d*?)0+$/, '$1')}`
 }
 
 /**

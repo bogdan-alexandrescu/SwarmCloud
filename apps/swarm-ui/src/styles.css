@@ -2871,16 +2871,9 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   .att-cpu-note.is-final { display: flex; }
   .att-cpu-note .att-cpu-by { display: inline; }
 }
-/* The card foot as a link row. `.ctl-card-foot` supplies the surface step, the
-   mono face and the tone; this is only the wrapping. */
-.ctl-card-foot,
-.att-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--ctl-s1) var(--ctl-s2);
-  margin: var(--ctl-s3) 0 0;
-}
+/* The card foot as a link row: its wrapping is in `.ctl-card-foot` below (it
+   was a second rule here, shared with the agent Details tab's help-link block,
+   which agent-details-v3.html A replaced with one `?` per card). */
 .ctl-card-foot a { color: var(--text-dim); }
 
 /* STILL READING, DRAWN AT THE GEOMETRY THE TEXT WILL OCCUPY (§8.7.1).
@@ -3152,17 +3145,6 @@ ol.timeline li::before {
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
-/* Details' compact timeline: the last event, and the way to the full one. */
-.ev-last {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0 var(--ctl-s2);
-  margin: 0;
-}
-.ev-last .ev-at { margin-left: 0; }
-.ev-owner { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.ev-more-link { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* Code a step handed on to a dependant rather than pushed (#278). */
 .git-handed { margin: var(--ctl-s3) 0 0; }
 .git-handed-line,
@@ -4319,6 +4301,11 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    information from the card's body — it is about the reading, not the reading
    itself — and a fill says that where a hairline just says "stop". */
 .ctl-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s1) var(--ctl-s2);
+  margin: var(--ctl-s3) 0 0;
   margin-top: auto;
   padding: var(--ctl-s2) var(--ctl-pad-chrome);
   border-radius: 0 0 var(--radius) var(--radius);
@@ -10450,7 +10437,17 @@ span.sk-ttile { cursor: default; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }
   .sk-app.has-drawer .sk-ri { width: 58px; font-size: var(--t-micro); }
-  .sk-app.has-drawer .sk-panel { flex: 1; width: auto; }
+  /* THE PANEL IS THE DRAWER'S WIDTH, NOT ITS LONGEST NAME'S (owner QA R5,
+     2026-10-04). `flex: 1` with no `min-width: 0` let the panel take the
+     min-content of its widest child -- a long Recent workflow name, 1298px
+     -- so `nav.sk-panel` was 1394px wide and the Recent names, the Global
+     pool's number and the Dark and System theme buttons were off-screen. At
+     zero the panel is what the drawer leaves beside the spine, and a Recent
+     row is cut with an ellipsis, whole in its title (names.css). The Recent
+     row is matched by attribute because its class name, written after a dot,
+     reads as an API key to the worker's publish scan (rules.py openai_key). */
+  .sk-app.has-drawer .sk-panel { flex: 1 1 0%; width: auto; min-width: 0; }
+  .sk-app.has-drawer .sk-kid[class*="recent-kid"] { min-width: 0; max-width: 100%; }
   .sk-app.has-drawer .sk-collapse { display: none; }
   .sk-flyout { display: none; }
   /* THE HEADER GIVES BACK ITS HEIGHT ON SCROLL (#139): 36px once the page is

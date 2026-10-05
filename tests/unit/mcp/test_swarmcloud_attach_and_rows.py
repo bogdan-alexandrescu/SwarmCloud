@@ -278,7 +278,8 @@ def test_a_spec_given_by_path_alone_is_submitted_by_the_ref_the_bridge_read(tmp_
     assert submit["prompt"] == "SUBMIT\nspec_digest: " + read["spec_digest"] + "\nspec_ref: spec_0123456789abcdef"
     assert "scan a" not in submit["prompt"]
     labels = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
-    assert "[SwarmCloud] scan · stage Report · report" in labels, labels
+    # The console's stage (level + 1), not the outline's `stage` name.
+    assert "[SwarmCloud] scan · stage 3 · report" in labels, labels
 
 
 def test_the_read_row_copies_the_outline_and_never_the_spec():

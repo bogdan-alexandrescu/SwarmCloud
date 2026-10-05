@@ -246,7 +246,10 @@ describe('N17: the pool list is its own full-width row', () => {
     expect(headroom.querySelector('.ov-pl'), 'the pools still lengthen Headroom').toBeNull()
     const pools = el.querySelector<HTMLElement>('#ov-pools')!
     expect(pools, 'no Pools card').not.toBeNull()
-    expect(pools.parentElement!.classList.contains('ov-page'), 'the Pools card is inside a two-column row').toBe(true)
+    // Since U12 N17/D19 the cards are two column stacks in one grid; the
+    // pools are that grid's full-width row under both, in neither column.
+    expect(pools.closest('.ov-col'), 'the Pools card is inside a column').toBeNull()
+    expect(painted(pools, 'grid-column', WIDE), 'the Pools card is inside a two-column row').toBe('1 / -1')
     expect(pools.querySelectorAll('.ov-pl').length).toBe(14)
     const grid = painted(pools.querySelector('.ov-pls')!, 'grid-template-columns', WIDE) ?? ''
     expect(grid, 'the pools are one column across 1056px').toMatch(/repeat\(auto-fill/)

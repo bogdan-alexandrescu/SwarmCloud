@@ -179,7 +179,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve and run' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Approve and run' }, WAIT))[0]!)
     await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Running'), WAIT)
     const post = calls.find((c) => c.url.endsWith('plan:approve'))!
     expect(post.method).toBe('POST')
@@ -202,13 +202,13 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve and run' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Approve and run' }, WAIT))[0]!)
     await screen.findByText(/The plan changed since you opened it/, undefined, WAIT)
     await waitFor(() => expect(visible(container.querySelector('.rn-plan'))).toContain('An edited plan.'), WAIT)
     expect(reads).toBe(2)
     expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_B)
     // Still PLANNED: approving again approves the plan now on screen.
-    expect(screen.getByRole('button', { name: 'Approve and run' })).not.toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Approve and run' })[0]!).not.toBeNull()
   })
 
   it('Reject sends the shown digest and the reason', async () => {
@@ -220,7 +220,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     const { container } = await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Reject' }, WAIT))[0]!)
     fireEvent.change(screen.getByLabelText('Why (optional)'), { target: { value: 'wrong repo' } })
     fireEvent.click(screen.getByRole('button', { name: 'Reject this plan' }))
     await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Rejected'), WAIT)
@@ -235,7 +235,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
     fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'A shorter plan.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
     await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
@@ -273,7 +273,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
     fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'A shorter plan.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
     await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
@@ -381,7 +381,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
     // Unchanged, it sends the plan it opened on, every field included.
     fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
     await waitFor(() => expect(calls.filter((c) => c.url.endsWith('plan:edit'))).toHaveLength(1), WAIT)
@@ -395,7 +395,7 @@ describe('/runs/<id>: one run', () => {
       return null
     })
     await mount('run=run_4c1e09d2')
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit plan' }, WAIT))[0]!)
     fireEvent.change(screen.getByLabelText('Requirements, one per line'), { target: { value: 'Only this one\n\n' } })
     fireEvent.change(screen.getByLabelText('Estimate'), { target: { value: '' } })
     fireEvent.change(screen.getAllByLabelText('Files, one per line')[1]!, { target: { value: 'a.tsx\n b.tsx ' } })
@@ -535,7 +535,7 @@ describe('/runs/<id>: one run', () => {
       return { ...m, RUN_POLL_MS: ms }
     })()
     await advance(0)
-    fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit plan' })[0]!)
     fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'My edit of the first plan.' } })
 
     // Someone else edits; the next poll reads their plan.
@@ -588,7 +588,7 @@ describe('/runs/<id>: one run', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show the plan now' }))
     expect(container.querySelector('.rn-held')).toBeNull()
     expect(visible(container.querySelector('.rn-plan'))).toContain("Someone else's plan.")
-    fireEvent.click(screen.getByRole('button', { name: 'Approve and run' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve and run' })[0]!)
     await advance(0)
     const post = calls.find((c) => c.url.endsWith('plan:approve'))!
     expect(post.body).toEqual({ plan_digest: DIGEST_B })

@@ -3698,22 +3698,22 @@ export function workflowStartText(
   workflow: Pick<Workflow, 'steps' | 'created_at'>,
   taskById: ReadonlyMap<string, Pick<Task, 'started_at' | 'state'>> | null,
   now: number = Date.now(),
-): { text: string; title: string; submitted: string; submittedTitle: string } {
+): { text: string; title: string; submitted: string; submittedTitle: string; kind: 'never' | 'unread' | 'at' } {
   const sub = clockTime(workflow.created_at, now)
   const submitted = sub?.text ?? 'not recorded'
   const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
   const start = workflowStart(workflow, taskById)
   if (start.kind === 'never') {
     const text = start.settled ? 'never started' : 'not started yet'
-    return { text, title: `no step has started; ${submittedTitle}`, submitted, submittedTitle }
+    return { text, title: `no step has started; ${submittedTitle}`, submitted, submittedTitle, kind: 'never' }
   }
   if (start.kind === 'unread') {
-    return { text: 'start not read', title: `the step tasks were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle }
+    return { text: 'start not read', title: `the step tasks were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle, kind: 'unread' }
   }
   const at = clockTime(start.at, now)
   const text = at?.text ?? 'start not read'
   const partial = start.partial ? ' among the steps read (some were not)' : ''
-  return { text, title: `first step started ${at?.title ?? start.at}${partial}; ${submittedTitle}`, submitted, submittedTitle }
+  return { text, title: `first step started ${at?.title ?? start.at}${partial}; ${submittedTitle}`, submitted, submittedTitle, kind: at === null ? 'unread' : 'at' }
 }
 
 /**

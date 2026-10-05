@@ -1234,7 +1234,20 @@ function markdownBlocks(source: string): ReactNode[] {
   return out
 }
 
-/** `code`, **bold**, *italic* and http(s) links, as elements. */
+/**
+ * One line of markdown drawn inline: its code spans, bold, italic and links,
+ * and nothing block-level. For a line quoted out of a transcript (the agent's
+ * Details strip), where a raw backtick reads as part of the text.
+ */
+export function MarkdownInline({ text }: { text: string }) {
+  return <>{inline(text)}</>
+}
+
+/**
+ * `code`, **bold**, *italic* and http(s) links, as elements. Bold and italic
+ * are read INSIDE as well (owner QA R9, 2026-10-04): `**Edit `x.py`**` drew
+ * its backticks raw, because the bold took the code span as plain text.
+ */
 function inline(text: string): ReactNode[] {
   const pattern =
     /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s)<>]+)/g
@@ -1249,9 +1262,9 @@ function inline(text: string): ReactNode[] {
     if (token.startsWith('`')) {
       out.push(<code key={key++}>{token.slice(1, -1)}</code>)
     } else if (token.startsWith('**')) {
-      out.push(<strong key={key++}>{token.slice(2, -2)}</strong>)
+      out.push(<strong key={key++}>{inline(token.slice(2, -2))}</strong>)
     } else if (token.startsWith('*')) {
-      out.push(<em key={key++}>{token.slice(1, -1)}</em>)
+      out.push(<em key={key++}>{inline(token.slice(1, -1))}</em>)
     } else if (token.startsWith('[')) {
       const parts = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token)
       const href = parts?.[2]

@@ -16,7 +16,15 @@ import { loadAttempts, loadTask } from './api'
 import type { Result } from './fetch'
 import { RunFiles, useCheckpointListing } from './RunFiles'
 import { Screen } from './Shell'
-import type { AttemptRow, Task } from './types'
+import { TERMINAL_STATES, type AttemptRow, type Task } from './types'
+
+/**
+ * WHILE THE AGENT RUNS, THE PANE RE-READS (owner QA D21, 2026-10-04): it read
+ * once, so the tab said `2 of 2` while the agent went on writing. It re-reads
+ * at the detail's cadence (10s, `AgentDetail.DRAWER_POLL_MS`) until the task
+ * is finished, and the Details tile draws this same read (AgentSplit).
+ */
+export const CHECKPOINTS_POLL_MS = 10_000
 
 interface CheckpointsRead {
   task: Task
@@ -79,7 +87,7 @@ export function CheckpointsPane({ taskId, onCount }: { taskId: string; onCount?:
   const load = useCallback(() => loadCheckpointsRead(taskId), [taskId])
   return (
     <div className="ag-ckpts">
-      <Screen title="Checkpoints" load={load}>
+      <Screen title="Checkpoints" load={load} pollMs={(d) => (d !== null && TERMINAL_STATES.has(d.task.state) ? null : CHECKPOINTS_POLL_MS)}>
         {(read, reading) => <Listed read={read} readAt={reading.fetchedAt} onCount={onCount} />}
       </Screen>
     </div>

@@ -655,6 +655,7 @@ def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "workflow_id": workflow.get("workflow_id"),
         "label": None,
+        "title": None,
         "state": workflow.get("state"),
         "created_at": workflow.get("created_at"),
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
@@ -677,6 +678,9 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
     if workflow.get("state"):
         entry["state"] = workflow["state"]
     entry["label"] = _label_of(envelope)
+    # The spec's short name, when it gave one: what /sc attach --all titles
+    # each workflow's run with (`workflows.title_name`).
+    entry["title"] = workflows.stored_names(envelope)["title"]
     links = {
         step.get("step_id"): step
         for step in workflow.get("steps") or []

@@ -152,8 +152,10 @@ describe('N18 / N20: the preview\'s title and meta line', () => {
     for (const item of meta.children) {
       expect(visible(item).startsWith('·'), visible(item)).toBe(false)
     }
-    expect(visible(meta)).not.toMatch(/\b(AM|PM)\b/i)
-    expect(visible(meta)).toMatch(/read \d{2}:\d{2}:\d{2} /)
+    // The read time is its own line since U12 R15 (no dangling dot).
+    const read = container.querySelector('.in-read-at')!
+    expect(visible(read)).not.toMatch(/\b(AM|PM)\b/i)
+    expect(visible(read)).toMatch(/read \d{2}:\d{2}:\d{2} /)
   })
 })
 

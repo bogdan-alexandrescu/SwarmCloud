@@ -53,3 +53,34 @@ The live app was audited against the batch 1-2 picks on 2026-10-02: #503.
 | Page | Pick |
 |---|---|
 | agent-details-v3.html | **A as drawn**: a 2-line header (state pill, title, 'elapsed · attempt n of N', Copy link / Stop / close; one sans meta line with profile · class · workflow link · account, the task id behind copy); a **Now** card (current phase, last log line, latest checkpoint, Open logs); ONE stat strip (Elapsed · Attempt · Peak memory with % of limit · CPU peak/limit · Cost, unknown values small and muted 'at exit'); Progress (compact phases + last 5 events) and Resources (thin bars with % of limit, charts behind 'details') side by side from a 640px pane; Input folded (3-line prompt preview, metadata behind a disclosure); Dispatch as plain-language chips in the header meta; one '?' per card instead of the help-link block; an Outcome card (finished) or a failure card (failed) leads; tokens under Cost; checkpoints in the Now card; lease/attempt ids on the Attempts tab; mono only for ids and values; ONE scroll container. Replaces the Details layout of agent-detail-2.html. Logs stay a full-height tab (owner, 2026-10-04). |
+
+## Repositories, repository index and git tokens (picked 2026-10-05)
+
+From `repositories.html` (lanes RI0, #573, and RI0b, #578) and the designs in
+[`docs/repo-index.md`](../../repo-index.md) and [`docs/git-tokens.md`](../../git-tokens.md).
+
+**The owner's picks:**
+
+| Screen | Pick |
+|---|---|
+| 2 · Repositories list | **B, cards**: one card per repository with the index at a glance (freshness against the head, last indexed, schedule, tests mapped). This overrides the page's recommendation, A |
+| 3 · Register repository | **C, pick from the token**: list what the tenant's git token can read, pick one, then set the schedule and on-change trigger. Overrides A |
+| 4 · Repository detail | **A, tabs**: Overview, Test map, Hot-spots, Index runs, Settings, Used by |
+| 5 · The index inside an issue-run plan | **B, a Context card** above the plan: the index used, its freshness, the modules and impact it found. Overrides A with C's per-step tests |
+
+The owner said "for second pass mock-ups go with your own recommendations"
+(2026-10-05), so **the operator picked these**. Each stays open to the owner's
+override:
+
+| Screen or decision | Pick | Why |
+|---|---|---|
+| 8 · Graph explorer | **A**, a force-directed canvas with a side inspector | The page's recommendation. It is the only variant that shows the module, call and test graphs on one surface |
+| 9 · Commit / PR impact | **A**, four columns (diff → changed symbols → callers → tests) | The page's recommendation. Each column answers one question in order |
+| 10 · Selected-tests gate = merge policy | **C, P3**: the selected tests gate the merge, and a change touching build or test config, shared fixtures, or symbols with low-confidence edges falls back to the full suite | P1 lets a missed edge merge a regression with no full run before merge. P2 keeps the full suite on every PR, so selection buys only a faster red. P3 is fast on the common case and safe where the graph is weakest. The page made no recommendation, because this is a policy decision |
+| Execution mode (repo-index.md §4.4) | **X2**: SwarmCloud passes the selected test list to the repository's own CI (`workflow_dispatch` inputs), which posts `swarmcloud/selected-tests` | No frozen-contract change (X1 needs request C), and it runs in each repository's own CI environment, which is multi-repo from the start. X1 stays available per repository later |
+| 11 · Repository Settings | **A**, cards | The page's recommendation |
+| 12 · Git tokens | **B**, cards plus a command line. **No console paste box** in phase 1 | A forge token enters only through `scripts/create-secrets.sh --stdin` (CLAUDE.md, owner rule 2026-09-25). A paste box is a new path for a token value through the API, which is the owner's to open, not the operator's. B shows the exact command per slot |
+| 13 · Permission matrix | **A**, a grid of tokens × repositories, one cell per capability | The page's recommendation |
+| Token resolution order (git-tokens.md §3.1) | **R2**: repository token, then tenant token. A user's token is used for attribution only | A task never fails because the dispatching user's token lacks a right that the repository or tenant token has. R1 can refuse work that R2 would do |
+| User-token isolation (§2) | **U1**: a user token is a tenant secret attributed to a person | Simplest for phase 1 and enough under R2, where a user token never clones or pushes. U2 (personal tenants) and U3 (a reader identity per user) stay open if user tokens ever push |
+| Secret creation (§2) | **S1**: Terraform declares each slot, and values come only from `create-secrets.sh --stdin` | The doc's recommendation. It adds no platform privilege, and the registry does not depend on self-service |

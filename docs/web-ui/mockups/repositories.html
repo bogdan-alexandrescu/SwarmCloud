@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Repositories, the repository index, its graph, and git tokens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell, pills and the icon sprite are copied from the approved
+   components.html (pick A as built) and agent-details-v3.html (pick A). TYPE RULE (owner,
+   2026-10-01): 12px floor, no all-caps, no tracking. The frames follow the page's theme
+   toggle (light / dark / system), so one click shows every frame in both themes; the one
+   frame drawn in .fd is always dark, for side-by-side comparison. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:760px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.variant{margin-top:32px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.fr{margin:0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute)}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ======== frame tokens: .fx follows the page theme, .fd is always dark ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+:root[data-theme="dark"] .fx,.fd{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);min-width:1280px;width:1280px;min-height:760px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app a{color:inherit;text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee!important;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff!important}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e!important;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.pk .new{font:600 12px var(--f-mono);color:var(--f-ac)}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.ct h3{margin:0;font-size:21px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sub{font-size:13px;color:var(--f-mu);margin:0}
+/* brand state marks and pills */
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st svg{width:12px;height:12px;flex:none}
+.st.live{color:var(--s-live)}.st.park{color:var(--s-park)}.st.bad{color:var(--s-bad)}.st.warn{color:var(--s-warn)}.st.neu{color:var(--s-neu)}
+.st span{color:var(--f-ink);font-size:13px}
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.park{background:var(--s-parkb);color:var(--s-park)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}.sp.warn{background:var(--s-warnb);color:var(--s-warn)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ctx{background:var(--f-acs);color:var(--f-ac);border:1px solid var(--f-acl);font-family:var(--f-display);font-weight:600}
+.chip.ctx .ic{width:13px;height:13px}
+.chip.warn{background:var(--s-warnb);color:var(--s-warn)}
+.dash{color:var(--f-mu);border-bottom:1px dotted var(--f-mu);cursor:help}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.danger{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 55%,transparent)}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.more{color:var(--f-ac)!important;font-size:12.5px;white-space:nowrap;font-weight:550}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln)}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.bar{height:6px;border-radius:3px;background:var(--f-ln);overflow:hidden;display:flex;min-width:60px}
+.bar i{display:block;height:100%;background:var(--f-ac)}
+.bar i.l{background:var(--s-live)}.bar i.w{background:var(--s-warn)}
+.bar.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px);border:1px dashed var(--f-bd)}
+.inp{border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--f-mu);min-height:32px}
+.inp.val{color:var(--f-ink)}
+.inp.err{border-color:var(--s-bad)}
+.app code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.app .exd{color:var(--f-mu)}
+/* tables in frames */
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+table.t th{font-size:12px;font-weight:600;color:var(--f-mu);text-align:left;padding:7px 10px;border-bottom:1px solid var(--f-ln);white-space:nowrap}
+table.t td{padding:0 10px;height:40px;border-bottom:1px solid var(--f-ln);white-space:nowrap;vertical-align:middle}
+table.t tr:last-child td{border-bottom:0}
+table.t td.mu{color:var(--f-mu)}
+table.t .rn{display:flex;flex-direction:column;line-height:1.25}
+table.t .rn b{font-weight:600}
+table.t .rn small{font-size:12px;color:var(--f-mu)}
+table.t tr.sel td{background:var(--f-acs)}
+.fresh{display:inline-flex;align-items:center;gap:6px}
+.fresh small{font-size:12px;color:var(--f-mu)}
+.tm{display:grid;grid-template-columns:70px minmax(0,1fr) 44px;gap:8px;align-items:center;font-size:12.5px}
+/* forms */
+.fgrid{display:grid;grid-template-columns:200px minmax(0,1fr);gap:14px 18px;align-items:start}
+.fl{font-size:13px;font-weight:600;padding-top:6px}
+.fl small{display:block;font-weight:400;color:var(--f-mu);font-size:12px}
+.hint{font-size:12px;color:var(--f-mu);margin-top:4px}
+.hint.bad{color:var(--s-bad)}
+.radio{display:flex;gap:6px;flex-wrap:wrap}
+.radio span{border:1px solid var(--f-ln);border-radius:8px;padding:5px 10px;font-size:12.5px;color:var(--f-mu)}
+.radio span.on{border-color:var(--f-ac);background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.check{display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:12px}
+.check i{width:14px;height:14px;border:1px solid var(--f-bd);border-radius:4px;display:inline-block}
+.check i.on{background:var(--f-ac);border-color:var(--f-ac)}
+.check.off{color:var(--f-mu)}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:440px;background:var(--f-sf);border-left:1px solid var(--f-ln);box-shadow:var(--f-sh);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.28)}
+.steps{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.steps b{display:inline-flex;align-items:center;gap:6px;color:var(--f-ac);font-weight:600}
+.steps i{font-style:normal;width:20px;height:20px;border-radius:50%;border:1px solid currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.pick{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln)}
+.pick small{grid-column:2/4;font-size:12px;color:var(--f-mu)}
+.pick.on{background:var(--f-acs)}
+.pick .dot{width:14px;height:14px;border-radius:50%;border:1px solid var(--f-bd)}
+.pick.on .dot{border:4px solid var(--f-ac)}
+/* detail */
+.kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden}
+.kv>div{padding:9px 12px;border-left:1px solid var(--f-ln);display:flex;flex-direction:column;gap:2px;min-width:0}
+.kv>div:first-child{border-left:0}
+.kv .l{font-size:12px;color:var(--f-mu)}
+.kv .v{font:650 17px/1.25 var(--f-display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.kv .v small{font-size:12.5px;font-weight:500;color:var(--f-mu)}
+.kv .s{font-size:12px;color:var(--f-mu)}
+.kv .s.warn{color:var(--s-warn)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.cols3{display:grid;grid-template-columns:260px minmax(0,1fr) 300px;gap:12px;align-items:start}
+.mrow{display:grid;grid-template-columns:minmax(0,180px) minmax(0,1fr) 54px;gap:10px;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.mrow:first-child{border-top:0}
+.mrow code{justify-self:start}
+.mrow span{color:var(--f-mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.hs{display:grid;grid-template-columns:minmax(0,1fr) 120px 30px;gap:10px;align-items:center;font-size:12.5px;padding:4px 0}
+.hs .p{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hs em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.run{display:grid;grid-template-columns:18px 92px 110px minmax(0,1fr) 70px;gap:8px;align-items:center;font-size:12.5px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.run:first-child{border-top:0}
+.run em{font:normal 12px var(--f-mono);color:var(--f-mu)}
+.run small{color:var(--f-mu);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree{font:12.5px/1.9 var(--f-mono);margin:0;white-space:pre;color:var(--f-ink)}
+.tree .on{background:var(--f-acs);color:var(--f-ac);border-radius:4px;padding:0 4px}
+.tree i{font-style:normal;color:var(--f-mu)}
+.used{display:flex;flex-direction:column}
+.used>div{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px}
+.used>div:first-child{border-top:0}
+.used small{color:var(--f-mu);font-size:12px}
+.banner{display:flex;align-items:center;gap:10px;border:1px solid color-mix(in srgb,var(--s-warn) 45%,transparent);background:var(--s-warnb);color:var(--f-ink);border-radius:10px;padding:8px 12px;font-size:12.5px}
+.banner b{color:var(--s-warn)}
+.banner .btn{margin-left:auto}
+/* plan + agent details */
+.plan{display:flex;flex-direction:column;gap:8px}
+.pstep{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px 10px;border:1px solid var(--f-ln);border-radius:10px;padding:10px 12px;background:var(--f-sf)}
+.pstep .n{width:22px;height:22px;border-radius:50%;background:var(--f-hv);font:600 12px/22px var(--f-mono);text-align:center;color:var(--f-mu)}
+.pstep b{font-size:13.5px}
+.pstep .f{grid-column:2;display:flex;flex-wrap:wrap;gap:4px 8px;font-size:12px;color:var(--f-mu)}
+.pstep .f code{font-size:12px}
+.pop{position:absolute;z-index:4;width:340px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:12px;box-shadow:var(--f-sh);padding:12px 14px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.pop b{font-size:13px}.pop p{margin:0}.pop small{color:var(--f-mu);font-size:12px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.meta>span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.meta>span+span::before{content:"·";margin-right:3px}
+.meta b{color:var(--f-ink);font-weight:550}
+.meta.col{flex-direction:column;align-items:flex-start;gap:4px}.meta.col>span+span::before{content:none}
+.ctxcard{border:1px solid var(--f-acl);border-left:3px solid var(--f-ac);border-radius:12px;background:var(--f-sf);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.ctxcard ul{margin:0;padding-left:18px;font-size:12.5px}
+.ctxcard li{margin:2px 0}
+.half{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.pane{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.pane h4{margin:0;font-size:16px}
+/* ======== second pass (RI0b, 2026-10-05): graph explorer, impact, gate, settings, git tokens ======== */
+.gcanvas{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);position:relative;overflow:hidden}
+.gcanvas .tools{position:absolute;top:10px;left:10px;display:flex;gap:6px;flex-wrap:wrap}
+.gcanvas .legend{position:absolute;bottom:10px;left:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--f-mu);background:var(--f-sf);padding:4px 8px;border-radius:8px;border:1px solid var(--f-ln)}
+svg.g{display:block}
+svg.g text{font:12px var(--f-mono);fill:var(--f-ink)}
+svg.g text.mu{fill:var(--f-mu)}
+svg.g text.ac{fill:var(--f-ac);font-weight:600}
+svg.g .e{stroke:var(--f-bd);stroke-width:1.4;fill:none}
+svg.g .e.lsp{stroke:var(--f-ac);stroke-width:1.8}
+svg.g .e.ast{stroke:var(--f-mu);stroke-dasharray:5 4}
+svg.g .e.low{stroke:var(--s-warn);stroke-dasharray:2 4}
+svg.g .e.hot{stroke:var(--s-bad)}
+svg.g .n{fill:var(--f-sf);stroke:var(--f-bd);stroke-width:1.4}
+svg.g .n.sel{fill:var(--f-acs);stroke:var(--f-ac);stroke-width:2.2}
+svg.g .n.hot{fill:var(--s-badb);stroke:var(--s-bad)}
+svg.g .n.warm{fill:var(--s-warnb);stroke:var(--s-warn)}
+svg.g .n.cool{fill:var(--s-liveb);stroke:var(--s-live)}
+svg.g .n.test{fill:var(--s-parkb);stroke:var(--s-park)}
+svg.g .cl{fill:var(--f-hv);stroke:var(--f-ln);stroke-width:1}
+svg.g .cell{fill:var(--f-hv)}
+svg.g .cell.d1{fill:var(--f-acs)}
+svg.g .cell.d2{fill:var(--f-acl)}
+svg.g .cell.d3{fill:var(--f-ac)}
+svg.g .cell.cyc{fill:var(--s-badb);stroke:var(--s-bad)}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.lg i{display:inline-block;width:22px;height:0;border-top:2px solid var(--f-ac)}
+.lg i.ast{border-top:2px dashed var(--f-mu)}.lg i.low{border-top:2px dotted var(--s-warn)}
+.lg b{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid var(--s-bad);background:var(--s-badb)}
+.lg b.warm{border-color:var(--s-warn);background:var(--s-warnb)}.lg b.cool{border-color:var(--s-live);background:var(--s-liveb)}.lg b.test{border-color:var(--s-park);background:var(--s-parkb)}
+.ev{font:500 12px var(--f-mono);padding:1px 6px;border-radius:99px;border:1px solid var(--f-acl);color:var(--f-ac);background:var(--f-acs)}
+.ev.ast{border-style:dashed;border-color:var(--f-bd);color:var(--f-mu);background:none}
+.ev.low{border-color:color-mix(in srgb,var(--s-warn) 55%,transparent);color:var(--s-warn);background:var(--s-warnb)}
+.cap{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 7px;border-radius:99px;white-space:nowrap}
+.cap svg{width:12px;height:12px}
+.cap.ok{background:var(--s-liveb);color:var(--s-live)}.cap.missing{background:var(--s-badb);color:var(--s-bad)}.cap.unknown{background:var(--s-neub);color:var(--s-neu)}
+table.mx{border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+table.mx th{font-size:12px;font-weight:600;color:var(--f-mu);padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap;vertical-align:bottom}
+table.mx th.l,table.mx td.l{text-align:left}
+table.mx td{padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap}
+table.mx tr.grp td{background:var(--f-hv);font-weight:600;text-align:left}
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.flow .col{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.flow .col h5{margin:0;font-size:13px;display:flex;gap:6px;align-items:baseline}
+.flow .col h5 em{font:normal 600 17px var(--f-display);color:var(--f-ac)}
+.flow .it{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow .it small{display:block;font:12px var(--f-display);color:var(--f-mu);white-space:normal}
+.treerow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:5px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.treerow:first-child{border-top:0}
+.treerow code{justify-self:start}
+.treerow small{color:var(--f-mu);font-size:12px}
+.ind1{padding-left:18px}.ind2{padding-left:36px}.ind3{padding-left:54px}
+.prcard{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.gate{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:4px 10px;align-items:center;font-size:13px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.gate:first-of-type{border-top:0}
+.gate small{grid-column:2/4;color:var(--f-mu);font-size:12px}
+.gate svg{width:12px;height:12px}
+.term{background:#06101e;color:#d7e3f0;border-radius:10px;padding:10px 12px;font:12.5px/1.6 var(--f-mono);white-space:pre;overflow:auto;margin:0;border:1px solid var(--f-ln)}
+.term b{color:#7cc8f8;font-weight:500}.term i{font-style:normal;color:#4cd9a0}.term u{text-decoration:none;color:#f5c451}.term s{text-decoration:none;color:#9fb0c4}
+.ghcheck{border:1px solid var(--f-ln);border-radius:10px;overflow:hidden;background:var(--f-sf)}
+.ghcheck .hd{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln);font-size:13px;background:var(--f-hv)}
+.ghcheck .bd{padding:8px 12px;font-size:12.5px;display:flex;flex-direction:column;gap:4px}
+.paste{border:1px dashed var(--f-bd);border-radius:8px;padding:8px 10px;font:13px var(--f-mono);color:var(--f-mu);display:flex;align-items:center;gap:8px;min-height:36px}
+.lang{display:grid;grid-template-columns:120px 130px 120px minmax(0,1fr) 80px;gap:10px;align-items:center;font-size:12.5px;padding:7px 0;border-top:1px solid var(--f-ln)}
+.lang:first-child{border-top:0}
+.lang small{color:var(--f-mu);font-size:12px}
+.slider{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.slider .tr{position:relative;width:200px;height:4px;border-radius:2px;background:var(--f-ln)}
+.slider .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--f-ac)}
+.slider .tr b{position:absolute;top:-6px;width:16px;height:16px;border-radius:50%;background:var(--f-sf);border:2px solid var(--f-ac)}
+.ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:15px}
+.ask .inp{min-width:200px}
+.answer{border:1px solid color-mix(in srgb,var(--s-bad) 45%,transparent);border-left:3px solid var(--s-bad);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.answer.yes{border-color:color-mix(in srgb,var(--s-live) 45%,transparent);border-left-color:var(--s-live)}
+.pickt td:nth-child(2) a{margin-right:8px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol><symbol id="i-repo" viewBox="0 0 24 24"><path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z"/><path d="M5.5 17.5a2 2 0 0 1 2-2h11"/><path d="M9 8.5h6"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol></defs></svg>
+<div class="wrap">
+<p class="kicker">SwarmCloud · Work · Repositories · design lane RI0 · 2026-10-04</p>
+<h1>Repositories, and the index every planner reads</h1>
+<p class="lede">The owner asked on 2026-10-04 for a place to register the repositories SwarmCloud works in, an agent that indexes each one on a schedule or when its default branch moves, and that index handed to every planner and step working there, down to "which tests does this diff need". These are the screens, in two or three variants each, for the owner to pick. The design behind them, and why each value is what it is, is <a href="../../repo-index.md">docs/repo-index.md</a>. <b>Nothing here is built</b>, and the section is not in the live console.</p>
+<p class="sub" style="color:var(--mute)">All data is <span class="exd">example data</span>: the tenant is <code>eng</code>, the user is Operator, the host is <code>swarm.example.com</code>, the repositories are <code>example-org/example-api</code>, <code>example-org/example-web</code> and <code>example-org/example-infra</code>.</p>
+<div class="themebar" role="group" aria-label="Theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#today">1 · Today</a></li><li><a href="#list">2 · Repositories list</a></li><li><a href="#register">3 · Register repository</a></li><li><a href="#detail">4 · Repository detail</a></li><li><a href="#context">5 · The index in a plan and in Details</a></li><li><a href="#rec">6 · Recommendation</a></li><li><a href="#map">7 · Every element, mapped to data</a></li><li><a href="#graph">8 · Graph explorer</a></li><li><a href="#impact">9 · Commit / PR impact</a></li><li><a href="#gate">10 · Selected-tests gate</a></li><li><a href="#settings">11 · Settings additions</a></li><li><a href="#tokens">12 · Git tokens</a></li><li><a href="#perms">13 · Permission matrix</a></li><li><a href="#rec2">14 · Recommendation, second pass</a></li><li><a href="#map2">15 · New elements, mapped</a></li><li><a href="#pick">16 · All screens to pick</a></li></ul>
+<p class="sub" style="color:var(--mute);margin-top:12px"><b>Second pass, lane RI0b (owner, 2026-10-04; drawn 2026-10-05).</b> Sections 1-7 are RI0's, unchanged. Sections 8-13 add the owner's four decisions: an AST and LSP graph and its explorer, the commit/PR impact view, the selected-tests gate (one screen per merge policy), and git tokens with what each can do (<a href="../../git-tokens.md">git-tokens.md</a>). Section 16 lists every screen for one pass of picks.</p>
+
+<h2 id="today"><span class="n">1</span>Today, measured from the code</h2>
+<p>There is no repository screen because there is no repository record. What the console shows about a repository today:</p>
+<div class="tw"><table class="doc"><thead><tr><th>Where</th><th>What it shows</th><th>Source</th></tr></thead><tbody>
+<tr><td>Submit › Task</td><td>a free <code>repository_url</code> field, checked by one rule (https, ssh or <code>git@</code>, no credential before <code>@</code>)</td><td class="src"><code>apps/swarm-api/swarm_api/validation.py:792</code></td></tr>
+<tr><td>Submit › Issue</td><td><code>owner/repo#N</code>; the repository is derived from the issue reference, GitHub only</td><td class="src"><code>apps/swarm-api/swarm_api/validation.py:854</code></td></tr>
+<tr><td>Work › Runs › a run</td><td>the open issues and pull requests read for that run's planner; nothing survives the run</td><td class="src"><code>apps/swarm-api/swarm_api/forge.py:531</code></td></tr>
+<tr><td>Agents › Details</td><td>the task's repository URL, masked; no context the agent was given beyond its prompt and <code>issue.md</code></td><td class="src"><code>apps/agent-worker/agent_worker/issue.py</code></td></tr>
+</tbody></table></div>
+<p>Where the new page sits: <b>Work › Repositories</b>, after Runs, in the panel. Repositories are what work is done in, the same tenant reads them, and Admin is for platform operators. A new spine section was considered and rejected: one page does not earn a spine slot.</p>
+
+<!-- ================================================================== -->
+<h2 id="list"><span class="n">2</span>Repositories list</h2>
+<p>One row per registration. Each row answers "is the index good enough to plan from?": freshness against the head polled from the forge, when it was last built, how it is scheduled, and how much of the source the test map covers. An unknown value is a dash with its reason.</p>
+
+<div class="variant" id="list-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A dense table, freshness first</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › <b>Repositories</b></div>
+<div class="phead"><h3>Repositories</h3><span class="cnt">3 registered · tenant eng</span><div class="r"><span class="inp" style="width:220px"><svg class="ic"><use href="#i-search"/></svg>Filter repositories</span><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register repository</span></div></div>
+<p class="sub">Indexes are rebuilt on each repository's schedule and when its default branch moves (polled every 5 min). Index runs are ordinary tasks and use this tenant's capacity.</p>
+<div class="card" style="padding:0">
+<table class="t"><thead><tr><th>Repository</th><th>Default branch</th><th>Index vs head</th><th>Last indexed</th><th>Schedule</th><th>Tests mapped</th><th style="text-align:right">Actions</th></tr></thead><tbody>
+<tr><td><div class="rn"><b>example-org/example-api</b><small>claude-code · used by 4 runs this week</small></div></td><td><code>main</code></td><td><span class="fresh"><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current</span><small>a1b2c3d</small></span></td><td class="mu">18 min ago · incremental</td><td class="mu">every 24 h + on change</td><td><div class="tm"><div class="bar"><i class="l" style="width:86%"></i></div><b>86%</b><span></span></div></td><td style="text-align:right"><span class="btn sm">Index now</span> <span class="btn sm ghost">⋯</span></td></tr>
+<tr><td><div class="rn"><b>example-org/example-web</b><small>claude-code · used by 1 run this week</small></div></td><td><code>main</code></td><td><span class="fresh"><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>3 behind</span><small>9f8e7d6 → 5c4b3a2</small></span></td><td class="mu"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span> indexing now · started 4 min ago</td><td class="mu">every 12 h + on change</td><td><div class="tm"><div class="bar"><i class="l" style="width:61%"></i></div><b>61%</b><span></span></div></td><td style="text-align:right"><span class="btn sm" aria-disabled="true" style="opacity:.55">Index now</span> <span class="btn sm ghost">⋯</span></td></tr>
+<tr><td><div class="rn"><b>example-org/example-infra</b><small>claude-code, codex · not used yet</small></div></td><td><code>develop</code></td><td><span class="fresh"><span class="dash" title="Head never read: change polling is off for this repository, so freshness cannot be measured">—</span><small>no index yet</small></span></td><td class="mu"><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg></span> failed 2 h ago · timed_out</td><td class="mu">every 168 h · polling off</td><td><span class="dash" title="No index has been built, so nothing is mapped yet">—</span></td><td style="text-align:right"><span class="btn sm">Index now</span> <span class="btn sm ghost">⋯</span></td></tr>
+</tbody></table></div>
+<p class="sub">3 of 3 · <span class="exd">example data</span> · head read 2 min ago</p>
+</main></div></div></figure>
+<figure class="fr" style="margin-top:20px"><div class="scroller"><div class="app fd" style="min-height:420px"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › <b>Repositories</b></div>
+<div class="phead"><h3>Repositories</h3><span class="cnt">0 registered · tenant eng</span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register repository</span></div></div>
+<div class="card" style="align-items:flex-start;padding:22px"><b style="font-size:15px">No repositories registered for eng</b><p class="sub">Register a repository to have SwarmCloud index it. Tasks still run in any repository without one; a registration only adds the index, the schedule and the test map.</p><span class="btn pri">Register repository</span></div>
+</main></div></div><figcaption>Variant A, empty state, always dark (the frame above follows the page's theme toggle).</figcaption></figure>
+<div class="idea"><div><h4>Idea</h4><p>The 32px-row table of the picked components, one row per registration, freshness as a state pill in the brand colours, so a stale index reads at a glance.</p></div><div><h4>Pros</h4><ul><li>Every column the brief names is visible without a click.</li><li>Same table as Agents and Ceilings: nothing new to learn or build.</li><li>Scales to forty repositories.</li></ul></div><div><h4>Risks</h4><ul><li>Seven columns need about 1,000px; on a phone it becomes a list of rows with freshness and actions only.</li><li>"Tests mapped %" invites reading it as coverage; its tooltip must say it is index edges, not executed coverage.</li></ul></div></div>
+</div>
+
+<div class="variant" id="list-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Cards, one per repository, with the index at a glance</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="phead"><h3>Repositories</h3><span class="cnt">3 registered</span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register repository</span></div></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+<div class="card"><div class="ch"><b>example-org/example-api</b><span class="r"><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current</span></span></div><div class="meta"><span>Default branch <b>main</b></span><span>head <b>a1b2c3d</b></span></div><div class="tm"><span class="cnt">Tests mapped</span><div class="bar"><i class="l" style="width:86%"></i></div><b>86%</b></div><div class="meta"><span>Last indexed <b>18 min ago</b></span><span>Schedule <b>24 h + on change</b></span></div><div style="display:flex;gap:6px"><span class="btn sm">Open</span><span class="btn sm">Index now</span></div></div>
+<div class="card"><div class="ch"><b>example-org/example-web</b><span class="r"><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>3 behind</span></span></div><div class="meta"><span>Default branch <b>main</b></span><span>head <b>5c4b3a2</b></span></div><div class="tm"><span class="cnt">Tests mapped</span><div class="bar"><i class="l" style="width:61%"></i></div><b>61%</b></div><div class="meta"><span>Last indexed <b>3 h ago</b></span><span>Schedule <b>12 h + on change</b></span></div><div style="display:flex;gap:6px"><span class="btn sm">Open</span><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>indexing now</span></span></div></div>
+<div class="card"><div class="ch"><b>example-org/example-infra</b><span class="r"><span class="sp neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>no index</span></span></div><div class="meta"><span>Default branch <b>develop</b></span><span>head <span class="dash" title="Head never read: change polling is off">—</span></span></div><div class="tm"><span class="cnt">Tests mapped</span><div class="bar hatch"></div><span class="dash" title="No index has been built yet">—</span></div><div class="meta"><span>Last run <b style="color:var(--s-bad)">failed · timed_out</b></span><span>Schedule <b>168 h</b></span></div><div style="display:flex;gap:6px"><span class="btn sm">Open</span><span class="btn sm">Index now</span></div></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>A card per repository, the way a tenant with a handful of repositories thinks of them, with the test-map bar as the visual anchor.</p></div><div><h4>Pros</h4><ul><li>Reads well with three to nine repositories and on a phone without a second layout.</li><li>Room for the head sha beside the branch.</li></ul></div><div><h4>Risks</h4><ul><li>Does not scale past a dozen; comparing freshness across cards means scanning a grid.</li><li>A new card component next to the one canonical set components.html just consolidated.</li></ul></div></div>
+</div>
+
+<div class="variant" id="list-c">
+<div class="vh"><span class="vn">Variant C</span><h3>Split view: the list on the left, the selected repository's index on the right</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="phead"><h3>Repositories</h3><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register repository</span></div></div>
+<div class="half" style="grid-template-columns:380px minmax(0,1fr)">
+<div class="card" style="padding:0">
+<table class="t"><thead><tr><th>Repository</th><th>Index</th><th>Tests mapped</th></tr></thead><tbody>
+<tr class="sel"><td><div class="rn"><b>example-org/example-api</b><small>main · 18 min ago</small></div></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>current</span></span></td><td>86%</td></tr>
+<tr><td><div class="rn"><b>example-org/example-web</b><small>main · 3 h ago</small></div></td><td><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>3 behind</span></span></td><td>61%</td></tr>
+<tr><td><div class="rn"><b>example-org/example-infra</b><small>develop · never</small></div></td><td><span class="dash" title="Head never read: change polling is off">—</span></td><td><span class="dash" title="No index yet">—</span></td></tr>
+</tbody></table></div>
+<div class="pane"><div class="ch"><h4>example-org/example-api</h4><span class="r"><span class="btn sm">Index now</span><span class="btn sm">Open page</span></span></div>
+<div class="meta"><span>Default branch <b>main</b></span><span>index <b>a1b2c3d</b> = head</span><span>Schedule <b>every 24 h + on change</b></span></div>
+<div class="kv"><div><span class="l">Modules</span><span class="v">14</span></div><div><span class="l">Routes</span><span class="v">37</span></div><div><span class="l">Tests mapped</span><span class="v">86%</span><span class="s">212 of 247 source files</span></div><div><span class="l">Index size</span><span class="v">148 <small>KiB</small></span><span class="s">summary 19 KiB</span></div></div>
+<div class="mrow"><code>src/api/routes</code><span>HTTP routes: users, orders, health</span><em>21</em></div><div class="mrow"><code>src/api/models</code><span>pydantic models and the store</span><em>9</em></div><div class="mrow"><code>src/worker</code><span>background jobs, queue consumer</span><em>12</em></div>
+</div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The Agents pattern (the picked V1 compact list plus wide detail) applied to repositories, so the index is one click from the list.</p></div><div><h4>Pros</h4><ul><li>Same split component, divider snapping and remembered width as Agents.</li><li>Comparing two repositories' indexes is a click, not a page load.</li></ul></div><div><h4>Risks</h4><ul><li>The list loses columns (schedule, last run) to make room.</li><li>The detail pane duplicates a cut-down detail page that still has to exist for links.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="register"><span class="n">3</span>Register repository</h2>
+<p>The credential is never typed here. Registration reads the repository once with the tenant's stored forge token, <code>swarm-tenant-eng-git</code>, to check access and fill the default branch; the form names the secret, and never shows or asks for its value.</p>
+
+<div class="variant" id="register-a">
+<div class="vh"><span class="vn">Variant A</span><h3>One page, top to bottom, like the picked task form</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>Register repository</b></div>
+<h3>Register repository</h3>
+<div class="card" style="padding:18px 20px;max-width:820px"><div class="fgrid">
+<div class="fl">Forge<small>GitHub only for now</small></div><div><div class="radio"><span class="on">GitHub</span><span style="opacity:.55">GitLab · not supported</span></div></div>
+<div class="fl">Repository<small>owner/repo</small></div><div><div class="inp val">example-org/example-api</div><div class="hint"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span style="font-size:12px">readable with <code>swarm-tenant-eng-git</code> · private · 247 source files</span></span></div></div>
+<div class="fl">Default branch<small>read from GitHub</small></div><div><div class="inp val">main</div><div class="hint">The change trigger watches this branch and the index describes its head.</div></div>
+<div class="fl">Runner profiles<small>which may work in it</small></div><div><span class="check"><i class="on"></i>claude-code</span><span class="check off"><i></i>codex · disabled on this platform</span><div class="hint">By name only. A registration narrows what runs here; it never changes what a profile is.</div></div>
+<div class="fl">Re-index every</div><div><div class="radio"><span>6 h</span><span>12 h</span><span class="on">24 h</span><span>7 days</span><span>Off</span></div></div>
+<div class="fl">Change trigger</div><div><div class="radio"><span class="on">Poll the default branch (every 5 min)</span><span style="opacity:.55">Webhook · phase 3</span><span>Off</span></div><div class="hint">At most one change-triggered run every 30 min; ten pushes in a minute cost one run.</div></div>
+<div class="fl">First index</div><div><span class="check"><i class="on"></i>Index now, after registering</span><div class="hint">A full run: about 20-30 min for a repository this size. It queues like any task and holds one claude-code slot of eng's capacity while it runs.</div></div>
+</div>
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><span class="btn ghost">Cancel</span><span class="btn pri">Register example-org/example-api</span></div></div>
+<div class="card" style="max-width:820px;border-color:color-mix(in srgb,var(--s-bad) 45%,transparent)"><div class="fgrid"><div class="fl">Repository</div><div><div class="inp val err">example-org/private-tools</div><div class="hint bad">swarm-tenant-eng-git cannot read example-org/private-tools (GitHub answered 404). Grant the token access, or store a token that has it with scripts/create-secrets.sh --stdin.</div></div></div></div>
+</main></div></div><figcaption>With the refusal a registration gets when the tenant's token cannot read the repository: it names the secret, never its value.</figcaption></figure>
+<div class="idea"><div><h4>Idea</h4><p>One form, stacked, the same shape as the picked Submit forms: the repository first, then what may run in it, then when it is indexed.</p></div><div><h4>Pros</h4><ul><li>The access check runs as soon as the repository is typed, so a bad token is found before anything is queued.</li><li>Cost of the first index is stated before the click.</li></ul></div><div><h4>Risks</h4><ul><li>A long form for what is usually "this repo, defaults".</li><li>A typed <code>owner/repo</code> invites typos the access check then reports as 404.</li></ul></div></div>
+</div>
+
+<div class="variant" id="register-b">
+<div class="vh"><span class="vn">Variant B</span><h3>A side drawer over the list, defaults folded</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct" style="position:relative">
+<div class="phead"><h3>Repositories</h3><span class="cnt">3 registered</span></div>
+<div class="card" style="padding:0;opacity:.6"><table class="t"><thead><tr><th>Repository</th><th>Default branch</th><th>Index vs head</th></tr></thead><tbody><tr><td>example-org/example-api</td><td>main</td><td>current</td></tr><tr><td>example-org/example-web</td><td>main</td><td>3 behind</td></tr><tr><td>example-org/example-infra</td><td>develop</td><td>—</td></tr></tbody></table></div>
+<div class="scrim"></div>
+<div class="drawer"><div class="ch"><b style="font-size:16px">Register repository</b><span class="r"><span class="btn ghost sm">Close</span></span></div>
+<div><div class="fl" style="padding:0 0 4px">GitHub repository</div><div class="inp val">example-org/example-api</div><div class="hint">Readable with <code>swarm-tenant-eng-git</code> · default branch <b>main</b></div></div>
+<div class="card" style="gap:4px"><b style="font-size:13px">Defaults</b><div class="meta"><span>claude-code</span><span>re-index every 24 h</span><span>poll for changes</span><span>index now</span></div><span class="more">Change defaults ›</span></div>
+<p class="sub">The first index is a full run, about 20-30 min, and uses one of eng's claude-code slots while it runs.</p>
+<div style="margin-top:auto;display:flex;gap:8px;justify-content:flex-end"><span class="btn ghost">Cancel</span><span class="btn pri">Register</span></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Registering is one field and a button; everything else is a sensible default behind one disclosure, in a drawer that keeps the list visible.</p></div><div><h4>Pros</h4><ul><li>Fastest path for the common case.</li><li>The new row appears in the list behind the drawer as soon as it is registered.</li></ul></div><div><h4>Risks</h4><ul><li>Defaults hide that indexing spends capacity on a schedule.</li><li>A drawer is a new pattern; the picked Submit forms are full pages.</li></ul></div></div>
+</div>
+
+<div class="variant" id="register-c">
+<div class="vh"><span class="vn">Variant C</span><h3>Pick from what the token can read, then set the schedule</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>Register repository</b></div>
+<div class="steps"><b><i>1</i>Choose repository</b><span>›</span><span><i>2</i> Schedule and profiles</span><span>›</span><span><i>3</i> Register</span></div>
+<div class="card" style="padding:0;max-width:760px">
+<div style="padding:10px 12px;border-bottom:1px solid var(--f-ln)"><span class="inp"><svg class="ic"><use href="#i-search"/></svg>Filter the 41 repositories swarm-tenant-eng-git can read</span></div>
+<div class="pick on"><span class="dot"></span><b>example-org/example-api</b><span class="cnt">main</span><small>private · pushed 18 min ago</small></div>
+<div class="pick"><span class="dot"></span><b>example-org/example-mobile</b><span class="cnt">main</span><small>private · pushed 2 days ago</small></div>
+<div class="pick" style="opacity:.6"><span class="dot"></span><b>example-org/example-web</b><span class="cnt">main</span><small>already registered</small></div>
+<div class="pick"><span class="dot"></span><b>example-org/example-docs</b><span class="cnt">gh-pages</span><small>public · pushed 3 weeks ago</small></div>
+</div>
+<div style="display:flex;gap:8px;max-width:760px;justify-content:flex-end"><span class="btn ghost">Cancel</span><span class="btn pri">Next: schedule</span></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>No typing: list what the tenant's token can already read, so a registration can never name a repository the platform cannot clone.</p></div><div><h4>Pros</h4><ul><li>No 404s from typos.</li><li>Shows at once which repositories are already registered.</li></ul></div><div><h4>Risks</h4><ul><li>Needs a new forge read (the token's installation repositories), paged, on every open of the form.</li><li>Lists every repository the token can see to everyone in the tenant, which a fine-grained token's owner may not expect.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="detail"><span class="n">4</span>Repository detail</h2>
+<p>What the index says, how it was built, when it next runs, and who used it. Every figure names the commit it describes.</p>
+
+<div class="variant" id="detail-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Tabs: Overview, Test map, Hot-spots, Index runs, Settings, Used by</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:900px"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-web</b></div>
+<div class="phead"><h3>example-org/example-web</h3><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>3 behind head</span><div class="r"><span class="btn">Index now</span><span class="btn ghost">⋯</span></div></div>
+<div class="meta"><span>Default branch <b>main</b></span><span>index <b>9f8e7d6</b></span><span>head <b>5c4b3a2</b>, read 2 min ago</span><span>claude-code</span><span>registered by Operator, 2026-10-04</span></div>
+<div class="banner"><svg viewBox="0 0 12 12" width="13" height="13" style="color:var(--s-warn)"><use href="#s-warn"/></svg><span><b>Behind by 3 commits.</b> 7 files changed since this index was built; planners are told which. An incremental run started 4 min ago.</span><span class="btn sm">See changed files</span></div>
+<div class="tabs"><span class="on">Overview</span><span>Test map <em>61%</em></span><span>Hot-spots</span><span>Index runs <em>12</em></span><span>Settings</span><span>Used by <em>5</em></span></div>
+<div class="kv"><div><span class="l">Modules</span><span class="v">9</span><span class="s">412 files · 38k lines</span></div><div><span class="l">Entry points</span><span class="v">3</span><span class="s">web, ssr, storybook</span></div><div><span class="l">Tests mapped</span><span class="v">61%</span><span class="s warn">96 source files with no test edge</span></div><div><span class="l">Index</span><span class="v">212 <small>KiB</small></span><span class="s">summary 23 of 24 KiB · hot-spots trimmed</span></div></div>
+<div class="cols">
+<div class="card"><div class="ch"><b>Modules</b><span class="r"><span class="more">All 9 ›</span></span></div>
+<div><div class="mrow"><code>src/pages</code><span>route components, one per URL</span><em>88</em></div><div class="mrow"><code>src/components</code><span>shared UI; design tokens in theme.ts</span><em>141</em></div><div class="mrow"><code>src/api</code><span>typed client for example-api's routes</span><em>23</em></div><div class="mrow"><code>src/state</code><span>stores and selectors</span><em>31</em></div><div class="mrow"><code>server</code><span>SSR entry and edge handlers</span><em>17</em></div></div></div>
+<div class="card"><div class="ch"><b>Hot-spots</b><span class="r"><span class="cnt">last 90 days on main</span></span></div>
+<div><div class="hs"><span class="p">src/api/client.ts</span><div class="bar"><i class="w" style="width:100%"></i></div><em>41</em></div><div class="hs"><span class="p">src/pages/checkout.tsx</span><div class="bar"><i class="w" style="width:73%"></i></div><em>30</em></div><div class="hs"><span class="p">src/state/cart.ts</span><div class="bar"><i class="w" style="width:56%"></i></div><em>23</em></div><div class="hs"><span class="p">server/render.ts</span><div class="bar"><i class="w" style="width:34%"></i></div><em>14</em></div></div>
+<p class="sub" style="font-size:12px">Changed together most: <code>src/api/client.ts</code> ↔ <code>src/api/types.ts</code> (27 times).</p></div>
+</div>
+<div class="cols">
+<div class="card"><div class="ch"><b>Index runs</b><span class="r"><span class="more">All 12 ›</span></span></div>
+<div><div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><em>5c4b3a2</em><span>incremental</span><small>change · started 4 min ago · holds 1 slot</small><em>—</em></div><div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><em>9f8e7d6</em><span>incremental</span><small>change · 3 h ago</small><em>6m 12s</em></div><div class="run"><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg></span><em>77aa1b0</em><span>full</span><small>interval · yesterday · timed_out</small><em>30m 00s</em></div><div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><em>4d3c2b1</em><span>full</span><small>interval · 2 days ago</small><em>24m 40s</em></div></div></div>
+<div class="card"><div class="ch"><b>Schedule and change trigger</b><span class="r"><span class="more">Edit ›</span></span></div>
+<div class="meta col"><span>Re-index <b>every 12 h</b> · next at 21:40</span><span>Change trigger <b>poll main every 5 min</b>, at most one run per 30 min</span><span>Full run <b>every 7 days</b> · last full 2 days ago</span><span>Paused <b>no</b></span></div>
+<div class="ch" style="margin-top:6px"><b>Used by</b></div>
+<div class="used"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Run <b>#88 checkout totals round wrong</b> · planner</span><small>9f8e7d6</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><span>Workflow <b>cart-refactor</b> · 3 steps</span><small>9f8e7d6</small></div></div></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>An Overview that answers "can I plan from this?" in the first screen, and one tab per part of the index for depth: the test map is big enough to need its own page.</p></div><div><h4>Pros</h4><ul><li>The staleness banner leads, using the picked page-state tier from states.html.</li><li>Index runs are drawn with the brand state marks, the same as agents, because they are agents.</li><li>The tabs map one-to-one to the index's keys.</li></ul></div><div><h4>Risks</h4><ul><li>Six tabs; Used by and Settings could be one.</li><li>The Test map tab needs a path search to be useful on a large repository.</li></ul></div></div>
+</div>
+
+<div class="variant" id="detail-b">
+<div class="vh"><span class="vn">Variant B</span><h3>One long page of cards, the test map as a path lookup</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:820px"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current</span><div class="r"><span class="btn">Index now</span><span class="btn">Settings</span></div></div>
+<div class="meta"><span>main</span><span>index = head <b>a1b2c3d</b></span><span>last indexed 18 min ago, incremental</span><span>every 24 h + on change</span></div>
+<div class="card"><div class="ch"><b>Which tests cover these paths?</b><span class="r"><span class="cnt">from the test map at a1b2c3d</span></span></div>
+<div class="inp val" style="font-family:var(--f-mono);font-size:12.5px">src/api/routes/users.py, src/api/models.py</div>
+<table class="t"><thead><tr><th>Test</th><th>Because</th><th>Evidence</th></tr></thead><tbody>
+<tr><td><code>tests/api/test_users.py</code></td><td class="mu">src/api/routes/users.py</td><td><span class="chip">import</span></td></tr>
+<tr><td><code>tests/unit/test_contract.py</code></td><td class="mu">always run · declared in CLAUDE.md</td><td><span class="chip">declared</span></td></tr>
+<tr><td><span class="chip warn">unmapped</span> <code>src/api/models.py</code></td><td class="mu">no edge in the map; run the area's suite instead</td><td><code>uv run pytest tests/api -q</code></td></tr>
+</tbody></table></div>
+<div class="cols"><div class="card"><div class="ch"><b>Entry points and routes</b></div><div><div class="mrow"><code>src/api/main.py</code><span>create_app() · uvicorn --factory</span><em>app</em></div><div class="mrow"><code>GET /v1/users/{id}</code><span>routes/users.py · get_user</span><em>route</em></div><div class="mrow"><code>POST /v1/orders</code><span>routes/orders.py · create_order</span><em>route</em></div></div><span class="more">All 37 routes ›</span></div>
+<div class="card"><div class="ch"><b>Territory and commands</b></div><div class="meta col"><span><code>src/contract/</code> frozen · CLAUDE.md</span><span><code>infra/</code> owned by platform · CODEOWNERS</span><span>test <code>uv run pytest tests -q</code> · Makefile</span><span>lint <code>uv run ruff check</code> · pyproject.toml</span></div></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Lead with the question the owner named last, "what tests should run for this change", as a lookup an operator can use before opening a pull request.</p></div><div><h4>Pros</h4><ul><li>The <code>tests:select</code> route gets a screen that shows exactly what agents are told, unmapped paths included.</li><li>No tabs; territory and commands are visible.</li></ul></div><div><h4>Risks</h4><ul><li>Index runs, hot-spots and Used by fall below the first screen.</li><li>Typing paths is a developer's task; most operators will use it rarely.</li></ul></div></div>
+</div>
+
+<div class="variant" id="detail-c">
+<div class="vh"><span class="vn">Variant C</span><h3>Explorer: the module tree, the selected module's facts, and the runs beside it</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:760px"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"><span class="btn">Index now</span></div></div>
+<div class="cols3">
+<div class="card"><div class="ch"><b>Modules</b><span class="r"><span class="cnt">14</span></span></div>
+<pre class="tree">src/
+  api/
+    <span class="on">routes/</span>     <i>21</i>
+    models/     <i>9</i>
+    auth/       <i>6</i>
+  worker/       <i>12</i>
+  contract/     <i>4 · frozen</i>
+tests/
+  api/          <i>18</i>
+  unit/         <i>44</i></pre></div>
+<div class="card"><div class="ch"><b>src/api/routes</b><span class="r"><span class="chip">python</span></span></div><p class="sub">HTTP routes: users, orders, health. Each module registers one APIRouter in main.py.</p>
+<div class="ch"><b style="font-size:13px">Covered by</b></div><div><div class="mrow"><code>tests/api/test_users.py</code><span>users.py</span><em>import</em></div><div class="mrow"><code>tests/api/test_orders.py</code><span>orders.py</span><em>naming</em></div><div class="mrow"><code>health.py</code><span>no test edge</span><em><span class="dash" title="No test in the map imports or is named after health.py">—</span></em></div></div>
+<div class="ch"><b style="font-size:13px">Changes most with</b></div><div class="meta"><span><code>src/api/models/user.py</code> 14×</span><span><code>tests/api/test_users.py</code> 11×</span></div></div>
+<div class="card"><div class="ch"><b>Index runs</b></div><div class="used"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>a1b2c3d · incremental</span><small>18 min</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>e5f6a7b · full</span><small>1 day</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-cancelled"/></svg></span><span>c3d4e5f · incremental</span><small>2 days</small></div></div>
+<div class="ch"><b>Used by</b></div><div class="used"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><span>Run #91 · planner</span><small>a1b2c3d</small></div><div><span class="st park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg></span><span>Workflow orders-v2</span><small>e5f6a7b</small></div></div></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Browse the repository the way the index sees it: pick a module, see what it is for, what tests cover it and what changes with it.</p></div><div><h4>Pros</h4><ul><li>Makes the index's quality inspectable module by module, which is how a bad purpose line gets noticed.</li><li>Impact ("changes most with") is next to coverage.</li></ul></div><div><h4>Risks</h4><ul><li>The most to build: a tree, an inspector and a third column.</li><li>Schedule and trigger settings are not on the first screen.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="context"><span class="n">5</span>The index inside an issue-run plan and an agent's Details</h2>
+<p>A plan and an agent both say which index they were given, at which commit, and how far behind its head it was at the time. The chip is the same everywhere: <span class="chip ctx" style="font-size:12px">Context used · repo index</span>.</p>
+
+<div class="variant" id="context-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A "Context used" chip in the header meta, with a popover</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:640px"><div class="side" data-shell="Runs"></div><main class="ct" style="position:relative">
+<div class="crumb">Work › Runs › <b>run_7c1e</b></div>
+<div class="phead"><h3>example-org/example-web#88 · Checkout totals round wrong</h3><span class="sp park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg>planned · awaiting approval</span></div>
+<div class="meta"><span>planner <b>claude-code</b></span><span>3 steps</span><span>plan digest <b>4e1f…</b></span><span class="chip ctx"><svg class="ic"><use href="#i-branch"/></svg>Context used · repo index 9f8e7d6 · 3 behind</span><span class="chip">open work · 6 items</span></div>
+<div class="pop" style="top:96px;left:500px"><b>Repo index of example-org/example-web</b><p>Built at <code>9f8e7d6</code> (incremental, 3 h before planning). The head was <code>5c4b3a2</code>, 3 commits ahead; the planner was told the 7 files changed since.</p><small>Summary 23 KiB given in the prompt · digest checked · <span style="color:var(--f-ac)">Open repository ›</span></small></div>
+<div class="plan" style="margin-top:6px">
+<div class="pstep"><span class="n">1</span><b>Round totals in cents, not floats</b><div class="f"><span>files</span><code>src/state/cart.ts</code><code>src/api/client.ts</code><span>tests</span><code>src/state/cart.test.ts</code><span style="color:var(--f-ac)">· from the index's test map</span></div></div>
+<div class="pstep"><span class="n">2</span><b>Show the rounded total on checkout</b><div class="f"><span>files</span><code>src/pages/checkout.tsx</code><span>tests</span><code>src/pages/checkout.test.tsx</code></div></div>
+<div class="pstep"><span class="n">3</span><b>Contract test for the totals route</b><div class="f"><span>files</span><code>tests/contract/totals.test.ts</code><span>tests</span><span class="dash" title="This path has no edge in the index; the planner named the suite for its directory instead">—</span></div></div>
+</div>
+<div class="card" style="margin-top:6px"><div class="ch"><b>Agent Details, the same chip</b><span class="r"><span class="exd">agent-details-v3.html header meta</span></span></div>
+<div class="meta"><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>running</span><span><b>impl-1 · Round totals in cents</b></span><span>claude-code · standard</span><span>workflow <b>run_7c1e</b></span><span class="chip ctx"><svg class="ic"><use href="#i-branch"/></svg>Context used · repo index 9f8e7d6</span><span class="chip">issue.md</span></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>One chip in the meta line the picked Details header already has, beside the other inputs an agent was given, with the facts behind a click.</p></div><div><h4>Pros</h4><ul><li>No new card; fits the v3 header that was just picked.</li><li>Tests the planner took from the test map are marked where they appear.</li><li>A stale index shows in the chip itself ("3 behind").</li></ul></div><div><h4>Risks</h4><ul><li>A chip is easy to miss when an operator is asking "why did the plan choose these files?".</li><li>The popover is the only place the changed-since list is visible.</li></ul></div></div>
+</div>
+
+<div class="variant" id="context-b">
+<div class="vh"><span class="vn">Variant B</span><h3>A Context card above the plan</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:560px"><div class="side" data-shell="Runs"></div><main class="ct">
+<div class="phead"><h3>example-org/example-api#142 · Orders endpoint returns 500 on empty cart</h3><span class="sp park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg>planned</span></div>
+<div class="ctxcard"><div class="ch"><b>Context the planner was given</b><span class="r"><span class="chip ctx">Context used</span></span></div>
+<ul><li><b>Repo index</b> at <code>a1b2c3d</code>, the head when planning · 14 modules, 37 routes, test map 86% · territory: <code>src/contract/</code> frozen</li><li><b>Issue</b> #142 with 4 comments</li><li><b>Open work</b> 6 issues, 2 pull requests; one overlaps <code>src/api/routes/orders.py</code></li></ul>
+<span class="more">Open the index ›</span></div>
+<div class="plan">
+<div class="pstep"><span class="n">1</span><b>Handle the empty cart in create_order</b><div class="f"><span>files</span><code>src/api/routes/orders.py</code><span>tests</span><code>tests/api/test_orders.py</code></div></div>
+<div class="pstep"><span class="n">2</span><b>Regression test for an empty cart</b><div class="f"><span>files</span><code>tests/api/test_orders.py</code></div></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Make everything the planner read one card the approver sees before the steps: the index, the issue and the open work together.</p></div><div><h4>Pros</h4><ul><li>The approver sees what the plan was based on before approving its digest.</li><li>Groups the existing open-work snapshot with the new index.</li></ul></div><div><h4>Risks</h4><ul><li>About 120px more before the first step on every run.</li><li>A second shape for the same facts the agent Details chip shows.</li></ul></div></div>
+</div>
+
+<div class="variant" id="context-c">
+<div class="vh"><span class="vn">Variant C</span><h3>Per step: the tests to run for its files, from the index</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:540px"><div class="side" data-shell="Runs"></div><main class="ct">
+<div class="phead"><h3>example-org/example-api#142 · Orders endpoint returns 500 on empty cart</h3><span class="chip ctx">Context used · repo index a1b2c3d</span></div>
+<div class="pstep" style="grid-template-columns:26px minmax(0,1fr) 340px"><span class="n">1</span><div><b>Handle the empty cart in create_order</b><div class="f" style="margin-top:4px"><span>files</span><code>src/api/routes/orders.py</code><code>src/api/models/cart.py</code></div></div>
+<div class="card" style="padding:8px 10px;gap:6px"><b style="font-size:12.5px">Tests to run for these files</b><div class="used"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><code>tests/api/test_orders.py</code><small>import</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><code>tests/unit/test_contract.py</code><small>always</small></div><div><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg></span><code>src/api/models/cart.py</code><small>unmapped → tests/api</small></div></div></div></div>
+<div class="card"><div class="ch"><b>Merge step checklist (docs/merge-step.md), advisory line</b></div><div class="meta"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>2 of 2 selected tests ran in CI at the head</span></span><span>1 unmapped path, its suite ran</span><span>advisory: the gate is still the required checks</span></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Show the index where it changes what happens: each step's selected tests, as the implement step and the merge step will see them.</p></div><div><h4>Pros</h4><ul><li>Draws the "which tests for this change" answer the owner asked for, per step and at merge.</li><li>Unmapped paths are visible instead of silently missing.</li></ul></div><div><h4>Risks</h4><ul><li>The selection is for planned files; the real diff can differ, so the step's own selection after its diff is the one that counts.</li><li>Widens every step row by 340px.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="rec"><span class="n">6</span>Recommendation</h2>
+<div class="recbox"><h3>List A, Register A, Detail A, Context A, with Context C's per-step tests folded into the plan step</h3>
+<ul><li><b>List A</b> is the table the console already has, so it costs least and scales furthest; freshness is the first thing that matters about an index and it leads.</li>
+<li><b>Register A</b> states the cost of indexing and checks access before anything is queued. Variant C's picker is attractive but adds a forge read and shows every repository the token can see to the whole tenant.</li>
+<li><b>Detail A</b> keeps the staleness banner, the index runs and the schedule in the first screen. Detail B's path lookup becomes its Test map tab.</li>
+<li><b>Context A</b> fits the v3 Details header just picked. From Context C, keep the "from the index's test map" marker on a step's tests; the per-step panel can come later.</li></ul>
+<p>The owner picks; this is a recommendation. The design choices that do not depend on the pick (registration per tenant, the index under the tenant's prefix, indexing as ordinary capacity-accounted work) are argued in <a href="../../repo-index.md">docs/repo-index.md</a>.</p></div>
+
+<h2 id="map"><span class="n">7</span>Every element, mapped to data</h2>
+<p>Each figure on these frames, and the field the proposed routes would serve it from. None of these routes exists yet.</p>
+<div class="tw"><table class="doc"><thead><tr><th>Element</th><th>Field</th><th>Route (proposed)</th></tr></thead><tbody>
+<tr><td>Repository, Default branch</td><td><code>owner</code>, <code>repo</code>, <code>default_branch</code></td><td><code>GET /v1/repositories</code></td></tr>
+<tr><td>Index vs head</td><td><code>index.current_sha</code>, <code>index.head_sha</code>, <code>index.behind_by</code>, <code>index.head_read_at</code>; a dash when the head was never read</td><td><code>GET /v1/repositories</code></td></tr>
+<tr><td>Last indexed</td><td><code>index.last_indexed_at</code>, <code>index.last_kind</code>; the in-flight run from <code>index.in_flight_task_id</code></td><td><code>GET /v1/repositories</code></td></tr>
+<tr><td>Schedule, Change trigger</td><td><code>index.interval_hours</code>, <code>index.on_change</code>, <code>index.min_change_interval_minutes</code></td><td><code>PATCH /v1/repositories/{repo_id}</code></td></tr>
+<tr><td>Tests mapped %</td><td><code>index.coverage</code>: source files with at least one test edge ÷ source files; edges, not executed coverage</td><td><code>GET /v1/repositories</code></td></tr>
+<tr><td>Modules, Hot-spots, Entry points, Territory</td><td><code>modules</code>, <code>hot_spots</code>, <code>entry_points</code>, <code>territory</code> of <code>repo-index.json</code></td><td><code>GET /v1/repositories/{repo_id}/index?format=json</code></td></tr>
+<tr><td>Index runs</td><td><code>repo_index_runs</code> by <code>repo_id</code>, each with its task's state and end cause</td><td><code>GET /v1/repositories/{repo_id}</code></td></tr>
+<tr><td>Which tests cover these paths</td><td><code>tests</code>, <code>always</code>, <code>unmapped</code>, <code>fallback</code></td><td><code>POST /v1/repositories/{repo_id}/tests:select</code></td></tr>
+<tr><td>Context used chip</td><td><code>index_sha</code>, <code>index_digest</code> on the run; the step's staged-input record in phase 2</td><td><code>GET /v1/runs/{run_id}</code></td></tr>
+<tr><td>Used by</td><td>runs whose <code>index_sha</code> is one of this repository's versions</td><td><code>GET /v1/repositories/{repo_id}</code></td></tr>
+</tbody></table></div>
+<!-- ================================================================== -->
+<!-- Second design pass, lane RI0b (owner, 2026-10-04). Sections 1-7 above are RI0's, unchanged. -->
+<h2 id="graph"><span class="n">8</span>Graph explorer in a repository</h2>
+<p>Owner decision (b), 2026-10-04: "a way to visualize all of this indexed data and AST and LSP graphs visually in the repository section". Three views in every variant: the <b>module dependency graph</b> (zoom and pan, clustered by package, coloured by hot-spot or by test reach), a <b>symbol call graph</b> centred on one symbol (callers and callees, a depth control, each edge's evidence <code>lsp</code> or <code>ast</code> and its confidence), and the <b>test map</b> (symbol → the tests that reach it). Drawn here as static SVG; the built screen draws the same shapes from <code>GET /v1/repositories/{repo_id}/graph</code> and <code>/symbols</code>, and needs no graph library to read them. Design: <a href="../../repo-index.md">repo-index.md</a> §2.5, §3.5.</p>
+<div class="variant" id="graph-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A force-directed canvas with a side inspector</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"><span class="btn sm">Index now</span></div></div>
+<div class="tabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span>Settings</span></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;align-items:start">
+<div class="gcanvas" style="height:470px">
+<div class="tools"><span class="chip ctx">Modules</span><span class="chip">Call graph</span><span class="chip">Test map</span><span class="chip">Cluster: package</span><span class="chip">Colour: hot-spots ▾</span><span class="btn sm">−</span><span class="btn sm">+</span><span class="btn sm">Fit</span></div>
+<div style="padding:30px 0 0"><svg class="g" width="640" height="440" viewBox="0 0 640 440" role="img" aria-label="Module dependency graph of example-org/example-api, clustered by package"><rect class="cl" x="40" y="40" width="215" height="180" rx="14"/><text class="mu" x="50" y="58">src/api</text><rect class="cl" x="270" y="40" width="200" height="180" rx="14"/><text class="mu" x="280" y="58">src/core</text><rect class="cl" x="490" y="40" width="130" height="180" rx="14"/><text class="mu" x="500" y="58">src/db</text><rect class="cl" x="90" y="270" width="230" height="130" rx="14"/><text class="mu" x="100" y="288">src/workers</text><line class="e hot" x1="95" y1="100" x2="330" y2="110" style="stroke-width:3"/><line class="e" x1="185" y1="150" x2="545" y2="105" style="stroke-width:1.4"/><line class="e" x1="330" y1="110" x2="415" y2="75" style="stroke-width:2.2"/><line class="e" x1="330" y1="110" x2="380" y2="180" style="stroke-width:1.6"/><line class="e" x1="415" y1="75" x2="380" y2="180" style="stroke-width:1.4"/><line class="e" x1="330" y1="110" x2="545" y2="105" style="stroke-width:2"/><line class="e" x1="545" y1="105" x2="565" y2="180" style="stroke-width:1.4"/><line class="e" x1="150" y1="320" x2="330" y2="110" style="stroke-width:1.8"/><line class="e" x1="150" y1="320" x2="255" y2="360" style="stroke-width:1.2"/><line class="e" x1="90" y1="180" x2="565" y2="180" style="stroke-width:1"/><circle class="n hot" cx="95" cy="100" r="17"/><text x="78" y="132">orders</text><circle class="n cool" cx="185" cy="150" r="12"/><text x="173" y="177">users</text><circle class="n cool" cx="90" cy="180" r="8"/><text x="82" y="203">health</text><circle class="n sel" cx="330" cy="110" r="20"/><text x="310" y="145" class="ac">orders</text><circle class="n warm" cx="415" cy="75" r="14"/><text x="401" y="104">pricing</text><circle class="n cool" cx="380" cy="180" r="10"/><text x="370" y="205">money</text><circle class="n warm" cx="545" cy="105" r="15"/><text x="530" y="135">models</text><circle class="n cool" cx="565" cy="180" r="9"/><text x="556" y="204">session</text><circle class="n warm" cx="150" cy="320" r="13"/><text x="137" y="348">invoices</text><circle class="n cool" cx="255" cy="360" r="9"/><text x="246" y="384">email</text></svg></div>
+<div class="legend"><span class="lg"><b></b>hot-spot (20+ changes in 90 days)</span><span class="lg"><b class="warm"></b>5-19</span><span class="lg"><b class="cool"></b>under 5</span><span>edge width = resolved calls between modules</span></div>
+</div>
+<div class="card">
+<div class="ch"><b>src/core/orders.py</b><span class="r"><span class="chip">module</span></span></div>
+<div class="meta"><span><b>412</b> lines</span><span><b>14</b> symbols</span><span><b>23</b> changes in 90 days</span></div>
+<div class="meta"><span>called from <b>3</b> modules</span><span>test reach <b>78%</b> of symbols</span><span>python · pyright ok</span></div>
+<div class="ch"><b>Call graph</b><span class="r"><span class="cnt">depth</span><span class="btn sm">−</span><b>2</b><span class="btn sm">+</span></span></div>
+<span class="inp val"><svg class="ic"><use href="#i-search"/></svg>OrderService.total</span>
+<svg class="g" width="300" height="170" viewBox="0 0 300 170" role="img" aria-label="Call graph of OrderService.total at depth 2">
+<path class="e lsp" d="M70 40 C110 40 110 85 150 85"/><path class="e lsp" d="M70 130 C110 130 110 85 150 85"/>
+<path class="e lsp" d="M150 85 C190 85 190 40 230 40"/><path class="e ast" d="M150 85 C190 85 190 130 230 130"/>
+<circle class="n" cx="70" cy="40" r="7"/><circle class="n" cx="70" cy="130" r="7"/><circle class="n sel" cx="150" cy="85" r="10"/><circle class="n" cx="230" cy="40" r="7"/><circle class="n" cx="230" cy="130" r="7"/>
+<text x="6" y="24">checkout_total</text><text x="6" y="155">get_order_total</text><text class="ac" x="100" y="112">OrderService.total</text><text x="200" y="24">Money.round</text><text x="190" y="155">TaxTable.lookup</text>
+<text class="mu" x="176" y="118">ast 0.6</text><text class="mu" x="176" y="52">lsp</text></svg>
+<div class="ch"><b>Test map</b><span class="r"><span class="cnt">5 tests reach it</span></span></div>
+<div class="treerow"><code>test_empty_cart_total</code><small>depth 1 · lsp</small></div>
+<div class="treerow"><code>test_checkout_rounds_half_even</code><small>depth 2 · lsp</small></div>
+<div class="treerow"><code>test_invoice_totals</code><small>depth 3 · <span class="ev ast">ast 0.6</span></small></div>
+<span class="more">All 5 in the Test map view</span>
+</div></div>
+<p class="sub">Index <code>a1b2c3d</code> · 2,014 files · 31,240 symbols · 148,900 edges, 91% lsp · <span class="exd">example data</span></p>
+</main></div></div></figure>
+<figure class="fr" style="margin-top:20px"><div class="scroller"><div class="app fd"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"></div></div>
+<div class="tabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span>Settings</span></div>
+<div class="phead"><span class="chip">Modules</span><span class="chip ctx">Call graph</span><span class="chip">Test map</span><span class="inp val" style="width:260px"><svg class="ic"><use href="#i-search"/></svg>OrderService.total · src/core/orders.py:88-131</span><div class="r"><span class="cnt">depth</span><span class="btn sm">−</span><b>2</b><span class="btn sm">+</span><span class="radio"><span class="on">both</span><span>callers</span><span>callees</span></span></div></div>
+<div class="gcanvas" style="padding:8px 0 44px"><svg class="g" width="940" height="360" viewBox="0 0 940 360" role="img" aria-label="Call graph centred on OrderService.total, callers left, callees right, depth 2">
+<text class="mu" x="40" y="22">callers, depth 2</text><text class="mu" x="250" y="22">callers, depth 1</text><text class="mu" x="610" y="22">callees, depth 1</text><text class="mu" x="790" y="22">depth 2</text>
+<path class="e lsp" d="M150 80 C200 80 220 110 260 110"/><path class="e ast" d="M150 200 C200 200 220 250 260 250"/><path class="e low" d="M150 310 C210 310 220 260 260 250"/>
+<path class="e lsp" d="M380 110 C420 110 420 180 455 180"/><path class="e lsp" d="M380 250 C420 250 420 180 455 180"/>
+<path class="e lsp" d="M500 180 C560 180 560 110 610 110"/><path class="e lsp" d="M500 180 C560 180 560 250 610 250"/><path class="e ast" d="M720 110 C750 110 760 110 790 110"/>
+<rect class="n" x="20" y="64" width="130" height="32" rx="8"/><text x="30" y="85">POST /checkout</text>
+<rect class="n" x="20" y="184" width="130" height="32" rx="8"/><text x="30" y="205">InvoiceJob.run</text>
+<rect class="n warm" x="20" y="294" width="130" height="32" rx="8"/><text x="30" y="315">admin_recalc</text>
+<rect class="n" x="260" y="94" width="120" height="32" rx="8"/><text x="270" y="115">checkout_total</text>
+<rect class="n" x="260" y="234" width="120" height="32" rx="8"/><text x="268" y="255">get_order_total</text>
+<rect class="n sel" x="400" y="160" width="150" height="40" rx="10"/><text class="ac" x="412" y="185">OrderService.total</text>
+<rect class="n" x="610" y="94" width="110" height="32" rx="8"/><text x="622" y="115">Money.round</text>
+<rect class="n" x="610" y="234" width="130" height="32" rx="8"/><text x="620" y="255">TaxTable.lookup</text>
+<rect class="n" x="790" y="94" width="140" height="32" rx="8" style="stroke-dasharray:4 3"/><text class="mu" x="798" y="115">external:decimal</text>
+<text class="mu" x="168" y="236">ast 0.6</text><text class="mu" x="168" y="300">ast 0.3</text><text class="mu" x="560" y="140">lsp 0.95</text><text class="mu" x="738" y="100">ast</text>
+</svg><div class="legend"><span class="lg"><i></i>lsp: resolved by the language server</span><span class="lg"><i class="ast"></i>ast: syntactic match</span><span class="lg"><i class="low"></i>below 0.4 confidence</span></div></div>
+<p class="sub">5 callers to depth 2 (one through a 0.3 edge, drawn dotted: the impact query cuts paths below 0.2 and flags those below 0.4) · 3 callees · the external callee is not resolved because dependencies are not installed (repo-index.md §3.5).</p>
+</main></div></div><figcaption>Variant A, the call graph view of the same canvas, always dark. Hovering an edge shows its evidence, confidence and call site (file:line).</figcaption></figure>
+<div class="idea"><div><h4>Idea</h4><p>A canvas the operator pans and zooms, clusters drawn as soft rectangles, the inspector beside it answering "what is this module, what does this symbol call, which tests reach it" without leaving the canvas.</p></div><div><h4>Pros</h4><ul><li>The picture people expect from "graph": coupling and hot-spots are visible at once.</li><li>One canvas for all three views; the chips switch it.</li><li>The inspector carries the exact numbers the canvas only suggests.</li></ul></div><div><h4>Risks</h4><ul><li>A force layout of 2,000 modules is a hairball: the built screen must start clustered and expand on click.</li><li>Positions move between index versions unless the layout is seeded by module path.</li><li>Weakest on a phone; the inspector alone is the mobile view.</li></ul></div></div>
+</div>
+
+<div class="variant" id="graph-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Hierarchical: a module tree, a dependency structure matrix, and the call graph as an indented tree</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"></div></div>
+<div class="tabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span>Settings</span></div>
+<div style="display:grid;grid-template-columns:220px minmax(0,1fr) 400px;gap:12px;align-items:start">
+<div class="card"><div class="ch"><b>Modules</b><span class="r"><span class="cnt">by package</span></span></div>
+<pre class="tree">src/
+  api/
+    routes/  <i>3</i>
+  <span class="on">core/       <i>3</i></span>
+    orders.py
+    pricing.py
+    money.py
+  db/        <i>2</i>
+  workers/   <i>2</i>
+tests/       <i>212</i></pre></div>
+<div class="card"><div class="ch"><b>Module dependency matrix</b><span class="r"><span class="chip">row uses column</span><span class="chip warn">1 cycle</span></span></div>
+<svg class="g" width="482" height="322" viewBox="0 0 482 322" role="img" aria-label="Dependency structure matrix of eight modules; a cycle between core/orders and db/models is marked"><text x="6" y="62">1 api/routes/orders</text><text class="mu" x="212" y="30">1</text><rect class="cell d1" x="201" y="41" width="32" height="32" rx="4"/><rect class="cell" x="235" y="41" width="32" height="32" rx="4"/><rect class="cell" x="269" y="41" width="32" height="32" rx="4"/><rect class="cell d3" x="303" y="41" width="32" height="32" rx="4"/><text x="315" y="62">3</text><rect class="cell" x="337" y="41" width="32" height="32" rx="4"/><rect class="cell" x="371" y="41" width="32" height="32" rx="4"/><rect class="cell" x="405" y="41" width="32" height="32" rx="4"/><rect class="cell" x="439" y="41" width="32" height="32" rx="4"/><text x="6" y="96">2 api/routes/users</text><text class="mu" x="246" y="30">2</text><rect class="cell" x="201" y="75" width="32" height="32" rx="4"/><rect class="cell d1" x="235" y="75" width="32" height="32" rx="4"/><rect class="cell" x="269" y="75" width="32" height="32" rx="4"/><rect class="cell" x="303" y="75" width="32" height="32" rx="4"/><rect class="cell" x="337" y="75" width="32" height="32" rx="4"/><rect class="cell" x="371" y="75" width="32" height="32" rx="4"/><rect class="cell d1" x="405" y="75" width="32" height="32" rx="4"/><text x="417" y="96">1</text><rect class="cell" x="439" y="75" width="32" height="32" rx="4"/><text x="6" y="130">3 api/routes/health</text><text class="mu" x="280" y="30">3</text><rect class="cell" x="201" y="109" width="32" height="32" rx="4"/><rect class="cell" x="235" y="109" width="32" height="32" rx="4"/><rect class="cell d1" x="269" y="109" width="32" height="32" rx="4"/><rect class="cell" x="303" y="109" width="32" height="32" rx="4"/><rect class="cell" x="337" y="109" width="32" height="32" rx="4"/><rect class="cell" x="371" y="109" width="32" height="32" rx="4"/><rect class="cell" x="405" y="109" width="32" height="32" rx="4"/><rect class="cell d1" x="439" y="109" width="32" height="32" rx="4"/><text x="451" y="130">1</text><text x="6" y="164">4 core/orders</text><text class="mu" x="314" y="30">4</text><rect class="cell" x="201" y="143" width="32" height="32" rx="4"/><rect class="cell" x="235" y="143" width="32" height="32" rx="4"/><rect class="cell" x="269" y="143" width="32" height="32" rx="4"/><rect class="cell d1" x="303" y="143" width="32" height="32" rx="4"/><rect class="cell d2" x="337" y="143" width="32" height="32" rx="4"/><text x="349" y="164">2</text><rect class="cell d2" x="371" y="143" width="32" height="32" rx="4"/><text x="383" y="164">2</text><rect class="cell cyc" x="405" y="143" width="32" height="32" rx="4"/><text x="417" y="164">2</text><rect class="cell" x="439" y="143" width="32" height="32" rx="4"/><text x="6" y="198">5 core/pricing</text><text class="mu" x="348" y="30">5</text><rect class="cell" x="201" y="177" width="32" height="32" rx="4"/><rect class="cell" x="235" y="177" width="32" height="32" rx="4"/><rect class="cell" x="269" y="177" width="32" height="32" rx="4"/><rect class="cell" x="303" y="177" width="32" height="32" rx="4"/><rect class="cell d1" x="337" y="177" width="32" height="32" rx="4"/><rect class="cell d1" x="371" y="177" width="32" height="32" rx="4"/><text x="383" y="198">1</text><rect class="cell" x="405" y="177" width="32" height="32" rx="4"/><rect class="cell" x="439" y="177" width="32" height="32" rx="4"/><text x="6" y="232">6 core/money</text><text class="mu" x="382" y="30">6</text><rect class="cell" x="201" y="211" width="32" height="32" rx="4"/><rect class="cell" x="235" y="211" width="32" height="32" rx="4"/><rect class="cell" x="269" y="211" width="32" height="32" rx="4"/><rect class="cell" x="303" y="211" width="32" height="32" rx="4"/><rect class="cell" x="337" y="211" width="32" height="32" rx="4"/><rect class="cell d1" x="371" y="211" width="32" height="32" rx="4"/><rect class="cell" x="405" y="211" width="32" height="32" rx="4"/><rect class="cell" x="439" y="211" width="32" height="32" rx="4"/><text x="6" y="266">7 db/models</text><text class="mu" x="416" y="30">7</text><rect class="cell" x="201" y="245" width="32" height="32" rx="4"/><rect class="cell" x="235" y="245" width="32" height="32" rx="4"/><rect class="cell" x="269" y="245" width="32" height="32" rx="4"/><rect class="cell cyc" x="303" y="245" width="32" height="32" rx="4"/><text x="315" y="266">1</text><rect class="cell" x="337" y="245" width="32" height="32" rx="4"/><rect class="cell" x="371" y="245" width="32" height="32" rx="4"/><rect class="cell d1" x="405" y="245" width="32" height="32" rx="4"/><rect class="cell d1" x="439" y="245" width="32" height="32" rx="4"/><text x="451" y="266">1</text><text x="6" y="300">8 db/session</text><text class="mu" x="450" y="30">8</text><rect class="cell" x="201" y="279" width="32" height="32" rx="4"/><rect class="cell" x="235" y="279" width="32" height="32" rx="4"/><rect class="cell" x="269" y="279" width="32" height="32" rx="4"/><rect class="cell" x="303" y="279" width="32" height="32" rx="4"/><rect class="cell" x="337" y="279" width="32" height="32" rx="4"/><rect class="cell" x="371" y="279" width="32" height="32" rx="4"/><rect class="cell" x="405" y="279" width="32" height="32" rx="4"/><rect class="cell d1" x="439" y="279" width="32" height="32" rx="4"/></svg>
+<p class="sub">Read a row: module 4 (<code>core/orders</code>) uses 5, 6 and 7. The red pair is a cycle: <code>core/orders</code> and <code>db/models</code> use each other. Numbers are resolved call edges; colour depth is their count.</p></div>
+<div class="card"><div class="ch"><b>Call graph · OrderService.total</b><span class="r"><span class="cnt">depth 2 · callers</span></span></div>
+<svg class="g" width="370" height="150" viewBox="0 0 370 150" role="img" aria-label="Layered call tree: callers of OrderService.total at depth 1 and 2">
+<path class="e lsp" d="M185 34 V52 H95 V70"/><path class="e lsp" d="M185 34 V52 H275 V70"/>
+<path class="e lsp" d="M95 92 V108 H45 V122"/><path class="e ast" d="M275 92 V108 H215 V122"/><path class="e low" d="M275 92 V108 H325 V122"/>
+<rect class="n sel" x="115" y="10" width="140" height="24" rx="7"/><text class="ac" x="125" y="27">OrderService.total</text>
+<rect class="n" x="40" y="70" width="110" height="22" rx="7"/><text x="46" y="86">checkout_total</text>
+<rect class="n" x="215" y="70" width="120" height="22" rx="7"/><text x="220" y="86">get_order_total</text>
+<text x="4" y="138">POST /checkout</text><text x="160" y="138">InvoiceJob.run</text><text x="290" y="138">admin_recalc</text>
+</svg>
+<div class="treerow"><code>OrderService.total</code><small>src/core/orders.py:88-131</small></div>
+<div class="treerow ind1"><span>← <code>checkout_total</code></span><span class="ev">lsp</span></div>
+<div class="treerow ind2"><span>← <code>POST /checkout</code></span><span class="ev">lsp</span></div>
+<div class="treerow ind1"><span>← <code>get_order_total</code></span><span class="ev">lsp</span></div>
+<div class="treerow ind2"><span>← <code>InvoiceJob.run</code></span><span class="ev ast">ast 0.6</span></div>
+<div class="treerow ind2"><span>← <code>admin_recalc</code></span><span class="ev low">ast 0.3</span></div>
+<div class="ch"><b>Test map</b><span class="r"><span class="cnt">symbol × test</span></span></div>
+<svg class="g" width="380" height="150" viewBox="0 0 380 150" role="img" aria-label="Test map matrix: four symbols by five tests"><text class="mu" x="170" y="18">t1</text><text class="mu" x="210" y="18">t2</text><text class="mu" x="250" y="18">t3</text><text class="mu" x="290" y="18">t4</text><text class="mu" x="330" y="18">t5</text><text x="4" y="44">OrderService.total</text><rect class="cell d2" x="164" y="28" width="26" height="22" rx="4"/><rect class="cell d2" x="204" y="28" width="26" height="22" rx="4"/><rect class="cell d2" x="244" y="28" width="26" height="22" rx="4"/><rect class="cell" x="284" y="28" width="26" height="22" rx="4"/><rect class="cell" x="324" y="28" width="26" height="22" rx="4"/><text x="4" y="74">checkout_total</text><rect class="cell" x="164" y="58" width="26" height="22" rx="4"/><rect class="cell d2" x="204" y="58" width="26" height="22" rx="4"/><rect class="cell" x="244" y="58" width="26" height="22" rx="4"/><rect class="cell d2" x="284" y="58" width="26" height="22" rx="4"/><rect class="cell" x="324" y="58" width="26" height="22" rx="4"/><text x="4" y="104">Money.round</text><rect class="cell d2" x="164" y="88" width="26" height="22" rx="4"/><rect class="cell d2" x="204" y="88" width="26" height="22" rx="4"/><rect class="cell" x="244" y="88" width="26" height="22" rx="4"/><rect class="cell" x="284" y="88" width="26" height="22" rx="4"/><rect class="cell d2" x="324" y="88" width="26" height="22" rx="4"/><text x="4" y="134">TaxTable.lookup</text><rect class="cell" x="164" y="118" width="26" height="22" rx="4"/><rect class="cell" x="204" y="118" width="26" height="22" rx="4"/><rect class="cell d2" x="244" y="118" width="26" height="22" rx="4"/><rect class="cell" x="284" y="118" width="26" height="22" rx="4"/><rect class="cell" x="324" y="118" width="26" height="22" rx="4"/></svg>
+<p class="sub">t1 <code>test_empty_cart_total</code> · t2 <code>test_checkout_rounds_half_even</code> · t3 <code>test_invoice_totals</code> · t4 <code>test_checkout_route</code> · t5 <code>test_money_round</code></p>
+</div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Structure rather than picture: a module tree, a dependency structure matrix that shows layering and cycles exactly, the call graph as an indented tree, and the test map as a symbol × test matrix.</p></div><div><h4>Pros</h4><ul><li>Scales: a matrix of 200 modules is still readable where a node-link drawing is not.</li><li>Cycles and layering violations are unmistakable.</li><li>Every cell is a number a test can assert.</li></ul></div><div><h4>Risks</h4><ul><li>Less inviting than a drawing; the matrix needs its one-line legend.</li><li>The call graph as a tree repeats a symbol reached by two paths.</li><li>Three panes need the full 1,280px.</li></ul></div></div>
+</div>
+
+<div class="variant" id="graph-c">
+<div class="vh"><span class="vn">Variant C</span><h3>List-first: symbols in a table, each with an inline mini call graph</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"></div></div>
+<div class="tabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span>Settings</span></div>
+<div class="phead"><span class="radio"><span>Modules</span><span class="on">Symbols</span><span>Tests</span></span><span class="inp" style="width:260px"><svg class="ic"><use href="#i-search"/></svg>Filter symbols in src/core</span><div class="r"><span class="chip">sort: most callers</span></div></div>
+<div class="card" style="padding:0"><table class="t"><thead><tr><th>Symbol</th><th>Lines</th><th>Callers</th><th>Callees</th><th>Tests reaching</th><th>Call graph</th></tr></thead><tbody><tr class="sel"><td><div class="rn"><b>OrderService.total</b><small>method</small></div></td><td class="mu">88-131</td><td>5</td><td>3</td><td>7</td><td><svg class="g" width="120" height="34" viewBox="0 0 120 34" aria-hidden="true"><line class="e lsp" x1="10" y1="6.0" x2="60" y2="17"/><line class="e lsp" x1="10" y1="17.0" x2="60" y2="17"/><line class="e ast" x1="10" y1="28.0" x2="60" y2="17"/><line class="e lsp" x1="60" y1="17" x2="110" y2="6.0"/><line class="e lsp" x1="60" y1="17" x2="110" y2="28.0"/><circle class="n sel" cx="60" cy="17" r="5"/></svg></td></tr><tr><td><div class="rn"><b>checkout_total</b><small>function</small></div></td><td class="mu">12-40</td><td>2</td><td>4</td><td>4</td><td><svg class="g" width="120" height="34" viewBox="0 0 120 34" aria-hidden="true"><line class="e lsp" x1="10" y1="6.0" x2="60" y2="17"/><line class="e lsp" x1="10" y1="28.0" x2="60" y2="17"/><line class="e lsp" x1="60" y1="17" x2="110" y2="6.0"/><line class="e lsp" x1="60" y1="17" x2="110" y2="17.0"/><line class="e lsp" x1="60" y1="17" x2="110" y2="28.0"/><circle class="n sel" cx="60" cy="17" r="5"/></svg></td></tr><tr><td><div class="rn"><b>get_order_total</b><small>route GET /orders/{id}/total</small></div></td><td class="mu">44-61</td><td>1</td><td>1</td><td>3</td><td><svg class="g" width="120" height="34" viewBox="0 0 120 34" aria-hidden="true"><line class="e lsp" x1="10" y1="6.0" x2="60" y2="17"/><line class="e lsp" x1="60" y1="17" x2="110" y2="6.0"/><circle class="n sel" cx="60" cy="17" r="5"/></svg></td></tr><tr><td><div class="rn"><b>Money.round</b><small>method</small></div></td><td class="mu">20-34</td><td>9</td><td>1</td><td>12</td><td><svg class="g" width="120" height="34" viewBox="0 0 120 34" aria-hidden="true"><line class="e lsp" x1="10" y1="6.0" x2="60" y2="17"/><line class="e lsp" x1="10" y1="13.333333333333332" x2="60" y2="17"/><line class="e lsp" x1="10" y1="20.666666666666664" x2="60" y2="17"/><line class="e lsp" x1="10" y1="28.0" x2="60" y2="17"/><line class="e lsp" x1="60" y1="17" x2="110" y2="6.0"/><circle class="n sel" cx="60" cy="17" r="5"/></svg></td></tr><tr><td><div class="rn"><b>admin_recalc</b><small>function</small></div></td><td class="mu">70-96</td><td>0</td><td>1</td><td><span class="dash" title="No test reaches this symbol through a resolved edge; the file-level naming edge points at tests/core/test_admin.py">—</span></td><td><svg class="g" width="120" height="34" viewBox="0 0 120 34" aria-hidden="true"><line class="e ast" x1="10" y1="6.0" x2="60" y2="17"/><line class="e lsp" x1="60" y1="17" x2="110" y2="6.0"/><circle class="n sel" cx="60" cy="17" r="5"/></svg></td></tr></tbody></table></div>
+<div class="card"><div class="ch"><b>OrderService.total</b><span class="r"><span class="cnt">depth</span><span class="btn sm">−</span><b>1</b><span class="btn sm">+</span><span class="btn sm">Open in canvas</span></span></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px"><svg class="g" width="560" height="150" viewBox="0 0 560 150" role="img" aria-label="Callers and callees of OrderService.total">
+<path class="e lsp" d="M130 30 C180 30 200 75 250 75"/><path class="e lsp" d="M130 75 L250 75"/><path class="e ast" d="M130 120 C180 120 200 75 250 75"/>
+<path class="e lsp" d="M330 75 C380 75 400 40 440 40"/><path class="e lsp" d="M330 75 C380 75 400 110 440 110"/>
+<text x="4" y="34">checkout_total</text><text x="4" y="79">get_order_total</text><text x="4" y="124">InvoiceJob.run</text>
+<rect class="n sel" x="250" y="60" width="80" height="30" rx="8"/><text class="ac" x="262" y="80">total</text>
+<text x="446" y="44">Money.round</text><text x="446" y="114">TaxTable.lookup</text><text class="mu" x="160" y="140">ast 0.6</text><text class="mu" x="370" y="70">lsp</text></svg>
+<div><b style="font-size:13px">Test map: 7 tests reach it</b>
+<div class="treerow"><code>test_empty_cart_total</code><small>depth 1 · lsp</small></div>
+<div class="treerow"><code>test_checkout_rounds_half_even</code><small>depth 2 · lsp</small></div>
+<div class="treerow"><code>test_invoice_totals</code><small>depth 3 · ast 0.6</small></div>
+<span class="more">4 more</span></div></div></div>
+<p class="sub">The Modules toggle lists modules the same way, with a module dependency mini-graph per row. <span class="exd">example data</span></p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The table the console already has, one row per symbol (or module, or test), with a tiny call graph in each row; the selected row opens a larger inline graph and its test map.</p></div><div><h4>Pros</h4><ul><li>Cheapest to build and to read; search and sort do the navigation.</li><li>Works on a phone as a list.</li><li>The exact numbers lead, the drawing supports.</li></ul></div><div><h4>Risks</h4><ul><li>No whole-repository picture: coupling between packages is not visible.</li><li>A 120px mini-graph is decoration past five edges.</li><li>The operator cannot pan to a neighbour; they search for it.</li></ul></div></div>
+</div>
+
+<h2 id="impact"><span class="n">9</span>Commit and pull-request impact</h2>
+<p>Owner decision (c): from a diff to the tests that must run. The chain is the impact query of <a href="../../repo-index.md">repo-index.md</a> §4.3a: diff → changed symbols → affected callers (bounded depth) → tests to run, each with the reason it was chosen and the evidence behind it. The same view serves a commit (Repositories › Impact) and a pull request (the run's PR card links here).</p>
+<div class="variant" id="impact-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Four columns: diff → changed symbols → callers → tests to run</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Runs › <b>example-org/example-api#142</b> › Impact</div>
+<div class="phead"><h3>Pull request #57 · Orders endpoint returns 500 on empty cart</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>index current · a1b2c3d</span><div class="r"><span class="radio"><span>Commit</span><span class="on">Pull request</span></span><span class="btn sm">Copy test list</span></div></div>
+<div class="meta"><span>base <b>main</b> 5c4b3a2</span><span>head <b>fix/empty-cart</b> e7f8a9b</span><span>depth <b>3</b></span><span>min confidence <b>0.2</b></span><span>policy <b>P3</b> · no fallback</span></div>
+<div class="flow">
+<div class="col"><h5><em>3</em> files in the diff</h5>
+<div class="it">src/core/orders.py <small>+18 −6 · 2 hunks</small></div>
+<div class="it">src/core/money.py <small>+4 −1 · 1 hunk</small></div>
+<div class="it">tests/core/test_orders.py <small>+22 · a test file, always run</small></div></div>
+<div class="col"><h5><em>4</em> changed symbols</h5>
+<div class="it">OrderService.total <small>lines 88-131 · modified</small></div>
+<div class="it">OrderService._apply_tax <small>lines 133-150 · modified</small></div>
+<div class="it">Money.round <small>lines 20-34 · modified</small></div>
+<div class="it">Money.half_even <small>added · not in index a1b2c3d, file level</small></div></div>
+<div class="col"><h5><em>17</em> affected callers</h5>
+<div class="it">checkout_total <small>depth 1 · lsp</small></div>
+<div class="it">POST /checkout <small>depth 2 · lsp</small></div>
+<div class="it">get_order_total · GET /orders/{id}/total <small>depth 1 · lsp</small></div>
+<div class="it">InvoiceJob.run <small>depth 2 · ast 0.6</small></div>
+<span class="more">13 more · depth 3 of max 6</span></div>
+<div class="col"><h5><em>12</em> tests to run <span class="cnt">of 1,480</span></h5>
+<div class="it">test_empty_cart_total <small>because it calls OrderService.total directly (lsp)</small></div>
+<div class="it">test_checkout_rounds_half_even <small>because it reaches Money.round via checkout_total, depth 2 (lsp, lsp)</small></div>
+<div class="it">test_invoice_totals <small>because it reaches OrderService.total via InvoiceJob.run (ast 0.6)</small></div>
+<div class="it">tests/core/test_money.py <small>because Money.half_even is unindexed: the file-level naming edge</small></div>
+<span class="more">8 more</span></div></div>
+<div class="banner"><b>1 path cut</b> admin_recalc → OrderService.total is an ast edge at 0.3; its path to any test falls below 0.2, so no test is chosen through it. Under P3 that alone is not a fallback: another test reaches the symbol at 0.9.<span class="btn sm">Show the cut</span></div>
+</main></div></div></figure>
+<figure class="fr" style="margin-top:20px"><div class="scroller"><div class="app fd"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › example-org/example-api › <b>Impact</b></div>
+<div class="phead"><h3>Commit 9d8c7b6 · Round tax per line, not per order</h3><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>index 3 behind head</span><div class="r"><span class="radio"><span class="on">Commit</span><span>Pull request</span></span></div></div>
+<div class="flow">
+<div class="col"><h5><em>2</em> files</h5><div class="it">src/core/pricing.py</div><div class="it">tests/conftest.py <small>shared fixture</small></div></div>
+<div class="col"><h5><em>2</em> changed symbols</h5><div class="it">TaxTable.lookup</div><div class="it">fixture: priced_cart <small>used by 214 tests</small></div></div>
+<div class="col"><h5><em>9</em> affected callers</h5><div class="it">OrderService._apply_tax <small>depth 1 · lsp</small></div><span class="more">8 more</span></div>
+<div class="col"><h5><em>1,480</em> tests to run</h5><div class="it">the full suite <small>because tests/conftest.py changed: a shared fixture is a fallback trigger, and the index is 3 commits behind head</small></div></div></div>
+</main></div></div><figcaption>Variant A for a commit, always dark: a shared-fixture change and a stale index are both fallback triggers, so the plan is the full suite and says why.</figcaption></figure>
+<div class="idea"><div><h4>Idea</h4><p>Four columns left to right, the chain the query walks, with a count at the top of each and the reason on every test.</p></div><div><h4>Pros</h4><ul><li>The count in each column is the whole story at a glance: 3 files, 4 symbols, 17 callers, 12 of 1,480 tests.</li><li>Commit and pull request are one screen with a toggle.</li><li>The cut path is stated, not hidden.</li></ul></div><div><h4>Risks</h4><ul><li>Columns truncate; the operator expands each to see all.</li><li>Which caller led to which test is in the reason text, not drawn.</li></ul></div></div>
+</div>
+
+<div class="variant" id="impact-b">
+<div class="vh"><span class="vn">Variant B</span><h3>A tree grouped by changed symbol, with the path to each test</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Runs › <b>example-org/example-api#142</b> › Impact</div>
+<div class="phead"><h3>Impact</h3><span class="radio"><span>Commit</span><span class="on">Pull request #57</span></span><div class="r"><span class="chip">depth 3</span><span class="chip">group by changed symbol</span></div></div>
+<div class="kv"><div><span class="l">Changed symbols</span><span class="v">4</span><span class="s">in 2 source files</span></div><div><span class="l">Affected callers</span><span class="v">17</span><span class="s">1 path cut below 0.2</span></div><div><span class="l">Tests to run</span><span class="v">12 <small>of 1,480</small></span><span class="s">0.8% of the suite</span></div><div><span class="l">Fallback triggers</span><span class="v">0</span><span class="s">policy P3 would select</span></div></div>
+<div class="card">
+<div class="treerow"><span><b>OrderService.total</b> <small>src/core/orders.py:88-131 · modified</small></span><span class="cnt">7 tests</span></div>
+<div class="treerow ind1"><span>caller <code>checkout_total</code> <span class="ev">lsp</span></span><small>depth 1</small></div>
+<div class="treerow ind2"><span>test <code>test_checkout_rounds_half_even</code></span><small>because it calls checkout_total, which calls total</small></div>
+<div class="treerow ind1"><span>caller <code>InvoiceJob.run</code> <span class="ev ast">ast 0.6</span></span><small>depth 2</small></div>
+<div class="treerow ind2"><span>test <code>test_invoice_totals</code></span><small>because it runs InvoiceJob.run · confidence 0.57</small></div>
+<div class="treerow ind1"><span>caller <code>admin_recalc</code> <span class="ev low">ast 0.3</span></span><small>cut: below 0.2 on every path</small></div>
+<div class="treerow"><span><b>Money.round</b> <small>src/core/money.py:20-34 · modified</small></span><span class="cnt">12 tests</span></div>
+<div class="treerow ind1"><span>test <code>test_money_round</code></span><small>because it calls Money.round directly (lsp)</small></div>
+<div class="treerow"><span><b>Money.half_even</b> <small>added · unindexed</small></span><span class="cnt">1 file</span></div>
+<div class="treerow ind1"><span>test file <code>tests/core/test_money.py</code></span><small>because of the naming edge; symbols added since the index are matched at file level</small></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>A tree grouped by changed symbol: under each, its callers and, under each caller, the tests chosen through it with their reasons; four summary figures on top.</p></div><div><h4>Pros</h4><ul><li>The path from a change to a test is drawn, not paraphrased.</li><li>A test chosen twice is visible as such.</li><li>Tall rather than wide: works on a narrow screen.</li></ul></div><div><h4>Risks</h4><ul><li>Long for a large change; it needs collapse-all.</li><li>The summary figures and the tree can disagree in a reader's head when a test is shared; the tree must say "also via".</li></ul></div></div>
+</div>
+
+<h2 id="gate"><span class="n">10</span>The selected-tests gate, one screen per merge policy</h2>
+<p>How the selection appears where a pull request is judged: the run page's PR card, the <code>swarmcloud/selected-tests</code> check run on GitHub, and the Claude Code side (<code>/sc:swarmcloud</code> in a terminal). <b>Each variant is one policy</b> of <a href="../../repo-index.md">repo-index.md</a> §4.4, so picking a screen picks the policy: P1 selected tests are the gate and the full suite is scheduled; P2 selected tests are a fast first gate and the full suite is still required; P3 selected tests gate unless a fallback trigger sends the change to the full suite. The merge step (#295, lane M1a) reads the check like any other required check. Under X2 (the repository's own GitHub Actions) the check shown here is <b>not</b> the dispatched job's own check run, which lands on the default branch commit; it is a check run the workflow's last step posts on the pull request's head sha through the Checks API (<code>checks: write</code>), so it carries GitHub Actions' <code>app_id</code> as the ruleset requires. A commit status could not stand in for it.</p>
+<div class="variant" id="gate-a">
+<div class="vh"><span class="vn">Variant A</span><h3>P1: selected tests are the merge gate; the full suite is scheduled</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Runs › <b>example-org/example-api#142</b></div>
+<div class="phead"><h3>example-org/example-api#142 · Orders endpoint returns 500 on empty cart</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ready to merge</span></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:12px;align-items:start"><div class="prcard"><div class="ch"><b>Pull request #57</b><span class="chip">fix/empty-cart → main</span><span class="r"><span class="chip ctx">policy P1</span><span class="btn sm">Impact</span></span></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Selected tests</span><span class="cnt">12 of 1,480 passed</span><small>the gate: chosen by the impact query at a1b2c3d, 4 changed symbols</small></div><div class="gate"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><span>Full suite</span><span class="cnt">scheduled</span><small>not required before merge: runs nightly at 02:00 and on main after the merge; a failure opens an issue</small></div><div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Required checks</span><span class="cnt">lint · typecheck · build</span><small>the repository's own, unchanged</small></div><p class="sub">Green: the merge step may merge. Ruleset: <code>swarmcloud/selected-tests</code> required, full-suite jobs not required.</p></div><div style="display:flex;flex-direction:column;gap:10px"><div class="ghcheck"><div class="hd"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>swarmcloud/selected-tests</b><span class="cnt">success</span></div><div class="bd"><span><b>12 of 1,480 selected · policy P1 · no fallback</b></span><span>test_empty_cart_total: calls OrderService.total (changed), lsp</span><span>test_checkout_rounds_half_even: reaches Money.round via checkout_total, depth 2</span><span>… 9 more, each with its reason</span><span>Full suite: not part of this gate; the last nightly run on main passed.</span><span>Posted on the pull request's head sha by the dispatched workflow's Checks API step (X2), attributed to GitHub Actions</span></div></div><pre class="term"><b>/sc:swarmcloud</b> run example-org/example-api#142
+  pr #57  fix/empty-cart → main          <i>green</i>
+  selected tests   <i>12 of 1,480 passed</i>   policy P1
+  full suite       <s>scheduled · nightly 02:00, and on main after merge</s>
+  merge            <i>ready</i> · the merge step may merge</pre></div></div>
+<div class="card"><div class="ch"><b>When the scheduled full suite fails on main</b></div><div class="used"><div><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg></span><span>nightly full suite at 7a6b5c4 · 2 failed · issue <b>example-org/example-api#151</b> opened, naming the 3 pull requests merged since the last green run and the plans that left the failing tests out</span><small>06:12</small></div></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Policy P1: the selected tests are the gate. The card says plainly that the full suite is not part of it and when it runs instead.</p></div><div><h4>Pros</h4><ul><li>Fastest merge; CI time scales with the change.</li><li>The scheduled full run closes the loop with an issue, not silence.</li></ul></div><div><h4>Risks</h4><ul><li>A selection miss lands on main and is found hours later.</li><li>The ruleset must drop the full-suite checks from required, a change in each repository.</li></ul></div></div>
+</div>
+
+<div class="variant" id="gate-b">
+<div class="vh"><span class="vn">Variant B</span><h3>P2: selected tests as a fast first gate; the full suite is still required</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Runs › <b>example-org/example-api#142</b></div>
+<div class="phead"><h3>example-org/example-api#142 · Orders endpoint returns 500 on empty cart</h3><span class="sp neu"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>checks running</span></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:12px;align-items:start"><div class="prcard"><div class="ch"><b>Pull request #57</b><span class="chip">fix/empty-cart → main</span><span class="r"><span class="chip ctx">policy P2</span><span class="btn sm">Impact</span></span></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Selected tests</span><span class="cnt">12 of 1,480 passed</span><small>fast gate, 3 min: a failure here would have stopped the pull request early</small></div><div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><span>Full suite</span><span class="cnt">required · running 14 of 22 min</span><small>required before merge, as today</small></div><div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Required checks</span><span class="cnt">lint · typecheck · build</span><small></small></div><p class="sub">Not green yet: the full suite is required. Ruleset: both <code>swarmcloud/selected-tests</code> and the full-suite jobs required.</p></div><div style="display:flex;flex-direction:column;gap:10px"><div class="ghcheck"><div class="hd"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>swarmcloud/selected-tests</b><span class="cnt">success</span></div><div class="bd"><span><b>12 of 1,480 selected · policy P2 · fast gate</b></span><span>Passed in 3 min. The full suite is still required before merge.</span><span>… each test with its reason</span><span>Posted on the pull request's head sha by the dispatched workflow's Checks API step (X2), attributed to GitHub Actions</span></div></div><pre class="term"><b>/sc:swarmcloud</b> run example-org/example-api#142
+  pr #57  fix/empty-cart → main          <u>pending</u>
+  selected tests   <i>12 of 1,480 passed</i> in 3m   policy P2
+  full suite       <u>required · running 14/22 min</u>
+  merge            <s>waiting for the full suite</s></pre></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Policy P2: the selected tests report first, the full suite is still required. The card shows both, and that merge waits for the second.</p></div><div><h4>Pros</h4><ul><li>Nothing about what green means changes; only red arrives sooner.</li><li>No ruleset change beyond adding the new check.</li></ul></div><div><h4>Risks</h4><ul><li>Saves no CI time on a green pull request.</li><li>Two rows that both say "tests" need their labels to stay distinct.</li></ul></div></div>
+</div>
+
+<div class="variant" id="gate-c">
+<div class="vh"><span class="vn">Variant C</span><h3>P3: selected tests gate, with a full-suite fallback and its reason</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Runs › <b>example-org/example-api#142</b></div>
+<div class="phead"><h3>example-org/example-api#142 · Orders endpoint returns 500 on empty cart</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ready to merge</span></div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 380px;gap:12px;align-items:start"><div class="prcard"><div class="ch"><b>Pull request #57</b><span class="chip">fix/empty-cart → main</span><span class="r"><span class="chip ctx">policy P3</span><span class="btn sm">Impact</span></span></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Selected tests</span><span class="cnt">12 of 1,480 passed</span><small>no fallback trigger: every changed symbol is reached by a test at 0.9 or above</small></div><div class="gate"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><span>Full suite</span><span class="cnt">not required for this change</span><small>nightly on main still runs</small></div><div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Required checks</span><span class="cnt">lint · typecheck · build</span><small></small></div><p class="sub">Green: the merge step may merge.</p></div><div class="prcard"><div class="ch"><b>Pull request #57</b><span class="chip">fix/empty-cart → main</span><span class="r"><span class="chip ctx">policy P3</span><span class="btn sm">Impact</span></span></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><span>Selected tests → full suite</span><span class="cnt">fallback · 1,480 tests · running 9 of 22 min</span><small>fallback reason: tests/conftest.py changed (a shared fixture used by 214 tests)</small></div><div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>Required checks</span><span class="cnt">lint · typecheck · build</span><small></small></div><p class="sub">Not green yet: this change fell back to the full suite, and <code>swarmcloud/selected-tests</code> reports it.</p></div><div style="display:flex;flex-direction:column;gap:10px"><div class="ghcheck"><div class="hd"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><b>swarmcloud/selected-tests</b><span class="cnt">in progress</span></div><div class="bd"><span><b>Full suite · policy P3 · fallback</b></span><span>Fallback reason: tests/conftest.py changed (shared fixture).</span><span>Other triggers that would also fall back: build or test config, an unsupported or failing language, a symbol reached only through edges below 0.4, an unindexed symbol, a stale index.</span><span>Posted on the pull request's head sha by the dispatched workflow's Checks API step (X2), attributed to GitHub Actions</span></div></div><pre class="term"><b>/sc:swarmcloud</b> run example-org/example-api#142
+  pr #57  fix/empty-cart → main          <i>green</i>
+  selected tests   <i>12 of 1,480 passed</i>   policy P3 · no fallback
+<b>/sc:swarmcloud</b> run example-org/example-api#160
+  pr #61  fixture/priced-cart → main     <u>pending</u>
+  selected tests   <u>fallback: full suite</u> · tests/conftest.py changed
+  full suite       <u>running 9/22 min</u></pre></div></div>
+<p class="sub">Two pull requests side by side: #57 selected, #61 fell back. <span class="exd">example data</span></p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Policy P3: the selected tests gate, except where the graph cannot vouch for the selection; then the same check runs the full suite and names the trigger.</p></div><div><h4>Pros</h4><ul><li>P1's speed for most pull requests, P2's certainty where it matters.</li><li>Every fallback is explained in the check's summary and in the terminal.</li></ul></div><div><h4>Risks</h4><ul><li>The trigger list must be kept honest, or fallback becomes rare by drift.</li><li>Operators may be surprised when a one-line fixture change runs everything; the reason line is what answers them.</li></ul></div></div>
+</div>
+
+<h2 id="settings"><span class="n">11</span>Repository Settings: languages, graph, selection policy, and the token that resolves</h2>
+<p>Additions to the repository's Settings tab (RI0's Detail A keeps its schedule settings). Per language, the grammar and the language server and whether it worked; how deep the graph walks; the selection policy, inherited from the tenant or overridden here; and the git token that resolves for this repository with its capability row (<a href="../../git-tokens.md">git-tokens.md</a> §3, §5).</p>
+<div class="variant" id="settings-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Cards: languages, graph, selection policy, resolved token</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"></div></div>
+<div class="tabs"><span>Overview</span><span>Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span class="on">Settings</span></div>
+<div class="cols">
+<div class="card"><div class="ch"><b>Languages detected</b><span class="r"><span class="btn sm">Re-run LSP pass</span></span></div>
+<div class="lang" style="color:var(--f-mu);font-size:12px"><span>language</span><span>grammar</span><span>language server</span><span>last index</span><span>status</span></div>
+<div class="lang"><b>Python</b><span><code>tree-sitter-python</code></span><span><code>pyright</code></span><small>1,412 files · 91% of call sites resolved</small><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>ok</span></span></div><div class="lang"><b>TypeScript</b><span><code>tree-sitter-typescript</code></span><span><code>tsserver</code></span><small>388 files · 84% resolved</small><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>ok</span></span></div><div class="lang"><b>Go</b><span><code>tree-sitter-go</code></span><span><code>gopls</code></span><small>timed out after 30 min at index a1b2c3d; edges are ast only</small><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg><span>failing</span></span></div><div class="lang"><b>HCL</b><span><code>tree-sitter-hcl</code></span><span><code>terraform-ls</code></span><small>61 files · references only, no call hierarchy</small><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>ok</span></span></div><div class="lang"><b>Ruby</b><span><code>tree-sitter-ruby</code></span><span><span class="dash" title="No language server is supported for this language in phase 1">—</span></span><small>no language server: symbols and ast edges only</small><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>unsupported</span></span></div><div class="lang"><b>Shell</b><span><span class="dash" title="No tree-sitter grammar is bundled for this language">—</span></span><span><span class="dash" title="No language server is supported for this language in phase 1">—</span></span><small>no grammar: file level only (naming, co-change)</small><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>unsupported</span></span></div></div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<div class="card"><div class="ch"><b>Graph</b></div>
+<div class="fgrid"><span class="fl">Graph depth<small>callers walked by impact</small></span><div class="slider"><span class="tr"><i style="width:40%"></i><b style="left:36%"></b></span><b>3</b><span class="cnt">1-6</span></div>
+<span class="fl">Minimum confidence<small>paths below are cut</small></span><div class="slider"><span class="tr"><i style="width:20%"></i><b style="left:16%"></b></span><b>0.2</b></div></div></div>
+<div class="card"><div class="ch"><b>Selection policy</b><span class="r"><span class="chip">tenant default: P2</span></span></div>
+<div class="radio"><span>Inherit (P2)</span><span>P1 selected gate</span><span>P2 fast gate</span><span class="on">P3 gate with fallback</span><span>Off</span></div>
+<div class="radio"><span class="on">X2 run in this repository's GitHub Actions</span><span>X1 run in SwarmCloud</span></div>
+<p class="hint">Ruleset this policy expects on <code>main</code>: <code>swarmcloud/selected-tests</code> required; full-suite jobs not required. The repository's ruleset today: full suite required — <b>mismatch</b>, so this behaves as P2 until it is changed.</p></div>
+<div class="card"><div class="ch"><b>Resolved token</b><span class="r"><span class="btn sm">Git tokens</span></span></div>
+<div class="meta"><span><b>repository token</b> example-api-bot</span><span>fine-grained PAT ··· 7f3a</span><span>expires in <b>41 days</b></span><span>last verified 3 h ago</span></div>
+<div class="meta"><span>order R2: repo &gt; tenant</span><span>your user token is used only to open the pull request</span></div>
+<div style="display:flex;flex-wrap:wrap;gap:6px"><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Clone</span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Push branches</span> <span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>Open PRs</span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Read checks</span> <span class="cap missing" title="The branch rules restrict merges on main to the merge App"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>Merge</span> <span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>Close issues</span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Read issues</span> <span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>workflow_dispatch</span></div></div>
+</div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Four cards on the Settings tab: what the indexer could read per language and with what, the graph's depth and cut-off, the selection policy with the ruleset it expects, and the token that resolves here with its capabilities.</p></div><div><h4>Pros</h4><ul><li>Every "why is the graph thin for Go" question is answered by one row.</li><li>The ruleset mismatch is stated where the policy is chosen.</li><li>The resolved token is visible exactly where repository access is configured.</li></ul></div><div><h4>Risks</h4><ul><li>Four cards make a long tab; the language card can fold once all are ok.</li><li>The policy card describes a ruleset it cannot change itself.</li></ul></div></div>
+</div>
+
+<div class="variant" id="settings-b">
+<div class="vh"><span class="vn">Variant B</span><h3>One form: languages as chips, the token's capability row as a one-row matrix</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fd"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>example-org/example-api</b></div>
+<div class="phead"><h3>example-org/example-api</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · a1b2c3d</span><div class="r"></div></div>
+<div class="tabs"><span>Overview</span><span>Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span class="on">Settings</span></div>
+<div class="card"><div class="fgrid">
+<span class="fl">Languages<small>from the last index, a1b2c3d</small></span>
+<div style="display:flex;flex-wrap:wrap;gap:6px"><span class="chip">Python · pyright <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span></span><span class="chip">TypeScript · tsserver <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span></span><span class="chip warn">Go · gopls failing</span><span class="chip">HCL · terraform-ls <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span></span><span class="chip warn">Ruby · unsupported</span><span class="chip warn">Shell · unsupported</span></div>
+<span class="fl">Graph depth</span><div class="radio"><span>1</span><span>2</span><span class="on">3</span><span>4</span><span>5</span><span>6</span></div>
+<span class="fl">Selection policy<small>this repository</small></span><div><div class="radio"><span class="on">Inherit tenant default (P2)</span><span>P1</span><span>P2</span><span>P3</span><span>Off</span></div><p class="hint">The policies are described on the gate screens (section 10) and in repo-index.md §4.4.</p></div>
+<span class="fl">Run selected tests</span><div class="radio"><span class="on">In GitHub Actions (X2)</span><span>In SwarmCloud (X1)</span></div>
+<span class="fl">Resolved token<small>for you, under order R1</small></span><div><div class="meta"><span><b>your user token</b> operator-gh</span><span>classic PAT ··· 19c2</span><span>expires in <span class="dash" title="A classic PAT may have no expiry; GitHub did not send an expiration header for this one">—</span></span><span>last verified 5 h ago</span></div>
+<table class="mx" style="margin-top:6px"><thead><tr><th>Clone</th><th>Push branches</th><th>Open PRs</th><th>Read checks</th><th>Merge</th><th>Close issues</th><th>Read issues</th><th>workflow_dispatch</th></tr></thead><tbody><tr><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap missing" title="The branch rules restrict merges on main to the merge App"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td></tr></tbody></table></div>
+</div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>One form, the brief's four additions as rows, the token's capabilities as a one-row matrix under it.</p></div><div><h4>Pros</h4><ul><li>Compact; matches the picked task form.</li><li>The capability row reads exactly as a row of the permission matrix (section 13).</li></ul></div><div><h4>Risks</h4><ul><li>Language detail is squeezed into chips; the failure reason is a tooltip.</li><li>No room for the ruleset-mismatch warning beside the policy.</li></ul></div></div>
+</div>
+
+<h2 id="tokens"><span class="n">12</span>Git tokens</h2>
+<p>Owner request (d), 2026-10-04: different git tokens per repository and per user or tenant, and what each can do. The list by scope — tenant default, repository, user — with the account each acts as, its forge, expiry, when it was last verified and the repositories it covers; and registering or rotating one. A token's value is never displayed: at most its last 4 characters, recorded once. Design: <a href="../../git-tokens.md">git-tokens.md</a>. Whether the console may accept a value at all is the owner's decision (§4.2): variant A draws the paste box, variant B the command-line path that keeps today's rule to the letter.</p>
+<div class="variant" id="tokens-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A table grouped by scope, with a register drawer that takes the value once</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>Git tokens</b></div>
+<div class="phead"><h3>Git tokens</h3><span class="cnt">5 · tenant eng</span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register token</span></div></div>
+<p class="sub">Resolution order for this tenant: <b>R2</b>, repository token, else the tenant default; a user token only opens pull requests. Tokens are re-verified daily, on rotation and after a forge refusal.</p>
+<div class="card" style="padding:0"><table class="t"><thead><tr><th>Token</th><th>Acts as</th><th>Forge</th><th>Expires</th><th>Last verified</th><th>Repos covered</th><th style="text-align:right">Actions</th></tr></thead><tbody>
+<tr class="grp"><td colspan="7">Tenant default · 1</td></tr>
+<tr><td><div class="rn"><b>swarm-tenant-eng-git</b><small>fine-grained PAT ··· a41c</small></div></td><td>eng-swarm-bot</td><td class="mu">github</td><td><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>in 9 days</span></span></td><td class="mu">2 h ago</td><td>all 3 not covered below</td><td style="text-align:right"><span class="btn sm">Rotate</span> <span class="btn sm ghost">Verify now</span></td></tr>
+<tr class="grp"><td colspan="7">Repository · 2</td></tr>
+<tr><td><div class="rn"><b>example-org/example-api</b><small>fine-grained PAT ··· 7f3a</small></div></td><td>example-api-bot</td><td class="mu">github</td><td>in 41 days</td><td class="mu">3 h ago</td><td>example-org/example-api</td><td style="text-align:right"><span class="btn sm">Rotate</span> <span class="btn sm ghost">Verify now</span></td></tr>
+<tr><td><div class="rn"><b>example-org/example-infra</b><small>GitHub App installation</small></div></td><td>example-infra-app</td><td class="mu">github</td><td><span class="mu">minted per use, 1 h</span></td><td class="mu">3 h ago</td><td>example-org/example-infra</td><td style="text-align:right"><span class="btn sm">Rotate</span> <span class="btn sm ghost">Verify now</span></td></tr>
+<tr class="grp"><td colspan="7">User · 2</td></tr>
+<tr><td><div class="rn"><b>Operator</b><small>classic PAT ··· 19c2</small></div></td><td>operator-gh</td><td class="mu">github</td><td><span class="dash" title="GitHub sent no expiration header: this classic PAT has no expiry, which is itself a warning">—</span></td><td class="mu">5 h ago</td><td>all repositories, for Operator's own dispatches</td><td style="text-align:right"><span class="btn sm">Rotate</span> <span class="btn sm ghost">Verify now</span></td></tr>
+<tr><td><div class="rn"><b>dev@swarm.example.com</b><small>fine-grained PAT ··· 0b8e</small></div></td><td>dev-gh</td><td class="mu">github</td><td><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg><span>expired 2 days ago</span></span></td><td class="mu">2 days ago · failed</td><td>example-org/example-web</td><td style="text-align:right"><span class="btn sm">Rotate</span> <span class="btn sm ghost">Verify now</span></td></tr>
+</tbody></table></div><div class="scrim"></div><div class="drawer"><div class="ch"><b style="font-size:16px">Register token</b><span class="r"><span class="btn ghost sm">Close</span></span></div>
+<div class="fl">Scope</div><div class="radio"><span>Tenant default</span><span class="on">Repository</span><span>User (me)</span></div>
+<div class="fl">Repository</div><span class="inp val">example-org/example-web ▾</span>
+<div class="fl">Token</div><div class="paste" aria-label="Paste the new token; it is sent once and not shown again"><svg class="ic"><use href="#i-lock"/></svg>••••••••••••••••••••</div>
+<p class="hint">Sent to the server once, written to Secret Manager as <code>swarm-tenant-eng-git-r-&lt;hex&gt;</code>, and never shown again — not here, not in a tooltip, not in a copy button. Only the last 4 characters are kept, so you can tell tokens apart.</p>
+<p class="hint">On save SwarmCloud checks what the token can do in example-org/example-web (section 13) and shows the result here; it never echoes the token.</p>
+<div style="display:flex;gap:8px;margin-top:auto"><span class="btn pri">Register and verify</span><span class="btn">Cancel</span></div></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The Agents-style table, grouped by scope, with the register drawer open: the paste box masks the value, says it goes to the server once, and keeps only the last 4.</p></div><div><h4>Pros</h4><ul><li>Every column the owner named on one screen.</li><li>Expiry in the brand warning and failure colours.</li><li>Rotate and Verify now on every row.</li></ul></div><div><h4>Risks</h4><ul><li>The paste box is a new path for a forge token; the owner decides it (git-tokens.md §4.2).</li><li>A tenant with many users makes the User group long; it needs filtering.</li></ul></div></div>
+</div>
+
+<div class="variant" id="tokens-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Cards by scope, and registration handed to the command line</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fd"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › <b>Git tokens</b></div>
+<div class="phead"><h3>Git tokens</h3><span class="radio"><span class="on">All</span><span>Tenant</span><span>Repository</span><span>User</span></span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Register token</span></div></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+<div class="card"><div class="ch"><span class="chip">Tenant</span><b>eng default</b><span class="r"><span class="btn sm">Rotate</span></span></div>
+<div class="meta"><span>acts as <b>eng-swarm-bot</b></span><span>github</span><span>fine-grained PAT ··· a41c</span></div>
+<div class="meta"><span>Expires <b>in 9 days</b></span><span>Last verified <b>2 h ago</b></span></div>
+<div class="meta"><span>Repos covered: every repository not covered below</span></div></div>
+<div class="card"><div class="ch"><span class="chip">Repository</span><b>example-org/example-api</b><span class="r"><span class="btn sm">Rotate</span></span></div>
+<div class="meta"><span>acts as <b>example-api-bot</b></span><span>github</span><span>fine-grained PAT ··· 7f3a</span></div>
+<div class="meta"><span>Expires <b>in 41 days</b></span><span>Last verified <b>3 h ago</b></span></div>
+<div class="meta"><span>Repos covered: example-org/example-api</span></div></div>
+<div class="card"><div class="ch"><span class="chip">User</span><b>Operator</b><span class="r"><span class="btn sm">Rotate</span></span></div>
+<div class="meta"><span>acts as <b>operator-gh</b></span><span>github</span><span>classic PAT ··· 19c2</span></div>
+<div class="meta"><span>Expires <b><span class="dash" title="No expiration header: this classic PAT does not expire">—</span></b></span><span>Last verified <b>5 h ago</b></span></div>
+<div class="meta"><span>Repos covered: Operator's own dispatches</span></div></div>
+</div>
+<div class="card"><div class="ch"><b>Register token: from your terminal</b><span class="r"><span class="chip">value never enters the console</span></span></div>
+<p class="sub">1. Choose the slot. The console creates the record and shows the secret's name; the name is not a credential.</p>
+<div class="radio"><span>Tenant</span><span class="on">Repository: example-org/example-web</span><span>User (me)</span></div>
+<div class="phead"><code>swarm-tenant-eng-git-r-3f9a2c1d8e7b6a50</code><span class="btn sm" aria-label="Copy secret name">Copy secret name</span></div>
+<p class="sub">2. Store the value the way every forge token is stored today, from stdin:</p>
+<pre class="term"><s>$</s> scripts/create-secrets.sh --tenant eng --provider git-r-3f9a2c1d8e7b6a50 --stdin</pre>
+<p class="sub">3. SwarmCloud sees the new version, records the last 4 characters, checks the token's permissions and shows them here. The value is never shown again, and never was: it went from your terminal to Secret Manager.</p>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Cards per token, filterable by scope, and registration as a three-step handoff to the command line, so the value never crosses the console or swarm-api.</p></div><div><h4>Pros</h4><ul><li>Keeps the owner rule of 2026-09-25 exactly: stored only with create-secrets.sh --stdin.</li><li>No new path for a secret to leak through.</li><li>Cards read well on a phone.</li></ul></div><div><h4>Risks</h4><ul><li>Registration needs a terminal and gcloud access; a user without them asks an admin.</li><li>Cards scale worse than a table past a dozen tokens.</li></ul></div></div>
+</div>
+
+<h2 id="perms"><span class="n">13</span>Permission matrix: what each token can do in each repository</h2>
+<p>Computed server-side from the forge — the repository's <code>permissions</code>, an App token's granted permissions, a classic PAT's <code>X-OAuth-Scopes</code>, the expiry header — and served as <b>ok</b>, <b>missing</b> or <b>unknown</b> with a reason, never as the token (<a href="../../git-tokens.md">git-tokens.md</a> §5). Hover any cell for its reason; an unknown is grey, not green.</p>
+<div class="variant" id="perms-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A matrix grid: tokens × repositories, one cell per capability</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › Git tokens › <b>Permissions</b></div>
+<div class="phead"><h3>Permissions</h3><span class="cnt">4 tokens × 3 repositories</span><div class="r"><span class="chip">order R2</span><span class="btn sm">Verify all</span></div></div>
+<div class="card" style="padding:0;overflow:auto"><table class="mx"><thead><tr><th class="l">Token</th><th>Clone</th><th>Push branches</th><th>Open PRs</th><th>Read checks</th><th>Merge</th><th>Close issues</th><th>Read issues</th><th>workflow_dispatch</th><th class="l">Expires in</th><th class="l">Last verified</th></tr></thead><tbody><tr class="grp"><td colspan="11">example-org/example-api</td></tr><tr><td class="l">example-api-bot · repository <span class="chip ctx">resolves</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap missing" title="The branch rules on main allow merges only by the merge App"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td class="l">41 d</td><td class="l mu">3 h ago</td></tr><tr><td class="l">eng-swarm-bot · tenant</td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap missing" title="Push service advertisement refused: the token has read-only contents"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap missing" title="No push, so no merge"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td class="l"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>9 d</span></span></td><td class="l mu">3 h ago</td></tr><tr class="grp"><td colspan="11">example-org/example-web</td></tr><tr><td class="l">dev-gh · user (expired)</td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap missing" title="Expired 2 days ago: GitHub answers 401"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td class="l"><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg><span>expired</span></span></td><td class="l mu">3 h ago</td></tr><tr><td class="l">eng-swarm-bot · tenant <span class="chip ctx">resolves</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap unknown" title="Fine-grained grants are not readable from the API; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td class="l"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>9 d</span></span></td><td class="l mu">3 h ago</td></tr><tr class="grp"><td colspan="11">example-org/example-infra</td></tr><tr><td class="l">example-infra-app · repository <span class="chip ctx">resolves</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap missing" title="Issues are disabled on this repository (410)"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap ok" title="Measured by a read the token was allowed to make"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td class="l">1 h, per use</td><td class="l mu">3 h ago</td></tr></tbody></table></div>
+<p class="sub"><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span> measured · <span class="cap missing"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span> refused, with the reason · <span class="cap unknown"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span> not readable without trying (fine-grained grants), never shown as ok. "resolves" marks the token a task in that repository would use.</p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Every token × repository × capability in one grid, grouped by repository, the resolving token marked.</p></div><div><h4>Pros</h4><ul><li>The whole tenant's access in one screen; a missing cell is impossible to miss.</li><li>Each cell's reason is a hover away.</li><li>The same row appears on a repository's Settings (section 11).</li></ul></div><div><h4>Risks</h4><ul><li>Eleven columns need the full width; on a phone it becomes perms-b's cards.</li><li>Rows for tokens that never resolve add noise; a "resolving only" filter is needed.</li></ul></div></div>
+</div>
+
+<div class="variant" id="perms-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Per-repository cards: which token each action would use, and what it lacks</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fd"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › Git tokens › <b>Permissions by repository</b></div>
+<div class="phead"><h3>Permissions by repository</h3><div class="r"><span class="radio"><span class="on">order R2</span><span>order R1</span></span></div></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start">
+<div class="card"><div class="ch"><b>example-org/example-api</b></div>
+<div class="treerow"><span><b>Clone</b> <small>with example-api-bot</small></span><span class="cap ok" title="GET /repos answered 200"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Push branches</b> <small>with example-api-bot</small></span><span class="cap ok" title="Push advertisement accepted"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Open PRs</b> <small>with your user token</small></span><span class="cap unknown" title="Fine-grained grants are not readable; the role allows it"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></div>
+<div class="treerow"><span><b>Read checks</b> <small>with example-api-bot</small></span><span class="cap ok" title="check-runs answered 200"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Merge</b> <small>with merge App</small></span><span class="cap ok" title="The merge step uses the merge App, not this token"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Close issues</b> <small>with example-api-bot</small></span><span class="cap unknown" title="Fine-grained grants are not readable"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></div>
+<div class="treerow"><span><b>Read issues</b> <small>with example-api-bot</small></span><span class="cap ok" title="issues answered 200"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>workflow_dispatch</b> <small>with example-api-bot</small></span><span class="cap unknown" title="actions: write is not readable for a fine-grained PAT"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></div>
+<p class="hint">Lacks nothing measured; 3 unknown.</p></div>
+<div class="card"><div class="ch"><b>example-org/example-web</b><span class="r"><span class="chip warn">1 missing</span></span></div>
+<div class="treerow"><span><b>Clone</b> <small>with eng default</small></span><span class="cap ok" title="200"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Push branches</b> <small>with eng default</small></span><span class="cap ok" title="Push advertisement accepted"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Open PRs</b> <small>with dev-gh (expired) → eng default</small></span><span class="cap unknown" title="The user token expired; the tenant default is used"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></div>
+<div class="treerow"><span><b>Merge</b> <small>with eng default</small></span><span class="cap missing" title="No merge App is registered and the branch rules restrict merges"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></div>
+<p class="hint">Lacks: merge. A run that ends in a merge step parks CREDENTIAL_MISSING here.</p></div>
+<div class="card"><div class="ch"><b>example-org/example-infra</b></div>
+<div class="treerow"><span><b>Clone</b> <small>with example-infra-app</small></span><span class="cap ok" title="Installation token minted with contents: read"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<div class="treerow"><span><b>Read issues</b> <small>with example-infra-app</small></span><span class="cap missing" title="Issues are disabled on this repository (410)"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></div>
+<div class="treerow"><span><b>workflow_dispatch</b> <small>with example-infra-app</small></span><span class="cap ok" title="actions: write granted"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></div>
+<p class="hint">Lacks: read issues, so issue runs cannot start here. Expires: <span class="dash" title="An App installation token is minted per use and lasts one hour; the App key has no expiry">—</span></p></div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>One card per repository, one line per action SwarmCloud takes there, naming the token that would be used for it under the tenant's resolution order and what it lacks.</p></div><div><h4>Pros</h4><ul><li>Answers the operator's real question: "what will happen in this repository".</li><li>Shows the resolution order at work, including a user token falling through to the tenant default.</li></ul></div><div><h4>Risks</h4><ul><li>The tenant-wide picture is spread across cards.</li><li>Toggling R1/R2 here previews an order; it must not look like it sets it.</li></ul></div></div>
+</div>
+
+<div class="variant" id="perms-c">
+<div class="vh"><span class="vn">Variant C</span><h3>A checker: "can SwarmCloud do X in repo Y?"</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Repositories"></div><main class="ct">
+<div class="crumb">Work › Repositories › Git tokens › <b>Check access</b></div>
+<div class="phead"><h3>Can SwarmCloud…</h3></div>
+<div class="card"><div class="ask">Can SwarmCloud <span class="inp val">merge ▾</span> in <span class="inp val">example-org/example-web ▾</span> for <span class="inp val">Operator ▾</span> ?<span class="btn pri">Check</span></div></div>
+<div class="answer"><div class="ch"><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg></span><b style="font-size:15px">No: merge is missing</b><span class="r"><span class="cnt">verified 3 h ago</span><span class="btn sm">Verify now</span></span></div>
+<div class="meta col"><span>Token that would be used: <b>eng default</b> (tenant), because Operator's user token does not cover example-org/example-web and the repository has none (order R2).</span>
+<span>Why: the branch rules on <code>main</code> restrict merges, and no merge App is registered for this tenant.</span>
+<span>What fixes it: register the merge App (<code>swarm-tenant-eng-git-merge</code>), or a repository token whose actor may merge.</span></div></div>
+<div class="answer yes"><div class="ch"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b style="font-size:15px">Yes: push branches is ok in example-org/example-web</b></div><p class="sub">Same token; measured by the push service advertisement.</p></div>
+<div class="answer" style="border-color:var(--f-ln);border-left-color:var(--s-neu)"><div class="ch"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b style="font-size:15px">Not known: open PRs is unknown in example-org/example-web</b></div><p class="sub">A fine-grained PAT's grants are not readable from the API. The token's owner has the role to open pull requests; the first attempt will say for certain, and the next verification records it.</p></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>A question box: pick an action, a repository and (optionally) a user, get yes / no / not known, the token that would be used, why, and what would fix it.</p></div><div><h4>Pros</h4><ul><li>The question an operator actually asks, answered in one sentence.</li><li>Includes the fix, which neither grid nor cards say.</li><li>Smallest to build: one route, POST /v1/git-tokens:check.</li></ul></div><div><h4>Risks</h4><ul><li>No overview; it only answers what is asked.</li><li>Easy to read a "not known" as a yes; it must stay grey and say why.</li></ul></div></div>
+</div>
+
+<h2 id="rec2"><span class="n">14</span>Recommendation, second pass</h2>
+<div class="recbox"><h3>Graph A, Impact A, Settings A, Git tokens A or B by the owner's paste-box decision, Permissions A; the gate policy is the owner's alone</h3>
+<ul><li><b>Graph A</b> is the picture the owner asked for, with Graph B's dependency matrix as a second tab once repositories pass a few hundred modules, and Graph C's symbol table as its search.</li>
+<li><b>Impact A</b>: the four counts are the answer; Impact B's tree is what "Show path" should open.</li>
+<li><b>Gate A, B or C is not recommended.</b> They are policies P1, P2 and P3 (repo-index.md §4.4), and choosing what "green" means is the owner's decision.</li>
+<li><b>Settings A</b> puts the ruleset mismatch beside the policy, which Settings B has no room for.</li>
+<li><b>Git tokens A</b> if the owner allows a token value through the console (git-tokens.md §4.2); <b>B</b> if not. Nothing else on either page depends on that.</li>
+<li><b>Permissions A</b> as the page, with C's checker as its search box and B's card as the mobile layout.</li></ul>
+<p>The owner picks; this is a recommendation.</p></div>
+
+<h2 id="map2"><span class="n">15</span>Every new element, mapped to data</h2>
+<p>None of these routes exists yet. Design: <a href="../../repo-index.md">repo-index.md</a> §6 and <a href="../../git-tokens.md">git-tokens.md</a> §7.</p>
+<div class="tw"><table class="doc"><thead><tr><th>Element</th><th>Field</th><th>Route (proposed)</th></tr></thead><tbody>
+<tr><td>Module graph, clusters, hot-spot and test-reach colour</td><td>modules, weighted module edges, <code>hot_spots</code>, per-module test reach</td><td><code>GET /v1/repositories/{repo_id}/graph</code></td></tr>
+<tr><td>Symbol call graph, depth, evidence, confidence</td><td><code>call_edges</code> from the graph shards, <code>evidence</code>, <code>confidence</code></td><td><code>GET /v1/repositories/{repo_id}/symbols?id=&amp;depth=</code></td></tr>
+<tr><td>Test map</td><td><code>symbol_test_map</code>: tests per symbol with depth and path confidence</td><td><code>GET /v1/repositories/{repo_id}/symbols?id=&amp;tests=1</code></td></tr>
+<tr><td>Impact columns and reasons</td><td><code>changed_symbols</code>, <code>affected_callers</code>, <code>tests[].reason</code>, <code>fallback_triggers</code>, <code>low_confidence_cut</code></td><td><code>POST /v1/repositories/{repo_id}/impact</code></td></tr>
+<tr><td>PR card gate rows</td><td><code>impact_plans/{plan_id}</code>: policy, selected, total, conclusion, check run id</td><td><code>GET /v1/runs/{run_id}</code></td></tr>
+<tr><td>Languages and LSP status</td><td><code>languages</code>: grammar, server, status, fallback</td><td><code>GET /v1/repositories/{repo_id}/languages</code></td></tr>
+<tr><td>Graph depth, selection policy, execution mode</td><td><code>graph.depth</code>, <code>selection_policy.policy</code>, <code>selection_policy.mode</code></td><td><code>PATCH /v1/repositories/{repo_id}</code></td></tr>
+<tr><td>Git tokens list</td><td><code>git_tokens</code>: scope, forge login, kind, <code>last4</code>, <code>expires_at</code>, <code>verified_at</code>, repos covered; never a value</td><td><code>GET /v1/git-tokens</code></td></tr>
+<tr><td>Permission cells</td><td><code>git_token_checks</code>: capability → ok / missing / unknown and reason</td><td><code>GET /v1/git-tokens/permissions</code></td></tr>
+<tr><td>Resolved token on Settings</td><td>the resolution of git-tokens.md §3 for this repository and the caller</td><td><code>GET /v1/repositories/{repo_id}/token?user=me</code></td></tr>
+<tr><td>"Can SwarmCloud…" answer</td><td>the capability's state, the resolving token, the reason, the fix</td><td><code>POST /v1/git-tokens:check</code></td></tr>
+</tbody></table></div>
+
+<h2 id="pick"><span class="n">16</span>All screens to pick</h2>
+<p>Every screen on this page, RI0's four and RI0b's six, with its variants, so the owner can pick in one pass. Picks are recorded by the owner in PICKS.md; this page does not edit it.</p>
+<div class="tw"><table class="doc pickt"><thead><tr><th>Screen</th><th>Variants</th><th>Recommended</th><th>Lane</th></tr></thead><tbody>
+<tr><td>2 · Repositories list</td><td><a href="#list-a">A table</a> <a href="#list-b">B cards</a> <a href="#list-c">C split view</a></td><td>A</td><td>RI0</td></tr>
+<tr><td>3 · Register repository</td><td><a href="#register-a">A one page</a> <a href="#register-b">B drawer</a> <a href="#register-c">C pick from the token</a></td><td>A</td><td>RI0</td></tr>
+<tr><td>4 · Repository detail</td><td><a href="#detail-a">A tabs</a> <a href="#detail-b">B long page</a> <a href="#detail-c">C explorer</a></td><td>A</td><td>RI0</td></tr>
+<tr><td>5 · The index in a plan and in Details</td><td><a href="#context-a">A chip</a> <a href="#context-b">B card</a> <a href="#context-c">C per step</a></td><td>A, with C's per-step tests</td><td>RI0</td></tr>
+<tr><td>8 · Graph explorer</td><td><a href="#graph-a">A force-directed canvas</a> <a href="#graph-b">B tree + matrix</a> <a href="#graph-c">C list-first</a></td><td>A</td><td>RI0b</td></tr>
+<tr><td>9 · Commit / PR impact</td><td><a href="#impact-a">A four columns</a> <a href="#impact-b">B tree by symbol</a></td><td>A</td><td>RI0b</td></tr>
+<tr><td>10 · Selected-tests gate = merge policy</td><td><a href="#gate-a">A P1 selected gate</a> <a href="#gate-b">B P2 fast gate</a> <a href="#gate-c">C P3 gate with fallback</a></td><td><span class="exd">none: the owner's policy decision</span></td><td>RI0b</td></tr>
+<tr><td>11 · Repository Settings additions</td><td><a href="#settings-a">A cards</a> <a href="#settings-b">B one form</a></td><td>A</td><td>RI0b</td></tr>
+<tr><td>12 · Git tokens</td><td><a href="#tokens-a">A table + paste box</a> <a href="#tokens-b">B cards + command line</a></td><td>A or B, by the paste-box decision</td><td>RI0b</td></tr>
+<tr><td>13 · Permission matrix</td><td><a href="#perms-a">A grid</a> <a href="#perms-b">B per-repository cards</a> <a href="#perms-c">C checker</a></td><td>A</td><td>RI0b</td></tr>
+</tbody></table></div>
+<p class="sub" style="color:var(--mute)">Decisions that ride on these picks, from the design docs: the merge policy P1/P2/P3 and the execution mode X1/X2 (repo-index.md §4.4); the token resolution order R1/R2, the user-token isolation U1/U2/U3, the secret creation S1/S2, and whether the console may accept a token value (git-tokens.md).</p>
+<p class="sub" style="color:var(--mute);margin-top:24px">Drawn 2026-10-04 for design lane RI0; sections 8-16 drawn 2026-10-05 for lane RI0b. Picks are recorded by the owner in PICKS.md; this page does not edit it.</p>
+</div>
+
+<script>
+/* Page theme: light / dark / system, remembered for this page only. */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+
+/* Shell: Sky spine + panel, filled into every frame's .side[data-shell]. Work pages from
+   App.tsx SECTIONS, plus the proposed Repositories page. */
+(function(){
+  const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+  const rail=`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE}</div><a class="ri rcta">${I('i-submit')}<small>Submit</small></a><div class="rsep"></div><a class="ri">${I('i-overview')}<small>Overview</small></a><a class="ri on">${I('i-agents')}<small>Work</small></a><a class="ri">${I('i-pools')}<small>Capacity</small></a><a class="ri">${I('i-limits')}<small>Admin</small></a><div class="rgrow"></div><a class="ri">${I('i-help')}<small>Help</small></a><a class="ri">${I('i-api')}<small>API reads</small></a><span class="av">OP</span></nav>`;
+  const page=(on,icon,label,extra)=>`<a class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span>${extra||''}</a>`;
+  function panel(cur){
+    return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Work</div>${page(cur==='Agents','i-agents','Agents','<span class="cnt">6</span>')}${page(cur==='Workflows','i-workflows','Workflows','<span class="cnt">2</span>')}${page(cur==='Runs','i-branch','Runs')}${page(cur==='Timeline','i-timeline','Timeline')}${page(cur==='Repositories','i-repo','Repositories','<span class="new">new</span>')}</div><div class="pfoot"><span class="pfrow"><b>Operator</b><span class="seg" role="group" aria-label="Theme"><button class="ibtn" title="Light">${I('i-sun')}</button><button class="ibtn" title="Dark">${I('i-moon')}</button><button class="ibtn on" title="System">${I('i-monitor')}</button></span><button class="ibtn" title="Sign out">${I('i-out')}</button></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com · ui and api at main</span></div></nav>`;
+  }
+  document.querySelectorAll('.side[data-shell]').forEach(el=>{el.innerHTML=rail+panel(el.dataset.shell)});
+})();
+</script>
+</body>
+</html>

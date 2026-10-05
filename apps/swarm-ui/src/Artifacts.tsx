@@ -1583,6 +1583,8 @@ function TranscriptBody({
     failed: null,
   })
   const [reading2, setReading2] = useState(false)
+  // Inside the Logs tab, whose provider is the only one there is (logMarks.tsx).
+  const docked = useLogMarks() !== NO_MARKS
 
   if (read.status === 'error' || read.status === 'stale') return <ReadFailed error={read.error} what="the transcript" />
   if (read.status !== 'ok') return <ReadFailed error={null} what="the transcript" />
@@ -1622,9 +1624,7 @@ function TranscriptBody({
   // object that does not exist and a masking count over bytes nobody read.
   // The absent, unreadable and not-applicable answers say what they are below.
   const published = t.stream.status === 'ok'
-  return (
-    <div className="arts-transcript">
-      {published && (
+  const facts = published && (
       <ul className="ctl-facts">
         <li className="ctl-fact">
           <b>source</b>
@@ -1702,6 +1702,20 @@ function TranscriptBody({
           </Button>
         </li>
       </ul>
+  )
+  return (
+    <div className="arts-transcript">
+      {/* IN THE LOGS TAB THE TRANSCRIPT'S FACTS ARE FOLDED, as stdout's are
+          (owner QA R9, 2026-10-04): source, format, masked and the object's
+          location opened above the first step. A masked count over 0 is
+          also the bar's own chip, so folding it hides no warning. */}
+      {facts !== false && docked ? (
+        <details className="ag-logmeta">
+          <summary>transcript · source, format, masked and location</summary>
+          {facts}
+        </details>
+      ) : (
+        facts
       )}
       {/* THE SERVER'S OWN SENTENCE ABOUT THIS WINDOW, when it read one: a
           capture cut at its cap, a line longer than the window, a window that

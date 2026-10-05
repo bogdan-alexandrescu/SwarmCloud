@@ -829,13 +829,31 @@ function glyphAnchors(): Map<string, number> {
   return counts
 }
 
-/** The console's total. B7.4 measured 16 here, against 139 anchors before it. */
-const GLYPH_CEILING = 20
+/**
+ * The console's total. B7.4 measured 16 here, against 139 anchors before it,
+ * and capped it at 20. RAISED BY THE DETAILS TAB, BY NAME: five for its
+ * cards beyond the one `?` the file already drew (`PER_CARD_SCREENS`), and
+ * one for the split header's dispatch chips (AgentSplit.tsx), which the same
+ * pick draws with a plain-language `?`. Everything else is still held to 20.
+ */
+const GLYPH_CEILING = 20 + 5 + 1
 
 /** Per screen. Two is one always-drawn glyph plus one that only a branch draws. */
 const GLYPH_CEILING_PER_FILE = 2
 
-test('the console draws fewer than twenty help glyphs in total', () => {
+/**
+ * THE ONE EXEMPTION FROM THE PER-SCREEN RATION, AND WHY. The owner picked
+ * agent-details-v3.html A on 2026-10-04 (PICKS.md, "Agent Details tab, v3"):
+ * "one `?` per card instead of the help-link block". That block was ten
+ * underlined links at the foot of the tab; each card now opens the topics
+ * for that card only. Six anchors in the file -- Now, the failure card and
+ * Outcome are one leading card, so at most five are drawn at once (the lead,
+ * Progress, Resources, Input, and Output once there is output). The strip's
+ * labels publish theirs silently (`HelpNote`). A seventh card's `?` fails here.
+ */
+const PER_CARD_SCREENS: ReadonlyMap<string, number> = new Map([['AgentDetail.tsx', 6]])
+
+test('the console draws no more help glyphs in total than its ceiling of twenty-six', () => {
   const counts = glyphAnchors()
   const total = [...counts.values()].reduce((a, b) => a + b, 0)
   const breakdown = [...counts.entries()]
@@ -867,7 +885,7 @@ test('no single screen draws more than two help glyphs', () => {
   assert.ok(counts.size >= 10, `only ${counts.size} screens were examined`)
   for (const [file, n] of counts) {
     assert.ok(
-      n <= GLYPH_CEILING_PER_FILE,
+      n <= (PER_CARD_SCREENS.get(file) ?? GLYPH_CEILING_PER_FILE),
       `${file} draws ${n} help glyphs; B7.4 caps a screen at ${GLYPH_CEILING_PER_FILE}. ` +
         `An explanation goes to the label, the column head, the screen's footer ` +
         `index or a <HelpNote> before it gets a glyph of its own.`,

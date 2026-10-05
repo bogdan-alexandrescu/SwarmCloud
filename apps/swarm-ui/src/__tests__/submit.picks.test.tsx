@@ -125,19 +125,24 @@ describe('the chooser draws the three picked cards', () => {
     expect(go).toHaveBeenLastCalledWith('work/new-issue')
   })
 
-  it('"Start from a recent one" is a card stating the missing route, not a dashed box', () => {
+  // U12 R15 (owner QA, 2026-10-04): the card lists the caller's own recent
+  // submissions from the reads that exist, rather than "No recent submissions
+  // yet" to an owner with runs (qa.u12.submit.test.tsx holds what it lists).
+  it('"Start from a recent one" is a card of your own recent submissions, not a dashed box', async () => {
     const { container } = render(<SubmitChooser go={() => {}} />)
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     expect(recent, 'no recent card').not.toBeNull()
     expect(visible(recent.querySelector('.sb-card-h'))).toBe('Start from a recent one')
-    // WHAT THE USER SEES AND CAN DO (walkthrough E): the empty state in one
-    // line, and why it is empty -- the API keeps no such list -- behind its `?`.
-    expect(visible(recent.querySelector('.sb-empty'))).toBe('No recent submissions yet.')
+    // Where the list comes from is behind the `?`.
     expect(recent.querySelector('button[aria-label^="Help: "]'), 'the why is not behind a `?`').not.toBeNull()
-    expect(recent.querySelector('[data-mark]'), 'the empty state carries no mark').not.toBeNull()
     expect(container.querySelector(OLD_SK('recent-empty'))).toBeNull()
-    // Nothing invented: no digit in the region.
-    expect(visible(recent)).not.toMatch(/\d/)
+    await waitFor(() => expect(recent.querySelector('[aria-busy="true"]')).toBeNull())
+    // The fixture's caller has submissions: each is listed as a link to its
+    // page, and the empty line is not drawn beside them.
+    const rows = [...recent.querySelectorAll('.sb-recent-i')]
+    expect(rows.length, 'the fixture caller has recent submissions').toBeGreaterThan(0)
+    expect(recent.querySelector('.sb-empty')).toBeNull()
+    for (const r of rows) expect(r.querySelector('a[href]')).not.toBeNull()
   })
 })
 

@@ -101,15 +101,26 @@ export function tailGap(prev: WindowAt | null, next: WindowAt): Gap | GapUnknown
  * THE CONSOLE-SIDE ERROR PATTERN. The API marks no log line as an error
  * (routes/tasks.py), so "jump to error" matches this, plus a transcript tool
  * result's own `is_error`. It can miss an error that says none of these words
- * and it can match a line that only quotes one; the dock's button says so.
+ * and it can match a line that only quotes one; the button says so.
+ *
+ * BROADENED (owner QA, 2026-10-04): the control was disabled at 0 on every
+ * agent tried, the mock's own stderr `deterministic failure, exit 2` among
+ * them, because only capitals (`ERROR`, `FAILED`) and `exit code N` matched.
+ * It now matches, in any case, the words error, exception, failed, failure
+ * and fatal; a `SomethingError` or `SomethingException` name; Traceback and
+ * `panic:`; and a non-zero exit however it is written (`exit 2`, `exit code
+ * 2`, `exited with status 2`, `exit_code=2`). Not `errors` or `failures`:
+ * "0 failures" and "errors were handled" are not errors.
  */
-export const ERROR_PATTERN = /\bTraceback\b|\bERROR\b|\bFAILED\b|\bFATAL\b|\bpanic:|\bexit (?:code|status) [1-9]\d*/
+const ERROR_WORDS = /\b(?:error|exception|failed|failure|fatal)\b|\bexit(?:ed)?(?:\s+with)?(?:[\s_]+(?:code|status))?[\s:=]+[1-9]\d*\b/i
+const ERROR_NAMES = /\b[A-Z]\w*(?:Error|Exception)\b|\bTraceback\b|\bpanic:/
 
-/** The words `ERROR_PATTERN` matches, for the button that says what it matches. */
-export const ERROR_PATTERN_SAYS = 'Traceback, ERROR, FAILED, FATAL, panic: and a non-zero exit code'
+/** The words the pattern matches, for the button that says what it matches. */
+export const ERROR_PATTERN_SAYS =
+  'error, exception, failed, failure or fatal in any case, a name ending in Error or Exception, Traceback, panic:, and a non-zero exit (exit 2, exit code 2, exited with status 2)'
 
 export function isErrorLine(line: string): boolean {
-  return ERROR_PATTERN.test(line)
+  return ERROR_WORDS.test(line) || ERROR_NAMES.test(line)
 }
 
 /** A window's lines. A trailing newline does not make an empty last line. */

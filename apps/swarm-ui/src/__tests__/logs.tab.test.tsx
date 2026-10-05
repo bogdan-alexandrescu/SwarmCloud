@@ -190,15 +190,18 @@ describe('the tab opens on the stream the runner has', () => {
 
 describe('the attempt picker reads the picked attempt, by attempt_id', () => {
   it('labels each attempt by generation and passes its id to every log read', async () => {
-    render(<AgentLogs task={running()} />)
+    render(<AgentLogs task={running({ current_generation: 2 })} />)
     const picker = await waitFor(() => {
       const s = within(dock()).getByRole('combobox', { name: 'Attempt, by generation' }) as HTMLSelectElement
-      expect(s.options.length).toBe(3)
+      expect(s.options.length).toBe(2)
       return s
     })
-    expect([...picker.options].map((o) => o.textContent)).toEqual(['latest', 'gen 2 · att_2 · exit 0', 'gen 1 · att_1 · exit 0'])
-    // The latest first, with no attempt named: what the Artifacts pane always read.
+    // THE DEFAULT IS THE CURRENT GENERATION, said as such (U12 R9): it was
+    // "latest", which read gen 1 under a header that said gen 2.
+    expect([...picker.options].map((o) => o.textContent)).toEqual(['current · gen 2 · att_2 · exit 0', 'gen 1 · att_1 · exit 0'])
+    // Before the attempts are read nothing is named: the log route's latest.
     expect(api.loadTaskLogs.mock.calls[0]![1]).not.toHaveProperty('attemptId')
+    await waitFor(() => expect(api.loadTaskLogs.mock.calls.some((c) => c[1]?.attemptId === 'att_2')).toBe(true))
     fireEvent.change(picker, { target: { value: 'att_1' } })
     await waitFor(() => expect(api.loadTaskLogs.mock.calls.some((c) => c[1]?.attemptId === 'att_1')).toBe(true))
     expect(api.loadTranscript.mock.calls.some((c) => c[1]?.attemptId === 'att_1')).toBe(true)
