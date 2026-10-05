@@ -522,6 +522,38 @@ def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
     return spec.model_dump(exclude_unset=True, exclude_none=True)
 
 
+def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
+    """An operator's edit of a stored plan, checked like a new plan except for
+    the overlaps it carries over from a plan stored before `PlanOverlap.action`.
+
+    The console's editor sends the plan back whole, so an edit of a legacy plan
+    -- only to fix a step prompt -- carries its action-less overlaps with it,
+    and there is no control to add one. Such an overlap is accepted when it is
+    IDENTICAL to one the stored plan already had without `action`; a new or
+    changed overlap still needs one, exactly as a planner's plan does.
+    """
+    plan = parse_plan(value, stored=True)
+    legacy = set()
+    if isinstance(stored_plan, Mapping):
+        for overlap in stored_plan.get("overlaps") or ():
+            if isinstance(overlap, Mapping) and overlap.get("action") is None:
+                legacy.add((overlap.get("ref"), overlap.get("kind"), overlap.get("note")))
+    for index, overlap in enumerate(plan.get("overlaps") or ()):
+        if "action" in overlap:
+            continue
+        if (overlap["ref"], overlap["kind"], overlap["note"]) not in legacy:
+            problem = (
+                f'overlaps.{index}: the overlap {overlap["ref"]} has no "action": it is '
+                '"none" when this plan does nothing about it, or "required" when this '
+                "plan or a person must act, with the note saying what"
+            )
+            raise InvalidPlan(
+                "the plan does not match the plan schema: " + problem,
+                detail={"errors": [problem]},
+            )
+    return plan
+
+
 def plan_stages(plan: Mapping[str, Any]) -> list[list[str]]:
     """A parsed plan's step ids, grouped into the stages `compile_plan` runs them in."""
     return _stages(list(plan["steps"]))
