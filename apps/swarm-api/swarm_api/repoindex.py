@@ -37,6 +37,16 @@ WHAT AN INDEX RUN IS, AND WHY EACH RULE:
     or unknown against the head last read, and the summary's first line says
     it when the index is not current.
 
+THE POLL (lane RI4, §3.3). `RepoIndex.poll` is `POST /v1/admin/repositories/
+poll`, called every five minutes per tenant by the `repo_index_poll` Cloud
+Scheduler job. Per registration: settle, read the head with the last ETag
+(`read_head_if_changed`; a 304 costs no rate limit), store it, and queue a
+run when `poll_trigger` says `change` or `interval`. The queueing is `_start`,
+the same claim "Index now" takes, so the poll and a person can never both
+submit, and a run in flight turns a newer head into the pending one. A run is
+submitted as the registration's creator in its tenant, never as the
+scheduler's identity.
+
 WHERE THE INDEX LIVES. As the indexer task's artifact, under the tenant's own
 prefix (invariant 9): `tenants/<tenant>/tasks/<task>/attempts/<attempt>/
 artifacts/repo-index.json`. §2.3 asks this lane to copy it under
@@ -64,6 +74,8 @@ import json
 import logging
 import re
 import secrets
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote
@@ -86,20 +98,28 @@ from swarm_common.models import Tenant
 from swarm_common.states import TaskState
 
 from .auth import AuthContext
-from .errors import Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
+from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
 from .forge import (
     GITHUB_API_HOST,
     MAX_RESPONSE_BYTES,
     ForgeReadError,
     ForgeTokens,
     GitHubIssues,
+    IssueNoAccess,
     IssueNotFound,
     IssueReadFailed,
+    github_headers,
+    is_pinned_host,
     neutral_line,
 )
 from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, RepoGraph
 from .repositories import COLLECTION as REPOSITORIES
-from .repositories import Repositories
+from .repositories import (
+    INTERVAL_HOURS_DEFAULT,
+    MIN_CHANGE_INTERVAL_DEFAULT,
+    ON_CHANGE_DEFAULT,
+    Repositories,
+)
 from .schemas import TaskCreate
 
 log = logging.getLogger(__name__)
@@ -169,6 +189,24 @@ MAX_SELECT_PATHS = 1000
 MAX_SELECT_PATH_CHARS = 1024
 #: The routes of the summary kept before the size budget drops the rest.
 SUMMARY_ROUTES = 100
+
+#: §3.3, the poll (lane RI4). The Cloud Scheduler job gives a tick 300 s
+#: (`attempt_deadline`, terraform/modules/scheduler/jobs.tf); the pass stops
+#: starting reads at 240 s so its answer, which says what it did not reach,
+#: is written before the job gives up on it. A read is one forge GET with
+#: `TIMEOUT_SECONDS`, so a tick that begins a read at 239 s still ends inside
+#: the deadline.
+POLL_BUDGET_SECONDS = 240.0
+#: The most registrations one tick reads, paged by the API's page size. At
+#: forty repositories (the design's figure) it is never reached; past it the
+#: answer says `truncated`, never a quiet "all read".
+POLL_MAX_REGISTRATIONS = 500
+#: GitHub's media type that answers `GET /repos/{o}/{r}/commits/{ref}` with
+#: the bare 40-hex sha instead of the whole commit: a 200 is 40 bytes, and the
+#: ETag is that answer's, so it changes exactly when the head does.
+SHA_MEDIA_TYPE = "application/vnd.github.sha"
+#: What `requested_by` says on a run the poll queued: no person asked for it.
+POLL_REQUESTED_BY = "repo_index_poll"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _TERMINAL = {
@@ -564,6 +602,166 @@ def read_head(
     if not isinstance(head, str) or not _SHA.match(head):
         raise HeadUnreadable(f"GitHub's answer for {what} names no commit")
     return head
+
+
+@dataclass(frozen=True)
+class HeadRead:
+    """One poll read of the default branch: the head, its ETag, and whether
+    GitHub answered `304 Not Modified`."""
+
+    sha: str
+    etag: str | None
+    not_modified: bool
+
+
+#: An entity tag as GitHub sends one: optionally weak, then a quoted string.
+#: Anything else is not stored, so a header can never put arbitrary text on
+#: the registration.
+_ETAG = re.compile(r'^(W/)?"[\x21\x23-\x7e]{1,128}"$')
+
+
+def read_head_if_changed(
+    record: Mapping[str, Any], tenant: Tenant, *, etag: str | None, known_sha: str | None,
+    tokens: ForgeTokens, forge: GitHubIssues,
+) -> HeadRead:
+    """The poll's read: `GET /repos/{o}/{r}/commits/{branch}`, conditional on the ETag.
+
+    §3.3: sent with the last response's `ETag` as `If-None-Match`, an
+    unchanged branch answers `304 Not Modified`, which GitHub does not count
+    against the token's rate limit. The ETag is only sent when the head it
+    describes is known, so a 304 always has a head to stand for.
+
+    Through the forge client's header-returning transport (`probe_send`, the
+    same pinned, redirect-refusing GET the git token probe uses), because
+    the ETag is a header. The token resolves as `read_head`'s does (R2, with
+    no repository token readable by swarm-api yet: the tenant's), goes to the
+    one Authorization header, and the header map is cleared after the send.
+    """
+    branch = record["default_branch"]
+    what = f"the head of {record['owner']}/{record['repo']}@{branch}"
+    url = f"{_repo_url(record)}/commits/{quote(branch, safe='/')}"
+    if not is_pinned_host(url):
+        raise IssueReadFailed(f"{what} is not on {GITHUB_API_HOST}; no token is sent there")
+    headers = github_headers(tokens.token_for(tenant))
+    headers["Accept"] = SHA_MEDIA_TYPE
+    if etag and known_sha:
+        headers["If-None-Match"] = etag
+    try:
+        answer = forge.probe_send(url, headers, forge.timeout)
+    except Exception as exc:
+        # The type only. A transport's message can quote the request.
+        raise IssueReadFailed(
+            f"{what} could not be read from GitHub ({type(exc).__name__})"
+        ) from None
+    finally:
+        headers.clear()
+    status = answer.status
+    tag = (answer.headers or {}).get("etag")
+    tag = tag if isinstance(tag, str) and _ETAG.match(tag) else None
+    if status == 304 and known_sha:
+        return HeadRead(sha=known_sha, etag=tag or etag, not_modified=True)
+    if status in (404, 410, 422):
+        # 422 is GitHub's "No commit found for SHA": the branch is gone.
+        raise HeadUnreadable(
+            f"GitHub has no branch {branch!r} on {record['owner']}/{record['repo']}, or the "
+            "tenant's token cannot see it: set the registration's default_branch"
+        )
+    if status in (401, 403):
+        raise IssueNoAccess(
+            f"GitHub refused the tenant's forge credential for {what} (HTTP {status}): it "
+            "may lack access to the repository, have expired, or have spent its rate limit"
+        )
+    if status != 200:
+        raise IssueReadFailed(
+            f"GitHub answered HTTP {status} for {what}"
+            + (" (a redirect, which is never followed)" if 300 <= status < 400 else "")
+        )
+    head = (answer.body or b"")[:64].decode("ascii", "replace").strip()
+    if not _SHA.match(head):
+        raise HeadUnreadable(f"GitHub's answer for {what} names no commit")
+    return HeadRead(sha=head, etag=tag, not_modified=False)
+
+
+def _int_or(value: Any, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def interval_due(
+    index: Mapping[str, Any], *, newest_run: Mapping[str, Any] | None,
+    created_at: Any, now: datetime,
+) -> bool:
+    """§3.3's backstop: `interval_hours` passed since the registration was last indexed.
+
+    Counted from the LATER of the last promotion and the last run queued, so
+    a run that failed is not re-queued on every tick: the next interval run
+    comes a whole interval after it. A registration never indexed and never
+    run counts from its creation. `off` is never due.
+    """
+    hours = index.get("interval_hours", INTERVAL_HOURS_DEFAULT)
+    if hours == "off":
+        return False
+    hours = _int_or(hours, INTERVAL_HOURS_DEFAULT)
+    marks = [
+        moment for moment in (
+            _parse_time(index.get("last_indexed_at")),
+            _parse_time((newest_run or {}).get("queued_at")),
+        ) if moment is not None
+    ]
+    base = max(marks) if marks else _parse_time(created_at)
+    return base is None or now - base >= timedelta(hours=hours)
+
+
+def poll_trigger(
+    index: Mapping[str, Any], head: str | None, *, newest_run: Mapping[str, Any] | None,
+    created_at: Any, now: datetime,
+) -> str | None:
+    """`change`, `interval` or None: whether the poll queues a run of `head` (§3.3).
+
+    CHANGE when `on_change` is `poll`, the head is neither the promoted index
+    nor the commit the newest run was given (so a head is indexed once, and a
+    run that failed on it is retried by the interval, not every tick), and
+    `min_change_interval_minutes` has passed since that run was queued.
+    INTERVAL when `interval_due`. Pure: the caller settles and reads first.
+    """
+    if not head:
+        return None
+    last_sha = (newest_run or {}).get("commit_sha")
+    last_queued = _parse_time((newest_run or {}).get("queued_at"))
+    if (
+        index.get("on_change", ON_CHANGE_DEFAULT) == "poll"
+        and head != index.get("current_sha")
+        and head != last_sha
+    ):
+        minimum = timedelta(minutes=_int_or(
+            index.get("min_change_interval_minutes"), MIN_CHANGE_INTERVAL_DEFAULT
+        ))
+        if last_queued is None or now - last_queued >= minimum:
+            return "change"
+    if interval_due(index, newest_run=newest_run, created_at=created_at, now=now):
+        return "interval"
+    return None
+
+
+@dataclass
+class PollReport:
+    """What one tick of the poll did, for the route's answer and the log."""
+
+    registrations: int = 0
+    read: int = 0
+    not_modified: int = 0
+    submitted: int = 0
+    coalesced: int = 0
+    skipped: int = 0
+    truncated: bool = False
+    failures: list[dict[str, str]] = field(default_factory=list)
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "registrations": self.registrations, "read": self.read,
+            "not_modified": self.not_modified, "submitted": self.submitted,
+            "coalesced": self.coalesced, "skipped": self.skipped,
+            "truncated": self.truncated,
+        }
 
 
 def read_relation(
@@ -1328,6 +1526,9 @@ class RepoIndex:
         record = self.registrations.get(tenant_id, repo_id)
         index = record.get("index") or {}
         pending = index.get("pending_sha")
+        if pending and pending == index.get("current_sha"):
+            self._drop_pending(tenant_id, repo_id, pending)
+            return
         if pending and not index.get("paused") and (
             not index.get("in_flight_task_id") or _claim_expired(index, self._now())
         ):
@@ -1625,6 +1826,185 @@ class RepoIndex:
             )
         return parse_index(content)
 
+    # -- the poll (§3.3, lane RI4) -------------------------------------------
+    def _record_head(self, tenant_id: str, repo_id: str, read: HeadRead) -> None:
+        """Store the head, when it was read and its ETag: on every read, 304 or not."""
+        ref = self._repo_ref(repo_id)
+        transaction = self._db.transaction()
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise Repositories.not_found(repo_id)
+            index = dict(data.get("index") or {})
+            index["head_sha"] = read.sha
+            index["head_read_at"] = now
+            index["etag"] = read.etag
+            # The sha the ETag describes: "Index now" moves `head_sha` with
+            # an unconditional read and no ETag, and a 304 against a tag for
+            # some other head would vouch for the wrong commit.
+            index["etag_sha"] = read.sha
+            txn.update(ref, {"index": index})
+
+        _apply(transaction)
+
+    def poll(
+        self, tenant_id: str, *, tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext],
+        page_size: int, clock: Callable[[], float] = time.monotonic,
+    ) -> PollReport:
+        """One tick of `POST /v1/admin/repositories/poll` for ONE tenant (§3.3).
+
+        Reads only `tenant_id`'s registrations (`Repositories.list` filters on
+        it, in the query and again in the application), each with the
+        tenant's own token, and submits only as `owner_auth(record)` -- the
+        registration's creator in this tenant, built by the route -- so
+        nothing is read or queued for any other tenant (invariant 9). One
+        registration's failure is reported by code and the pass goes on.
+        """
+        report = PollReport()
+        started = clock()
+        token: str | None = None
+        while True:
+            rows, token = self.registrations.list(tenant_id, limit=page_size, page_token=token)
+            for record in rows:
+                if (report.registrations >= POLL_MAX_REGISTRATIONS
+                        or clock() - started >= POLL_BUDGET_SECONDS):
+                    report.truncated = True
+                    break
+                report.registrations += 1
+                try:
+                    self._poll_one(tenant_id, record, tenant, owner_auth, report)
+                except ApiError as failed:
+                    code = failed.code
+                except Exception as failed:  # one registration never stops the pass
+                    code = "internal"
+                    log.warning("repo index poll tenant=%s repo_id=%s error=%s",
+                                tenant_id, record.get("repo_id"), type(failed).__name__)
+                else:
+                    continue
+                report.failures.append({"repo_id": record["repo_id"], "code": code})
+                log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
+                         tenant_id, record["repo_id"], code)
+            if report.truncated or token is None:
+                break
+        log.info(
+            "repo index poll tenant=%s registrations=%d read=%d not_modified=%d "
+            "submitted=%d coalesced=%d failures=%d truncated=%s", tenant_id,
+            report.registrations, report.read, report.not_modified, report.submitted,
+            report.coalesced, len(report.failures), report.truncated,
+        )
+        return report
+
+    def _poll_one(
+        self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
+    ) -> None:
+        repo_id = record["repo_id"]
+        # Settle first: a run that ended since the last tick is promoted and
+        # frees the slot, so the decision below reads what is really in flight.
+        self.settle(tenant_id, repo_id, tenant=tenant)
+        record = self.registrations.get(tenant_id, repo_id)
+        index: Mapping[str, Any] = record.get("index") or {}
+        if index.get("paused"):
+            report.skipped += 1
+            return
+        newest = next(iter(self.runs(tenant_id, repo_id, limit=1)), None)
+        head = index.get("head_sha")
+        reads = index.get("on_change", ON_CHANGE_DEFAULT) == "poll" or interval_due(
+            index, newest_run=newest, created_at=record.get("created_at"), now=self._now()
+        )
+        if reads:
+            etag = index.get("etag") if head and index.get("etag_sha") == head else None
+            read = read_head_if_changed(
+                record, tenant, etag=etag, known_sha=head,
+                tokens=self._tokens, forge=self._forge,
+            )
+            self._record_head(tenant_id, repo_id, read)
+            report.read += 1
+            report.not_modified += int(read.not_modified)
+            head = read.sha
+            if not read.not_modified:
+                # §5.1: `behind_by` is read when the head is polled.
+                self.refresh_relation(tenant_id, repo_id, tenant)
+            record = self.registrations.get(tenant_id, repo_id)
+            index = record.get("index") or {}
+        now = self._now()
+        trigger = poll_trigger(
+            index, head, newest_run=newest, created_at=record.get("created_at"), now=now
+        )
+        in_flight = index.get("in_flight_task_id")
+        busy = bool(in_flight) and not _claim_expired(index, now)
+        if busy:
+            # §3.1 coalescing: one run in flight. A newer head is recorded as
+            # pending (once), and indexed when the running one has ended. The
+            # head the running one was given is never pending: the interval
+            # counts from that run's queueing, so a run still queued after
+            # `interval_hours` (it is priority -50, behind all tenant work)
+            # would otherwise be followed by a second run of the same commit.
+            if trigger is None or head in (
+                index.get("pending_sha"), self._in_flight_sha(in_flight, newest)
+            ):
+                return
+            self._start(
+                owner_auth(record), tenant_id, record, head, kind="full", trigger=trigger,
+                requested_by=POLL_REQUESTED_BY, head_read=False, from_pending=False,
+            )
+            report.coalesced += 1
+            return
+        pending = index.get("pending_sha")
+        if not trigger and pending and pending == index.get("current_sha"):
+            # The pending head is already the promoted index: nothing to run.
+            self._drop_pending(tenant_id, repo_id, pending)
+            return
+        sha = head if trigger else pending
+        if not sha:
+            return
+        # A claim clears the pending head: a newer head supersedes it, and
+        # the pending one itself is this run when nothing newer triggered.
+        _run, coalesced = self._start(
+            owner_auth(record), tenant_id, record, sha, kind="full",
+            trigger=trigger or "pending",
+            requested_by=(POLL_REQUESTED_BY if trigger
+                          else index.get("pending_requested_by") or POLL_REQUESTED_BY),
+            head_read=False, from_pending=False,
+        )
+        if coalesced:
+            report.coalesced += 1
+        else:
+            report.submitted += 1
+
+
+    def _in_flight_sha(self, in_flight: Any, newest: Mapping[str, Any] | None) -> str | None:
+        """The commit the run holding the in-flight slot was given, if known."""
+        if not isinstance(in_flight, str) or in_flight.startswith(CLAIM_PREFIX):
+            return None
+        if newest is not None and newest.get("task_id") == in_flight:
+            return newest.get("commit_sha")
+        snap = self._run_ref(in_flight).get()
+        return (snap.to_dict() or {}).get("commit_sha") if snap.exists else None
+
+    def _drop_pending(self, tenant_id: str, repo_id: str, sha: str) -> None:
+        """Clear `pending_sha` if it is still `sha`."""
+        ref = self._repo_ref(repo_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            if index.get("pending_sha") == sha:
+                index.update(pending_sha=None, pending_requested_by=None, pending_at=None)
+                txn.update(ref, {"index": index})
+
+        _apply(transaction)
+
 
 def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
     holder = index.get("in_flight_task_id")
@@ -1635,11 +2015,12 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 
 __all__ = [
-    "EXTRACTOR_COMMAND", "INDEXER_PROFILE", "INDEX_FILE", "IndexDigestMismatch",
+    "EXTRACTOR_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE", "IndexDigestMismatch",
     "IndexPaused", "IndexRunRequest", "IndexUnavailable", "InvalidIndex", "MAX_INDEX_BYTES",
-    "MAX_SELECT_PATHS", "MAX_SUMMARY_BYTES", "RUNS_COLLECTION", "RepoIndex",
+    "MAX_SELECT_PATHS", "MAX_SUMMARY_BYTES", "POLL_BUDGET_SECONDS", "POLL_MAX_REGISTRATIONS",
+    "PollReport", "RUNS_COLLECTION", "RepoIndex",
     "RepoIndexSpec", "SCHEMA", "SelectRequest", "check_run_kind", "content_digest", "coverage", "freshness",
-    "indexer_prompt", "indexer_task", "parse_index", "promotion_decision",
-    "read_head", "read_relation", "render_markdown", "run_to_api", "select_tests",
+    "indexer_prompt", "indexer_task", "interval_due", "parse_index", "poll_trigger",
+    "promotion_decision", "read_head", "read_head_if_changed", "read_relation", "render_markdown", "run_to_api", "select_tests",
     "staleness_line", "version_to_api",
 ]
