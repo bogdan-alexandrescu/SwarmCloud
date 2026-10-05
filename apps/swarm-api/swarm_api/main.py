@@ -27,6 +27,7 @@ from .routes import (
     attempts,
     checkpoints,
     children,
+    gittokens,
     health,
     issues,
     leases,
@@ -100,6 +101,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(runs.router)
     # The issue preview, read with the caller's tenant's forge token (#454 1A).
     app.include_router(issues.router)
+    # The git token registry (docs/git-tokens.md, lane GT1): slot records,
+    # never values. Tenant-scoped; the document is `gittokens`'s own.
+    app.include_router(gittokens.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

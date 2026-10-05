@@ -30,7 +30,7 @@ from swarm_api.gittokens import (
     repo_id_for,
     token_id_for,
 )
-from swarm_api.main import create_app
+from swarm_api.routes import gittokens as gittokens_routes
 
 from .conftest import auth_header, seed_tenant
 
@@ -184,10 +184,12 @@ def test_a_repository_slot_needs_a_well_formed_repository(client, eng_with_git) 
 # -- no route accepts a value ------------------------------------------------
 
 
-def test_no_route_accepts_a_token_value(client, eng_with_git, api_context) -> None:
-    app = create_app(api_context)
-    routes = [r for r in app.routes if getattr(r, "path", "").startswith("/v1/git-tokens")]
-    assert routes, "the git token routes are not mounted"
+def test_no_route_accepts_a_token_value(client, eng_with_git) -> None:
+    # The router's own routes: the pinned FastAPI mounts an included router
+    # as one opaque entry in `app.routes`. That it IS mounted is every other
+    # test in this file, which reaches it over HTTP.
+    routes = list(gittokens_routes.router.routes)
+    assert len(routes) == 4
     for route in routes:
         assert not route.path.endswith("/value"), route.path
         assert route.methods <= {"GET", "POST", "DELETE"}, (route.path, route.methods)
