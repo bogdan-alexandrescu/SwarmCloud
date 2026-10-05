@@ -83,6 +83,39 @@ directory first, every time, and refuses to continue if it cannot. Restoring a
 checkpoint on top of leftovers from a previous attempt would produce a workspace
 that exists in no checkpoint — irreproducible, and silently wrong.
 
+### What is left out, and what rebuilds it
+
+The 2026-10-05 history analysis (#637) measured 247 GB of checkpoints uploaded
+over the platform's history, 88.5 GB of it on 2026-10-02 alone from 1,732
+checkpoints: a median of 66 MB every 120 s. Only 1.25% of those bytes were ever
+restored. Most of them were directories the agent's next command recreates, so
+they are not archived (owner decision 2026-10-05):
+
+| Left out | Where | What rebuilds it after a restore |
+|---|---|---|
+| `.cache`, `.npm`, `.local/share/uv`, `.local/share/pnpm`, `.yarn/cache` | HOME (`work/`) only | the next `uv run` / `uv sync`, `npm ci`, `pnpm install`, `yarn install` fetches them again |
+| `node_modules/` | anywhere in `work/` | `npm ci` (or `pnpm install`, `yarn install`) |
+| `.venv/` | anywhere, unless git tracks a file in it | `uv sync` (`uv run` syncs first) |
+| `__pycache__/` | anywhere, unless tracked | the interpreter, on the next import |
+| `dist/` | anywhere, unless tracked | the project's build: `npm run build`, `uv build` |
+| `.test-build/` | anywhere, unless tracked | `npm run typecheck` |
+| `coverage/` | anywhere, unless tracked | the next test run with coverage on |
+
+The lists are `TOOL_CACHES` and `BUILD_DIRS` in
+`apps/agent-worker/agent_worker/checkpoint.py`.
+
+**A restore still produces a working tree.** Every row above is output of a
+command, never the agent's work, and a resumed agent runs the command again the
+way a fresh clone needs it run. The one way that could fail is a build
+directory a repository *commits* — some libraries commit `dist/`. Left out, it
+would come back as a checkout whose committed files read as deleted, and a
+publish could carry the deletion. So a `BUILD_DIRS` directory is left out only
+when the nearest git checkout around it tracks nothing under it. The worker
+reads that from the checkout's index file itself (formats 2-4, SHA-1 or
+SHA-256), never by running git, which would run the agent's `core.fsmonitor`;
+an index it cannot read keeps the directory. Only directories are matched: a
+*file* named `dist` is kept.
+
 ---
 
 ## 2. Layout in GCS
@@ -119,6 +152,42 @@ that moved the marker onto a later commit of its own kept its earlier commits
 out of the fold that makes every pushed commit the worker's. A manifest written
 before the field existed holds `null`; that attempt's work is harvested against
 the marker and is not pushed.
+
+### Incremental archives after the first
+
+**An attempt's first checkpoint is a full archive; each one after it holds only
+what changed since the one before** (#637). The worker remembers, per entry,
+what it archived last time — for a file its mode, size, mtime, ctime and inode;
+for a link its target; for a directory its mode — and archives the entries that
+differ. Deletions, and entries that changed kind (a file that became a
+directory), are listed so the restore removes them first. A file written within
+a second of the walk that read it is *racy* — a same-size rewrite in the same
+clock tick changes none of those fields — and is archived again next time, which
+is git's rule for the same problem.
+
+**The chain lives inside the archives, bound by digest.** An incremental
+archive's gzip header comment holds `swarm-checkpoint {"base": {checkpoint_id,
+archive_sha256}, "deleted": [...]}`. A restore verifies the head against the
+digest the attempt document recorded (section 3), reads its base from the
+verified bytes, fetches that base from beside it, verifies it against the digest
+the head named, and so on down to a full archive; then it replays them oldest
+first. Rewriting a base in the bucket, or a manifest's `base_checkpoint_id` /
+`base_archive_sha256` (which are there for a reader only), gets the restore
+refused, not a planted tree restored. The comment is not a tar member, so it
+cannot collide with an agent's file, and every gzip reader skips it — the
+console's checkpoint browser lists an incremental archive's own members, which
+are the changes; its manifest says `"kind": "incremental"`.
+
+**A chain never crosses an attempt.** A resume is a new attempt, and its first
+checkpoint is full. That is what keeps retention simple: the reconciler keeps
+every checkpoint of the attempt `task.latest_checkpoint` names
+(`reconciler/checkpoints.py`, `classify`), because which of them is the full
+archive is in the bytes, not the key.
+
+**Chains are short.** A new full archive is written after
+`CHECKPOINT_CHAIN_MAX` (24) incremental ones, or as soon as the incremental
+archives since the last full one weigh as much as it does, whichever is first.
+A restore refuses a chain longer than 200 or one that loops.
 
 ---
 
@@ -196,16 +265,30 @@ Path traversal is checked on the way **out**, not trusted on the way in.
 
 ## 4. When checkpoints happen
 
-| Trigger | Where |
-|---|---|
-| Every `checkpoint_interval_seconds` (default 120; `mock` uses 30) | worker step 8 |
-| Before parking on provider quota | `agent_worker/quota.py` |
-| Before exiting on cancellation | worker shutdown path |
-| Final, after the runner exits | worker step 10 |
+| Trigger | Where | Skipped when nothing changed? |
+|---|---|---|
+| Every `checkpoint_interval_seconds` (default 120; `mock` uses 30), backing off while unchanged | worker step 8 | **yes** — nothing is written, and the interval doubles |
+| Before parking on provider quota | `agent_worker/quota.py` | never |
+| Before exiting on cancellation | worker shutdown path | never |
+| On SIGTERM, a control-plane outage, a child await | worker shutdown paths | never |
+| Final, after the runner exits | worker step 10 | never |
 
 The interval is per runner profile (`RunnerProfile.checkpoint_interval_seconds`)
 and is *mandatory* — there is no profile-level switch to turn it off, because a
 profile with it off would be a profile whose long runs are unrecoverable.
+
+**The periodic checkpoint backs off while the tree is unchanged** (#637, owner
+decision 2026-10-05). At each tick the worker walks `work/` with `stat` only; if
+nothing differs from the last checkpoint it writes nothing — no archive, no
+`checkpoint_started` event, no id — and waits twice as long for the next look:
+2 → 4 → 8 → 10 minutes at the default interval, capped by
+`CHECKPOINT_MAX_INTERVAL_SECONDS` (default 600). The first change found resets
+it to the base interval. A failed checkpoint is not an unchanged one and is
+retried at the base interval. The cost, stated plainly: a change made just after
+an unchanged look waits up to the current backoff, at most 10 minutes, to be
+taken. Every other checkpoint in the table is written whether or not anything
+changed — an empty incremental archive is a few hundred bytes — because each is
+the one the next attempt restores (invariant 8).
 
 ---
 
@@ -299,7 +382,9 @@ and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
 | Resume restores an old checkpoint | newer ones never committed | check worker logs for upload errors and GCS permissions on the tenant prefix |
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
 | Resume starts from scratch with "no checkpoint is restored; starting from an empty workspace" | a check in section 3 refused the recorded checkpoint; the log line's `reason` names which | expected on a first attempt; on a retry, an error line just before it says what did not match. A checkpoint under the prefix that no attempt recorded is never restored, by design (#347) |
-| Checkpoints growing every cycle | build output inside `work/` (`node_modules`, anywhere, and HOME's tool caches are already left out: `checkpoint.TOOL_CACHES`) | fix the runner; do not raise `max_bytes` |
+| Checkpoints growing every cycle | build output inside `work/` that is not in `TOOL_CACHES` or `BUILD_DIRS`, or a build directory the checkout tracks (section 1) | fix the runner; do not raise `max_bytes` |
+| Restore fails with "failed integrity check" on a `ckpt-` other than the recorded one | a base of an incremental chain was rewritten or deleted in the bucket | expected refusal; the chain is bound by digest (section 2) |
+| A periodic checkpoint missing for several minutes, "checkpoint unchanged; nothing written" in the log | the tree did not change; the interval backed off | none needed; the next change resets it |
 | Restore fails with "holds a path outside the workspace", "through its own link", "holds a hard link" or "more than once" | the archive is inconsistent with itself: a traversing path, a member written through a symlink member, or a hard link to a missing, skipped or outside member | expected refusal; this platform's archiver never writes one, so inspect the archive before trusting its producer |
 | "checkpoint restore skipped links escaping the workspace" | the agent's tree held symlinks pointing outside `work/` (uv's `bin/python` is the usual one) | none needed; those links are not recreated and the rest restored |
 

@@ -166,6 +166,7 @@ from .accountlease import (
 from .checkpoint import (
     ARCHIVE_NAME,
     MANIFEST_NAME,
+    CheckpointBackoff,
     CheckpointManager,
     CheckpointRecord,
     checkpoint_prefix,
@@ -1854,6 +1855,13 @@ class Worker:
             self._lease_live_until = now + self.control.heartbeat_extension_seconds
         next_heartbeat = now + cfg.heartbeat_interval_seconds
         next_checkpoint = now + cfg.checkpoint_interval_seconds
+        # #637: while the tree is unchanged the periodic checkpoint writes
+        # nothing and the wait to the next look doubles, to the cap; a change
+        # resets it. Only the periodic one: every exit's checkpoint is written.
+        checkpoint_backoff = CheckpointBackoff(
+            base_seconds=cfg.checkpoint_interval_seconds,
+            cap_seconds=cfg.checkpoint_max_interval_seconds,
+        )
         next_poll = now + cfg.control_poll_seconds
         next_live_log = now + cfg.live_log_interval_seconds
 
@@ -1896,7 +1904,11 @@ class Worker:
                     return self._exit_fenced_mid_run(
                         child, observed_generation=exc.actual, reason=str(exc)
                     )
-                next_checkpoint = now + cfg.checkpoint_interval_seconds
+                # A failed checkpoint is not an unchanged one: it is retried
+                # at the base interval.
+                next_checkpoint = now + checkpoint_backoff.next_interval(
+                    changed=not self.checkpoints.last_unchanged
+                )
 
             # BEATEN THROUGH, LIKE THE CHECKPOINT (#426). Both leave the control
             # plane for another service -- up to four GCS uploads with a 60 s
@@ -6023,34 +6035,59 @@ class Worker:
         archive (#286): the owner check, the start event and the pointer's
         transaction are Firestore calls with budgets of 30-60 s each, and they
         ran with nothing beating. The carrier push after it beats on its own.
+
+        ONLY THE PERIODIC CHECKPOINT IS EVER SKIPPED (#637), and that is
+        decided by its label here, so no other caller can ask for it: when the
+        tree is as the last checkpoint left it, nothing is announced or
+        written, None is returned, and `checkpoints.last_unchanged` says so.
+        The final, park, cancellation, interruption, outage and child-await
+        checkpoints are written whatever changed (invariant 8).
         """
         if self.ws is None:
             return None
         with self._heartbeat_meanwhile(f"checkpoint ({label})"):
-            record = self._write_checkpoint(label)
+            record = self._write_checkpoint(label, only_if_changed=label == "periodic")
         if record is None:
             return None
         self._last_checkpoint = record
         self._push_carrier_branch(label)
         return record
 
-    def _write_checkpoint(self, label: str) -> CheckpointRecord | None:
+    def _write_checkpoint(
+        self, label: str, *, only_if_changed: bool = False
+    ) -> CheckpointRecord | None:
         """`_checkpoint`'s owner check, archive and record, under its heartbeat."""
         assert self.ws is not None  # checked by `_checkpoint`
         try:
-            self.control.ensure_owner(write=f"checkpoint ({label})")
+            if only_if_changed:
+                # The owner check and the start event run once the walk has
+                # found a change, before the first byte is uploaded: an
+                # unchanged tick announces nothing.
+                record = self.checkpoints.create_if_changed(
+                    self.ws, label=label, before_upload=lambda: self._announce_checkpoint(label)
+                )
+                if record is None:
+                    # Still the owner check: the periodic tick is one of the
+                    # places a mid-run fence is met (`_exit_fenced_mid_run`),
+                    # and a tree that stopped changing must not stop that.
+                    self._confirm_owner(label)
+                    return None
+            else:
+                self._announce_checkpoint(label)
+                record = self.checkpoints.create(self.ws, label=label)
         except (FencedError, TenantMismatchError):
             raise
+        except CheckpointError as exc:
+            self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
+            return None
         except Exception as exc:
-            # A read that could not be made is not a fence. Carry on, as a
-            # checkpoint always has. The pointer's own transaction is still the
-            # authority, and it re-checks.
-            self.log.warning(
-                "could not confirm this attempt still owns its task before "
-                "checkpointing; the pointer write will check again",
-                label=label,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            self.log.exception("checkpoint failed unexpectedly", exc, label=label)
+            return None
+        return self._record_checkpoint(label, record)
+
+    def _announce_checkpoint(self, label: str) -> None:
+        """The owner check and the start event every written checkpoint is preceded by."""
+        self._confirm_owner(label)
         try:
             # The announcement is an audit record, written to Firestore; the
             # archive goes to the bucket. An event that cannot be written must
@@ -6065,14 +6102,26 @@ class Worker:
                 label=label,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    def _confirm_owner(self, label: str) -> None:
+        """Raise the fence if this attempt no longer owns its task; a failed read is not one."""
         try:
-            record = self.checkpoints.create(self.ws, label=label)
-        except CheckpointError as exc:
-            self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
-            return None
+            self.control.ensure_owner(write=f"checkpoint ({label})")
+        except (FencedError, TenantMismatchError):
+            raise
         except Exception as exc:
-            self.log.exception("checkpoint failed unexpectedly", exc, label=label)
-            return None
+            # A read that could not be made is not a fence. Carry on, as a
+            # checkpoint always has. The pointer's own transaction is still the
+            # authority, and it re-checks.
+            self.log.warning(
+                "could not confirm this attempt still owns its task before "
+                "checkpointing; the pointer write will check again",
+                label=label,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _record_checkpoint(self, label: str, record: CheckpointRecord) -> CheckpointRecord | None:
+        """Write a checkpoint's record: the attempt's list and digest, the pointer, the event."""
         # THE RECORD'S ERRORS STAY HERE (#70). The archive is in the bucket; the
         # record -- the attempt's list and digest, the task's pointer, the
         # event -- is Firestore's, under its budget. A record that could not

@@ -33,6 +33,7 @@ import os
 import stat
 import subprocess
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,14 @@ def _tree(root: Path) -> dict[str, tuple]:
     return out
 
 
+def _settled(monkeypatch) -> None:
+    """Shrink the racy window, and wait it out, so files written above count as settled."""
+    from agent_worker import checkpoint as checkpoint_mod
+
+    monkeypatch.setattr(checkpoint_mod, "RACY_WINDOW_NS", 50_000_000)
+    time.sleep(0.1)
+
+
 # ---------------------------------------------------------------------------
 # 1. rebuildable directories are left out
 # ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ def test_dependency_and_build_directories_are_not_archived(store, tmp_path, log_
     assert "repo/docs/dist" in names
     for name in BUILD_DIRS:
         assert not any(n == f"repo/{name}" or n.startswith(f"repo/{name}/") for n in names), name
-        assert not any(f"/{name}/" in f"/{n}/" for n in names), name
+        assert not any(f"/{name}/" in f"/{n}" for n in names), name
     assert not any(n.startswith((".cache", ".npm", ".venv")) for n in names)
     assert not any("node_modules" in n for n in names)
 
@@ -147,7 +156,7 @@ def test_a_build_directory_git_tracks_is_kept(store, tmp_path, log_stream):
 # 2. incremental after the first, and a restore replays the chain
 # ---------------------------------------------------------------------------
 
-def test_incremental_restore_equals_a_full_restore(store, tmp_path, log_stream):
+def test_incremental_restore_equals_a_full_restore(store, tmp_path, log_stream, monkeypatch):
     logger = _logger(log_stream)
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     work = ws.work
@@ -158,6 +167,7 @@ def test_incremental_restore_equals_a_full_restore(store, tmp_path, log_stream):
     _write(work / "repo" / "becomes_dir", "a file that becomes a directory\n")
     _write(work / "repo" / "becomes_link" / "x.txt", "a directory that becomes a link\n")
     _write(work / "repo" / "script.sh", "#!/bin/sh\n")
+    _settled(monkeypatch)
     manager = _manager(store, logger)
     first = manager.create(ws)
     assert first.base_checkpoint_id is None
@@ -174,6 +184,7 @@ def test_incremental_restore_equals_a_full_restore(store, tmp_path, log_stream):
     os.symlink("edit.txt", work / "repo" / "becomes_link")
     os.chmod(work / "repo" / "script.sh", 0o755)
     _write(work / "repo" / "new" / "file.txt", "new\n")
+    time.sleep(0.1)  # settled, so the third archive holds only the third's changes
     second = manager.create(ws)
 
     _write(work / "repo" / "edit.txt", "v3\n")
@@ -236,6 +247,10 @@ def test_the_chain_is_rebased_on_a_full_archive(store, tmp_path, log_stream, mon
 
     monkeypatch.setattr(checkpoint_mod, "CHECKPOINT_CHAIN_MAX", 2)
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    # Incompressible, so the full archive outweighs the small ones on it and
+    # only the length rule rebases.
+    (ws.work / "weight.bin").write_bytes(os.urandom(256 * 1024))
+    _settled(monkeypatch)
     manager = _manager(store, _logger(log_stream))
     bases = []
     for index in range(5):
@@ -248,9 +263,12 @@ def test_the_chain_is_rebased_on_a_full_archive(store, tmp_path, log_stream, mon
 # 3. an unchanged tree backs off; the final checkpoint is always written
 # ---------------------------------------------------------------------------
 
-def test_an_unchanged_tree_is_not_rewritten_and_a_change_is(store, tmp_path, log_stream):
+def test_an_unchanged_tree_is_not_rewritten_and_a_change_is(
+    store, tmp_path, log_stream, monkeypatch
+):
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     _write(ws.work / "a.txt", "one\n")
+    _settled(monkeypatch)
     manager = _manager(store, _logger(log_stream))
     announced: list[str] = []
 
@@ -270,6 +288,24 @@ def test_an_unchanged_tree_is_not_rewritten_and_a_change_is(store, tmp_path, log
     assert changed.checkpoint_id == "ckpt-00002", "a skipped tick takes no id"
 
 
+def test_a_rewrite_in_the_same_clock_tick_is_not_missed(store, tmp_path, log_stream):
+    """Same size, and quite possibly the same mtime, ctime and inode: only the
+    racy rule catches it, by archiving a just-written file again next time."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    target = ws.work / "a.txt"
+    target.write_text("one\n")
+    manager = _manager(store, _logger(log_stream))
+    manager.create(ws)
+    with target.open("r+") as handle:  # in place: the inode stays
+        handle.write("two\n")
+    record = manager.create_if_changed(ws)
+    assert record is not None
+    assert _members(store, record) == ["a.txt"]
+    resumed = workspace_mod.create(tmp_path / "ws2", "att_2")
+    _manager(store, _logger(log_stream), attempt_id="att_2").restore(record, resumed)
+    assert (resumed.work / "a.txt").read_text() == "two\n"
+
+
 def test_the_interval_backs_off_while_unchanged_and_resets_on_change():
     backoff = CheckpointBackoff(base_seconds=120, cap_seconds=600)
     assert backoff.current == 120
@@ -283,10 +319,11 @@ def test_the_interval_backs_off_while_unchanged_and_resets_on_change():
 
 @pytest.mark.parametrize("label", ["final", "quota-park", "cancellation", "interrupted"])
 def test_every_checkpoint_but_the_periodic_one_is_written_unchanged(
-    store, tmp_path, log_stream, label
+    store, tmp_path, log_stream, label, monkeypatch
 ):
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     _write(ws.work / "a.txt", "one\n")
+    _settled(monkeypatch)
     manager = _manager(store, _logger(log_stream))
     manager.create(ws)
     assert manager.create_if_changed(ws) is None
@@ -300,8 +337,12 @@ def test_every_checkpoint_but_the_periodic_one_is_written_unchanged(
 
 
 def test_a_worker_skips_unchanged_periodic_checkpoints_and_still_writes_the_final(
-    db, store, tmp_path, log_stream, worker_factory
+    db, store, tmp_path, log_stream, worker_factory, monkeypatch
 ):
+    from agent_worker import checkpoint as checkpoint_mod
+
+    # The racy window is a second; this test's interval is too.
+    monkeypatch.setattr(checkpoint_mod, "RACY_WINDOW_NS", 50_000_000)
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 3.5})
     worker, _, _ = worker_factory(checkpoint_interval_seconds=1)
     assert worker.run() == ExitCode.OK
