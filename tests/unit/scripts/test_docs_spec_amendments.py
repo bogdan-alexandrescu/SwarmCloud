@@ -186,6 +186,7 @@ def _cited_anchor(path: str, text: str, *, once: bool = True) -> str:
     `once` (the default) also holds that the text names ONE place: an anchor
     that occurs twice does not say which of the two the doc means.
     """
+    assert "\n" not in text, f"an anchor is one line of {path}: {text!r}"
     target = REPO / path
     assert target.is_file(), f"cited {path}, which does not exist"
     source = target.read_text(encoding="utf-8")
@@ -356,3 +357,19 @@ CITING = AMENDED + (CHILD_TASKS,)
 def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
     """No `path:N`; every `path::qualname` names a def, class or name; every `path` (`text`) finds its text."""
     _assert_cites_resolve(doc)
+
+
+def test_an_anchor_that_is_gone_or_ambiguous_fails():
+    """The helpers' own failure modes: the reason a moved line no longer turns main red is
+    that the anchor is checked for presence instead, so presence must really be checked."""
+    dockerfile = "images/agent-runtime-base/Dockerfile"
+    with pytest.raises(AssertionError, match="no longer contains"):
+        _cited_anchor(dockerfile, "USER swarm:swarm-that-is-not-there")
+    with pytest.raises(AssertionError, match="times: cite one place"):
+        _cited_anchor(dockerfile, "RUN ")
+    assert _cited_anchor(dockerfile, "RUN ", once=False).lstrip().startswith("RUN ")
+    with pytest.raises(AssertionError, match="has no"):
+        _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR_GONE")
+    # A name's `#:` block is part of what it cites; a function's decorator is too.
+    assert _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR").startswith("#: v2: root inside a gVisor sandbox.")
+    assert _cited_symbol("apps/swarm-api/swarm_api/routes/platform.py", "runtimes").startswith("@router.get(")

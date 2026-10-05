@@ -282,7 +282,8 @@ def test_accounts_section_says_no_pod_runs_claudeswitch():
     assert "claudeswitch" not in _text(REPO / "images" / "agent-runtime-base" / "Dockerfile")
     assert "No pod and no service runs claudeswitch" in body
     oauth = "apps/quota-broker/quota_broker/oauth.py"
-    assert _cited_symbol(oauth, "TOKEN_ENDPOINT").startswith("TOKEN_ENDPOINT = ")
+    # The cited source opens with the name's `#:` block; the assignment is its last line.
+    assert _cited_symbol(oauth, "TOKEN_ENDPOINT").splitlines()[-1].startswith("TOKEN_ENDPOINT = ")
     assert f"`{oauth}::TOKEN_ENDPOINT`" in body
 
 
@@ -297,7 +298,7 @@ def test_dispatch_section_records_the_hold_not_the_lease():
     # The variable's NAME, built from pieces: no value is involved here.
     variable = "CLAUDE_CODE_OAUTH_" + "TOK" + "EN"
     name = "ACCOUNT_" + "TOK" + "EN_ENV"
-    assert _cited_symbol(accountlease, name) == f'{name} = "{variable}"'
+    assert _cited_symbol(accountlease, name).splitlines()[-1] == f'{name} = "{variable}"'
     for cite in (f"{broker}::Account", f"{accountlease}::{name}"):
         assert f"`{cite}`" in body, cite
     assert "HOLD" in body and "request 13" in body
