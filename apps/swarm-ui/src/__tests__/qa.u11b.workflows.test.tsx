@@ -34,7 +34,6 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { cellStyle, fixedColumns, fontPx, lengthPx, nowrap, textPx } from './tablefit'
 
-const WAIT = { timeout: 8000 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The list's box at 1440: 1440 less the 84px spine, the 236px panel and two 32px gutters. */
 const LIST_AT_1440 = 1440 - 84 - 236 - 64
@@ -70,7 +69,7 @@ async function stepTable(path: string): Promise<HTMLElement> {
     const t = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(t?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return t!
-  }, WAIT)
+  })
 }
 
 /** Ten rows of long names: the fixture's rows, cloned and renamed. */
@@ -206,7 +205,7 @@ async function list(): Promise<HTMLTableElement> {
     const t = document.querySelector<HTMLTableElement>('.wfl .wfl-table')
     expect(t!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
     return t!
-  }, WAIT)
+  })
 }
 
 describe('N7: the Runners cell names the runner', () => {
@@ -265,8 +264,8 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
       const n = document.querySelector<HTMLButtonElement>('.wf-canvas button.node')
       expect(n).not.toBeNull()
       return n!
-    }, WAIT)
+    })
     fireEvent.click(node)
-    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true), WAIT)
+    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true))
   })
 })

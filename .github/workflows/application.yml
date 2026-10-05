@@ -697,11 +697,13 @@ jobs:
         # workers outside watch mode: 3 on this 4-vCPU runner, one core left
         # for the main process. That is not oversubscription, and the issue's
         # own numbers agree -- 946 s of tests in a 517 s run is ~1.8 files at
-        # a time, under the 3 allowed. The flakes were waits, not starvation:
-        # each `*ByRole` poll over the agent split cost ~850 ms of
+        # a time, under the 3 allowed; a 2-worker run of the whole suite on
+        # 2026-10-05 took 526 s, the same. The flakes were waits, not
+        # starvation: each `*ByRole` poll over the agent split cost ~850 ms of
         # `getComputedStyle` even on an idle machine, so a 1000 ms `findBy`
         # held one poll. The tests now wait on their read instead
-        # (src/__tests__/reads.ts), and setup.ts's asyncUtilTimeout is 2000 ms.
+        # (src/__tests__/reads.ts); in that 526 s run no wait took over
+        # 1000 ms, and setup.ts's asyncUtilTimeout is 2000 ms.
         run: npm test
 
       - name: production build

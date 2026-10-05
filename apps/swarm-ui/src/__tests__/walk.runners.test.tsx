@@ -23,7 +23,6 @@ import { loadCapacity } from '../api'
 import { RunnerPicker, RunnerSelect, runnerSplit } from '../RunnerPicker'
 import type { RunnerProfile } from '../types'
 
-const WAIT = { timeout: 8000 }
 
 afterEach(() => {
   window.history.replaceState(null, '', '/')
@@ -50,7 +49,7 @@ describe('D: the issue form shows the one runner it can use', () => {
       const g = document.querySelector<HTMLElement>('[role="radiogroup"][aria-label="runner"]')
       expect(g).not.toBeNull()
       return g!
-    }, WAIT)
+    })
     const radios = within(group).getAllByRole('radio')
     expect(radios.map((r) => (r as HTMLInputElement).value)).toEqual(['claude-code'])
     expect(group.textContent, 'a disabled explanation in the usable list').not.toMatch(/disabled:/)

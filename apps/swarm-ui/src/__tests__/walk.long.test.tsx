@@ -26,7 +26,6 @@ import { painted, TABLES } from './marks'
 import { resolveVars } from './spaceprobe'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 
 afterEach(() => {
@@ -57,7 +56,7 @@ async function page(path: string, selector: string): Promise<HTMLElement> {
     const el = document.querySelector<HTMLElement>(selector)
     expect(el, selector).not.toBeNull()
     return el!
-  }, WAIT)
+  })
 }
 
 describe('C: a long name is two lines and a tooltip, never off the edge', () => {
@@ -78,7 +77,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
       const t = document.querySelector<HTMLElement>('.ag-head-title')
       expect(t).not.toBeNull()
       return t!
-    }, WAIT)
+    })
     expect(painted(title, '-webkit-line-clamp', WIDE)).toBe('2')
     expectTitled(title, 'the agent title')
   })
@@ -105,7 +104,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
       const n = [...document.querySelectorAll('a.ov-name, a.ov-prun-n')]
       expect(n.length).toBeGreaterThan(0)
       return n
-    }, WAIT)
+    })
     for (const n of names) {
       expectClamped(n, 'an Overview agent name')
       expectTitled(n, 'an Overview agent name')

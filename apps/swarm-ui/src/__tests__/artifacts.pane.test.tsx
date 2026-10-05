@@ -39,7 +39,6 @@ import { task as baseTask } from './runfixture'
 vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
 
 const REF = 'task_73b5f4d9ca3641fbb914'
-const WAIT = { timeout: 8000 }
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
 
 function json(body: unknown, status = 200): Response {
@@ -336,7 +335,7 @@ async function sectionReady(title: string, text: string | RegExp): Promise<HTMLE
     const s = section(title)
     expect(s.textContent ?? '').toMatch(text)
     return s
-  }, WAIT)
+  })
 }
 
 function row(within: HTMLElement, name: string): HTMLTableRowElement {
@@ -364,7 +363,7 @@ afterEach(() => {
 async function openTranscriptOfNoCliRunner(): Promise<void> {
   const dock = await sectionReady('Log', /Runner/)
   const pressed = () => [...dock.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.getAttribute('aria-pressed') === 'true')
-  await waitFor(() => expect(pressed()?.textContent, 'a runner with no agent CLI did not open on Runner').toBe('Runner'), WAIT)
+  await waitFor(() => expect(pressed()?.textContent, 'a runner with no agent CLI did not open on Runner').toBe('Runner'))
   const t = [...dock.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'Transcript')
   fireEvent.click(t!)
 }
@@ -380,7 +379,7 @@ describe('the drawer has five panes: Details, Logs, Attempts, Artifacts, Checkpo
       const list = drawer().querySelector('[role="tablist"][aria-label="Agent panes"]')
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
-    }, WAIT)
+    })
     expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(tabs[3]!.getAttribute('aria-selected')).toBe('true')
     for (const title of ['Inputs', 'Outputs', 'Log']) await sectionReady(title, /./)
@@ -455,7 +454,7 @@ describe('Outputs: the answer first, then every file', () => {
       'no open full for the image',
     ).toBe(true)
     fireEvent.error(img!)
-    await waitFor(() => expect(out.textContent).toMatch(/image could not be loaded/), WAIT)
+    await waitFor(() => expect(out.textContent).toMatch(/image could not be loaded/))
     expect(out.querySelector('.ctl-mark.is-unread'), 'a broken image is not marked as a failed read').not.toBeNull()
     expect(out.querySelector('img'), 'the broken image is still drawn as a blank box').toBeNull()
   })
@@ -498,21 +497,21 @@ describe('Outputs: the answer first, then every file', () => {
     }
 
     open('report.md')
-    await waitFor(() => expect(out.querySelector('.art-viewer .art-md h4')?.textContent).toBe('Report'), WAIT)
+    await waitFor(() => expect(out.querySelector('.art-viewer .art-md h4')?.textContent).toBe('Report'))
 
     open('claude-transcript.json')
     // A WHOLE JSON FILE OPENS AS A TREE, with Raw beside it (viewers.html A).
-    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toContain('"num_turns": 7'), WAIT)
+    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toContain('"num_turns": 7'))
     fireEvent.click([...out.querySelectorAll<HTMLButtonElement>('.art-viewer [aria-label="JSON view"] button')].find((b) => b.textContent === 'Raw')!)
-    await waitFor(() => expect(out.querySelector('.art-viewer pre.art-text')?.textContent).toBe('{\n  "type": "result",\n  "num_turns": 7\n}'), WAIT)
+    await waitFor(() => expect(out.querySelector('.art-viewer pre.art-text')?.textContent).toBe('{\n  "type": "result",\n  "num_turns": 7\n}'))
 
     open('big.json')
-    await waitFor(() => expect(out.querySelector('.art-viewer')?.textContent).toMatch(/partial, not pretty-printed/), WAIT)
+    await waitFor(() => expect(out.querySelector('.art-viewer')?.textContent).toMatch(/partial, not pretty-printed/))
     expect(out.querySelector('.art-viewer pre.art-text')?.textContent, 'a partial JSON window was reformatted').toBe('{"steps":[{"a":1},{"a"')
 
     const before = api.count(`/v1/tasks/${REF}/artifacts/content`)
     fireEvent.click(row(out, 'bundle.tar').querySelector('button.art-open')!)
-    await waitFor(() => expect(out.textContent).toMatch(/binary · 4 KiB/), WAIT)
+    await waitFor(() => expect(out.textContent).toMatch(/binary · 4 KiB/))
     expect(api.count(`/v1/tasks/${REF}/artifacts/content`), 'a binary file was read as text').toBe(before)
   })
 
@@ -604,7 +603,7 @@ describe('Outputs lists every file the run uploaded, past one page of the listin
     const { manifest, served, routes } = manyFiles(61)
     await openPane(routes)
     const out = await sectionReady('Outputs', /screenshot-000\.png/)
-    await waitFor(() => expect(fileRows(out).size, 'a file of the manifest has no row').toBe(manifest.length), WAIT)
+    await waitFor(() => expect(fileRows(out).size, 'a file of the manifest has no row').toBe(manifest.length))
     const rows = fileRows(out)
     for (const e of manifest) {
       expect(rows.get(e.name)?.querySelector('a[download]')?.getAttribute('href'), `${e.name} cannot be downloaded`).toBe(
@@ -631,7 +630,7 @@ describe('Outputs lists every file the run uploaded, past one page of the listin
     expect(head.querySelector('.ctl-mark.is-partial'), 'a cut listing is not marked partial').not.toBeNull()
     expect(out.querySelector('.arts-files .c-chip.is-n')?.textContent, 'the count is the page, not the run').toBe(String(manifest.length))
 
-    await waitFor(() => expect(fileRows(out).size).toBe(manifest.length), WAIT)
+    await waitFor(() => expect(fileRows(out).size).toBe(manifest.length))
     const rows = fileRows(out)
     for (const e of manifest) {
       expect(rows.get(e.name)?.querySelector('a[download]')?.getAttribute('href'), `${e.name} cannot be downloaded`).toBe(
@@ -964,7 +963,7 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     expect(link?.getAttribute('href')).toBe(`#work/task/${UP}/artifacts`)
     expect(r.querySelector<HTMLAnchorElement>('a[download]')?.getAttribute('href')).toBe(rawHref(UP, 'scan.md', 'attachment'))
     fireEvent.click(r.querySelector('button.art-open')!)
-    await waitFor(() => expect(inputs.querySelector('.art-viewer .art-md h4')?.textContent).toBe('Scan'), WAIT)
+    await waitFor(() => expect(inputs.querySelector('.art-viewer .art-md h4')?.textContent).toBe('Scan'))
     expect(api.count(`/v1/tasks/${UP}/artifacts/content`), 'the staged file was not read from its upstream run').toBe(1)
   })
 
@@ -975,7 +974,7 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     expect(r.textContent).toMatch(/2 KiB/)
     expect(r.textContent, 'a staged size is drawn as zero').not.toMatch(/0 B/)
     fireEvent.click(r.querySelector('button.art-open')!)
-    await waitFor(() => expect(inputs.textContent).toMatch(/removed from the upstream run/), WAIT)
+    await waitFor(() => expect(inputs.textContent).toMatch(/removed from the upstream run/))
   })
 })
 
@@ -1032,9 +1031,9 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
       fireEvent.click(b!)
     }
     choose('Agent stderr')
-    await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
     choose('Runner')
-    await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/), WAIT)
+    await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
     row(logsSection, 'stdout')
     row(logsSection, 'stderr')
   })
@@ -1193,12 +1192,12 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
     const out = await sectionReady('Outputs', /report\.md/)
     const fact = () => [...out.querySelectorAll('.art-viewer li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'not utf-8')
     fireEvent.click(row(out, 'report.md').querySelector('button.art-open')!)
-    await waitFor(() => expect(fact(), 'bytes shown as U+FFFD are not counted').toBeTruthy(), WAIT)
+    await waitFor(() => expect(fact(), 'bytes shown as U+FFFD are not counted').toBeTruthy())
     expect(fact()!.textContent).toMatch(/3/)
     expect(fact()!.querySelector('.ctl-mark.is-partial')).not.toBeNull()
     fireEvent.click(row(out, 'claude-transcript.json').querySelector('button.art-open')!)
     // A whole JSON file opens as its tree (viewers.html A).
-    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toBe('{ 0 keys }'), WAIT)
+    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toBe('{ 0 keys }'))
     expect(fact(), 'a zero count is drawn as a finding').toBeUndefined()
   })
 })
@@ -1316,7 +1315,7 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
       expect(c?.textContent).toMatch(/^\d+s ago/)
       expect(c?.querySelector('.ctl-sub')?.textContent).toBe('live')
       return c!
-    }, WAIT)
+    })
     expect(shownAt(cell, { width: 390 }), 'a live stream’s age is hidden at 390').toBe(true)
   })
 
@@ -1515,7 +1514,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     }
     choose('Runner')
     for (const name of ['stdout', 'stderr']) {
-      const head = await waitFor(() => row(logsSection, name).querySelector('th')!, WAIT)
+      const head = await waitFor(() => row(logsSection, name).querySelector('th')!)
       expect(head.querySelector('.uri')?.textContent).toContain(`/logs/${name}.log`)
       expect([...head.querySelectorAll('button.copy')].map((b) => b.textContent)).toContain('copy gsutil')
     }
@@ -1600,13 +1599,13 @@ describe('the address names the open output and never the open file of a patch',
   it('opening change.diff gives exactly /agents/<tab>/<id>/artifacts/change.diff; n and a click leave it alone', async () => {
     await openPane(patchRoutes())
     const out = await sectionReady('Outputs', /change\.diff/)
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`), WAIT)
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`))
     fireEvent.click(row(out, 'change.diff').querySelector('button.art-open')!)
     const scroller = await waitFor(() => {
       const s = drawer().querySelector<HTMLElement>('section.diff .diff-scroll')
       expect(s, 'change.diff did not open in the diff viewer').not.toBeNull()
       return s!
-    }, WAIT)
+    })
     const named = `/agents/live/${REF}/artifacts/change.diff`
     expect(window.location.pathname).toBe(named)
     expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
@@ -1619,7 +1618,7 @@ describe('the address names the open output and never the open file of a patch',
     expect(window.location.hash).toBe('')
     // Back to the list takes the name out of the address again.
     fireEvent.click(drawer().querySelector<HTMLElement>('.diff-bar .diff-back')!)
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`), WAIT)
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`))
     expect(drawer().querySelector('section.diff')).toBeNull()
   })
 
@@ -1629,7 +1628,7 @@ describe('the address names the open output and never the open file of a patch',
       const s = drawer().querySelector<HTMLElement>('section.diff .diff-scroll')
       expect(s, 'the named output was not opened').not.toBeNull()
       return s!
-    }, WAIT)
+    })
     expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
     expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts/change.diff`)
   })

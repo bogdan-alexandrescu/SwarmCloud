@@ -19,11 +19,13 @@ import { forgetProbes } from '../fetch'
 // 2000 ms for findBy*/waitFor, twice Testing Library's default and no more (#605). #591 set
 // 8000 after qa.u11a.logs and qa.u10a.agent timed out on unrelated branches' runs on 2026-10-05.
 // The cause was the waits, not the box: each poll of a `findByRole` over the agent split cost
-// ~850 ms of `getComputedStyle` even idle, so those waits took 1.5-1.9 s in a full run on
-// 2026-10-05 and a loaded runner fit one poll in the window. They now wait on the read their
-// assertion depends on (`landed` in reads.ts) and query once. A ceiling this high stays only
-// as headroom for a runner busier than the one measured; a wait that needs more is a test to
-// fix like those, not a reason to raise this. Files that pass their own `{ timeout }` keep it.
+// ~850 ms of `getComputedStyle` even idle, so qa.u11a's waits took up to 2.0 s and a loaded
+// runner fit one poll in the window. They now wait on the read their assertion depends on
+// (`landed` in reads.ts) and query once. Measured on 2026-10-05 over the whole suite (217
+// files, 2 workers, 526 s -- the CI job's 517-572 s), no wait took over 1000 ms; the longest was
+// 853 ms. So the per-file `{ timeout: 8000 }` limits sixteen agent-split and walkthrough files
+// carried are gone too. This ceiling stays only as headroom for a runner busier than the one
+// measured; a wait that needs more is a test to fix like those, not a reason to raise this.
 configure({ asyncUtilTimeout: 2000 })
 
 const forbidden = (): never => {
