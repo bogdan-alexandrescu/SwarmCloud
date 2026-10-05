@@ -248,14 +248,16 @@ def test_the_window_case_is_not_repaired_inside_the_grace(db, config):
 
 
 def test_the_window_with_its_lease_still_held_is_repaired_too(db, config):
-    """The lease `finish` never got to release: the orphan-lease rule returns
-    the slot as it always did, and this rule ends the attempt and its hold."""
+    """The lease `finish` never got to release: the lease rules return the slot
+    as they always did, and this rule ends the attempt and its hold."""
     seed_window(db, finished_seconds_ago=GRACE + 60, lease_released=False)
     rec, releaser = build(db, config)
 
     report = rec.run_once()
 
-    assert sorted(o.kind for o in report.outcomes) == ["lost_after_finish", "orphan_lease"]
+    kinds = [o.kind for o in report.outcomes]
+    assert kinds.count("lost_after_finish") == 1, kinds
+    assert "orphan_lease" in kinds, kinds
     assert db.doc("leases/lease_1")["released_at"] is not None
     assert db.doc("attempts/att_1")["completed_at"] is not None
     assert live_holds(db) == [("", "")]
@@ -399,7 +401,7 @@ def test_a_hold_with_no_stamps_still_waits_for_its_ttl(db, config):
     assert live_holds(db) == [("", "")]
     (hold,) = holds_from_firestore(db.doc(f"accounts/{ACCOUNT}")["holds"])
     assert hold.expires_at == seeded["expires_at"], "an unstamped hold's TTL moved"
-    assert "released 0 account hold(s) of att_1" in lost(report)[0].actions
+    assert not any("account hold" in a for a in lost(report)[0].actions)
 
 
 # ---------------------------------------------------------------------------
