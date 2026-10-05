@@ -36,6 +36,9 @@ function num(v: unknown): number | null {
 function bool(v: unknown): boolean | null {
   return typeof v === 'boolean' ? v : null
 }
+function oneOf<K extends string>(v: unknown, keys: readonly K[]): K | null {
+  return typeof v === 'string' && (keys as readonly string[]).includes(v) ? (v as K) : null
+}
 function strs(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
 }
@@ -64,9 +67,20 @@ export function notServed(e: ApiError): boolean {
 // Repositories (repo-index.md §1, §6.2)
 // ---------------------------------------------------------------------------
 
+export type ChangeTrigger = 'poll' | 'webhook' | 'off'
+
+/** `index.interval_hours` as designed: 1-168, or `'off'`. Anything else is not that, so unknown. */
+function intervalHours(v: unknown): number | 'off' | null {
+  if (v === 'off') return 'off'
+  const n = num(v)
+  return n !== null && Number.isInteger(n) && n >= 1 && n <= 168 ? n : null
+}
+
 export interface RepoIndexState {
-  interval_hours: number | null
-  on_change: boolean | null
+  /** 1-168 hours, `'off'`, or null when not served (repo-index.md §3.3). */
+  interval_hours: number | 'off' | null
+  /** What a move of the default branch does (repo-index.md §3.3); null when not served. */
+  on_change: ChangeTrigger | null
   min_change_interval_minutes: number | null
   full_every_days: number | null
   paused: boolean | null
@@ -120,8 +134,9 @@ export interface UsedBy {
 
 export interface RepoDetail {
   repository: RepoRecord
-  index_runs: IndexRun[]
-  used_by: UsedBy[]
+  /** Null when the detail did not serve the array: not served is not "none". */
+  index_runs: IndexRun[] | null
+  used_by: UsedBy[] | null
 }
 
 const TASK_STATES: readonly TaskState[] = [
@@ -174,8 +189,8 @@ export function normRepo(v: unknown): RepoRecord | null {
     created_by: str(v.created_by),
     created_at: str(v.created_at),
     index: {
-      interval_hours: num(ix.interval_hours),
-      on_change: bool(ix.on_change),
+      interval_hours: intervalHours(ix.interval_hours),
+      on_change: oneOf(ix.on_change, ['poll', 'webhook', 'off'] as const),
       min_change_interval_minutes: num(ix.min_change_interval_minutes),
       full_every_days: num(ix.full_every_days),
       paused: bool(ix.paused),
@@ -222,8 +237,8 @@ export function normRepoDetail(v: unknown): RepoDetail | null {
   if (repository === null) return null
   return {
     repository,
-    index_runs: recs(v.index_runs).map(normIndexRun).filter((r): r is IndexRun => r !== null),
-    used_by: recs(v.used_by).map(normUsedBy).filter((r): r is UsedBy => r !== null),
+    index_runs: Array.isArray(v.index_runs) ? recs(v.index_runs).map(normIndexRun).filter((r): r is IndexRun => r !== null) : null,
+    used_by: Array.isArray(v.used_by) ? recs(v.used_by).map(normUsedBy).filter((r): r is UsedBy => r !== null) : null,
   }
 }
 
@@ -303,21 +318,28 @@ export function freshness(ix: RepoIndexState): Freshness {
 // ---------------------------------------------------------------------------
 
 /** "every 24 h", "every 7 days", or null when the interval is off or not served. */
-export function intervalWords(h: number | null): string | null {
-  if (h === null || h <= 0) return null
+export function intervalWords(h: number | 'off' | null): string | null {
+  if (h === null || h === 'off') return null
   if (h % 24 === 0 && h >= 48) return `${h / 24} days`
   return `${h} h`
 }
 
-/** The card's schedule line: "24 h + on change", "168 h", "on change only", "off", "paused". */
+/**
+ * The card's schedule line: "24 h + on change", "168 h", "on change only",
+ * "off", "paused". Null when the interval is not served; a served interval
+ * with an unserved trigger says the trigger is unknown rather than dropping
+ * it, so an unknown never reads as "off".
+ */
 export function scheduleWords(ix: RepoIndexState): string | null {
   if (ix.paused === true) return 'paused'
   const h = ix.interval_hours
   // An interval the API did not serve is unknown, not "off".
   if (h === null) return null
-  const every = h > 0 ? `${h} h` : null
-  if (every !== null) return ix.on_change === true ? `${every} + on change` : every
-  return ix.on_change === true ? 'on change only' : 'off'
+  const every = h === 'off' ? null : `${h} h`
+  const on = ix.on_change
+  const trigger = on === null ? 'change trigger unknown' : on === 'off' ? null : on === 'webhook' ? 'on change (webhook)' : 'on change'
+  if (every !== null) return trigger === null ? every : `${every} + ${trigger}`
+  return trigger === null ? 'off' : on === null ? `no interval · ${trigger}` : `${trigger} only`
 }
 
 /** A percentage for a 0-1 ratio. */
@@ -575,7 +597,7 @@ export const CAPABILITIES = [
   { key: 'merge', label: 'Merge' },
   { key: 'close_issues', label: 'Close issues' },
   { key: 'read_issues', label: 'Read issues' },
-  { key: 'workflow_dispatch', label: 'workflow_dispatch' },
+  { key: 'workflow_dispatch', label: 'Workflow dispatch' },
 ] as const
 
 export type CapabilityKey = (typeof CAPABILITIES)[number]['key']

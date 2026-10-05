@@ -5150,7 +5150,8 @@ export interface RegisterRepositoryBody {
   repository: string
   default_branch?: string
   allowed_profiles?: string[]
-  index?: { interval_hours: number; on_change: boolean }
+  /** repo-index.md §3.3: 1-168 or `'off'`; `poll`, `webhook` (phase 3) or `off`. */
+  index?: { interval_hours: number | 'off'; on_change: 'poll' | 'webhook' | 'off' }
 }
 
 /** `POST /v1/repositories`: register; the API reads the forge once and is idempotent on `repo_id`. */

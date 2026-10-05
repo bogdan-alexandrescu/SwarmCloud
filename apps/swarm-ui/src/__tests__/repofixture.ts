@@ -58,7 +58,7 @@ export function repo(over: Json = {}, index: Json = {}): Json {
     ...over,
     index: {
       interval_hours: 24,
-      on_change: true,
+      on_change: 'poll',
       min_change_interval_minutes: 30,
       full_every_days: 7,
       paused: false,

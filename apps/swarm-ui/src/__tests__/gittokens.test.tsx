@@ -145,6 +145,38 @@ describe('Git tokens are cards by scope (pick B)', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('swarm-tenant-eng-git-r-0a1b2c3d4e5f6071'), WAIT)
   })
 
+  it('after Rotate, the scope the radio shows is the scope Create posts', async () => {
+    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? { status: 201, body: token({ token_id: 'tok_new2', scope: 'repository', repo_ids: ['repo_1111111111111111'] }) } : null))
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    // Rotate the TENANT card: the radio shows Tenant and no repository select.
+    fireEvent.click(within(tokCards()[0]!).getByRole('button', { name: 'Rotate' }))
+    const reg = document.querySelector<HTMLElement>('.ur-reg')!
+    expect(within(reg).getByRole('radio', { name: 'Tenant' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(reg).queryByRole('combobox', { name: 'Repository' })).toBeNull()
+    // Picking Repository forgets the rotated slot and drives the select and Create.
+    fireEvent.click(within(reg).getByRole('radio', { name: 'Repository' }))
+    expect(within(reg).getByRole('radio', { name: 'Repository' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(reg).getByRole('radio', { name: 'Tenant' }).getAttribute('aria-checked')).toBe('false')
+    expect(reg.querySelector('pre.ur-term')).toBeNull()
+    fireEvent.change(within(reg).getByRole('combobox', { name: 'Repository' }), { target: { value: 'repo_1111111111111111' } })
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the slot' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'repository', repo_id: 'repo_1111111111111111' })
+  })
+
+  it('after Rotate of a user slot, Create without touching the radio posts that scope', async () => {
+    const calls = tokenRoutes((m, url) => (m === 'POST' && url === '/v1/git-tokens' ? { status: 201, body: token({ token_id: 'tok_new3' }) } : null))
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    fireEvent.click(within(tokCards()[2]!).getByRole('button', { name: 'Rotate' }))
+    const reg = document.querySelector<HTMLElement>('.ur-reg')!
+    expect(within(reg).getByRole('radio', { name: 'User (me)' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(within(reg).getByRole('button', { name: 'Create the slot' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'user' })
+  })
+
   it('registering a slot posts the scope and repository only, then shows the name and the command', async () => {
     const calls = tokenRoutes((m, url) =>
       m === 'POST' && url === '/v1/git-tokens'
@@ -223,7 +255,7 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     expect(visible(document.querySelector('.c-phead'))).toContain('2 tokens × 2 repositories')
     expect(visible(document.querySelector('.c-phead'))).toContain('order R2')
     const heads = Array.from(document.querySelectorAll('table.ur-mx thead th')).map((t) => visible(t))
-    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'workflow_dispatch', 'Expires in', 'Last verified'])
+    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Last verified'])
     expect(Array.from(document.querySelectorAll('tr.ur-grp')).map((g) => visible(g))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(visible(gridRows()[0]!.cells[0]!)).toBe('example-api-bot · repository resolves')
     expect(visible(gridRows()[1]!.cells[0]!)).toBe('eng-swarm-bot · tenant')

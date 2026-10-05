@@ -45,7 +45,7 @@ const THREE = [
   ),
   repo(
     { repo_id: 'repo_2222222222222222', repo: 'example-infra', default_branch: 'develop', last_run: { task_id: 'task_x', state: 'FAILED', end_cause: 'timed_out', kind: 'full' } },
-    { current_sha: null, head_sha: null, behind_by: null, coverage: null, last_indexed_at: null, interval_hours: 168, on_change: false },
+    { current_sha: null, head_sha: null, behind_by: null, coverage: null, last_indexed_at: null, interval_hours: 168, on_change: 'off' },
   ),
 ]
 
@@ -165,7 +165,9 @@ describe('the list says what it could not read', () => {
     const el = document.querySelector('[data-notserved]')!
     expect(el.getAttribute('data-notserved')).toBe('GET /v1/repositories')
     expect(visible(el)).toContain('Not served yet')
-    expect(visible(el)).toContain('GET /v1/repositories')
+    // Named on the element, not in the visible words (walkthrough E).
+    expect(el.getAttribute('title')).toBe('Not served: GET /v1/repositories')
+    expect(visible(el)).not.toContain('/v1/')
     expect(cards()).toHaveLength(0)
   })
 
@@ -192,5 +194,30 @@ describe('the phone frame', () => {
     const grid = document.querySelector('.ur-cards')!
     expect(cascade(sheets, grid, 'grid-template-columns', { width: 390 }).winner?.value).toBe('minmax(0, 1fr)')
     expect(cascade(sheets, grid, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(3, minmax(0, 1fr))')
+  })
+})
+
+// repo-index.md §3.3 designs `on_change` as `poll` | `webhook` | `off` and
+// `interval_hours` as 1-168 or `off`. A served `poll` is a change trigger; a
+// trigger that was not served is said to be unknown, never dropped as "off".
+describe('the schedule reads the designed index shape', () => {
+  it('reads a served poll as "+ on change", off as off, and an unserved trigger as unknown', async () => {
+    const { normRepo, scheduleWords } = await import('../RepositoriesData')
+    const words = (ix: Record<string, unknown>) => scheduleWords(normRepo(repo({}, ix))!.index)
+    expect(words({ interval_hours: 24, on_change: 'poll' })).toBe('24 h + on change')
+    expect(words({ interval_hours: 24, on_change: 'off' })).toBe('24 h')
+    expect(words({ interval_hours: 24, on_change: undefined })).toBe('24 h + change trigger unknown')
+    expect(words({ interval_hours: 'off', on_change: 'poll' })).toBe('on change only')
+    expect(words({ interval_hours: 'off', on_change: 'off' })).toBe('off')
+    // The old boolean shape is not the designed one, so it is unknown, not "on".
+    expect(words({ interval_hours: 24, on_change: true })).toBe('24 h + change trigger unknown')
+    expect(words({ interval_hours: 0, on_change: 'poll' })).toBeNull()
+  })
+
+  it('draws a served poll on the card as "24 h + on change"', async () => {
+    serve((m, url) => (m === 'GET' && url === '/v1/repositories' ? { status: 200, body: { repositories: [repo({}, { interval_hours: 24, on_change: 'poll' })] } } : null))
+    await mount()
+    await waitFor(() => expect(cards()).toHaveLength(1), WAIT)
+    expect(visible(cards()[0]!)).toContain('Schedule 24 h + on change')
   })
 })

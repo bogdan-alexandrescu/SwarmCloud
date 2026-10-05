@@ -198,6 +198,25 @@ describe('the repository page leads with what the index says about the head (Det
     expect(document.querySelector('.ur-runs')).not.toBeNull()
   })
 
+  it('a detail served without index_runs or used_by draws a dash and "not served", never 0 or "none"', async () => {
+    const { index_runs: _runs, used_by: _used, ...bare } = DETAIL
+    void _runs
+    void _used
+    routes({ detail: { status: 200, body: bare } })
+    await mount()
+    await loaded()
+    const tab = (name: string) => Array.from(document.querySelectorAll<HTMLElement>('.ur-tabs a')).find((a) => a.querySelector('.c-tab-label')?.textContent === name)!
+    for (const name of ['Index runs', 'Used by']) {
+      const em = tab(name).querySelector('em')!
+      expect(em.textContent).not.toContain('0')
+      expect(em.querySelector('.c-dash')).not.toBeNull()
+    }
+    expect(document.querySelector('[data-notserved="GET /v1/repositories/{repo_id} index_runs"]')).not.toBeNull()
+    expect(document.querySelector('[data-notserved="GET /v1/repositories/{repo_id} used_by"]')).not.toBeNull()
+    expect(document.body.textContent).not.toContain('No index runs yet.')
+    expect(document.body.textContent).not.toContain('No run or workflow has used this index yet.')
+  })
+
   it('the repository route not being served is said, naming it', async () => {
     routes({ detail: { status: 404, body: { detail: 'Not Found' } } })
     await mount()
@@ -292,7 +311,11 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(visible(document.querySelector('.ur-graph'))).toContain('Graph depth')
     expect(visible(document.querySelector('.ur-graph'))).toContain('3 of 1-6')
     expect(visible(document.querySelector('.ur-graph'))).toContain('0.2')
-    expect(document.body.textContent).toContain('PATCH /v1/repositories/{repo_id}')
+    // The route is named on the element; the words say it in plain language (walkthrough E).
+    const locked = document.querySelector('.ur-locked')!
+    expect(locked.getAttribute('data-notserved')).toBe('PATCH /v1/repositories/{repo_id}')
+    expect(visible(locked)).toContain('cannot be changed from this console yet')
+    expect(visible(locked)).not.toContain('/v1/')
   })
 
   it('the resolved token: scope, account, kind, last 4, expiry, last verified, order R2; never the value', async () => {
@@ -317,10 +340,10 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     await loaded()
     await waitFor(() => expect(document.querySelector('.ur-tokrow')).not.toBeNull(), WAIT)
     const caps = Array.from(document.querySelectorAll<HTMLElement>('.ur-tokrow .ur-cap'))
-    expect(caps.map((c) => visible(c))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'workflow_dispatch'])
+    expect(caps.map((c) => visible(c))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
     expect(caps.map((c) => c.getAttribute('data-cap'))).toEqual(['ok', 'ok', 'unknown', 'ok', 'missing', 'unknown', 'ok', 'unknown'])
     expect(caps[4]!.getAttribute('title')).toBe('Merge: missing. The branch rules restrict merges on main to the merge App')
-    expect(caps[7]!.getAttribute('title')).toBe('workflow_dispatch: unknown. Not served for this pair')
+    expect(caps[7]!.getAttribute('title')).toBe('Workflow dispatch: unknown. Not served for this pair')
   })
 
   it('a region whose route is not there yet names its route; the others still draw', async () => {

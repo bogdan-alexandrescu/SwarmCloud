@@ -26,7 +26,7 @@ const INTERVALS = [
   { key: '12', label: '12 h' },
   { key: '24', label: '24 h' },
   { key: '168', label: '7 days' },
-  { key: '0', label: 'Off' },
+  { key: 'off', label: 'Off' },
 ] as const
 type IntervalKey = (typeof INTERVALS)[number]['key']
 
@@ -77,6 +77,10 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
             state={readable.state}
             route="GET /v1/repositories/readable"
             what="The repositories the tenant's git token can read"
+            // Until the API declares `readable` (it is not in repo-index.md §6.1),
+            // `GET /v1/repositories/{repo_id}` matches it and answers its own
+            // not_found for a repository called "readable": the route is absent.
+            alsoNotServed={(e) => e.httpStatus === 404 && e.code === 'not_found'}
             onRetry={readable.reload}
             empty={
               <EmptyState kind="empty" heading="The token can read no repositories">
@@ -172,12 +176,12 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
       repository: full,
       ...(picked.default_branch !== null ? { default_branch: picked.default_branch } : {}),
       ...(names !== null ? { allowed_profiles: selected } : {}),
-      index: { interval_hours: Number(every), on_change: trigger === 'poll' },
+      index: { interval_hours: every === 'off' ? 'off' : Number(every), on_change: trigger },
     }
     const res = await registerRepository(body)
     if (res.status === 'error') {
       setBusy(false)
-      setRefused(writeFailure(res.error, 'POST /v1/repositories'))
+      setRefused(writeFailure(res.error))
       return
     }
     const data = res.status === 'ok' ? (res.data as Record<string, unknown> | null) : null
@@ -192,7 +196,7 @@ function ScheduleStep({ picked, go, onBack }: { picked: Readable; go: (to: strin
       if (run.status === 'error') {
         setBusy(false)
         setRegisteredId(id)
-        setRefused(`Registered, but the first index run was refused: ${writeFailure(run.error, 'POST /v1/repositories/{repo_id}/index:run')}`)
+        setRefused(`Registered, but the first index run was refused: ${writeFailure(run.error)}`)
         return
       }
     }

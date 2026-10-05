@@ -148,7 +148,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           )
         }}
       </UrRegion>
-      <RegisterSlot slot={slot} onSlot={(t) => { setSlot(t); tokens.reload() }} repos={regs} />
+      <RegisterSlot slot={slot} onSlot={(t) => { setSlot(t); tokens.reload() }} onClear={() => setSlot(null)} repos={regs} />
     </div>
   )
 }
@@ -158,12 +158,26 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
  * the slot's record; step 2 is the command that stores its value from stdin;
  * step 3 says what happens next. No step takes a value.
  */
-function RegisterSlot({ slot, onSlot, repos }: { slot: GitToken | null; onSlot: (t: GitToken) => void; repos: readonly RepoRecord[] }) {
+function RegisterSlot({
+  slot,
+  onSlot,
+  onClear,
+  repos,
+}: {
+  slot: GitToken | null
+  onSlot: (t: GitToken) => void
+  /** Forget the rotated or created slot: the person chose another scope. */
+  onClear: () => void
+  repos: readonly RepoRecord[]
+}) {
   const [scope, setScope] = useState<TokenScope>('repository')
   const [repoId, setRepoId] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  // ONE source of truth for the scope: what the radio shows is what the
+  // select follows and what Create posts. A rotated slot shows its own scope
+  // until the person picks another, which forgets the slot.
   const shownScope = slot?.scope ?? scope
   const pickRepo = repoId !== '' ? repoId : repos[0]?.repo_id ?? ''
 
@@ -171,10 +185,10 @@ function RegisterSlot({ slot, onSlot, repos }: { slot: GitToken | null; onSlot: 
     setBusy(true)
     setRefused(null)
     setCopied(false)
-    const res = await registerTokenSlot(scope === 'repository' ? { scope, repo_id: pickRepo } : { scope })
+    const res = await registerTokenSlot(shownScope === 'repository' ? { scope: shownScope, repo_id: pickRepo } : { scope: shownScope })
     setBusy(false)
     if (res.status === 'error') {
-      setRefused(writeFailure(res.error, 'POST /v1/git-tokens'))
+      setRefused(writeFailure(res.error))
       return
     }
     const data = res.status === 'ok' ? (res.data as Record<string, unknown> | null) : null
@@ -203,6 +217,7 @@ function RegisterSlot({ slot, onSlot, repos }: { slot: GitToken | null; onSlot: 
           onChange={(s) => {
             setScope(s)
             setCopied(false)
+            if (slot !== null && slot.scope !== s) onClear()
           }}
           options={[
             { key: 'tenant', label: 'Tenant' },
@@ -210,7 +225,7 @@ function RegisterSlot({ slot, onSlot, repos }: { slot: GitToken | null; onSlot: 
             { key: 'user', label: 'User (me)' },
           ]}
         />
-        {scope === 'repository' && (
+        {shownScope === 'repository' && (
           <select className="ur-select" aria-label="Repository" value={pickRepo} onChange={(e) => setRepoId(e.target.value)} disabled={repos.length === 0}>
             {repos.length === 0 && <option value="">No registered repository</option>}
             {repos.map((r) => (
@@ -220,7 +235,7 @@ function RegisterSlot({ slot, onSlot, repos }: { slot: GitToken | null; onSlot: 
             ))}
           </select>
         )}
-        <Button size="sm" busy={busy} onClick={() => void create()} disabled={scope === 'repository' && pickRepo === ''}>
+        <Button size="sm" busy={busy} onClick={() => void create()} disabled={shownScope === 'repository' && pickRepo === ''}>
           Create the slot
         </Button>
       </div>
@@ -322,7 +337,7 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
     if (failed.length > 0) {
       const [, first] = failed[0]!
       setRefused(
-        `${failed.length} of ${results.length} could not be re-probed: ${first.status === 'error' ? writeFailure(first.error, 'POST /v1/git-tokens/{token_id}:verify') : ''}`,
+        `${failed.length} of ${results.length} could not be re-probed: ${first.status === 'error' ? writeFailure(first.error) : ''}`,
       )
     }
     perms.reload()

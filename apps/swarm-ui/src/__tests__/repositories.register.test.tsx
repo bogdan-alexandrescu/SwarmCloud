@@ -14,7 +14,7 @@
 //   * the readable route not being there yet is "not served yet", naming it.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
@@ -104,7 +104,7 @@ describe('Register repository picks from what the token can read (pick C)', () =
       repository: 'example-org/example-api',
       default_branch: 'main',
       allowed_profiles: ['claude-code'],
-      index: { interval_hours: 12, on_change: true },
+      index: { interval_hours: 12, on_change: 'poll' },
     })
     expect(posts[1]!.url).toBe('/v1/repositories/repo_0a1b2c3d4e5f6071/index:run')
     expect(posts[1]!.body).toEqual({ kind: 'full' })
@@ -135,5 +135,34 @@ describe('Register repository picks from what the token can read (pick C)', () =
     await waitFor(() => expect(document.querySelector('[data-notserved]')).not.toBeNull(), WAIT)
     expect(document.querySelector('[data-notserved]')!.getAttribute('data-notserved')).toBe('GET /v1/repositories/readable')
     expect(picks()).toHaveLength(0)
+  })
+
+  it('the {repo_id} route answering not_found for "readable" is "not served yet" too, not a failure', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/repositories/readable' ? { status: 404, body: { code: 'not_found', message: 'No repository readable.' } } : null,
+    )
+    await mount()
+    await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/repositories/readable"]')).not.toBeNull(), WAIT)
+    expect(document.body.textContent).not.toContain('No repository readable.')
+  })
+
+  it('choosing Off sends the designed shape: interval_hours "off", on_change "off"', async () => {
+    const calls = serve((m, url) => {
+      if (m === 'GET' && url === '/v1/repositories/readable') return { status: 200, body: READABLE }
+      if (m === 'GET' && url === '/v1/runtimes') return { status: 200, body: RUNTIMES }
+      if (m === 'POST' && url === '/v1/repositories') return { status: 201, body: { repository: { repo_id: 'repo_0a1b2c3d4e5f6071', owner: 'example-org', repo: 'example-api' } } }
+      if (m === 'POST') return { status: 202, body: {} }
+      return null
+    })
+    await mount()
+    await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
+    fireEvent.click(picks()[0]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Next: schedule' }))
+    await waitFor(() => screen.getByRole('button', { name: 'Register example-org/example-api' }), WAIT)
+    fireEvent.click(screen.getByRole('radiogroup', { name: 'Re-index every' }).querySelector('[role="radio"]:last-child')!)
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Change trigger' })).getByRole('radio', { name: 'Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Register example-org/example-api' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect((calls.find((c) => c.method === 'POST')!.body as { index: unknown }).index).toEqual({ interval_hours: 'off', on_change: 'off' })
   })
 })

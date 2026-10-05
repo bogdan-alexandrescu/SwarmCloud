@@ -75,7 +75,7 @@ function RepositoryList({
     const res = await runRepositoryIndex(r.repo_id, r.index.current_sha === null ? 'full' : 'incremental')
     setBusy(null)
     if (res.status === 'error') {
-      setFailed(`${repoName(r)}: ${writeFailure(res.error, 'POST /v1/repositories/{repo_id}/index:run')}`)
+      setFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
     }
     reload()

@@ -48,8 +48,12 @@ function tabOf(t: string | null): TabKey {
   return (TABS.find((x) => x.key === t)?.key ?? 'overview') as TabKey
 }
 
-const PATCH_WHY =
-  'Changing these is PATCH /v1/repositories/{repo_id}, which this console cannot send yet (its write client sends POST, PUT and DELETE): the controls show the served values.'
+/** The route these settings change through; named on the element, not in the words (walkthrough E). */
+const PATCH_ROUTE = 'PATCH /v1/repositories/{repo_id}'
+const PATCH_WHY = 'These settings cannot be changed from this console yet: the controls show the served values.'
+
+/** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
+const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
 
 export function RepositoryDetail({ repoId, tab, go }: { repoId: string; tab: string | null; go: (to: string) => void }) {
   const detail = useUrRead(() => loadRepository(repoId), `detail:${repoId}`)
@@ -105,15 +109,16 @@ function DetailBody({ d, index, tab, go, onRead }: { d: RepoDetail; index: Index
     setRefused(null)
     const res = await runRepositoryIndex(r.repo_id, kind)
     setBusy(false)
-    if (res.status === 'error') setRefused(writeFailure(res.error, 'POST /v1/repositories/{repo_id}/index:run'))
+    if (res.status === 'error') setRefused(writeFailure(res.error))
     else onRead()
   }
 
   const inFlight = r.index.in_flight_task_id
-  const counts: Partial<Record<TabKey, string>> = {
+  // An array the detail did not serve is a dash with its reason, never "0".
+  const counts: Partial<Record<TabKey, ReactNode>> = {
     ...(r.index.coverage !== null ? { 'test-map': pct(r.index.coverage) } : {}),
-    'index-runs': String(d.index_runs.length),
-    'used-by': String(d.used_by.length),
+    'index-runs': d.index_runs === null ? <Dash why="Index runs are not served yet" /> : String(d.index_runs.length),
+    'used-by': d.used_by === null ? <Dash why="Who used this index is not served yet" /> : String(d.used_by.length),
   }
 
   return (
@@ -296,16 +301,16 @@ function Overview({ d, index, go }: { d: RepoDetail; index: IndexRead; go: (to: 
           title="Index runs"
           action={
             <UrLink to={repoAddress(r.repo_id, 'index-runs')} go={go} className="c-link is-card">
-              All {d.index_runs.length} ›
+              {d.index_runs === null ? 'All' : `All ${d.index_runs.length}`} ›
             </UrLink>
           }
         >
-          <RunList runs={d.index_runs.slice(0, 4)} />
+          <RunList runs={d.index_runs?.slice(0, 4) ?? null} />
         </Card>
         <Card title="Schedule and change trigger">
           <ScheduleLines r={r} />
           <h3 className="ur-subh">Used by</h3>
-          <UsedByList used={d.used_by.slice(0, 4)} go={go} />
+          <UsedByList used={d.used_by?.slice(0, 4) ?? null} go={go} />
         </Card>
       </div>
     </>
@@ -449,7 +454,8 @@ function duration(run: IndexRun): ReactNode {
   return formatDuration(new Date(run.ended_at).getTime() - new Date(from).getTime())
 }
 
-function RunList({ runs }: { runs: readonly IndexRun[] }) {
+function RunList({ runs }: { runs: readonly IndexRun[] | null }) {
+  if (runs === null) return <UrNotServed route={`${DETAIL_ROUTE} index_runs`} what="The repository's index runs" />
   if (runs.length === 0) return <p className="ur-none ur-runs">No index runs yet.</p>
   return (
     <div className="ur-runs ur-rows">
@@ -497,7 +503,9 @@ function ScheduleLines({ r }: { r: RepoRecord }) {
         Change trigger{' '}
         {ix.on_change === null ? (
           <Dash why="The change trigger was not served" />
-        ) : ix.on_change ? (
+        ) : ix.on_change === 'webhook' ? (
+          <b>webhook on {branch}</b>
+        ) : ix.on_change === 'poll' ? (
           <>
             <b>poll {branch}</b>
             {ix.min_change_interval_minutes !== null ? `, at most one run per ${ix.min_change_interval_minutes} min` : ''}
@@ -521,7 +529,8 @@ function usedAddress(u: UsedBy): string {
   return `work/runs?${new URLSearchParams({ run: u.id }).toString()}`
 }
 
-function UsedByList({ used, go }: { used: readonly UsedBy[]; go: (to: string) => void }) {
+function UsedByList({ used, go }: { used: readonly UsedBy[] | null; go: (to: string) => void }) {
+  if (used === null) return <UrNotServed route={`${DETAIL_ROUTE} used_by`} what="Which runs and workflows used this index" />
   if (used.length === 0) return <p className="ur-none ur-used">No run or workflow has used this index yet.</p>
   const noun = { run: 'Run', workflow: 'Workflow', task: 'Agent' } as const
   return (
@@ -556,7 +565,9 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
   const policy = pol.inherited_from_tenant === true ? 'inherit' : pol.policy
   return (
     <>
-      <p className="ur-hint ur-locked">{PATCH_WHY}</p>
+      <p className="ur-hint ur-locked" data-notserved={PATCH_ROUTE} title={`Not served: ${PATCH_ROUTE}`}>
+        {PATCH_WHY}
+      </p>
       <div className="ur-cols">
         <div className="ur-stack">
           <Card title="Schedule and change trigger">

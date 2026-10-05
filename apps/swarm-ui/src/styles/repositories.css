@@ -149,9 +149,9 @@
 .ur-secret code { font: var(--t-meta)/var(--lh-meta) var(--mono); overflow-wrap: anywhere; }
 .ur-term {
   margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-ctl);
-  background: #06101e; color: #d7e3f0; font: var(--t-micro)/1.6 var(--mono); white-space: pre; overflow-x: auto;
+  background: var(--surface-2); color: var(--text); font: var(--t-micro)/var(--lh-micro) var(--mono); white-space: pre; overflow-x: auto;
 }
-.ur-term > span { color: #9fb0c4; }
+.ur-term > span { color: var(--text-dim); }
 
 /* ---- screen 13, Permissions A: tokens × repositories ------------------------ */
 .ur-mx-wide { padding: 0; overflow-x: auto; }

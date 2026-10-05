@@ -34,16 +34,17 @@ export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): { sta
 
 /**
  * A ROUTE THE API DOES NOT SERVE YET (the backend lanes RI1, RI2 and GT1 are
- * building them in parallel). Said in place, naming the route, so nobody
- * reads an absent region as an empty one -- and never as a failure of
- * something that exists.
+ * building them in parallel). Said in place, so nobody reads an absent region
+ * as an empty one -- and never as a failure of something that exists. The
+ * route is named on the element (`data-notserved` and its title), not in the
+ * visible words: an API path is not copy for a user's screen (walkthrough E,
+ * owner 2026-10-03).
  */
 export function UrNotServed({ route, what }: { route: string; what: string }) {
   return (
-    <div className="ur-notserved" data-notserved={route}>
+    <div className="ur-notserved" data-notserved={route} title={`Not served: ${route}`}>
       <EmptyState kind="partial" heading="Not served yet">
-        {what} comes from <code>{route}</code>, which this API does not serve yet. Nothing here is a zero: it has not been
-        read.
+        {what} is not served by this API yet. Nothing here is a zero: it has not been read.
       </EmptyState>
     </div>
   )
@@ -61,6 +62,7 @@ export function UrRegion<T>({
   onRetry,
   empty,
   lines = 3,
+  alsoNotServed,
   children,
 }: {
   state: Result<T>
@@ -71,11 +73,13 @@ export function UrRegion<T>({
   onRetry: () => void
   empty?: ReactNode
   lines?: number
+  /** A failure this one route answers when it is not there yet, beyond `notServed`'s. */
+  alsoNotServed?: (e: ApiError) => boolean
   children: (data: T) => ReactNode
 }) {
   if (state.status === 'loading') return <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
   if (state.status === 'error') {
-    if (notServed(state.error)) return <UrNotServed route={route} what={what} />
+    if (notServed(state.error) || alsoNotServed?.(state.error) === true) return <UrNotServed route={route} what={what} />
     return <FailedPanel error={state.error} onRetry={onRetry} />
   }
   if (state.status === 'empty') return <>{empty ?? null}</>
@@ -254,9 +258,12 @@ export function UrRadio<K extends string>({
   )
 }
 
-/** What a refused write said, or that its route is not served yet, naming it. */
-export function writeFailure(e: ApiError, route: string): string {
-  return notServed(e) ? `Not served yet: ${route}.` : e.message
+/**
+ * What a refused write said, or -- when its route is not there yet -- that
+ * in plain words. The route stays out of the sentence (walkthrough E).
+ */
+export function writeFailure(e: ApiError): string {
+  return notServed(e) ? 'Not served yet: this API does not take this request yet.' : e.message
 }
 
 /** The test-map bar: filled to the ratio, or hatched when there is nothing measured. */
