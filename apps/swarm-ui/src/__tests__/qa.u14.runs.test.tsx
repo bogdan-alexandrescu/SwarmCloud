@@ -357,7 +357,7 @@ describe('5: at CHECKING the pull request card leads, and the plan folds', () =>
     const overlaps = container.querySelector('.rn-overlaps > details.rn-fold') as HTMLDetailsElement
     expect(overlaps).not.toBeNull()
     expect(overlaps.open).toBe(false)
-    expect(visible(overlaps.querySelector('summary'))).toMatch(/1 checked · 0 need action/)
+    expect(visible(overlaps.querySelector('summary'))).toMatch(/1 checked · none need action/)
     // The PR card comes before both.
     const ci = container.querySelector('.rn-ci')!
     expect(ci.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

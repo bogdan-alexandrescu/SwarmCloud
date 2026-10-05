@@ -583,7 +583,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </div>
         )}
 
-        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} />}
+        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} ended={run.terminal} />}
 
         <section className="rn-plan" aria-label="The plan">
           <Fold folded={approved && run.plan !== null}
@@ -1091,18 +1091,44 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
   )
 }
 
+/** A note's opening "No action", with the punctuation after it: cut from what is shown. */
+const NO_ACTION_LEAD = /^\s*no action\b\s*(?:[:.;,]|--?|—|–)?\s*/i
+/** "No action" opening the note, or a sentence of it: after `.`, `!` or `?` (and a closing quote or bracket), or a line break. */
+const NO_ACTION_SENTENCE = /(?:^|[.!?]['"’”)\]]*\s+|\n\s*)no action\b/i
+
 /**
- * WHAT THE PLANNER DECIDED ABOUT ONE OVERLAP, read off its note. The plan
- * schema has no verdict field (`issueruns.PlanOverlap` is ref, kind, note);
- * the planner is told to say "what this plan does about it", and says "No
- * action: ..." when it does nothing. A note that does not open with those
- * words is counted as needing action: an unread verdict is never "no action".
+ * WHAT THE PLANNER DECIDED ABOUT ONE OVERLAP. Its `action` field says so
+ * (#587, owner decision 2026-10-05: a field, not better guessing): `none` or
+ * `required`. A plan stored before the field has only the note, and the
+ * planner said "No action" in it when it did nothing -- but not always first:
+ * run_7a37942a19aa4d2c80d1's five notes each said what overlapped and THEN
+ * "No action", and reading only the opening drew all five amber. So a legacy
+ * note counts as no action when a sentence of it opens with those words;
+ * anything else needs action, because an unread verdict is never "no action".
+ *
+ * "Not in this run", in neutral grey with the note under it (owner wording,
+ * 2026-10-05): "No action" beside an amber card read as a dismissal of work
+ * someone may still have to do elsewhere.
+ *
+ * A PLAN STORED BEFORE THE FIELD, ON A RUN THAT HAS ENDED (owner decision,
+ * 2026-10-05): every such overlap is "Not in this run". A note written as an
+ * instruction for while the run went cannot need action once the run is DONE,
+ * FAILED, REJECTED or CANCELLED. An overlap WITH an `action` shows exactly its
+ * field, ended run or not.
  */
-export function overlapVerdict(note: string): { needs: boolean; word: string; why: string } {
-  if (typeof note !== 'string') return { needs: true, word: 'Needs action', why: '' }
-  const m = /^\s*no action\b\s*(?:[:.;,]|--?|—|–)?\s*/i.exec(note)
-  if (m !== null) return { needs: false, word: 'No action', why: note.slice(m[0].length) || note }
-  return { needs: true, word: 'Needs action', why: note }
+export function overlapVerdict(
+  o: Pick<PlanOverlap, 'note' | 'action'>,
+  runEnded = false,
+): { needs: boolean; word: string; why: string } {
+  const note = typeof o?.note === 'string' ? o.note : ''
+  const none = { needs: false, word: 'Not in this run' }
+  const needs = { needs: true, word: 'Needs action' }
+  if (o?.action === 'none') return { ...none, why: note }
+  if (o?.action === 'required') return { ...needs, why: note }
+  if (runEnded) return { ...none, why: note }
+  if (!NO_ACTION_SENTENCE.test(note)) return { ...needs, why: note }
+  const lead = NO_ACTION_LEAD.exec(note)
+  return { ...none, why: (lead === null ? note : note.slice(lead[0].length)) || note }
 }
 
 /**
@@ -1117,6 +1143,7 @@ function overlapRead(o: unknown): PlanOverlap {
   return {
     ref: typeof r.ref === 'string' ? r.ref : '',
     kind: r.kind === 'pull_request' ? 'pull_request' : 'issue',
+    ...(r.action === 'none' || r.action === 'required' ? { action: r.action } : {}),
     note: typeof r.note === 'string' ? r.note : '',
   }
 }
@@ -1131,15 +1158,17 @@ function overlapRead(o: unknown): PlanOverlap {
  * AMBER ONLY WHEN ONE NEEDS ACTION (owner QA E, 2026-10-04): five long
  * paragraphs that each said "no action" sat in a warn-edged card that read as
  * a warning. The card is neutral until an overlap needs action, and its
- * heading counts both: "5 checked · 0 need action".
+ * heading counts both from `overlapVerdict`: "5 checked · none need action",
+ * or "5 checked · 1 needs action".
  */
-function Overlaps({ plan, openWork, folded }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean }) {
+function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean; ended: boolean }) {
   const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
-  const verdicts = found ? overlaps!.map((o) => overlapVerdict(o.note)) : []
+  const verdicts = found ? overlaps!.map((o) => overlapVerdict(o, ended)) : []
   const needing = verdicts.filter((v) => v.needs).length
   const title = found
-    ? `Overlaps the planner found · ${overlaps!.length} checked · ${needing} ${needing === 1 ? 'needs' : 'need'} action`
+    ? `Overlaps the planner found · ${overlaps!.length} checked · ${
+      needing === 0 ? 'none need' : `${needing} ${needing === 1 ? 'needs' : 'need'}`} action`
     : 'Overlaps the planner found'
   const body = (
     <>
@@ -1171,7 +1200,7 @@ function Overlaps({ plan, openWork, folded }: { plan: RunPlan; openWork: OpenWor
                       ? <span className="mono">{o.ref}</span>
                       : <a href={url} target="_blank" rel="noreferrer" className="mono">{o.ref}</a>}
                     {o.ref === '' ? null : <Chip>{o.kind === 'pull_request' ? 'pull request' : 'issue'}</Chip>}
-                    <span className="rn-overlap-v" title="Read from the planner's note">{v.word}</span>
+                    <span className="rn-overlap-v" title={o.action === undefined ? "Read from the planner's note" : "The planner's verdict"}>{v.word}</span>
                   </summary>
                   <p className="rn-overlap-note"><RnText text={v.why} /></p>
                 </details>
