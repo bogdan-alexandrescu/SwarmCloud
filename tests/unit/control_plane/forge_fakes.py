@@ -66,6 +66,9 @@ class GitHub:
         self.pulls = pulls or []
         self.files = files or {}
         self.status = status or {}
+        #: `(method, path)` -> the status that one route answers instead, so a
+        #: test can refuse one write (closing an issue) and not the others.
+        self.refuse: dict[tuple[str, str], int] = {}
         self.raises = raises
         self.calls: list[tuple[str, dict[str, str]]] = []
 
@@ -111,6 +114,9 @@ class GitHubWrites:
         self.status = status or {}
         self.comments: dict[int, dict[str, Any]] = {}
         self.pulls: dict[int, dict[str, Any]] = {}
+        #: Each issue an `already_on_main` run closed (#646), by number: the
+        #: fields the PATCH set (`state`, `state_reason`).
+        self.issues: dict[int, dict[str, Any]] = {}
         # CI (#454's loop): the default branch's rules, the check runs and
         # commit statuses at each sha, each check run's annotations, and the
         # Actions job logs `locate` redirects to and `fetch` serves.
@@ -144,6 +150,8 @@ class GitHubWrites:
         if method in self.status:
             return self.status[method], json.dumps({"message": "refused"}).encode()
         parsed = urlparse(url)
+        if (method, parsed.path) in self.refuse:
+            return self.refuse[(method, parsed.path)], json.dumps({"message": "refused"}).encode()
         parts = parsed.path.strip("/").split("/")  # repos/o/r/...
         rest = parts[3:]
         payload = json.loads(body.decode()) if body else {}
@@ -156,6 +164,11 @@ class GitHubWrites:
             per_page = int(parse_qs(parsed.query).get("per_page", ["30"])[0])
             listed = sorted(self.on_issue(number), key=lambda c: c["id"])
             return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
+        if rest[:1] == ["issues"] and len(rest) == 2 and rest[1].isdigit():
+            number = int(rest[1])
+            if method == "PATCH":
+                self.issues.setdefault(number, {"number": number, "state": "open"}).update(payload)
+            return 200, json.dumps(self.issues.get(number, {"number": number, "state": "open"})).encode()
         if rest[:2] == ["issues", "comments"] and len(rest) == 3:
             cid = int(rest[2])
             if cid not in self.comments:
