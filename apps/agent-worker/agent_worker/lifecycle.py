@@ -10408,8 +10408,13 @@ def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
 #: LIST PRICES, USD per million tokens: (input, output, cache read), for the
 #: one use below -- estimating what a CLI run cost when it was stopped before
 #: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
-#: write rate. Read from Anthropic's published table on 2026-10-05. A model
-#: missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
+#: write rate. Input and output are Anthropic's first-party API rates as the
+#: Claude API reference's model table gives them (cached 2026-06-24, checked
+#: 2026-10-05). Two that look wrong are not: `claude-mythos-5-1` is the
+#: Project Glasswing counterpart of Fable 5.1, at Fable 5.1's price, and
+#: `claude-opus-5-5` is priced BELOW Opus 5 ($4/$20). Cache reads are that
+#: table's where it gives one (Fable 5.1 $0.25, Opus 5.5 $0.20) and 0.1x input
+#: elsewhere. A model missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
 #: cost is honest, a guessed one is a wrong figure. Add a model when the
 #: platform starts running it; change a price only with the date it changed.
 _LIST_PRICES: dict[str, tuple[float, float, float]] = {
