@@ -608,6 +608,7 @@ class ControlPlane:
         heartbeat_interval_seconds: int | None = None,
         startup_call_options: Mapping[str, Any] | None = None,
         quota_reporter: QuotaReporter | None = None,
+        finish_announcer: Any | None = None,
     ) -> None:
         self._db = db
         self.task_id = task_id
@@ -639,6 +640,10 @@ class ControlPlane:
         # means this deployment has no broker; outcomes are then logged and
         # not recorded.
         self._quota_reporter: QuotaReporter | None = quota_reporter
+        # Publishes the `task_finished` wake once this attempt has ENDED its
+        # task (`finishwake.PubSubFinishAnnouncer`, #636). None means no wake:
+        # the scheduler's safety tick releases the dependants, as before.
+        self._finish_announcer = finish_announcer
         # The mid-run budgets, built once (`MID_RUN_BUDGETS`).
         self._mid_run: dict[str, dict[str, Any]] = {}
         # provider -> until when the broker already knows of a rate limit,
@@ -1747,6 +1752,29 @@ class ControlPlane:
         }[state]
         self.emit(event, {"exit_code": exit_code, "error": error})
         self.release_lease(f"terminal:{state.value}")
+        self._announce_finished(state)
+
+    def _announce_finished(self, state: TaskState) -> None:
+        """Ring the scheduler: this task has ended, its dependants may run (#636).
+
+        Last, after the terminal write and the lease release, so the
+        scheduler that wakes sees the parent ended and the capacity back. A
+        wake that fails is logged and nothing else -- the safety tick releases
+        the dependants as it always has -- so this never raises.
+        """
+        if self._finish_announcer is None:
+            return
+        try:
+            published = bool(
+                self._finish_announcer.announce(
+                    task_id=self.task_id, tenant_id=self.tenant_id, state=state
+                )
+            )
+            outcome = "published" if published else "refused"
+        except Exception as exc:
+            # The type only: a transport error's text can name the request.
+            outcome = f"error:{type(exc).__name__}"
+        self._log.info("finish wake", state=state.value, outcome=outcome)
 
     def fail_retryably(
         self,
@@ -1856,4 +1884,6 @@ class ControlPlane:
         self.release_lease(
             f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
         )
+        if target is not TaskState.READY:
+            self._announce_finished(target)
         return target

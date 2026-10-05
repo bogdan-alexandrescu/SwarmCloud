@@ -277,6 +277,14 @@ class WorkerConfig:
     #: explicitly rather than inferred, and falls back to the URL.
     quota_broker_audience: str | None = None
 
+    # --- the finish wake (#636) ----------------------------------------------
+    #: The scheduler's wake topic (DISPATCH_TOPIC), passed through by the
+    #: scheduler's `worker_env` from its own settings. The worker publishes a
+    #: `task_finished` wake on it after ending its task, so the task's
+    #: dependants are released at once instead of on the next safety tick.
+    #: None means no wake; the tick still releases them.
+    wake_topic: str | None = None
+
     # --- pull request console links -------------------------------------------
     #: The console's origin (SWARM_CONSOLE_URL), passed through by the
     #: scheduler's `worker_env` from its own settings -- never from a caller.
@@ -515,6 +523,7 @@ class WorkerConfig:
             quota_broker_audience=(
                 os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
             ),
+            wake_topic=os.environ.get("DISPATCH_TOPIC", "").strip() or None,
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip() or None,
             pr_console_links=_bool_env("SWARM_PR_CONSOLE_LINKS", False),
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,

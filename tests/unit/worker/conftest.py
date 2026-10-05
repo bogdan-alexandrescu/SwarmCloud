@@ -341,6 +341,7 @@ def build_worker(
     child_api: Any | None = None,
     memory: MemoryProtection | None = None,
     heartbeat_extension_seconds: int = 120,
+    finish_announcer: Any | None = None,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -395,6 +396,9 @@ def build_worker(
         # The platform's `lease_timeout_seconds` by default. A test of what
         # outlasts the lease sets a short one rather than waiting two minutes.
         heartbeat_extension_seconds=heartbeat_extension_seconds,
+        # None: no task_finished wake is published (#636). A test about the
+        # wake hands in a recorder.
+        finish_announcer=finish_announcer,
     )
     exporter = RecordingExporter()
     deps = WorkerDeps(
