@@ -222,19 +222,30 @@
 .ag-snap.is-on { border-color: var(--sk-ac); color: var(--text); background: var(--sk-acs); font-weight: 600; }
 .ag-snap-say { color: var(--text-faint); }
 
-/* --- the header row: state pill, name, Copy link, Stop ------------------- */
-/* ONE ROW THAT FITS THE SPLIT (visual QA Q4, 2026-10-02): at the split's
-   width the title wrapped and the actions were cut. The title ellipses (its
-   whole id is its title), the state pill and the actions keep their width,
-   and the id line under it ellipses too. */
-.ag-head { display: flex; flex-direction: column; gap: 2px; padding: var(--ctl-s2) 0 0; min-width: 0; }
-.ag-head-row { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); min-width: 0; }
+/* --- the header: two lines (agent-details-v3.html A, picked 2026-10-04) --- */
+/* LINE 1: the state pill, the name, `elapsed · attempt n of N` and the
+   actions. The title takes the slack and clamps at two lines (its whole name
+   is its title); the pill, the headline and the actions keep their width, so
+   no control is ever drawn over another -- the defect (lane U9 item 2: the ✕
+   over Stop) that once gave the actions a row of their own. An opened Stop
+   confirm takes a line of its own inside the actions (`flex-basis: 100%`).
+   LINE 2: one sans meta line. agent.header.actions.test.tsx,
+   details.v3.test.tsx. */
+.ag-head { display: flex; flex-direction: column; gap: 6px; padding: var(--ctl-s2) 0 0; min-width: 0; }
+/* THE ROW WRAPS rather than run out of the column: the column is
+   `overflow: hidden`, so a row that did not fit clipped the ✕ (the U9 item 2
+   defect again). Measured on a running agent, 2026-10-04: line 1 needs about
+   552-559px; the column is 527px at 1440 on the 50% snap and 547px at 1280 on
+   the 380px snap. Under 640px the title and the headline take lines of their
+   own (below); above it a row that still does not fit drops its actions to
+   the next line, never past the edge. */
+.ag-head-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .ag-head-row > :first-child { flex: none; }
 .ag-head-title {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: 120px;
   margin: 0;
-  font: 650 var(--t-title)/var(--lh-title) var(--font);
+  font: 650 var(--t-lead)/var(--lh-lead) var(--font);
   /* TWO LINES, THEN AN ELLIPSIS (walkthrough C): the whole name is its title. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -244,28 +255,64 @@
   overflow-wrap: anywhere;
 }
 .ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }
-/* THE ACTIONS' OWN ROW (lane U9 item 2, owner 2026-10-03): on a running
-   agent the ✕ was drawn over Stop ("st" showed). Copy link, Stop and ✕ are a
-   row over the pill and the title now, packed to the right; the parent link
-   takes the left. The row WRAPS -- an opened Stop confirm, or a column
-   narrower than the three, starts a line rather than running one control
-   under another -- and each control keeps its width.
-   agent.header.actions.test.tsx. */
-.ag-head-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); min-width: 0; }
-.ag-head-bar > .ag-parent { flex: 1 1 auto; min-width: 0; }
-.ag-head-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s2); margin-inline-start: auto; flex: 0 1 auto; min-width: 0; }
+.ag-head-hl { flex: none; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ag-head-hl > b { color: var(--text); font-weight: 600; }
+.ag-head-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-inline-start: auto; flex: none; min-width: 0; max-width: 100%; }
 .ag-head-actions > *, .ag-head-stop > .c-btn { flex: none; }
 /* An opened Stop confirm is never wider than the column: it wraps inside it. */
 .ag-head-actions > .ag-head-stop { max-width: 100%; }
-.ag-head-id { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); margin: 0; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
-.ag-head-id > .ad-id-text { min-width: 0; overflow-wrap: anywhere; }
-.ag-head-facts { margin: 2px 0 0; }
-.ag-head-facts > .ag-head-shape { color: var(--text-dim); }
 /* THE ✕ IS AN ITEM OF THE ACTION ROW, after Copy link (walkthrough B): the
    column's sticky band drew it over Copy link. */
 .ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
+/* THE META LINE: profile · class · workflow · account, then the id's copy
+   and the dispatch chips. Sans; a `·` between facts, none before the copy
+   button or the chips. */
+.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.ag-head-facts > li + li:not(.is-nodot)::before { content: "·"; margin-inline-end: 3px; color: var(--text-dim); }
+.ag-head-facts > li.is-absent { color: var(--text-faint); }
+.ag-head-facts b { color: var(--text); font-weight: 550; }
+.ag-head-facts .ctl-link { font-weight: 550; }
+.ag-head-idcopy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  cursor: pointer;
+}
+.ag-head-idcopy:hover { background: var(--surface-2); }
+.ag-head-idcopy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-head-idcopy > .c-ic { width: 13px; height: 13px; }
+.ag-head-said:empty { display: none; }
+.ag-head-dchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px 1px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.ag-head-dchip.is-absent { color: var(--text-faint); }
+/* A NARROW COLUMN (a phone, or a pane under 640px -- the width the Details
+   tab's two columns also switch at): line 1 keeps the pill and the actions,
+   the title takes its own line and the headline the next, as
+   agent-details-v3.html A5 draws it. 480px was too low: see `.ag-head-row`. */
+@container ctl-inspector (max-width: 639px) {
+  .ag-head-title { order: 3; flex-basis: 100%; }
+  .ag-head-hl { order: 4; flex-basis: 100%; }
+}
 /* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
    `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
    scrolls under it. This column does not scroll (its pane does) and its ✕
@@ -295,6 +342,10 @@
 .ag-split.ctl-drawer { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .ag-split > * { flex: none; }
 .ag-split > .ag-split-pane { flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* THE PANE IS ALSO THE SIZE CONTAINER the Details tab's columns ask
+   (details.css): two columns from a 640px PANE, not a 640px window. Named,
+   so the drawer's own `ctl-inspector` queries keep asking the drawer. */
+.ag-split > .ag-split-pane { container: ag-pane / inline-size; }
 .ag-split > .ctl-agent-back { align-self: flex-start; }
 /* THE COLUMN FITS THE SCROLLPORT, NOT THE VIEWPORT (U10a D7, owner QA
    2026-10-04). It was `100vh - dock-h` tall and sticky at top 0, but the

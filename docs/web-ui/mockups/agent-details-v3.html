@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Agent Details</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell, pills and the icon sprite are copied from the approved
+   agent-detail-2.html / components.html (pick A as built). TYPE RULE (owner, 2026-10-01):
+   12px floor, no all-caps, no letter-spacing. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--accent-2:#1a96d4;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--hive:url(#g-hive-l);--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--accent-2:#38bdf8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;--hive:url(#g-hive-d);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--accent-2:#38bdf8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;--hive:url(#g-hive-d);color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:.86em;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;letter-spacing:-.02em;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;letter-spacing:-.01em;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+h3.sub{font-size:18px;margin:36px 0 6px}
+.lede{font-size:17px;color:var(--mute);max-width:760px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.variant{margin-top:28px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.frames2{display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
+.fr{margin:0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute);background:var(--code);padding:1px 6px;border-radius:4px}
+.qlist{margin:8px 0 0;padding-left:20px;font-size:14.5px}.qlist li{margin:6px 0}
+/* today vs proposed */
+.cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px;margin-top:14px;align-items:start}
+.cmp figure{margin:0;min-width:0}
+.cmp .mini{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin:0 auto}
+.cmp .mini>.dpw{transform-origin:0 0;position:absolute;left:0;top:0}
+.cmp figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.cmp .big{font:650 22px var(--f-display);color:var(--ink);font-variant-numeric:tabular-nums}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---- frame tokens (fixed light / fixed dark), copied from agent-detail-2.html + components.html A ---- */
+.fl{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+.fd{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);min-width:1440px;width:1440px;min-height:900px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app a{color:inherit;text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:5px;border-radius:6px;display:inline-flex}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee!important;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff!important}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e!important;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;letter-spacing:-.015em;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.kids{margin:2px 0 6px 38px;border-left:1px solid var(--f-ln);padding-left:8px}
+.kid{display:flex;justify-content:space-between;gap:8px;padding:5px 10px;border-radius:7px;color:var(--f-mu);white-space:nowrap}
+.kid.on{color:var(--f-ac);background:var(--f-acs);font-weight:600}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.meter{margin:8px 10px 4px;padding:9px 10px;border-radius:10px;background:var(--f-hv);display:flex;flex-direction:column;gap:6px}
+.meter .mh{display:flex;justify-content:space-between;font-size:12px;color:var(--f-mu)}
+.meter .mh b{color:var(--f-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.bar{height:6px;border-radius:3px;background:var(--f-ln);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--f-ac)}
+.bar i.w{background:var(--s-warn)}.bar i.l{background:var(--s-live)}.bar i.b{background:var(--s-bad)}.bar i.n{background:var(--s-neu)}
+.bar.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px);border:1px dashed var(--f-bd)}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:6px}.pfoot .pfrow .ibtn:first-of-type{margin-left:auto}
+.adm{font:600 12px var(--f-mono);color:var(--f-mu);border:1px solid var(--f-ln);border-radius:4px;padding:0 4px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.ct h3{margin:0;font-size:21px;letter-spacing:-.015em}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.phead .age{margin-left:auto;font:12px var(--f-mono);color:var(--f-mu)}
+.chip{font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.st{display:inline-flex;align-items:center;gap:7px}
+.st svg{width:12px;height:12px;flex:none}
+.st.live{color:var(--s-live)}.st.park{color:var(--s-park)}.st.bad{color:var(--s-bad)}.st.warn{color:var(--s-warn)}.st.neu{color:var(--s-neu)}
+.st span{color:var(--f-ink);font-size:13px}
+/* state pill (brand state colours) */
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.park{background:var(--s-parkb);color:var(--s-park)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.more{color:var(--f-ac)!important;font-size:12.5px;white-space:nowrap;font-weight:550}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln);flex-wrap:nowrap;overflow:hidden}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.danger{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 55%,transparent)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.io{width:30px;padding:0;justify-content:center}
+.split{display:grid;grid-template-columns:380px minmax(0,1fr);border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden;min-height:760px}
+.lp{border-right:1px solid var(--f-ln);display:flex;flex-direction:column;min-width:0}
+.lph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--f-ln)}
+.lph .inp{flex:1}
+.inp{border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--f-mu)}
+.li{display:grid;grid-template-columns:16px 1fr auto;gap:2px 8px;padding:9px 12px;border-bottom:1px solid var(--f-ln);align-items:start;position:relative}
+.li .st svg{margin-top:3px}
+.li b{font-weight:550;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li small{grid-column:2/4;font-size:12px;color:var(--f-mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li small.why{color:var(--s-warn)}
+.li em{font:normal 12px var(--f-mono);color:var(--f-mu);white-space:nowrap}
+.li.sel{background:var(--f-acs)}
+.li.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--f-ac)}
+.app code,.phone code,.dpw code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.app .exd,.phone .exd,.dpw .exd{background:none;padding:0;color:var(--f-mu)}
+.fold{position:absolute;left:0;right:0;height:0;border-top:2px dashed #e0457b;z-index:5;pointer-events:none}
+.fold span{position:absolute;right:8px;top:-22px;font:600 12px var(--f-mono);color:#fff;background:#e0457b;padding:2px 8px;border-radius:99px}
+
+/* ======== the proposed Details tab ======== */
+.dp{display:flex;flex-direction:column;gap:12px;padding:14px 16px 18px;min-width:0;font-size:13px}
+.dpw{background:var(--f-sf);color:var(--f-ink);font-family:var(--f-display);line-height:1.45;font-size:13px}
+.dh{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dh1{display:flex;align-items:center;gap:10px;min-width:0}
+.dh1 h4{margin:0;font-size:17px;line-height:1.25;letter-spacing:-.01em;overflow:hidden;min-width:120px;flex:1 1 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.hl{font-size:13px;color:var(--f-mu);white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
+.hl b{color:var(--f-ink);font-weight:600}
+.dh1 .r{margin-left:auto;display:flex;gap:6px;flex:none}
+.meta{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.meta>span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.meta>span+span::before{content:"·";margin-right:3px;color:var(--f-mu)}
+.meta b{color:var(--f-ink);font-weight:550}
+.meta a.wl{color:var(--f-ac)!important;font-weight:550}
+.meta .nodot::before{content:none!important}
+.idb{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--f-bd);border-radius:6px;padding:1px 7px;font-size:12px;color:var(--f-ink);background:var(--f-sf)}
+.idb .ic{width:13px;height:13px}
+.dchip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--f-ln);background:var(--f-hv);border-radius:99px;padding:1px 4px 1px 9px;font-size:12px;color:var(--f-ink)}
+.q{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid var(--f-bd);color:var(--f-mu);font:600 12px/1 var(--f-display);flex:none;background:var(--f-sf)}
+.q.on{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.pop{position:absolute;z-index:4;width:300px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:12px;box-shadow:var(--f-sh);padding:10px 12px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.pop b{font-size:13px}.pop p{margin:0;color:var(--f-ink)}.pop small{color:var(--f-mu);font-size:12px}
+.pop a{color:var(--f-ac)!important;font-weight:550}
+/* Now card */
+.now{border:1px solid var(--f-ln);border-left:3px solid var(--s-live);border-radius:12px;background:var(--f-sf);padding:11px 14px;display:flex;flex-direction:column;gap:9px}
+.now.bad{border-left-color:var(--s-bad);background:linear-gradient(90deg,var(--s-badb),var(--f-sf) 70%)}
+.now.ok{border-left-color:var(--s-live)}
+.nowh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.nowh>b{font-size:14px;font-weight:650}
+.nowh .r{margin-left:auto;display:flex;gap:10px;align-items:center}
+.phz{display:flex;align-items:center;gap:4px;font-size:12.5px;flex-wrap:wrap}
+.phz .p{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:99px;color:var(--f-mu);white-space:nowrap}
+.phz .p i{font-style:normal;font-variant-numeric:tabular-nums}
+.phz .p.done{color:var(--f-mu)}
+.phz .p.done::before{content:"✓";color:var(--s-live);font-weight:700}
+.phz .p.cur{background:var(--s-liveb);color:var(--s-live);font-weight:650}
+.phz .p.cur::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--s-live);box-shadow:0 0 0 3px color-mix(in srgb,var(--s-live) 25%,transparent)}
+.phz .p.todo{border:1px dashed var(--f-bd)}
+.phz .arr{color:var(--f-bd)}
+.ll{display:flex;align-items:center;gap:10px;background:var(--f-hv);border-radius:8px;padding:6px 10px;min-width:0}
+.ll .k{font-size:12px;color:var(--f-mu);white-space:nowrap}
+.ll .t{font:12.5px var(--f-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.ll .t.abs{font-family:var(--f-display);color:var(--f-mu)}
+.ll .a{font-size:12px;color:var(--f-mu);white-space:nowrap;font-variant-numeric:tabular-nums}
+.nf{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12.5px;color:var(--f-mu)}
+.nf b{color:var(--f-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.nf .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--s-live);margin-right:5px;vertical-align:1px}
+.errt{font:12.5px/1.5 var(--f-mono);background:var(--f-sf);border:1px solid color-mix(in srgb,var(--s-bad) 35%,transparent);border-radius:8px;padding:8px 10px;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.who{font-size:12px;color:var(--f-mu)}.who b{color:var(--f-ink);font-weight:600}
+.lead{margin:0;font-size:13.5px}.lead b{font-weight:650}
+/* stat strip */
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden}
+.sc{padding:9px 12px 10px;border-left:1px solid var(--f-ln);display:flex;flex-direction:column;gap:3px;min-width:0}
+.sc:first-child{border-left:0}
+.sc .l{font-size:12px;color:var(--f-mu);display:flex;gap:6px;align-items:center;white-space:nowrap}
+.sc .v{font:650 18px/1.2 var(--f-display);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc .v small{font-size:12.5px;font-weight:500;color:var(--f-mu);margin-left:4px}
+.sc .v.pend{font:500 13px/1.6 var(--f-display);color:var(--f-mu)}
+.sc .v.abs{font:500 13px/1.6 var(--f-display);color:var(--f-mu)}
+.sc .s{font-size:12px;line-height:1.35;color:var(--f-mu)}
+.sc .s.warn{color:var(--s-warn)}.sc .s.bad{color:var(--s-bad)}
+.sc .bar{margin-top:2px}
+.stats.stuck{box-shadow:0 6px 14px rgba(11,58,122,.12);border-radius:0 0 12px 12px}
+/* columns */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.phb{display:flex;height:12px;border-radius:4px;overflow:hidden;background:var(--f-hv);gap:2px}
+.phb i{display:block;height:100%}
+.phb .q1{background:var(--s-neu);opacity:.45}.phb .c1{background:var(--f-ac);opacity:.55}.phb .r1{background:var(--s-live)}
+.phb .r1.open{background:repeating-linear-gradient(90deg,var(--s-live) 0 70%,transparent 70% 100%) right/12px 100% no-repeat,var(--s-live);-webkit-mask:linear-gradient(90deg,#000 88%,transparent)}
+.phb .b1{background:var(--s-bad)}
+.phrow{display:grid;grid-template-columns:62px minmax(0,1fr) 60px;gap:8px;align-items:center;font-size:12px;color:var(--f-mu)}
+.phrow b{font-weight:500;text-align:right;color:var(--f-ink);font-variant-numeric:tabular-nums}
+.lg{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--f-mu)}
+.lg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.evs{display:flex;flex-direction:column}
+.evr{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;padding:5px 0;border-top:1px solid var(--f-ln);font-size:12.5px}
+.evr:first-child{border-top:0}
+.evr .tm{font:12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.evr .k{font-weight:550}.evr small{color:var(--f-mu);font-size:12px}
+.evr.bad .k{color:var(--s-bad)}
+.rr{display:grid;grid-template-columns:76px minmax(0,1fr) auto;gap:4px 10px;align-items:center;font-size:12.5px}
+.rr .n{color:var(--f-mu)}
+.rr .v{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.rr .v b{font-weight:600}.rr .v small{color:var(--f-mu);font-size:12px}
+.rr .bar{grid-column:2/3}
+.rnote{font-size:12px;color:var(--f-mu);margin:0}
+.disc{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--f-ac)!important;font-weight:550}
+.disc::before{content:"›";display:inline-block;transform:rotate(0);font-weight:700}
+.disc.open::before{transform:rotate(90deg)}
+.spark{height:46px;border-radius:6px;background:var(--f-hv);position:relative;overflow:hidden}
+.spark svg{position:absolute;inset:0;width:100%;height:100%}
+/* input + outcome */
+.prev{margin:0;font-size:13px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-line}
+.ifacts{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:12.5px;color:var(--f-mu)}
+.ifacts b{color:var(--f-ink);font-weight:550}
+.ifacts .m{font-family:var(--f-mono);font-size:12px;color:var(--f-ink)}
+.collapsed{display:flex;align-items:center;gap:10px;padding:10px 14px;border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf)}
+.collapsed b{font-size:14px;font-weight:600}.collapsed small{color:var(--f-mu);font-size:12.5px}
+.files{display:flex;flex-direction:column;border:1px solid var(--f-ln);border-radius:9px;overflow:hidden}
+.fi{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--f-ln);font-size:12.5px}
+.fi:first-child{border-top:0}
+.fi .p{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fi .z{font:12px var(--f-mono);color:var(--f-mu)}
+.add{color:var(--s-live)}.del{color:var(--s-bad)}
+.prl{display:inline-flex;align-items:center;gap:6px;font-weight:650;color:var(--f-ac)!important}
+.skl{height:12px;border-radius:6px;background:var(--f-ln);opacity:.7}
+.sta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.empty{border:1px dashed var(--f-bd);border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--f-mu);display:flex;flex-direction:column;gap:3px}
+.empty b{color:var(--f-ink);font-weight:600}
+.empty.err{border-style:solid;border-color:color-mix(in srgb,var(--s-bad) 40%,transparent);background:var(--s-badb)}
+.empty.err b{color:var(--s-bad)}
+.lbl2{font-size:12px;color:var(--f-mu)}
+/* today */
+.td .facts{display:flex;flex-wrap:wrap;gap:3px 12px;font:12px var(--f-mono);color:var(--f-mu)}
+.td .facts b{font-weight:500;color:var(--f-ink)}
+.td .facts .k{color:var(--f-mu)}
+.td .tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.td .tile{background:var(--f-hv);border-radius:9px;padding:9px 10px;min-height:86px;display:flex;flex-direction:column;gap:2px}
+.td .tile small{font-size:12px;color:var(--f-mu)}
+.td .tile b{font:650 20px var(--f-display)}
+.td .tile b.rd{font:650 20px var(--f-display);color:var(--f-mu);border-bottom:1px dotted var(--f-mu);align-self:flex-start}
+.td .tile i{font:normal 12px var(--f-mono);color:var(--f-mu)}
+.td .sec{border-top:1px solid var(--f-ln);padding-top:12px;display:flex;flex-direction:column;gap:10px}
+.td .sec>h5{margin:0;font-size:15px}
+.td .chart{height:120px;background:var(--f-hv);border-radius:8px;position:relative}
+.td .chart::after{content:attr(data-l);position:absolute;left:10px;top:8px;font-size:12px;color:var(--f-mu)}
+.td .rrow{display:grid;grid-template-columns:120px 1fr 190px;gap:8px;align-items:center;font:12px var(--f-mono);color:var(--f-mu)}
+.td .rd2{font:500 12px var(--f-mono);border:1px dashed var(--f-bd);border-radius:99px;padding:0 6px;color:var(--f-mu);justify-self:start}
+.td .links{display:flex;flex-wrap:wrap;gap:4px 12px;font:12px var(--f-mono)}
+.td .links a{color:var(--f-ac)!important;text-decoration:underline!important}
+.td pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--f-hv);border-radius:8px;padding:10px;white-space:pre-wrap}
+.td .mt{font:12px var(--f-mono);border-collapse:collapse;width:100%}
+.td .mt td{border-bottom:1px solid var(--f-ln);padding:5px 6px;vertical-align:top}
+.td .scroll2{outline:2px dashed #e0457b;outline-offset:-4px;border-radius:10px;position:relative}
+/* phone */
+.phone{width:390px;max-width:100%;height:844px;margin:0 auto;border-radius:30px;border:6px solid #0d1724;background:var(--f-bg);color:var(--f-ink);position:relative;overflow:hidden;font-size:13px;font-family:var(--f-display);line-height:1.45;display:flex;flex-direction:column}
+.pbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0b3a7a;color:#eef4fa;--hive:url(#g-hive-b)}
+.pbar b{font-size:15px;flex:1;font-weight:650}
+.pbar .ic{color:#eef4fa}
+.pbar .pill.dev{background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45)}
+.pbody{padding:12px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto;flex:1;background:var(--f-sf)}
+.pbody>*{flex:none}
+.phone .ll{flex-wrap:wrap;gap:2px 10px}.phone .ll .t{flex-basis:100%;order:3}
+.phone .tabs{overflow-x:auto}
+.phone .tabs span{padding:6px 8px;font-size:12.5px}
+.phone .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+.phone .sc{border-left:0;border-top:1px solid var(--f-ln)}
+.phone .sc:nth-child(-n+2){border-top:0}
+.phone .sc:nth-child(even){border-left:1px solid var(--f-ln)}
+.phone .sc:last-child{grid-column:1/-1}
+.phone .cols{grid-template-columns:minmax(0,1fr)}
+.phone .dh1 h4{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-size:16px}
+.back{font-size:13px;color:var(--f-ac);font-weight:550}
+.phone .nowh .phz{order:3;flex-basis:100%}
+.phone .meta>span+span::before{content:none}.phone .meta{gap:4px 12px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol></defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+<symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V10a3 3 0 0 0-3-3h-4m2-2-2 2 2 2"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+</defs></svg>
+
+<div class="wrap">
+<p class="kicker">SwarmCloud · Agents · Details tab · v3 · 2026-10-04</p>
+<h1>The agent Details tab, redesigned for the first screen</h1>
+<p class="lede">Measured live on 2026-10-04 at 1440 on a running claude-code agent, the Details pane is <b>2,770px</b> tall, and almost none of what answers "is this agent all right?" is above the fold. This page redraws the tab in the live console's visual system so that state, elapsed time, what it is doing now, the last log line, memory, CPU and cost all fit in the <b>first 900px</b>. Agents, ids, repos, times and figures are <span class="exd">example data</span>; the user is Operator.</p>
+<ul class="toc"><li><a href="#inv">1 · Today, measured</a></li><li><a href="#cmp">Today next to the proposal</a></li><li><a href="#va">2 · Variant A</a></li><li><a href="#states">Loading, empty, error</a></li><li><a href="#vb">Variant B</a></li><li><a href="#rec">3 · Recommendation</a></li><li><a href="#map">Every element, mapped to data</a></li><li><a href="#ungrounded">What the code does not say yet</a></li></ul>
+
+<h2 id="inv"><span class="n">1</span>What the Details tab draws today, measured from the code</h2>
+<p>Read from <code>origin/main</code> at 69416fa. The order is <code>Run()</code>'s stack in <code>AgentDetail.tsx</code>, under the split's header (<code>AgHead</code> in <code>AgentSplit.tsx</code>) and the one-line <code>LogLastLine</code> the split draws above the Details body.</p>
+<div class="tw"><table class="doc"><thead><tr><th>Today</th><th>Where (origin/main)</th><th>What is wrong with it (measured 2026-10-04)</th><th>In the proposal</th></tr></thead><tbody>
+<tr><td>Header: state, title, id + copy, facts strip</td><td class="src">AgentSplit.tsx:474 <code>AgHead</code>, :566 <code>AgHeadFacts</code></td><td>Two dense mixed-mono lines: profile · class · units · gen · started · account · tenant · workflow. No elapsed, no "what is it doing", no cost.</td><td>Line 1: pill, title, <b>elapsed · attempt n of N</b>, actions. Line 2: one sans meta line. Id behind a copy button.</td></tr>
+<tr><td>Last log line</td><td class="src">AgentLogs.tsx:649 <code>LogLastLine</code>, drawn at AgentSplit.tsx:403</td><td>A lone row above the body, disconnected from the state it explains.</td><td>Inside the <b>Now</b> card, with its age and "Open logs ›".</td></tr>
+<tr><td>Liveness + submitted / age / by</td><td class="src">AgentDetail.tsx:652 <code>Headline</code> (headed form)</td><td>"live 58s ago" alone on a line; "submitted · age · by" repeats header data.</td><td>Liveness joins the Now card. Submitted / by move to the Progress event list (the <code>submitted</code> event).</td></tr>
+<tr><td>Six metric tiles</td><td class="src">AgentDetail.tsx:838 <code>RunMetrics</code></td><td>Uneven 4+2 grid; two tiles say "written at exit" in large type while running; "documents · counter agrees".</td><td>One 5-cell <b>stat strip</b>; a value not due yet is small and muted ("at exit"), never full size. Tokens fold into Cost.</td></tr>
+<tr><td>Attempts section</td><td class="src">:1569 <code>Attempts</code>, :1774 <code>AttemptCard</code>, :1976 <code>AttemptResources</code>, <code>charts/AttemptPhases.tsx</code>, <code>charts/PeakMemory.tsx</code></td><td>Phases chart, attempt card + lease id, four resource bars with mono notes and "reading" chips, Peak RSS and checkpoint-cadence charts.</td><td>Compact phases bar in <b>Progress</b>; thin bars with % of limit in <b>Resources</b>; charts behind "Details". Per-attempt cards stay on the <b>Attempts</b> tab, which already exists.</td></tr>
+<tr><td>"reading these cards" link block</td><td class="src">:1720 <code>AttemptLegend</code></td><td>Nine to ten underlined mono help links in a row.</td><td>One <b>?</b> per card, opening the topics for that card only.</td></tr>
+<tr><td>Dispatch section</td><td class="src">:2959 <code>DispatchPanel</code> → Dispatch.tsx:400 <code>DispatchFacts</code></td><td>"strategy integrate · carrier checkpoints not acted on · role contributor": platform words.</td><td>Small chips in the header meta, in <code>STRATEGY_LABEL</code>'s words ("One PR for all steps"), each with a plain-language <b>?</b>.</td></tr>
+<tr><td>Output card</td><td class="src">:2769 <code>Output</code></td><td>Full-width card saying "nothing written yet · running".</td><td>Drawn only when there is output. While running: one line in the Now card.</td></tr>
+<tr><td>Input</td><td class="src">:3847 <code>Input</code>, :3993 <code>MaskedMetadataBlock</code></td><td>The entire prompt in a mono block (max 320px, its own scroller) plus a raw metadata table with JSON.</td><td>Collapsed: facts line + 3-line sans preview + "Show prompt"; metadata behind a disclosure.</td></tr>
+<tr><td>Timeline</td><td class="src">:4166 <code>Timeline</code></td><td>At the very bottom, below the fold of the fold.</td><td>Last 5 events in Progress, "All 23 events" expands in place.</td></tr>
+<tr><td>Scrolling</td><td class="src">agents.css:283 <code>.ag-split-pane{overflow-y:auto}</code> + the inner <code>.drawer</code> of <code>AgentDetailScreen</code></td><td>Two nested scroll containers: scrolling the outer one slides the whole detail away, leaving a blank panel.</td><td><b>One</b> scroll container: the pane. The header and tabs stay put above it.</td></tr>
+</tbody></table></div>
+
+<h2 id="cmp"><span class="n">·</span>Today next to the proposal, same pane, same scale</h2>
+<p>Both columns are the detail pane only (692px wide at 1440 with the list at the 380px snap), drawn at the same reduced scale. The pink dashed line is <b>900px</b> from the top of the pane.</p>
+<div class="cmp">
+<figure><div class="mini" data-cmp="today"></div><figcaption><span class="big">2,770px</span> · Today, drawn from the 2026-10-04 description: by the fold you have the header, the tiles and the start of the Attempts section. The dashed outline marks the inner scroll container.</figcaption></figure>
+<figure><div class="mini" data-cmp="new"></div><figcaption><span class="big" data-h="new">~1,000px</span> · Variant A: by the fold you have state, elapsed, attempt, the current phase, the last log line, checkpoints, memory, CPU, cost, the phases bar, the last events and every resource bar.</figcaption></figure>
+</div>
+
+<h2 id="va"><span class="n">2</span>Variant A: a Now card, one stat strip, two columns</h2>
+<section class="variant">
+<div class="vh"><span class="vn">Variant A</span><h3>Answer "is it all right?" in the first screen, and fold the rest</h3><span class="rec">Recommended</span></div>
+<p>The header says the state, the name and how long it has been going, on one line. Under the tabs, a <b>Now</b> card says which phase it is in, the last thing it logged and its latest checkpoint. One <b>stat strip</b> holds the five figures. Then two columns: <b>Progress</b> (phases bar and the last five events) and <b>Resources</b> (thin bars against the limit). Input is folded. When the agent has finished, the Now card becomes the <b>outcome</b>: the PR and files when it succeeded, the failure first when it did not.</p>
+
+<h3 class="sub">A1 · A running agent, 1440, light</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="run" data-t="l"></div><figcaption>Light · <code>/agents/task_01JC7Q4M2T8K</code> on the Details tab (a running agent opens on Logs, by the 2026-10-04 decision; this is the operator picking Details). The Resources <b>?</b> is drawn open to show the help. Everything above the pink line is the first screen. <span class="exd">example data</span></figcaption></figure></div>
+
+<h3 class="sub">A2 · The same agent, dark</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="run" data-t="d"></div><figcaption>Dark · the same screen with every <b>?</b> closed. The dispatch chips' plain words come from <code>STRATEGY_LABEL</code> (types.ts:859). <span class="exd">example data</span></figcaption></figure></div>
+
+<h3 class="sub">A3 · A finished agent: succeeded, with cost, files and a PR</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="done" data-t="l"></div><figcaption>Light · the Now card becomes the <b>Outcome</b> card: the PR sentence is <code>AgCodeLead</code>'s (AgentDetail.tsx:3483), then the base pin, the diffstat and the files from <code>result_summary.artifacts</code>. Cost and tokens are now real, so they take full size. Resources "Details" is opened to show where the charts went. <span class="exd">example data</span></figcaption></figure></div>
+
+<h3 class="sub">A4 · A failed agent: lost_worker, the failure reads first</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="lost" data-t="l"></div><figcaption>Light · <code>FAILED</code> with <code>end_cause</code> <code>lost_worker</code> after 3 of 3 attempts. The failure card is first: a plain sentence, who wrote the error (<code>errorWriter</code>, :1549, here the reconciler), and the full error, never truncated. The memory figure is the <b>last heartbeat reading</b>, labelled so, not a peak; the peak was never written. Cost is a dash with its reason. <span class="exd">example data</span></figcaption></figure></div>
+
+<h3 class="sub">A4b · The other failure that needs explaining: published_nothing</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="nothing" data-t="d"></div><figcaption>Dark · <code>publishedNothing()</code> (:3472). The heading and sentence are the live <code>AgCodeLead</code> copy. The run itself went well, so the strip is ordinary; the card says what to do next. <span class="exd">example data</span></figcaption></figure></div>
+
+<h3 class="sub">A5 · Phone, 390</h3>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="phone" data-t="l" style="padding:20px;background:var(--surface)"></div><figcaption>Light · the list and the agent are two pages on a phone (AgentSplit.tsx:61), so the back link is the way back. The strip becomes two columns with Cost across the bottom and moves above the Now card, so the figures come first on a small screen; Progress and Resources stack. State, elapsed, phase, last log line, memory, CPU and cost are all in the first 844px. <span class="exd">example data</span></figcaption></figure></div>
+
+<div class="idea"><div><h4>Idea</h4><p>Lead with the state the operator came to check, put the five figures in one strip, and move each detail behind one click, on the card it belongs to.</p></div><div><h4>Pros</h4><ul><li>Everything needed to judge a running agent is above 900px.</li><li>No new data: every element is a value the tab already reads.</li><li>One scroll container ends the "blank panel" bug.</li><li>A not-yet-due value stops shouting in 20px type.</li></ul></div><div><h4>Risks</h4><ul><li>The per-attempt facts (lease, exec, attempt id) leave this tab for the Attempts tab: anyone used to reading them here has to learn one more click.</li><li>Two columns need about 640px; at the 50% snap on a 1280 screen they stack.</li><li>The help moves from the page foot into the cards: <code>tests/agentdetail.test.tsx</code> asserts a <b>?</b> after the state key, and those tests change.</li></ul></div></div>
+</section>
+
+<h2 id="states"><span class="n">·</span>Loading, empty and error forms of each region</h2>
+<p>Each region keeps its slot. An unknown figure is a dash with its reason, never 0 (redesign-v2.md, "Honesty rules"). Light, at the detail column's width.</p>
+<div class="frames2"><figure class="fr"><div class="scroller" data-f="states" data-t="l"></div><figcaption>Light · the task is read and the attempt or event reads are still in flight or have failed. A failed read keeps its last good figure dimmed when there was one (states.html C, page tier). <span class="exd">example data</span></figcaption></figure></div>
+
+<h2 id="vb"><span class="n">·</span>Variant B: one column with a sticky stat strip</h2>
+<section class="variant">
+<div class="vh"><span class="vn">Variant B</span><h3>The same sections in one column; the strip stays at the top as you scroll</h3></div>
+<p>Everything is in the order of variant A, but stacked: Now, Progress, Resources, Input. The stat strip sticks under the tabs, so elapsed, memory, CPU and cost stay in view while you read the events or the prompt. The frame shows the pane scrolled 420px.</p>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="b" data-t="l"></div><figcaption>Light · scrolled 420px: the header, tabs and strip stay; the Now card has scrolled away. <span class="exd">example data</span></figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="b" data-t="d"></div><figcaption>Dark · the same. <span class="exd">example data</span></figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Keep one reading order at every width and pin the five figures, so the strip works like a status bar for the pane.</p></div><div><h4>Pros</h4><ul><li>One layout from 390 to 2560: nothing reflows between snaps.</li><li>The figures stay visible while you read the prompt or the events.</li><li>Simpler to build and to test than a two-column grid.</li></ul></div><div><h4>Risks</h4><ul><li>About 300px taller than A: Resources falls below 900px on a running agent, so the first screen misses the bars.</li><li>A sticky strip plus a sticky header takes about 150px of every scroll position.</li><li>Wide panes (the 50% snap on a 2560 screen) get long, thin cards with empty right halves.</li></ul></div></div>
+</section>
+
+<h2 id="rec"><span class="n">3</span>Recommendation</h2>
+<div class="recbox"><h3>Build variant A.</h3><p>It is the only one of the two that gets every figure, the current phase and the resource bars above 900px on a running agent at 1440. It reads the same data the tab reads today, so it is a layout change, not a backend change. B's sticky strip is a good idea for a narrow pane: A takes it below 640px, where its columns stack anyway.</p>
+<p style="margin-bottom:4px"><b>Small choices made in the frames</b> (each one tenable the other way):</p>
+<ul class="qlist">
+<li>The headline is <b>elapsed · attempt n of N</b> in sans next to the title, and the meta line is <b>profile · class · workflow · account</b>. Tenant leaves the header: it is in the panel's tenant tile already. <b>gen</b> and units leave too; they are on the Attempts tab.</li>
+<li>The full task id is behind a <b>copy id</b> button whose tooltip is the whole id, not printed.</li>
+<li>The strip's five cells are Elapsed · Attempt · Peak memory · CPU · Cost. <b>Tokens</b> go under Cost as its sub-line, and <b>Checkpoints</b> go to the Now card, because "2 · last 1m ago" is a progress fact, not a total.</li>
+<li>A live memory figure is the heartbeat's high-water mark so far, labelled "so far · 40s ago", as <code>RunMetrics</code> does today.</li>
+<li><b>Carrier</b> gets no chip: no worker reads it yet (<code>CARRIER_NOTE</code>, types.ts:877). It is named in the strategy chip's help.</li>
+<li>Progress shows the last <b>5</b> events, newest first; today's Timeline is oldest first. Newest first is what "what is it doing" needs.</li>
+<li>Two columns from a <b>640px</b> pane width; below that they stack and the strip sticks (B's idea).</li>
+<li>The Output card appears only once <code>result_summary</code> exists or a publish was refused; before that the Now card says "No output yet: written when the attempt ends".</li>
+</ul></div>
+
+<h2 id="map"><span class="n">·</span>Every element drawn, mapped to data the Details tab has</h2>
+<div class="tw"><table class="doc"><thead><tr><th>Element</th><th>Value</th><th>Source on origin/main</th></tr></thead><tbody>
+<tr><td>State pill</td><td><code>task.state</code></td><td class="src"><code>StateMark</code>, AgentSplit.tsx:541</td></tr>
+<tr><td>Elapsed (headline + strip)</td><td><code>elapsed(task, now)</code></td><td class="src">types.ts:2821; ticks on <code>useNow(1000)</code> capped by <code>rowClock</code> (AgentDetail.tsx:322)</td></tr>
+<tr><td>Attempt n of N</td><td><code>attempts.length</code> / <code>task.max_attempts</code></td><td class="src">RunMetrics, AgentDetail.tsx:915</td></tr>
+<tr><td>Meta line</td><td><code>runner_profile</code>, <code>resource_class</code> + class catalogue, <code>workflow_id</code>, <code>account</code></td><td class="src">AgHeadFacts, AgentSplit.tsx:566; <code>accountText</code></td></tr>
+<tr><td>Dispatch chips</td><td><code>dispatchOf(task)</code>: strategy, role</td><td class="src">Dispatch.tsx:400; <code>STRATEGY_LABEL</code> types.ts:859</td></tr>
+<tr><td>Now · phase</td><td><code>phasesFor(task, attempts, events)</code>: queue / cold start / run</td><td class="src">duration.ts:423, <code>PHASE_LABEL</code> :77</td></tr>
+<tr><td>Now · last log line</td><td><code>lastLineOf(feed)</code></td><td class="src">AgentLogs.tsx:649</td></tr>
+<tr><td>Now · heartbeat</td><td><code>livenessOf(task, events, now)</code></td><td class="src">Liveness.tsx:49</td></tr>
+<tr><td>Now · checkpoints</td><td><code>attempt.checkpoints</code> count; kept count from <code>useCheckpointListing</code></td><td class="src">AgentDetail.tsx:326, :900, :1023</td></tr>
+<tr><td>Peak memory</td><td><code>peak_rss_bytes</code>, else <code>newestHeartbeat().peakRssBytes</code>; limit <code>classes[class].memory_gib</code></td><td class="src">RunMetrics :889; types.ts:1884</td></tr>
+<tr><td>CPU</td><td><code>peak_cpu_cores</code>, <code>mean_cpu_cores</code>, <code>cpu_limit_cores</code></td><td class="src">AttemptRow, types.ts:1545-1563; <code>CpuRows</code> :2211</td></tr>
+<tr><td>Workspace</td><td><code>peak_disk_bytes</code> vs <code>disk_gib</code></td><td class="src">AttemptResources :2040</td></tr>
+<tr><td>Cost + tokens</td><td>sum of <code>cost_usd</code>; <code>tokenKinds()</code></td><td class="src">RunMetrics :894; <code>tokenKinds</code> :1140</td></tr>
+<tr><td>Events</td><td><code>run.events</code>, <code>EventType</code></td><td class="src">Timeline :4166; swarm_common/states.py:165</td></tr>
+<tr><td>Outcome / failure</td><td><code>AgCodeLead</code>, <code>ErrorBanner</code> + <code>errorWriter</code>, <code>end_cause</code></td><td class="src">:3483, :1497, :1549; EndCause types.ts:2278</td></tr>
+<tr><td>Input</td><td><code>/input</code> copy: prompt, redaction count, metadata</td><td class="src">Input :3847, MaskedMetadataBlock :3993</td></tr>
+</tbody></table></div>
+
+<h2 id="ungrounded"><span class="n">·</span>What the code does not say yet</h2>
+<ul class="qlist">
+<li><b>"Cost" while running.</b> <code>cost_usd</code> is written at attempt exit, so a running agent has no cost to show; the frames say "at exit". A live cost would need the worker to write spend on its heartbeat, which it does not.</li>
+<li><b>The current phase as a word.</b> <code>phasesFor</code> gives closed and open intervals per attempt; "running now" is read as the open <code>run</code> interval of the latest attempt. No field names the current phase directly.</li>
+<li><b>"Last checkpoint 1m ago".</b> <code>attempt.checkpoints</code> is a list of names (<code>string[]</code>); the time comes from the latest <code>checkpoint_completed</code> event on the page, which is capped and oldest first, so on a long run it may be missing. The frame would then say "2 · time not on this page".</li>
+<li><b>Two columns' breakpoint.</b> 640px is a choice, not a measurement; the live pane width at each snap was not measured for this page.</li>
+<li><b>The 2,770px Today frame</b> is drawn from the description of the 2026-10-04 measurement, not from a screenshot, and its section heights are approximate.</li>
+</ul>
+</div>
+
+<script>
+const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+const S={QUEUED:['s-queued','neu','queued'],LEASED:['s-starting','live','leased'],STARTING:['s-starting','live','starting'],RUNNING:['s-running','live','running'],PARKED:['s-parked','park','parked'],READY:['s-ready','neu','ready'],SUCCEEDED:['s-succeeded','live','succeeded'],FAILED:['s-failed','bad','failed'],CANCELLED:['s-cancelled','neu','cancelled'],DEAD_LETTERED:['s-dead','bad','dead-lettered']};
+const mk=s=>{const [y,c]=S[s];return `<span class="st ${c}"><svg viewBox="0 0 12 12" width="13" height="13" aria-hidden="true"><use href="#${y}"/></svg></span>`};
+const pill=s=>{const [y,c,t]=S[s];return `<span class="sp ${c}"><svg viewBox="0 0 12 12" aria-hidden="true"><use href="#${y}"/></svg>${t}</span>`};
+const HIVE=(w=44)=>`<svg width="${w}" height="${w}" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+const Q=(on)=>`<span class="q${on?' on':''}" title="What this card shows">?</span>`;
+
+/* ---------- shell: Sky spine + panel (copied from agent-detail-2.html; Work pages from App.tsx SECTIONS) ---------- */
+function rail(){return `<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE()}</div><a class="ri rcta">${I('i-submit')}<small>Submit</small></a><div class="rsep"></div><a class="ri">${I('i-overview')}<small>Overview</small></a><a class="ri on">${I('i-agents')}<small>Work</small></a><a class="ri">${I('i-pools')}<small>Capacity</small></a><a class="ri">${I('i-limits')}<small>Admin</small></a><div class="rgrow"></div><a class="ri">${I('i-help')}<small>Help</small></a><a class="ri">${I('i-api')}<small>API reads</small></a><span class="av">OP</span></nav>`}
+function panel(kid){
+ const k=(n,c)=>`<a class="kid${kid===n?' on':''}"><span>${n}</span>${c?`<span class="cnt">${c}</span>`:''}</a>`;
+ return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Work</div><a class="pk on">${I('i-agents')}<span class="pl1">Agents</span></a><div class="kids">${k('Live',6)}${k('Waiting',4)}${k('Recent')}</div><a class="pk">${I('i-workflows')}<span class="pl1">Workflows</span><span class="cnt">2</span></a><a class="pk">${I('i-branch')}<span class="pl1">Runs</span></a><a class="pk">${I('i-timeline')}<span class="pl1">Timeline</span></a></div><div class="meter"><div class="mh"><span>Global pool</span><b>14 / 40</b></div><div class="bar"><i style="width:35%"></i></div></div><div class="pfoot"><span class="pfrow"><b>Operator</b><button class="ibtn" title="Theme">${I('i-moon')}</button><button class="ibtn" title="Sign out">${I('i-out')}</button></span><small>operator@example.com</small><span class="stamp">ui 69416fa · api 69416fa</span></div></nav>`}
+function app(t,o){return `<div class="app ${t==='d'?'fd':'fl'}"${o.h?` style="min-height:${o.h}px"`:''}>${o.fold?'<div class="fold" style="top:900px"><span>900px · first screen</span></div>':''}<div class="side">${rail()}${panel(o.kid)}</div><main class="ct">${o.main}</main></div>`}
+
+const LIST=[
+ {s:'RUNNING',t:'Refactor quota broker AIMD backoff',a:'14m',sm:'claude-code · quota-broker-aimd',id:'run'},
+ {s:'RUNNING',t:'Shard 3: tests/e2e/agents',a:'6m',sm:'codex · child of Split the flaky e2e…'},
+ {s:'QUEUED',t:'Shard 4: tests/e2e/capacity',a:'3m',sm:'class:standard full · holds no capacity',c:'why'},
+ {s:'SUCCEEDED',t:'Fix flaky lease heartbeat test',a:'1h',sm:'claude-code · PR #512',id:'done'},
+ {s:'FAILED',t:'Migrate pool labels to the new schema',a:'2h',sm:'claude-code · lost_worker',id:'lost'},
+ {s:'FAILED',t:'Docs pass on quota-management.md',a:'3h',sm:'claude-code · published_nothing',id:'nothing'},
+ {s:'PARKED',t:'Split the flaky e2e suite',a:'26m',sm:'claude-code · awaiting 2 of 5 children'},
+ {s:'CANCELLED',t:'Rename pool labels in the console',a:'4h',sm:'claude-code · cancel_requested'},
+];
+function list(sel){return `<div class="lp"><div class="lph"><span class="inp">${I('i-search')}Filter agents</span><span class="btn ghost" title="Collapse the list ( [ )">«</span></div>${LIST.map(r=>`<div class="li${r.id===sel?' sel':''}">${mk(r.s)}<b>${r.t}</b><em>${r.a}</em><small class="${r.c||''}">${r.sm}</small></div>`).join('')}<div class="cnt" style="padding:8px 12px">8 of 31 · <span class="exd">example data</span></div></div>`}
+function head(kid){return `<div class="crumb">Work / Agents / <b>${kid}</b></div><div class="phead"><h3>Agents</h3><span class="chip">6 live · 4 waiting · tenant eng</span><span class="age">read 3s ago · poll 5s</span></div>`}
+
+/* ---------- the proposed Details tab ---------- */
+const AG={
+ run:{s:'RUNNING',title:'Refactor quota broker AIMD backoff',el:'14m 22s',att:'1 of 3',acct:'acct-eng-02',wf:'quota-broker-aimd',strat:'One PR for all steps',role:'adds to the shared PR',tabs:{att:1,art:null,ck:2},kid:'Live'},
+ done:{s:'SUCCEEDED',title:'Fix flaky lease heartbeat test',el:'22m 41s',att:'1 of 3',acct:'acct-eng-01',wf:null,strat:'A PR per step',tabs:{att:1,art:4,ck:3},kid:'Recent',ended:'ended 13:41'},
+ lost:{s:'FAILED',title:'Migrate pool labels to the new schema',el:'41m 10s',att:'3 of 3',acct:'acct-eng-02',wf:'pool-labels-v2',strat:'A PR per step',tabs:{att:3,art:0,ck:5},kid:'Recent',ended:'ended 12:18'},
+ nothing:{s:'FAILED',title:'Docs pass on quota-management.md',el:'9m 05s',att:'1 of 3',acct:'acct-eng-01',wf:null,strat:'A PR per step',tabs:{att:1,art:2,ck:1},kid:'Recent',ended:'ended 11:02'},
+};
+function dhead(a,phone){
+ const acts=`<span class="r">${phone?'':'<span class="btn">'+I('i-link')+'Copy link</span>'}${a.s==='RUNNING'?`<span class="btn danger">${I('i-stop')}Stop</span>`:''}${phone?'':`<span class="btn io" title="Close">${I('i-close')}</span>`}</span>`;
+ const hl=`<span class="hl"><b>${a.el}</b> · attempt ${a.att}${a.ended?` · ${a.ended}`:''}</span>`;
+ const meta=`<div class="meta"><span><b>claude-code</b></span><span>standard · 2 vCPU · 8 GiB</span>${a.wf?`<span>workflow <a class="wl">${a.wf} ›</a></span>`:''}<span>account <b>${a.acct}</b></span><span class="nodot"><span class="idb" title="task_01JC7Q4M2T8K (click to copy)">${I('i-copy')}copy id</span></span><span class="nodot"><span class="dchip">${a.strat}${Q()}</span>${a.role?`<span class="dchip">${a.role}${Q()}</span>`:''}</span></div>`;
+ if(phone) return `<div class="dh"><div class="dh1">${pill(a.s)}${acts}</div><div class="dh1"><h4 title="${a.title}">${a.title}</h4></div>${hl}${meta}</div>`;
+ return `<div class="dh"><div class="dh1">${pill(a.s)}<h4 title="${a.title}">${a.title}</h4>${hl}${acts}</div>${meta}</div>`;
+}
+function tabs(a){const T=[['Details',null,1],['Logs'],['Attempts',a.tabs.att],['Artifacts',a.tabs.art===null?'—':a.tabs.art],['Checkpoints',a.tabs.ck]];return `<div class="tabs">${T.map(([n,c,on])=>`<span class="${on?'on':''}">${n}${c!==undefined&&c!==null?`<em>${c}</em>`:''}</span>`).join('')}</div>`}
+function stats(cells){return `<div class="stats">${cells.map(c=>`<div class="sc"><span class="l">${c.l}</span><span class="v${c.k?' '+c.k:''}">${c.v}</span>${c.bar!==undefined?`<div class="bar${c.bar===null?' hatch':''}">${c.bar===null?'':`<i class="${c.bc||''}" style="width:${c.bar}%"></i>`}</div>`:''}${c.s?`<span class="s${c.sk?' '+c.sk:''}">${c.s}</span>`:''}</div>`).join('')}</div>`}
+const ST={
+ run:[{l:'Elapsed',v:'14m 22s',s:'since admitted 14:02'},{l:'Attempt',v:'1 <small>of 3</small>',s:'no retries'},{l:'Peak memory',v:'1.9 GiB <small>24%</small>',bar:24,s:'of 8 GiB · so far · 40s ago'},{l:'CPU',v:'1.6 <small>/ 2 cores</small>',bar:80,s:'peak · mean 0.7'},{l:'Cost',v:'at exit',k:'pend',s:'with tokens, when the attempt ends'}],
+ done:[{l:'Elapsed',v:'22m 41s',s:'13:18 → 13:41'},{l:'Attempt',v:'1 <small>of 3</small>',s:'no retries'},{l:'Peak memory',v:'3.1 GiB <small>39%</small>',bar:39,s:'of 8 GiB · at exit'},{l:'CPU',v:'1.8 <small>/ 2 cores</small>',bar:90,s:'peak · mean 0.6'},{l:'Cost',v:'$1.84',s:'1.41M tokens · 1 of 1 reported'}],
+ lost:[{l:'Elapsed',v:'41m 10s',s:'11:37 → 12:18'},{l:'Attempt',v:'3 <small>of 3</small>',s:'all three lost',sk:'bad'},{l:'Memory · last reading',v:'7.4 GiB <small>92%</small>',bar:92,bc:'w',s:'of 8 GiB · no peak was written',sk:'warn'},{l:'CPU',v:'2.0 <small>/ 2 cores</small>',bar:100,bc:'w',s:'last written · mean 1.4'},{l:'Cost',v:'— not reported',k:'abs',s:'lost attempts write none'}],
+ nothing:[{l:'Elapsed',v:'9m 05s',s:'10:53 → 11:02'},{l:'Attempt',v:'1 <small>of 3</small>',s:'not retried'},{l:'Peak memory',v:'1.2 GiB <small>15%</small>',bar:15,s:'of 8 GiB · at exit'},{l:'CPU',v:'0.9 <small>/ 2 cores</small>',bar:45,s:'peak · mean 0.3'},{l:'Cost',v:'$0.41',s:'312k tokens'}],
+};
+function nowRun(){return `<div class="now"><div class="nowh"><b>Now</b><div class="phz"><span class="p done">queued <i>41s</i></span><span class="arr">›</span><span class="p done">cold start <i>1m 08s</i></span><span class="arr">›</span><span class="p cur">running <i>12m 33s</i></span></div><span class="r">${Q()}</span></div>
+<div class="ll"><span class="k">Last log line</span><span class="t">editing apps/broker/aimd.py: replace fixed backoff with additive increase</span><span class="a">12s ago</span><a class="more">Open logs ›</a></div>
+<div class="nf"><span><span class="dot"></span>Heartbeat <b>live</b> · last event 22s ago</span><span>Checkpoints <b>2</b> · last 1m ago</span><span>Output <b>none yet</b> · written when the attempt ends</span></div></div>`}
+function nowDone(){return `<div class="now ok"><div class="nowh"><b>Outcome</b><span class="r"><a class="more">Artifacts ›</a>${Q()}</span></div>
+<p class="lead"><a class="prl">${I('i-pr')}Pull request #512 opened</a> from <code>swarm/task_01JC6H2R9W</code>: review it on the forge.</p>
+<div class="nf"><span>Based on <b>main @ 3f9a2c1</b></span><span>Changed <b class="add">+142</b> <b class="del">−37</b> in <b>6 files</b></span><span>Checkpoints <b>3</b> · 3 kept</span></div>
+<div class="files"><div class="fi">${I('i-file')}<span class="p">summary.md</span><span class="z">2.1 KB</span></div><div class="fi">${I('i-file')}<span class="p">patch.diff</span><span class="z">14.8 KB</span></div><div class="fi">${I('i-file')}<span class="p">pr-title.txt</span><span class="z">58 B</span></div><div class="fi">${I('i-file')}<span class="p">test-report.json</span><span class="z">6.3 KB</span></div></div>
+<div class="ll"><span class="k">Last log line</span><span class="t">pull request #512 opened · 6 files · +142 −37</span><span class="a">13:41</span><a class="more">Open logs ›</a></div></div>`}
+function nowLost(){return `<div class="now bad"><div class="nowh"><b style="color:var(--s-bad)">Failed: the worker stopped answering</b><span class="chip">lost_worker</span><span class="r"><a class="more">Attempts ›</a>${Q()}</span></div>
+<p class="lead">All three attempts went silent and the reconciler took their leases back. The last readings put memory at <b>92% of its limit</b>, so the container was probably killed for memory; the platform did not record why.</p>
+<span class="who">Error written by <b>the reconciler</b></span>
+<pre class="errt">reconciled: lease lease_01JC5W8 expired with no heartbeat for 10m; generation 3 fenced, execution swarm-cc-01jc5t3k-g3 not found</pre>
+<div class="ll"><span class="k">Last log line</span><span class="t">running migration batch 14 of 40 (pool_labels): 2,310 rows</span><span class="a">12:07</span><a class="more">Open logs ›</a></div></div>`}
+function nowNothing(){return `<div class="now bad"><div class="nowh"><b style="color:var(--s-bad)">Failed: nothing to publish</b><span class="chip">published_nothing</span><span class="r">${Q()}</span></div>
+<p class="lead">The branch has no commits beyond its base, so nothing was pushed; read the agent's log for why it stopped.</p>
+<div class="nf"><span>Branch <b>swarm/task_01JC5K7D3N</b></span><span>Based on <b>main @ 9b04e12</b></span><span>Files written <b>2</b></span></div>
+<div class="ll"><span class="k">Last log line</span><span class="t">docs/quota-management.md already matches the code; no edit needed</span><span class="a">11:02</span><a class="more">Open logs ›</a></div></div>`}
+function progress(k){
+ const P={run:[{n:'Attempt 1',q:4,c:8,r:88,open:1,t:'14m 22s'}],done:[{n:'Attempt 1',q:3,c:6,r:91,t:'22m 41s'}],lost:[{n:'Attempt 1',q:2,c:5,r:22,b:1,t:'11m 02s'},{n:'Attempt 2',q:6,c:5,r:21,b:1,t:'12m 40s'},{n:'Attempt 3',q:3,c:4,r:30,b:1,t:'14m 30s'}],nothing:[{n:'Attempt 1',q:5,c:12,r:83,t:'9m 05s'}]}[k];
+ const E={
+  run:[['14:16','checkpoint_completed','2 of 2 · 41 MB'],['14:15','heartbeat','rss 1.9 GiB · cpu 1.6'],['14:06','checkpoint_completed','1 of 2 · 38 MB'],['14:03','running','gen 1 · Cloud Run job swarm-cc-01jc7q4m'],['14:02','lease_acquired','class:standard · 2u']],
+  done:[['13:41','succeeded','PR #512 opened'],['13:41','lease_released','by its worker'],['13:39','checkpoint_completed','3 of 3'],['13:21','running','gen 1'],['13:18','submitted','by operator · via console']],
+  lost:[['12:18','failed','end cause lost_worker · 3 of 3 attempts',1],['12:18','lease_released','by the reconciler · gen 3 fenced'],['12:07','heartbeat','rss 7.4 GiB · cpu 2.0'],['11:58','checkpoint_restored','from checkpoint 4'],['11:57','retrying','attempt 3 of 3']],
+  nothing:[['11:02','failed','end cause published_nothing',1],['11:02','lease_released','by its worker'],['11:01','checkpoint_completed','1 of 1'],['10:54','running','gen 1'],['10:53','submitted','by operator · via console']],
+ }[k];
+ const n={run:11,done:23,lost:58,nothing:14}[k];
+ return `<div class="card"><div class="ch"><b>Progress</b><span class="r"><a class="more">Attempts tab ›</a>${Q()}</span></div>
+ ${P.map(p=>`<div class="phrow"><span>${p.n}</span><div class="phb"><i class="q1" style="flex:${p.q}"></i><i class="c1" style="flex:${p.c}"></i><i class="${p.b?'b1':'r1'+(p.open?' open':'')}" style="flex:${p.r}"></i>${p.b?`<i style="flex:${100-p.q-p.c-p.r};background:transparent"></i>`:''}</div><b>${p.t}${p.open?'+':''}</b></div>`).join('')}
+ <div class="lg"><span><i style="background:var(--s-neu);opacity:.45"></i>queue</span><span><i style="background:var(--f-ac);opacity:.55"></i>cold start</span><span><i style="background:var(--s-live)"></i>run</span>${k==='lost'?'<span><i style="background:var(--s-bad)"></i>run, then lost</span>':''}${k==='run'?'<span>· open: still running</span>':''}</div>
+ <div class="evs">${E.map(e=>`<div class="evr${e[3]?' bad':''}"><span class="tm">${e[0]}</span><span><span class="k">${e[1].replace(/_/g,' ')}</span> <small>${e[2]}</small></span></div>`).join('')}</div>
+ <a class="disc">All ${n} events</a></div>`}
+function resources(k,openHelp,openDetails){
+ const R={
+  run:[['Memory','1.9 GiB','of 8 GiB',24,''],['Workspace','—','written at exit',null,''],['CPU peak','1.6','of 2 cores',80,''],['CPU mean','0.7','of 2 cores',35,'']],
+  done:[['Memory','3.1 GiB','of 8 GiB',39,''],['Workspace','2.4 GiB','of 10 GiB',24,''],['CPU peak','1.8','of 2 cores',90,''],['CPU mean','0.6','of 2 cores',30,'']],
+  lost:[['Memory','7.4 GiB','of 8 GiB · last reading',92,'w'],['Workspace','—','never written',null,''],['CPU peak','2.0','of 2 cores · last written',100,'w'],['CPU mean','1.4','of 2 cores',70,'']],
+  nothing:[['Memory','1.2 GiB','of 8 GiB',15,''],['Workspace','0.6 GiB','of 10 GiB',6,''],['CPU peak','0.9','of 2 cores',45,''],['CPU mean','0.3','of 2 cores',15,'']],
+ }[k];
+ const note={run:'Live readings from the attempt record. Final figures are written when the attempt ends.',done:'Figures written at exit by attempt 1.',lost:'Attempt 3, the last one. No figure was written at exit: these are its last readings.',nothing:'Figures written at exit by attempt 1.'}[k];
+ const pop=openHelp?`<div class="pop" style="right:6px;top:calc(100% - 6px)"><b>Resources</b><p>Each bar is how much of its reserved size this agent has used. SwarmCloud reserves exactly what it may use (requests equal limits), so 100% is the ceiling, not a target.</p><p>A hatched bar is a figure that has not been measured yet, never a zero.</p><small>More: <a>Requests are ceilings</a> · <a>Workspace memory</a> · <a>OOM near miss</a> · <a>CPU figures</a></small></div>`:'';
+ const det=openDetails?`<a class="disc open">Details: memory and checkpoints over time</a><span class="lbl2">Peak memory reached, by heartbeat</span><div class="spark"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><path d="M0 40 L40 34 L80 30 L120 22 L160 20 L200 16 L240 15 L300 15" fill="none" stroke="var(--f-ac)" stroke-width="2"/><path d="M0 6 H300" stroke="var(--f-bd)" stroke-dasharray="4 3"/></svg></div><span class="lbl2">Checkpoints written: 13:24 · 13:31 · 13:39</span>`:`<a class="disc">Details: memory and checkpoints over time</a>`;
+ return `<div class="card" style="position:relative"><div class="ch"><b>Resources</b><span class="r">${Q(openHelp)}</span></div>${pop}
+ ${R.map(r=>`<div class="rr"><span class="n">${r[0]}</span><div class="bar${r[3]===null?' hatch':''}">${r[3]===null?'':`<i class="${r[4]}" style="width:${r[3]}%"></i>`}</div><span class="v"><b>${r[1]}</b> <small>${r[3]===null?r[2]:r[3]+'% '+r[2]}</small></span></div>`).join('')}
+ <p class="rnote">${note}</p>${det}</div>`}
+function input(k){
+ const pr={run:'Replace the fixed exponential backoff in apps/broker/quota.py with AIMD: on each 429 halve the in-flight ceiling, on each clean minute add one. Keep the per-account cooldown. Add unit tests for the increase and decrease paths, and a property test that the ceiling never drops below 1 or rises above the pool limit. Update docs/quota-management.md.',done:'The heartbeat test in tests/unit/worker/test_lease.py fails about one run in twenty. Find why, fix the cause rather than the timeout, and add a test that would have caught it.',lost:'Migrate every pool label in Firestore to the v2 schema in batches of 500, checkpointing after each batch.',nothing:'Read docs/quota-management.md against the code and fix anything stale.'}[k];
+ return `<div class="card"><div class="ch"><b>Input</b><span class="r"><span class="cnt">2 values masked</span>${Q()}</span></div>
+ <div class="ifacts"><span>repo <span class="m">github.com/example-org/swarm-demo</span> @ <span class="m">main</span></span><span>model <b>as submitted</b></span><span>priority <b>50</b></span><span>timeout <b>1h</b></span></div>
+ <p class="prev">${pr}</p>
+ <div class="row" style="display:flex;gap:16px"><a class="disc">Show prompt · 642 characters</a><a class="disc">Metadata · 6 keys</a></div></div>`}
+function dpane(k,o={}){const a=AG[k];
+ const now={run:nowRun,done:nowDone,lost:nowLost,nothing:nowNothing}[k]();
+ return `<div class="dp">${dhead(a)}${tabs(a)}${now}${stats(ST[k])}<div class="cols">${progress(k)}${resources(k,o.help,o.details)}</div>${input(k)}<span class="exd">example data</span></div>`}
+function frame(k,t,o={}){const a=AG[k];return app(t,{kid:a.kid,fold:o.fold,main:head(a.kid)+`<div class="split">${list(k)}${dpane(k,o)}</div>`})}
+
+/* ---------- variant B ---------- */
+function B(t){const a=AG.run;return app(t,{kid:'Live',main:head('Live')+`<div class="split">${list('run')}<div class="dp" style="gap:0">${dhead(a)}<div style="margin-top:12px">${tabs(a)}</div>
+ <div style="margin:-1px 0 12px;position:relative;z-index:2">${stats(ST.run).replace('class="stats"','class="stats stuck"')}</div>
+ <div style="display:flex;flex-direction:column;gap:12px"><div class="lbl2" style="text-align:center">scrolled 420px: the Now card and the top of Progress are above</div><div class="card" style="border-top-left-radius:0;border-top-right-radius:0;border-top:0;opacity:.75"><div class="evs"><div class="evr"><span class="tm">14:03</span><span><span class="k">running</span> <small>gen 1 · Cloud Run job swarm-cc-01jc7q4m</small></span></div><div class="evr"><span class="tm">14:02</span><span><span class="k">lease acquired</span> <small>class:standard · 2u</small></span></div></div><a class="disc">All 11 events</a></div>${resources('run')}${input('run')}<span class="exd">example data</span></div></div></div>`})}
+
+/* ---------- region states ---------- */
+function states(t){return `<div class="${t==='d'?'fd':'fl'} dpw" style="width:740px;padding:16px;display:flex;flex-direction:column;gap:12px">
+<b style="font-size:13px">Now card</b>
+<div class="sta"><div class="now"><div class="nowh"><b>Now</b><div class="phz"><span class="p todo">reading the attempt…</span></div></div><div class="ll"><span class="k">Last log line</span><span class="t abs">reading…</span></div><div class="skl" style="width:60%"></div></div>
+<div class="now" style="border-left-color:var(--s-warn)"><div class="nowh"><b>Now</b><div class="phz"><span class="p cur" style="background:var(--s-warnb);color:var(--s-warn)">running <i>19m</i></span></div></div><div class="ll"><span class="k">Last log line</span><span class="t abs">the log was not read</span><a class="more">Retry</a></div><div class="nf"><span style="color:var(--s-warn)">Heartbeat <b style="color:var(--s-warn)">silent</b> · no event for 8m. The worker may be gone; the reconciler reclaims a stale lease.</span></div></div></div>
+<b style="font-size:13px">Stat strip, attempt read failed (the task's own counter still answers)</b>
+${stats([{l:'Elapsed',v:'14m 22s',s:'task document'},{l:'Attempt',v:'1 <small>of 3</small>',s:'task counter'},{l:'Peak memory',v:'— read failed',k:'abs',bar:null,s:'attempt query'},{l:'CPU',v:'— read failed',k:'abs',bar:null,s:'attempt query'},{l:'Cost',v:'— read failed',k:'abs',s:'attempt query'}])}
+<b style="font-size:13px">Progress and Resources</b>
+<div class="cols"><div class="card"><div class="ch"><b>Progress</b></div><div class="empty err"><b>The event history could not be read</b><span>This is a failed read, not an empty history. 503 from /v1/tasks/…/events.</span><a class="more">Retry</a></div></div>
+<div class="card"><div class="ch"><b>Resources</b><span class="r"><span class="cnt">catalogue unread</span></span></div><div class="rr"><span class="n">Memory</span><div class="bar hatch"></div><span class="v"><b>1.9 GiB</b> <small>limit unknown</small></span></div><div class="rr"><span class="n">CPU peak</span><div class="bar hatch"></div><span class="v"><b>1.6</b> <small>limit unknown</small></span></div><p class="rnote">The measurements are real; only the ceiling is missing, so no percentage is drawn.</p></div></div>
+<div class="cols"><div class="card"><div class="ch"><b>Progress</b></div><div class="empty"><b>No attempt yet · queued</b><span>Nothing has been admitted, so there is no phase to draw. It holds no capacity while it waits.</span></div></div>
+<div class="card"><div class="ch"><b>Input</b></div><div class="empty"><b>No prompt key</b><span>This task's input has no prompt string; the full input is under Metadata.</span></div></div></div>
+<span class="exd">example data</span></div>`}
+
+/* ---------- phone ---------- */
+function phone(t){const a=AG.run;return `<div class="${t==='d'?'fd':'fl'}"><div class="phone"><div class="pbar">${HIVE(26)}<b>SwarmCloud</b><span class="pill dev">dev</span>${I('i-menu')}</div><div class="pbody"><a class="back">‹ Agents · Live</a>${dhead(a,true)}${tabs(a)}${stats(ST.run)}${nowRun()}<div class="cols">${progress('run')}${resources('run')}</div>${input('run')}<span class="exd">example data</span></div></div></div>`}
+
+/* ---------- today, drawn from the 2026-10-04 measurement ---------- */
+function today(){return `<div class="dp td" style="min-height:2770px">
+<div style="display:flex;justify-content:flex-end;gap:6px"><span class="btn">Copy link</span><span class="btn danger">Stop</span><span class="btn io">${I('i-close')}</span></div>
+<div style="display:flex;gap:8px;align-items:center">${pill('RUNNING')}<h4 style="margin:0;font-size:17px">Refactor quota broker AIMD backoff</h4></div>
+<span style="font:12px var(--f-mono);color:var(--f-mu)">task_01JC7Q4M2T8K ⧉</span>
+<div class="facts"><b>claude-code · standard · 2u · gen 1</b><span><span class="k">started</span> <b>14:03 (14m ago)</b></span><span><span class="k">account</span> <b>acct-eng-02</b></span><span><span class="k">tenant</span> <b>eng</b></span><span><span class="k">workflow</span> <b>wf_01JC7P9XK2</b></span></div>
+${tabs(AG.run)}
+<div class="ll"><span class="k">Last log line</span><span class="t">editing apps/broker/aimd.py: replace fixed backoff…</span><a class="more">Open logs ›</a></div>
+<div class="facts"><span class="k">state ?</span> <b style="color:var(--s-live)">● live 58s ago</b></div>
+<div class="facts"><span><span class="k">submitted</span> <b>14:02</b></span><span><span class="k">age</span> <b>14m ago</b></span><span><span class="k">by</span> <b>operator</b></span></div>
+<div class="tiles"><div class="tile"><small>Elapsed</small><b>14m 22s</b><i>running · admitted 14:02</i></div><div class="tile"><small>Attempts</small><b>1 / 3</b><i>documents · counter agrees</i></div><div class="tile"><small>Peak memory</small><b>1.9 GiB</b><i>live · 40s ago</i></div><div class="tile"><small>Tokens</small><b class="rd">written at exit</b></div><div class="tile"><small>Token cost</small><b class="rd">written at exit</b></div><div class="tile"><small>Checkpoints</small><b>2</b><i>2 written, 2 kept</i></div></div>
+<div class="scroll2" style="display:flex;flex-direction:column;gap:10px;padding:8px">
+<div class="sec"><h5>Attempts 1</h5><div class="chart" data-l="Attempt phases" style="height:90px"></div>
+<div class="card"><b>Attempt 1 · gen 1 <span class="chip">running</span> <span class="chip">latest</span></b><div class="facts"><span><span class="k">start</span> <b>14m ago</b></span><span><span class="k">end</span> <b>—</b></span><span><span class="k">account</span> <b>acct-eng-02</b></span><span><span class="k">exec</span> <b>swarm-cc-01jc7q4m-g1-x8k2p</b></span><span><span class="k">att</span> <b>att_01JC7Q5B0V3W</b></span><span><span class="k">lease</span> <b>lease_01JC7Q5B1A9C</b></span></div>
+<span style="font:12px var(--f-mono);color:var(--f-mu)">requested vs utilised</span>
+<div class="rrow"><span>memory peak RSS</span><div class="bar"><i style="width:24%"></i></div><span>1.9 GiB / 8 GiB <span class="rd2">reading</span></span></div>
+<div class="rrow"><span>workspace peak</span><div class="bar hatch"></div><span>not yet written <span class="rd2">reading</span></span></div>
+<div class="rrow"><span>cpu peak</span><div class="bar"><i style="width:80%"></i></div><span>1.6 / 2 cores · live reading</span></div>
+<div class="rrow"><span>cpu mean</span><div class="bar"><i style="width:35%"></i></div><span>0.7 / 2 cores · live reading</span></div>
+<p style="margin:0;font:12px var(--f-mono);color:var(--f-mu)">memory ◌ live heartbeat 40s ago · cpu ◌ live reading</p>
+<div class="chart" data-l="Peak RSS reached by"></div><div class="facts"><span class="k">spend</span> <b>written at exit</b></div><div class="chart" data-l="Checkpoint cadence" style="height:80px"></div></div>
+<div class="links"><span style="color:var(--f-mu)">reading these cards:</span><a>Requests are ceilings</a><a>Workspace memory</a><a>OOM near miss</a><a>CPU figures</a><a>Token cost</a><a>Checkpoints</a><a>Attempt documents</a><a>Dispatch strategies</a><a>Park on missing credential</a></div></div>
+<div class="sec"><h5>Dispatch</h5><div class="facts"><span><span class="k">strategy</span> <b>integrate</b></span><span><span class="k">carrier</span> <b>checkpoints</b> <span class="rd2">not acted on</span></span><span><span class="k">role</span> <b>contributor</b></span></div></div>
+<div class="sec"><h5>Output</h5><div class="empty" style="min-height:80px"><b>nothing written yet · running</b><span>A result summary is written only when an attempt finishes…</span></div></div>
+<div class="sec"><h5>Input</h5><div class="facts"><span><span class="k">profile</span> <b>claude-code</b></span><span><span class="k">class</span> <b>standard · 2 vCPU · 8 GiB · 10 GiB disk · 2u</b></span><span><span class="k">provider</span> <b>anthropic</b></span><span><span class="k">prio</span> <b>50</b></span><span><span class="k">timeout</span> <b>3600s</b></span><span><span class="k">repo</span> <b>https://github.com/example-org/swarm-demo @ main</b></span></div>
+<span style="font:12px var(--f-mono);color:var(--f-mu)">prompt</span><pre style="height:320px;overflow:hidden">Replace the fixed exponential backoff in apps/broker/quota.py with AIMD: on each 429 halve the in-flight ceiling, on each clean minute add one. Keep the per-account cooldown.
+
+Add unit tests for the increase and decrease paths, and a property test that the ceiling never drops below 1 or rises above the pool limit.
+
+Update docs/quota-management.md …</pre>
+<table class="mt"><tr><td>workflow_step</td><td>"implement"</td></tr><tr><td>labels</td><td>["quota","broker"]</td></tr><tr><td>origin</td><td>{"kind":"console","by":"operator"}</td></tr><tr><td>issue</td><td>{"repo":"example-org/swarm-demo","number":41}</td></tr><tr><td>token</td><td>"••••••" masked</td></tr><tr><td>notes</td><td>"…"</td></tr></table></div>
+<div class="sec"><h5>Timeline 11</h5><div class="evs">${['submitted','lease_acquired','dispatched','starting','running','heartbeat','checkpoint_completed','heartbeat','checkpoint_completed','heartbeat','heartbeat'].map((e,i)=>`<div class="evr"><span class="tm">14:${String(2+i).padStart(2,'0')}</span><span class="k">${e}</span></div>`).join('')}</div></div>
+</div></div>`}
+
+/* ---------- mount ---------- */
+const F={run:t=>frame('run',t,{fold:1,help:t==='l'}),done:t=>frame('done',t,{fold:1,details:1}),lost:t=>frame('lost',t,{fold:1}),nothing:t=>frame('nothing',t,{fold:1}),phone,states,b:B};
+document.querySelectorAll('[data-f]').forEach(el=>{el.innerHTML=F[el.dataset.f](el.dataset.t)});
+const SC=0.36,W=692;
+document.querySelectorAll('[data-cmp]').forEach(el=>{
+ const inner=el.dataset.cmp==='today'?today():dpane('run');
+ el.innerHTML=`<div class="dpw fl" style="width:${W}px">${inner}<div class="fold" style="top:900px"><span>900px</span></div></div>`;
+ const w=el.firstElementChild;w.style.transform=`scale(${SC})`;
+ const h=el.dataset.cmp==='today'?2770:(w.scrollHeight||1000);
+ el.style.width=Math.round(W*SC)+'px';el.style.height=Math.round(h*SC)+'px';
+ if(el.dataset.cmp==='new'){const lab=document.querySelector('[data-h="new"]');if(lab&&w.scrollHeight)lab.textContent=w.scrollHeight.toLocaleString('en-US')+'px'}
+});
+</script>
+</body>
+</html>

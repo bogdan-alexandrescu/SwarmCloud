@@ -271,7 +271,7 @@ async function renderDetail(over: Partial<AgentRun> = {}): Promise<HTMLElement> 
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={run(over)} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull())
   return container as HTMLElement
 }
 
@@ -544,8 +544,8 @@ describe('AgentDetail, with every help card closed', () => {
       attempts: [attempt(1), attempt(2), attempt(3, { checkpoints: ['ck_9'] })],
     })
     expectAllCardsClosed()
-    const strip = el.querySelector('.ctl-metrics')!
-    const absent = strip.querySelector('.ctl-metric.is-absent')
+    const strip = el.querySelector('.dt-strip')!
+    const absent = strip.querySelector('.dt-sc.is-absent')
     expect(absent, 'an absent metric has lost its dashed treatment').not.toBeNull()
     // SCOPED TO THE STRIP ON PURPOSE. `charts/TokenSpend.tsx` -- which this
     // group does not own -- prints the literal string "$0.00" inside its own
@@ -558,11 +558,12 @@ describe('AgentDetail, with every help card closed', () => {
 
   it('renders a MEASURED zero as a digit, which is the other half of the rule', async () => {
     const el = await renderDetail()
-    const tiles = [...el.querySelectorAll('.ctl-metric')]
-    const ckpt = tiles.find((t) => (t.textContent ?? '').toLowerCase().includes('checkpoint'))
+    // The checkpoint count is the leading card's fact (agent-details-v3.html A).
+    const facts = [...el.querySelectorAll('.dt-now .dt-nf')]
+    const ckpt = facts.find((t) => (t.textContent ?? '').startsWith('Checkpoints'))
     expect(ckpt).toBeDefined()
     // Measured: the attempt documents were read and one lists a checkpoint.
-    expect(ckpt!.querySelector('.ctl-metric-value')!.textContent).toMatch(/^\d/)
+    expect(ckpt!.querySelector('b')!.textContent).toMatch(/^\d/)
     expect(ckpt!.classList.contains('is-absent')).toBe(false)
   })
 
@@ -576,20 +577,22 @@ describe('AgentDetail, with every help card closed', () => {
     const mark = el.querySelector('.ctl-mark.is-unread')
     expect(mark, 'a failed read is not marked as unread').not.toBeNull()
     expect(mark!.textContent).toMatch(/not read/i)
-    const peak = [...el.querySelectorAll('.ctl-metric')].find((t) =>
+    const peak = [...el.querySelectorAll('.dt-sc')].find((t) =>
       (t.textContent ?? '').toLowerCase().includes('peak memory'),
     )
     expect(peak!.classList.contains('is-unread')).toBe(true)
-    expect(peak!.querySelector('.ctl-metric-value')!.textContent).not.toMatch(/\d/)
+    expect(peak!.querySelector('.dt-sc-v')!.textContent).not.toMatch(/\d/)
   })
 
-  it('keeps the standing rules reachable as links rather than printing them', async () => {
+  it('keeps the standing rules reachable, one `?` per card, rather than printing them', async () => {
     const el = await renderDetail()
-    // WHAT MOVED: `AttemptLegend`'s six help titles were an inline paragraph of
-    // links under every run. They are now the card foot's link row, and the
-    // topics themselves are unchanged -- the words still live in `help.ts`.
-    const legend = el.querySelector('.ctl-card-foot a[href^="#"]')
-    expect(legend, 'the help topics the cards depend on are unreachable').not.toBeNull()
+    // WHAT MOVED: `AttemptLegend`'s help titles were a row of links under every
+    // run; agent-details-v3.html A puts one `?` on each card, opening the
+    // topics for that card. The words still live in `help.ts`.
+    const cards = [...el.querySelectorAll('.dt-card')]
+    const helped = cards.filter((c) => c.querySelector(':scope > .dt-card-head button[aria-expanded]') !== null)
+    expect(helped.length, 'the help topics the cards depend on are unreachable').toBeGreaterThanOrEqual(4)
+    expect(el.querySelector('.att-legend'), 'the link block is back').toBeNull()
   })
 
   it('carries the dispatch instruction that prevents a second pull request', async () => {

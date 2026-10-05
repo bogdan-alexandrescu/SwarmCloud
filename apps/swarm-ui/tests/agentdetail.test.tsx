@@ -25,6 +25,7 @@ import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DRAWER_POLL_MS, Run, drawerPoll } from '../src/AgentDetail'
+import { HELP } from '../src/help'
 import type { AgentRun } from '../src/api'
 import type { AttemptRow, Task, TaskEvent } from '../src/types'
 
@@ -157,43 +158,51 @@ function surface(r: AgentRun = run()): string {
 }
 
 /**
- * One metric tile, as the surface shows it.
+ * One cell of the stat strip, as the surface shows it (agent-details-v3.html
+ * A replaced the six tiles with one five-cell strip: Elapsed · Attempt · Peak
+ * memory · CPU · Cost, tokens as Cost's sub-line, checkpoints in the leading
+ * card).
  *
  * This is the reader's eye, mechanised: it pulls the label, the rendered value
- * and the tile's tone class out of the markup. Everything below asks the same
+ * and the cell's tone class out of the markup. Everything below asks the same
  * question of it that a person glancing at the screen asks.
  */
 interface Tile {
   label: string
   value: string
-  /** What the tile says under the figure, tags stripped. */
+  /** What the cell says under the figure, tags stripped. */
   sub: string
   absent: boolean
   unread: boolean
   /** The pending tone: a figure that is due, not missing. */
   reading: boolean
+  /** The live tone: a real reading of a process still running, not its final figure. */
+  live: boolean
+}
+
+function text(html: string): string {
+  return html
+    .replace(/<span id="[^"]*" data-help-description=""[^>]*>[\s\S]*?<\/span>/g, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/<!-- -->/g, '')
+    .trim()
 }
 
 function tiles(markup: string): Map<string, Tile> {
   const out = new Map<string, Tile>()
-  // Split rather than match across a whole tile: the label span now CONTAINS
-  // the `?` button and the card's hidden description, so any regex running
-  // `(.*?)</span>` from the label closes on the wrong tag and finds no tiles
-  // at all -- which would leave every assertion below quietly vacuous.
-  for (const chunk of markup.split('<div class="ctl-metric').slice(1)) {
+  // Split rather than match across a whole cell: the label span CONTAINS the
+  // cell's hidden help description, so a regex running `(.*?)</span>` from the
+  // label would close on the wrong tag and find no cells at all -- which would
+  // leave every assertion below quietly vacuous.
+  for (const chunk of markup.split('<div class="dt-sc').slice(1)) {
     const cls = /^([^"]*)"/.exec(chunk)?.[1] ?? ''
     // The label is the text before the first tag inside the label span. That
-    // deliberately excludes the help card's hidden short text, which lives in
-    // the same span and is NOT part of what a sighted reader sees.
-    const label = /class="ctl-metric-label"[^>]*>([^<]*)/.exec(chunk)?.[1]?.trim()
+    // deliberately excludes the help copy, which lives in the same span and is
+    // NOT part of what a sighted reader sees.
+    const label = /class="dt-sc-l"[^>]*>([^<]*)/.exec(chunk)?.[1]?.trim()
     if (label === undefined || label === '') continue
-    const rest = /<span class="ctl-metric-value">([\s\S]*?)<\/div>/.exec(chunk)?.[1] ?? ''
-    const value = (rest.split(/<span class="ctl-metric-(?:sub|foot)"/)[0] ?? '')
-      .replace(/<[^>]*>/g, '')
-      .trim()
-    const sub = (/<span class="ctl-metric-sub">([\s\S]*?)<\/span>/.exec(rest)?.[1] ?? '')
-      .replace(/<[^>]*>/g, '')
-      .trim()
+    const value = text(/<span class="dt-sc-v">([\s\S]*?)<\/span>(?=<span class="dt-bar|<span class="dt-sc-s|<\/div>)/.exec(chunk)?.[1] ?? '')
+    const sub = text(/<span class="dt-sc-s">([\s\S]*?)<\/span><\/div>/.exec(chunk)?.[1] ?? '')
     out.set(label, {
       label,
       value,
@@ -201,6 +210,7 @@ function tiles(markup: string): Map<string, Tile> {
       absent: cls.includes('is-absent'),
       unread: cls.includes('is-unread'),
       reading: cls.includes('is-reading'),
+      live: cls.includes('is-live'),
     })
   }
   return out
@@ -230,15 +240,15 @@ test('the surface under test has every help card closed', () => {
 test('absent is distinguishable from zero with every help card closed', () => {
   const t = tiles(surface())
 
-  const cost = t.get('Token cost')
-  assert.ok(cost, 'the Token cost tile is not on the screen at all')
-  const ckpt = t.get('Checkpoints')
-  assert.ok(ckpt, 'the Checkpoints tile is not on the screen at all')
-
-  // THE MEASURED ZERO. The attempt documents were read; none lists a
-  // checkpoint. That is a result, and it renders as a figure.
+  const cost = t.get('Cost')
+  assert.ok(cost, 'the Cost cell is not on the screen at all')
+  // THE MEASURED ZERO, which moved into the leading card with the
+  // checkpoints (agent-details-v3.html A). The attempt documents were read;
+  // none lists a checkpoint. That is a result, and it renders as a figure.
+  const ck = /<span class="dt-nf">Checkpoints <b>([^<]*)<\/b>/.exec(plain(surface()))
+  assert.ok(ck, 'the checkpoint fact is not on the screen at all')
+  const ckpt = { value: ck[1]! }
   assert.equal(ckpt.value, '0', 'a measured zero must render as a digit')
-  assert.equal(ckpt.absent, false, 'a measured zero must not wear the absent treatment')
   assert.ok(readsAsANumber(ckpt.value))
 
   // THE ABSENT MEASUREMENT. No attempt reported a cost.
@@ -261,11 +271,12 @@ test('absent is distinguishable from zero with every help card closed', () => {
 
 test('the named absences still say what they are, in words, on the surface', () => {
   const t = tiles(surface())
-  // The brief lists these three by name as writing that must survive VISIBLY.
-  assert.equal(t.get('Token cost')?.value, 'not reported')
-  assert.equal(t.get('Peak memory')?.value, 'not recorded')
-  assert.equal(t.get('Tokens')?.value, 'not reported')
-  for (const label of ['Token cost', 'Peak memory', 'Tokens']) {
+  // The brief lists these three by name as writing that must survive VISIBLY:
+  // a dash and the word, never a figure. Tokens are Cost's sub-line now.
+  assert.equal(t.get('Cost')?.value, '— not reported')
+  assert.equal(t.get('Peak memory')?.value, '— not recorded')
+  assert.equal(t.get('Cost')?.sub, 'tokens not reported')
+  for (const label of ['Cost', 'Peak memory']) {
     assert.equal(t.get(label)?.absent, true, `${label} lost its absent treatment`)
   }
 })
@@ -286,7 +297,7 @@ test('the explanations moved rather than staying', () => {
 
 test('a failed read never produces a figure', () => {
   const t = tiles(surface(run({ attempts: null, attemptsDetail: 'HTTP 503.' })))
-  for (const label of ['Peak memory', 'Spend']) {
+  for (const label of ['Peak memory', 'CPU', 'Cost']) {
     const tile = t.get(label)
     assert.ok(tile, `${label} is missing`)
     assert.equal(tile.unread, true, `${label} does not carry the read-failed treatment`)
@@ -343,15 +354,17 @@ test('a partial read is marked apart from both', () => {
 // The screen-of-prose that left
 // ---------------------------------------------------------------------------
 
-test('the standing-rules legend is a footer of links, not a screen of prose', () => {
+test('the standing rules are behind one `?` per card, not a screen of prose or a block of links', () => {
   const markup = surface()
   assert.ok(!markup.includes('The requested figure is a ceiling, not a target'))
   assert.ok(!markup.includes('What is INSIDE a checkpoint is not recorded'))
-  // `HelpLinks` supplies the label and its default is "Reading this screen:".
-  // The legend is a footer of LINKS -- that is the property -- so this pins a
-  // label followed by a real help address, not one wording of the label.
-  assert.ok(/reading (this|these) (screen|card)/i.test(markup), 'the footer link is gone too')
-  assert.ok(markup.includes('#help/requests-are-ceilings'), 'the footer links nowhere')
+  // THE LINK BLOCK IS GONE (agent-details-v3.html A: "a block of 10
+  // underlined mono help links"); each card carries its own `?` instead, so
+  // the topics are still one click away, on the card they explain.
+  assert.ok(!/reading (this|these) (screen|card)/i.test(markup), 'the help-link block is back')
+  for (const topic of ['requests-are-ceilings', 'attempt-documents'] as const) {
+    assert.ok(markup.includes(`aria-label="Help: ${HELP[topic].title}"`), `no card opens ${topic}`)
+  }
 })
 
 test('the `?` sits after a label and never after a value', () => {
@@ -359,68 +372,37 @@ test('the `?` sits after a label and never after a value', () => {
   // A `?` button inside a value span would read as a footnote marker on the
   // figure itself, which is how a measured number becomes one nobody trusts.
   // This half of the rule is unchanged and unconditional.
-  assert.ok(
-    !/<span class="ctl-metric-value">[^<]*<button/.test(markup),
-    'a help glyph is attached to a value',
-  )
-  // B7.4 RE-POINTED THE SECOND HALF, AND IT GOT STRONGER.
-  //
-  // WHAT MOVED. This asserted the glyph was inside `.ctl-metric-label` --
-  // which it was, on six tiles, because every tile whose value was an absence
-  // carried one. This screen held twenty-two help anchors, the most in the
-  // console, and the tiles were most of them. The ration is one per screen, so
-  // the tiles keep the SENTENCE and lose the button: `explain` publishes the
-  // topic's short form at the label through `aria-describedby`, drawn nowhere.
-  //
-  // WHY THIS IS NOT A WEAKENING. The old assertion proved a glyph existed
-  // SOMEWHERE in a label. It could not tell a label that explains itself from
-  // one that merely has a button, and it said nothing about the screen's other
-  // sixteen anchors. The two below pin the property the glyph was standing in
-  // for -- that a label carrying an explanation actually publishes it -- and
-  // pin it on EVERY such label rather than on the first one a regex finds.
-  const labels = [
-    ...markup.matchAll(/<span class="ctl-metric-label"([^>]*)>(.*?)<\/span><span class="ctl-metric-value"/gs),
-  ]
-  assert.ok(labels.length >= 4, `only ${labels.length} metric labels were examined`)
+  assert.ok(!/<span class="dt-sc-v">(?:(?!<\/span>)[\s\S])*<button/.test(markup), 'a help glyph is attached to a strip value')
+  assert.ok(!/<span class="dt-rr-v">(?:(?!<\/span>)[\s\S])*<button/.test(markup), 'a help glyph is attached to a resource value')
+  // THE STRIP'S LABELS PUBLISH THEIR EXPLANATION AND DRAW NO BUTTON (B7.4):
+  // the strip is one card, and the cards' `?`s are below. Pinned on EVERY
+  // explained label rather than on the first one a regex finds.
+  const labels = [...markup.matchAll(/<span class="dt-sc-l"([^>]*)>(.*?)<\/span><span class="dt-sc-v"/gs)]
+  assert.ok(labels.length >= 4, `only ${labels.length} strip labels were examined`)
   let explained = 0
   for (const [, attrs, body] of labels) {
     const described = /aria-describedby="([^"]+)"/.exec(attrs ?? '')
     if (described === null) continue
     explained++
-    // The id it points at is IN this label, and it is the help copy.
     assert.ok(
       new RegExp(`<span id="${described[1]!.replace(/[$.*+?^{}()|[\]\\]/g, '\\$&')}" data-help-description=""`).test(body ?? ''),
-      'a metric label points aria-describedby at nothing it contains',
+      'a strip label points aria-describedby at nothing it contains',
     )
-    // ...and it draws no button, which is the whole of what B7.4 changed here.
-    // If a `?` comes back to these tiles, `tests/help.test.ts` fails on the
-    // per-screen ration and this fails on the same diff.
-    assert.ok(!(body ?? '').includes('<button'), 'a metric label draws a help glyph again')
+    assert.ok(!(body ?? '').includes('<button'), 'a strip label draws a help glyph')
   }
-  assert.ok(explained >= 3, `only ${explained} metric labels publish an explanation`)
-  // AND THE SCREEN'S ONE GLYPH FOLLOWS A LABEL (AH-24). It sat in the run
-  // heading AFTER the state chip -- `● running ? ● live` -- and the owner's
-  // rule of 2026-09-25 is that a `?` goes after the label or heading it
-  // explains and never after a value. A state chip is the task's state: a
-  // value. #161's first version moved the glyph to LEAD the heading, which is
-  // not after a label either. The heading's state now carries its key, as
-  // every fact in the strip under it does -- `state ? ● running` -- and the
-  // glyph is inside that key, after its word and before the chip.
-  // MUTATION: put the glyph back after the chip, or ahead of the key.
-  const heading = /<section class="section panel"><h2>([\s\S]*?)<\/h2>/.exec(markup)
-  assert.ok(heading, 'no run heading rendered')
-  const h = heading[1]!
-  const glyphAt = h.indexOf('aria-label="Help: ')
-  // The state chip is the canonical StateMark (`.sk-st`) since the #503 swap (it was `.ctl-chip`).
-  const chipAt = h.indexOf('class="sk-st ')
-  assert.ok(glyphAt >= 0, 'the run heading no longer carries the screen ?')
-  assert.ok(chipAt >= 0, 'the run heading draws no state chip')
-  assert.ok(glyphAt < chipAt, 'the run heading draws its ? after the state chip, a value')
-  assert.match(
-    h,
-    /<b>state<span style="[^"]*"><button[^>]*aria-label="Help: /,
-    'the run heading ? does not follow a `state` label',
-  )
+  assert.ok(explained >= 3, `only ${explained} strip labels publish an explanation`)
+  // AND EVERY GLYPH FOLLOWS A CARD'S HEADING (AH-24: a `?` goes after the
+  // label or heading it explains, never after a value). Each card head is its
+  // title, then its links, then its one `?`.
+  // MUTATION: put a `?` in a strip value, or a second one in a card head.
+  const glyphs = markup.split('aria-label="Help: ').length - 1
+  const heads = [...markup.matchAll(/<div class="dt-card-head"><b>[^<]+<\/b>([\s\S]*?)<\/div>/g)]
+  const inHeads = heads.reduce((n, [, body]) => n + ((body ?? '').split('aria-label="Help: ').length - 1), 0)
+  assert.ok(glyphs >= 4, `only ${glyphs} help glyphs on the surface`)
+  assert.equal(inHeads, glyphs, 'a help glyph sits somewhere other than after a card heading')
+  for (const [, body] of heads) {
+    assert.ok((body ?? '').split('aria-label="Help: ').length - 1 <= 1, 'a card carries more than one `?`')
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -437,7 +419,7 @@ test('a running agent draws its end-of-attempt figures as pending, never as abse
   // tiles go back to `not recorded` / `not reported` on the dashed absent
   // tile, beside an attempt that is still running.
   const t = tiles(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT] })))
-  for (const label of ['Peak memory', 'Tokens', 'Token cost']) {
+  for (const label of ['Peak memory', 'Cost']) {
     const tile = t.get(label)
     assert.ok(tile, `${label} is not on the screen`)
     assert.equal(tile.absent, false, `${label} draws the absent encoding while its attempt is open`)
@@ -445,9 +427,10 @@ test('a running agent draws its end-of-attempt figures as pending, never as abse
     // Pending is still not a number: nothing has been written.
     assert.ok(!readsAsANumber(tile.value), `${label} rendered "${tile.value}" before anything was written`)
   }
-  assert.equal(t.get('Tokens')?.value, 'written at exit')
-  assert.equal(t.get('Token cost')?.value, 'written at exit')
-  assert.equal(t.get('Peak memory')?.value, 'written at exit')
+  // Small, muted words -- `at exit` -- never full size (agent-details-v3.html A).
+  assert.equal(t.get('Cost')?.value, 'at exit')
+  assert.equal(t.get('Cost')?.sub, 'with tokens, when the attempt ends')
+  assert.equal(t.get('Peak memory')?.value, 'at exit')
 })
 
 test('a running agent shows its newest heartbeat peak as a live figure, with its age', () => {
@@ -462,9 +445,9 @@ test('a running agent shows its newest heartbeat peak as a live figure, with its
   assert.ok(peak, 'Peak memory is not on the screen')
   // A heartbeat reading IS a measurement of the live process, so it is a figure.
   assert.equal(peak.value, '18.6 MiB')
-  assert.match(peak.sub, /^live · /, `the live figure is not labelled live with its age: "${peak.sub}"`)
+  assert.match(peak.sub, / · so far · \S+ ago$/, `the live figure is not labelled live with its age: "${peak.sub}"`)
   assert.equal(peak.absent, false)
-  assert.equal(peak.reading, true, 'the live high-water mark is presented as the final figure')
+  assert.equal(peak.live, true, 'the live high-water mark is presented as the final figure')
 })
 
 test('a runner that never reports spend stays absent while it runs', () => {
@@ -476,9 +459,9 @@ test('a runner that never reports spend stays absent while it runs', () => {
   // Tokens: no model is called, so there is no figure to promise (owner
   // decision 2026-09-29, #322); it reads `no model call`, never a pending
   // `written at exit` and never a number. Token cost stays absent.
-  assert.equal(t.get('Tokens')?.value, 'no model call', 'Tokens promises a figure a mock run never writes')
-  assert.equal(t.get('Token cost')?.value, 'not reported', 'Token cost promises a figure a mock run never writes')
-  assert.equal(t.get('Token cost')?.absent, true)
+  assert.equal(t.get('Cost')?.value, 'no model call', 'Cost promises a figure a mock run never writes')
+  assert.ok(!/at exit|when the attempt ends/.test(t.get('Cost')?.sub ?? ''), 'a mock run is promised tokens at exit')
+  assert.equal(t.get('Cost')?.absent, true)
 })
 
 // ---------------------------------------------------------------------------
@@ -570,12 +553,21 @@ test('a task that never ran says so once on its Elapsed tile, and the note names
   assert.match(unended.sub, /^cancelled\b.*no finish recorded/, `the note hides the missing end: "${unended.sub}"`)
 })
 
-/** The head's facts strip: the `ctl-facts` list that carries the `age` fact. */
-function headFacts(markup: string): string {
-  const strip = markup.split('<ul class="ctl-facts">').slice(1).map((s) => s.split('</ul>')[0] ?? '')
-  const head = strip.find((s) => s.includes('<b>age</b>'))
-  assert.ok(head !== undefined, 'the head facts strip is gone; every assertion below would be vacuous')
-  return head
+/**
+ * WHERE THE WAIT AND THE AGE ARE SAID NOW (agent-details-v3.html A): a wait
+ * in the Now card's phase line, the age in Progress's `submitted` line. The
+ * head's facts strip that said both is gone.
+ */
+function nowCard(markup: string): string {
+  const at = markup.indexOf('data-lead="now"')
+  assert.ok(at >= 0, 'the Now card is gone; every assertion below would be vacuous')
+  return markup.slice(at, markup.indexOf('</section>', at))
+}
+
+function submittedLine(markup: string): string {
+  const m = /<p class="dt-note"[^>]*>submitted [^<]*<\/p>/.exec(markup)
+  assert.ok(m, 'the submitted line is gone')
+  return m[0]
 }
 
 /**
@@ -602,10 +594,9 @@ test('a task between attempts shows no wait and no figure the task document does
       attempt_count: state === 'LEASED' || state === 'DISPATCHED' ? 2 : 1,
     }
     const markup = plain(surface(run({ task: between, attempts: [{ ...ATTEMPT, completed_at: null, exit_code: null }] })))
-    const facts = headFacts(markup)
-    assert.ok(!facts.includes('<b>wait</b>'), `${state}: a task that already ran is shown a wait`)
-    // The age is still on the strip, under the key that says it is one.
-    assert.ok(facts.includes('<b>age</b>'), `${state}: the age fact is gone`)
+    const facts = nowCard(markup)
+    assert.ok(!/\bwait(ing)?\b/.test(facts), `${state}: a task that already ran is shown a wait`)
+    assert.match(submittedLine(markup), / ago<\/p>$/, `${state}: the age is gone`)
     assert.ok(
       !new RegExp(`${state.toLowerCase()} \\d`).test(facts),
       `${state}: the strip prints the task's age after its state word, which reads as time in that state`,
@@ -623,15 +614,15 @@ test('a task between attempts shows no wait and no figure the task document does
 test('an unstarted waiting task keeps its wait, because its whole age is one', () => {
   // THE CONTROL, so the test above cannot pass by never printing `wait`.
   const ready: Task = { ...TASK, state: 'READY', started_at: null, completed_at: null, current_lease_id: null }
-  const facts = headFacts(plain(surface(run({ task: ready, attempts: [] }))))
-  assert.ok(/<b>wait<\/b>waiting \d/.test(facts), `an unstarted READY task lost its wait: ${facts}`)
+  const facts = nowCard(plain(surface(run({ task: ready, attempts: [] }))))
+  assert.ok(/no attempt yet · waiting \d/.test(facts), `an unstarted READY task lost its wait: ${facts}`)
 })
 
 test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
   // BREAK IT: fall back to `agent, at finish` for any text the prefixes do
   // not recognise -- the old rule. No agent existed to write this.
   const markup = plain(surface(cascade()))
-  assert.ok(markup.includes('error · scheduler · cancel'), 'the cascade cancel is not attributed to the scheduler')
+  assert.ok(markup.includes('Error written by <b>scheduler · cancel</b>'), 'the cascade cancel is not attributed to the scheduler')
   assert.ok(!markup.includes('agent, at finish'), 'a task that never ran blames its agent')
 })
 
@@ -647,7 +638,7 @@ test('the error banner reads a lowercase dispatch code as the scheduler’s', ()
   }
   const unstarted: AttemptRow = { ...ATTEMPT, started_at: null, completed_at: null, exit_code: null }
   const markup = plain(surface(run({ task: failed, attempts: [unstarted] })))
-  assert.ok(markup.includes('error · scheduler · dispatch'), 'a lowercase dispatch code is not read as a dispatch failure')
+  assert.ok(markup.includes('Error written by <b>scheduler · dispatch</b>'), 'a lowercase dispatch code is not read as a dispatch failure')
 })
 
 test('the error banner still names the agent when the agent ran and failed', () => {
@@ -655,7 +646,7 @@ test('the error banner still names the agent when the agent ran and failed', () 
   const failed: Task = { ...TASK, state: 'FAILED', last_error: 'claude exited 1: tool call failed' }
   const ran: AttemptRow = { ...ATTEMPT, exit_code: 1, error: 'claude exited 1: tool call failed' }
   const markup = plain(surface(run({ task: failed, attempts: [ran] })))
-  assert.ok(markup.includes('error · agent, at finish'), 'an agent’s own failure is no longer attributed to it')
+  assert.ok(markup.includes('Error written by <b>agent, at finish</b>'), 'an agent’s own failure is no longer attributed to it')
 })
 
 test('a finished task that never ran has nothing-ran as its output, a real zero', () => {
@@ -695,11 +686,11 @@ test('a failed agent’s reason is printed once, and an earlier attempt’s own 
 // Marks that are not in flight, and one name per attempt (AG-9, AG-21)
 // ---------------------------------------------------------------------------
 
-/** The Timeline panel's toolbar, as markup. */
+/** The Progress card's event list and its paging note, as markup. */
 function timelineToolbar(markup: string): string {
-  const at = markup.indexOf('<h2>Timeline')
-  assert.ok(at >= 0, 'the Timeline panel is not on the screen')
-  return markup.slice(at, markup.indexOf('</div>', at))
+  const at = markup.indexOf('<b>Progress</b>')
+  assert.ok(at >= 0, 'the Progress card is not on the screen')
+  return markup.slice(at, markup.indexOf('</section>', at))
 }
 
 test('the timeline does not draw a read in flight once its read has landed', () => {
@@ -707,7 +698,7 @@ test('the timeline does not draw a read in flight once its read has landed', () 
   const events = [event({ type: 'submitted', at: '2026-09-22T09:00:00Z' })]
   const unproven = timelineToolbar(surface(run({ task: RUNNING_TASK, attempts: [RUNNING_ATTEMPT], events })))
   assert.ok(!unproven.includes('is-pending'), 'the landed timeline still says `reading`')
-  assert.ok(unproven.includes('oldest first · cap unknown'), 'the paging caveat is gone from the toolbar')
+  assert.ok(unproven.includes('one page, cap unknown'), 'the paging caveat is gone from the event list')
   // THE PROVEN CASE KEEPS ITS MARK: a SUCCEEDED task with no terminal event
   // on the page proves the page ends early.
   const proven = timelineToolbar(surface(run({ events })))

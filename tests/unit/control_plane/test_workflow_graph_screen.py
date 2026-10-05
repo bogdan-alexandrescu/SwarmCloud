@@ -740,12 +740,22 @@ def test_the_run_panel_keeps_the_writing_the_node_borrows():
     facts = _src("measure.ts")
     assert "No attempt reported a cost. This is an absent measurement, not $0.00." in facts
     assert "Written when an attempt ends." in facts
-    assert 'value="not recorded"' in agent
-    assert 'value="not reported"' in agent
+    #
+    # THE PANEL MOVED TOO. The Details v3 rebuild replaced `RunMetrics` and its
+    # `<Metric value="not recorded" />` tiles with `DtStrip`, whose cells are
+    # objects, and put the checkpoint count on the `DtCheckpoints` fact line.
+    # The property is unchanged: an unmeasured memory or cost is a PHRASE in
+    # the value slot, never blank and never `$0`.
+    strip = _decl(agent, "function DtStrip(")
+    assert "value: '— not recorded'" in strip, (
+        "an unrecorded peak memory no longer says so in the value slot"
+    )
+    assert "value: '— not reported'" in strip, (
+        "an unreported cost no longer says so in the value slot, so it may be read as $0"
+    )
 
-    metrics = _decl(agent, "function RunMetrics(")
-    checkpoints = metrics[metrics.index('label="Checkpoints"') :]
-    assert "value={`${ckpts}`}" in checkpoints, (
+    checkpoints = _decl(agent, "function DtCheckpoints(")
+    assert "Checkpoints <b>{written}</b>" in checkpoints, (
         "the checkpoint count is no longer rendered as a digit. That zero was MEASURED "
         "-- it is the one number on the panel that is allowed to be one."
     )

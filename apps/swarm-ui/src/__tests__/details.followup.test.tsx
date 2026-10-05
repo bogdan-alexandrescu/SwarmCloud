@@ -101,14 +101,19 @@ async function mount(run: AgentRun): Promise<HTMLElement> {
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskInputOnce.mockImplementation(async () => served)
   const { container } = render(<Run run={run} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull(), WAIT)
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull(), WAIT)
   // The Input section's own read has landed: no block is still `reading`.
   await waitFor(() => expect(section(container as HTMLElement, 'Input')?.querySelector('.ctl-mark.is-pending') ?? null).toBeNull(), WAIT)
   return container as HTMLElement
 }
 
 function section(root: HTMLElement, title: string): HTMLElement | null {
-  return [...root.querySelectorAll<HTMLElement>('section')].find((s) => s.querySelector('h2')?.textContent === title) ?? null
+  // A Details card is headed by `.dt-card-head > b` (agent-details-v3.html A).
+  return (
+    [...root.querySelectorAll<HTMLElement>('section')].find(
+      (s) => s.querySelector(':scope > h2, :scope > .dt-card-head > b')?.textContent === title,
+    ) ?? null
+  )
 }
 
 describe('the runner log lives in Artifacts › Logs only', () => {
@@ -127,7 +132,8 @@ describe('the runner log lives in Artifacts › Logs only', () => {
 describe('Details has no artifact list of its own', () => {
   it('lists no file the Artifacts pane lists, and opens no viewer for one', async () => {
     const root = await mount(agentRun())
-    const output = section(root, 'Output')
+    // A finished agent's output card leads the tab, headed Outcome.
+    const output = section(root, 'Outcome')
     expect(output, 'no Output section').not.toBeNull()
     const eyebrows = [...output!.querySelectorAll('.ctl-eyebrow')].map((e) => e.textContent?.trim())
     expect(eyebrows, 'Details still lists the artifacts').not.toContain('artifacts')

@@ -240,7 +240,7 @@ describe('the inspector paints its why sentence by the same rule', () => {
 
     // Thirty seconds: live. Nothing is wrong, so there is no line to colour.
     const live = render(<Run run={holding(0.5)} />)
-    await waitFor(() => expect(live.container.querySelector('.ctl-metrics')).not.toBeNull())
+    await waitFor(() => expect(live.container.querySelector('.dt-strip')).not.toBeNull())
     expect(live.container.querySelector('.why-full'), 'a live worker was given a why line').toBeNull()
     live.unmount()
   })

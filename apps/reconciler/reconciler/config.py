@@ -296,6 +296,27 @@ class ReconcilerConfig:
     #: TTL for five hours with only a per-pass WARNING to show for it.
     held_lease_alert_minutes: int = 15
 
+    #: How old a lease whose worker NEVER STARTED -- no heartbeat on the
+    #: lease, no start on its attempt -- must be before that absence is itself
+    #: enough to repair it, when nothing else can prove the execution is gone
+    #: (its kill is not confirmed, or its backend cannot be read).
+    #:
+    #: Why a worker that never started may be repaired without that proof: the
+    #: repair writes the fence in the same transaction as the release, and a
+    #: worker checks its generation before it creates a workspace, reads a
+    #: secret or starts a runner, so a container that does start later exits
+    #: without running the agent (invariant 5). What it cannot do is hold the
+    #: lease: an execution that cannot be read or cannot be cancelled held
+    #: four leases for ten hours on 2026-10-04 (#560).
+    #:
+    #: Why this long: it is measured from the lease's creation, and the
+    #: slowest dispatch-to-first-write measured on Cloud Run is 256 s against
+    #: a 480 s `dispatch_timeout_seconds`. Twenty minutes is 2.5 times the
+    #: deadline and nearly five times the slowest start ever seen, so no
+    #: worker that is merely slow is in this window. `from_env` keeps it at
+    #: least twice the platform's dispatch timeout if that is ever raised.
+    never_started_release_seconds: int = 1200
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -397,6 +418,10 @@ class ReconcilerConfig:
                 STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
             ),
             held_lease_alert_minutes=_int("HELD_LEASE_ALERT_MINUTES", 15),
+            never_started_release_seconds=max(
+                2 * settings.dispatch_timeout_seconds,
+                _int("NEVER_STARTED_RELEASE_SECONDS", 1200),
+            ),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -8,7 +9,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy, Mark } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, Mark } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadTask } from './api'
@@ -30,8 +31,20 @@ import {
 } from './listSnap'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { CONCURRENCY_STATES, RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
-import { AGE_TICK_MS, useNow } from './useNow'
+import { useResourceClasses } from './Blockers'
+import { HelpCard } from './HelpCard'
+import {
+  CONCURRENCY_STATES,
+  STRATEGY_LABEL,
+  TERMINAL_STATES,
+  accountText,
+  clockTime,
+  dispatchOf,
+  elapsed,
+  type DispatchRole,
+  type Task,
+} from './types'
+import { rowClock, useNow } from './useNow'
 import './styles/agents.css'
 import { Button, CIcon, StateMark, Tabs } from './components'
 
@@ -301,6 +314,14 @@ export function AgentSplit({
     },
   ]
   const selected: TaskPane = pane
+  const links = useMemo(
+    () => ({
+      logs: () => go(`${base}/logs`),
+      attempts: () => go(`${base}/attempts`),
+      artifacts: () => go(`${base}/artifacts`),
+    }),
+    [base, go],
+  )
 
   return (
     <div
@@ -381,7 +402,14 @@ export function AgentSplit({
       {/* THE ✕ IS IN THE HEADER'S ACTION ROW, after Copy link (walkthrough
           B, 2026-10-03): a sticky band of its own on the column, it was
           drawn over Copy link. */}
-      <AgHead taskId={taskId} task={task} read={head.state.status} reload={reload} onClose={close} />
+      <AgHead
+        taskId={taskId}
+        task={task}
+        read={head.state.status}
+        readAt={head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null}
+        reload={reload}
+        onClose={close}
+      />
 
       {/* UNDERLINE TABS WITH COUNTS (agents.html V1; #503 measured a boxed
           segmented control with none). A count the task document does not
@@ -422,10 +450,18 @@ export function AgentSplit({
             <span className="ctl-pending art-loading-bar" />
           </p>
         ) : selected === 'detail' ? (
-          <>
-            {task !== null && <LogLastLine key={taskId} task={task} onOpen={() => go(`${base}/logs`)} />}
-            <AgentDetailScreen taskId={taskId} onClose={close} headed checkpoints={ckpt} />
-          </>
+          // THE LAST LOG LINE IS IN THE LEADING CARD (agent-details-v3.html
+          // A): a lone row above the body, it was disconnected from the state
+          // it explains. The split draws it, since only the split can switch
+          // to Logs; the card places it.
+          <AgentDetailScreen
+            taskId={taskId}
+            onClose={close}
+            headed
+            checkpoints={ckpt}
+            links={links}
+            lastLine={task !== null ? <LogLastLine key={taskId} task={task} onOpen={links.logs} /> : undefined}
+          />
         ) : selected === 'attempts' ? (
           <AttemptTimelineScreen taskId={taskId} />
         ) : selected === 'checkpoints' ? null : (
@@ -485,29 +521,42 @@ function artifactCount(task: Task | null): number | null {
 const COPY_SAID_MS = 4000
 
 /**
- * THE DETAIL'S HEADER BLOCK (agents.html V1), AND THE ONE PLACE ITS
- * METADATA IS SAID (walkthrough B, owner 2026-10-03). The state pill, the
- * agent's name -- its step, or what it is when it stands alone -- and Copy
- * link, Stop and ✕ in the action row; under it the whole id with its copy,
- * profile · class · units · gen, and the facts: started / ended, the account,
- * the tenant and the workflow. The Details pane said these again in two other
- * shapes; it now draws only what this does not (`Headline` with `headed`).
- * A child carries its parent's link above the title (agent-detail-2.html A2).
+ * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
+ * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
+ * it is when it stands alone -- the headline `elapsed · attempt n of N` in
+ * sans, and Copy link, Stop and ✕. Line 2: one sans meta line -- profile ·
+ * class · workflow · account -- the task id behind a copy button whose title
+ * is the whole id, and the dispatch as plain-language chips.
+ *
+ * WHAT LEFT IT, AND WHERE TO: the printed id (behind `copy id`), the tenant
+ * (the panel's tenant tile says it), gen and units (the Attempts tab), and
+ * started (the strip's Elapsed sub-line). The actions share line 1 again:
+ * the title takes the slack and clamps at two lines, and the headline and
+ * the actions never shrink, so the ✕ cannot be drawn over Stop (the defect
+ * lane U9 moved them to a row of their own for). A child carries its
+ * parent's link above line 1 (agent-detail-2.html A2).
  */
 function AgHead({
   taskId,
   task,
   read,
+  readAt,
   reload,
   onClose,
 }: {
   taskId: string
   task: Task | null
   read: string
+  /** When the header's read landed, so the elapsed figure stops where the read stops vouching for it. */
+  readAt: number | null
   reload: () => void
   onClose: () => void
 }) {
-  const now = useNow(AGE_TICK_MS)
+  // THE HEADLINE TICKS EVERY SECOND, as the Agents list's elapsed column
+  // does, and stops one poll past a read that has not been renewed
+  // (`rowClock`): a failed re-read must not age a live agent into a long run.
+  const clock = useNow(1000)
+  const now = task !== null && !TERMINAL_STATES.has(task.state) ? rowClock(clock, readAt, DRAWER_POLL_MS) : clock
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
   useEffect(() => {
     if (copied === null) return
@@ -526,7 +575,6 @@ function AgHead({
       () => setCopied('no'),
     )
   }
-  const units = task === null ? undefined : RESOURCE_UNITS[task.resource_class]
   const name = task === null ? taskId : agentName(task)
   // The breadcrumb has the id and no task: it names the agent with this.
   useEffect(() => {
@@ -534,16 +582,21 @@ function AgHead({
   }, [task])
   return (
     <header className="ag-head">
-      {/* THE ACTIONS HAVE A ROW OF THEIR OWN (lane U9 item 2, owner
-          2026-10-03): sharing the title's line, the ✕ was drawn over Stop on
-          a running agent. The parent link, when there is one, takes the
-          row's left; the actions are packed to its right and wrap. */}
-      <div className="ag-head-bar">
-        {task !== null && <AgParentLink task={task} />}
+      {task !== null && <AgParentLink task={task} />}
+      <div className="ag-head-row">
+        {task !== null ? (
+          <StateMark state={task.state} />
+        ) : (
+          <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
+        )}
+        {/* TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN THE TOOLTIP
+            (walkthrough C): a long step name ran off the column. */}
+        <h2 className="ag-head-title" title={name}>
+          {name}
+        </h2>
+        {task !== null && <AgHeadline task={task} now={now} />}
         <span className="ag-head-actions">
-          <Button onClick={copy}>
-            Copy link
-          </Button>
+          <Button onClick={copy}>Copy link</Button>
           {copied !== null && (
             <span role="status" className="ag-head-copied">
               {copied === 'yes' ? 'copied' : 'could not copy'}
@@ -559,70 +612,133 @@ function AgHead({
           </Button>
         </span>
       </div>
-      <div className="ag-head-row">
-        {task !== null ? (
-          <StateMark state={task.state} />
-        ) : (
-          <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
-        )}
-        {/* TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN THE TOOLTIP
-            (walkthrough C): a long step name ran off the column. */}
-        <h2 className="ag-head-title" title={name}>
-          {name}
-        </h2>
-      </div>
-      <p className="ag-head-id">
-        <IdCopy value={taskId} />
-      </p>
-      {task !== null && <AgHeadFacts task={task} units={units} now={now} />}
+      <AgHeadMeta taskId={taskId} task={task} />
     </header>
   )
 }
 
 /**
- * Profile · class · units · gen, then when it started and ended, the account,
- * the tenant and the workflow -- each keyed once, in the facts-strip treatment
- * the Details pane uses, with the same formatters (`startedOf`, `clockTime`,
- * `accountText`) so the header and the attempt cards never print one instant
- * two ways. An account not read is a dash with its reason, never blank.
+ * `elapsed · attempt n of N`, and when it ended once it has. `elapsed()` is
+ * the Agents list's own figure, so the row and the header never disagree; the
+ * attempt is the task's own counter, which the header's read carries.
  */
-function AgHeadFacts({ task, units, now }: { task: Task; units: number | undefined; now: number }) {
-  const start = startedOf(task, now)
+function AgHeadline({ task, now }: { task: Task; now: number }) {
+  const el = elapsed(task, now)
   const ended = clockTime(task.completed_at, now)
-  const account = accountText(task.account)
   return (
-    <ul className="ctl-facts ag-head-facts">
-      <li className="ctl-fact ag-head-shape mono">
-        {task.runner_profile} · {task.resource_class}
-        {units !== undefined && ` · ${units}u`}
-        {task.current_generation !== null && task.current_generation !== undefined && ` · gen ${task.current_generation}`}
-      </li>
-      <li className="ctl-fact" title={start.title}>
-        <b>started</b>
-        {start.text}
-      </li>
+    <span className="ag-head-hl">
+      <b>{el.text}</b> ·{' '}
+      {task.attempt_count > 0 ? `attempt ${task.attempt_count} of ${task.max_attempts}` : 'no attempt yet'}
       {ended !== null && (
-        <li className="ctl-fact" title={`ended ${ended.title}`}>
-          <b>ended</b>
-          {ended.text}
-        </li>
+        <span title={`ended ${ended.title}`}> · ended {ended.text}</span>
       )}
-      <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
-        <b>account</b>
-        <span className="mono">{account.text}</span>
+    </span>
+  )
+}
+
+/** What each role does, in the words of the dispatch chips. */
+const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
+  contributor: 'adds to the shared PR',
+  integrator: 'opens the shared PR',
+}
+
+/**
+ * Profile · class (with its size, once the catalogue answers) · workflow ·
+ * account, the id's copy button, and the dispatch chips. Sans; mono only for
+ * the ids. An account not read is a dash with its reason, never blank.
+ */
+export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
+  const classes = useResourceClasses()
+  const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
+  const account = task === null ? null : accountText(task.account)
+  const d = task === null ? null : dispatchOf(task)
+  return (
+    <ul className="ag-head-facts">
+      {task !== null && (
+        <>
+          <li>
+            <b>{task.runner_profile}</b>
+          </li>
+          <li title={cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined}>
+            {task.resource_class}
+            {cls !== null && ` · ${cls.cpu} vCPU · ${cls.memory_gib} GiB`}
+          </li>
+          {task.workflow_id !== null && (
+            <li>
+              workflow{' '}
+              <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
+                {task.workflow_id} ›
+              </a>
+            </li>
+          )}
+          {account !== null && (
+            <li className={account.known ? undefined : 'is-absent'} title={account.title}>
+              account <b className="mono">{account.text}</b>
+            </li>
+          )}
+        </>
+      )}
+      <li className="is-nodot">
+        <AgCopyId value={taskId} />
       </li>
-      <li className="ctl-fact">
-        <b>tenant</b>
-        <span className="mono">{task.tenant_id}</span>
-      </li>
-      {task.workflow_id !== null && (
-        <li className="ctl-fact">
-          <b>workflow</b>
-          <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
-            {task.workflow_id}
-          </a>
+      {task !== null && (
+        // ONE `?` FOR THE DISPATCH CHIPS, after them: what the strategy and
+        // the role mean is one topic. The carrier gets no chip -- no worker
+        // reads it yet (`CARRIER_NOTE`) -- and the topic names it.
+        <li className="is-nodot ag-head-dispatch">
+          {d === null ? (
+            <span className="ag-head-dchip is-absent">dispatch not served</span>
+          ) : (
+            <>
+              <span className="ag-head-dchip">{STRATEGY_LABEL[d.strategy]}</span>
+              {d.role !== null && <span className="ag-head-dchip">{ROLE_SAY[d.role]}</span>}
+            </>
+          )}
+          <HelpCard topic={d === null ? 'dispatch-absent-is-old-api' : 'dispatch-strategies'} />
         </li>
       )}
     </ul>
+  )
+}
+
+/**
+ * THE TASK ID, BEHIND ITS COPY (agent-details-v3.html A). Not printed: the
+ * button's title is the whole id, and the status says whether the copy
+ * happened -- `navigator.clipboard` is undefined outside a secure context.
+ */
+function AgCopyId({ value }: { value: string }) {
+  const [said, setSaid] = useState('')
+  useEffect(() => {
+    if (said === '') return
+    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
+    return () => clearTimeout(t)
+  }, [said])
+  const copy = () => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clipboard === undefined) {
+      setSaid('copy refused')
+      return
+    }
+    clipboard.writeText(value).then(
+      () => setSaid('task id copied'),
+      () => setSaid('copy refused'),
+    )
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className="ag-head-idcopy"
+        title={`${value} (click to copy)`}
+        aria-label={`Copy task id ${value}`}
+        onClick={copy}
+      >
+        <CIcon name="copy" />
+        copy id
+      </button>
+      <span className="ag-head-said" role="status">
+        {said}
+      </span>
+    </>
   )
 }

@@ -51,19 +51,31 @@ function run(t: Task, attempts: AttemptRow[]): AgentRun {
   }
 }
 
+/**
+ * THE TOKENS, which are the Cost cell's sub-line now (agent-details-v3.html
+ * A: "tokens as Cost's sub-line"): the headline `1.41M tokens`, and each kind
+ * under it.
+ */
 async function tokensTile(r: AgentRun): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={r} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
-  const found = [...container.querySelectorAll<HTMLElement>('.ctl-metric')].find(
-    (m) => m.querySelector('.ctl-metric-label')?.textContent?.startsWith('Tokens'),
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull())
+  const found = [...container.querySelectorAll<HTMLElement>('.dt-sc')].find(
+    (m) => m.querySelector('.dt-sc-l')?.firstChild?.textContent === 'Cost',
   )
-  expect(found, 'no Tokens tile').toBeTruthy()
+  expect(found, 'no Cost cell').toBeTruthy()
   return found!
 }
 
-const value = (tile: HTMLElement) => tile.querySelector('.ctl-metric-value')?.textContent ?? ''
+/** The tokens' headline: the figure before `tokens`, or what the cell says instead of one. */
+const value = (tile: HTMLElement) => {
+  const sub = tile.querySelector('.dt-sc-s')?.textContent ?? ''
+  const figure = /(?:^|· )([\d.,]+[kM]?) tokens/.exec(sub)?.[1]
+  if (figure !== undefined) return figure
+  if (/tokens not reported/.test(sub)) return 'not reported'
+  return tile.querySelector('.dt-sc-v')?.textContent ?? ''
+}
 
 /** The usage block of task_9c0ade75fd0c4f1c9a6e, as the worker stores it. */
 function summary(cacheCreation: Record<string, number> | null, models: Record<string, Record<string, number>>) {

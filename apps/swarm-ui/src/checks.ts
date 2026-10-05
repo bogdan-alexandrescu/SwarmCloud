@@ -1,5 +1,4 @@
-import { PHONE_PAGE_LIMIT } from './agentlist'
-import { TASK_PAGE_LIMIT } from './api'
+import { PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT } from './pageLimits'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import {
   CONCURRENCY_STATES,

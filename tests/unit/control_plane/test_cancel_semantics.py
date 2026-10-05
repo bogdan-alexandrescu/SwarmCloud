@@ -96,6 +96,20 @@ def submit_fan_out(client, *, on_step_failure: str = "fail_workflow") -> dict:
 # What the dialog is allowed to say
 # --------------------------------------------------------------------------
 
+def worker_is_running(db, task_id: str) -> None:
+    """What a worker's first control-plane writes leave behind: a heartbeat on
+    the lease and a start on the attempt. A step whose worker never started is
+    ended by the cancel itself since #560 (test_cancel_without_a_worker.py);
+    these tests are about a stop that a live worker has to act on."""
+    from datetime import datetime, timezone
+
+    lease_id = db.docs[f"tasks/{task_id}"]["current_lease_id"]
+    lease = db.docs[f"leases/{lease_id}"]
+    now = datetime.now(timezone.utc)
+    lease["heartbeat_at"] = now
+    db.docs[f"attempts/{lease['attempt_id']}"]["started_at"] = now
+
+
 def worker_acts_on_the_flag(db, task_id: str) -> None:
     """What `lifecycle` does when it sees `cancel_requested` mid-run.
 
@@ -122,6 +136,7 @@ def test_nothing_downstream_moves_until_the_worker_has_acted(
     wf = submit_fan_out(client)
     scheduler = make_scheduler()
     scheduler.drain()
+    worker_is_running(db, wf["steps"]["left"])
 
     client.post(f"/v1/tasks/{wf['steps']['left']}/cancel", headers=auth_header("alice"))
     scheduler.drain()
@@ -261,6 +276,7 @@ def test_a_step_holding_capacity_is_flagged_rather_than_stopped(
     wf = submit_fan_out(client)
     make_scheduler().drain()
     assert db.docs[f"tasks/{wf['steps']['left']}"]["state"] == "DISPATCHED"
+    worker_is_running(db, wf["steps"]["left"])
 
     body = client.post(
         f"/v1/tasks/{wf['steps']['left']}/cancel", headers=auth_header("alice")

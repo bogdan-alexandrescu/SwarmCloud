@@ -1,24 +1,36 @@
 """Repair, in the only order that cannot cause duplicate execution.
 
-    1. INVALIDATE the generation      -- the running worker now fences itself
-    2. TERMINATE the execution        -- and confirm the backend accepted it
-    3. RELEASE the slot               -- only now, and only if 2 succeeded
-    4. REPAIR the task state          -- back to READY, or FAILED if spent,
+    1. TERMINATE the execution        -- and confirm the backend accepted it
+    2. in ONE transaction, only now:
+       INVALIDATE the generation      -- a worker that wakes later fences itself
+       RELEASE the slot               -- through the frozen release
+       REPAIR the task state          -- back to READY, or FAILED if spent,
                                          or CANCELLED if a cancel was requested
 
-Step 3 after step 2 is the whole point of this module. Releasing first returns a
-slot to the scheduler, which admits the next task in milliseconds, while the
-agent whose slot it was is still running: two agents, one task, one credential,
-one repository. So a termination that is not confirmed does not release. The
-cost of getting that wrong in the safe direction is one stuck slot until the
-next pass; the cost of getting it wrong in the other direction is silent data
-loss in a tenant's repository.
+Releasing before the kill is confirmed is what this module exists to prevent.
+Releasing returns a slot to the scheduler, which admits the next task in
+milliseconds, while the agent whose slot it was is still running: two agents,
+one task, one credential, one repository. So a termination that is not
+confirmed does not release. The cost of getting that wrong in the safe
+direction is one stuck slot until the next pass; the cost of getting it wrong
+in the other direction is silent data loss in a tenant's repository.
 
-Step 1 before step 2 matters for the same reason from the other side. Killing an
-execution can fail, hang, or race a container that is already restarting;
-bumping the generation is a single Firestore write that makes the old worker
-stop by itself at its next poll -- a second, independent brake that does not
-depend on the backend being reachable.
+THE FENCE IS NEVER WRITTEN ALONE (#560). It used to be step 1, committed in a
+transaction of its own before the kill, as a brake that did not depend on the
+backend. When the kill then failed, the pass returned with the task fenced and
+the lease held, and every later pass saw a superseded lease whose execution
+belonged to the obsolete-generation rule, whose kill failed the same way: on
+2026-10-04 four tasks held their leases for ten hours with nothing more ever
+written. A dead worker -- the only kind these rules fence -- is not polling,
+so the early brake bought little; the stuck rule, whose worker IS alive and
+polling, still fences alone (`_repair_stuck`). Now a pass that cannot finish
+writes nothing, and the next one starts again from a clean state.
+
+A WORKER THAT NEVER STARTED is its own evidence once its lease is
+`never_started_release_seconds` old (`_never_started_wait`): the kill need not
+be confirmed and the backend need not be readable, because the fence commits
+with the release and a worker checks its generation before it does anything
+(invariant 5). A worker that DID start is still held on proof (#450).
 """
 
 from __future__ import annotations
@@ -71,7 +83,7 @@ from .model import (
     Termination,
 )
 from .progress import assess
-from .store import ControlStore
+from .store import ControlStore, RepairPlan
 
 #: The two lines the reconciler writes when it holds back, spelled ONCE.
 #:
@@ -130,6 +142,13 @@ _AFTER_THE_FENCE = (
     "Job has ended, terminating it first if it has not, and requeues or fails "
     "the task by the retry rules"
 )
+
+#: The states a lease's task may be in while its worker can still be said
+#: never to have started. RUNNING is not one: only a worker writes it.
+_NEVER_STARTED_STATES = (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+#: Set on a finding `_admit` let through on that evidence alone, so `_repair`
+#: releases it only behind a fence (#560).
+_NEVER_STARTED_DETAIL = "admitted_because_worker_never_started"
 
 #: The event each repaired state is announced with.
 _EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
@@ -627,7 +646,23 @@ class Reconciler:
             if past <= threshold:
                 continue
             still_held.add(lease.lease_id)
-            reasons = why.get(lease.lease_id) or ["no repair was attempted on this pass"]
+            reasons = list(why.get(lease.lease_id) or ["no repair was attempted on this pass"])
+            task = snapshot.tasks.get(lease.task_id)
+            if task is not None and task.generation != lease.generation:
+                # The #560 shape: what a worker of this lease could do is
+                # already fenced, and only the release is outstanding.
+                reasons.append(
+                    f"fenced: the task is at generation {task.generation}, the lease "
+                    f"at {lease.generation}, and the lease is still held"
+                )
+            remaining = self._never_started_wait(lease.lease_id, snapshot)
+            if remaining is not None:
+                reasons.append(
+                    f"its worker never started; released on that evidence in {remaining:.0f}s"
+                    if remaining > 0
+                    else "its worker never started and the wait is over; the repair "
+                    "did not complete"
+                )
             entry = {
                 "lease_id": lease.lease_id,
                 "task_id": lease.task_id,
@@ -1170,6 +1205,29 @@ class Reconciler:
         probed = self._probe(finding, snapshot, sight)
         if probed is not None:
             return probed
+        remaining = self._never_started_wait(finding.lease_id, snapshot)
+        if remaining is not None and remaining <= 0 and finding.lease_id:
+            # Nothing can be read about its execution, and its worker never
+            # started, long past any start ever measured. An execution that
+            # cannot be read must not hold capacity for ever (#560): repair it
+            # behind a fence written in the same transaction as the release,
+            # which stops the worker if it ever does start (invariant 5). A
+            # worker that DID start is still held on #450's rule.
+            self._log.warning(
+                "repairing without proof of absence: its worker never started",
+                task_id=finding.task_id,
+                lease_id=finding.lease_id,
+                kind=finding.kind.value,
+                never_started_release_seconds=self._config.never_started_release_seconds,
+            )
+            return replace(
+                finding,
+                detail={**finding.detail, _NEVER_STARTED_DETAIL: True},
+                reason=(
+                    f"{finding.reason}; its worker never started in "
+                    f"{self._config.never_started_release_seconds}s"
+                ),
+            )
         attempt = snapshot.attempts.get(finding.attempt_id or "")
         self._log.warning(
             NOT_REPAIRING,
@@ -1414,7 +1472,7 @@ class Reconciler:
         snapshot: ControlSnapshot,
         handles: dict[str, Any],
     ) -> RepairOutcome:
-        """Invalidate, terminate, release, repair -- in that order, or not at all.
+        """Terminate; then invalidate, release and repair together -- or not at all.
 
         `handles` is every configured backend, NOT only the ones this pass could
         list: see `_Sight`. Whether a finding may be acted on was settled by
@@ -1459,160 +1517,215 @@ class Reconciler:
                 if ended_at_startup
                 else f"would invalidate and requeue the task, releasing nothing: {finding.reason}"
                 if leaseless
-                else "would invalidate, terminate, release and repair"
+                else "would terminate, then invalidate, release and repair in one transaction"
             )
             return outcome
 
-        # ---- STEP 1: invalidate the generation --------------------------
-        if finding.task_id and finding.generation is not None:
-            fence_guard = (
-                {**guard, "unless_holding_lease": finding.lease_id}
-                if orphan_lease and finding.lease_id
-                else guard
+        # ---- STEP 1: terminate the execution ----------------------------
+        # BEFORE anything is written. The fence used to be committed first, in
+        # a transaction of its own, and when this kill was then refused the
+        # repair returned with the generation fenced and the lease held. Every
+        # later pass saw a superseded lease and left it to a rule whose kill
+        # failed the same way: on 2026-10-04 four leases were held like that
+        # for ten hours (#560). Nothing is fenced now that this pass cannot
+        # also release and repair.
+        proof_by_absence_of_a_start = False
+        if not self._terminate(finding, outcome, handles):
+            remaining = self._never_started_wait(finding.lease_id, snapshot)
+            if remaining is None or remaining > 0:
+                if remaining is not None:
+                    outcome.actions.append(
+                        f"its worker never started; released without a confirmed "
+                        f"kill in {remaining:.0f}s if nothing proves it gone sooner"
+                    )
+                return outcome
+            # A worker that never started, long past any start ever measured.
+            # The fence below commits WITH the release, and a worker checks its
+            # generation before it does anything, so if this container ever
+            # starts it exits without running the agent (invariant 5).
+            proof_by_absence_of_a_start = True
+            outcome.skipped = None
+            outcome.actions.append(
+                "kill not confirmed, but its worker never started in "
+                f"{self._config.never_started_release_seconds}s: fencing and "
+                "releasing on that evidence"
             )
-            new_generation = self._store.invalidate_generation(
-                finding.task_id, finding.generation, **fence_guard
+        proof_by_absence_of_a_start = (
+            proof_by_absence_of_a_start or bool(finding.detail.get(_NEVER_STARTED_DETAIL))
+        )
+
+        # ---- STEPS 2-4: fence, release, repair -- one transaction -------
+        plan: RepairPlan | None = None
+        task = snapshot.tasks.get(finding.task_id or "") if finding.task_id else None
+        if task is not None and not task.is_terminal:
+            # A requested cancel is FINISHED here, in one hop. Returning the
+            # task to READY and leaving the flag for the scheduler's drain
+            # to act on is a second hop through a second service, and it
+            # records the wrong outcome whenever retries are spent: READY
+            # is downgraded to FAILED, so a task somebody stopped was
+            # written down as having failed. DISPATCHED/STARTING/RUNNING/
+            # LEASED -> CANCELLED are all legal (swarm_common.states), and
+            # the repair re-reads the flag inside its transaction, so a
+            # cancel pressed after this snapshot is honoured too.
+            cancelling = task.cancel_requested
+            # A worker that exited 78 CANNOT START, and another attempt
+            # would fail the same way: FAILED, whatever attempts remain,
+            # with the worker's cause as the whole `last_error` (owner,
+            # 2026-09-25). Every other finding requeues, as it always has.
+            if cancelling:
+                to_state, error = (
+                    TaskState.CANCELLED,
+                    f"cancelled on request; reconciled: {finding.reason}",
+                )
+            elif cannot_start:
+                to_state, error = TaskState.FAILED, finding.reason
+            else:
+                to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
+            # An attempt that ended before its runner started is refunded,
+            # up to a bound, inside the repair's own transaction and before
+            # it decides whether the attempts are spent (#67). The store
+            # appends how the attempt was counted, so the reason goes in
+            # without the snapshot's prediction of it. Only on this
+            # transaction's own fence: when somebody else fenced first,
+            # nothing is refunded (invariant 5).
+            refund_limit: int | None = None
+            if ended_at_startup and to_state is TaskState.READY:
+                what = finding.detail.get("what_ended") or finding.reason
+                error = f"reconciled: {what}"
+                refund_limit = self._config.startup_refund_limit
+            plan = RepairPlan(
+                to_state=to_state,
+                # Only the task this finding is actually about. A snapshot is
+                # minutes old by the time slow terminations ahead of it are
+                # done, and the task may legitimately be on a newer lease by
+                # now -- see `repair_task_state`.
+                expected_lease_id=finding.lease_id,
+                error=error,
+                # A retry time means nothing on a task that will not retry.
+                next_eligible_at=None if cannot_start else utcnow(),
+                # Why it ends if it ends FAILED: the worker could not start,
+                # or (spent attempts on a requeue) its worker was lost.
+                failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
+                startup_refund_limit=refund_limit,
             )
-            outcome.invalidated_to = new_generation
-            if new_generation is not None:
-                outcome.actions.append(f"generation {finding.generation} -> {new_generation}")
+        fence_guard: dict[str, Any] = dict(guard)
+        if orphan_lease and finding.lease_id:
+            fence_guard["unless_holding_lease"] = finding.lease_id
+        done = self._store.fence_release_repair(
+            finding.task_id,
+            expected_generation=finding.generation if finding.task_id else None,
+            # Never for a leaseless task: its lease is already released (or
+            # was never written), so its capacity is already back. Asking
+            # again is a no-op only because the frozen release is
+            # idempotent; not asking keeps the requeue from depending on that
+            # (invariants 2 and 3).
+            lease_id=finding.lease_id if not leaseless else None,
+            release_reason=f"reconciler:{finding.kind.value}",
+            repair=plan,
+            # An orphan-lease finding may rest on a snapshot that missed its
+            # task (#332), and a release on the evidence of a worker that never
+            # started is safe only behind a fence: both are refused while the
+            # task, as this transaction leaves it, still holds the lease.
+            refuse_while_task_holds_it=orphan_lease or proof_by_absence_of_a_start,
+            **fence_guard,
+        )
+
+        if done.new_generation is not None and finding.task_id:
+            outcome.invalidated_to = done.new_generation
+            outcome.actions.append(f"generation {finding.generation} -> {done.new_generation}")
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=EventType.GENERATION_FENCED,
+                detail={
+                    "reason": finding.reason,
+                    "finding": finding.kind.value,
+                    "invalidated_generation": finding.generation,
+                    "new_generation": done.new_generation,
+                },
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
+                generation=finding.generation,
+            )
+            self._release_fenced_holds(finding, outcome)
+        if done.release_refused:
+            outcome.actions.append(
+                f"did NOT release {finding.lease_id}: its task still holds it at its generation"
+            )
+        outcome.released = done.released
+        if done.released:
+            outcome.actions.append(f"released {finding.lease_id}")
+            if finding.task_id:
                 self._store.emit(
                     task_id=finding.task_id,
                     tenant_id=finding.tenant_id,
-                    event_type=EventType.GENERATION_FENCED,
-                    detail={
-                        "reason": finding.reason,
-                        "finding": finding.kind.value,
-                        "invalidated_generation": finding.generation,
-                        "new_generation": new_generation,
-                    },
+                    event_type=EventType.LEASE_RELEASED,
+                    detail={"reason": finding.kind.value, "detail": finding.reason},
                     attempt_id=finding.attempt_id,
                     lease_id=finding.lease_id,
-                    generation=finding.generation,
                 )
-                self._release_fenced_holds(finding, outcome)
-
-        # ---- STEP 2: terminate the execution ----------------------------
-        if not self._terminate(finding, outcome, handles):
-            return outcome
-
-        # ---- STEP 3: release the slot -----------------------------------
-        # Never for a leaseless task: its lease is already released (or was
-        # never written), so its capacity is already back. Asking again is a
-        # no-op only because the frozen release is idempotent; not asking
-        # keeps the requeue from depending on that (invariants 2 and 3).
-        if finding.lease_id and not leaseless:
-            outcome.released = self._store.release_lease(
-                finding.lease_id,
-                f"reconciler:{finding.kind.value}",
-                **({"refuse_while_task_holds_it": True} if orphan_lease else {}),
+        repaired = done.repaired_to
+        if repaired is not None and task is not None and finding.task_id:
+            outcome.repaired_to = repaired.value
+            outcome.actions.append(f"task -> {repaired.value}")
+            detail: dict[str, Any] = {
+                "reason": finding.kind.value,
+                "detail": finding.reason,
+            }
+            if cannot_start:
+                detail.update(
+                    exit_code=finding.detail.get("exit_code"),
+                    execution=finding.detail.get("execution"),
+                    cause_source=finding.detail.get("cause_source"),
+                )
+            if ended_at_startup:
+                detail.update(
+                    exit_code=finding.detail.get("exit_code"),
+                    execution=finding.detail.get("execution"),
+                    task_state=finding.detail.get("task_state"),
+                )
+            if repaired is TaskState.CANCELLED:
+                # The API's flag-only cancel wrote `cancel_requested`
+                # (before 2026-09-24: a `cancelled` with
+                # phase=cancel_requested). THIS is the terminal
+                # `cancelled`, written by the component that released
+                # the lease -- contract request 17.
+                detail.update(phase="cancelled", from_state=task.state.value)
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=_EVENT_FOR_REPAIR.get(repaired, EventType.FAILED),
+                detail=detail,
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
             )
-            if outcome.released:
-                outcome.actions.append(f"released {finding.lease_id}")
-                if finding.task_id:
-                    self._store.emit(
-                        task_id=finding.task_id,
-                        tenant_id=finding.tenant_id,
-                        event_type=EventType.LEASE_RELEASED,
-                        detail={"reason": finding.kind.value, "detail": finding.reason},
-                        attempt_id=finding.attempt_id,
-                        lease_id=finding.lease_id,
-                    )
-
-        # ---- STEP 4: repair the task state ------------------------------
-        if finding.task_id:
-            task = snapshot.tasks.get(finding.task_id)
-            if task is not None and not task.is_terminal:
-                # A requested cancel is FINISHED here, in one hop. Returning the
-                # task to READY and leaving the flag for the scheduler's drain
-                # to act on is a second hop through a second service, and it
-                # records the wrong outcome whenever retries are spent: READY
-                # is downgraded to FAILED, so a task somebody stopped was
-                # written down as having failed. DISPATCHED/STARTING/RUNNING/
-                # LEASED -> CANCELLED are all legal (swarm_common.states), and
-                # `repair_task_state` re-reads the flag inside its transaction,
-                # so a cancel pressed after this snapshot is honoured too.
-                cancelling = task.cancel_requested
-                # A worker that exited 78 CANNOT START, and another attempt
-                # would fail the same way: FAILED, whatever attempts remain,
-                # with the worker's cause as the whole `last_error` (owner,
-                # 2026-09-25). Every other finding requeues, as it always has.
-                if cancelling:
-                    to_state, error = (
-                        TaskState.CANCELLED,
-                        f"cancelled on request; reconciled: {finding.reason}",
-                    )
-                elif cannot_start:
-                    to_state, error = TaskState.FAILED, finding.reason
-                else:
-                    to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
-                # An attempt that ended before its runner started is refunded,
-                # up to a bound, inside the repair's own transaction and before
-                # it decides whether the attempts are spent (#67). The store
-                # appends how the attempt was counted, so the reason goes in
-                # without the snapshot's prediction of it. Only on this pass's
-                # own fence: `invalidated_to` is None when somebody else fenced
-                # first, and then nothing is refunded (invariant 5).
-                refund: dict[str, Any] = {}
-                if ended_at_startup and to_state is TaskState.READY:
-                    what = finding.detail.get("what_ended") or finding.reason
-                    error = f"reconciled: {what}"
-                    refund = {
-                        "startup_refund_limit": self._config.startup_refund_limit,
-                        "fenced_generation": outcome.invalidated_to,
-                    }
-                repaired = self._store.repair_task_state(
-                    finding.task_id,
-                    to_state=to_state,
-                    # Only the task this finding is actually about. A snapshot is
-                    # minutes old by the time slow terminations ahead of it are
-                    # done, and the task may legitimately be on a newer lease by
-                    # now -- see `repair_task_state`.
-                    expected_lease_id=finding.lease_id,
-                    error=error,
-                    # A retry time means nothing on a task that will not retry.
-                    next_eligible_at=None if cannot_start else utcnow(),
-                    # Why it ends if it ends FAILED: the worker could not start,
-                    # or (spent attempts on a requeue) its worker was lost.
-                    failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
-                    **guard,
-                    **refund,
-                )
-                if repaired is not None:
-                    outcome.repaired_to = repaired.value
-                    outcome.actions.append(f"task -> {repaired.value}")
-                    detail: dict[str, Any] = {
-                        "reason": finding.kind.value,
-                        "detail": finding.reason,
-                    }
-                    if cannot_start:
-                        detail.update(
-                            exit_code=finding.detail.get("exit_code"),
-                            execution=finding.detail.get("execution"),
-                            cause_source=finding.detail.get("cause_source"),
-                        )
-                    if ended_at_startup:
-                        detail.update(
-                            exit_code=finding.detail.get("exit_code"),
-                            execution=finding.detail.get("execution"),
-                            task_state=finding.detail.get("task_state"),
-                        )
-                    if repaired is TaskState.CANCELLED:
-                        # The API's flag-only cancel wrote `cancel_requested`
-                        # (before 2026-09-24: a `cancelled` with
-                        # phase=cancel_requested). THIS is the terminal
-                        # `cancelled`, written by the component that released
-                        # the lease -- contract request 17.
-                        detail.update(phase="cancelled", from_state=task.state.value)
-                    self._store.emit(
-                        task_id=finding.task_id,
-                        tenant_id=finding.tenant_id,
-                        event_type=_EVENT_FOR_REPAIR.get(repaired, EventType.FAILED),
-                        detail=detail,
-                        attempt_id=finding.attempt_id,
-                        lease_id=finding.lease_id,
-                    )
         return outcome
+
+    def _never_started_wait(self, lease_id: str | None, snapshot: ControlSnapshot) -> float | None:
+        """Seconds until this lease's never-started worker is its own evidence.
+
+        None when the worker DID start -- the lease has heartbeated, its
+        attempt recorded a start, or its task reached RUNNING, which only a
+        worker writes -- or when there is no lease to judge. Then #450 holds:
+        an execution nobody can see is held until something proves it gone.
+        Zero or less means `never_started_release_seconds` have passed since
+        the lease was created and nothing of its worker was ever heard: see
+        that setting for why that is enough (#560).
+        """
+        lease = snapshot.leases.get(lease_id or "")
+        if lease is None or lease.is_released or lease.heartbeat_at is not None:
+            return None
+        task = snapshot.tasks.get(lease.task_id)
+        if task is None or task.state not in _NEVER_STARTED_STATES:
+            return None
+        attempt = snapshot.attempts.get(lease.attempt_id or "")
+        if attempt is not None and attempt.started_at is not None:
+            return None
+        created = lease.created_at or (attempt.created_at if attempt is not None else None)
+        if created is None:
+            return None
+        age = (snapshot.taken_at - created).total_seconds()
+        return float(self._config.never_started_release_seconds) - age
 
     def _held_for_unstopped(self, finding: Finding) -> RepairOutcome:
         """The outcome of a release this pass refuses: its lease's execution still runs."""

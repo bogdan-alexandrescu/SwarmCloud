@@ -53,7 +53,7 @@ from typing import Any, Callable, Iterable, Sequence
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from swarm_common.admission import _snapshot
+from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
     Attempt,
     EndCause,
@@ -123,6 +123,67 @@ def _with_tenant_member(detail: dict[str, Any], tenant_member: str) -> dict[str,
     if tenant_member:
         detail["tenant_member"] = "service_account"
     return detail
+
+#: How long a FENCED attempt's lease must have been silent before a cancel may
+#: release it from here (`_no_live_worker`). A fenced worker stops its agent at
+#: its next control poll (every 10 s) and exits without touching the lease, so
+#: it heartbeats no more; this is the reconciler's own `heartbeat_grace_seconds`
+#: (90), the window inside which a heartbeat proves a worker is alive.
+FENCED_SILENCE_SECONDS = 90
+
+
+#: The capacity-holding states a cancel may end from here when no worker is
+#: alive (`_no_live_worker`). Not LEASED: the scheduler holds a LEASED task
+#: between admission and dispatch, and finishes a cancel flagged in that window
+#: itself, through its guarded writes (`SchedulerStore.mark_dispatched`,
+#: `return_to_ready_after_failed_dispatch`). Not RUNNING: only a worker writes
+#: it, so a RUNNING task's capacity is the worker's or, if it died, the
+#: reconciler's, which kills before it releases.
+_WORKER_AWAITED_STATES = frozenset({TaskState.DISPATCHED, TaskState.STARTING})
+
+
+def _as_utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _no_live_worker(
+    task: dict[str, Any],
+    lease: dict[str, Any] | None,
+    attempt: dict[str, Any] | None,
+    now: datetime,
+) -> str | None:
+    """Why no worker can be acting on this capacity-holding task, or None.
+
+    None -- a worker may be alive, and only it (or the reconciler, which kills
+    first) may give its capacity back -- unless one of these holds:
+
+    * NEVER STARTED. The lease has never heartbeated and its attempt records no
+      start. Nothing
+      of the worker has run, and the fence this cancel writes in the same
+      transaction makes it exit at its generation check -- before a workspace,
+      a secret or a runner -- if its container ever does start (invariant 5).
+    * FENCED. The task's generation is past the lease's, so the lease's worker
+      already stops at its next poll without touching anything, and its lease
+      has been silent for `FENCED_SILENCE_SECONDS`.
+
+    A lease that is missing or already released is left to the reconciler's
+    leaseless-task rule: there is no capacity here to release.
+    """
+    if lease is None or lease.get("released_at") is not None:
+        return None
+    heartbeat = _as_utc(lease.get("heartbeat_at"))
+    if int(task.get("current_generation", 0)) != int(lease.get("generation", 0)):
+        if heartbeat is None or (now - heartbeat).total_seconds() > FENCED_SILENCE_SECONDS:
+            return "its generation is fenced and its worker is silent"
+        return None
+    if heartbeat is not None:
+        return None
+    if attempt is not None and attempt.get("started_at") is not None:
+        return None
+    return "its worker never started"
+
 
 #: Step-task point reads one list request may spend deriving workflow states.
 #: A page of `max_page_size` workflows at `max_workflow_steps` each would be
@@ -927,12 +988,16 @@ class Store:
     def request_cancel(
         self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
     ) -> Task:
-        """Flag the task for cancellation, terminating it immediately if idle.
+        """Flag the task for cancellation, terminating it immediately if no worker can act.
 
         A task that holds no capacity (SUBMITTED / QUEUED / READY / PARKED) goes
-        straight to CANCELLED. A task that does hold capacity keeps it until the
-        worker or the reconciler releases the lease, because releasing it from
-        here would decrement a pool that the running container still occupies.
+        straight to CANCELLED. So does a task that holds capacity with NO LIVE
+        WORKER behind it -- one whose worker never started, or whose generation
+        is fenced and whose lease has gone silent (`_no_live_worker`, #560):
+        its lease is released and its generation fenced in this transaction.
+        A task with a live worker keeps its capacity until the worker or the
+        reconciler releases the lease, because releasing it from here would
+        decrement a pool that the running container still occupies.
 
         ONE TRANSACTION, AND THE STATE READ INSIDE IT IS THE PRECONDITION. The
         branch -- cancel outright, flag only, or refuse -- is chosen from the
@@ -960,11 +1025,14 @@ class Store:
         attempt records it once, and an event never exists for a write that
         did not commit.
 
-        WHAT THIS STILL DOES NOT DO, deliberately: release a lease or touch a
-        pool. Serialising the read does not make it safe to give capacity back
-        from here (CONTRACT invariant 1). Only the worker, which knows its
-        container has stopped, or the reconciler, which fences the generation
-        first, may do that.
+        WHAT THIS STILL DOES NOT DO, deliberately: release a lease a live
+        worker may be using. Serialising the read does not make it safe to give
+        that capacity back from here (CONTRACT invariant 1). Only the worker,
+        which knows its container has stopped, or the reconciler, which stops
+        it first, may do that. A worker that never started has no container
+        doing anything, and the fence written with the release keeps it that
+        way; the reconciler's orphan rule then terminates its execution, whose
+        task is now terminal.
         """
         ref = self._db.collection(TASKS).document(task_id)
         transaction = self._db.transaction()
@@ -982,9 +1050,54 @@ class Store:
                     detail={"state": task.state.value},
                 )
 
+            # Every read before any write. The lease and its attempt are read
+            # only for a task that holds capacity, to decide whether a worker
+            # can still be acting on it (`_no_live_worker`).
+            lease_id = data.get("current_lease_id") or None
+            lease: dict[str, Any] | None = None
+            attempt: dict[str, Any] | None = None
+            if task.state in _WORKER_AWAITED_STATES and lease_id:
+                lease_snap = _snapshot(txn.get(self._db.collection(LEASES).document(lease_id)))
+                lease = (lease_snap.to_dict() or {}) if lease_snap.exists else None
+                attempt_id = (lease or {}).get("attempt_id")
+                if attempt_id:
+                    attempt_snap = _snapshot(
+                        txn.get(self._db.collection(ATTEMPTS).document(attempt_id))
+                    )
+                    attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else None
+
             now = self._now()
             patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
-            if task.state in PENDING_STATES:
+            nobody = (
+                _no_live_worker(data, lease, attempt, now)
+                if task.state in _WORKER_AWAITED_STATES
+                else None
+            )
+            released: str | None = None
+            if nobody is not None and lease_id:
+                # CANCEL WITHOUT A WORKER (#560). Nobody would ever act on the
+                # flag: the reconciler waited for a worker that never came, and
+                # four tasks held their leases for ten hours with a cancel on
+                # them. So this ends the task here, with everything a finish
+                # writes, in THIS transaction: the frozen release returns every
+                # pool the lease reserved (invariant 2), and the generation is
+                # fenced so a container that starts late exits without running
+                # the agent (invariant 5). The release reads the lease and its
+                # pools before it writes, and nothing has been written yet.
+                assert_transition(task.state, TaskState.CANCELLED)
+                if release_lease_in_transaction(
+                    txn, db=self._db, lease_id=lease_id, reason="cancel_requested:no_live_worker",
+                    now=now,
+                ):
+                    released = lease_id
+                patch["state"] = TaskState.CANCELLED.value
+                patch["completed_at"] = now
+                patch["end_cause"] = EndCause.CANCEL_REQUESTED.value
+                patch["current_lease_id"] = None
+                patch["current_generation"] = int(data.get("current_generation", 0)) + 1
+                patch["park_reason"] = None
+                patch["blocked_by"] = []
+            elif task.state in PENDING_STATES:
                 assert_transition(task.state, TaskState.CANCELLED)
                 patch["state"] = TaskState.CANCELLED.value
                 patch["completed_at"] = now
@@ -1026,6 +1139,11 @@ class Store:
                         # `event_from_dict` serves as CANCEL_REQUESTED is then
                         # the same shape as a new one.
                         "phase": "cancelled" if immediate else "cancel_requested",
+                        # Present only when this cancel ended a task that held
+                        # capacity: why no worker could act on it, and the
+                        # lease whose pools it returned.
+                        **({"no_live_worker": nobody} if immediate and nobody else {}),
+                        **({"released_lease": released} if released else {}),
                     },
                     tenant_member,
                 ),
@@ -1034,6 +1152,20 @@ class Store:
                 ref.collection(EVENTS).document(event.event_id),
                 event_to_firestore(event),
             )
+            if released:
+                freed = TaskEvent(
+                    event_id=new_id("ev"),
+                    task_id=task_id,
+                    tenant_id=tenant_id,
+                    type=EventType.LEASE_RELEASED,
+                    at=now,
+                    lease_id=released,
+                    detail={"reason": "cancel_requested", "detail": nobody},
+                )
+                txn.set(
+                    ref.collection(EVENTS).document(freed.event_id),
+                    event_to_firestore(freed),
+                )
             # What THIS call committed, not a re-read afterwards: the route
             # derives `released_immediately` from the returned state, and a
             # re-read would report a worker's later CANCELLED as ours.

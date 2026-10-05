@@ -438,7 +438,9 @@ describe('D21: the Checkpoints tab and the Details tile are one read', () => {
       classes: null,
     } as unknown as Parameters<typeof Run>[0]['run']
     const { container } = render(<Run run={run} checkpoints={{ written: 2, kept: 2 }} />)
-    const tile = [...container.querySelectorAll('.ctl-metric, [class*="metric"]')].find((m) => /Checkpoints/.test(m.textContent ?? ''))!
+    // Details v3 (#572) draws the count as the Now card's checkpoint fact,
+    // not a metric tile; the property is the same: the tab's read, only.
+    const tile = [...container.querySelectorAll('.dt-nf')].find((m) => /Checkpoints/.test(m.textContent ?? ''))!
     expect(tile.textContent).toMatch(/2 written, 2 kept/)
     expect(tile.textContent).not.toMatch(/6/)
   })

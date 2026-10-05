@@ -96,7 +96,8 @@ one whose state is not `SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED`,
 newest first. Call `swarm_workflows` once (the sc plugin's own read tool; it
 works outside a checkout); in a checkout `uv run sc workflows` prints the
 same list. Report each workflow's id, label, state, its current steps with
-their states, its age and its console link, as served — never build a link.
+their states, its age and its console link, and each current step's console
+link (a parked or queued one too), all as served — never build a link.
 `complete: false` means the list stopped paging: say so. None running is an
 answer, not an error. Never poll; offer `/sc attach --all` when any run.
 
@@ -105,7 +106,9 @@ answer, not an error. Never poll; offer `/sc attach --all` when any run.
 Runs the `/sc:swarmcloud` workflow with args `{attach: "all"}` — nothing
 else. It lists the caller's tenant's running workflows once and attaches the
 newest 10 exactly as `attach <wf_id>` attaches one: finished steps reported
-once, a live row for every unfinished step. More than 10 are listed, each with
+once, a live row for every unfinished step; every row's label carries its
+task's console link as served, from the moment the row starts, whatever the
+step's state, and each listed workflow's line carries its own. More than 10 are listed, each with
 the `/sc attach <wf_id>` that follows it, and not followed — every row is an
 agent of its own in this session, and past 10 workflows /workflows is no
 longer readable. Report the run's `state` (`ATTACHED`, `NOTHING_RUNNING` or

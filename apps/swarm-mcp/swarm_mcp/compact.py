@@ -88,7 +88,31 @@ from .render import describe_blocker, parse_time, task_label
 #: lowers it. 1800 s is far under that, and under the 3600 s `swarm_wait`
 #: already holds by default in the same plugin. A developer who sets
 #: `MCP_TOOL_TIMEOUT` below 1,800,000 ms makes every held row call fail.
+#:
+#: THE IDLE TIMEOUT IS THE OTHER LIMIT, and the one that bit (lane U12,
+#: 2026-10-04: rows ended UNKNOWN on "exceeded idle timeout while waiting for
+#: parent tasks"). Claude Code also aborts a call that sent NOTHING for
+#: `SILENT_MAX_WAIT_SECONDS`' idle timeout, below. This full hold is served
+#: only to a call the bridge keeps alive with progress notifications
+#: (`server.KEEPALIVE_SECONDS`), which reset that idle clock.
 MAX_WAIT_SECONDS = 1800
+
+#: The longest a progress call may hold when the host sent no `progressToken`,
+#: so the bridge has no way to send a keepalive: twenty minutes.
+#:
+#: WHY (read 2026-10-04 from Claude Code 2.1.283, `bin/claude.exe`): every MCP
+#: tool call has an idle watchdog that ticks every 30 s and aborts the call
+#: when no response AND no progress notification arrived for
+#: `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` ms -- else a per-server `timeout`, else
+#: 1,800,000 ms for a stdio server like this plugin's (300,000 ms for http and
+#: sse). A silent thirty-minute hold plus its last reads is cut at that edge,
+#: which is what U12's rows met. Two thirds of the stdio default leaves ten
+#: minutes for the reads after the window and the watchdog's 30 s tick; the
+#: row re-issues the hold, so a parent wait costs at most three calls an hour.
+#: A developer who lowers `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` below this AND
+#: runs a host that sends no progress token gets cut calls, which a row
+#: repeats (`plugin/agents/step.md`).
+SILENT_MAX_WAIT_SECONDS = 1200
 
 #: How often a running task is re-read inside a window. One small read.
 POLL_SECONDS = 10.0
@@ -358,6 +382,7 @@ def watch_progress(
     wait_seconds: float = 0,
     step_id: str | None = None,
     parents: list[str] | None = None,
+    max_wait: float = MAX_WAIT_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -372,6 +397,10 @@ def watch_progress(
     `parents` (one task only) holds the call -- the first one too -- while
     the task waits on them (`_waits_on_parents`) and any of them is
     unfinished; the reply's `parents` maps each to its state.
+
+    `max_wait` is the longest this call may hold, whatever `wait_seconds`
+    asks: `MAX_WAIT_SECONDS` for a call the bridge keeps alive, else
+    `SILENT_MAX_WAIT_SECONDS`, inside the host's idle timeout.
     """
     if parents and len(task_ids) != 1:
         raise SwarmError(
@@ -384,7 +413,7 @@ def watch_progress(
         )
     states, keys, failures = decode_since(since)
     first_call = since in (None, "")
-    wait = max(0.0, min(float(wait_seconds or 0), MAX_WAIT_SECONDS))
+    wait = max(0.0, min(float(wait_seconds or 0), max_wait, MAX_WAIT_SECONDS))
     deadline = clock() + wait
     interval = POLL_SECONDS
     latest: dict[str, dict[str, Any]] = {}
@@ -492,12 +521,13 @@ def watch_progress(
             progress.append(f"[{label}] stopped following: {clip(abandoned, 160)}")
         else:
             line, key = progress_line(client, task, stamp)
-            if link is not None and (first_call or task.get("terminal")):
-                # WHERE TO WATCH IT, on the row's FIRST line and its LAST: the
-                # link the API served, as served (owner decision 2026-10-01).
-                # Not on every line between -- each written line is re-read on
-                # every later turn of the row -- and not part of `key`, so a
-                # link never makes an unchanged line news.
+            if link is not None:
+                # WHERE TO WATCH IT, on EVERY line the row writes: the link the
+                # API served, as served (owner decisions 2026-10-01 and
+                # 2026-10-04). Once only on the first line and the last, which
+                # left a row parked or running for an hour showing no link where
+                # the person looked. Not part of `key`, so a link never makes
+                # an unchanged line news: a row still writes only on a change.
                 line = f"{line} · console: {link}"
             if key != keys.get(task_id) or first_call:
                 progress.append(line)

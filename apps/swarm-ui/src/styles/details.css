@@ -1,0 +1,250 @@
+/* =========================================================================
+   THE AGENT DETAILS TAB, v3 (agent-details-v3.html A, picked 2026-10-04)
+   =========================================================================
+   Measured live at 1440 on a running agent, the Details pane was 2,770px
+   tall with the facts that judge it scattered. This sheet draws the pick: a
+   leading card (Now, Outcome or the failure), one stat strip, Progress |
+   Resources side by side from a 640px PANE, and Input folded. Everything
+   long is behind a `<details>` on the card it belongs to.
+
+   Components here are LOCAL (`dt-`) because the canonical components lane
+   was building in parallel (owner, 2026-10-02); each is drawn to
+   components.html A -- 32px rows, pill chips, radius 8/12, the brand state
+   marks -- so a later pass can swap it for the canonical one.
+
+   TYPE (PICKS.md): 12px floor, no all-caps, no letter-spacing; sizes from
+   the scale tokens only. Mono only for ids and values.
+
+   ONE SCROLL CONTAINER: nothing in this sheet sets `overflow: auto` or
+   `scroll` on anything; the split's pane (agents.css) is the only scroller,
+   and the header and tabs stay put above it. details.v3.test.tsx. */
+
+.dt { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding-bottom: 18px; }
+.dt > .dt-top:empty { display: none; }
+.dt > .dt-top { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+/* --- the card (components.html A: radius 12, hairline, surface) ---------- */
+.dt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 24px; }
+.dt-card-head > b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
+.dt-card-r { display: inline-flex; align-items: center; gap: 10px; margin-inline-start: auto; }
+.dt-more {
+  text-decoration: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--info);
+  font: 550 var(--t-micro)/var(--lh-micro) var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dt-more:hover { text-decoration: underline; }
+.dt-more:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-note { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+
+/* --- the leading card: Now / Outcome / failure --------------------------- */
+/* A 3px state rule on its leading edge, in the brand state hues. */
+.dt-now { border-left: 3px solid var(--s-live); gap: 9px; }
+.dt-now.is-warn { border-left-color: var(--s-warn); }
+.dt-now.is-ok { border-left-color: var(--s-live); }
+.dt-now.is-neu { border-left-color: var(--s-neu); }
+.dt-now.is-bad { border-left-color: var(--s-bad); background: linear-gradient(90deg, var(--s-badb), var(--surface) 70%); }
+.dt-now.is-bad > .dt-card-head > b { color: var(--s-bad); }
+.dt-phases { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dt-phase-step { display: inline-flex; align-items: center; gap: 4px; }
+.dt-phase-arr { color: var(--text-faint); }
+.dt-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dt-phase.is-done::before { content: "✓"; color: var(--s-live); font-weight: 700; }
+.dt-phase.is-cur { background: var(--s-liveb); color: var(--s-live); font-weight: 650; }
+.dt-phase.is-cur::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--s-live);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-live) 25%, transparent);
+}
+.dt-phase.is-gap { border: 1px dashed var(--line); }
+.dt-phase.is-todo { border: 1px dashed var(--line); align-self: flex-start; }
+.dt-nfs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-nf { display: inline-flex; align-items: center; gap: 5px; }
+.dt-nf > b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.dt-nf.is-absent, p.dt-nf.is-absent { color: var(--text-faint); margin: 0; }
+.dt-who { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-who > b { color: var(--text); font-weight: 600; }
+/* THE WHOLE ERROR, never truncated: it wraps, it never scrolls. */
+.dt-err {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--s-bad) 35%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The last log line, inside the leading card (AgentLogs.tsx `LogLastLine`). */
+.dt-card > .ag-loglast { margin: 0; border: 0; background: var(--surface-2); border-radius: 8px; }
+.dt-card > .ag-loglast:hover { background: color-mix(in srgb, var(--surface-2) 70%, var(--line)); }
+/* The leading Outcome card keeps the code panel's own blocks flush. */
+.dt-card.run-output > .section,
+.dt-card.run-output > .git-outcome { margin: 0; }
+
+/* --- the stat strip ------------------------------------------------------ */
+.dt-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-sc { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 9px 12px 10px; border-left: 1px solid var(--line); }
+.dt-sc:first-child { border-left: 0; }
+.dt-sc-l { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+.dt-sc-v {
+  font: 650 var(--t-title)/var(--lh-title) var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dt-sc-v > small { margin-inline-start: 2px; color: var(--text-dim); font-size: var(--t-micro); font-weight: 500; }
+/* NOT DUE, NOT READ OR NOT RECORDED: small and muted, never full size. */
+.dt-sc.is-reading > .dt-sc-v,
+.dt-sc.is-absent > .dt-sc-v,
+.dt-sc.is-unread > .dt-sc-v { font: 500 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.dt-sc-s { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-sc-k { display: block; }
+.dt-sc.is-alert > .dt-sc-s { color: var(--s-warn); }
+.dt-sc.is-unread > .dt-sc-s { color: var(--s-warn); }
+
+/* --- bars (components.html A UsageBar, thin) ----------------------------- */
+.dt-bar { display: flex; height: 6px; margin-top: 2px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.dt-bar > i { display: block; height: 100%; background: var(--info); }
+.dt-bar > i.is-warn { background: var(--s-warn); }
+/* NO FIGURE OR NO CEILING: hatched with a dashed edge, never an empty track
+   (an unfilled plain track reads as 0% used). */
+.dt-bar.is-hatch {
+  border: 1px dashed var(--text-faint);
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 5px);
+}
+
+/* --- Progress and Resources: two columns from a 640px pane --------------- */
+.dt-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+@container ag-pane (min-width: 640px) {
+  .dt-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+/* BELOW 640px THE COLUMNS STACK AND THE STRIP STICKS (agent-details-v3.html,
+   small choices: B's idea): the figures stay in view while the stacked cards
+   scroll under them. Sticky against the pane, the detail's one scroller. */
+@container ag-pane (max-width: 639px) {
+  .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+}
+.dt-phrow { display: grid; grid-template-columns: 70px minmax(0, 1fr) 64px; gap: 8px; align-items: center; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-phrow > b { color: var(--text); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+.dt-phb { display: flex; gap: 2px; height: 12px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.dt-phb > i { display: block; height: 100%; flex-basis: 0; }
+.dt-phb > .is-q, .dt-lg .is-q { background: var(--s-neu); opacity: .45; }
+.dt-phb > .is-c, .dt-lg .is-c { background: var(--info); opacity: .55; }
+.dt-phb > .is-r, .dt-lg .is-r { background: var(--s-live); }
+.dt-phb > .is-b { background: var(--s-bad); }
+/* AN OPEN RUN IS DRAWN OPEN: it fades at its end rather than closing at now. */
+.dt-phb > .is-open { mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.dt-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-lg i { display: inline-block; width: 9px; height: 9px; margin-inline-end: 5px; border-radius: 2px; vertical-align: -1px; }
+.dt-evs { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.dt-ev { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-ev:first-child { border-top: 0; }
+.dt-ev-t { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dt-ev-k { font-weight: 550; }
+.dt-ev small { color: var(--text-dim); font-size: var(--t-micro); }
+.dt-ev.is-bad .dt-ev-k { color: var(--s-bad); }
+.dt-rr { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-rr > .dt-bar { margin-top: 0; }
+.dt-rr-n { color: var(--text-dim); }
+.dt-rr-v { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dt-rr-v > b { font-weight: 600; }
+.dt-rr-v > small { color: var(--text-dim); font-size: var(--t-micro); }
+.dt-empty { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-empty > b { color: var(--text); font-weight: 600; }
+.dt-empty.is-err { border-style: solid; border-color: color-mix(in srgb, var(--s-bad) 40%, transparent); background: var(--s-badb); }
+.dt-empty.is-err > b { color: var(--s-bad); }
+
+/* --- disclosures: the long sections, one click down ----------------------- */
+.dt-disc { min-width: 0; }
+.dt-disc > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--info);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  font-weight: 550;
+  cursor: pointer;
+  list-style: none;
+}
+.dt-disc > summary::-webkit-details-marker { display: none; }
+.dt-disc > summary::before { content: "›"; display: inline-block; font-weight: 700; }
+.dt-disc[open] > summary::before { transform: rotate(90deg); }
+.dt-disc > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-disc[open] > summary { margin-bottom: 8px; }
+
+/* --- Input, folded --------------------------------------------------------- */
+.dt-ifacts { margin: 0; }
+/* THREE LINES OF THE PROMPT, in the sans face; the whole of it is behind
+   "Show prompt", where it wraps in full -- no box of its own to scroll. */
+.dt-prev {
+  margin: 0;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.dt-prompt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* --- the phone, and any pane under 480px ---------------------------------- */
+/* The strip becomes two columns with Cost across the bottom and moves ABOVE
+   the leading card, so the figures come first on a small screen; the
+   columns are already stacked. */
+@container ag-pane (max-width: 479px) {
+  .dt > .dt-top { order: -2; }
+  .dt > .dt-strip { order: -1; }
+  .dt-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dt-sc { border-left: 0; border-top: 1px solid var(--line); }
+  .dt-sc:nth-child(-n + 2) { border-top: 0; }
+  .dt-sc:nth-child(even) { border-left: 1px solid var(--line); }
+  .dt-sc:last-child { grid-column: 1 / -1; }
+}

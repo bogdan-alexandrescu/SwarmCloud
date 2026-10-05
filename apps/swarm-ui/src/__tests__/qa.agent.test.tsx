@@ -76,7 +76,12 @@ describe('Q4: the detail header and tabs fit the split', () => {
     expect(painted(title, '-webkit-line-clamp', WIDE)).toBe('2')
     expect(painted(title, 'overflow', WIDE)).toBe('hidden')
     expect(title.getAttribute('title')).toBe(title.textContent)
-    expect(painted(s.querySelector('.ag-head-row')!, 'flex-wrap', WIDE)).toBe('nowrap')
+    // The title takes the slack and the row WRAPS rather than run the actions
+    // out of the column's `overflow: hidden` (v3 review, 2026-10-04): a
+    // nowrap row clipped the ✕ in 480-640px columns. Each line is measured in
+    // agent.header.actions.test.tsx.
+    expect(painted(title, ['flex', 'flex-grow'], WIDE)).toMatch(/^1\b/)
+    expect(painted(s.querySelector('.ag-head-row')!, 'flex-wrap', WIDE)).toBe('wrap')
     expect(painted(s.querySelector('.ag-head-actions')!, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
   })
 

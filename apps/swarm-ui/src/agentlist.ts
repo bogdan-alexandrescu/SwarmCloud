@@ -79,22 +79,9 @@ export function agentListPath(list: AgentList): string {
   return list.tab === 'recent' && list.state !== null ? `${list.tab}/${list.state}` : list.tab
 }
 
-/**
- * THE PAGE THE LIST READS AT PHONE WIDTH -- AND SO THE PAGE THE OVERVIEW
- * COUNTS OVER THERE (OV-10). Why 50 and why only on a phone is `Agents.tsx`'s
- * to say (docs/web-ui/03-agents-and-workflows.md §2.5: the payload of a
- * 200-row page on a 5-second poll).
- *
- * IT IS HERE, NOT IN `Agents.tsx`, BECAUSE THE OVERVIEW READS IT TOO. OV-10's
- * guarantee is that the failures item's figure and the list its link opens
- * describe one population, because the list filters client-side over the same
- * task read the check counts. When the list started reading 50 rows at phone
- * width and the Overview kept reading 200, "7 failed among the 200 most
- * recent" could open a list that said nothing failed. Both read this value at
- * `phoneWidth()` and the api's full page otherwise; one value, so the two
- * cannot drift apart again.
- */
-export const PHONE_PAGE_LIMIT = 50
+// `PHONE_PAGE_LIMIT` lives in `pageLimits.ts`, which the pure check layer
+// (checks.ts) imports too; re-exported here for the screens that read it.
+export { PHONE_PAGE_LIMIT } from './pageLimits'
 
 /**
  * THE WORD ON THE AGENT PAGE'S BACK LINK: the list tab it returns to.

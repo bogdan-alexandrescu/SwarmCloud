@@ -598,8 +598,10 @@ def test_an_unacknowledged_cancel_holds_the_slot_while_the_execution_still_runs(
     assert "Unspecified error" in outcome.skipped, "the real cause must survive"
     assert db.doc("pools/global")["active"] == 2
     assert db.doc("leases/lease_1")["released_at"] is None
-    # The generation brake was still applied: it does not need the backend.
-    assert db.doc("tasks/task_1")["current_generation"] == 4
+    # And nothing is fenced: the fence commits only with the release (#560),
+    # so a kill that is not confirmed leaves the attempt exactly as it was for
+    # the next pass to try again, rather than fenced behind a held lease.
+    assert db.doc("tasks/task_1")["current_generation"] == 3
 
 
 # ---------------------------------------------------------------------------

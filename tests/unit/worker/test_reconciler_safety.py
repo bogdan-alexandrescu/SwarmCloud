@@ -144,7 +144,10 @@ def test_slot_is_released_only_after_the_execution_is_terminated(db, config):
     terminated = index_of(journal, lambda e: e[0] == "terminate")
     released = index_of(journal, lambda e: e[1].startswith("pools/") and "active" in e[2])
 
-    assert invalidated < terminated < released, (
+    # The kill first; then the fence, the release and the requeue, which
+    # commit in one transaction (#560), so nothing is fenced that this pass
+    # cannot also release.
+    assert terminated < released and terminated < invalidated, (
         "the slot must come back only after the execution is confirmed dead"
     )
     assert db.doc("pools/global")["active"] == 1
@@ -168,8 +171,9 @@ def test_failed_termination_keeps_the_slot_held(db, config):
     # The slot stays held: a stuck slot is recoverable, a duplicate agent is not.
     assert db.doc("pools/global")["active"] == 2
     assert db.doc("leases/lease_1")["released_at"] is None
-    # But the generation was already invalidated, so the worker fences itself.
-    assert db.doc("tasks/task_1")["current_generation"] == 4
+    # And nothing is fenced: a fence the pass cannot follow with a release is
+    # how four leases were held for ten hours (#560). The next pass tries again.
+    assert db.doc("tasks/task_1")["current_generation"] == 3
 
 
 def test_unconfirmed_termination_keeps_the_slot_held(db, config):
