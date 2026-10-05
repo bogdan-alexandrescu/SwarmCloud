@@ -32,6 +32,7 @@ import {
   usageOf,
 } from './types'
 import type { StepUsage } from './api'
+import { measuredCell, usd, type Cell } from './measure'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { skippedByVerdict } from './wfreview'
 
@@ -2880,14 +2881,56 @@ export function resultIsNewest(task: Task): boolean {
   return TERMINAL_STATES.has(task.state)
 }
 
-/** Where a step's cost figure came from. */
-export type FigureSource = 'telemetry' | 'result'
+/**
+ * Where a step's cost figure came from: the board's own attempt read, the
+ * API's served total over every attempt (`totalCostOf`), or the result
+ * summary, which is the last attempt's alone.
+ */
+export type FigureSource = 'telemetry' | 'total' | 'result'
+
+/**
+ * THE API'S TOTAL OVER EVERY ATTEMPT (lane review P1, 2026-10-05), or null
+ * when this task was served without one (an older API, a list route, or an
+ * attempt read that failed). `incomplete` makes `usd` a floor.
+ */
+export function totalCostOf(task: Task): { usd: number; incomplete: boolean; attempts: number | null; lastUsd: number | null } | null {
+  const total = task.cost_usd_total
+  if (typeof total !== 'number' || !Number.isFinite(total) || task.attempts_read === 'failed') return null
+  const last = task.last_attempt_cost_usd
+  return {
+    usd: total,
+    incomplete: task.cost_incomplete === true,
+    attempts: typeof task.attempts === 'number' ? task.attempts : null,
+    lastUsd: typeof last === 'number' && Number.isFinite(last) ? last : null,
+  }
+}
+
+/**
+ * The served total as a board cell: `at least` when an attempt recorded no
+ * cost, and the last attempt's figure in the note -- the secondary text --
+ * because the result summary a reader may compare it with is that attempt's.
+ */
+export function totalCostCell(task: Task): Cell | null {
+  const total = totalCostOf(task)
+  if (total === null) return null
+  const n = total.attempts
+  const over = n === null ? 'every attempt' : `${n} attempt${n === 1 ? '' : 's'}`
+  const last = n !== null && n > 1 ? ` · last attempt ${total.lastUsd === null ? 'not reported' : usd(total.lastUsd)}` : ''
+  const floor = total.incomplete ? ' At least: an attempt reported no cost, so this is a floor.' : ''
+  return measuredCell(
+    `${total.incomplete ? 'at least ' : ''}${usd(total.usd)}`,
+    `Summed by the API over ${over}${last}.${floor} Token cost only — no infrastructure cost is recorded anywhere.`,
+  )
+}
 
 /**
  * ONE STEP'S COST, BY THE ONE RULE THE NODE, THE TABLE AND THE ROW'S TOTAL
- * SHARE: the attempt telemetry where it carries a cost, otherwise the result's
- * -- and the result's only once the task has finished (`finishedResultOf`),
- * which is when the inspector offers it too.
+ * SHARE: the attempt telemetry where it carries a cost, otherwise the API's
+ * served total over every attempt (`totalCostOf`), otherwise the result's --
+ * and the result's only once the task has finished (`finishedResultOf`),
+ * which is when the inspector offers it too. The result is the LAST attempt's
+ * alone, so it is the last resort: preferring it under-reported a retried
+ * step by every earlier attempt (UR1: $0.51 served, $9.64 spent).
  *
  * `telemetry` is the step's rolled-up attempts when this board read them, and
  * undefined when it did not (outside the sample, or the read failed). Null
@@ -2905,6 +2948,8 @@ export function stepCostOf(
   ) {
     return { usd: telemetry.costUsd, from: 'telemetry' }
   }
+  const total = totalCostOf(task)
+  if (total !== null) return { usd: total.usd, from: 'total' }
   const result = finishedResultOf(task)?.usd ?? null
   return result === null ? null : { usd: result, from: 'result' }
 }

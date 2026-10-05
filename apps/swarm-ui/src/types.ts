@@ -613,6 +613,25 @@ export interface Task {
    * read it sends null. Read it through `accountText`, never raw.
    */
   account?: TaskAccount | null
+  /**
+   * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
+   * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
+   * read. `result_summary` and `started_at` describe only the LAST attempt;
+   * these sum all of them. OPTIONAL because an older API and the list routes
+   * do not send them. `cost_usd_total` null is NOT MEASURED, never $0;
+   * `cost_incomplete` true makes it a floor ("at least"). `attempts_read:
+   * 'failed'` means the attempts were not read and every figure is null.
+   */
+  attempts?: number | null
+  attempts_with_cost?: number | null
+  cost_usd_total?: number | null
+  cost_incomplete?: boolean | null
+  duration_s_total?: number | null
+  duration_incomplete?: boolean | null
+  first_started_at?: string | null
+  last_attempt_cost_usd?: number | null
+  last_attempt_duration_s?: number | null
+  attempts_read?: 'ok' | 'failed'
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
