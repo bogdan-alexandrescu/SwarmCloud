@@ -62,8 +62,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import secrets
+import threading
 import time
 import zlib
+from collections import OrderedDict
 from typing import Any, Callable
 
 from swarm_common.states import PENDING_STATES
@@ -225,11 +228,15 @@ def _payload(token: Any) -> dict[str, Any] | None:
     if not dot:
         return None
     if checksum != _checksum(body):
+        # NEVER "or omit it" (owner, 2026-10-05): rows that took that advice
+        # dropped `since`, every call then answered at once, and three rows
+        # polled 56-60 times in minutes.
         raise SwarmError(
             "the `since` token fails its checksum: it is not the token a previous "
             "call returned, and was changed on its way back here -- a single "
-            "character is enough. Nothing was read. Pass `since` back unchanged, "
-            "exactly as it was returned, or omit it to start again from the beginning"
+            "character is enough. Nothing was read. Pass `since` back unchanged: copy "
+            "it again from the previous reply, character for character, and call "
+            "again with it"
         )
     try:
         padded = body + "=" * (-len(body) % 4)
@@ -239,6 +246,171 @@ def _payload(token: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("v") != SINCE_VERSION:
         return None
     return payload
+
+
+#: How many tokens one bridge process keeps behind handles. A row makes at most
+#: ~60 calls and a session runs a few dozen rows; past this the OLDEST handles
+#: go first, and a handle that has gone is read as described in `Handles.resolve`.
+HANDLE_LIMIT = 4096
+
+#: A handle: `r`, four hex digits, and a Luhn mod 16 check digit.
+_HANDLE_DIGITS = 4
+
+
+def _luhn16(digits: str) -> str:
+    """The Luhn mod 16 check digit of these hex digits.
+
+    Luhn mod N catches every single-character substitution and every swap of
+    two adjacent different characters -- the two slips a hand copy makes.
+    """
+    total = 0
+    factor = 2
+    for ch in reversed(digits):
+        addend = factor * int(ch, 16)
+        total += addend // 16 + addend % 16
+        factor = 1 if factor == 2 else 2
+    return f"{(16 - total % 16) % 16:x}"
+
+
+class Handles:
+    """Each follower's `since` token, kept HERE and handed out as a short handle.
+
+    WHY (owner decision, 2026-10-05, lane review B1). Haiku `sc:step` rows
+    copied the ~175-character token by hand and corrupted it on 88 of 192
+    calls (46%). The checksum refused every one, so nothing was lost -- but
+    the refused rows then dropped `since`, every call without one answered at
+    once, and three rows polled 56-60 times in minutes: 14.9M tokens, 51% of
+    all row tokens. A handle such as `r7f3a2` is six characters to copy.
+
+    A handle is an immutable alias of ONE token: every reply issues a new one,
+    and an older handle still resumes from where IT was issued. So a call the
+    host cut, repeated with the same `since`, re-reads rather than skipping
+    what the cut reply carried -- exactly as the full token behaves.
+
+    A follower is `(format, task ids)`. A follow WITHOUT `since` for a follower
+    this process already answered resumes from the LAST token it issued that
+    follower, and therefore holds like any follow instead of answering at once.
+    The last one issued, not the last one passed back: a row that keeps
+    dropping `since` would otherwise resume, on every call, from a position
+    whose state has since moved, and answer at once each time.
+
+    In memory, per bridge process: a restarted bridge knows no handle, and
+    `resolve` says what it does then. The tokens hold byte positions, state
+    names and counts -- what the follow report already showed -- and nothing
+    secret.
+    """
+
+    def __init__(self, limit: int = HANDLE_LIMIT) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        #: handle -> (follower, token), oldest first.
+        self._tokens: OrderedDict[str, tuple[tuple[Any, ...], str]] = OrderedDict()
+        #: follower -> the last token issued to it, oldest first.
+        self._latest: OrderedDict[tuple[Any, ...], str] = OrderedDict()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._tokens.clear()
+            self._latest.clear()
+
+    @staticmethod
+    def follower(fmt: str, task_ids: list[str]) -> tuple[Any, ...]:
+        return (fmt, tuple(str(t) for t in task_ids))
+
+    @staticmethod
+    def is_handle(since: Any) -> bool:
+        """Whether `since` is SHAPED like a handle -- its check digit aside."""
+        if not isinstance(since, str):
+            return False
+        text = since.strip().lower()
+        return (
+            len(text) == _HANDLE_DIGITS + 2
+            and text[0] == "r"
+            and all(ch in "0123456789abcdef" for ch in text[1:])
+        )
+
+    def issue(self, follower: tuple[Any, ...], token: str) -> str:
+        """A new handle for `token`, which is now `follower`'s latest."""
+        with self._lock:
+            while True:
+                body = f"{secrets.randbelow(16 ** _HANDLE_DIGITS):0{_HANDLE_DIGITS}x}"
+                handle = f"r{body}{_luhn16(body)}"
+                if handle not in self._tokens:
+                    break
+            self._tokens[handle] = (follower, token)
+            self._latest[follower] = token
+            self._latest.move_to_end(follower)
+            while len(self._tokens) > self._limit:
+                self._tokens.popitem(last=False)
+            while len(self._latest) > self._limit:
+                self._latest.popitem(last=False)
+            return handle
+
+    def resolve(
+        self, since: Any, follower: tuple[Any, ...], *, resume: bool = True,
+    ) -> tuple[Any, str | None]:
+        """`(token, note)`: the full token to read from, and a sentence when it
+        is not the one the caller passed.
+
+        * no `since`: `follower`'s last token when `resume` and this process
+          issued one (the call then holds); else None, a first call;
+        * a handle whose check digit fails: refused -- it was changed on the
+          way back, and the refusal says to copy it again, never to omit it;
+        * a handle issued for OTHER tasks: refused, for the same reason;
+        * a handle this process does not have (it restarted, or the handle
+          is older than `HANDLE_LIMIT` handles): `follower`'s last token when
+          there is one, else a fresh start, and the note says so;
+        * anything else -- an old full token included -- is the token itself.
+        """
+        if since is None or since == "":
+            if not resume:
+                return None, None
+            with self._lock:
+                latest = self._latest.get(follower)
+            if latest is None:
+                return None, None
+            return latest, (
+                "no `since` was passed; this bridge resumed from the position it last "
+                "returned for these tasks, so the call held like any follow"
+            )
+        if not self.is_handle(since):
+            return since, None
+        handle = since.strip().lower()
+        if _luhn16(handle[1:-1]) != handle[-1]:
+            raise SwarmError(
+                f"the `since` handle {since.strip()!r} fails its check digit: it is not "
+                "the handle a previous call returned, and was changed on its way back "
+                "here. Nothing was read. Copy `since` again from the previous reply, "
+                "character for character -- six characters, `r` and five hex digits -- "
+                "and call again with it"
+            )
+        with self._lock:
+            known = self._tokens.get(handle)
+            latest = self._latest.get(follower)
+        if known is not None:
+            owner, token = known
+            if owner != follower:
+                raise SwarmError(
+                    f"the `since` handle {handle!r} was returned by a follow of "
+                    f"{list(owner[1])} in format {owner[0]!r}, not of these tasks in this "
+                    "format. Nothing was read. Copy `since` again from the previous reply "
+                    "for these tasks, character for character, and call again with it"
+                )
+            return token, None
+        if latest is not None:
+            return latest, (
+                f"this bridge no longer holds the position behind `since` {handle!r}, so it "
+                "resumed from the last position it returned for these tasks"
+            )
+        return None, (
+            f"this bridge holds no position behind `since` {handle!r} -- it was restarted "
+            "since that handle was issued -- so this call started each task from the "
+            "beginning; it may repeat what an earlier call showed"
+        )
+
+
+#: This bridge process's handles. One process serves one Claude Code session.
+HANDLES = Handles()
 
 
 def read_failures(token: Any) -> dict[str, int]:

@@ -1068,6 +1068,11 @@ class DispatchOptions:
     #: Here and not read from `metadata` by the worker, because the worker
     #: reads no key the spec signature does not cover.
     pr_label: str | None = None
+    #: The tenant's wave epic (#638), on a GATED step only: the issue the
+    #: worker files the review verdict's MINOR findings on, read from the
+    #: tenant's `findings_epic` setting at submission. Here, inside the signed
+    #: block, so no agent of the tenant can point the worker at another issue.
+    findings_epic: int | None = None
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1120,9 +1125,11 @@ class DispatchOptions:
         gate_verdicts: Sequence[str] = (),
         allow_empty_diff: bool = False,
         pr_label: str | None = None,
+        findings_epic: int | None = None,
     ) -> "DispatchOptions":
         """This step's `builds_on`, verdict gate and empty-diff permission,
-        already resolved to task ids. `pr_label` is kept only on a gated step."""
+        already resolved to task ids. `pr_label` and `findings_epic` are kept
+        only on a gated step."""
         return replace(
             self,
             builds_on=builds_on,
@@ -1130,6 +1137,7 @@ class DispatchOptions:
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
             allow_empty_diff=bool(allow_empty_diff),
             pr_label=pr_label if gate_task_id and pr_label else None,
+            findings_epic=findings_epic if gate_task_id and findings_epic else None,
         )
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
@@ -1192,6 +1200,10 @@ class DispatchOptions:
             block["allow_empty_diff"] = True
         if self.pr_label:
             block["pr_label"] = self.pr_label
+        # Absent unless the tenant set an epic (#638). The worker spells the
+        # key `agent_worker.findings_epic.EPIC_FIELD`.
+        if self.findings_epic:
+            block["findings_epic"] = self.findings_epic
         # Absent unless the step opted in (#75), so a step that did not stores
         # exactly the block it stored before. The worker spells the key
         # `agent_worker.inputs.PARENTS_KEY`.

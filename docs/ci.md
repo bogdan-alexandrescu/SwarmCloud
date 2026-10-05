@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
+| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
@@ -666,8 +666,9 @@ there as success.
 **`contents: write` is granted on that job, not on the workflow.** The workflow
 default stays `contents: read`. The jobs that build, plan and deploy run a lot
 of code, and none of it needs to write to the repository. `plugin-tag` runs
-only checkout, `jq` and `git`. (`acceptance` holds the same grant for its own
-sweep. See its header.)
+only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
+sweep until #628 moved its pull requests to the private sandbox; it is
+`contents: read` now, and the sweep uses the sandbox's own token.)
 
 **A bump that touches only `plugin/` starts no release,** because `plugin/**`
 is not in `release.yml`'s `on.push.paths`. That filter was left alone. The
@@ -1328,6 +1329,57 @@ organization or another repository.
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds all of that and runs the gate against a fake `gh`.
 
+### A merge closes the issues its keywords name
+
+**GitHub did not close the issues named by the pull requests the App
+merged.** Of 65 merged pull requests with a closing keyword, owner merges
+closed 77 of 77 referenced issues; the `swarmcloud-merge` App's merges left 28
+of 33 open (history analysis, 2026-10-05; #487 → #124/#125/#127/#128, #481 →
+#89–#93, #541 → #503, #490 → #307), although GraphQL `closingIssuesReferences`
+listed every one of them (#621). Owner decision, 2026-10-05: close them
+explicitly after the merge, as the workflow `merge` step does (#581), with no
+change to the App's permissions.
+
+So `auto-merge.yml` also runs on `closed`, and its `close-issues` job runs
+[`scripts/close-merged-issues.sh`](../scripts/close-merged-issues.sh) on every
+pull request **merged into the default branch**:
+
+* it reads the pull request's `closingIssuesReferences` and closes each one
+  that is **open and in this repository**, with the comment "Closed by #N,
+  merged into main ..." naming the merging pull request;
+* it closes nothing else. It never reads the pull request's text, so a
+  `part of #N` — which GitHub does not list as a closing reference — is never
+  closed. Write `part of #N` for a partial fix, and a closing keyword only when
+  it is unconditionally true (CLAUDE.md, "Issues");
+* an issue that is already closed is left alone, with no second comment, and
+  one in another repository is recorded in the run summary, not touched;
+* an unreadable answer or an unmerged pull request fails the job and closes
+  nothing; a refused close fails it after the others have been tried, naming
+  the issue; more than 100 references (one page) fails it after the page.
+
+It runs on every merge, not only the App's, because the event does not
+reliably say who merged and an owner's merge costs it one read: GitHub has
+closed those issues already, and the script skips a closed issue. A merge into
+any other branch does nothing, because GitHub's keywords act only on the
+default branch.
+
+**Least privilege:** the job's GITHUB_TOKEN holds `issues: write` (comment and
+close), `pull-requests: read` (the references) and `contents: read` (a sparse
+checkout of the default branch's `scripts/`, without persisted credentials);
+no other job in the workflow holds `issues`, and the job mints no App token.
+It checks out the default branch — the code the merge just made, the same main
+the release builds — never the pull request's head. A close made with the
+GITHUB_TOKEN starts no workflow, which is right here: nothing should.
+[`test_close_merged_issues.py`](../tests/unit/scripts/test_close_merged_issues.py)
+runs the script against a fake `gh` (`Closes` vs `part of` vs already closed,
+another repository, an unmerged or unreadable pull request), and
+[`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
+holds the job's trigger, permissions and checkout.
+
+The issues App merges left open before this existed are not closed by it: it
+acts on the merge event only, so they are checked against main and closed by
+hand (#621).
+
 ### What the owner applies, once
 
 These are repository settings. A workflow cannot apply them and no lane
@@ -1576,6 +1628,143 @@ Before sending, compare the body with a fresh read of the ruleset: a rule
 added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
 `security.yml`'s always-run jobs plus `ci-gate`, none pinned.
+
+## Release acceptance runs in the smoke tenant, against a private sandbox
+
+The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
+deploy ([acceptance.md](acceptance.md) says what each check asserts). Until
+2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
+and cloned and opened pull requests on this platform's own public repository.
+The history analysis of that day (#628) counted 58 fixture pull requests
+("Fix add()...") opened and closed there since 09-30, each one running full CI,
+and acceptance as 62% of eng's tasks, so eng's success rates and failure
+classes could not be read; the `smoke` tenant had none. The owner decided the
+same day that acceptance runs in `smoke` against a private sandbox repository,
+and that nothing in acceptance can name the public one.
+
+**Where the target is stated.** Once, in
+[`scripts/acceptance/config.sh`](../scripts/acceptance/config.sh): the tenant
+(`smoke`), the repository (`bogdan-alexandrescu/swarmcloud-sandbox`, private,
+default branch `main`), the ref, and the sandbox's fixture issue. The suite,
+the sweep and the sync all read it; none of them reads
+`GITHUB_REPOSITORY` for a target, and `config.sh` refuses a target that is the
+repository a CI run is for or the one the checkout was cloned from.
+[`test_acceptance_target.py`](../tests/unit/scripts/test_acceptance_target.py)
+holds the configuration to smoke and the sandbox, and fails if any file under
+`scripts/acceptance/` or the release's acceptance job names the public
+repository.
+
+**How the suite gets into `smoke`.** It sends `X-Swarm-Tenant: smoke` on every
+API call (`SWARM_API_TENANT`, which `common.sh`'s `api_request` turns into the
+header). The header *selects* among the caller's confirmed memberships of
+registered directory groups and never grants, so swarm-verify must be a member
+of smoke's group. Its default tenant stays `eng`: `smoke` sorts after `eng` in
+`TENANT_GROUPS`, so smoke-test, e2e and race-test are unchanged. A
+`tenants.smoke.service_accounts` listing would have been simpler to write and
+would have stopped every suite: a listed account is continuation-scoped
+(`swarm_api.auth.CONTINUATION_ROUTES`) and may submit nothing but a
+continuation.
+
+**What the suite refuses.** Before any group runs, `run.sh` asks GitHub
+anonymously for the repository and refuses a 200 (public) or an unanswered
+read, and asks `GET /tenants/me` with the header and refuses any tenant but
+`smoke`, including a 403 `tenant_not_member`. It never falls back to the
+caller's default tenant: that fallback is how acceptance came to fill eng.
+
+**What the release job holds.** `contents: read` and `id-token: write`. The
+repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
+to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
+commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
+differ, and no other path) and opens or checks the fixture issue;
+`scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
+requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
+closes the pull requests and branches the suite opened there. The job's
+`GITHUB_TOKEN` reaches only this repository, which is why it is no longer
+write-scoped.
+
+**Where the GitHub read-backs moved.** The swarm-verify job holds no GitHub
+credential, by design, and the sandbox is private, so the suite cannot read a
+pull request back and SKIPs those assertions, naming the step that makes them.
+Dropping them would have let a release go green with the pull-request half of
+the direct-pr and integrate checks unexercised, so they run on the GitHub
+runner instead, which does hold the sandbox token:
+
+* `github-verify.sh` runs after the suite (even a failed one) and before the
+  sweep closes anything. It judges every open `swarm/task_` pull request of the
+  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
+  `started` step), and fails the job when one has an empty title or a title
+  carrying a task id, a body without its task id, a change outside
+  `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
+  `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
+  that lists no merged branch or leaves one out. It only reads; the sweep still
+  runs when it fails. Finding no pull request at all is printed with a workflow
+  warning, not a failure: a claude-code group without a provider credential
+  SKIPs without opening one.
+* The `collect` check's patch is applied in the suite itself, to this build's
+  own `calc.py`: the swarm-verify image now carries
+  `tests/acceptance/fixtures/`, and `sandbox-sync.sh` put the same commit's
+  copy on the sandbox's `main` first, so the two are the same bytes.
+
+What still runs only in the suite: the pull request was opened, its title is
+the agent's (`pull_request_text.title`), the artifacts exist and the patch
+replaces the bug line. The one comparison the runner cannot make is the PR
+title against the task's `pr-title.txt` artifact, which lives behind the API
+inside the VPC; it checks the title is a non-empty fact rather than a task id
+instead. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set measures that
+in the suite too.
+
+### What the owner applies, once, in this order
+
+1. **Create the Workspace group `smoke@saga.xyz`** and add
+   `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` as a member.
+   It must exist before step 3 is applied: `dev.tfvars` registers it as a
+   directory group, and a registered group whose lookup fails 503s every
+   caller in no group above it.
+2. **Re-point the tenant document.** `tenants/smoke` in Firestore still says
+   `principal: swarm-smoke@saga.xyz`, and Terraform will not change it (the
+   tenant documents are under `ignore_changes`). swarm-api refuses a tenant
+   whose stored principal differs from the selecting group with a 409, so set
+   that one field to `smoke@saga.xyz`, for example:
+
+   ```bash
+   # The access token reaches curl as a config file, never in argv.
+   curl -sS -X PATCH -K <(printf 'oauth2-bearer = "%s"\n' "$(gcloud auth print-access-token)") \
+     -H "x-goog-user-project: saga-agents-staging" -H "Content-Type: application/json" \
+     "https://firestore.googleapis.com/v1/projects/saga-agents-staging/databases/swarm/documents/tenants/smoke?updateMask.fieldPaths=principal" \
+     -d '{"fields": {"principal": {"stringValue": "smoke@saga.xyz"}}}'
+   ```
+
+   `smoke` has never run a task, so no work changes hands.
+3. **Merge the `dev.tfvars` change** (the release applies it): `tenants.smoke`
+   gets `principal = "smoke@saga.xyz"`, `directory_group = true` and
+   `providers = ["anthropic"]`, and `pool_limits.providers.anthropic` goes from
+   100 to 120, because three tenants now declare anthropic and the plan refuses
+   a provider pool below 3 x `provider_tenant`. The live pool documents are
+   under `ignore_changes`, so raise the live one too:
+   `scripts/pool-limit.sh --pool provider:anthropic --limit 120`.
+4. **Give `smoke` its credentials**, with the scripts that keep them out of the
+   repository and out of Terraform state:
+   * the forge token, slot **`swarm-tenant-smoke-git`**:
+     `scripts/register-tenant.sh --tenant smoke --add-provider git`, then
+     `scripts/create-secrets.sh --tenant smoke --provider git --stdin`. A
+     fine-grained token scoped to the sandbox alone, with Contents, Pull
+     requests and Issues read and write (the worker clones, pushes and opens
+     the pull request with it; the `issue` input reads the fixture issue);
+   * the Anthropic credential, slot `swarm-tenant-smoke-anthropic`:
+     `scripts/register-tenant.sh --tenant smoke --add-provider anthropic`,
+     then `scripts/create-secrets.sh --tenant smoke --provider anthropic
+     --stdin` (or `--subscription`), or lend `smoke` an account
+     (`PUT /v1/accounts/<id>/lending`). Without one, every claude-code check
+     SKIPs on `CREDENTIAL_MISSING`.
+5. **Add the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`** (Settings ->
+   Secrets and variables -> Actions): a fine-grained token scoped to the
+   sandbox alone, with Contents, Pull requests and Issues read and write. It
+   may be the same token as step 4's. Without it the sync step fails and the
+   suite does not start.
+
+Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
+with the sentence that names this section, and nothing is submitted: a red
+acceptance job, not a quiet return to eng.
 
 ## The finishing sequence
 

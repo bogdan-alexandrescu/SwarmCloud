@@ -1117,23 +1117,32 @@ _api_explain_iap() {
 }
 
 # api_request METHOD PATH [BODY] -> body on stdout, HTTP status in API_STATUS
+#
+# SWARM_API_TENANT, when set, is sent as `X-Swarm-Tenant`: the tenant switcher
+# swarm-api honours for a caller in several registered groups. It SELECTS
+# among the caller's verified memberships and never grants (403 otherwise).
+# The acceptance suite sets it to run in `smoke` rather than the caller's
+# default tenant (scripts/acceptance/config.sh, #628). Unset, nothing changes.
 API_STATUS=0
 api_request() {
   local method="$1" path="$2" body="${3:-}"
   local url token response
+  local tenant_header=()
   url="$(api_url)${path}"
   token="$(api_credential)"
+  [[ -z "${SWARM_API_TENANT:-}" ]] || tenant_header=(-H "X-Swarm-Tenant: ${SWARM_API_TENANT}")
 
   # -K - : the Authorization header arrives on stdin, never in argv. See
   # auth_config above for why that distinction matters for an ID token.
   if [[ -n "${body}" ]]; then
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
       -w $'\n%{http_code}' -X "${method}" \
-      -H "Content-Type: application/json" \
+      -H "Content-Type: application/json" ${tenant_header[@]+"${tenant_header[@]}"} \
       --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
   else
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
-      -w $'\n%{http_code}' -X "${method}" "${url}")" || { API_STATUS=0; return 1; }
+      -w $'\n%{http_code}' -X "${method}" ${tenant_header[@]+"${tenant_header[@]}"} \
+      "${url}")" || { API_STATUS=0; return 1; }
   fi
 
   API_STATUS="${response##*$'\n'}"

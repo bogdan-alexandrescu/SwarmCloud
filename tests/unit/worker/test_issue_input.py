@@ -6,7 +6,7 @@ comments read-only with the tenant's forge credential and writes them to
 `work/issue.md`; the runner names that file in the prompt. What is held here:
 
   * the fetch asks the repository's own forge, carries the credential only in
-    its `Authorization` header, and follows no redirect to another host;
+    its `Authorization` header, and follows no redirect, to another host or its own;
   * the file is scrubbed of every secret the attempt holds, is never written
     through a link, and lands in `work/`, not in the checkout or the artifacts;
   * the prompt names the file by absolute path between the caller's prompt and
@@ -309,24 +309,25 @@ def test_a_repository_on_no_forge_is_refused_before_any_request(forge):
     assert not fake.requests
 
 
-def test_a_redirect_to_another_host_is_refused_and_one_on_the_same_host_followed():
-    """urllib copies `Authorization` onto a redirect wherever it points."""
-    handler = issue_mod._SameHostRedirects()
+def test_no_redirect_is_followed_by_the_issue_fetch_on_any_host():
+    """urllib copies `Authorization` onto a redirect wherever it points, so the
+    fetch sends through `forge.open_without_redirects`, which follows none --
+    not to another host, and not on the same one (#645). The real-server
+    versions of this are in test_forge_no_redirect.py."""
+    from agent_worker import forge as forge_mod
+
     req = urllib.request.Request("https://api.github.com/repos/octo/widgets/issues/1")
     req.add_header("Authorization", f"Bearer {TOKEN}")
-
-    for elsewhere in (
+    (handler,) = [
+        h for h in forge_mod._NO_REDIRECT_OPENER.handlers
+        if isinstance(h, urllib.request.HTTPRedirectHandler)
+    ]
+    for target in (
         "https://attacker.example/steal",
         "http://api.github.com/repos/octo/widgets/issues/1",
+        "https://api.github.com/repositories/42/issues/1",
     ):
-        with pytest.raises(issue_mod.IssueUnavailable) as caught:
-            handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, elsewhere)
-        assert TOKEN not in str(caught.value)
-
-    followed = handler.redirect_request(
-        req, io.BytesIO(), 301, "Moved", {}, "https://api.github.com/repositories/42/issues/1"
-    )
-    assert followed is not None and followed.full_url.endswith("/repositories/42/issues/1")
+        assert handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, target) is None
 
 
 # ---------------------------------------------------------------------------

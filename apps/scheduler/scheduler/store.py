@@ -876,6 +876,13 @@ class SchedulerStore:
         already released is not decremented twice. The event is still written
         after the commit, so an event write that fails cannot keep the pools.
 
+        THE ATTEMPT'S END IS WRITTEN IN THE SAME TRANSACTION (#630), whenever
+        this dispatch's attempt is over -- the task was returned off its lease
+        here, or a later generation superseded it with no reclaim pending --
+        with cause `dispatch_failed` and the stable code. A failed dispatch
+        started no container, so nothing else would write it. See
+        `_end_attempt` for what is never written.
+
         `cancel_requested` IS part of the decision. The API flags a LEASED task
         and leaves it to "the worker or the reconciler"; when the dispatch
         fails there is no worker, and READY was a second hop through the next
@@ -916,7 +923,61 @@ class SchedulerStore:
         # agreed with the bug -- feed it what the loop actually holds.
         task_ref = self._db.collection(TASKS).document(task.id)
         lease_ref = self._db.collection(LEASES).document(lease.lease_id)
+        attempt_ref = self._db.collection(ATTEMPTS).document(lease.attempt_id)
         transaction = self._db.transaction()
+
+        def _end_attempt(
+            txn: Any, attempt: dict[str, Any] | None, stored: dict[str, Any] | None,
+            *, returned: bool,
+        ) -> None:
+            """Record the end of THIS dispatch's attempt, in this transaction (#630).
+
+            `_admit_one` writes the attempt before it dispatches, and a failed
+            dispatch started no container, so nothing else would ever write its
+            `completed_at`: it stayed open for ever and was counted as running
+            by every figure read from attempts. Written only when the attempt
+            is over:
+
+              * this transaction returned the task off the lease (READY,
+                FAILED, CANCELLED, or a reclaim finished here); or
+              * the task is past this lease's generation and no reclaim is
+                pending -- the attempt was superseded while the dispatch hung.
+
+            Never a running worker's (the task advanced on this lease at this
+            generation: its worker writes its own end), never a pending
+            reclaim's (the reconciler's fence writes it), never an attempt
+            of another task or generation, and never one already ended
+            (invariant 5). No exit code is known; the cause heads `error`,
+            with the stable code and never the upstream text.
+            """
+            if attempt is None or attempt.get("completed_at") is not None:
+                return
+            if attempt.get("task_id") != task.id:
+                return
+            try:
+                generation = int(attempt.get("generation", -1))
+            except (ValueError, TypeError, OverflowError):
+                return
+            if generation != lease.generation:
+                return
+            if not returned:
+                if stored is None:
+                    return
+                try:
+                    current = int(stored.get("current_generation", 0))
+                except (ValueError, TypeError, OverflowError):
+                    return
+                if current <= lease.generation:
+                    return
+            txn.update(
+                attempt_ref,
+                {
+                    "completed_at": now,
+                    "exit_code": None,
+                    "error": f"{EndCause.DISPATCH_FAILED.value}: {error_code}"[:2000],
+                    "tenant_id": attempt.get("tenant_id") or task.tenant_id,
+                },
+            )
 
         def _returned(
             txn: Any,
@@ -990,6 +1051,8 @@ class SchedulerStore:
             # pools. Firestore refuses a read after a write in one transaction.
             snap = _snapshot(txn.get(task_ref))
             lease_snap = _snapshot(txn.get(lease_ref))
+            attempt_snap = _snapshot(txn.get(attempt_ref))
+            attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else None
             stored = (snap.to_dict() or {}) if snap.exists else None
             found = stored.get("state") if stored is not None else None
             refusal = _lease_refusal(stored, lease)
@@ -1017,7 +1080,9 @@ class SchedulerStore:
                         reclaim=_RECLAIM_PENDING,
                         task_generation=int(stored.get("current_generation", 0)),
                     )
-                return _returned(txn, stored, found, _RECLAIM_FINISHED, released=False)
+                settled = _returned(txn, stored, found, _RECLAIM_FINISHED, released=False)
+                _end_attempt(txn, attempt, stored, returned=True)
+                return settled
 
             worker_owns_it = refusal == STATE_CHANGED and found in _WORKER_OWNED and points_here
             released = False
@@ -1026,11 +1091,15 @@ class SchedulerStore:
                     txn, db=self._db, lease_id=lease.lease_id, reason=release_reason, now=now
                 )
             if refusal is not None or stored is None or found is None:
+                if not worker_owns_it:
+                    _end_attempt(txn, attempt, stored, returned=False)
                 return _Settled(
                     GuardedWrite("return_to_ready", False, TaskState.LEASED.value, found, refusal),
                     released,
                 )
-            return _returned(txn, stored, found, None, released=released)
+            settled = _returned(txn, stored, found, None, released=released)
+            _end_attempt(txn, attempt, stored, returned=True)
+            return settled
 
         settled = _settle(transaction)
         outcome = settled.outcome

@@ -46,3 +46,8 @@ output "repo_index_poll_schedule" {
   description = "Exposed so a test can assert how often registered repositories are polled (docs/repo-index.md §3.3)."
   value       = var.repo_index_poll_schedule
 }
+
+output "execution_cancel_topic" {
+  description = "Where swarm-api publishes a cancelled task's attempt for the reconciler to stop (#627)."
+  value       = google_pubsub_topic.execution_cancel.name
+}

@@ -15,6 +15,10 @@ import {
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
   type ResolvedToken, type TokenScope,
 } from './RepositoriesData'
+import {
+  normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
+  type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
+} from './RepoGraphData'
 import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
@@ -5130,6 +5134,46 @@ export async function loadRepository(repoId: string): Promise<Result<RepoDetail 
 /** `GET /v1/repositories/{repo_id}/index?format=json`: the current index's structured document. */
 export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexDoc | null>> {
   return readAs(route('/v1/repositories/{repo_id}/index', { repo_id: repoId }, new URLSearchParams({ format: 'json' })), normIndexDoc)
+}
+
+/** `GET /v1/repositories/{repo_id}/graph`: the module dependency graph, aggregated for drawing (Graph A). */
+export async function loadRepositoryGraph(repoId: string): Promise<Result<ModuleGraph | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/graph', { repo_id: repoId }), normModuleGraph)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?q=`: symbols whose id contains `q`. */
+export async function searchRepositorySymbols(repoId: string, q: string): Promise<Result<SymbolSearch | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, new URLSearchParams({ q })), normSymbolSearch)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?id=&depth=&direction=`: the call graph centred on one symbol. */
+export async function loadSymbolGraph(
+  repoId: string,
+  id: string,
+  depth: number,
+  direction: 'both' | 'callers' | 'callees',
+): Promise<Result<CallGraph | null>> {
+  const q = new URLSearchParams({ id, depth: String(depth), direction })
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, q), normCallGraph)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?id=&tests=1`: the tests that reach one symbol. */
+export async function loadSymbolTests(repoId: string, id: string): Promise<Result<SymbolTests | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, new URLSearchParams({ id, tests: '1' })), normSymbolTests)
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/impact`: a pull request or a commit -> the
+ * test plan (repo-index.md §4.3a). A query, not a change: the API reads the
+ * diff from the forge and stores the plan keyed by its inputs, so asking twice
+ * for one head is the same plan. The body names the change and nothing else
+ * (the route refuses `paths`, `tests` or a command: invariant 10).
+ */
+export async function queryRepositoryImpact(repoId: string, change: { pull_request: number } | { commit: string }): Promise<Result<ImpactPlan | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/impact', { repo_id: repoId }), 'POST', change)
+  if (r.status === 'ok') return { ...r, data: normImpact(r.data) }
+  if (r.status === 'stale') return { ...r, data: normImpact(r.data) }
+  return r
 }
 
 /** Languages per repository (not served): per language, grammar, server and status. */

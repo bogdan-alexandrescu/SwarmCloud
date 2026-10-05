@@ -91,12 +91,15 @@ from .codec import (
     workflow_to_firestore,
 )
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
+from .executioncancel import ExecutionTarget
 
 log = logging.getLogger(__name__)
 
 TASKS = "tasks"
 WORKFLOWS = "workflows"
 TENANTS = "tenants"
+#: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
+TENANT_FINDINGS_EPIC = "findings_epic"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
@@ -154,6 +157,51 @@ FENCED_SILENCE_SECONDS = 90
 #: it, so a RUNNING task's capacity is the worker's or, if it died, the
 #: reconciler's, which kills before it releases.
 _WORKER_AWAITED_STATES = frozenset({TaskState.DISPATCHED, TaskState.STARTING})
+
+#: The states in which a task's attempt may have an execution running: the
+#: capacity-holding ones (invariant 1). The first cancel of a task in one of
+#: them names that execution for the route to stop (#627).
+_EXECUTION_STATES = frozenset(
+    {TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING}
+)
+
+
+def first_cancel_target(
+    db: Any, txn: Any, data: dict[str, Any], *, tenant_id: str, task_id: str
+) -> ExecutionTarget | None:
+    """The execution a task's first cancel should stop, read inside `txn` (#627).
+
+    For a caller whose transaction has not yet set `cancel_requested` -- the
+    child cascade -- and which must call this before any write. None when the
+    flag is already set (a cancel already asked), when the task holds no
+    capacity, or when its attempt recorded no execution or has ended.
+    """
+    if data.get("cancel_requested"):
+        return None
+    try:
+        state = TaskState(data.get("state"))
+    except ValueError:
+        return None
+    lease_id = data.get("current_lease_id")
+    if state not in _EXECUTION_STATES or not lease_id:
+        return None
+    lease_snap = _snapshot(txn.get(db.collection(LEASES).document(lease_id)))
+    lease = (lease_snap.to_dict() or {}) if lease_snap.exists else {}
+    attempt_id = lease.get("attempt_id")
+    if not attempt_id:
+        return None
+    attempt_snap = _snapshot(txn.get(db.collection(ATTEMPTS).document(attempt_id)))
+    attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else {}
+    execution = attempt.get("execution_name")
+    if not isinstance(execution, str) or not execution or attempt.get("completed_at") is not None:
+        return None
+    return ExecutionTarget(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        attempt_id=str(attempt_id),
+        backend=str(attempt.get("backend") or ""),
+        execution_name=execution,
+    )
 
 
 def _as_utc(value: Any) -> datetime | None:
@@ -808,6 +856,29 @@ class Store:
         tenant.credentials = providers
         return tenant
 
+    def get_findings_epic(self, tenant_id: str) -> int | None:
+        """The tenant's wave epic (#638): the issue a review's minors are filed on.
+
+        A field of the tenant DOCUMENT, beside the frozen `Tenant` type's
+        fields rather than one of them (rule 1), so `tenant_from_dict` never
+        sees it. None when unset, cleared, or not an issue number.
+        """
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        if not snap.exists:
+            return None
+        value = (snap.to_dict() or {}).get(TENANT_FINDINGS_EPIC)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
+
+    def set_findings_epic(self, tenant_id: str, epic: int | None) -> int | None:
+        """Set (or, with None, clear) the tenant's wave epic. NotFound for no tenant."""
+        ref = self._db.collection(TENANTS).document(tenant_id)
+        if not ref.get().exists:
+            raise NotFound(f"tenant {tenant_id!r} does not exist")
+        ref.update({TENANT_FINDINGS_EPIC: epic})
+        return epic
+
     # -- tasks ------------------------------------------------------------
 
     def create_tasks(self, tasks: Sequence[Task], *, tenant_member: str = "") -> list[Task]:
@@ -1002,7 +1073,23 @@ class Store:
     def request_cancel(
         self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
     ) -> Task:
+        """`request_cancel_with_target`, for a caller that stops no execution."""
+        return self.request_cancel_with_target(
+            tenant_id, task_id, by=by, tenant_member=tenant_member
+        )[0]
+
+    def request_cancel_with_target(
+        self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
+    ) -> tuple[Task, ExecutionTarget | None]:
         """Flag the task for cancellation, terminating it immediately if no worker can act.
+
+        Returns the task as this call left it and, on the FIRST cancel of a
+        task whose attempt may still be executing, that attempt's execution
+        (#627), for the route to ask the backend to stop. None on every later
+        cancel of the same task -- the flag was already set -- so pressing
+        cancel twice asks the backend once; and None for a task with no
+        execution recorded. Read in this transaction, so the execution named
+        is the attempt of the lease the task held when the flag was written.
 
         A task that holds no capacity (SUBMITTED / QUEUED / READY / PARKED) goes
         straight to CANCELLED. So does a task that holds capacity with NO LIVE
@@ -1065,12 +1152,18 @@ class Store:
                 )
 
             # Every read before any write. The lease and its attempt are read
-            # only for a task that holds capacity, to decide whether a worker
-            # can still be acting on it (`_no_live_worker`).
+            # for a task a worker may not have reached yet, to decide whether
+            # one can still be acting on it (`_no_live_worker`), and on the
+            # FIRST cancel of any task that holds capacity, to name the
+            # execution the route asks to be stopped (#627).
             lease_id = data.get("current_lease_id") or None
             lease: dict[str, Any] | None = None
             attempt: dict[str, Any] | None = None
-            if task.state in _WORKER_AWAITED_STATES and lease_id:
+            first_request = not data.get("cancel_requested")
+            if lease_id and (
+                task.state in _WORKER_AWAITED_STATES
+                or (first_request and task.state in _EXECUTION_STATES)
+            ):
                 lease_snap = _snapshot(txn.get(self._db.collection(LEASES).document(lease_id)))
                 lease = (lease_snap.to_dict() or {}) if lease_snap.exists else None
                 attempt_id = (lease or {}).get("attempt_id")
@@ -1183,7 +1276,23 @@ class Store:
             # What THIS call committed, not a re-read afterwards: the route
             # derives `released_immediately` from the returned state, and a
             # re-read would report a worker's later CANCELLED as ours.
-            return task_from_dict({**data, **patch})
+            target: ExecutionTarget | None = None
+            execution = (attempt or {}).get("execution_name")
+            if (
+                first_request
+                and task.state in _EXECUTION_STATES
+                and isinstance(execution, str)
+                and execution
+                and (attempt or {}).get("completed_at") is None
+            ):
+                target = ExecutionTarget(
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    attempt_id=str((lease or {}).get("attempt_id") or ""),
+                    backend=str((attempt or {}).get("backend") or ""),
+                    execution_name=execution,
+                )
+            return task_from_dict({**data, **patch}), target
 
         return _apply(transaction)
 
@@ -1486,8 +1595,17 @@ class Store:
         )
 
     def cancel_workflow(
-        self, tenant_id: str, workflow_id: str, *, by: str, tenant_member: str = ""
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        by: str,
+        tenant_member: str = "",
+        targets: list[ExecutionTarget] | None = None,
     ) -> dict[str, Any]:
+        # `targets`, when given, collects each step's execution to stop
+        # (`request_cancel_with_target`, #627); the result dict stays the
+        # response body and carries none of them.
         # Unfiltered: cancel is not in CONTINUATION_ROUTES, so only a full
         # member reaches this, and a full member may cancel any of its
         # tenant's workflows.
@@ -1502,10 +1620,12 @@ class Store:
             if not step.task_id:
                 continue
             try:
-                self.request_cancel(
+                _task, target = self.request_cancel_with_target(
                     tenant_id, step.task_id, by=by, tenant_member=tenant_member
                 )
                 cancelled.append(step.task_id)
+                if target is not None and targets is not None:
+                    targets.append(target)
             except Conflict:
                 already_terminal.append(step.task_id)
             except NotFound:

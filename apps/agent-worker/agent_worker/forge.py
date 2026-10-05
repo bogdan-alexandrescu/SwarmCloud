@@ -132,8 +132,22 @@ def transient_network_error(exc: BaseException) -> bool:
     if isinstance(reason, ssl.SSLCertVerificationError):
         return False
     if isinstance(reason, str):
-        return "timed out" in reason.lower()
+        return bool(_TRANSIENT_REASON.search(reason))
     return isinstance(reason, (OSError, http.client.HTTPException))
+
+
+#: A network failure that arrives as TEXT rather than as an exception (a
+#: `URLError` whose reason is a string, or a proxy's message): a timeout, a
+#: connect failure, a DNS failure or a dropped connection. Only "timed out"
+#: was read before, so "Failed to connect to github.com port 443" ended its
+#: call as a permanent `ForgeError` (#623, 2026-10-05).
+_TRANSIENT_REASON = re.compile(
+    r"timed out|failed to connect|couldn't connect|could not resolve"
+    r"|temporary failure in name resolution|name or service not known"
+    r"|connection (?:reset|refused|closed|aborted)|network is unreachable"
+    r"|no route to host|remote end closed connection",
+    re.IGNORECASE,
+)
 
 
 def _network_reason(exc: BaseException) -> Any:
@@ -361,6 +375,51 @@ def parse_repo(url: str) -> RepoRef | None:
     return RepoRef(host=host, owner=owner, name=name)
 
 
+# ---------------------------------------------------------------------------
+# The one opener for every request that carries a forge token (#645, #307)
+# ---------------------------------------------------------------------------
+#
+# `urllib.request.urlopen` follows 301/302/303/307/308 and builds the follow-up
+# request with the original's headers, `Authorization` included, wherever the
+# `Location` points. A forge answer of `302 Location: https://elsewhere/` would
+# hand the tenant's token -- or the worker actions' installation token -- to a
+# host that must never see it. So every request this worker makes with a forge
+# token goes through `_NO_REDIRECT_OPENER`, via `open_without_redirects`: a 3xx
+# comes back as an HTTPError carrying its own status and is never followed, to
+# another host or to the same one. GitHub's API has no call here it answers
+# with a redirect it needs followed; a renamed repository's 301 is refused and
+# says so, which is the safe answer to a credential question.
+#
+# `_request` (the probe and the pull-request calls), `_open` (the pinned
+# client's transport) and `issue._open` (the issue fetch) are the call sites;
+# tests/unit/worker/test_forge_no_redirect.py fails if any of them, or any
+# other module that imports this one, opens a URL another way.
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Answer every redirect with None, so urllib raises it as an HTTPError.
+
+    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
+    default one, so no other handler follows it either.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def open_without_redirects(request: urllib.request.Request, *, timeout: float = _TIMEOUT) -> Any:
+    """Send one request through the no-redirect opener. A 3xx raises as HTTPError.
+
+    The only way a request carrying a forge token leaves this process. It
+    reads `_NO_REDIRECT_OPENER` at call time, so a test that replaces it sees
+    every call.
+    """
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
 def _request(
     url: str,
     *,
@@ -378,10 +437,17 @@ def _request(
         req.add_header("Content-Type", "application/json")
     host = urlparse(url).hostname
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_TIMEOUT) as response:
             raw = response.read().decode("utf-8", errors="replace")
             return response.status, (json.loads(raw) if raw.strip() else None)
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            # Never followed (`_NO_REDIRECT_OPENER`), and not read as an answer
+            # either: the caller learns the forge redirected, and the token
+            # went to the first host only. `Location` is not quoted -- it
+            # names wherever the redirect pointed, which is not ours to log.
+            exc.close()
+            raise ForgeRedirectRefused(exc.code, urlparse(url).path) from None
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
@@ -631,6 +697,73 @@ def _update_pull_request(
 
 
 # ---------------------------------------------------------------------------
+# Issue comments: a review's minor findings on the tenant's wave epic (#638)
+# ---------------------------------------------------------------------------
+
+#: The most pages of an epic's comments read before refusing to file. The
+#: dedup has to see EVERY comment: one it never read is a finding filed twice.
+#: 30 pages of 100 is GitHub's own cap on a list read elsewhere in this module.
+MAX_COMMENT_PAGES = 30
+COMMENTS_PER_PAGE = 100
+
+
+def _issue_comments_url(ref: RepoRef, number: int) -> str:
+    if ref is None or not may_receive_forge_token(ref.host):
+        # Asked where the token would leave, as `open_pull_request` asks (#307).
+        raise ForgeError(
+            "refusing to send the tenant's git credential to "
+            f"{getattr(ref, 'host', None)}: it is sent only to github.com"
+        )
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise ForgeError(f"{number!r} is not an issue number")
+    return f"{ref.api_base}/repos/{ref.owner}/{ref.name}/issues/{number}/comments"
+
+
+def list_issue_comments(*, ref: RepoRef, token: str, number: int) -> list[str]:
+    """The body of every comment on issue `number`, oldest first. GETs only.
+
+    Raises `ForgeUnavailable` on an outage and `ForgeError` on anything else
+    -- an issue that does not exist, a token that cannot read it, or more
+    comments than `MAX_COMMENT_PAGES` pages -- because a partial list read as
+    whole would let a finding be filed twice.
+    """
+    url = _issue_comments_url(ref, number)
+    bodies: list[str] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        status, data = _request(f"{url}?per_page={COMMENTS_PER_PAGE}&page={page}", token=token)
+        if status != 200 or not isinstance(data, list):
+            message = _message_of(data)
+            failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+            raise failure(
+                f"could not read the comments of issue #{number} ({status})"
+                + (f": {message}" if message else "")
+            )
+        bodies += [str(c.get("body") or "") for c in data if isinstance(c, dict)]
+        if len(data) < COMMENTS_PER_PAGE:
+            return bodies
+    raise ForgeError(
+        f"issue #{number} has more than {MAX_COMMENT_PAGES * COMMENTS_PER_PAGE} comments; "
+        "they were not all read, so nothing is filed on it"
+    )
+
+
+def create_issue_comment(*, ref: RepoRef, token: str, number: int, body: str) -> int:
+    """Post one comment on issue `number`; its id. Never retried by this module:
+    a POST whose answer was lost may have made the comment, and the caller's
+    dedup on its next run is what finds it."""
+    status, data = _request(
+        _issue_comments_url(ref, number), token=token, method="POST", payload={"body": body}
+    )
+    if status == 201 and isinstance(data, dict):
+        return int(data.get("id") or 0)
+    message = _message_of(data)
+    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    raise failure(
+        f"could not comment on issue #{number} ({status})" + (f": {message}" if message else "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # The pinned forge client: the merge and post-verdict worker actions (#295)
 # ---------------------------------------------------------------------------
 #
@@ -739,24 +872,10 @@ class ForgeResponse:
 Transport = Callable[[urllib.request.Request], tuple[int, Mapping[str, str], bytes]]
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Answer every redirect with None, so urllib raises it as an HTTPError.
-
-    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
-    default one, so no other handler follows it either.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
 def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], bytes]:
     """Send one request with the no-redirect opener; a 3xx comes back as itself."""
     try:
-        with _NO_REDIRECT_OPENER.open(request, timeout=_TIMEOUT) as response:
+        with open_without_redirects(request, timeout=_TIMEOUT) as response:
             return response.status, dict(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read() if exc.fp is not None else b""

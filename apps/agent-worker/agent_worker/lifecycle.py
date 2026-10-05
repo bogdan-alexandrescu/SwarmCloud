@@ -189,6 +189,7 @@ from .errors import (
     TenantMismatchError,
     WorkerError,
 )
+from . import findings_epic as findings_epic_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import post_verdict as post_verdict_mod
@@ -198,6 +199,7 @@ from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
     GitError,
+    GitTransient,
     MergeOutcome,
     clone_at_commit,
     commit_dirty,
@@ -210,6 +212,7 @@ from .gitops import (
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    retry_clone,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
@@ -240,6 +243,9 @@ from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
+    RESUME_MOVED,
+    RESUME_REASON_ENV,
+    RESUME_RELOADED,
     RESUME_SESSION_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
@@ -538,6 +544,21 @@ class Outcome:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+class _CloneUnreachable(WorkerError):
+    """The clone's forge did not answer through every in-process try (#623).
+
+    Raised by `_maybe_clone` and turned by `_prepare` into a retryable end of
+    the attempt (`_fail_clone_unreachable`). A `WorkerError`, so a caller
+    that does not tell it apart still fails deliberately rather than crashing.
+    `reason` is already scrubbed.
+    """
+
+    def __init__(self, reason: str, tries: int) -> None:
+        super().__init__(f"repository clone failed: {reason}")
+        self.reason = reason
+        self.tries = tries
+
+
 class Worker:
     """One attempt, start to finish."""
 
@@ -633,6 +654,10 @@ class Worker:
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
+        # The findings that verdict marked minor, which this step files on the
+        # tenant's wave epic after its own work is done (#638).
+        self._verdict_minors: tuple[verdict_mod.MinorFinding, ...] = ()
+        self._verdict_minors_dropped = 0
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -694,6 +719,9 @@ class Worker:
         # the moves so far; and whether the last start followed a swap.
         self._session_id: str | None = None
         self._resume_session: str | None = None
+        #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
+        #: decides what the resumed CLI is told.
+        self._resume_reason: str | None = None
         self._readings: ReadingForwarder | None = None
         self._turns_checked = 0
         self._channel_seen: int | None = None
@@ -956,11 +984,27 @@ class Worker:
                 refusal = self._credential_refusal()
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
+                    # RESUMED, NOT STARTED AGAIN (#626). A restart from the
+                    # prompt threw away everything the agent had done -- 26
+                    # restarts and ~169 agent-minutes in the 2026-10-05
+                    # history. On a held account the runner's channel named
+                    # the session (`_move_account_after` read it above), and
+                    # the restart continues it with `--resume`, exactly as an
+                    # account move does. A run that named no session, or a
+                    # runner that cannot resume (the channel exists only for
+                    # one that can), restarts from the prompt as before.
+                    resumed = self._account is not None and self._session_id is not None
+                    if resumed:
+                        self._resume_session = self._session_id
+                        self._resume_reason = RESUME_RELOADED
+                        # The next runner counts its turns from zero.
+                        self._turns_checked = 0
                     self.log.warning(
                         "credential refused; reloading it and restarting in place",
                         provider=refusal.get("provider"),
                         marker=refusal.get("marker"),
                         reload=credential_reloads,
+                        resumed=resumed,
                     )
                     self.control.emit(
                         EventType.RETRYING,
@@ -968,6 +1012,7 @@ class Worker:
                             "cause": "credential_reloaded",
                             "provider": refusal.get("provider"),
                             "reload": credential_reloads,
+                            "resumed": resumed,
                         },
                     )
                     ws.credential_path.unlink(missing_ok=True)
@@ -1528,7 +1573,12 @@ class Worker:
 
         # ---- STEP 5: optional shallow clone -----------------------------
         self.phases.enter("clone")
-        repo_info = self._maybe_clone(task)
+        try:
+            repo_info = self._maybe_clone(task)
+        except _CloneUnreachable as exc:
+            # The forge did not answer through every in-process try (#623):
+            # the ATTEMPT ends retryably, after the startup window closes.
+            return functools.partial(self._fail_clone_unreachable, exc.reason, exc.tries)
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
@@ -2025,18 +2075,7 @@ class Worker:
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
             self._child_ended()
-            self._checkpoint("cancellation")
-            summary = self._upload_outputs()
-            self._add_runner_block(summary)
-            self._export_metrics()
-            self.control.finish(
-                state=TaskState.CANCELLED,
-                exit_code=None,
-                error="cancelled by request",
-                result_summary=summary,
-                end_cause=self.control.cancel_cause(),
-            )
-            return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
+            return self._finish_cancelled()
 
         quota = signal_from_control(signals, cfg.provider)
         if quota is not None:
@@ -2097,6 +2136,21 @@ class Worker:
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
+        if self._cancel_requested_now():
+            # THE CANCEL ARRIVING AS A SIGTERM (#627). The API's cancel route
+            # asks the backend to cancel the execution directly, and Cloud
+            # Run's cancel and a GKE Job delete both reach this process as a
+            # SIGTERM -- usually before the next control poll has read the
+            # flag. Parking would put a task somebody stopped back in line, so
+            # it ends CANCELLED here, with its spend and its end recorded, the
+            # way the control poll's cancel ends it.
+            self.log.warning("SIGTERM on a task whose cancel was requested; ending it cancelled")
+            try:
+                return self._finish_cancelled()
+            except FencedError as exc:
+                return Outcome(
+                    exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
+                )
         try:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
@@ -2111,6 +2165,42 @@ class Worker:
                 exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
             )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _cancel_requested_now(self) -> bool:
+        """Whether the task's cancel has been requested, read now. Never raises.
+
+        A read that fails answers False: the SIGTERM path then parks as it
+        always has, and a parked task with a cancel on it is cancelled by the
+        scheduler's drain rather than run again.
+        """
+        try:
+            return bool((self.control.fetch_task() or {}).get("cancel_requested"))
+        except Exception as exc:
+            self.log.warning(
+                "could not read whether a cancel was requested",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+
+    def _finish_cancelled(self) -> Outcome:
+        """End a cancelled task once its runner has stopped and been collected.
+
+        The checkpoint, then the uploads (which record the attempt's spend,
+        `_upload_outputs`), then the terminal write, which records the
+        attempt's end and releases the lease (`control.finish`).
+        """
+        self._checkpoint("cancellation")
+        summary = self._upload_outputs()
+        self._add_runner_block(summary)
+        self._export_metrics()
+        self.control.finish(
+            state=TaskState.CANCELLED,
+            exit_code=None,
+            error="cancelled by request",
+            result_summary=summary,
+            end_cause=self.control.cancel_cause(),
+        )
+        return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
     # -- the fenced exits ---------------------------------------------------
     def _exit_fenced_mid_run(
@@ -2300,6 +2390,10 @@ class Worker:
                 # The owner's words for it (2026-10-05): on MERGE, no fix
                 # agent; the step only published the reviewed work.
                 summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+            if result.exit_code != EXIT_TERMINATED:
+                # After the publish, so the epic hears of a review only once
+                # the step it gated has done its own work; never on a stop.
+                summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
         if self._pr_text_from is not None:
             summary["pull_request_text_from"] = dict(self._pr_text_from)
         self._export_metrics()
@@ -2561,6 +2655,12 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        if self._spend.get("cost_estimated"):
+            # The attempt's `cost_usd` includes an estimate for a run stopped
+            # before it reported one (#627). Said here, at the top, because a
+            # CLI runner stopped on SIGTERM may leave no result for the block
+            # below to be written from.
+            summary["cost_estimated"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -3146,9 +3246,26 @@ class Worker:
         # clones; a private one fails, and the error below says why.
         refusal = self._git_token_refusal()
         clone = None
+        # A clone or fetch the forge did not answer -- a connect or read
+        # timeout, DNS, a reset, a 5xx (`gitops.GitTransient`) -- is tried
+        # again in this process after 10 s and 30 s, within the platform's
+        # in-worker wait and the step's deadline (`gitops.retry_clone`). Past
+        # that the attempt ends RETRYABLY (`_fail_clone_unreachable`), so the
+        # task's attempt budget applies. A missing repository, refused
+        # authentication or a bad ref is a plain `GitError` and stays
+        # terminal, at once (#623).
+        retry = functools.partial(
+            retry_clone,
+            destination=destination,
+            max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            remaining_seconds=self._remaining_seconds,
+            logger=self.log,
+            sleep=self.forge_sleep,
+            on_retry=self._heartbeat,
+        )
         if pinned_sha is not None:
             try:
-                clone = clone_at_commit(
+                clone = retry(lambda: clone_at_commit(
                     url=url,
                     branch=ref,
                     commit=pinned_sha,
@@ -3158,7 +3275,11 @@ class Worker:
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
                     token=None if refusal else self._git_token(),
-                )
+                ))
+            except GitTransient as exc:
+                # Not a fall back to the branch tip: the tip is on the same
+                # forge, and an unpinned clone would be a silent change of base.
+                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
                 # Not the end of the step: the branch tip is what every step
                 # started from before the pin existed. Said, so a patch that
@@ -3171,7 +3292,7 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         try:
-            clone = clone or shallow_clone(
+            clone = clone or retry(lambda: shallow_clone(
                 url=url,
                 ref=ref,
                 destination=destination,
@@ -3184,7 +3305,9 @@ class Worker:
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
                 token=None if refusal else self._git_token(),
-            )
+            ))
+        except GitTransient as exc:
+            raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -3230,6 +3353,42 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
+        """A retryable failure before the agent ran: the clone's forge did not answer.
+
+        Measured 2026-10-05 (#623): task_943349914a88 and task_cb020e97d585
+        failed for good on attempt 1 of 3 on "Failed to connect to github.com
+        port 443 after 134 s". An outage says nothing about the repository,
+        so this ends only the ATTEMPT (`fail_retryably`), as
+        `_fail_issue_unreachable` does for the issue fetch: the task goes back
+        to READY while it has attempts left, its lease and capacity are
+        released, and a task whose attempts are spent ends CANNOT_START.
+        """
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: the repository could not be cloned, the forge "
+            f"did not answer after {tries} tries: {reason}. The agent was not "
+            "started; the attempt is retried while the task has attempts left."
+        )
+        self.log.warning(
+            "the clone's forge did not answer; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            tries=tries,
+        )
+        summary = self._upload_outputs()
+        summary["clone_check"] = {"cause": FORGE_UNREACHABLE, "tries": tries}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+            detail={"clone": "repository", "tries": tries},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _upstream_base_pin(
         self, task: dict[str, Any]
@@ -3560,6 +3719,8 @@ class Worker:
             "findings": list(read.findings),
             "findings_dropped": read.findings_dropped,
         }
+        self._verdict_minors = read.minors
+        self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
             "verdict gate read: the agent runs" if runs
             else "verdict gate read: the agent does not run; the step still publishes",
@@ -3569,6 +3730,89 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _file_review_minors(self) -> dict[str, Any]:
+        """File the verdict's minor findings on the tenant's wave epic (#638).
+
+        See `agent_worker.findings_epic`. The epic is the signed
+        `dispatch.findings_epic`; the token is the tenant's own `-git` one,
+        read here by the worker after the agent ended and handed only to the
+        two forge calls. Never raises: what was filed, or why nothing was, is
+        the result, under `result_summary.findings_epic`.
+        """
+        minors = self._verdict_minors
+        extra: dict[str, Any] = {}
+        if self._verdict_minors_dropped:
+            extra["minors_dropped"] = self._verdict_minors_dropped
+        try:
+            epic = findings_epic_mod.epic_from_dispatch(self._dispatch_block())
+        except ValueError as exc:
+            return findings_epic_mod.not_filed(None, len(minors), str(exc), **extra)
+        if epic is None:
+            return findings_epic_mod.not_filed(
+                None, len(minors),
+                f"no findings_epic is configured for this tenant, so the {len(minors)} "
+                "minor finding(s) in the verdict were not posted",
+                **extra,
+            )
+        if not minors:
+            return {"epic": epic, "minors": 0, "filed": [], "already_filed": 0, **extra}
+        ref = forge_mod.parse_repo(self._repo_url or self.cfg.repository_url or "")
+        if ref is None or not forge_mod.may_receive_forge_token(ref.host):
+            return findings_epic_mod.not_filed(
+                epic, len(minors),
+                "this step's repository is not on github.com, where the tenant's git "
+                "credential may be sent, so the minor findings were not posted",
+                **extra,
+            )
+        refusal = self._git_token_refusal()
+        if refusal:
+            return findings_epic_mod.not_filed(
+                epic, len(minors), f"refusing to read the tenant git token: {refusal}", **extra
+            )
+        token = self._git_token()
+        if not token:
+            return findings_epic_mod.not_filed(
+                epic, len(minors),
+                "no git credential is registered for this tenant, so the minor findings "
+                "were not posted",
+                **extra,
+            )
+        self.log.register_secret(token)
+        verdict = self._verdict or {}
+        workflow_id = str((self._task or {}).get("workflow_id") or "")
+        found_by = f"found by review `{verdict.get('task_id')}`" + (
+            f" of workflow `{workflow_id}`" if workflow_id else ""
+        )
+        result = findings_epic_mod.file_minors(
+            minors=minors,
+            epic=epic,
+            ref=ref,
+            # Reads are retried on an outage; the POST is not, since one whose
+            # answer was lost may have made the comment (the dedup finds it).
+            list_comments=lambda number: forge_mod.retry_transient(
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                policy=self._forge_retry(),
+                what="the findings epic's comments",
+            ),
+            post_comment=lambda number, body: forge_mod.create_issue_comment(
+                ref=ref, token=token, number=number, body=body
+            ),
+            found_by=found_by,
+            clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
+        )
+        del token
+        result.update(extra)
+        self.log.info(
+            "review minors filed on the findings epic" if not result.get("not_filed")
+            else "review minors not all filed on the findings epic",
+            epic=epic,
+            filed=len(result["filed"]),
+            already_filed=result["already_filed"],
+            minors=len(minors),
+            reason=result.get("not_filed"),
+        )
+        return result
 
     def _finish_without_agent(self) -> Outcome:
         """End a step whose verdict gate stayed shut: no agent, same ending (#264).
@@ -5012,6 +5256,7 @@ class Worker:
         env = {ACCOUNT_STREAM_ENV: str(stream), ACCOUNT_MOVE_ENV: str(move)}
         if self._resume_session:
             env[RESUME_SESSION_ENV] = self._resume_session
+            env[RESUME_REASON_ENV] = self._resume_reason or RESUME_MOVED
         return env
 
     def _read_account_channel(self) -> dict[str, Any]:
@@ -5189,6 +5434,7 @@ class Worker:
                 current, reason = outcome, SWAP_UNUSABLE
                 continue
             self._resume_session = self._session_id
+            self._resume_reason = RESUME_MOVED
             self._just_swapped = True
             self._readings = None
             self._turns_checked = 0
@@ -8638,8 +8884,30 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        if "total_cost_usd" not in usage:
+            # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
+            # cancel, a SIGTERM, a fence or a timeout prints no result event.
+            # What its stream showed is estimated, and only the keys the run
+            # did not report itself are taken, so nothing is counted twice.
+            estimate = self._stopped_run_estimate()
+            more = {k: v for k, v in estimate.items() if k not in usage}
+            if more:
+                usage = {**usage, **more}
+                if "total_cost_usd" in more:
+                    self._spend["cost_estimated"] = True
         if usage:
             self._spend = _add_spend(self._spend, usage)
+
+    def _stopped_run_estimate(self) -> dict[str, Any]:
+        """`_stream_spend_estimate` over this profile's agent capture, or {}."""
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is None or self.ws is None:
+            return {}
+        try:
+            return _stream_spend_estimate(self.ws.artifacts / files.stdout)
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not estimate the stopped run's spend", error=str(exc))
+            return {}
 
     def _record_spend(self) -> None:
         """Write what this attempt has spent onto its attempt document. Never raises.
@@ -10605,6 +10873,142 @@ def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
     if models:
         out["models"] = sorted(models)
     return out
+
+
+#: LIST PRICES, USD per million tokens: (input, output, cache read), for the
+#: one use below -- estimating what a CLI run cost when it was stopped before
+#: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
+#: write rate. Input and output are Anthropic's first-party API rates as the
+#: Claude API reference's model table gives them (cached 2026-06-24, checked
+#: 2026-10-05). Two that look wrong are not: `claude-mythos-5-1` is the
+#: Project Glasswing counterpart of Fable 5.1, at Fable 5.1's price, and
+#: `claude-opus-5-5` is priced BELOW Opus 5 ($4/$20). Cache reads are that
+#: table's where it gives one (Fable 5.1 $0.25, Opus 5.5 $0.20) and 0.1x input
+#: elsewhere. A model missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
+#: cost is honest, a guessed one is a wrong figure. Add a model when the
+#: platform starts running it; change a price only with the date it changed.
+_LIST_PRICES: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4-8": (5.0, 25.0, 0.50),
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+}
+_CACHE_WRITE_FACTOR = 1.25
+
+#: `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: the priced name, then
+#: at most a date and a context marker. Anything else is not that model.
+_MODEL_SUFFIX = re.compile(r"(?:-\d{8})?(?:\[[a-z0-9]+\])?")
+
+#: The most of a capture file read for an estimate. The capture is itself
+#: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
+_ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
+
+
+def _list_price(model: Any) -> tuple[float, float, float] | None:
+    if not isinstance(model, str):
+        return None
+    for name, price in _LIST_PRICES.items():
+        if model.startswith(name) and _MODEL_SUFFIX.fullmatch(model[len(name):]):
+            return price
+    return None
+
+
+def _stream_spend_estimate(path: Path) -> dict[str, Any]:
+    """What a stopped CLI run spent, from the per-message usage its stream carried.
+
+    A CLI stopped on SIGTERM -- a cancel, a SIGTERM to the worker, a fence, a
+    timeout -- prints no `result` event, and that event is the only place it
+    reports `total_cost_usd`; every such attempt used to read "not reported"
+    however long it had worked (#627: cancelled attempts priced 0 of 87). Each
+    `assistant` event carries its message's `usage` and `model`, so the tokens
+    are summed per message -- the LAST copy of each message id, because the
+    stream repeats a message once per content block with the output count
+    growing -- and priced at `_LIST_PRICES`.
+
+    A FLOOR, not an exact figure: a capture past its cap keeps its head and
+    tail, so a long run's middle is not counted. The caller marks the figure
+    as an estimate. `total_cost_usd` is left out when any message's model has
+    no price, and {} comes back when the stream carried no usage at all.
+
+    The capture is in `artifacts/`, which the agent can write, so a link put
+    in its place is refused at the open, not followed (as `_publish_tail`
+    does). Never raises.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return {}
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read(_ESTIMATE_READ_LIMIT)
+    except OSError:
+        return {}
+    messages: dict[str, tuple[Any, dict[str, Any]]] = {}
+    anonymous = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith(b"{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+            continue
+        key = message.get("id")
+        if not isinstance(key, str) or not key:
+            anonymous += 1
+            key = f"\x00{anonymous}"
+        messages[key] = (message.get("model"), message["usage"])
+    if not messages:
+        return {}
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+    totals = dict.fromkeys(fields, 0)
+    cost = 0.0
+    priced = True
+    models: set[str] = set()
+    for model, usage in messages.values():
+        counts = {
+            k: usage[k] if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+            else 0
+            for k in fields
+        }
+        for k in fields:
+            totals[k] += counts[k]
+        if isinstance(model, str):
+            models.add(model)
+        price = _list_price(model)
+        if price is None:
+            priced = False
+            continue
+        inp, out, read = price
+        cost += (
+            counts["input_tokens"] * inp
+            + counts["output_tokens"] * out
+            + counts["cache_creation_input_tokens"] * inp * _CACHE_WRITE_FACTOR
+            + counts["cache_read_input_tokens"] * read
+        ) / 1_000_000
+    estimate: dict[str, Any] = dict(totals)
+    if priced:
+        estimate["total_cost_usd"] = round(cost, 10)
+    if models:
+        estimate["models"] = sorted(models)
+    return estimate
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:

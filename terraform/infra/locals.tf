@@ -221,6 +221,10 @@ locals {
   # service account, so one of the two dependencies has to be a plain string.
   wake_topic = "${var.name_prefix}-scheduler-wake"
 
+  # The same, for the topic swarm-api publishes a cancelled task's attempt to
+  # and the reconciler stops its execution from (#627).
+  execution_cancel_topic = "${var.name_prefix}-execution-cancel"
+
   image_base = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}"
 
   # --- images, by digest ---------------------------------------------------
@@ -518,6 +522,12 @@ locals {
       # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
+
+      # Where a cancel asks for its task's execution to be stopped now rather
+      # than at the worker's next poll or the reconciler's next pass (#627).
+      # The reconciler stops it: swarm-api holds no compute permission, by
+      # design (modules/scheduler/execution_cancel.tf says why).
+      EXECUTION_CANCEL_TOPIC = local.execution_cancel_topic
 
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
