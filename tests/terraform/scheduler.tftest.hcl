@@ -480,3 +480,34 @@ run "a_cancel_reaches_the_reconciler_and_only_swarm_api_publishes_it" {
     error_message = "only swarm-api writes a cancel, so only swarm-api may publish a stop request"
   }
 }
+
+run "the_task_identities_may_ring_the_wake_topic_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    worker_publisher_members = {
+      "worker:eng"             = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      "action:eng:claude-code" = "serviceAccount:swarm-action-eng-cc@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  # #636: the worker publishes `task_finished` on the wake topic when it ends
+  # a task. Publisher on that topic only -- not the dead-letter topic, not a
+  # subscription -- and the platform services' grants are unchanged.
+  assert {
+    condition = alltrue([
+      for k, m in google_pubsub_topic_iam_member.worker_publishers :
+      m.topic == "swarm-scheduler-wake" && m.role == "roles/pubsub.publisher"
+    ]) && length(google_pubsub_topic_iam_member.worker_publishers) == 2
+    error_message = "every task identity gets roles/pubsub.publisher on the wake topic, and only there"
+  }
+
+  assert {
+    condition     = keys(google_pubsub_topic_iam_member.publishers) == ["api", "reconciler"]
+    error_message = "the task identities are granted apart from the platform services, which are unchanged"
+  }
+}
