@@ -1267,6 +1267,24 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
     ),
+    # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
+    # on agent-runtime-indexer, the image that carries the repository index's
+    # toolchain once it left agent-runtime-base. Identical to claude-code in
+    # every field but its name and its image, by that decision. swarm-api names
+    # it for its own index runs (`swarm_api.repoindex.INDEXER_PROFILE`); a
+    # caller picks it by name like any other and sends no image (invariant 10).
+    "indexer": RunnerProfile(
+        name="indexer",
+        image="agent-runtime-indexer",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+    ),
 }
 
 

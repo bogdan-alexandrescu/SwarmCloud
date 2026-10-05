@@ -298,6 +298,10 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'claude-code-review': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
+  // claude-code's runner on agent-runtime-indexer (contract request 48, #625).
+  indexer: [
+    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
+  ],
   // The two worker actions (contract requests 33 and 35, #295) start no
   // runner and take `input: {}`, so they are offered nothing. Listed, empty,
   // so check-contract-parity.sh sees every catalogue profile here.

@@ -3197,7 +3197,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
-  "claude-code-review": {"required_keys": ["prompt"]}
+  "claude-code-review": {"required_keys": ["prompt"]},
+  "indexer": {"required_keys": ["prompt"]}
 }
 
 /**
@@ -3228,7 +3229,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "browser": {"available": true, "disabled_reason": ""},
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
-  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."}
+  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "indexer": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

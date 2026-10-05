@@ -128,6 +128,11 @@ FROM ${BASE_IMAGE} AS runtime
 # Re-declared so the guard below can read it: an ARG before the first FROM is
 # in scope for FROM lines only.
 ARG BASE_IMAGE
+# The commit this image was built from. cloudbuild.yaml passes it, and a
+# --build-arg nothing declares is dropped with only a warning, so it is
+# declared and recorded as the OCI revision label (#625).
+ARG GIT_SHA=""
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 USER root
 

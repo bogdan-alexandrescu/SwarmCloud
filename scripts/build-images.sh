@@ -879,10 +879,17 @@ on_interrupt() {
 }
 trap on_interrupt INT TERM
 
-if [[ "${ASYNC}" -eq 1 ]] && row_of agent-runtime-base >/dev/null && row_of agent-runtime-browser >/dev/null; then
+if [[ "${ASYNC}" -eq 1 ]]; then
   # --async returns once a build is QUEUED, so "the base has finished" cannot be
-  # waited for. Said up front rather than discovered in the browser build log.
-  warn "--async: agent-runtime-browser is submitted once agent-runtime-base is QUEUED, not built; it fails unless agent-runtime-base:${TAG} already exists"
+  # waited for. Said up front, for every image this run builds FROM another it
+  # also builds (agent-runtime-browser and agent-runtime-indexer, #625), rather
+  # than discovered in that image's build log.
+  for async_target in ${T_NAME[@]+"${T_NAME[@]}"}; do
+    async_base="$(build_after "${async_target}")"
+    if [[ -n "${async_base}" ]] && row_of "${async_base}" >/dev/null; then
+      warn "--async: ${async_target} is submitted once ${async_base} is QUEUED, not built; it fails unless ${async_base}:${TAG} already exists"
+    fi
+  done
 fi
 
 if [[ "${#T_NAME[@]}" -gt 0 ]]; then
