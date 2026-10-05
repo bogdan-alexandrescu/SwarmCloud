@@ -35,7 +35,7 @@ from swarm_api.routes import gittokens as gittokens_routes
 from .conftest import auth_header, seed_tenant
 
 #: Built at runtime from pieces: nothing token-shaped is a literal here.
-FAKE_TOKEN = "ghp" + "_" + secrets.token_hex(18)
+FAKE_VALUE = "".join(("ghp", "_", secrets.token_hex(18)))
 
 #: The shapes a GitHub credential takes, matched against every response and log.
 TOKEN_SHAPES = re.compile(
@@ -47,7 +47,7 @@ REPO_HEX = REPO.removeprefix("repo_")
 
 
 def assert_no_token_shape(text: str) -> None:
-    assert FAKE_TOKEN not in text
+    assert FAKE_VALUE not in text
     assert not TOKEN_SHAPES.search(text), text
 
 
@@ -195,7 +195,7 @@ def test_no_route_accepts_a_token_value(client, eng_with_git) -> None:
         assert route.methods <= {"GET", "POST", "DELETE"}, (route.path, route.methods)
     for field in ("value", "token", "secret", "api_key", "password"):
         response = client.post(
-            "/v1/git-tokens", json={"scope": "user", field: FAKE_TOKEN},
+            "/v1/git-tokens", json={"scope": "user", field: FAKE_VALUE},
             headers=auth_header("alice"),
         )
         assert response.status_code == 422, (field, response.text)
@@ -203,7 +203,7 @@ def test_no_route_accepts_a_token_value(client, eng_with_git) -> None:
     token_id = token_id_for("eng", "tenant", "")
     for method in ("put", "patch"):
         response = client.request(
-            method, f"/v1/git-tokens/{token_id}/value", json={"value": FAKE_TOKEN},
+            method, f"/v1/git-tokens/{token_id}/value", json={"value": FAKE_VALUE},
             headers=auth_header("root"),
         )
         assert response.status_code in (404, 405), response.text
@@ -280,11 +280,11 @@ def test_no_response_or_log_carries_a_token(client, eng_with_git, db, caplog) ->
     # A last4 known from an earlier rotation is served; nothing more of a value is.
     texts = [client.get("/v1/git-tokens", headers=auth_header("alice")).text]
     default_id = token_id_for("eng", "tenant", "")
-    db.docs[f"{COLLECTION}/{default_id}"]["last4"] = FAKE_TOKEN[-4:]
+    db.docs[f"{COLLECTION}/{default_id}"]["last4"] = FAKE_VALUE[-4:]
     for method, path, body, user in (
         ("post", "/v1/git-tokens", {"scope": "repository", "repo_id": REPO}, "root"),
         ("post", "/v1/git-tokens", {"scope": "user"}, "alice"),
-        ("post", "/v1/git-tokens", {"scope": "user", "value": FAKE_TOKEN}, "alice"),
+        ("post", "/v1/git-tokens", {"scope": "user", "value": FAKE_VALUE}, "alice"),
         ("get", "/v1/git-tokens", None, "alice"),
         ("get", f"/v1/git-tokens/{default_id}", None, "alice"),
         ("delete", f"/v1/git-tokens/{default_id}", None, "root"),
@@ -292,7 +292,7 @@ def test_no_response_or_log_carries_a_token(client, eng_with_git, db, caplog) ->
         response = client.request(method, path, json=body, headers=auth_header(user))
         texts.append(response.text)
     listed = client.get("/v1/git-tokens", headers=auth_header("alice")).json()["tokens"]
-    assert {t["token_id"]: t["last4"] for t in listed}[default_id] == FAKE_TOKEN[-4:]
+    assert {t["token_id"]: t["last4"] for t in listed}[default_id] == FAKE_VALUE[-4:]
     for text in texts:
         assert_no_token_shape(text)
     for record in caplog.records:
