@@ -633,6 +633,13 @@ class Worker:
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
+        # Where the pull request text of a step whose verdict gate stayed shut
+        # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
+        # `implementer`, `label` or None; None when the gate did not shut.
+        self._pr_text_from: dict[str, str | None] | None = None
+        # The contributors this integrator left out of its merge because they
+        # changed nothing (`_integrates_with_changes`, 2026-10-05).
+        self._no_change_contributors: list[str] = []
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -1445,6 +1452,21 @@ class Worker:
         if waiting_on:
             return functools.partial(self._park_dependency_incomplete, waiting_on)
 
+        # ---- STEP 4a'': an upstream this step needs changed nothing ---------
+        # Owner decision, 2026-10-05. A step allowed an empty diff
+        # (`allow_empty_diff`) and had nothing to change; this step needed
+        # that change -- its patch, its branch, or every branch it integrates
+        # -- or stages from a step that was itself skipped. It ends SUCCEEDED
+        # with `result_summary.skipped` here, on the same verified document,
+        # before a checkpoint is restored, a repository cloned (the branch it
+        # would start from was never pushed), an input staged (the patch was
+        # never written) or a credential read. After the window closes, like
+        # every other ending `_prepare` decides on.
+        self._task = task
+        nothing = self._nothing_to_work_on(task)
+        if nothing:
+            return functools.partial(self._finish_nothing_to_change, nothing)
+
         # ---- STEP 4a': a WORKER ACTION starts no runner (contract request 33)
         # `merge` and `post-verdict` name a `WorkerAction` in the frozen
         # catalogue and have no runner_argv: the worker performs the action
@@ -2239,6 +2261,15 @@ class Worker:
         # runs and the publish WAITS (#165, owner decision 2026-09-28): it is
         # made below, only once the upload manifest has passed the check.
         summary = self._upload_outputs(defer_publish=True)
+        if ran_clean and self._no_change(summary):
+            # An empty diff this step was allowed (2026-10-05): its result,
+            # which the missing-output check and `_published_nothing` read,
+            # and which a dependant that needed the change skips on.
+            summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+            self.log.info(
+                "nothing to change: the diff is empty and this step allows it",
+                allow_empty_diff=True,
+            )
         # Before the check, which counts what is carried as present (#166).
         self._carry_parked_uploads(summary)
         # Here, where the runner ended on its own, and not on the park, cancel
@@ -2257,6 +2288,12 @@ class Worker:
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         if self._verdict is not None:
             summary["verdict_gate"] = dict(self._verdict)
+            if not self._verdict.get("agent_ran", True):
+                # The owner's words for it (2026-10-05): on MERGE, no fix
+                # agent; the step only published the reviewed work.
+                summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+        if self._pr_text_from is not None:
+            summary["pull_request_text_from"] = dict(self._pr_text_from)
         self._export_metrics()
 
         runner_result = self._add_runner_block(summary)
@@ -3356,6 +3393,133 @@ class Worker:
         )
         return staged
 
+    # -- an empty diff that is a result (owner decision, 2026-10-05) --------
+
+    def _allows_empty_diff(self) -> bool:
+        """Whether this step's signed dispatch block says an empty diff is a
+        result (`allow_empty_diff`), not the `empty_diff` failure."""
+        return expected_mod.allows_empty_diff(self._dispatch_block())
+
+    def _no_change(self, summary: dict[str, Any]) -> bool:
+        """True when this attempt may end SUCCEEDED with `no_change`: it is
+        allowed an empty diff and the harvest found one. Never for an
+        integrator still owed a merge of its contributors, whose deliverable
+        is their work, not its own diff."""
+        return (
+            self._allows_empty_diff()
+            and not self._integration_is_pending()
+            and expected_mod.changed_nothing(summary.get("git"))
+        )
+
+    def _upstream_left(self, task_id: str) -> str | None:
+        """`expected_mod.left_nothing` of one upstream, read through the
+        tenant-checked upstream read; None for one that did not SUCCEED.
+
+        None too for one that cannot be read -- no document, another
+        tenant's: that is not evidence it changed nothing, and the step goes
+        on to meet the refusal where it always did (staging, the clone, the
+        merge's "missing"), with the words those give.
+        """
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=task_id,
+                tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except InputUnavailable:
+            return None
+        if upstream.get("state") != TaskState.SUCCEEDED.value:
+            return None
+        return expected_mod.left_nothing(upstream.get("result_summary"))
+
+    def _nothing_to_work_on(self, task: dict[str, Any]) -> list[str]:
+        """The upstream task ids whose missing change leaves this step nothing
+        to do (`expected_mod.nothing_to_work_on`), or [] when it runs.
+
+        Every id comes from the verified spec: `metadata.input_from`'s keys
+        and the signed dispatch block's `builds_on`, `pr_author` (a
+        `single-pr` reader or amender clones the author's branch), merge
+        target and `integrates`. A step that names none reads nothing.
+        """
+        block = self._dispatch_block()
+        declared = (task.get("metadata") or {}).get("input_from")
+        input_from = {
+            key.strip(): value
+            for key, value in (declared.items() if isinstance(declared, dict) else ())
+            if isinstance(key, str) and isinstance(value, str) and _TASK_ID_RE.match(key.strip())
+        }
+        branch_from: list[str] = []
+        builds_on = self._dispatch_builds_on()
+        if builds_on:
+            branch_from.append(builds_on)
+        author = block.get("pr_author")
+        if self._pr_role() in ("reader", "amender") and isinstance(author, str) and (
+            _TASK_ID_RE.match(author.strip())
+        ):
+            branch_from.append(author.strip())
+        target = block.get(merge_mod.MERGE_TARGET_FIELD)
+        pull = target.get("pull_request") if isinstance(target, dict) else None
+        if isinstance(pull, str) and _TASK_ID_RE.match(pull.strip()):
+            branch_from.append(pull.strip())
+        integrates = (
+            [t for t in self._dispatch_integrates() if _TASK_ID_RE.match(t)]
+            if self._integration_is_pending() else []
+        )
+        upstream = list(dict.fromkeys([*input_from, *branch_from, *integrates]))
+        if not upstream:
+            return []
+        left = {task_id: self._upstream_left(task_id) for task_id in upstream}
+        return expected_mod.nothing_to_work_on(
+            input_from=input_from, branch_from=branch_from, integrates=integrates, left=left,
+        )
+
+    def _finish_nothing_to_change(self, upstream: list[str]) -> Outcome:
+        """End this step SUCCEEDED, SKIPPED for "nothing to change" (2026-10-05).
+
+        No agent, no clone, no staging, no publish: the change this step was
+        to work on does not exist. The generation is checked first, as before
+        any ending, and the finish is the fenced write every other ending
+        makes, which releases the lease. SUCCEEDED, not CANCELLED: the
+        workflow reads a skipped step as a success (`swarm_api.rollup`), and
+        its own dependants are promoted, read this marker and skip in turn.
+        The frozen `TaskState` has no SKIPPED; the marker is
+        `result_summary.skipped`.
+        """
+        self.phases.enter("nothing_to_change")
+        self.control.validate_generation()
+        summary: dict[str, Any] = {
+            expected_mod.SKIPPED_SUMMARY_KEY: {
+                "reason": expected_mod.NOTHING_TO_CHANGE,
+                "upstream": list(upstream),
+            },
+        }
+        self._export_metrics()
+        self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        self.log.info(
+            "nothing to change: a step this one needs changed nothing; no agent ran",
+            upstream=list(upstream),
+        )
+        return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
+
+    def _integrates_with_changes(self) -> list[str]:
+        """The contributors this integrator merges: `integrates`, less every
+        one that ended with nothing to change (`no_change`, or skipped). Those
+        pushed no branch, so merging them would name them "missing" on the
+        pull request, as an incomplete integration they are not. They are
+        recorded in `_no_change_contributors`, and the publish says so."""
+        kept: list[str] = []
+        self._no_change_contributors = []
+        for task_id in self._dispatch_integrates():
+            # One that cannot be read is merged as before, and the merge
+            # names a branch it cannot find.
+            left = self._upstream_left(task_id) if _TASK_ID_RE.match(task_id) else None
+            if left is None:
+                kept.append(task_id)
+            else:
+                self._no_change_contributors.append(task_id)
+        return kept
+
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
         """Read this step's verdict gate (#264). None: no gate. True/False: run the agent or not.
 
@@ -3410,6 +3574,11 @@ class Worker:
         ws = self.ws
         assert ws is not None and self._verdict is not None
         self._take_workdir_baseline()
+        if self._opens_pull_request():
+            # Before the result is written and the finish reads the artifacts
+            # folder: the pull request this step owes is titled by the
+            # implementer's own text, or the workflow's label (2026-10-05).
+            self._adopt_pull_request_text()
         ws.result_path.write_text(
             json.dumps(
                 {
@@ -3437,6 +3606,117 @@ class Worker:
                 stderr_truncated=False,
             )
         )
+
+    def _pr_label(self) -> str | None:
+        """The workflow's label from the signed dispatch block (`pr_label`),
+        as one line, or None. swarm-api writes it on a gated step only."""
+        raw = self._dispatch_block().get(expected_mod.PR_LABEL_KEY)
+        if not isinstance(raw, str):
+            return None
+        text = " ".join(raw.split())
+        return text or None
+
+    def _adopt_pull_request_text(self) -> None:
+        """Title and describe the pull request of a step whose gate stayed shut.
+
+        Owner decision, 2026-10-05: after a MERGE verdict no fix agent runs,
+        so nothing writes the `pr-title.txt` an integrator owes. In order:
+
+          1. the implementer's own `pr-title.txt` and `pr-body.md` -- the
+             uploaded artifacts of the `builds_on` step, located through the
+             tenant-checked upstream read and its successful attempt's
+             manifest (`inputs.artifact_reference`, whose key must lie under
+             this tenant's prefix for that task), at most
+             `PR_READ_LIMIT_BYTES` each;
+          2. for whichever is absent or, for the title, unusable: text made
+             from the workflow's label (`_pr_label`).
+
+        Each is written into this attempt's artifacts folder, where the
+        publish reads an agent's (`_agent_pull_request_text`), so it is
+        scrubbed, refused on attribution or a task id, and its mentions
+        neutralised exactly as an agent's own text is. With neither, nothing
+        is written, and the missing title fails the attempt as before. Where
+        each came from is `result_summary.pull_request_text_from`.
+        """
+        ws = self.ws
+        assert ws is not None and self._verdict is not None
+        source: dict[str, str | None] = {"title": None, "body": None}
+        upstream = self._dispatch_builds_on()
+        document: dict[str, Any] | None = None
+        if upstream:
+            try:
+                document = inputs_mod.fetch_upstream_task(
+                    self.db,
+                    upstream_task_id=upstream,
+                    tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                )
+            except InputUnavailable as exc:
+                self.log.warning(
+                    "the implementer's pull request text could not be read",
+                    upstream=upstream, error=str(self._scrub(str(exc))),
+                )
+        if document is not None:
+            for name, part in ((PR_TITLE_FILE, "title"), (PR_BODY_FILE, "body")):
+                if self._copy_upstream_text(document, upstream, name):
+                    source[part] = "implementer"
+        if source["title"] is not None:
+            refused: list[str] = []
+            if self._agent_title(refused) is None:
+                # A title the publish would refuse is no title: the label's
+                # stands in rather than the attempt failing on it.
+                (ws.artifacts / PR_TITLE_FILE).unlink(missing_ok=True)
+                source["title"] = None
+                self.log.warning(
+                    "the implementer's pr-title.txt was not usable; the label's is used",
+                    refused=refused,
+                )
+        label = self._pr_label()
+        if label is not None:
+            if source["title"] is None and not (ws.artifacts / PR_TITLE_FILE).exists():
+                (ws.artifacts / PR_TITLE_FILE).write_text(label + "\n", encoding="utf-8")
+                source["title"] = "label"
+            if source["body"] is None and not (ws.artifacts / PR_BODY_FILE).exists():
+                verdict = self._verdict["verdict"]
+                (ws.artifacts / PR_BODY_FILE).write_text(
+                    f"{label}\n\nThe review's verdict was {verdict}, so no fix agent "
+                    "ran: this pull request carries the implementer's work as it was "
+                    "reviewed.\n",
+                    encoding="utf-8",
+                )
+                source["body"] = "label"
+        self._pr_text_from = source
+        self.log.info("the shut gate's pull request text", title=source["title"],
+                      body=source["body"])
+
+    def _copy_upstream_text(self, document: dict[str, Any], upstream: str, name: str) -> bool:
+        """Copy `name` from the upstream's successful attempt into this
+        attempt's artifacts folder. False, and nothing written, when it has
+        none, it is over `PR_READ_LIMIT_BYTES`, the read fails, or the folder
+        already holds the name."""
+        ws = self.ws
+        assert ws is not None
+        destination = ws.artifacts / name
+        if destination.exists() or destination.is_symlink():
+            return False
+        try:
+            reference = inputs_mod.artifact_reference(
+                document, tenant_id=self.cfg.tenant_id, upstream_task_id=upstream, filename=name,
+            )
+        except InputUnavailable:
+            return False
+        if reference.size_bytes > PR_READ_LIMIT_BYTES:
+            self.log.warning("the implementer's file is over the read limit; not used",
+                             file=name, bytes=reference.size_bytes)
+            return False
+        try:
+            data = self.store.download_bytes(reference.key)
+        except Exception as exc:  # the store's own errors vary by backend
+            self.log.warning("the implementer's file could not be read; not used",
+                             file=name, error=type(exc).__name__)
+            return False
+        destination.write_bytes(data[:PR_READ_LIMIT_BYTES])
+        return True
 
     def _link_artifacts(self) -> None:
         """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
@@ -3935,6 +4215,11 @@ class Worker:
             if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         ]
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
+        if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+            # An allowed empty diff (2026-10-05) writes no patch and opens no
+            # pull request, so neither the patch nor a title is owed; every
+            # other expected output still is.
+            missing = [name for name in missing if name not in (PATCH_NAME, PR_TITLE_FILE)]
         if not missing:
             return []
         causes = self._missing_causes(summary)
@@ -4194,6 +4479,10 @@ class Worker:
         if not self._opens_pull_request():
             return None
         if self._verdict is not None and not self._verdict.get("agent_ran", True):
+            return None
+        if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+            # `allow_empty_diff` (2026-10-05): changing nothing is this
+            # step's result, and there was nothing to open a pull request for.
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
@@ -7352,7 +7641,7 @@ class Worker:
             # at an arbitrary ref.
             if role == "integrator":
                 upstream = [
-                    f"{cfg.git_branch_prefix}{tid}" for tid in self._dispatch_integrates()
+                    f"{cfg.git_branch_prefix}{tid}" for tid in self._integrates_with_changes()
                 ]
                 if upstream:
                     merge = merge_branches(
@@ -7374,6 +7663,12 @@ class Worker:
                         "missing": list(merge.missing),
                         "complete": merge.complete,
                     }
+                if self._no_change_contributors:
+                    # Not merged, and not missing: they had nothing to change
+                    # (`allow_empty_diff`), so they pushed no branch.
+                    out.setdefault("integrated", {})["no_change"] = [
+                        f"{cfg.git_branch_prefix}{tid}" for tid in self._no_change_contributors
+                    ]
 
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
