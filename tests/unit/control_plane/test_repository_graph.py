@@ -42,7 +42,7 @@ from .repo_fakes import TenantTokens, make_client
 from .repo_index_fakes import REPOSITORY, IndexGitHub, finish_index_task, fixture_index, sha
 
 ONE, TWO = sha("one"), sha("two")
-WRITER = (Path(__file__).resolve().parents[3] / "images" / "agent-runtime-base" / "repo-index"
+WRITER = (Path(__file__).resolve().parents[3] / "images" / "agent-runtime-indexer" / "repo-index"
           / "repo_graph_shards.py")
 
 

@@ -157,7 +157,7 @@ WALKED_KINDS = frozenset({"call", "reference", "route_handler", "inherit"})
 UNTRUSTED_LANGUAGE_STATUSES = frozenset({"unsupported", "failing", "timed_out"})
 
 #: A file's language when no graph lists it (a file the head adds). Restated
-#: from the extractor (images/agent-runtime-base/repo-index/
+#: from the extractor (images/agent-runtime-indexer/repo-index/
 #: repo_index_extract.py `SUPPORTED_EXTENSIONS`, `UNSUPPORTED_EXTENSIONS`,
 #: `UNSUPPORTED_FILENAMES`), which runs in another image; a language missing
 #: here is a file with no language, i.e. not source.

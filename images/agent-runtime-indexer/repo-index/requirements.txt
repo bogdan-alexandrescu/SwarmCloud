@@ -1,7 +1,7 @@
 # The repository-index extractor's only dependencies: the tree-sitter runtime
 # and the five grammars docs/repo-index.md §3.5 names for phase 1 (Python,
 # TypeScript/TSX, JavaScript, Go, HCL). Installed into their own environment
-# (/opt/repo-index) by images/agent-runtime-base/Dockerfile with
+# (/opt/repo-index) by images/agent-runtime-indexer/Dockerfile with
 # --require-hashes, so a rebuild in six months installs these exact bytes.
 #
 # The SAME versions are pinned in the root pyproject.toml's dev group, so the

@@ -67,7 +67,7 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify)
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify)
 
 # Find the build recipe for a target. Track B owns images/ and the service
 # Dockerfiles, so both layouts are accepted rather than assumed.
@@ -87,11 +87,13 @@ find_recipe() {
   return 1
 }
 
-# The one image that must FINISH building before another may be SUBMITTED.
+# The images that must wait for another to FINISH building before they may be
+# SUBMITTED.
 #
 # images/agent-runtime-browser/cloudbuild.yaml pulls agent-runtime-base:<tag>
 # in its first step and builds FROM that digest, so submitting it before the
-# base has been pushed fails with manifest-unknown. When builds ran one at a
+# base has been pushed fails with manifest-unknown. images/agent-runtime-indexer/
+# cloudbuild.yaml does the same (#625). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -102,6 +104,7 @@ find_recipe() {
 build_after() {
   case "$1" in
     agent-runtime-browser) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
 }
@@ -228,9 +231,11 @@ LIST_INPUTS=0
 # Bounded because saga-agents-staging is a SHARED project: its Cloud Build
 # concurrency quota is shared with the other team in it, so a release should
 # take what it needs and no more. And 4 is what it needs. agent-runtime-browser
-# cannot be submitted until agent-runtime-base has FINISHED, so the critical
-# path is two builds long whatever the bound; four slots fit the other six
-# images inside that path, and eight would only finish at the same time.
+# and agent-runtime-indexer cannot be submitted until agent-runtime-base has
+# FINISHED, so the critical path is two builds long whatever the bound; four
+# slots fit the other six images inside that path, and the two derived images
+# share the slots the base frees, so nine images would only finish at the same
+# time with more.
 PARALLELISM="${BUILD_PARALLELISM:-4}"
 # How often the scheduler looks for finished builds. A build takes minutes.
 POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"
