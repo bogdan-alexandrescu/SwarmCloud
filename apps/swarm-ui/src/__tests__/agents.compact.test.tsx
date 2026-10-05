@@ -135,8 +135,9 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(text).toContain('claude-code · sonnet')
     expect(text).toContain('alex')
     expect(text).toContain('try 1/3')
-    // The step is the name, so the task id rides on line two.
-    expect(sub!.querySelector('.id')?.getAttribute('title')).toBe(STEP.id)
+    // The whole task id is printed under the name (#94), not on line two.
+    expect(sub!.querySelector('.id')).toBeNull()
+    expect(rowOf(c, 'fix-heartbeat').querySelector('.cr-name .tid-text')?.textContent).toBe(STEP.id)
   })
 
   it('gives a waiting row its reason in place of the try', async () => {
