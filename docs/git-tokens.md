@@ -319,8 +319,10 @@ verified 3 days ago — the last attempt failed: …" rather than turning rows
 
 The probe reads the secret into memory, registers it as a literal with the
 redaction filter before the first request, sends it only to the forge host
-the record names (`forge.may_receive_forge_token`, the rule the issue fetch
-and the worker already use), and returns booleans, labels and reasons. A
+the record names (the rule `forge.may_receive_forge_token` states in
+`apps/agent-worker/agent_worker/forge.py`; it lives only in the worker
+today, so GT2 adds or shares a swarm-api equivalent of that host rule rather
+than assuming one exists), and returns booleans, labels and reasons. A
 forge error message is passed through `redact` before it becomes a reason. No
 route returns any part of a value except `last4`. In the console, no
 `aria-label`, `title`, tooltip, `data-` attribute or copy button carries a

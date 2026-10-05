@@ -622,3 +622,64 @@ def test_the_mockup_ends_with_an_all_screens_to_pick_summary():
 
 def test_the_mockup_links_the_git_tokens_doc():
     assert 'href="../../git-tokens.md"' in _text(MOCKUP)
+
+
+# --------------------------------------------------------------------------
+# review findings on the second pass
+# --------------------------------------------------------------------------
+
+def _x2_bullet() -> str:
+    body = _section(_text(DESIGN), _heading(_text(DESIGN), "### 4.4 "))
+    start = body.index("**(X2)")
+    end = body.index("The choice of X1 or X2", start)
+    return body[start:end]
+
+
+def test_x2_posts_the_gate_through_the_checks_api_on_the_head_sha():
+    # A workflow_dispatch run's own check runs land on the dispatched ref's
+    # commit (the default branch), never on the PR head, so X2 can only gate
+    # a merge if the workflow posts the check run itself.
+    bullet = " ".join(_x2_bullet().split())
+    for needle in ("POST /repos/{owner}/{repo}/check-runs", "head_sha", "checks: write",
+                   "GITHUB_TOKEN", "default branch's HEAD", "not the gate", "commit status",
+                   "M5"):
+        assert needle in bullet, needle
+    assert "is posted by GitHub Actions on the head sha" not in bullet
+
+
+def test_the_x2_lane_and_the_gate_mockup_say_who_posts_the_check():
+    plan = _section(_text(DESIGN), _heading(_text(DESIGN), "## 7. "))
+    ri12 = re.search(r"^\| RI12 \|.*$", plan, flags=re.M)
+    assert ri12 and "Checks API" in ri12.group(0) and "checks: write" in ri12.group(0)
+    for vid in ("gate-a", "gate-b", "gate-c"):
+        assert "Checks API step (X2)" in _variant(vid), vid
+
+
+def test_index_versions_is_listed_once_in_the_api_sketch():
+    body = _section(_text(DESIGN), _heading(_text(DESIGN), "## 6. "))
+    assert body.count("repositories/{repo_id}/index_versions/{commit_sha}\n") == 1
+    entry = body[body.index("repositories/{repo_id}/index_versions/{commit_sha}\n"):]
+    entry = entry[: entry.index("\n\n")]
+    for field in ("graph_manifest", "graph_digest", "languages"):
+        assert field in entry, field
+
+
+def test_no_lane_depends_on_a_lane_in_its_own_phase():
+    plan = _section(_text(DESIGN), _heading(_text(DESIGN), "## 7. "))
+    rows = re.findall(r"^\| (RI\d+[a-z]?) \| (\d) \|.*\| ([^|]*) \|$", plan, flags=re.M)
+    phase = {lane: int(p) for lane, p, _ in rows}
+    for lane, p, needs in rows:
+        for dep in re.findall(r"\bRI\d+[a-z]?\b", needs):
+            if dep in phase and phase[dep] == int(p):
+                # an in-phase ordering is allowed only when the plan states it
+                note = " ".join(plan.split())
+                assert f"{lane} follows {dep} within phase {p}" in note, f"{lane} needs {dep}, same phase"
+            elif dep in phase:
+                assert phase[dep] < int(p), f"{lane} (phase {p}) needs {dep} (phase {phase[dep]})"
+
+
+def test_the_probe_host_rule_is_not_claimed_to_exist_in_swarm_api():
+    body = " ".join(_text(GIT_TOKENS).split())
+    assert "apps/agent-worker/agent_worker/forge.py" in body
+    assert "swarm-api equivalent" in body
+    assert "the rule the issue fetch and the worker already use" not in body

@@ -777,9 +777,20 @@ Actions:**
   (`swarm-selected-tests.yml`), with inputs carrying the head sha and the
   test ids. The dispatch is made on the **default branch's** copy of the
   workflow, which checks out the head sha — so a pull request cannot rewrite
-  the workflow that judges it — and the job, named `swarmcloud/selected-tests`,
-  is posted by GitHub Actions on the head sha; the ruleset pins it to GitHub
-  Actions' `app_id` as every rule in docs/ci.md does. Needs the
+  the workflow that judges it. A `workflow_dispatch` run's own check suite
+  and job check runs attach to the commit the dispatched ref points at (the
+  default branch's HEAD, `GITHUB_SHA`), **not** to the sha the job checks
+  out, so the job's own check run is never on the pull request and is not
+  the gate. The workflow therefore **posts the gate itself**: its last step
+  creates a check run with the Checks API (`POST
+  /repos/{owner}/{repo}/check-runs`, `head_sha` = the input sha, `name` =
+  `swarmcloud/selected-tests`, the plan in its summary) using the job's
+  `GITHUB_TOKEN` with `permissions: checks: write`. That check run is
+  attributed to GitHub Actions' `app_id`, so the ruleset still pins it to
+  GitHub Actions' `app_id` as every rule in docs/ci.md does, and the merge
+  step reads it at the pinned head sha like any required check. A commit
+  status cannot stand in for it: a status has no `app_id`, and merge-step.md
+  M5 refuses a required check without one. Needs the
   `workflow_dispatch` capability on the resolved token
   ([git-tokens.md](git-tokens.md) §5.1) and a workflow file in the
   repository. Inputs are strings with a size limit, so a plan too long for
@@ -903,7 +914,8 @@ contract's and must not leak into it.
 
     repositories/{repo_id}/index_versions/{commit_sha}
       task_id, attempt_id, json_object, md_object, digest, kind, base_sha,
-      built_at, bytes, truncated
+      built_at, bytes, truncated,
+      graph_manifest, graph_digest, languages      (revised 2026-10-04)
 
     repo_index_runs/{task_id}
       tenant_id, repo_id, commit_sha, kind, trigger (interval|change|manual),
@@ -911,9 +923,6 @@ contract's and must not leak into it.
 
     issue_runs/{run_id}                     (existing; two new optional fields)
       index_sha, index_digest
-
-    repositories/{repo_id}/index_versions/{commit_sha}   (revised: three fields)
-      graph_manifest, graph_digest, languages
 
     impact_plans/{plan_id}                  (revised 2026-10-04)
       tenant_id, repo_id, pull_request, base_sha, head_sha, index_sha,
@@ -1006,7 +1015,11 @@ the owner picks.
 
 Each lane is one territory, so no two lanes edit the same file (CLAUDE.md:
 territory, not subject, splits work). Lanes in one phase run side by side;
-a phase starts when the one before it has merged.
+a phase starts when the one before it has merged. The per-language LSP
+adapters RI10a-RI10d need RI10's driver, so they sit in phase 4 rather than
+beside it in phase 3. One ordering inside a phase is kept from RI0's plan:
+RI2 follows RI1 within phase 1, because index runs are scoped to a
+registration.
 
 | lane | phase | builds | territory | needs |
 |---|---|---|---|---|
@@ -1020,12 +1033,12 @@ a phase starts when the one before it has merged.
 | RI8 | 3 | optional: the GitHub push webhook with per-registration HMAC secret | `apps/swarm-api/`, `terraform/modules/secret_manager/` | RI4, owner's go-ahead |
 | RI9 | 2 | *(revised)* **graph storage**: the shard writer (content-addressed blobs, manifest, caller and callee shards), promotion recording `graph_manifest` and `graph_digest`, the blob sweep, measured sizes against §2.5's estimates | the shard writer beside RI3's tool, new `repograph.py` in `apps/swarm-api/swarm_api/` | RI2, RI3 |
 | RI10 | 3 | *(revised)* the headless LSP driver: start a server over stdio, budget and per-request timeouts, memory stop, `definition` / call hierarchy / `references`, the `failing` / `timed_out` / `unsupported` fallback; the four servers installed in the indexer image (one lane, because they share its Dockerfile) | the indexer image, a new `lsp/` package beside RI3's tool | RI9 |
-| RI10a | 3 | *(revised)* Python through **pyright**: its adapter, decorator routes resolved, pytest test discovery, tests on a fixture repository | `lsp/python.py` and its tests | RI10 |
-| RI10b | 3 | *(revised)* TypeScript and JavaScript through **tsserver** (`typescript-language-server`): adapter, Express/Next routes, vitest/jest discovery | `lsp/typescript.py` and its tests | RI10 |
-| RI10c | 3 | *(revised)* Go through **gopls**: adapter, `HandleFunc` routes, `TestXxx` discovery, no module download | `lsp/go.py` and its tests | RI10 |
-| RI10d | 3 | *(revised)* HCL through **terraform-ls**: adapter, `references` in place of call hierarchy, `terraform test` discovery | `lsp/terraform.py` and its tests | RI10 |
+| RI10a | 4 | *(revised)* Python through **pyright**: its adapter, decorator routes resolved, pytest test discovery, tests on a fixture repository | `lsp/python.py` and its tests | RI10 |
+| RI10b | 4 | *(revised)* TypeScript and JavaScript through **tsserver** (`typescript-language-server`): adapter, Express/Next routes, vitest/jest discovery | `lsp/typescript.py` and its tests | RI10 |
+| RI10c | 4 | *(revised)* Go through **gopls**: adapter, `HandleFunc` routes, `TestXxx` discovery, no module download | `lsp/go.py` and its tests | RI10 |
+| RI10d | 4 | *(revised)* HCL through **terraform-ls**: adapter, `references` in place of call hierarchy, `terraform test` discovery | `lsp/terraform.py` and its tests | RI10 |
 | RI11 | 3 | *(revised)* the **impact** query: diff from the forge, changed symbols, bounded transitive callers, covering tests, `fallback_triggers`, `impact_plans`, `POST .../impact`, the graph, symbols and languages routes | new `impact.py` and the routes in `routes/repositories.py` | RI9 |
-| RI12 | 4 | *(revised)* the **`swarmcloud/selected-tests`** check and merge-step integration: the X2 dispatch and its example workflow, the check summary, the P1 scheduled full suite and its issue, the P3 fallback; a merge-step test that a required `swarmcloud/selected-tests` pinned to an App is read like any required check | `impact.py`'s check composer, `apps/agent-worker/agent_worker/merge.py` tests (after M1a merges) | RI11, the owner's policy pick |
+| RI12 | 4 | *(revised)* the **`swarmcloud/selected-tests`** check and merge-step integration: the X2 dispatch and its example workflow (whose last step posts `swarmcloud/selected-tests` on the input head sha through the Checks API with `checks: write`, because the dispatched run's own check runs land on the default branch commit), the check summary, the P1 scheduled full suite and its issue, the P3 fallback; a merge-step test that a required `swarmcloud/selected-tests` pinned to an App is read like any required check | `impact.py`'s check composer, `apps/agent-worker/agent_worker/merge.py` tests (after M1a merges) | RI11, the owner's policy pick |
 | RI12b | 4 | *(revised)* X1: the `test-runner` and checks-posting steps | `apps/agent-worker/`, the frozen-contract edit by the owner | request C |
 | RI13 | 4 | *(revised)* the **graph explorer** UI from the owner's pick (module graph, symbol call graph, test map), the impact view and the PR card's gate row | `apps/swarm-ui/` | RI11, RI6 |
 | RI14 | 4 | *(revised)* the carved `graph/` prefix (worker write grant excludes it, the indexer profile's account writes it) and the per-tenant `-git-checks` secret with its sole accessor | `terraform/modules/tenancy/`, `terraform/modules/secret_manager/` | request B, before P1 or P3 is enabled |
