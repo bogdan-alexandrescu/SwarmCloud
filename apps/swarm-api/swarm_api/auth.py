@@ -48,9 +48,15 @@ TENANT_HEADER = "X-Swarm-Tenant"
 #: non-default tenant would 404 every artifact of the tasks it lists. It is
 #: validated by exactly the same `Authenticator._select_tenant` as the header:
 #: it selects among the caller's verified memberships and never grants one.
+#:
+#: The checkpoint archive is here for the same reason: the console offers it
+#: as a plain download link (`checkpointDownloadHref`), so the browser can
+#: stream a large archive to disk rather than into memory, and that link can
+#: carry no header either.
 TENANT_QUERY = "tenant"
 TENANT_QUERY_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
 })
 
 
@@ -779,10 +785,18 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: ever. What it can submit is bounded by the run documents, not the caller:
 #: only an `auto` run's own stored plan, in the run's own tenant, as the
 #: member who created it (`routes.runs.run_owner_auth`).
+#:
+#: And the repository index poll (docs/repo-index.md §3.3, lane RI4, terraform
+#: jobs.tf `repo_index_poll`): it reads one tenant's registered repositories'
+#: heads with that tenant's token and queues an index run -- a fixed prompt
+#: by profile name -- in that tenant, as the registration's creator
+#: (`routes.admin.registration_owner_auth`). It is the one route here the
+#: sweeper alone may call: §6.1 admits only the scheduler's identity.
 ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/v1/admin/workflows/rollup"),
         ("POST", "/v1/admin/runs/advance"),
+        ("POST", "/v1/admin/repositories/poll"),
     }
 )
 

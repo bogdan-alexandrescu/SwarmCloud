@@ -243,3 +243,50 @@ def test_a_reconciler_with_no_broker_says_so_once_at_start(db, config, monkeypat
     assert "no quota broker configured" not in _built_with(
         db, config, hold_releaser=RecordingReleaser(db)
     )
+
+
+def _left_running(db: FakeFirestore, *, terminate_returns: bool):
+    """A GKE Job still active after its task reached CANCELLED.
+
+    No fence: a terminal task has no generation left to fence. What ends this
+    attempt is the confirmed kill, and nothing else will ever release for it
+    -- the worker that would have died with its Job.
+    """
+    seed_dead_worker(db, generation=3)
+    db.doc("tasks/task_1")["state"] = TaskState.CANCELLED.value
+    execution = replace(running_execution(), backend="GKE_AUTOPILOT", namespace="swarm-tenant-eng")
+    backend = FakeBackend(
+        "GKE_AUTOPILOT", executions=[execution], journal=db.writes,
+        terminate_returns=terminate_returns,
+    )
+    finding = Finding(
+        kind=FindingKind.LEFT_RUNNING, reason="task is CANCELLED but its job is active",
+        task_id="task_1", lease_id="lease_1", attempt_id="att_1", tenant_id=TENANT,
+        generation=3, execution=execution,
+    )
+    return backend, finding
+
+
+def test_a_left_running_job_killed_gives_back_its_holds(db, config):
+    releaser = RecordingReleaser(db)
+    backend, finding = _left_running(db, terminate_returns=True)
+    reconciler = build(db, config, releaser, backend)
+
+    outcome = reconciler._repair(finding, None, {"GKE_AUTOPILOT": backend})  # type: ignore[arg-type]
+
+    assert outcome.terminated is True
+    assert releaser.calls == [("task_1", "att_1", 3)]
+    assert "released 1 account hold(s) of att_1" in outcome.actions
+
+
+def test_a_left_running_job_whose_kill_is_unconfirmed_keeps_its_holds(db, config):
+    # The control: the same Job, its kill not confirmed. Its worker may still
+    # be running the agent on the account, so nothing is given back.
+    releaser = RecordingReleaser(db)
+    backend, finding = _left_running(db, terminate_returns=False)
+    reconciler = build(db, config, releaser, backend)
+
+    outcome = reconciler._repair(finding, None, {"GKE_AUTOPILOT": backend})  # type: ignore[arg-type]
+
+    assert outcome.terminated is False
+    assert releaser.calls == []

@@ -531,3 +531,135 @@ def test_the_writer_never_mutates_its_input(shards, tmp_path):
     full = _write(shards, tmp_path / "full", graph_doc())
     _write(shards, tmp_path, document, max_commit_bytes=full["stored_bytes"] - 1)
     assert document == before
+
+
+# --------------------------------------------------------------------------
+# where the writer writes: the step's own configuration, never the prompt's
+# --------------------------------------------------------------------------
+#
+# The indexer prompt (swarm_api.repoindex.indexer_prompt) names the repo_id and
+# the destination; the tenant and the bucket are the container's own, set by
+# dispatch (`TENANT_ID`, `ARTIFACT_BUCKET`) and readable by the agent's
+# processes only as PID 1's environment. Every test below points the writer at
+# a configuration file of its own: the machine running the tests may well be a
+# worker whose PID 1 carries a real tenant.
+
+@pytest.fixture(autouse=True)
+def _no_ambient_configuration(shards, tmp_path, monkeypatch):
+    monkeypatch.setattr(shards, "CONTAINER_ENVIRON", tmp_path / "no-such-environ")
+    for name in ("TENANT_ID", "ARTIFACT_BUCKET"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _container(shards, tmp_path, monkeypatch, **values: str) -> None:
+    path = tmp_path / "pid1-environ"
+    path.write_bytes(b"".join(f"{k}={v}".encode() + b"\0" for k, v in values.items()))
+    monkeypatch.setattr(shards, "CONTAINER_ENVIRON", path)
+
+
+def _graph_file(tmp_path: Path) -> Path:
+    path = tmp_path / "graph.json"
+    path.write_text(json.dumps(graph_doc()))
+    return path
+
+
+def _destination(tenant: str = TENANT, repo: str = REPO_ID) -> str:
+    return f"tenants/{tenant}/repos/{repo}/graph"
+
+
+def test_the_writer_refuses_a_destination_outside_the_tenant_prefix(
+    shards, tmp_path, monkeypatch, capsys
+):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    store = tmp_path / "bucket"
+    for wrong in (_destination(tenant="research"),
+                  _destination(repo="gh-other-repo"),
+                  f"{_destination()}/../../../research/repos/{REPO_ID}/graph",
+                  f"tenants/{TENANT}/tasks/x/graph",
+                  "graph"):
+        code = shards.main(["write", "--graph", str(_graph_file(tmp_path)),
+                            "--store", str(store), "--repo-id", REPO_ID,
+                            "--destination", wrong, "--no-sweep"])
+        assert code == 1, wrong
+        assert "outside" in capsys.readouterr().err
+    assert not store.exists() or _tree(store) == {}
+
+
+def test_the_writer_takes_the_tenant_from_its_container_not_its_own_environment(
+    shards, tmp_path, monkeypatch
+):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    # An agent can set its own environment; it cannot set PID 1's.
+    monkeypatch.setenv("TENANT_ID", "research")
+    store = tmp_path / "bucket"
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)), "--store", str(store),
+                        "--repo-id", REPO_ID, "--destination", _destination(), "--no-sweep"])
+    assert code == 0
+    assert all(key.startswith(_destination() + "/") for key in _tree(store))
+    assert _tree(store)
+
+
+def test_the_writer_refuses_a_tenant_its_configuration_does_not_hold(
+    shards, tmp_path, monkeypatch, capsys
+):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    store = tmp_path / "bucket"
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)), "--store", str(store),
+                        "--tenant", "research", "--repo-id", REPO_ID, "--no-sweep"])
+    assert code == 1
+    assert "research" in capsys.readouterr().err
+    assert not store.exists()
+
+
+def test_the_writer_refuses_to_run_with_no_tenant_at_all(shards, tmp_path, capsys):
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)),
+                        "--store", str(tmp_path / "bucket"), "--repo-id", REPO_ID])
+    assert code == 1
+    assert "TENANT_ID" in capsys.readouterr().err
+
+
+def test_the_writer_resolves_the_bucket_from_its_configuration(shards, tmp_path, monkeypatch):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT,
+               ARTIFACT_BUCKET="swarm-dev-artifacts")
+    opened: list[str] = []
+    local = tmp_path / "bucket"
+
+    def fake_open(spec: str) -> Any:
+        opened.append(spec)
+        return shards.LocalStore(local)
+
+    monkeypatch.setattr(shards, "open_store", fake_open)
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)), "--repo-id", REPO_ID,
+                        "--destination", _destination(), "--no-sweep"])
+    assert code == 0
+    assert opened == ["gs://swarm-dev-artifacts"]
+
+
+def test_the_writer_refuses_a_bucket_its_configuration_does_not_name(
+    shards, tmp_path, monkeypatch, capsys
+):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT,
+               ARTIFACT_BUCKET="swarm-dev-artifacts")
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)),
+                        "--store", "gs://someone-elses-bucket", "--repo-id", REPO_ID,
+                        "--no-sweep"])
+    assert code == 1
+    assert "someone-elses-bucket" in capsys.readouterr().err
+
+
+def test_the_writer_with_no_bucket_and_no_store_says_so(shards, tmp_path, monkeypatch, capsys):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    code = shards.main(["write", "--graph", str(_graph_file(tmp_path)), "--repo-id", REPO_ID])
+    assert code == 1
+    assert "ARTIFACT_BUCKET" in capsys.readouterr().err
+
+
+def test_the_sweep_takes_the_same_configuration(shards, tmp_path, monkeypatch, capsys):
+    _container(shards, tmp_path, monkeypatch, TENANT_ID=TENANT)
+    store = tmp_path / "bucket"
+    _write(shards, store, graph_doc())
+    assert shards.main(["sweep", "--store", str(store), "--repo-id", REPO_ID,
+                        "--destination", _destination()]) == 0
+    assert shards.main(["sweep", "--store", str(store), "--repo-id", REPO_ID,
+                        "--destination", _destination(tenant="research")]) == 1
+    assert "outside" in capsys.readouterr().err

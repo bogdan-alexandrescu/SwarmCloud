@@ -850,13 +850,14 @@ def prune_holds(
 ) -> int:
     """Drop expired holds and aged-out unreadable reports. Returns how many went.
 
-    THIS IS THE BACKSTOP, and it is in the broker rather than in the
-    reconciler: `apps/reconciler/` has no account code at all, and comments
-    here used to claim it did. A claimed safety net that does not exist is
-    worse than none, because the next person reads it as a reason not to build
-    one. The quota sweep calls this for every account on every tick, so a
-    worker killed without warning costs one over-counted hold until the hold's
-    own deadline passes and this call notices.
+    THIS IS THE LAST BACKSTOP. An attempt the platform can prove ended has its
+    holds released sooner: by the reconciler once its fence commits or its
+    kill of a left-running Job is confirmed, and by the sweep's
+    `_release_ended_attempt_holds` for every other ending its record shows
+    (#380). What neither can prove -- an unstamped hold, a hold whose task or
+    attempt document is missing -- is dropped here, when the hold's own
+    deadline passes. The quota sweep calls this for every account on every
+    tick.
 
     Each pruned hold's record is closed as `expired` IN THIS TRANSACTION, so
     the history and the counter change together or not at all.
@@ -1182,6 +1183,120 @@ def _release_attempt_holds_everywhere(
             released += count
             accounts.append(account_id)
     return {"released": released, "accounts": accounts}
+
+
+#: How long after an attempt records `completed_at` the sweep waits before
+#: giving its holds back on its behalf (#380). The worker records its end and
+#: THEN releases, from the `finally` of its run, so for a few seconds every
+#: orderly exit looks like this. Two minutes is many times that, and still
+#: ninety times shorter than `DEFAULT_HOLD_TTL`, which is what it replaces for
+#: a worker killed between the two.
+ENDED_ATTEMPT_GRACE = timedelta(minutes=2)
+
+
+def _attempt_ended(db: Any, task_id: str, attempt_id: str, now: datetime) -> bool:
+    """Whether the task and attempt documents prove this attempt is over.
+
+    Two proofs, and nothing else counts:
+
+    * the task's `current_generation` is past the attempt's `generation`: the
+      attempt is FENCED (invariant 5), by whoever fenced it. The same evidence
+      the reconciler releases on at its own fence, and like it, monotonic -- a
+      generation never comes back -- so deciding it outside the account
+      transaction cannot release a hold that a later write made live again;
+    * the attempt recorded `completed_at` longer ago than
+      `ENDED_ATTEMPT_GRACE`: its worker said it was done, and its own release
+      has had ample time to land.
+
+    A terminal task state alone is NOT a proof (#372): a GKE Job can outlive
+    its task's end, still running its agent on the account, which is exactly
+    the `left_running` finding the reconciler kills before it releases.
+
+    False -- leave it to the TTL -- for a missing document, an attempt
+    document naming another task, or a generation that is not an integer: a
+    hold's stamps are the worker's claim, and an unreadable record proves
+    nothing about it.
+    """
+    task_snap = db.collection("tasks").document(task_id).get()
+    attempt_snap = db.collection("attempts").document(attempt_id).get()
+    if not getattr(task_snap, "exists", False) or not getattr(attempt_snap, "exists", False):
+        return False
+    task = task_snap.to_dict() or {}
+    attempt = attempt_snap.to_dict() or {}
+    if attempt.get("task_id") != task_id:
+        return False
+    current, generation = task.get("current_generation"), attempt.get("generation")
+    if (
+        isinstance(current, int)
+        and isinstance(generation, int)
+        and not isinstance(current, bool)
+        and not isinstance(generation, bool)
+        and current > generation
+    ):
+        return True
+    completed = attempt.get("completed_at")
+    return isinstance(completed, datetime) and now - _aware_utc(completed) >= ENDED_ATTEMPT_GRACE
+
+
+def _release_ended_attempt_holds(db: Any, now: datetime) -> dict[str, Any]:
+    """Give back every live hold whose attempt has ended without releasing it (#380).
+
+    The reconciler releases at the fences IT commits. This is for every other
+    way an attempt ends with nobody calling the broker: a generation fenced by
+    another writer or by a pass whose broker call failed, and a worker killed
+    after recording its end but before its `finally` released the account.
+    Without it each of those holds counted for the whole `DEFAULT_HOLD_TTL`.
+
+    Each attempt is judged once per sweep (`_attempt_ended`: two document
+    reads), then released through `release_attempt_holds` on every account,
+    so the release is the same transaction, the same record closure and the
+    same idempotence as the reconciler's. Unstamped holds are never judged.
+    Every document id straight from the collection, for `_prune_all_holds`'s
+    reason (#243).
+    """
+    judged: dict[tuple[str, str], bool] = {}
+    released = 0
+    for doc in db.collection(ACCOUNTS_COLLECTION).stream():
+        account_id = str(doc.id)
+        try:
+            live = _live_holds(doc.to_dict() or {}, now)
+        except _MALFORMED as exc:
+            log.warning(
+                "could not read the holds on an account document for ended attempts",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        for hold in live:
+            if not hold.task_id or not hold.attempt_id:
+                continue
+            key = (hold.task_id, hold.attempt_id)
+            if key not in judged:
+                judged[key] = _attempt_ended(db, *key, now)
+            if not judged[key]:
+                continue
+            try:
+                count = release_attempt_holds(
+                    db, account_id, task_id=key[0], attempt_id=key[1], now=now
+                )
+            except _MALFORMED as exc:
+                log.warning(
+                    "could not release an ended attempt's holds on an account document",
+                    extra={"account_id": account_id, "error": type(exc).__name__},
+                )
+                continue
+            if count:
+                released += count
+                log.warning(
+                    "released the account holds of an attempt that ended without "
+                    "releasing them",
+                    extra={
+                        "account_id": account_id,
+                        "task_id": key[0],
+                        "attempt_id": key[1],
+                        "released": count,
+                    },
+                )
+    return {"released": released, "judged": len(judged)}
 
 
 #: The history route's page: the default, and the most one request may ask.
@@ -3303,9 +3418,10 @@ def create_app(
         #
         # A worker releases its account on its own exit path, which covers
         # every orderly exit. It does not cover SIGKILL, an OOM kill, a node
-        # preemption or a Cloud Run task kill, and nothing else in this
-        # repository knows the assignment existed: `apps/reconciler/` has no
-        # account code at all. Without this, `assigned` would drift upward
+        # preemption or a Cloud Run task kill. The reconciler releases at the
+        # fences it commits and `ended_holds` below at every ending the
+        # record shows (#380); an unstamped hold, or one whose documents are
+        # gone, has only this. Without it, `assigned` would drift upward
         # forever -- and it is `choose()`'s load-spreading tiebreak and the
         # number an operator reads as "agents on this account", so the pool's
         # spreading would degrade permanently and silently.
@@ -3328,6 +3444,20 @@ def create_app(
                     extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
                 )
                 result["holds"] = {"error": type(exc).__name__}
+            # The holds of attempts that are OVER, ahead of their TTL (#380):
+            # fenced by anyone, or completed and never released. Its own block
+            # and its own key, so a failure here leaves the TTL backstop above
+            # and its summary exactly as they were.
+            try:
+                result["ended_holds"] = _release_ended_attempt_holds(
+                    request.app.state.broker.db, datetime.now(timezone.utc)
+                )
+            except Exception as exc:  # pragma: no cover - defence in depth
+                log.error(
+                    "ended-attempt hold sweep failed",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["ended_holds"] = {"error": type(exc).__name__}
 
         # The same scheduled tick refreshes subscription credentials, because
         # this service is the platform's single writer for them -- see

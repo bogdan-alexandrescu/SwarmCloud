@@ -139,6 +139,12 @@ def download_checkpoint(
     response over 32 MiB, and uvicorn chunks exactly when no length is
     declared. An archive larger than the request timeout lets through is cut
     the same way -- see `CheckpointContent.download` for the arithmetic.
+
+    `?tenant=` is accepted here (`auth.TENANT_QUERY_ROUTES`) because the
+    console offers this as a plain download link, which sends no
+    `X-Swarm-Tenant`. `current_auth` reads it and puts it through the
+    header's own membership check, so `tenant_scope` is still the only tenant
+    this body sees.
     """
     archive = service.download(
         tenant_id,

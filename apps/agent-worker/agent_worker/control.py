@@ -150,6 +150,9 @@ def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
 #:               the lease it is extending has expired is a beat for a lease
 #:               the reconciler may already have reclaimed. Held under the
 #:               extension whatever it is configured to (`_heartbeat_deadline`).
+#:               And held to ONE BEAT INTERVAL when the worker gives its beat
+#:               (#426): a beat retrying for 90 s is the reconciler's whole
+#:               grace spent on one beat, with the next not started.
 #:   poll        30 s. The control poll runs every `control_poll_seconds`, and
 #:               a failed one is asked again on the next tick.
 #:   checkpoint  60 s for the pointer write and its owner check: the archive
@@ -602,6 +605,7 @@ class ControlPlane:
         logger: Any,
         txn_runner: TransactionRunner | None = None,
         heartbeat_extension_seconds: int = 120,
+        heartbeat_interval_seconds: int | None = None,
         startup_call_options: Mapping[str, Any] | None = None,
         quota_reporter: QuotaReporter | None = None,
     ) -> None:
@@ -614,6 +618,10 @@ class ControlPlane:
         self._log = logger
         self._txn = txn_runner or FirestoreTransactionRunner(db)
         self._heartbeat_extension = heartbeat_extension_seconds
+        # The worker's beat (`WorkerConfig.heartbeat_interval_seconds`); None
+        # leaves the heartbeat's budget as `MID_RUN_BUDGETS` and the extension
+        # make it. See `_heartbeat_deadline`.
+        self._heartbeat_interval = heartbeat_interval_seconds
         self._lease_released = False
         # `retry` and `timeout` for every Firestore call a worker makes before
         # its runner exists, applied inside `startup_budget()`. The entrypoint
@@ -704,8 +712,18 @@ class ControlPlane:
         extension -- a test, or a deployment that lowered
         `lease_timeout_seconds` -- keeps the same proportion, so a beat never
         retries past the expiry of the lease it is extending.
+
+        AND NO LONGER THAN ONE BEAT (#426). 90 s is the reconciler's whole
+        grace: a beat that kept retrying for it was the lease's silence, with
+        no other beat started meanwhile. Held to the worker's beat interval, a
+        beat that cannot land gives way to the next one on time, and the lease
+        is still extended by whichever lands first. The outage rule is
+        unchanged: it reads `_lease_live_until`, not how long one call tried.
         """
-        return min(deadline, 0.75 * self._heartbeat_extension)
+        deadline = min(deadline, 0.75 * self._heartbeat_extension)
+        if self._heartbeat_interval is not None:
+            deadline = min(deadline, float(self._heartbeat_interval))
+        return deadline
 
     def _run_transaction(self, fn: Callable[[Any], Any], *, call: str | None = None) -> Any:
         options = self.call_options(call)

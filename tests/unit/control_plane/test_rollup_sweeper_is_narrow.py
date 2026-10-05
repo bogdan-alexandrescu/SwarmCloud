@@ -55,9 +55,13 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: The issue-run tick (#454, owner decision "Advancing runs: swarm-api, on a
 #: Cloud Scheduler tick") was added to it on purpose: it moves only runs
 #: already in the named tenant, as their own creators.
+#: The repository index poll (docs/repo-index.md §3.3, lane RI4) was added for
+#: the same reason: it reads only the named tenant's registrations and
+#: submits an index run as the registration's creator, never as the sweeper.
 DECIDED = frozenset({
     ("POST", "/v1/admin/workflows/rollup"),
     ("POST", "/v1/admin/runs/advance"),
+    ("POST", "/v1/admin/repositories/poll"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]

@@ -656,8 +656,12 @@ def test_the_claude_code_runner_passes_max_turns_through_as_a_flag(tmp_path, mon
 
     captured: dict = {}
 
-    def fake_run(ctx, spec, *, extra_args=()):
-        captured["extra"] = list(extra_args)
+    def fake_run(ctx, spec, *, extra_args=(), extra_env=None):
+        # The generated `--settings` file (background commands refused) is
+        # always last; what comes before it is what this test is about.
+        assert list(extra_args)[-2] == "--settings"
+        assert extra_env == {claude_code.NO_BACKGROUND_ENV: "1"}
+        captured["extra"] = list(extra_args)[:-2]
         return {"summary": "ok"}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)

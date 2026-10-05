@@ -243,6 +243,27 @@ class ReconcilerConfig:
     #: cannot scale down while it runs, because it may not be evicted.
     left_running_grace_seconds: int = 300
 
+    #: How long after its task reached a terminal state an attempt that never
+    #: recorded its end, with no live execution, waits before the reconciler
+    #: records the end for it and gives back its account holds
+    #: (`detect_lost_after_finish`, #380).
+    #:
+    #: 300s. `ControlPlane.finish` writes the terminal state, then the attempt
+    #: end, then the lease release, and the account goes back from the run's
+    #: `finally`: seconds apart in an orderly exit. Five minutes is far past
+    #: that, so a worker still finishing is never written over; it is the
+    #: left-running grace, so both rules about a just-finished task wait
+    #: alike; and it is under a thirtieth of the 3-hour hold TTL this rule
+    #: exists to beat.
+    lost_after_finish_grace_seconds: int = 300
+
+    #: How far back, by the task's `completed_at`, a pass looks for such
+    #: attempts. 10800s is the broker's `DEFAULT_HOLD_TTL`: every hold taken
+    #: before its task finished has expired by then, so an older attempt has
+    #: nothing left to give back and reading it again would cost a query per
+    #: task per pass for nothing.
+    lost_after_finish_lookback_seconds: int = 10800
+
     #: How long before a pass read Firestore an execution must have ENDED for
     #: the ended-at-startup rule to act on it (#198, `detect_ended_at_startup`).
     #:
@@ -414,6 +435,10 @@ class ReconcilerConfig:
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
+            lost_after_finish_grace_seconds=_int("LOST_AFTER_FINISH_GRACE_SECONDS", 300),
+            lost_after_finish_lookback_seconds=_int(
+                "LOST_AFTER_FINISH_LOOKBACK_SECONDS", 10800
+            ),
             startup_refund_limit=min(
                 STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
             ),

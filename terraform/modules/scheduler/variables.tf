@@ -105,10 +105,12 @@ variable "api_audience" {
 
 variable "rollup_tenant_ids" {
   description = <<-EOT
-    The registered tenants whose workflows are swept and whose issue runs
-    are advanced, one Cloud Scheduler job of each kind per tenant
-    (POST /v1/admin/workflows/rollup?tenant_id=<t> and
-    POST /v1/admin/runs/advance?tenant_id=<t>). The root passes the
+    The registered tenants whose workflows are swept, whose issue runs
+    are advanced and whose registered repositories are polled, one Cloud
+    Scheduler job of each kind per tenant
+    (POST /v1/admin/workflows/rollup?tenant_id=<t>,
+    POST /v1/admin/runs/advance?tenant_id=<t> and
+    POST /v1/admin/repositories/poll?tenant_id=<t>). The root passes the
     keys of var.tenants: a set the configuration knows at plan, so the
     for_each never depends on a value that exists only after apply.
   EOT
@@ -148,6 +150,22 @@ variable "issue_run_advance_schedule" {
   EOT
   type        = string
   default     = "* * * * *"
+}
+
+variable "repo_index_poll_schedule" {
+  description = <<-EOT
+    How often each tenant's registered repositories are polled for a moved
+    default branch and an elapsed index interval (docs/repo-index.md §3.3).
+
+    Every five minutes, the design's figure: it bounds how old "the planner has
+    today's index" can be after a merge, and an unchanged branch is read with
+    the last ETag, which GitHub answers 304 without spending the token's rate
+    limit, so forty repositories every five minutes cost almost nothing. A
+    tighter schedule would not index sooner than a registration's
+    `min_change_interval_minutes` (default 30) allows anyway.
+  EOT
+  type        = string
+  default     = "*/5 * * * *"
 }
 
 variable "tick_service_account" {

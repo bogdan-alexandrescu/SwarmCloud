@@ -297,6 +297,103 @@ run "the_issue_run_tick_runs_per_tenant_every_minute_as_the_sweeper" {
   }
 }
 
+# docs/repo-index.md §3.3 (lane RI4): every five minutes, per registered tenant,
+# POST /v1/admin/repositories/poll reads each registration's default-branch
+# head with the last ETag and queues an index run where it moved or the
+# interval passed. As the rollup sweeper, which swarm-api admits to that route
+# by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES) and to nothing wider; its one
+# grant, run.invoker on swarm-api, is already the rollup's (terraform/infra
+# main.tf rollup_sweeper_invokes_api, held by infra_guards.tftest.hcl), so the
+# job adds no IAM member.
+run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.repo_index_poll)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one repo_index_poll job, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.repo_index_poll["eng"].name == "swarm-repo-index-poll-eng"
+    error_message = "the poll job is named for its tenant"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.repo_index_poll["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/repositories/poll?tenant_id=eng"
+    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.repo_index_poll["research"].http_target[0].http_method == "POST"
+    error_message = "the poll route is a POST"
+  }
+
+  # The OIDC grant: the rollup-sweeper identity, minted for the API's own URL.
+  # swarm-api's poll route refuses every other caller, admins included.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.repo_index_poll :
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+      && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    ])
+    error_message = "the poll presents the rollup-sweeper identity, for the API's own URL, never the platform tick"
+  }
+
+  # §3.3: "every 5 minutes". An unchanged branch answers 304, which costs no
+  # rate limit, so forty repositories every five minutes cost almost nothing.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.repo_index_poll : job.schedule == "*/5 * * * *"
+    ]) && output.repo_index_poll_schedule == "*/5 * * * *"
+    error_message = "repositories are polled every five minutes by default"
+  }
+
+  # The route stops starting reads at 240 s (repoindex.POLL_BUDGET_SECONDS);
+  # the deadline must leave it room to answer.
+  assert {
+    condition     = google_cloud_scheduler_job.repo_index_poll["eng"].attempt_deadline == "300s"
+    error_message = "the poll's attempt deadline is 300s, above the route's 240s read budget"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.repo_index_poll : job.retry_config[0].retry_count == 0
+    ])
+    error_message = "the next tick is the poll's retry"
+  }
+
+  # A Cloud Scheduler job has no labels; the destroy guard reads the marker
+  # from its description.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.repo_index_poll :
+      startswith(job.description, "managed-by=swarm-terraform;")
+    ])
+    error_message = "every repo_index_poll job carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "repo-index-poll")
+    error_message = "the sweeper account's description names every job that presents it"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-repo-index-poll-eng") && contains(output.scheduler_job_names, "swarm-repo-index-poll-research")
+    error_message = "scheduler_job_names must list every repo_index_poll job"
+  }
+}
+
 run "no_registered_tenant_means_no_rollup_job" {
   command = plan
 
@@ -312,6 +409,11 @@ run "no_registered_tenant_means_no_rollup_job" {
   assert {
     condition     = length(google_cloud_scheduler_job.issue_run_advance) == 0
     error_message = "an issue-run tick for a tenant nobody registered advances nothing"
+  }
+
+  assert {
+    condition     = length(google_cloud_scheduler_job.repo_index_poll) == 0
+    error_message = "a repo_index_poll job for a tenant nobody registered polls nothing"
   }
 }
 

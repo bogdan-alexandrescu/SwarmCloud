@@ -19,6 +19,9 @@ untrusted-ish code lives here:
   read instead would fill the pipe buffer and deadlock the child at 64KB -- a
   hang that looks exactly like a slow agent.
 * **A capped agent stream keeps its END** (`keep_tail`). See `StreamCapture`.
+* **Below the worker's priority** (`niceness`). The runner child's process
+  group is reniced as it starts, and everything it forks inherits it, so an
+  agent compiling on every core cannot starve the worker's heartbeat (#426).
 * **No zombies.** Every exit path waits on the process and joins the readers.
 """
 
@@ -277,8 +280,11 @@ class ChildProcess:
         keep_tail: bool = False,
         log_argv: Sequence[str] | None = None,
         stdout_tap: Callable[[bytes], None] | None = None,
+        niceness: int = 0,
     ) -> None:
         self.argv = validate_argv(argv)
+        # How far below this process's priority the child runs: 0 is the same.
+        self._niceness = niceness
         # WHAT THE `child started` LINE SAYS THE ARGV WAS (the PR #229 review).
         # A CLI runner passes the task's prompt as its last argument, and this
         # line logged it whole into the runner's stderr, which `/logs` serves:
@@ -316,11 +322,44 @@ class ChildProcess:
             start_new_session=True,
             close_fds=True,
         )
+        if self._niceness:
+            self._lower_priority()
         for capture, stream in ((self._stdout, self._proc.stdout), (self._stderr, self._proc.stderr)):
             thread = threading.Thread(target=capture.pump, args=(stream,), daemon=True)
             thread.start()
             self._threads.append(thread)
         self._log.info("child started", pid=self._proc.pid, argv=self._log_argv, cwd=str(self._cwd))
+
+    def _lower_priority(self) -> None:
+        """Run the child's process group `niceness` below this process (#426).
+
+        THE GROUP, NOT THE PID. The child leads its own process group
+        (`start_new_session`), and `PRIO_PGRP` reaches every process in it,
+        so anything it has already forked is lowered with it; what it forks
+        later inherits the value. Lowering a priority needs no capability,
+        and the kernel caps it at 19.
+
+        Not a `preexec_fn`, which is unsafe in a process that runs threads,
+        as this one does. The window between the fork and this call is the
+        child's interpreter starting, in which it forks nothing.
+
+        A child that could not be lowered still runs: the heartbeat then
+        competes with it at the same priority, as it did before, and the line
+        below says so. Not raised, because stopping a running agent for this
+        would cost the attempt the heartbeat exists to keep.
+        """
+        assert self._proc is not None
+        try:
+            target = min(19, os.getpriority(os.PRIO_PROCESS, 0) + self._niceness)
+            os.setpriority(os.PRIO_PGRP, self._proc.pid, target)
+        except OSError as exc:
+            self._log.warning(
+                "could not lower the child's priority; it competes with the worker's "
+                "heartbeat at the same priority",
+                pid=self._proc.pid,
+                niceness=self._niceness,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     @property
     def pid(self) -> int | None:

@@ -143,7 +143,7 @@ resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup and issue-run-advance Cloud Scheduler jobs. swarm-api admits it to POST /v1/admin/workflows/rollup and POST /v1/admin/runs/advance only. No project roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the per-tenant workflow-rollup, issue-run-advance and repo-index-poll jobs. swarm-api admits it to those three /v1/admin routes only. No project roles."
 }
 
 locals {
@@ -241,6 +241,65 @@ resource "google_cloud_scheduler_job" "issue_run_advance" {
   # No retry: the schedule is every minute, so the next tick IS the retry,
   # and a retried tick overlapping the next one only doubles the reads (each
   # move is a transaction, so it can never double a transition).
+  retry_config {
+    retry_count = 0
+  }
+}
+
+# --- The repository index poll (docs/repo-index.md §3.3, lane RI4) ------------
+#
+# POST /v1/admin/repositories/poll (apps/swarm-api/swarm_api/routes/admin.py,
+# swarm_api.repoindex.RepoIndex.poll) reads, for each of one tenant's
+# registered repositories, the default branch's head with the last response's
+# ETag -- GitHub answers an unchanged branch 304, which costs no rate limit --
+# and queues an index run where the head moved and the minimum change interval
+# has passed, or where `interval_hours` has passed since the last one. A run in
+# flight is never duplicated: a newer head is recorded as pending and indexed
+# once the running one ends. Without this job a repository is indexed only
+# when a person presses "Index now".
+#
+# An index run is an ordinary task, queued by profile name and admitted like
+# any other (invariants 1-3, 10): the job creates no capacity and holds none.
+#
+# SAME TENANTS AND SAME IDENTITY as the two jobs above: the route takes exactly
+# one tenant_id, and swarm-api admits the rollup-sweeper account to it by name
+# (swarm_api.auth.ROLLUP_SWEEPER_ROUTES) -- and, unlike the rollup, admits
+# nobody else, admins included (§6.1). Its one grant, run.invoker on
+# swarm-api, is already the rollup's (terraform/infra main.tf,
+# rollup_sweeper_invokes_api), so this job adds no IAM member. A run it queues
+# is submitted as the registration's creator in that tenant
+# (routes/admin.py registration_owner_auth), never as this account.
+
+resource "google_cloud_scheduler_job" "repo_index_poll" {
+  for_each = var.rollup_tenant_ids
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-repo-index-poll-${each.key}"
+
+  description = "managed-by=swarm-terraform; repo_index_poll: reads tenant ${each.key}'s registered repositories' heads and queues their index runs (docs/repo-index.md §3.3)"
+  schedule    = var.repo_index_poll_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One forge GET per registration, each bounded by the client's timeout; the
+  # route stops starting reads at 240 s (repoindex.POLL_BUDGET_SECONDS) and
+  # reports what it did not reach, so it answers inside this deadline.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/repositories/poll?tenant_id=${urlencode(each.key)}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next tick IS the retry, five minutes later. Every queueing
+  # is a claim in a Firestore transaction, so an overlapping retry could never
+  # queue a second run of one registration; it would only repeat the reads.
   retry_config {
     retry_count = 0
   }

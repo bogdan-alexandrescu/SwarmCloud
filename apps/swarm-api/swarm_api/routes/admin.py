@@ -16,8 +16,11 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from fastapi import APIRouter, Depends, Query
 
+from swarm_common.identity import Principal
 from swarm_common.models import ProviderState
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
@@ -31,8 +34,9 @@ from ..codec import (
     tenant_to_api,
 )
 from ..deps import AppContext, admin_auth, get_context, paged_limit
-from ..errors import NotFound, ValidationFailed
+from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..repoindex import RepoIndex
 from ..schemas import (
     DrainRequest,
     LimitRequest,
@@ -724,6 +728,100 @@ def advance_runs(
         "tenant_id": tenant_id,
         "report": report.to_api(),
         # Only the runs that could not be advanced, by id and error code. A
+        # healthy tick returns an empty list, which is an answer.
+        "failures": report.failures,
+    }
+
+
+class RegistrationOwnerNotMember(Forbidden):
+    """The registration's creator is no longer a member of its tenant: the
+    poll submits nothing more as them (the issue-run tick's rule)."""
+
+    code = "owner_not_member"
+
+
+def registration_owner_auth(ctx: AppContext, tenant_id: str):
+    """The submitter of a polled index run: the registration's creator, in its tenant.
+
+    The issue-run tick's shape (`routes.runs.run_owner_auth`), for the same
+    reason: the poll's caller is the scheduler's identity, which is no tenant
+    member and must submit nothing as itself. Built from the stored tenant
+    and the stored `created_by`, never from the caller, and only while that
+    person is still a member (asked of the directory on every submission,
+    invariant 9). Nothing wider than an ordinary member: not an admin, no
+    member scope.
+    """
+
+    def _owner(record: Mapping[str, Any]) -> AuthContext:
+        tenant = ctx.store.get_tenant(tenant_id)
+        if tenant is None:
+            raise NotFound(f"tenant {tenant_id!r} not found")
+        email = str(record.get("created_by") or "")
+        if not ctx.authenticator.is_tenant_member(email, tenant):
+            raise RegistrationOwnerNotMember(
+                f"the registration's creator {email or '(not recorded)'} is no longer a "
+                f"member of tenant {tenant_id!r}, so nothing is indexed on their behalf; "
+                "register the repository again as a current member"
+            )
+        return AuthContext(
+            principal=Principal(
+                email=email,
+                # Not a token subject: this context was never authenticated.
+                subject=f"repo-index-poll:{record.get('repo_id')}",
+                domain=email.rsplit("@", 1)[-1],
+                groups=(),
+            ),
+            tenant_id=tenant_id,
+            is_admin=False,
+            tenant_principal=tenant.principal,
+        )
+
+    return _owner
+
+
+@router.post("/repositories/poll")
+def poll_repositories(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """One tenant's repository-index triggers (docs/repo-index.md §3.3, lane RI4).
+
+    Called every five minutes by the per-tenant Cloud Scheduler job
+    `repo_index_poll` (terraform/modules/scheduler/jobs.tf). For each of the
+    tenant's registrations: settle finished index runs, read the default
+    branch's head with the last ETag (a 304 costs no rate limit), store it,
+    and queue a run where the head moved and the minimum change interval has
+    passed, or the interval has; a run in flight is never duplicated -- the
+    newer head becomes pending (`repoindex.RepoIndex.poll`).
+
+    ONLY THE SCHEDULER'S IDENTITY, as §6.1 says: the rollup sweeper, admitted
+    to this route by `auth.ROLLUP_SWEEPER_ROUTES`. Not an admin either: an
+    operator who wants a poll now runs the job (`gcloud scheduler jobs run`),
+    and a person who wants an index now uses "Index now" in their own tenant.
+
+    TENANT IS EXPLICIT, as on the other ticks. Runs are submitted in that
+    tenant as each registration's creator (`registration_owner_auth`), never
+    as the caller, and they wait for admission like any task (invariants
+    1-3). `limit` is the page size registrations are read in.
+    """
+    if not auth.is_rollup_sweeper:
+        raise Forbidden(
+            "POST /v1/admin/repositories/poll is the repo_index_poll scheduler job's; "
+            "run the job, or use Index now on the repository"
+        )
+    service = RepoIndex.from_context(ctx)
+    report = service.poll(
+        tenant_id, tenant=service.tenant(tenant_id),
+        owner_auth=registration_owner_auth(ctx, tenant_id),
+        page_size=paged_limit(ctx, limit),
+    )
+    ctx.metrics.admin_actions.labels(action="repo_index_poll").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the registrations that could not be polled, by id and code. A
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
     }

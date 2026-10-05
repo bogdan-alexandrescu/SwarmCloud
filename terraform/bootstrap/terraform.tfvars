@@ -31,7 +31,7 @@ github_allowed_refs = ["refs/heads/main"]
 # refs/heads/main and to nothing else. UNSET until the owner names the account;
 # set it to the same email as the repository variable SWARM_CI_FIX_SA, and add
 # it to frontend_iap_members below as serviceAccount:<email>, in one apply.
-# ci_fix_service_account = ""
+ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
 
 # The deployer's roles that have traded their project-wide grant for a
 # conditioned one (deployer_conditions.tf).
@@ -128,6 +128,7 @@ deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
 frontend_iap_members = [
   "domain:saga.xyz",
   "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com",
+  "serviceAccount:swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
 ]
 
 # The Desktop OAuth client `sc login` signs developers in with

@@ -344,6 +344,9 @@ describe('big diffs', () => {
     const patch = bigPatch(1, 52_000)
     expect(patch.split('\n').length).toBeGreaterThan(50_000)
     render(<DiffView patch={patch} />)
+    // A file this size opens collapsed (owner decision 2026-10-05); expanded, it still windows.
+    expect(rows()).toHaveLength(1)
+    fireEvent.click(rows('file')[0]!)
     const n = rows().length
     expect(n).toBeGreaterThan(10)
     expect(n).toBeLessThan(300)
@@ -353,6 +356,7 @@ describe('big diffs', () => {
 
   it('draws the rows under the scroll position, and not the ones above it', () => {
     render(<DiffView patch={bigPatch(1, 50_000)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all' }))
     const s = scroller()
     fireEvent.scroll(s, { target: { scrollTop: 22 * 30_000 } })
     const texts = rows('line').map((r) => r.querySelector('.diff-text')?.textContent ?? '')
