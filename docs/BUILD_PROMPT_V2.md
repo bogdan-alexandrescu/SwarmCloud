@@ -55,6 +55,7 @@ disabled for every tenant; no Job exists for them yet):
 | `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1209` |
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1228` |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1253` |
+| `indexer` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1276` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`

@@ -6,9 +6,9 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, shellcheck, make, the docker CLI) | every profile but `browser`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, shellcheck, make, the docker CLI) | every profile but `browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` (GKE Autopilot) |
-| `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls, terraform-ls, pyright and typescript-language-server | **no profile yet** (contract request 48, below) |
+| `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 
 The two derived images are built only after the base has finished in the same
 run (`build_after()` in `scripts/build-images.sh`), from a `cloudbuild.yaml`
@@ -24,7 +24,7 @@ claude-code is the profile almost every step of every workflow runs. The
 dispatched-to-starting p50 for claude-code on Cloud Run, from the 2026-10-05
 history analysis, was:
 
-| days | p50 | what had landed in agent-runtime-base |
+| days | p50 | what had landed on main (not what was deployed: see the bisect below) |
 |---|---|---|
 | 09-24 | 71 s | — |
 | 09-30 .. 10-02 | ~115 s | the agent toolbox (9e2ba44, 2026-10-01 03:44 PDT) |
@@ -45,7 +45,7 @@ the image:
 | addition | layer | gzip MB | unpacked MB |
 |---|---|---|---|
 | repo-index toolchain | Go 1.27.1, `/usr/local/go` without `test/` | 69.5 | 256 |
-| | terraform-ls 0.39.0 | 30.8 | 43 |
+| | terraform-ls 0.39.0 (since removed, see below) | 30.8 | 43 |
 | | gopls 0.23.0, built as the Dockerfile builds it | 22.1 | 43 |
 | | pyright, typescript, typescript-language-server (`npm ci` of the lockfile) | 9.1 | 60 |
 | | tree-sitter and its five grammars | 1.3 | 7 |
@@ -60,52 +60,55 @@ the image:
 | | shellcheck 0.11.0 | 3.8 | |
 | | **total** | **~202** | |
 
-**The bisect, as far as the artifacts take it.** Two additions explain the two
-steps:
+**The registry bisect (the operator, 2026-10-05 ~11:05Z, #625).** Run with
+`scripts/image-sizes.sh` over 101 releases of agent-runtime-base:
 
-* The toolbox (~202 MB) explains 71 s → ~115 s.
-* The repo-index toolchain (~133 MB) explains ~115 s → ~167 s.
+| when | compressed | what |
+|---|---|---|
+| until 2026-10-01 10:57Z | 521 MB | — |
+| 2026-10-01 10:57Z .. 2026-10-05 06:00Z | 726-728 MB | the agent toolbox, +205 MB |
+| 518642c2's build, 2026-10-05 09:38Z | 916 MB | the repo-index toolchain, +188 MB; never deployed (the release scan refused it) |
 
-The second explanation has one unresolved hole. The repo-index commits landed
-late on 10-04 Pacific, which is 10-05 UTC. If the analysis buckets days in UTC,
-10-04's 166 s predates them and something else moved that day. If it buckets
-in Pacific, 10-04 holds at most 75 minutes of starts with the toolchain.
-`scripts/image-sizes.sh` over the released digests settles it, from any shell
-that holds `roles/artifactregistry.reader`. Run it with no arguments to get the
-size of every release, then run `--diff` on the release before the jump and the
-release that brought it.
+So the toolbox explains 71 s → ~115 s, but **the ~115 s → ~167 s step of
+10-04/05 happened with no change in the image's size**: the toolchain never
+reached a deployed base. The estimate above that tied that step to the
+toolchain is not supported; the step is investigated in #667. The move still
+stands, because it keeps +188 MB out of every agent start.
 
 The toolbox stays in the base. Agents use those tools in ordinary claude-code
 work (BUILD_PROMPT_V2 §2.12). The repo-index toolchain is used by one kind of
 task, the index run, so it moved.
 
-**Before and after.** agent-runtime-base loses the 132.8 MB of layers above
-(409 MB unpacked); the toolchain's sources and pins are unchanged. The base's
-absolute compressed size before and after is not stated here. It needs a
-registry read, and the first release of this change is where to take it
-(`scripts/image-sizes.sh --since 2026-10-05`). The start-time effect is
-measured after release, against the table above.
+**Before and after.** agent-runtime-base goes back to the toolbox-only
+726-728 MB the bisect measured, instead of the 916 MB the toolchain made it;
+the toolchain's sources and pins moved unchanged, less terraform-ls (below).
+Confirm it on the first release of this change with
+`scripts/image-sizes.sh --since 2026-10-05`.
 
-## The gap until request 48 is accepted
+## The `indexer` profile (contract request 48)
 
-Index runs are submitted as `claude-code` (`swarm_api.repoindex.INDEXER_PROFILE`),
-and `claude-code` runs agent-runtime-base. Until a profile runs
-agent-runtime-indexer, an index run finds no `swarm-repo-index`. It then does
-what its prompt already says to do: it computes the mechanical fields with git
-and the file tree, records `"extractor": {"ran": false, "reason": "not
-installed in this image"}`, and writes no graph. An impact query on a
-graph-less index treats every changed file as `unindexed` (§4.3a of
-[repo-index.md](repo-index.md)). That is coarser, never wrong.
+Accepted by the owner 2026-10-05. `indexer` is `claude-code` in every field
+but its name and its image: the same runner, resource class, backend,
+timeouts, provider, secrets and inputs. swarm-api submits index runs as
+`indexer` (`swarm_api.repoindex.INDEXER_PROFILE`), so an index run finds
+`swarm-repo-index`, runs the LSP pass and writes the graph. Terraform mirrors
+it (`terraform/infra/locals.tf`), which puts `agent-runtime-indexer` in
+`runner_images`: its digest is pinned in `image_refs`, handed to the scheduler
+in `WORKER_IMAGE_REFS`, and every tenant that registers `anthropic` gets an
+`indexer` Job running as its own worker account.
 
-The image map lives only in the frozen catalogue (`RunnerProfile.image` in
-`apps/common/swarm_common/profiles.py`, mirrored by `terraform/infra/locals.tf`),
-so the profile that runs this image is a frozen-contract change: request 48 in
-[contract-change-requests.md](contract-change-requests.md). Once it is accepted,
-the remaining steps are:
+**It is offered to every caller.** The catalogue has no internal-only
+mechanism: `available` is the one flag, and `available=False` would refuse
+swarm-api's own index runs too. A caller who submits `indexer` gets a
+claude-code agent on a bigger image, by name, with no image or command of
+their own (invariant 10). Making it platform-only needs a catalogue field, a
+contract change of its own.
 
-1. Add the catalogue entry and its Terraform mirror. The image is already
-   built and promoted.
-2. Set `INDEXER_PROFILE = "repo-indexer"`.
+**terraform-ls is not in the image.** Its source build answered 0 references
+in the LSP self-test (owner decision 2026-10-05), so it stays a
+`DISABLED_SERVERS` spec in `lsp/servers.py` until it resolves. gopls is
+compiled from module source with the golang.org/x modules trivy flagged
+raised (#661); HashiCorp's prebuilt zip is not used.
 
 ## Adding to a worker image
 

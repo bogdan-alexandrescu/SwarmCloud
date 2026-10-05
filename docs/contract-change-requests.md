@@ -8625,11 +8625,18 @@ section says otherwise.
 
 ## 48. `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain
 
-**Status:** open, filed 2026-10-05 with #625 (functionality wave 8, lane IMG).
-A request, not a change. It is the image half of docs/repo-index.md §6.3
-request (B), in the smallest form that restores what index runs had.
+**Status:** accepted by the owner 2026-10-05 (#625), and applied by
+functionality wave 8, lane IDX. The owner's decision changed the requested
+entry in two ways: the profile is named `indexer`, not `repo-indexer`, and it
+is `claude-code` in EVERY field but its name and its image -- so it takes
+claude-code's inputs (`issue`), not `inputs={}`. Its pool ceiling is the
+`runner_profiles` lookup's default, the global ceiling, as for merge,
+post-verdict and claude-code-review; a tfvars entry narrows it. Filed
+2026-10-05 with #625 (functionality wave 8, lane IMG); it is the image half
+of docs/repo-index.md §6.3 request (B), in the smallest form that restores
+what index runs had.
 
-### What is true today
+### What was true before
 
 #625 moved the repository index's toolchain out of `agent-runtime-base` into
 its own image, `agent-runtime-indexer` (docs/worker-images.md). Every
@@ -8684,6 +8691,13 @@ Nothing that exists. The work that follows acceptance:
 * the entry needs a pool ceiling;
 * `INDEXER_PROFILE` becomes `"repo-indexer"`;
 * the tests that enumerate `RUNNER_PROFILES` gain the entry.
+
+As applied (lane IDX): `RUNNER_PROFILES["indexer"]`, the `indexer` entry and
+its model in `terraform/infra/locals.tf`, `INDEXER_PROFILE = "indexer"`, its
+agent-stream rows in the worker and swarm-api, and the UI's fixture and
+Submit rows. The catalogue has no internal-only mechanism, so `indexer` is
+offered to every caller like `claude-code`; keeping it platform-only would
+need a catalogue field, which is a request of its own.
 
 ### If it is declined
 

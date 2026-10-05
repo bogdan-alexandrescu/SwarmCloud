@@ -553,12 +553,11 @@ something a caller names (invariant 10).
 
 *Revised 2026-10-05 (#625):* the single image exists as
 `images/agent-runtime-indexer`, built FROM `agent-runtime-base` by digest.
-The toolchain had shipped in the base, where every claude-code start pulled
-its ~133 MB (compressed) and only an index run used it. No profile runs the
-indexer image until contract request 48 (the image half of request B, §6.3)
-is accepted. Until then index runs on `claude-code` record the extractor as
-not installed and write no graph. [worker-images.md](worker-images.md) has
-the measurement.
+The toolchain had shipped in the base, where it added +188 MB (compressed)
+to every agent start and only an index run used it. Contract request 48 (the
+image half of request B, §6.3), accepted by the owner the same day, added
+the `indexer` profile: claude-code on that image, and what index runs are
+submitted as. [worker-images.md](worker-images.md) has the measurement.
 
 ---
 
@@ -987,6 +986,12 @@ equal limits, invariant 7), the budget table's timeouts, and **no agent**:
 the tool pass runs as a worker-run step, as `merge` and `post-verdict` do, so
 no agent in the tenant writes the graph a merge gate reads. The agent's
 reading (purposes, territory, notes) stays a `claude-code` step after it.
+
+*Revised 2026-10-05 (#625):* the image half of (B) is contract request 48,
+accepted by the owner: the `indexer` profile is `claude-code` on
+`agent-runtime-indexer` (same resource class, timeouts and inputs), and index
+runs are submitted as it. The agent-free, worker-run shape above is still
+the later change.
 
 **Request (C), revised 2026-10-04, needed only for execution mode X1 (§4.4):**
 
