@@ -69,14 +69,14 @@ holding, and what to do when its pull request is green.
 
 ### 2.1 What it generalises
 
-An issue run (#454) is `issue_runs/{run_id}` (`apps/swarm-api/swarm_api/issueruns.py:1178`,
-`IssueRun`), moved by `RunState` (`apps/swarm-api/swarm_api/issueruns.py:225`)
+An issue run (#454) is `issue_runs/{run_id}` (`apps/swarm-api/swarm_api/issueruns.py::IssueRun`,
+`IssueRun`), moved by `RunState` (`apps/swarm-api/swarm_api/issueruns.py::RunState`)
 through PLANNING → PLANNED → APPROVED → RUNNING → CHECKING ⇄ FIXING → DONE.
 Its routes are `apps/swarm-api/swarm_api/routes/runs.py`; every read advances
-it (`advance_run`, `apps/swarm-api/swarm_api/routes/runs.py:282`) and so does a
+it (`advance_run`, `apps/swarm-api/swarm_api/routes/runs.py::advance_run`) and so does a
 per-tenant Cloud Scheduler tick (`advance_tenant_runs`,
-`apps/swarm-api/swarm_api/routes/runs.py:357`). The plan becomes a workflow
-through `compile_plan` (`apps/swarm-api/swarm_api/issueruns.py:917`): the
+`apps/swarm-api/swarm_api/routes/runs.py::advance_tenant_runs`). The plan becomes a workflow
+through `compile_plan` (`apps/swarm-api/swarm_api/issueruns.py::compile_plan`): the
 plan's implementer steps, a review that writes `verdict.json`, and a fix gated
 on `NOT_YET` that is the workflow's one publisher (`integrate`).
 
@@ -213,7 +213,7 @@ any, with "from the plan, once planned".
 A lane's territory is the union of:
 
 * every plan step's `files` (`PlanStep.files`,
-  `apps/swarm-api/swarm_api/issueruns.py:357` — "a plan, not a fence"), and
+  `apps/swarm-api/swarm_api/issueruns.py::PlanStep.files` — "a plan, not a fence"), and
 * the paths the lane was given at submission (`territory`), which a `brief`
   lane always has.
 
@@ -226,7 +226,7 @@ a lane that needs more holds a prefix.
 **Seam files** are the per-repository list of files nearly every lane must
 touch to register what it built: in this repository
 `apps/swarm-api/swarm_api/main.py` (routers) and `apps/swarm-ui/src/App.tsx`
-(`SECTIONS`), plus `apps/swarm-api/swarm_api/schemas.py`. The list lives on
+(`export const SECTIONS`), plus `apps/swarm-api/swarm_api/schemas.py`. The list lives on
 the repository's registration (docs/repo-index.md §1), seeded from the
 index's `hot_spots`, and a lane's `seams` are its territory's entries that
 are on it. A seam is the reason #588 and #589 conflicted, and the reason a
@@ -304,7 +304,7 @@ contract.
 The lane does not grow a second CI loop. `issueci`
 (`apps/swarm-api/swarm_api/issueci.py`) already reads the pull request's
 required checks at its head (`from_checks`,
-`apps/swarm-api/swarm_api/issueci.py:504`), claims a round and submits ONE
+`apps/swarm-api/swarm_api/issueci.py::from_checks`), claims a round and submits ONE
 continuation of the integrator per red reading at a new head, at most
 `fix_rounds` (1-5, default 3), and fails with the redacted excerpt at the cap.
 LQ4 makes it operate on a narrow protocol (the fields it reads and patches:
@@ -331,7 +331,7 @@ the same visit:
 2. the **final review** says `MERGE` (see "Reviewed after a fix" below);
 3. the keyword block is written on the pull request body
    (`issuesync.sync_pull_request`,
-   `apps/swarm-api/swarm_api/issuesync.py:232`);
+   `apps/swarm-api/swarm_api/issuesync.py::sync_pull_request`);
 4. no `territory_breach`, and under T2 the lane holds the merge token of
    every seam its diff touched.
 
@@ -409,15 +409,15 @@ ticks nothing.
 Some lanes exist to check, not change: "prove the guard still refuses",
 "confirm #N is fixed on main". On the laptop they ended FAILED, because the
 worker fails a pull-request step that published nothing
-(`published_nothing`, `apps/agent-worker/agent_worker/lifecycle.py:4182`), or
+(`published_nothing`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._published_nothing`), or
 the patch harvest's `empty_diff` cause
-(`apps/agent-worker/agent_worker/expected_outputs.py:373`) failed the
+(`apps/agent-worker/agent_worker/expected_outputs.py::CAUSE_EMPTY_DIFF`) failed the
 reviewer's expected `swarm-work.patch`.
 
 A lane carries `allow_empty_diff` (default false):
 
 * **`source: verify`** requires `allow_empty_diff: true` and compiles to a
-  `collect` workflow (`apps/swarm-api/swarm_api/validation.py:544`): a verify
+  `collect` workflow (`apps/swarm-api/swarm_api/validation.py::DISPATCH_STRATEGIES`): a verify
   step whose expected output is `verify.md`, then a review that reads it and
   writes `verdict.json`. Nothing opens a pull request, so nothing can fail for
   publishing nothing. `swarm-work.patch` is not an expected output. The lane
@@ -592,7 +592,7 @@ job in that file does. The sweeper account's description, which lists the
 admin routes it is admitted to, gains this one; it gets no project role.
 
 The tick visits a tenant's live lanes oldest first, bounded by the page
-limit (`advance_tenant_runs` is the pattern, `apps/swarm-api/swarm_api/routes/admin.py:700`
+limit (`advance_tenant_runs` is the pattern, `apps/swarm-api/swarm_api/routes/admin.py::advance_runs`
 the route it copies), one lane's failure being that lane's only. After a
 merge, the tick moves that lane's dependants in the same visit, so a chain of
 lanes advances one link per merge, not one link per minute. A healthy lane

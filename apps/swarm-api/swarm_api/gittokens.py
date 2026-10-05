@@ -187,6 +187,31 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+@dataclass(frozen=True)
+class Viewer:
+    """Who a record is served to: the VERIFIED caller (`AuthContext.email`,
+    `is_admin`), never anything a request names. `yours` and which emails a
+    record shows are computed from this per request (owner decision
+    2026-10-05, U1 follow-up)."""
+
+    email: str
+    is_admin: bool = False
+
+    def owns(self, email: str | None) -> bool:
+        return bool(email) and _user_key(email or "") == _user_key(self.email)
+
+    def may_see(self, email: str | None) -> str | None:
+        """An email as served to this viewer: an admin sees every one, a
+        member only their own. Another person's is null, not masked: a
+        masked email still says which colleague it is."""
+        if not email:
+            return None
+        if "@" not in email:
+            # A system actor (`swarm-api` registers the tenant default), not a person.
+            return email
+        return email if self.is_admin or self.owns(email) else None
+
+
 @dataclass
 class GitTokenRecord:
     """`git_tokens/{token_id}`, docs/git-tokens.md §1. No field holds a value."""
@@ -296,12 +321,22 @@ class GitTokenRecord:
         )
 
     def to_api(self, pair_docs: Iterable[dict[str, Any]] = (), *,
-               now: datetime | None = None) -> dict[str, Any]:
+               now: datetime | None = None, viewer: Viewer | None = None) -> dict[str, Any]:
         """The record as served, with its probe summary (§5, §6: the
         permission matrix reads `probe.repositories`) and its expiry as the
         console draws it (§3.4, `expiry_status`). `pair_docs` are this
-        tenant's `git_token_checks` documents; only this record's are used."""
+        tenant's `git_token_checks` documents; only this record's are used.
+
+        `yours` is true only on the viewer's own user token, which is what
+        Repository Settings draws its attribution line from. `owner` is the
+        user token's email, served to its owner and to an admin; every email
+        field is null to anyone else, and to no viewer at all."""
         body = self.to_firestore()
+        yours = viewer is not None and self.scope is Scope.USER and viewer.owns(self.user)
+        for key in ("user", "registered_by", "revoked_by"):
+            body[key] = viewer.may_see(body[key]) if viewer is not None else None
+        body["owner"] = body["user"] if self.scope is Scope.USER else None
+        body["yours"] = yours
         for key in ("expires_at", "registered_at", "rotated_at", "verified_at", "revoked_at",
                     "probe_attempted_at", "refusal_reported_at"):
             body[key] = _iso(body[key])

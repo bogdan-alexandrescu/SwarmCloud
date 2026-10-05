@@ -279,10 +279,10 @@ That is a UI surface over the frozen runner-profile catalogue
 
 **Mapped since, re-checked 2026-10-02.** This section said no route returned
 either. Two do now: `GET /v1/runtimes`
-(`apps/swarm-api/swarm_api/routes/platform.py:130`) serves every runner profile
+(`apps/swarm-api/swarm_api/routes/platform.py::runtimes`) serves every runner profile
 with its image, declared and resolved backend, resource class, timeout and
 availability, read from the catalogue rather than copied; and
-`GET /v1/resource-classes` (`apps/swarm-api/swarm_api/routes/platform.py:82`)
+`GET /v1/resource-classes` (`apps/swarm-api/swarm_api/routes/platform.py::resource_classes`)
 serves the classes' sizes and units. The console renders the first as
 Capacity ▸ Runtimes (`apps/swarm-ui/src/Runtimes.tsx`). Publishing the
 catalogue does not weaken invariant 10: a caller still sends only a profile

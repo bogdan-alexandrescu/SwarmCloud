@@ -24,7 +24,7 @@
  * the table's fixed layout or the uri's ellipsis; drop `.cr-vh`; drop the
  * wide floor; let a blank line be the last line; unfold the transcript's
  * facts; read "latest" when the current generation is known; stop recursing
- * into bold; narrow the error pattern; drop the `.cr-sub .id` rule; read the
+ * into bold; narrow the error pattern; drop `.tid-text`'s weight; read the
  * tile from its own listing or stop the pane's poll -- each turns a case red.
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -287,15 +287,16 @@ describe('R7: beside the strip', () => {
 })
 
 describe('R13: one row format', () => {
-  it('draws a step row\'s line-two id at line two\'s size and weight', async () => {
+  // The id moved from line two to its own line under the name (#94,
+  // `TaskIdLine`); the rule R13 set for it holds there.
+  it('draws a step row\'s id at line two\'s size and weight', async () => {
     const { TaskRow } = await import('../Agents')
     const { container } = render(<TaskRow task={runTask({ id: ID, state: 'RUNNING', step_id: 'upstream', runner_profile: 'mock' })} now={Date.now()} onOpen={() => {}} classes={null} />)
-    const sub = container.querySelector('.cr-sub')!
-    const id = sub.querySelector('.id')!
-    const font = painted(id, 'font', WIDE) ?? ''
-    expect(font, 'the id is bold').not.toMatch(/^500\b/)
-    expect(font).toMatch(/var\(--t-micro\)/)
-    expect(painted(id, 'font-size', WIDE) ?? 'inherit').not.toMatch(/t-body/)
+    expect(container.querySelector('.cr-sub .id'), 'the id is on line two again').toBeNull()
+    const id = container.querySelector('.cr-name .tid-text')!
+    expect(id.textContent).toBe(ID)
+    expect(painted(id, 'font-weight', WIDE), 'the id is bold').toBe('400')
+    expect(painted(id, 'font-size', WIDE)).toBe('var(--t-micro)')
   })
 })
 

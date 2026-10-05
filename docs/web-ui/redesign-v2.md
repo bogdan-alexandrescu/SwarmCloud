@@ -23,8 +23,8 @@ move.
 | §2.2 (2) | **Full-bleed work area** | `.app` is capped by `--app-max` (≥ 1600px, held by `brand.test.tsx` B19) instead of 1100px; prose alone is clamped to `--measure` |
 | §2.2 (3) | **Inspector** | `App.tsx:730` and `:761` (`has-inspector`), `panes.ts:36` `INSPECTOR`, the resize grip at `App.tsx:1323` |
 | §2.2 (4), §2.4 | **Dock with provenance** | `Dock.tsx:63`: the DataSources strip collapsed to one line that expands on click. The dock carries provenance only. Logs render in the inspector (below), not in the dock |
-| §1.0, §6 F0 | **F0 decoder** | `apps/swarm-api/swarm_api/codec.py:278-282`: `attempt_from_dict` now passes all five spend fields |
-| §6 S2, dock | **Logs route** | `GET /v1/tasks/{id}/logs` at `apps/swarm-api/swarm_api/routes/tasks.py:291`, redacted at read time. UI: `RunFiles.tsx:284` through `api.ts:444` `loadTaskLogs` |
+| §1.0, §6 F0 | **F0 decoder** | `apps/swarm-api/swarm_api/codec.py::attempt_from_dict`: `attempt_from_dict` now passes all five spend fields |
+| §6 S2, dock | **Logs route** | `GET /v1/tasks/{id}/logs` at `apps/swarm-api/swarm_api/routes/tasks.py::read_logs`, redacted at read time. UI: `RunFiles.tsx:284` through `api.ts:444` `loadTaskLogs` |
 | §6 S3 (artifact half), Panel 3 | **Artifact content route** | `GET /v1/tasks/{id}/artifacts/content` at `routes/tasks.py:200`. It resolves an artifact by manifest name, never by path. UI: `api.ts:648` `loadArtifactContent` |
 | Panel 4 | **Checkpoint list** | `GET /v1/tasks/{id}/checkpoints` at `routes/tasks.py:246`, across attempts and read-only. UI: `RunFiles.tsx:96` through `api.ts:408` `loadCheckpoints` |
 | Panel 1 | **Fencing fields** | `task_to_api` serves `current_generation` and `current_lease_id` (`codec.py:168-199`), typed at `types.ts:406-427`. `gen N` is drawn per attempt (`AgentDetail.tsx:1187`) and per event (`AgentDetail.tsx:2962`, `AttemptTimeline.tsx:324`). No screen reads `current_generation` itself yet |
@@ -101,39 +101,39 @@ Added on 2026-10-02 in the same form as the list above: the rows checked at
 its order.
 
 - **The workflow timeline and table views** (§2.3; §4 #2): shipped. The board
-  offers graph, timeline and table (`apps/swarm-ui/src/stepviews.ts:68`), rendered at
-  `apps/swarm-ui/src/Workflows.tsx:1726` and `apps/swarm-ui/src/Workflows.tsx:1745`.
-- **The duration bar** (§4 #3): partly shipped. `apps/swarm-ui/src/charts/AttemptPhases.tsx:6`
+  offers graph, timeline and table (`apps/swarm-ui/src/stepviews.ts` (`export const WORKFLOW_VIEWS: readonly WorkflowView[] = ['graph', 'timeline', 'table']`)), rendered at
+  `apps/swarm-ui/src/Workflows.tsx` (`<WorkflowTable`) and `apps/swarm-ui/src/Workflows.tsx` (`<WorkflowTimeline`).
+- **The duration bar** (§4 #3): partly shipped. `apps/swarm-ui/src/charts/AttemptPhases.tsx` (`PHASE BARS (redesign-v2 §4 viz #3)`)
   draws queue, cold start and run on one axis per attempt, with a `dispatched`
-  tick, mounted at `apps/swarm-ui/src/AgentDetail.tsx:1482`. It has three segments, not the
+  tick, mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<AttemptDurations task={task}`). It has three segments, not the
   five-state queued → leased → dispatched → starting → running bar.
 - **Peak RSS over time** (§4 #4): shipped, a step line
-  (`apps/swarm-ui/src/charts/PeakMemory.tsx:222`), mounted at `apps/swarm-ui/src/AgentDetail.tsx:1963`.
-- **The checkpoint strip** (§4 #6): shipped (`apps/swarm-ui/src/charts/CheckpointStrip.tsx:85`),
-  on the attempt at `apps/swarm-ui/src/AgentDetail.tsx:2564`.
+  (`apps/swarm-ui/src/charts/PeakMemory.tsx` (`<StepLine points={points}`)), mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<PeakMemoryChart attempt={a}`).
+- **The checkpoint strip** (§4 #6): shipped (`apps/swarm-ui/src/charts/CheckpointStrip.tsx` (`export function CheckpointStrip({`)),
+  on the attempt at `apps/swarm-ui/src/AgentDetail.tsx` (`<CheckpointStrip attempt={a}`).
 - **The diffstat** (§4 #7): shipped as diverging bars
-  (`apps/swarm-ui/src/charts/Diffstat.tsx:65`), mounted at `apps/swarm-ui/src/AgentDetail.tsx:2973`.
+  (`apps/swarm-ui/src/charts/Diffstat.tsx` (`export function DiffstatChart({`)), mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<DiffstatChart commits={commits}`).
 - **`input_from` edges** (§4 #1, #9): partly shipped. Edges are still laid out
   from dependencies, because every data edge is also a `depends_on`
-  (`apps/swarm-ui/src/dag.ts:897`). Each drawn edge is now marked data or ordering
-  (`apps/swarm-ui/src/dag.ts:1175`).
+  (`apps/swarm-ui/src/dag.ts` (`(validation.py, check 5), so every data edge is an`)). Each drawn edge is now marked data or ordering
+  (`apps/swarm-ui/src/dag.ts` (`export function edgeProvenance(`)).
 - **Scrubbers** (§2.3): shipped, the inspector's two
-  (`apps/swarm-ui/src/WorkflowViews.tsx:728`).
+  (`apps/swarm-ui/src/WorkflowViews.tsx` (`THE INSPECTOR, AND THE TWO SCRUBBERS redesign-v2`)).
 - **Events paging** (§6 S1): the route is paged (above), and the UI half is
   still open. The client reads one page, oldest first. No screen sends
-  `order=desc` or follows the page token (`apps/swarm-ui/src/api.ts:163`).
+  `order=desc` or follows the page token (`apps/swarm-ui/src/api.ts` (`but this client reads ONE page, oldest-first, and does not`)).
 - **Cross-task attempts** (§6 S4): the route shipped (above), and the UI half
   is still open. No screen calls `GET /v1/attempts`; attempts are read per
-  task (`apps/swarm-ui/src/api.ts:1628`).
+  task (`apps/swarm-ui/src/api.ts` (`export async function loadAgentRun(`)).
 - **Checkpoint content** (§6 S3): shipped in #29 (above).
 - **§1.1(b), the duplicate `@keyframes pulse`**: fixed. No `@keyframes pulse`
   is left. The two are `ctl-placeholder-pulse` (.5 → .85,
-  `apps/swarm-ui/src/styles.css:992`) and `ctl-live-pulse` (`apps/swarm-ui/src/styles.css:3966`).
+  `apps/swarm-ui/src/styles.css` (`@keyframes ctl-placeholder-pulse`)) and `ctl-live-pulse` (`apps/swarm-ui/src/styles.css` (`@keyframes ctl-live-pulse`)).
 - **§1.1(c), the duplicate `.filters`**: fixed. No `.filters` rule is left
-  (`apps/swarm-ui/src/styles.css:2804` says why).
+  (`apps/swarm-ui/src/styles.css` (`IS GONE FROM HERE AND FROM THE NAV BLOCK`) says why).
 
 The "Fencing fields" row's last sentence still holds: no screen reads
-`current_generation` itself. The type now sits at `apps/swarm-ui/src/types.ts:606`.
+`current_generation` itself. The type now sits at `apps/swarm-ui/src/types.ts` (`THE FENCING GENERATION.`).
 
 **The six questions in §8: five answered, Q2 half answered**
 
@@ -202,7 +202,7 @@ a line, and every one was checked at `f0154b4` rather than taken from a report.
 
 ### 1.0 Every cost figure in the product is unreachable, and the code blames the wrong thing
 
-`apps/swarm-api/swarm_api/codec.py:211-229` — `attempt_from_dict` builds an
+`apps/swarm-api/swarm_api/codec.py::attempt_from_dict` — `attempt_from_dict` builds an
 `Attempt` from a Firestore document and never passes `input_tokens`,
 `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` or
 `cost_usd`. The dataclass defaults (`None`) therefore apply on every read, and
@@ -234,7 +234,7 @@ Two things make this worse than an ordinary bug:
   "Null until the worker fix ships in an agent-runtime-base image and attempts run
   on it." That is now false, and it is the first thing anyone debugging this will
   read.
-- **A passing test protects it.** `tests/unit/control_plane/test_leases_and_attempts_read_path.py:151-156`
+- **A passing test protects it.** `tests/unit/control_plane/test_leases_and_attempts_read_path.py::test_absent_usage_is_null_not_zero`
   (`test_absent_usage_is_null_not_zero`) asserts the five fields are `None` on an
   attempt that never recorded spend. That is the only test touching them. Nothing
   asserts they are present when the document carries them, so the fix has no
@@ -399,7 +399,7 @@ does not happen.
 
 ### 1.7 One stale comment that will mislead the next reader
 
-`apps/swarm-ui/src/api.ts:103-107` says `GET /v1/tasks/{id}/artifacts` "is
+`apps/swarm-ui/src/api.ts` (`it would be a second copy of something the first read already carries`) says `GET /v1/tasks/{id}/artifacts` "is
 deliberately NOT called: it reads a Firestore subcollection nothing writes, so it
 returns [] for every task forever."
 
@@ -585,16 +585,16 @@ empty list reading as "produced nothing". `artifacts_skipped` names files droppe
 
 - the artifact bucket sets `public_access_prevention = "enforced"` and
   `uniform_bucket_level_access = true` with no CORS
-  (`terraform/modules/storage/main.tf:25-26, 69-70`);
+  (`terraform/modules/storage/main.tf` (`resource "google_storage_bucket" "artifacts"`));
 - the load balancer routes only `/v1`, `/v1/*`, `/healthz`, `/readyz`, `/metrics`,
   `/docs`, `/openapi.json` to the API, with no `backend_bucket`
-  (`terraform/modules/frontend/main.tf:267`);
+  (`terraform/modules/frontend/main.tf` (`paths   = ["/v1", "/v1/*", "/healthz", "/readyz", "/metrics", "/docs", "/openapi.json"]`));
 - nothing in the repository mints a signed URL — `generate_signed_url` and
   `signBlob` appear nowhere in `apps/` or `terraform/`;
 - `apps/swarm-api/pyproject.toml` has no `google-cloud-storage` dependency.
 
 So a browser cannot read an artifact byte today. **The IAM already exists:**
-`terraform/modules/iam/bindings.tf:228-233` grants swarm-api
+`terraform/modules/iam/bindings.tf` (`resource "google_storage_bucket_iam_member" "api_reader"`) grants swarm-api
 `roles/storage.objectViewer` on the artifact bucket, unconditioned, with the comment
 "The API serves result artifacts back to callers, so it reads objects" — a behaviour
 it does not have. The seam is built at both ends with nothing in the middle. See
@@ -668,7 +668,7 @@ holds no `roles/monitoring.viewer`, so that path is closed to the UI regardless.
 
 Three rules:
 
-- **Do not stack memory and disk.** `apps/common/swarm_common/profiles.py:61-67` says
+- **Do not stack memory and disk.** `apps/common/swarm_common/profiles.py` (`and not additional capacity.`) says
   it in the frozen contract's own words: the workspace is memory-backed tmpfs, so
   "`disk_gib` is a slice OF `memory_gib` and not additional capacity."
   `peak_disk_bytes` is *inside* `peak_rss_bytes`. A stacked bar double-counts.
@@ -741,7 +741,7 @@ can distinguish a **gap** (it polled too slowly and the window moved) from a
 **continuation**. Any log viewer must read that header and say "output is missing
 here" rather than silently stitching two non-adjacent pieces together.
 
-And there is already a reader: `apps/swarm-mcp/swarm_mcp/cli.py:62-69` constructs
+And there is already a reader: `apps/swarm-mcp/swarm_mcp/cli.py::_live_log_uri` constructs
 `gs://{bucket}/tenants/{tenant}/tasks/{task}/attempts/{attempt}/logs/live/{stream}.tail.log`
 and tails it with the caller's own credentials. The browser cannot do that. Seam
 **S2** is the same route as S3 with a different prefix.
@@ -755,7 +755,7 @@ visual redesign, because every rule here costs pixels and a chart library will
 happily violate all of them by default.
 
 The rules are **structurally enforced**, not merely documented.
-`apps/swarm-ui/src/fetch.ts:1-17` states the reason: a sweep found 56 places in this
+`apps/swarm-ui/src/fetch.ts` (`sweep of its operational scripts confirmed 56 places`) states the reason: a sweep found 56 places in this
 platform's operational scripts where a probe failure rendered as an absence —
 `status.sh` printing "no swarm services deployed" when a session had expired; a build
 writing a manifest of zero images and reporting "ok built 6 image(s)". Commit
@@ -1445,14 +1445,14 @@ follows at 3am.
 
 Reported, not patched, per CLAUDE.md.
 
-1. **`apps/swarm-ui/src/api.ts:103-107`** describes `GET /v1/tasks/{id}/artifacts` as
+1. **`apps/swarm-ui/src/api.ts` (`it would be a second copy of something the first read already carries`)** describes `GET /v1/tasks/{id}/artifacts` as
    a dead route reading an unwritten subcollection. It was repaired;
    `store.list_artifacts` now reads `task.result_summary` and its docstring cites
    this comment by name. Nothing is broken; the next reader will be misled.
-2. **`apps/swarm-api/swarm_api/codec.py:330-332`** attributes null cost fields to a
+2. **`apps/swarm-api/swarm_api/codec.py::attempt_to_api`** attributes null cost fields to a
    worker image that has not shipped. The worker ships them correctly; the decoder
    twenty lines above drops them.
-3. **`terraform/modules/iam/bindings.tf:225-227`** states "The API serves result
+3. **`terraform/modules/iam/bindings.tf` (`The API serves result artifacts back to callers, so it reads objects.`)** states "The API serves result
    artifacts back to callers, so it reads objects." The API has no route that serves
    an artifact and no GCS client dependency. The grant is correct for the intended
    design and currently unused.

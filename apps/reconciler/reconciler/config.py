@@ -338,6 +338,50 @@ class ReconcilerConfig:
     #: least twice the platform's dispatch timeout if that is ever raised.
     never_started_release_seconds: int = 1200
 
+    # -- workflow stall check (#616, owner decision 2026-10-05) --------------
+    #: How long a workflow step may sit in DISPATCHED or STARTING before the
+    #: pass reports it as `start_overdue`.
+    #:
+    #: Ten minutes, beside a MEASURED median of 162 s from dispatch to a
+    #: running worker. It is set past the 480 s `dispatch_timeout_seconds`
+    #: on purpose: inside that deadline the missing-execution and
+    #: ended-at-startup rules are still entitled to act on the task, and a
+    #: workflow finding there would only repeat them. A step still not
+    #: started at ten minutes -- over three and a half medians, and past the
+    #: slowest cold start ever measured here (256 s) -- is one those rules did
+    #: not resolve, which is what an operator needs to hear. Reported, never
+    #: repaired: the task-level rules own the repair.
+    workflow_start_budget_seconds: int = 600
+
+    #: Minutes a RUNNING workflow may go with no step state change, and no
+    #: step holding a fresh heartbeat, before the pass reports `no_progress`.
+    #:
+    #: Forty-five. A step RUNNING with a heartbeat younger than
+    #: `heartbeat_grace_seconds` is progress whatever its age -- an agent
+    #: thinking for an hour is working -- so this clock only runs on a
+    #: workflow whose live steps have ALL gone quiet. It is longer than the
+    #: 30-minute no-progress rule (`stuck_after_seconds`) so that rule, which
+    #: can fence, acts first; this finding is what is left when it could not.
+    #: Only RUNNING workflows: a READY, PARKED or QUEUED one holds no capacity
+    #: and is waiting on something the parked and blocked-by views name
+    #: (invariant 1), so a long wait there is not a stall.
+    workflow_no_progress_minutes: int = 45
+
+    #: How long after its last parent finished a step still PARKED on
+    #: DEPENDENCY_INCOMPLETE waits before the pass promotes it to READY.
+    #:
+    #: 120 s: two of the scheduler's one-minute safety ticks. Its dependency
+    #: sweep is the normal promoter (RI10 recovered seconds later on
+    #: 2026-10-05), and both writes are guarded, so promoting earlier would be
+    #: safe -- it would only turn the scheduler's routine work into a finding.
+    workflow_promote_grace_seconds: int = 120
+
+    #: Live workflows read per pass. Each costs one read plus one per step,
+    #: every minute; past this many the pass says `truncated` rather than
+    #: reading the platform's whole history. 200 is several times the
+    #: concurrent workflows ever run here.
+    workflow_scan_limit: int = 200
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -447,6 +491,10 @@ class ReconcilerConfig:
                 2 * settings.dispatch_timeout_seconds,
                 _int("NEVER_STARTED_RELEASE_SECONDS", 1200),
             ),
+            workflow_start_budget_seconds=_int("WORKFLOW_START_BUDGET_SECONDS", 600),
+            workflow_no_progress_minutes=_int("WORKFLOW_NO_PROGRESS_MINUTES", 45),
+            workflow_promote_grace_seconds=_int("WORKFLOW_PROMOTE_GRACE_SECONDS", 120),
+            workflow_scan_limit=max(1, _int("WORKFLOW_SCAN_LIMIT", 200)),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

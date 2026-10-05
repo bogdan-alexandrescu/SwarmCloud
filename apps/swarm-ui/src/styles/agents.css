@@ -99,6 +99,12 @@
 }
 .row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
+/* THE NAME CELL STACKS (#94): the name, then the id line UNDER it. Without
+   this the cell is styles.css's `.row .agent`, a one-line flex ROW, and the
+   id sat beside the name, so a long step name and the id cut each other and
+   a phone squeezed both. `stretch` gives the id line the cell's full width to
+   cut in the middle; the shared reason stays absolutely positioned. */
+.row.is-compact > .cr-name { flex-direction: column; align-items: stretch; gap: 0; }
 .row.is-compact > .cr-name b {
   display: block;
   overflow: hidden;
@@ -121,19 +127,66 @@
   line-height: var(--lh-micro);
   color: var(--text-dim);
 }
-.cr-sub .id { font-family: var(--mono); }
-/* ONE ROW FORMAT (owner QA R13, 2026-10-04): a workflow step's row -- the
-   'upstream' step of the mock group -- prints its short id on line two, and
-   styles.css's `.row .id` (500 weight at --t-body, later in the bundle) drew
-   it bold and larger than the line it sits in. On line two it is line two's
-   size and weight, mono. */
-.row.is-compact > .cr-sub .id { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: inherit; }
 /* THE STRIP ROW'S NAME (owner QA R7): folded to 64px the row shows only its
    mark, so its accessible name was the state word ('running'). These words --
    the agent's name and id -- are drawn only in the strip, for a screen
    reader; a pointer gets them from the strip's hover card. */
 .row.is-compact > .cr-vh { display: none; }
 .cr-try.is-over { color: var(--bad); font-weight: 600; }
+/* THE TASK ID LINE (#94): the whole id, printed in mono under the agent's
+   name -- a list row's and the split header's (`TaskIdLine`) -- with its copy
+   button. It was a hover title and a tooltip, so an id had to be hovered to
+   be read. 12px (--t-micro) is the floor; every colour is a theme token, so
+   light and dark both carry it.
+   ONE LINE AT EVERY WIDTH, CUT IN THE MIDDLE: the head gives way with an
+   ellipsis and the last characters never shrink, because ids share their
+   `task_` prefix and differ along their length -- an end-ellipsis would hide
+   the part that tells two apart. The copy is always the whole id.
+   NOT `.id`, and weight 400 at line two's size: styles.css's `.row .id`
+   (500 at --t-body) drew a row's id bold and larger than the line it sits
+   in (owner QA R13, 2026-10-04). */
+.tid {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.tid-text {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  font-weight: 400;
+  color: var(--text-dim);
+  user-select: text;
+}
+.tid-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tid-tail { flex: none; white-space: nowrap; }
+.tid-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tid-copy:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+.tid-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.tid-copy > .c-ic { width: 13px; height: 13px; }
+.tid-said { flex: none; white-space: nowrap; font-family: var(--font); color: var(--text-dim); }
+.tid-said:empty { display: none; }
 
 /* --- the 64px strip: the list folded by «, [ or the divider --------------- */
 /* BY CLASS, NOT BY DOM SHAPE. The rule this replaces hid every child of
@@ -266,8 +319,8 @@
 .ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
-/* THE META LINE: profile · class · workflow · account, then the id's copy
-   and the dispatch chips. Sans; a `·` between facts, none before the copy
+/* THE META LINE: profile · class · workflow · account, then the dispatch
+   chips. Sans; a `·` between facts, none before the copy
    button or the chips. */
 .ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
@@ -275,23 +328,6 @@
 .ag-head-facts > li.is-absent { color: var(--text-faint); }
 .ag-head-facts b { color: var(--text); font-weight: 550; }
 .ag-head-facts .ctl-link { font-weight: 550; }
-.ag-head-idcopy {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 24px;
-  padding: 0 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: var(--t-micro)/var(--lh-micro) var(--font);
-  cursor: pointer;
-}
-.ag-head-idcopy:hover { background: var(--surface-2); }
-.ag-head-idcopy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.ag-head-idcopy > .c-ic { width: 13px; height: 13px; }
-.ag-head-said:empty { display: none; }
 .ag-head-dchip {
   display: inline-flex;
   align-items: center;

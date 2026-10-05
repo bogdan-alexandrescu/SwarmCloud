@@ -68,23 +68,23 @@ admission:
 What exists, and what does not:
 
 * **Per-attempt cost IS recorded.** The worker's `record_spend`
-  (`apps/agent-worker/agent_worker/control.py:1119`), called from every exit by
-  `_record_spend` (`apps/agent-worker/agent_worker/lifecycle.py:7148`), writes
+  (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`), called from every exit by
+  `_record_spend` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._record_spend`), writes
   the runner's token counts and `cost_usd` onto the attempt
-  (`apps/common/swarm_common/models.py:372`). It is the provider cost the runner
+  (`apps/common/swarm_common/models.py::Attempt.cost_usd`). It is the provider cost the runner
   reports — `total_cost_usd` from the CLI's result — not the cloud bill, and a
   cost the runner did not report is omitted, not written as zero. The attempts
   list reports how many rows carry one
-  (`apps/swarm-api/swarm_api/routes/attempts.py:48`), because a sum over
+  (`apps/swarm-api/swarm_api/routes/attempts.py::spend_coverage`), because a sum over
   partially reported rows is a lower bound that looks like a total.
 * **`monthly_budget_usd` is refused with a 422**
-  (`apps/swarm-api/swarm_api/routes/admin.py:266`). Storing it would echo a
+  (`apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits`). Storing it would echo a
   number back with a 200 and enforce nothing, and an admin would believe they
   had a spend control.
 * **`PARKED(BUDGET_EXHAUSTED)` is never written.** The value stays in the frozen
-  `ParkReason` enum (`apps/common/swarm_common/states.py:134`) because the enum
+  `ParkReason` enum (`apps/common/swarm_common/states.py::ParkReason.BUDGET_EXHAUSTED`) because the enum
   is frozen, not because anything uses it; no sweep reads it either
-  (`apps/scheduler/scheduler/loop.py:836`). Removing it is a request, not an
+  (`apps/scheduler/scheduler/loop.py::Scheduler._stop_for_failed_workflow`). Removing it is a request, not an
   edit: [contract-change-requests.md](contract-change-requests.md) entry 39.
 
 The constraint anyone revisiting this would face: `record_spend` writes when an
