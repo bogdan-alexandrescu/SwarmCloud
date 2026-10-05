@@ -635,6 +635,28 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
         --exclude-newer "${CHECKOV_EXCLUDE_NEWER}" "checkov==${CHECKOV_VERSION}" \
  && rm -rf /tmp/uv-cache
 
+# The repository-index extractor (docs/repo-index.md §3.5, lane RI3): one
+# tree-sitter pass the indexer prompt runs first, as
+# `swarm-repo-index --repo <checkout> --out "$SWARM_ARTIFACTS_DIR/..."`.
+# Like checkov it gets its OWN environment, /opt/repo-index, so its grammars
+# never change the worker's /opt/venv or the agent's `pip install` target.
+# --require-hashes with --only-binary: every wheel is the exact bytes
+# requirements.txt names, and nothing is compiled at build time. The script
+# and its pins are read-only to the agent (root-owned, 0644/0755). `-I` keeps
+# the agent's PYTHONPATH and user site out of the extractor's interpreter.
+COPY images/agent-runtime-base/repo-index/requirements.txt images/agent-runtime-base/repo-index/repo_index_extract.py /opt/repo-index/
+RUN /usr/local/bin/python3.11 -m venv --without-pip /opt/repo-index/venv \
+ && UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/tmp/uv-cache \
+      uv pip install --python /opt/repo-index/venv/bin/python \
+        --require-hashes --only-binary :all: --no-deps \
+        -r /opt/repo-index/requirements.txt \
+ && rm -rf /tmp/uv-cache \
+ && chmod 0644 /opt/repo-index/requirements.txt /opt/repo-index/repo_index_extract.py \
+ && printf '%s\n' '#!/bin/sh' \
+      'exec /opt/repo-index/venv/bin/python -I /opt/repo-index/repo_index_extract.py "$@"' \
+      > /usr/local/bin/swarm-repo-index \
+ && chmod 0755 /usr/local/bin/swarm-repo-index
+
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
@@ -671,6 +693,11 @@ print('python', sys.version.split()[0])"
 # A worker that cannot import its own runners is broken in a way that must not
 # reach production, so the build proves it can.
 RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+
+# The repository-index extractor must load all five grammars and parse one
+# file with each, as the agent user, or the indexer step would find out
+# instead of the build.
+RUN swarm-repo-index --self-test
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

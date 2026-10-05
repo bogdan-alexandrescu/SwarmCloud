@@ -563,10 +563,11 @@ def test_the_tree_sitter_packages_are_pinned_identically(tool: Any) -> None:
     assert set(image_pins) == expected
     assert image_pins == test_pins
     # Every requirement is hash-pinned, so a rebuild installs the same bytes.
-    blocks = [b for b in REQUIREMENTS.read_text(encoding="utf-8").split("\n\n") if "==" in b]
-    for block in blocks:
-        for requirement in re.findall(r"^[a-z][a-z0-9-]*==\S+", block, re.MULTILINE):
-            assert "--hash=sha256:" in block, requirement
+    entries = re.split(r"^(?=[a-z][a-z0-9-]*==)", REQUIREMENTS.read_text(encoding="utf-8"),
+                       flags=re.MULTILINE)[1:]
+    assert len(entries) == len(expected)
+    for entry in entries:
+        assert "--hash=sha256:" in entry, entry.splitlines()[0]
     # The script reports the grammar versions it parsed with.
     assert tool.GRAMMAR_PACKAGES["python"] == "tree-sitter-python"
 
