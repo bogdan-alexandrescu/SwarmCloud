@@ -12,9 +12,10 @@ consequence would be built without it; a mock-up that broke the house rules
 into the console.
 
 Nothing here reads the code the design describes beyond checking that every
-file it cites exists and that a cited line is inside the file. Line numbers
-are deliberately not pinned tighter than that: issueruns.py and forge.py are
-edited by other lanes every wave.
+file it cites exists and that every `path::qualname` or `path` (`anchor`) it
+cites resolves. It cites no line numbers (lane CITD): issueruns.py and
+forge.py are edited by other lanes every wave, and a line number drifts with
+each edit where a symbol or an anchor fails only when it is gone.
 """
 
 from __future__ import annotations
@@ -25,13 +26,15 @@ from pathlib import Path
 
 import pytest
 
+from .test_docs_spec_amendments import _assert_cites_resolve
+
 REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "repo-index.md"
 MOCKUPS = REPO / "docs" / "web-ui" / "mockups"
 MOCKUP = MOCKUPS / "repositories.html"
 
 _CITE = re.compile(
-    r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin)/[\w./-]+\.\w+)(?::(\d+))?`"
+    r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin)/[\w./-]+\.\w+)`"
 )
 
 
@@ -170,12 +173,9 @@ def test_the_design_doc_links_its_mockups():
 
 @pytest.mark.parametrize("doc", [DESIGN, MOCKUP], ids=lambda p: p.name)
 def test_every_cited_file_exists_in_doc_and_mockup(doc: Path):
-    for path, line in _CITE.findall(_text(doc)):
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        if line:
-            length = _text(target).count("\n") + 1
-            assert int(line) <= length, f"{doc.name} cites {path}:{line}, past its end"
+    for path in _CITE.findall(_text(doc)):
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -495,11 +495,9 @@ def test_the_git_tokens_doc_cites_real_files_and_nothing_credential_shaped(doc: 
     text = _text(doc)
     assert not _CREDENTIAL_SHAPES.search(text)
     assert "agents-staging" not in text
-    for path, line in _CITE.findall(text):
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        if line:
-            assert int(line) <= _text(target).count("\n") + 1, f"{path}:{line} is past its end"
+    for path in _CITE.findall(text):
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------

@@ -206,8 +206,10 @@ _LINE_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.\w+:\d+(?:-\d+)?)`")
 #: `path::qualname`, a Python function, class or name.
 _SYMBOL_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.py)::([\w.]+)`")
 
-#: `path` (`text`): the exact text a non-Python citation points at.
-_ANCHOR_CITE = re.compile(rf"`({_ROOTS}[\w./-]+)` \(`([^`]+)`\)")
+#: `path` (`text`): the exact text a non-Python citation points at. `\s+`, not
+#: one space, so a citation the doc wraps between `path` and (`text`) is still
+#: checked rather than silently skipped.
+_ANCHOR_CITE = re.compile(rf"`({_ROOTS}[\w./-]+)`\s+\(`([^`]+)`\)")
 
 #: Anchors a doc cites that occur more than once in their file, and why each
 #: cannot be narrowed to one. Every other anchor must occur exactly once.

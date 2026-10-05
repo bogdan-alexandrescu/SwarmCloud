@@ -17,9 +17,10 @@ be built without it; a mock-up that broke the house rules (12px floor, theme
 toggle, honest dashes, placeholder names) would be copied into the console.
 
 Nothing here reads the code the design describes beyond checking that every
-file it cites exists and that a cited line is inside the file. Line numbers
-are not pinned tighter than that: issueruns.py, issueci.py and runs.py are
-edited by other lanes every wave.
+file it cites exists and that every `path::qualname` or `path` (`anchor`) it
+cites resolves. It cites no line numbers (lane CITD): issueruns.py, issueci.py
+and runs.py are edited by other lanes every wave, and a line number drifts
+with each edit where a symbol or an anchor fails only when it is gone.
 """
 
 from __future__ import annotations
@@ -30,12 +31,14 @@ from pathlib import Path
 
 import pytest
 
+from .test_docs_spec_amendments import _SYMBOL_CITE, _assert_cites_resolve
+
 REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "lane-queue.md"
 MOCKUP = REPO / "docs" / "web-ui" / "mockups" / "lane-queue.html"
 
 _CITE = re.compile(
-    r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin|\.github)/[\w./-]+\.\w+)(?::(\d+))?`"
+    r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs|plugin|\.github)/[\w./-]+\.\w+)`"
 )
 
 
@@ -346,13 +349,11 @@ def test_the_design_doc_links_its_mockups():
 def test_every_cited_file_exists_in_doc_and_mockup(doc: Path):
     cited = _CITE.findall(_text(doc))
     if doc is DESIGN:
-        assert len(cited) >= 10, "the design cites the code it generalises"
-    for path, line in cited:
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        if line:
-            length = _text(target).count("\n") + 1
-            assert int(line) <= length, f"{doc.name} cites {path}:{line}, past its end"
+        symbols = _SYMBOL_CITE.findall(_text(doc))
+        assert len(cited) + len(symbols) >= 10, "the design cites the code it generalises"
+    for path in cited:
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
