@@ -1058,6 +1058,16 @@ class DispatchOptions:
     #: decides whether this step's agent runs, and the verdicts that run it.
     gate_task_id: str | None = None
     gate_verdicts: tuple[str, ...] = ()
+    #: The step's `allow_empty_diff` (owner decision, 2026-10-05): an empty
+    #: diff ends it SUCCEEDED with `result_summary.no_change` instead of
+    #: failing on `empty_diff`. Written only when true, inside the signed block.
+    allow_empty_diff: bool = False
+    #: The workflow's label (`metadata.unit`, else `metadata.title`), on a
+    #: GATED step only: what a MERGE verdict, which runs no fix agent, titles
+    #: the pull request with when the implementer wrote no `pr-title.txt`.
+    #: Here and not read from `metadata` by the worker, because the worker
+    #: reads no key the spec signature does not cover.
+    pr_label: str | None = None
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1108,13 +1118,18 @@ class DispatchOptions:
         builds_on: str | None,
         gate_task_id: str | None,
         gate_verdicts: Sequence[str] = (),
+        allow_empty_diff: bool = False,
+        pr_label: str | None = None,
     ) -> "DispatchOptions":
-        """This step's `builds_on` and verdict gate, already resolved to task ids."""
+        """This step's `builds_on`, verdict gate and empty-diff permission,
+        already resolved to task ids. `pr_label` is kept only on a gated step."""
         return replace(
             self,
             builds_on=builds_on,
             gate_task_id=gate_task_id,
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
+            allow_empty_diff=bool(allow_empty_diff),
+            pr_label=pr_label if gate_task_id and pr_label else None,
         )
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
@@ -1170,6 +1185,13 @@ class DispatchOptions:
                 "task_id": self.gate_task_id,
                 "verdict_in": list(self.gate_verdicts),
             }
+        # Absent unless asked for (2026-10-05), so every other step stores
+        # exactly the block it stored before. The worker spells both keys in
+        # `agent_worker.expected_outputs`.
+        if self.allow_empty_diff:
+            block["allow_empty_diff"] = True
+        if self.pr_label:
+            block["pr_label"] = self.pr_label
         # Absent unless the step opted in (#75), so a step that did not stores
         # exactly the block it stored before. The worker spells the key
         # `agent_worker.inputs.PARENTS_KEY`.
@@ -1191,6 +1213,32 @@ class DispatchOptions:
         if self.merge_target:
             block[MERGE_TARGET_FIELD] = dict(self.merge_target)
         return block
+
+
+#: The metadata keys a workflow's label is read from, in order: `unit` is
+#: what the MCP bridge sends a spec's `label` as, `title` its `title`
+#: (`swarm_mcp.workflows.stored_names`).
+WORKFLOW_LABEL_KEYS = ("unit", "title")
+#: GitHub's own title field holds 256 characters; the worker cuts there too.
+WORKFLOW_LABEL_MAX_CHARS = 256
+
+
+def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
+    """The workflow's label as one line of text, or None when it has none.
+
+    The first of `WORKFLOW_LABEL_KEYS` that holds a non-blank string, with its
+    whitespace runs folded to one space and cut to
+    `WORKFLOW_LABEL_MAX_CHARS`. A caller's text: the worker scrubs it, refuses
+    it if it carries a task id or attribution, and neutralises every mention
+    before it titles anything, as it does for an agent's `pr-title.txt`.
+    """
+    for key in WORKFLOW_LABEL_KEYS:
+        value = (metadata or {}).get(key)
+        if isinstance(value, str):
+            text = " ".join(value.split())
+            if text:
+                return text[:WORKFLOW_LABEL_MAX_CHARS]
+    return None
 
 
 def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key: str) -> str:

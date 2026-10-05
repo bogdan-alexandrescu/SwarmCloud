@@ -92,6 +92,7 @@ from .validation import (
     validate_step_routing,
     validate_storable,
     validate_timeout,
+    workflow_label,
 )
 from .waker import SchedulerWaker
 
@@ -524,6 +525,10 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
+                allow_empty_diff=source.allow_empty_diff,
+                # Kept on a gated step only (`with_routing`): the MERGE path's
+                # pull request title when the implementer wrote none.
+                pr_label=workflow_label(spec.metadata),
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in
