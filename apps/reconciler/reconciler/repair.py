@@ -1707,6 +1707,12 @@ class Reconciler:
             # started is safe only behind a fence: both are refused while the
             # task, as this transaction leaves it, still holds the lease.
             refuse_while_task_holds_it=orphan_lease or proof_by_absence_of_a_start,
+            # The attempt this finding supersedes gets its end in the same
+            # commit (#630): a fenced worker never writes one, and an attempt
+            # left open counted as running in every figure read from attempts.
+            # The store writes it only at the finding's own generation.
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
             **fence_guard,
         )
 
@@ -1728,6 +1734,7 @@ class Reconciler:
                 generation=finding.generation,
             )
             self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, done.attempt_ended)
         if done.release_refused:
             outcome.actions.append(
                 f"did NOT release {finding.lease_id}: its task still holds it at its generation"
@@ -1903,7 +1910,13 @@ class Reconciler:
         if not finding.task_id or finding.generation is None:
             outcome.skipped = "nothing_to_fence"
             return outcome
-        new_generation = self._store.invalidate_generation(finding.task_id, finding.generation)
+        fenced = self._store.fence_attempt(
+            finding.task_id,
+            finding.generation,
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
+        )
+        new_generation = fenced.new_generation
         outcome.invalidated_to = new_generation
         if new_generation is None:
             # Moved on since the snapshot -- fenced by someone else, finished,
@@ -1931,9 +1944,18 @@ class Reconciler:
             generation=finding.generation,
         )
         self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, fenced.attempt_ended)
         outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
         self._log_eviction(finding, outcome)
         return outcome
+
+    def _note_attempt_end(
+        self, finding: Finding, outcome: RepairOutcome, cause: str | None
+    ) -> None:
+        """Say on the outcome that a fence's commit recorded its attempt's end (#630)."""
+        if cause is None or not finding.attempt_id:
+            return
+        outcome.actions.append(f"recorded the end of {finding.attempt_id} as {cause}")
 
     def _release_attempt_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
         """Give back the account holds of the attempt this pass just ended (#380).
