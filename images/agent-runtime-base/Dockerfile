@@ -56,39 +56,71 @@ FROM ${PYTHON_IMAGE} AS languageservers
 # `go list`, so the runtime stage carries /usr/local/go too.
 ARG GO_VERSION=1.27.1
 ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
-# gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05).
-# gopls ships NO prebuilt binary -- `go install` is the vendor's only
-# distribution -- so it is the one tool here compiled at build time, against
-# the module checksum database (sum.golang.org verifies every module's
-# bytes, the go.sum of the toolbox above). About 35 s; it runs in this
-# throwaway stage, so the compile cache never reaches the runtime.
-ARG GOPLS_VERSION=0.23.0
+# gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05) and
 # terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version on
-# 2026-10-05). Checksum:
-# https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_SHA256SUMS
-# (terraform-ls_0.39.0_linux_amd64.zip). Built by HashiCorp with go1.25.12.
+# 2026-10-05) are both COMPILED HERE from their module source, not taken as
+# the vendor's build. Release 37289476429 (2026-10-05) refused this image:
+# trivy found HIGH CVEs in both binaries, all in what they were linked
+# against -- golang.org/x/mod v0.37/v0.38 (CVE-2026-56864, -56865),
+# x/text v0.38 (CVE-2026-56852), x/crypto v0.54 (CVE-2026-56854), and, in
+# HashiCorp's terraform-ls zip, the go1.25.12 standard library (seven CVEs).
+# Owner decision 2026-10-05: rebuild from source rather than ignore them.
+# So each server's module is fetched through the module proxy (sum.golang.org
+# verifies every module's bytes), the flagged golang.org/x modules are raised
+# to the fixed versions below with `go get` (which verifies those too), and
+# the result is linked with the Go above, which also clears the stdlib CVEs.
+# The build then reads each binary's own module list (`go version -m`) and
+# fails if a bump did not land, so a pin that stops applying is loud.
+# Raising a pin: take the "fixed version" trivy prints, then read the pinned
+# modules' OWN requirements on the proxy (curl proxy.golang.org/<mod>/@v/<v>.mod):
+# the x/* modules require each other, so a pin below what another pin needs
+# fails `go get` ("x/mod@v0.40.0 indirectly requires x/text@v0.41.0", main
+# 3ed3305, 2026-10-05). Check every `go` line is not newer than GO_VERSION.
+#
+# gopls is v0.24.0-pre.1 (2026-09-30), not v0.23.0: x/mod >= 0.40 requires
+# x/tools 0.49, and gopls is compiled against x/tools internals, so forcing
+# 0.23.0 (x/tools 0.47.1 snapshot) onto a newer x/tools risks not compiling.
+# 0.24.0-pre.1 already requires x/mod 0.41.0, x/text 0.42.0 and x/tools
+# 0.50.1-pre, so its two pins below are no-ops kept for the linked-version
+# check. Move to v0.24.0 when it is released. terraform-ls takes x/tools
+# 0.48 -> 0.49 through the raised x/mod and x/text; it uses x/tools' public API.
+ARG GOPLS_VERSION=0.24.0-pre.1
 ARG TERRAFORM_LS_VERSION=0.39.0
-ARG TERRAFORM_LS_SHA256=7750edc736845fd8c04ff0fc6332423c12d8275b358668c8c17e8aedc43ef971
+ARG X_CRYPTO_VERSION=0.55.0
+ARG X_MOD_VERSION=0.41.0
+ARG X_TEXT_VERSION=0.42.0
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
- && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+ && apt-get install --no-install-recommends -y ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
- && rm -rf /tmp/go.tar.gz /usr/local/go/test \
- && GOPATH=/tmp/gopath GOCACHE=/tmp/gocache GOTOOLCHAIN=local GOTELEMETRY=off \
-      CGO_ENABLED=0 GOFLAGS=-trimpath \
-      /usr/local/go/bin/go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
- && install -o root -g root -m 0755 /tmp/gopath/bin/gopls /usr/local/bin/gopls \
- && rm -rf /tmp/gopath /tmp/gocache \
- && curl -fsSL -o /tmp/terraform-ls.zip \
-      "https://releases.hashicorp.com/terraform-ls/${TERRAFORM_LS_VERSION}/terraform-ls_${TERRAFORM_LS_VERSION}_linux_amd64.zip" \
- && echo "${TERRAFORM_LS_SHA256}  /tmp/terraform-ls.zip" | sha256sum -c - \
- && unzip -q /tmp/terraform-ls.zip terraform-ls -d /tmp/terraform-ls \
- && install -o root -g root -m 0755 /tmp/terraform-ls/terraform-ls /usr/local/bin/terraform-ls \
- && rm -rf /tmp/terraform-ls /tmp/terraform-ls.zip \
+ && rm -rf /tmp/go.tar.gz /usr/local/go/test
+# build_server MODULE VERSION OUT MODULE@FIX...: copy the module's verified
+# source out of the read-only module cache, raise the named dependencies,
+# build, and assert each raised version is what the binary was linked with.
+RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/gocache \
+      GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 GOFLAGS=-trimpath; \
+    build_server() { \
+      local module="$1" version="$2" out="$3"; shift 3; \
+      local dir; dir="$(go mod download -json "${module}@v${version}" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["Dir"])')" || return 1; \
+      rm -rf /tmp/src && cp -r "${dir}" /tmp/src && chmod -R u+w /tmp/src || return 1; \
+      (cd /tmp/src && go get "$@" && go build -o "${out}" .) || return 1; \
+      local fix; for fix in "$@"; do \
+        go version -m "${out}" | grep -qE "[[:space:]]${fix%@*}[[:space:]]+${fix#*@}([[:space:]]|$)" \
+          || { echo "${out}: ${fix} did not land" >&2; return 1; }; \
+      done; \
+      chmod 0755 "${out}"; \
+    }; \
+    build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
+      "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
+ && build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
+      "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/mod@v${X_MOD_VERSION}" \
+      "golang.org/x/text@v${X_TEXT_VERSION}" \
+ && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
  && /usr/local/bin/gopls version && /usr/local/bin/terraform-ls version
 
 # ---------------------------------------------------------------------------

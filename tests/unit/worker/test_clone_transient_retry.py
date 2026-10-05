@@ -129,13 +129,20 @@ def test_a_forge_network_failure_is_transient(exc):
     assert forge.transient_network_error(exc) is True
 
 
+class _Refusing:
+    """Stands in for `forge._NO_REDIRECT_OPENER`, the one opener `_request` uses."""
+
+    def __init__(self, refuse) -> None:  # noqa: ANN001
+        self.open = refuse
+
+
 def test_a_forge_url_error_with_a_connect_reason_is_forge_unavailable(monkeypatch):
     """The probe's `_request`: a connect failure is the retryable class."""
 
     def refuse(*args, **kwargs):
         raise urllib.error.URLError("Failed to connect to github.com port 443 after 134 s")
 
-    monkeypatch.setattr(forge.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(forge, "_NO_REDIRECT_OPENER", _Refusing(refuse))
     with pytest.raises(forge.ForgeUnavailable) as raised:
         forge.probe_repository(url="https://github.com/octo/widgets.git", token="t" * 8)
     assert "Failed to connect to github.com port 443" in str(raised.value)
@@ -145,7 +152,7 @@ def test_a_forge_certificate_failure_stays_permanent(monkeypatch):
     def refuse(*args, **kwargs):
         raise urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
 
-    monkeypatch.setattr(forge.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(forge, "_NO_REDIRECT_OPENER", _Refusing(refuse))
     with pytest.raises(forge.ForgeError) as raised:
         forge.probe_repository(url="https://github.com/octo/widgets.git", token="t" * 8)
     assert not isinstance(raised.value, forge.ForgeUnavailable)
