@@ -1,8 +1,9 @@
 """Per-run copies of `/sc:swarmcloud`'s script, each titled after its SwarmCloud workflow.
 
 Owner, 2026-10-04: every SwarmCloud workflow run in Claude Code is titled
-`SwarmCloud · <name> · N steps`, at most 100 characters, instead of the fixed
-`swarmcloud` and its generic description. A workflow script's `meta` must be a
+after its workflow -- since 2026-10-05 `SC · <name> · N steps`, at most 150
+characters (the task panel shows ~28; Enter shows the whole) -- instead of
+the fixed `swarmcloud` and its generic description. A workflow script's `meta` must be a
 PURE LITERAL -- Claude Code reads the name before the script runs, and a
 running script cannot rename itself -- so the name cannot be computed inside
 run.js. Instead the bridge writes a copy of the plugin's run.js with
