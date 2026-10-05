@@ -174,9 +174,9 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     text = _text(BUILD_PROMPT)
     isolation = _section(text, "### 2.2 Isolation: root inside the pod, gVisor underneath")
     assert "Amended 2026-10-01" in isolation
-    assert "`images/agent-runtime-base/Dockerfile:778`" in isolation
+    assert "`images/agent-runtime-base/Dockerfile:658`" in isolation
     assert "`kubernetes/render.py:390`" in isolation
-    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 778)
+    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 658)
     assert "--runtime gvisor" in _cited_line("kubernetes/render.py", 390)
     assert "NOT the" in _cited_line("kubernetes/render.py", 390)
 

@@ -126,7 +126,7 @@ verify that against the actual bill rather than trusting this sentence.
 > **Amended 2026-10-01: this section is unbuilt v2 design, not what runs.**
 > No profile runs as root and no profile runs under gVisor by default. The agent
 > image drops to `USER swarm:swarm`, uid 10001
-> (`images/agent-runtime-base/Dockerfile:778`), on both backends, and an agent
+> (`images/agent-runtime-base/Dockerfile:658`), on both backends, and an agent
 > installs into its own user paths (§2.12). gVisor is the `--runtime gvisor`
 > render option for GKE pods (`kubernetes/render.py:390`), not the default, and
 > Cloud Run Jobs has no runtime class at all. So the boundary this section
@@ -708,7 +708,7 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 > `claude-code` and `codex`, and GKE Autopilot for `browser`, routed by
 > `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`).
 > Neither box is "root, sandboxed": the worker runs as uid 10001
-> (`images/agent-runtime-base/Dockerfile:778`) and gVisor is opt-in
+> (`images/agent-runtime-base/Dockerfile:658`) and gVisor is opt-in
 > (`kubernetes/render.py:390`), see §2.2. There is no credential sidecar; the
 > worker leases its account itself (§2.6.3).
 
@@ -919,7 +919,7 @@ v2 contradicts the frozen contract in specific places. These are **requests**, p
   gVisor. The defence moved down a layer; it did not disappear, and it is not the
   same defence.~~ **Not requested (amended 2026-10-02):** nothing runs as root,
   so the contract line stands. The agent image drops to `USER swarm:swarm`,
-  uid 10001 (`images/agent-runtime-base/Dockerfile:778`). The GKE pod and its
+  uid 10001 (`images/agent-runtime-base/Dockerfile:658`). The GKE pod and its
   container keep non-root, a read-only root filesystem and every capability
   dropped (`apps/scheduler/scheduler/dispatch.py:192`,
   `apps/scheduler/scheduler/dispatch.py:205`). gVisor is the opt-in
