@@ -403,11 +403,11 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:4923`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py::Worker._lease_account`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:5293`,
-> `apps/agent-worker/agent_worker/accountlease.py:650`). That is the same on a
+> (`apps/agent-worker/agent_worker/lifecycle.py::Worker._account_credential_env`,
+> `apps/agent-worker/agent_worker/accountlease.py::credential_env_from_account`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
 > writer (§7.3); the worker never refreshes.
@@ -775,7 +775,7 @@ v1 built these and they are correct. They are not rewritten:
 >
 > * **Item 5: there is no sidecar** in either backend's pod. The worker process
 >   itself leases the account (§2.6.3) and runs the checkpoint timer
->   (`apps/agent-worker/agent_worker/lifecycle.py:1486`). The reason is §2.6.3's:
+>   (`apps/agent-worker/agent_worker/lifecycle.py::Worker._run_child_supervised`). The reason is §2.6.3's:
 >   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
 >   How events are published is §2.7's question.
 > * **Item 12 is not configuration.** The catalogue is the frozen
