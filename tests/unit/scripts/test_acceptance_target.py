@@ -233,7 +233,13 @@ def test_the_release_acceptance_job_does_not_name_the_public_repository():
 # The tenant: every API call carries X-Swarm-Tenant
 # ---------------------------------------------------------------------------
 
+# The fake drains stdin as real curl does with `-K -`: api_request pipes the
+# auth config into curl, and under `set -o pipefail` a reader that exits
+# before the writer finishes kills it with SIGPIPE and fails the call. That
+# made test_api_request_sends_no_tenant_header_by_default flaky (PR #674's run
+# 37322841628 exited 1 with empty stderr; the same code passed elsewhere).
 FAKE_CURL = r"""#!/usr/bin/env bash
+cat >/dev/null
 printf '%s\n' "$@" >>"${FAKE_DIR}/curl.args"
 printf '{}\n200'
 """

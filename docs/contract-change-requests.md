@@ -47,6 +47,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
+| 38 | `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374) | accepted by the owner 2026-10-05 (recorded on #374), IMPLEMENTED 2026-10-05 (functionality wave 7, lane CR38) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
 | 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
@@ -8112,9 +8113,10 @@ schedule back toward ~90 s, which is what lost the two attempts #401 recorded.
 
 ## 38. `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374)
 
-**Status: PROPOSED (functionality wave 1, lane B1, 2026-10-01).** Numbered 38
-on the assumption 37 is the last entry on main; renumber if another branch has
-taken it.
+**Status: ACCEPTED 2026-10-05 by the owner (recorded on #374) and IMPLEMENTED
+2026-10-05 (functionality wave 7, lane CR38).** Proposed 2026-10-01
+(functionality wave 1, lane B1). What was applied is listed under "As
+implemented" at the end of this entry.
 
 ### What is true today
 
@@ -8164,6 +8166,37 @@ scheduler's drain (none today) would still say `TENANT_LIMIT` at 0.
 2. All-or-nothing reservation: unchanged; an unset pool still refuses.
 3. Concurrency counts from `LEASED`: unchanged.
 7. `requests == limits`: unaffected; this is the pool ceiling, not a pod spec.
+
+### As implemented, 2026-10-05
+
+* `states.py`: `BlockedReason.POOL_LIMIT_UNSET`. `swarm_api/headroom.py` files
+  it under `NEEDS_ACTION` (waiting never clears it; somebody sets a limit).
+* `models.py`: `SlotPool.hard_limit: int | None`. None makes `effective_limit`
+  and `available` None and `has_capacity` False. `SlotPool` lives in
+  `models.py`, not `admission.py`/`states.py`; it is the type this request's
+  third bullet names, so that is the one edit outside the two modules in the
+  title.
+* `admission.py`: the transaction reads `d.get("hard_limit")`, so a missing
+  key and a stored null are both None; `evaluate_capacity` refuses through
+  such a pool with `{"reason": "POOL_LIMIT_UNSET", "limit": None}`, after the
+  `MANUAL_PAUSE` check. An explicit 0 is still a 0 with the pool's own reason.
+* Removed as dead: `Scheduler._name_unset_limits` (`scheduler/loop.py`), the
+  `UnsetLimitPool` class in both codecs and the scheduler codec's string
+  `POOL_LIMIT_UNSET`, and `_UnsetLimitReads`/`_PoolSnapshot`
+  (`scheduler/store.py`, #601), which hid a stored null from the transaction
+  because the old read crashed on it. swarm-api's `hard_limit_known` stays,
+  now `pool.hard_limit is not None`, for `service.py`'s `/v1/capacity` filter.
+* `swarm_api/headroom.py` `_ceiling`: a None limit bounds headroom at 0, never
+  "unbounded" (a paused pool with no limit reaches it).
+* The jq restatement `effective_limit` in `scripts/lib/common.sh` returns null
+  for an absent or null `hard_limit`, as the model returns None, and
+  `scripts/lib/check-contract-parity.sh` holds it there with three
+  null-`hard_limit` rows. `status.sh` prints such a pool's LIMIT and HARD as
+  `unset`; `resume-swarm.sh` says `POOL_LIMIT_UNSET`, not `hard_limit 0`; the
+  over-limit checks in `concurrency-test.sh` and `race-test.sh` treat a null
+  limit as admitting nothing, because in jq every number is greater than null.
+* Proved by `tests/unit/common/test_pool_limit_unset_contract.py` and the
+  updated `tests/unit/control_plane/test_pool_limit_unset.py`.
 
 ---
 

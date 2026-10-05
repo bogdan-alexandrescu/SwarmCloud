@@ -52,10 +52,16 @@ class SlotPool:
     `effective_limit` is the real ceiling and is always the minimum of the
     configured hard limit, the adaptive target, and any quota-derived cap.
     Adaptive logic may lower it; nothing may raise it above `hard_limit`.
+
+    `hard_limit` is None when the pool's document carries none: nobody set the
+    ceiling (contract request 38, #374). That is UNKNOWN -- not 0, which says
+    an operator chose zero, and not unlimited. `effective_limit` and
+    `available` are then None too, and `has_capacity` is False, so admission
+    refuses through the pool (`BlockedReason.POOL_LIMIT_UNSET`).
     """
 
     name: str
-    hard_limit: int
+    hard_limit: int | None
     adaptive_target: int | None = None
     quota_derived_limit: int | None = None
     active: int = 0
@@ -63,7 +69,9 @@ class SlotPool:
     updated_at: datetime = field(default_factory=utcnow)
 
     @property
-    def effective_limit(self) -> int:
+    def effective_limit(self) -> int | None:
+        if self.hard_limit is None:
+            return None
         candidates = [self.hard_limit]
         if self.adaptive_target is not None:
             candidates.append(self.adaptive_target)
@@ -72,11 +80,15 @@ class SlotPool:
         return max(0, min(candidates))
 
     @property
-    def available(self) -> int:
-        return max(0, self.effective_limit - self.active)
+    def available(self) -> int | None:
+        limit = self.effective_limit
+        if limit is None:
+            return None
+        return max(0, limit - self.active)
 
     def has_capacity(self, units: int = 1) -> bool:
-        return self.enabled and self.active + units <= self.effective_limit
+        limit = self.effective_limit
+        return self.enabled and limit is not None and self.active + units <= limit
 
 
 def pool_names_for(

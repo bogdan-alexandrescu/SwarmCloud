@@ -534,6 +534,13 @@ export interface GitToken {
   /** The covered repositories by name, when the API names them. */
   repositories: string[]
   last_error: string | null
+  /**
+   * The caller's own user token. The API computes it per request from the
+   * verified identity (`GET /v1/git-tokens`); only an exact `true` counts.
+   */
+  yours: boolean
+  /** A user token's email: served on the caller's own records, and to an admin. */
+  owner: string | null
 }
 
 function scopeOf(v: unknown): TokenScope | null {
@@ -572,6 +579,8 @@ export function normToken(v: unknown): GitToken | null {
     // The API names the covered repositories as {repo_id: "owner/repo"}.
     repositories: isRec(v.repositories) ? Object.values(v.repositories).filter((x): x is string => typeof x === 'string') : strs(v.repositories),
     last_error: str(v.last_error) ?? str(v.probe_error),
+    yours: v.yours === true,
+    owner: str(v.owner),
   }
 }
 
@@ -681,6 +690,17 @@ function resolver(tokens: GitToken[], repoId: string): GitToken | null {
   )
 }
 
+/**
+ * The caller's own user token that attributes work in this repository: the
+ * record the API marked `yours`, usable, and not narrowed away from it. Null
+ * when there is none -- the attribution line is then not drawn at all.
+ */
+function ownUserToken(tokens: GitToken[], repoId: string): GitToken | null {
+  return (
+    tokens.find((t) => t.yours && t.scope === 'user' && usable(t) && (t.repo_ids.length === 0 || t.repo_ids.includes(repoId))) ?? null
+  )
+}
+
 /** The probe rows `GET /v1/git-tokens` carries for each token: `probe.repositories`. */
 function probeRows(raw: Rec): Rec[] {
   return isRec(raw.probe) ? recs(raw.probe.repositories) : []
@@ -723,7 +743,7 @@ export interface ResolvedToken {
   capabilities: CapRow | null
   /** Why nothing resolved, when nothing did. */
   reason: string | null
-  /** The caller's own token, used only for attribution under R2. */
+  /** The caller's own token (the record marked `yours`), used only for attribution under R2. */
   user_token: GitToken | null
 }
 
@@ -778,17 +798,19 @@ export function expiryWords(iso: string, now: number): string | null {
 /**
  * The token that resolves for one repository, derived from
  * `GET /v1/git-tokens` and the repository id (R2: the repository's own token,
- * else the tenant's). Metadata only; there is no per-repository token route.
+ * else the tenant's), and the caller's own user token beside it, for
+ * attribution. Metadata only; there is no per-repository token route.
  */
 export function normResolvedFromTokens(v: unknown, repoId: string): ResolvedToken {
   const order = isRec(v) ? str(v.resolution_order) : null
   const raws = isRec(v) ? recs(v.git_tokens ?? v.tokens) : []
   const tokens = raws.map(normToken).filter((t): t is GitToken => t !== null)
   const token = resolver(tokens, repoId)
+  const user_token = ownUserToken(tokens, repoId)
   if (token === null) {
-    return { order, token: null, capabilities: null, reason: 'No repository or tenant token is registered for this repository', user_token: null }
+    return { order, token: null, capabilities: null, reason: 'No repository or tenant token is registered for this repository', user_token }
   }
   const raw = raws.find((r) => r.token_id === token.token_id)
   const row = raw === undefined ? undefined : probeRows(raw).find((r) => r.repo_id === repoId)
-  return { order, token, capabilities: row === undefined ? null : capRow(row.capabilities), reason: null, user_token: null }
+  return { order, token, capabilities: row === undefined ? null : capRow(row.capabilities), reason: null, user_token }
 }

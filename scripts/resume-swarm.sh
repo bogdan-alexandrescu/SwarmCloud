@@ -75,8 +75,12 @@ for pool in "${TARGETS[@]}"; do
     warn "pool ${pool} does not exist; skipping"
     continue
   fi
-  hard="$(jq -r '.hard_limit // 0' <<<"${existing}")"
-  if [[ "${hard}" -eq 0 ]]; then
+  # An absent or null hard_limit is UNSET, not 0 (contract request 38, #374):
+  # admission refuses through it as POOL_LIMIT_UNSET, so say that, not "0".
+  hard="$(jq -r 'if .hard_limit == null then "unset" else .hard_limit end' <<<"${existing}")"
+  if [[ "${hard}" == "unset" ]]; then
+    warn "pool ${pool} has no hard_limit set (POOL_LIMIT_UNSET); enabling it admits nothing. Set a limit first."
+  elif [[ "${hard}" -eq 0 ]]; then
     warn "pool ${pool} has hard_limit 0; enabling it admits nothing. Set a limit first."
   fi
   fs_patch "pools/${pool}" "enabled,updated_at" \

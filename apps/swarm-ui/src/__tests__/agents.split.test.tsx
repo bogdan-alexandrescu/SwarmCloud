@@ -121,10 +121,11 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
       return h!
     })
     expect(head.querySelector('.sk-st')?.textContent).toMatch(/running/i)
-    // ONCE, IN THE HEADER BLOCK (walkthrough B; agent-details-v3.html A): the
-    // whole id behind its copy button, whose title it is, and profile · class
-    // as the first of the meta line. Units and gen are the Attempts tab's.
-    expect(head.querySelector<HTMLElement>('.ag-head-facts .ag-head-idcopy')?.title).toBe(`${ID} (click to copy)`)
+    // ONCE, IN THE HEADER BLOCK (walkthrough B; #94): the whole id printed
+    // under the name with its copy button, and profile · class as the first
+    // of the meta line. Units and gen are the Attempts tab's.
+    expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(ID)
+    expect(head.querySelector<HTMLElement>('.ag-head-id .tid-copy')?.title).toBe(`${ID} (click to copy)`)
     const meta = [...head.querySelectorAll('.ag-head-facts > li')].map((li) => li.textContent)
     expect(meta.slice(0, 2)).toEqual(['claude-code', 'standard'])
     // Stop is in the header, once.
