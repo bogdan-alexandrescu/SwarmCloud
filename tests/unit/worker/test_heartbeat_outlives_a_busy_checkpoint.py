@@ -24,6 +24,10 @@ was left, and what each test below holds:
    the worker. A process may lower its own priority without a capability but
    not raise it, so "the heartbeat above the agent" is reached by lowering the
    agent, not by raising the worker.
+6. THE LOOP'S OTHER I/O HELD THE BEAT. Between beats the supervision loop
+   publishes the live log tails to GCS and asks the account broker over HTTP;
+   either held the beat for as long as it took. Both now run with the lease
+   beaten from a thread, as the checkpoint does.
 """
 
 from __future__ import annotations

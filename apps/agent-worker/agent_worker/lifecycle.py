@@ -1826,14 +1826,22 @@ class Worker:
                     )
                 next_checkpoint = now + cfg.checkpoint_interval_seconds
 
+            # BEATEN THROUGH, LIKE THE CHECKPOINT (#426). Both leave the control
+            # plane for another service -- up to four GCS uploads with a 60 s
+            # request timeout each, and the account broker over HTTP -- and
+            # held this loop, and so the beat, for as long as either took.
+            # Under `_heartbeat_meanwhile` a block shorter than the time left
+            # to the next beat costs a thread start and no beat.
             if now >= next_live_log:
-                self._publish_live_logs()
+                with self._heartbeat_meanwhile("live log tails"):
+                    self._publish_live_logs()
                 next_live_log = now + cfg.live_log_interval_seconds
 
             if self._account is not None:
                 # A file stat when nothing changed; a forward at most once per
                 # window per minute; a hold read at most once per turn.
-                self._watch_account()
+                with self._heartbeat_meanwhile("account channel"):
+                    self._watch_account()
 
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
