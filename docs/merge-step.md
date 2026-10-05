@@ -114,6 +114,41 @@ What the built step checks, and how this differs from §4-§5:
   <task_id> ...`, the same text as the squash commit's body, with no
   attribution line.
 
+**Where the default does not apply.** On a repository on a host no
+`ForgeMerger` serves, `merge_by_default` appends nothing: the worker harvests
+a patch there and opens no pull request, so an admin turning the default on
+must not refuse every such tenant's workflow. An explicit `"on"`, or a stated
+merge step, on such a host is still refused at submission.
+
+**Issue runs merge from the CI loop, not from their workflow.** A run's
+`auto_merge` takes the platform default when the run does not say. A merge
+appended inside the run's compiled workflow would run before the run reached
+CHECKING: before the API writes the `Closes #N` block into the pull request
+(every compiled prompt forbids agents to write one), so the merge would read
+no closing reference and close nothing -- #569 again -- and before the CI loop
+could fix a red check, so a red or slow CI would fail the workflow, and the
+run with it. So the compiled workflow and every CI fix round say
+`metadata.merge: "off"`, and the CI loop (`issueci._merge`) submits ONE
+merge-only continuation -- `continues_task` naming the run's task that pushed
+the green head (the integrator, or the newest fix round's task), and one
+`merge` step -- once CI is green at that head AND the keyword block is
+recorded written, and only when the review's verdict is `MERGE`. The run
+stays CHECKING while the merge runs and is DONE when GitHub reports the pull
+request merged; a review verdict other than `MERGE`, a head no task of the run
+pushed, or a merge the step refused is FAILED with the reason, the pull
+request left open and green for a person, and no merge is resubmitted for
+that head. A CI fix round is not re-reviewed (#454): the merge after one
+rests on the review's verdict of the code before the round and on green
+required checks. A merge-only continuation is a tenant member's: the
+continuation-scoped CI-fixer account (request 30) is refused one.
+
+**Operator step: the merge Job needs `git` in the tenant's providers.** The
+merge profile now runs on the tenant's `-git` token, so its Job exists only
+for a tenant whose tfvars `providers` lists `"git"`
+(`terraform/infra/locals.tf`'s job matrix). Until an operator adds it
+(`scripts/register-tenant.sh --tenant <tenant> --add-provider git`, then apply), there is no
+Job to dispatch a merge step to, for that tenant.
+
 What these decisions remove, and the residuals that follow:
 
 * **The protected-path refusal (§5.1, §7 T6, M4) is gone.** It refused a pull

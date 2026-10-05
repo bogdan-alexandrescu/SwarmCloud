@@ -903,7 +903,7 @@ two places:**
 
 | `metadata.merge` on the workflow | the spec states a merge step | result |
 |---|---|---|
-| absent | no | appended when the platform's `merge_by_default` is on (default **off**) |
+| absent | no | appended when the platform's `merge_by_default` is on (default **off**) and the repository is on github.com |
 | absent | yes | the stated step is honoured |
 | `"on"` | no | appended; refused (422) if the workflow opens no single pull request |
 | `"on"` | yes | the stated step is honoured; nothing is doubled |
@@ -914,9 +914,17 @@ two places:**
 `GET`/`PUT /v1/admin/settings` (`{"merge_by_default": true}`), stored in
 Firestore at `control/settings`. It applies to workflows submitted after it
 changes; a workflow keeps the steps it was signed with. An issue run's
-`auto_merge` is the same choice: absent, it takes the default; the run
-records what it resolved, and its compiled workflow (and every CI fix round)
-states it as `metadata.merge`.
+`auto_merge` is the same choice: absent, it takes the default, and the run
+records what it resolved. The run does NOT merge inside its compiled
+workflow (which, like every CI fix round, says `metadata.merge: "off"`): it
+merges from its CI loop, with one merge-only continuation submitted once CI
+is green and its `Closes #N` block is written, and only when its review said
+`MERGE` ([merge-step.md](merge-step.md#revised-2026-10-04-owner)).
+
+**A merge-only continuation** is a `direct-pr` workflow whose
+`continues_task` names a task and whose only step runs the `merge` profile: it
+merges that task's pull request at the head that task pushed, with every
+check below except the verdict (it has no review). A tenant member's only.
 
 What swarm-api appends, before it signs anything:
 
@@ -954,8 +962,12 @@ merge whose answer was lost ends `merge_unanswered`.
 **Refused at submission, never at merge time:** a repository on a host no
 merger serves. The merge acts on github.com only (`GitHubMerger`, the one
 `ForgeMerger`), the one host the tenant's token is ever sent to. A merge step
--- stated, `"on"`, or from the default -- on another host is a 422 that says
-to set `metadata.merge` to `"off"`.
+the caller asked for -- stated, or `"on"` -- on another host is a 422 that
+says to set `metadata.merge` to `"off"`. The platform default is NOT applied
+there: a workflow on another host opens no pull request (the worker harvests
+a patch), so with `metadata.merge` absent it is accepted with no merge step
+appended, and an admin turning `merge_by_default` on breaks no tenant who
+never asked for a merge.
 
 ## When not to use a workflow
 

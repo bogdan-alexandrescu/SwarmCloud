@@ -194,7 +194,8 @@ class RunCreate(StrictModel):
     #: default, because the plan is an agent's and its steps run with the
     #: tenant's forge token.
     plan_approval: Literal["required", "auto"] = "required"
-    #: End the run in a merge step (#295, contract request 47). Absent takes
+    #: Merge the run's pull request with a merge step once CI is green and the
+    #: keyword block is written (#295, contract request 47; `issueci._merge`). Absent takes
     #: the platform's `merge_by_default`; the run records what was resolved.
     auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)

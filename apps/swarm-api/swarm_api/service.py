@@ -72,6 +72,7 @@ from .validation import (
     SinglePrPlan,
     StepSpec,
     is_merge_step,
+    is_mergeable_forge,
     merge_step_for,
     plan_merge,
     refuse_unmergeable_forge,
@@ -425,7 +426,10 @@ class SubmissionService:
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
-            merged_spec = self._with_merge_step(spec, step_specs, dispatch.strategy)
+            merged_spec = self._with_merge_step(
+                spec, step_specs, dispatch.strategy, repository_url,
+                continued_task=continuation.task_id if continuation else None,
+            )
             if merged_spec is not spec:
                 spec = merged_spec
                 step_specs = self._step_specs(spec)
@@ -451,7 +455,10 @@ class SubmissionService:
                 strategy=dispatch.strategy,
                 integrator_step_id=integrator_step_id,
             )
-            merge_plan = plan_merge(step_specs, dispatch.strategy)
+            merge_plan = plan_merge(
+                step_specs, dispatch.strategy,
+                continuation.task_id if continuation else None,
+            )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
                 # serves is refused before any step runs.
@@ -641,7 +648,13 @@ class SubmissionService:
         ]
 
     def _with_merge_step(
-        self, spec: WorkflowCreate, step_specs: Sequence[StepSpec], strategy: str
+        self,
+        spec: WorkflowCreate,
+        step_specs: Sequence[StepSpec],
+        strategy: str,
+        repository_url: str | None,
+        *,
+        continued_task: str | None = None,
     ) -> WorkflowCreate:
         """`spec`, with a `merge` step appended when the merge choice says so.
 
@@ -657,7 +670,12 @@ class SubmissionService:
             one, before anything is built or signed;
           * "on" for a workflow that opens no single pull request is refused,
             because the caller asked for a merge that would not happen; the
-            platform default simply does not apply to one.
+            platform default simply does not apply to one;
+          * the platform default does not apply to a repository on a host no
+            `ForgeMerger` serves either: the worker harvests a patch there and
+            opens no pull request, so a tenant who never asked for a merge is
+            not refused for an admin's setting. An explicit "on", or a stated
+            merge step, on such a host is still refused at submission.
 
         `single-pr` ends in its own merge step and is left as submitted.
         """
@@ -675,9 +693,12 @@ class SubmissionService:
             return spec
         if choice == "off":
             return spec
-        if choice is None and not self._store.get_platform_settings().get("merge_by_default"):
+        if choice is None and (
+            not is_mergeable_forge(repository_url)
+            or not self._store.get_platform_settings().get("merge_by_default")
+        ):
             return spec
-        appended = merge_step_for(step_specs, strategy)
+        appended = merge_step_for(step_specs, strategy, continued_task)
         if appended is None:
             if choice == "on":
                 raise DispatchOptionError(
@@ -751,7 +772,10 @@ class SubmissionService:
             # minted each id already.
             sources = merge_plan.sources
             return dispatch.with_merge_target(
-                pull_request=step_task_id[sources.pull_request],
+                pull_request=(
+                    sources.pull_request if sources.continued
+                    else step_task_id[sources.pull_request]
+                ),
                 review=step_task_id[sources.review] if sources.review else None,
                 verdict_file=sources.verdict_file,
             )

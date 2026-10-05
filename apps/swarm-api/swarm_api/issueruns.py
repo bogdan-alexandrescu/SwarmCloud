@@ -82,14 +82,17 @@ strictly; only a complete one with every entry met lets the pull request say
 `Closes #N` (`issueci.evaluate_requirements`). Every compiled prompt tells
 its agent not to write a closing keyword itself (`NO_CLOSING_KEYWORD`).
 
-`auto_merge` ends the run's workflow in a `merge` step (#295, contract
-request 47, owner decisions 2026-10-04): the compiled workflow says
-`metadata.merge` "on" or "off", and swarm-api appends the step -- depending
-on the gated fix (the integrator) and the review, whose verdict must be
-MERGE -- when it is on. A run created without saying takes the platform's
-`merge_by_default`, and records what it resolved. The CI loop's fix rounds
-(`issueci`) carry the same choice, so a round that turns CI green merges
-exactly when the run would have.
+`auto_merge` merges the run's pull request with a `merge` step (#295,
+contract request 47, owner decisions 2026-10-04) -- but NOT inside the
+compiled workflow, which always says `metadata.merge` "off", as every CI fix
+round does. A merge there would run before the run reaches CHECKING: before
+the API writes the `Closes #N` block (so the merge would close nothing, the
+#569 defect again), and before the CI loop could fix a red check (a red or
+slow CI would fail the workflow, and the run with it). The CI loop
+(`issueci._merge`) instead submits ONE merge-only continuation once CI is
+green at the head and the keyword block is written, and only when the
+review's verdict is MERGE. A run created without saying takes the
+platform's `merge_by_default`, and records what it resolved.
 
 STAGES, NOT ONLY A CHAIN (owner decision, 2026-10-03). A step may state
 `depends_on`: earlier steps whose code or files it needs. A plan that states it
@@ -1059,9 +1062,10 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "repository_url": ref.repository_url,
         "steps": steps,
         "metadata": {
-            # The run's own choice, stated, so the platform default at compile
-            # time cannot override what the run resolved when it was created.
-            MERGE_METADATA_KEY: "on" if run.auto_merge else "off",
+            # Always "off", stated, so the platform default cannot append a
+            # merge here: an `auto_merge` run merges from the CI loop, once CI
+            # is green and its keyword block is written (`issueci._merge`).
+            MERGE_METADATA_KEY: "off",
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,
@@ -1188,6 +1192,11 @@ class IssueRun:
     issue_read: dict[str, Any] | None = None
     #: `{"code", "message"}` of the forge read that failed at submission.
     issue_read_error: dict[str, str] | None = None
+    #: An `auto_merge` run's merge (`issueci._merge`): `{head_sha,
+    #: pushed_by, claimed_at, workflow_id}`, the one merge-only continuation
+    #: submitted for the green head. None until CI is green with the keyword
+    #: block written; never set on a run without `auto_merge`.
+    merge: dict[str, Any] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1236,6 +1245,7 @@ class IssueRun:
             "writeback_attempt": self.writeback_attempt,
             "issue_read": dict(self.issue_read) if self.issue_read is not None else None,
             "issue_read_error": dict(self.issue_read_error) if self.issue_read_error is not None else None,
+            "merge": dict(self.merge) if self.merge is not None else None,
         }
 
     @classmethod
@@ -1291,6 +1301,7 @@ class IssueRun:
             writeback_attempt=data.get("writeback_attempt"),
             issue_read=dict(data["issue_read"]) if data.get("issue_read") else None,
             issue_read_error=dict(data["issue_read_error"]) if data.get("issue_read_error") else None,
+            merge=dict(data["merge"]) if isinstance(data.get("merge"), Mapping) else None,
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -1357,6 +1368,13 @@ class IssueRun:
                 if self.issue_read is not None else None
             ),
             "issue_read_error": self.issue_read_error,
+            # An auto_merge run's merge workflow and the head it pins.
+            "merge": (
+                None if self.merge is None else {
+                    "workflow_id": self.merge.get("workflow_id"),
+                    "head_sha": self.merge.get("head_sha"),
+                }
+            ),
         }
 
 
@@ -1376,6 +1394,7 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "last_plan_posted", "last_status_posted", "forge_login",
     "writeback_error", "writeback_failed_at", "writeback_attempt",
     "requirements_met", "requirements_unmet", "requirements_note",
+    "merge",
 })
 
 

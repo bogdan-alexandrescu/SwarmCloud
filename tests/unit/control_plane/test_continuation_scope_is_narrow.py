@@ -389,6 +389,23 @@ def test_the_listed_account_can_continue_a_task_another_member_submitted(fixer_c
     assert response.json()["dispatch"]["continues_task"] == original
 
 
+def test_the_listed_account_cannot_submit_a_merge_only_continuation(fixer_client):
+    """A merge is a wider power than the push request 30 accepted for the CI
+    fixer: a workflow of one `merge` step continuing a pull request is a
+    member's only (contract request 47; the issue run's merge)."""
+    original = _submit_direct_pr_task(fixer_client, ALICE)
+    merge_only = {
+        "steps": [{"step_id": "merge", "runner_profile": "merge"}],
+        "strategy": "direct-pr",
+        "continues_task": original,
+    }
+    refused = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=merge_only)
+    assert refused.status_code == 422, refused.text
+    assert "does not merge" in refused.json()["message"]
+    accepted = fixer_client.post("/v1/workflows", headers=ALICE, json=merge_only)
+    assert accepted.status_code == 201, accepted.text
+
+
 def _submit_integrate_workflow(fixer_client, headers: dict[str, str]) -> dict[str, str]:
     response = fixer_client.post(
         "/v1/workflows",

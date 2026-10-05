@@ -301,3 +301,70 @@ def test_a_merge_task_on_its_own_is_refused_as_misplaced_not_disabled(client):
     detail = response.json()["detail"]
     assert detail.get("disabled") is not True
     assert detail["merge_strategies"] == ["direct-pr", "integrate"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://gitlab.com/octo-org/widget-shop.git",
+    "https://github.example.com/octo-org/widget-shop.git",
+])
+def test_the_platform_default_appends_nothing_on_a_host_no_merger_serves(client, url):
+    """Review of the merge step: an admin turning the default on must not 422
+    every tenant on another host who never asked for a merge. The worker
+    harvests a patch there and opens no pull request, so there is nothing to
+    merge; an explicit "on" or a stated step is still refused (above)."""
+    _set_default(client, True)
+    response = _post(client, _review_shape(repository_url=url))
+    assert response.status_code == 201, response.text
+    assert _merge_steps(response.json()) == []
+    one = _post(client, {"strategy": "direct-pr", "repository_url": url,
+                         "steps": [{"step_id": "only", "runner_profile": "mock",
+                                    "input": {"prompt": "change it"}}]})
+    assert one.status_code == 201, one.text
+    assert _merge_steps(one.json()) == []
+
+
+# --------------------------------------------------------------------------
+# A merge-only continuation: how an issue run merges once CI is green
+# --------------------------------------------------------------------------
+
+def _direct_pr_task(client, user: str = "alice") -> str:
+    response = client.post("/v1/tasks", headers=auth_header(user), json={
+        "runner_profile": "mock", "strategy": "direct-pr", "repository_url": REPO,
+    })
+    assert response.status_code == 201, response.text
+    return response.json()["task"]["id"]
+
+
+def test_a_merge_only_continuation_targets_the_continued_task_by_id(client, db):
+    continued = _direct_pr_task(client)
+    response = _post(client, {
+        "strategy": "direct-pr", "continues_task": continued,
+        "steps": [{"step_id": "merge", "runner_profile": "merge"}],
+    })
+    assert response.status_code == 201, response.text
+    (merge,) = _merge_steps(response.json())
+    assert merge["depends_on"] == []
+    task = _task(db, merge["task_id"])
+    assert task["metadata"]["dispatch"]["merge_target"] == {"pull_request": continued}
+    assert task["provider"] == "git"
+    assert task["max_attempts"] == MERGE_STEP_MAX_ATTEMPTS
+
+
+def test_a_continuation_of_no_step_but_a_non_merge_one_is_still_one_step(client):
+    continued = _direct_pr_task(client)
+    response = _post(client, {
+        "strategy": "direct-pr", "continues_task": continued,
+        "steps": [{"step_id": "a", "runner_profile": "mock", "input": {"prompt": "x"}},
+                  {"step_id": "b", "runner_profile": "mock", "input": {"prompt": "y"}}],
+    })
+    assert response.status_code == 422, response.text
+
+
+def test_a_merge_only_continuation_on_another_tenants_task_is_refused(client):
+    continued = _direct_pr_task(client, user="bob")
+    response = _post(client, {
+        "strategy": "direct-pr", "continues_task": continued,
+        "steps": [{"step_id": "merge", "runner_profile": "merge"}],
+    })
+    assert response.status_code == 422, response.text
+    assert "not a task in your tenant" in response.json()["message"]

@@ -1882,14 +1882,20 @@ class MergeSources:
     """What a workflow's merge step acts on, all STEP ids."""
 
     #: The step that opens the pull request: the integrator, or a `direct-pr`
-    #: workflow's one agent step.
+    #: workflow's one agent step. A TASK id instead when `continued` is set.
     pull_request: str
     #: The review whose verdict must be MERGE -- the step the publishing
     #: step's verdict gate reads -- and the file that step stages from it.
     review: str | None = None
     verdict_file: str | None = None
+    #: True for a merge-only continuation (`continues_task` and one `merge`
+    #: step): `pull_request` is then the continued TASK, which pushed the
+    #: head to pin in an earlier workflow, and the step depends on nothing.
+    continued: bool = False
 
     def depends_on(self) -> list[str]:
+        if self.continued:
+            return []
         return [self.pull_request] + ([self.review] if self.review else [])
 
     def input_from(self) -> dict[str, str]:
@@ -1902,7 +1908,9 @@ class MergePlan:
     sources: MergeSources
 
 
-def merge_sources(steps: Sequence[StepSpec], strategy: str) -> MergeSources | None:
+def merge_sources(
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
     `steps` are the AGENT steps (no merge step), after `validate_dag`. Under
@@ -1912,8 +1920,17 @@ def merge_sources(steps: Sequence[StepSpec], strategy: str) -> MergeSources | No
     pull request, so there is ONE only when there is one agent step, and no
     review (`direct-pr` refuses a gate). `collect` opens none, and
     `single-pr` ends in its own merge.
+
+    `continued_task` is the task a `continues_task` workflow names, as
+    `continuation.resolve_continuation` checked it (the caller's tenant, a
+    branch with its own pull request, the same repository). A continuation
+    with NO agent step merges that task's pull request at the head that task
+    pushed: how an issue run merges once its CI is green and its keyword
+    block is written (`issueci`), after the workflow that opened it ended.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if strategy == "direct-pr" and continued_task is not None and not agents:
+        return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
         return MergeSources(agents[0].step_id) if len(agents) == 1 else None
     if strategy != "integrate" or len(agents) < 2:
@@ -1929,7 +1946,9 @@ def merge_sources(steps: Sequence[StepSpec], strategy: str) -> MergeSources | No
     return MergeSources(integrator.step_id, review, integrator.input_from.get(review))
 
 
-def merge_step_for(steps: Sequence[StepSpec], strategy: str) -> dict[str, Any] | None:
+def merge_step_for(
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
     `depends_on` names every step that must finish first -- the step that
@@ -1937,7 +1956,7 @@ def merge_step_for(steps: Sequence[StepSpec], strategy: str) -> dict[str, Any] |
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy)
+    sources = merge_sources(steps, strategy, continued_task)
     if sources is None:
         return None
     taken = {step.step_id for step in steps}
@@ -1953,7 +1972,9 @@ def merge_step_for(steps: Sequence[StepSpec], strategy: str) -> dict[str, Any] |
     }
 
 
-def plan_merge(steps: Sequence[StepSpec], strategy: str) -> MergePlan | None:
+def plan_merge(
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
     Call AFTER `validate_dag` and `validate_step_routing`. None when the
@@ -1999,7 +2020,7 @@ def plan_merge(steps: Sequence[StepSpec], strategy: str) -> MergePlan | None:
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy)
+    sources = merge_sources(steps, strategy, continued_task)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "
@@ -2039,12 +2060,8 @@ def plan_merge(steps: Sequence[StepSpec], strategy: str) -> MergePlan | None:
     return MergePlan(merge.step_id, sources)
 
 
-def refuse_unmergeable_forge(repository_url: str | None) -> None:
-    """A merge step's repository must be on a host a `ForgeMerger` serves.
-
-    Refused HERE, at submission, so a workflow never runs every agent step to
-    completion and then fails at its merge for a host nothing can merge on.
-    """
+def _forge_host(repository_url: str | None) -> tuple[str, int | None]:
+    """`(host, port)` of a repository URL, https or scp-style ssh."""
     from urllib.parse import urlsplit
 
     text = (repository_url or "").strip()
@@ -2057,8 +2074,24 @@ def refuse_unmergeable_forge(repository_url: str | None) -> None:
         port = parts.port
     except ValueError:
         host, port = "", None
-    if host in MERGE_FORGE_HOSTS and port is None:
+    return host, port
+
+
+def is_mergeable_forge(repository_url: str | None) -> bool:
+    """Whether a `ForgeMerger` serves this repository's host."""
+    host, port = _forge_host(repository_url)
+    return host in MERGE_FORGE_HOSTS and port is None
+
+
+def refuse_unmergeable_forge(repository_url: str | None) -> None:
+    """A merge step's repository must be on a host a `ForgeMerger` serves.
+
+    Refused HERE, at submission, so a workflow never runs every agent step to
+    completion and then fails at its merge for a host nothing can merge on.
+    """
+    if is_mergeable_forge(repository_url):
         return
+    host, _ = _forge_host(repository_url)
     raise DispatchOptionError(
         "the merge step merges on github.com only, and this workflow's repository "
         f"{'is on ' + repr(host) if host else 'names no forge host'}. Set the "

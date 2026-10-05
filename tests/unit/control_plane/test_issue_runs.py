@@ -627,25 +627,24 @@ def test_the_plan_compiles_to_implement_review_and_a_gated_fix():
     assert spec.metadata["issue_run"]["fix_rounds"] == 3
 
 
-@pytest.mark.parametrize(("auto_merge", "choice"), [(True, "on"), (False, "off")])
-def test_the_compiled_workflow_states_the_runs_merge_choice(auto_merge, choice):
-    """Stated, so the platform default at compile time cannot override the
-    choice the run resolved when it was created."""
+@pytest.mark.parametrize("auto_merge", [True, False])
+def test_the_compiled_workflow_always_says_merge_off(auto_merge):
+    """Stated, so the platform default cannot append a merge inside the
+    compiled workflow: that merge would run before the CI loop wrote the
+    `Closes #N` block or fixed a red check. An `auto_merge` run merges from
+    the CI loop instead (test_issue_run_auto_merge.py)."""
     spec = compile_plan(_stored_run(auto_merge=auto_merge))
-    assert spec.metadata["merge"] == choice
-    # The compiled steps are unchanged: swarm-api appends the merge step.
+    assert spec.metadata["merge"] == "off"
     assert [s.step_id for s in spec.steps] == ["impl-sort-key", "impl-ui", "review", "fix"]
 
 
-def test_an_auto_merge_run_submits_with_a_merge_step_after_the_fix_and_the_review(client):
+def test_an_auto_merge_run_submits_its_workflow_with_no_merge_step(client):
+    client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
     spec = compile_plan(_stored_run(auto_merge=True))
     response = client.post("/v1/workflows", headers=auth_header("alice"),
                            json=spec.model_dump(exclude_none=True))
     assert response.status_code == 201, response.text
-    merges = [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
-    assert len(merges) == 1
-    assert merges[0]["depends_on"] == ["fix", "review"]
-    assert merges[0]["input_from"] == {"review": "verdict.json"}
+    assert not [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
 
 
 def test_a_run_without_auto_merge_submits_no_merge_step_even_when_the_default_is_on(client):
