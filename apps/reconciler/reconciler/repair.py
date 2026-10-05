@@ -40,7 +40,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -67,6 +67,7 @@ from .detect import (
     cannot_start_candidates,
     detect_all,
     detect_empty_namespaces,
+    detect_lost_after_finish,
     detect_orphan_executions,
     detect_stale_leases,
     detect_unused_job_resources,
@@ -80,6 +81,7 @@ from .model import (
     ExecutionView,
     JobResourceView,
     LeaseView,
+    TaskView,
     Termination,
 )
 from .progress import assess
@@ -125,6 +127,10 @@ FENCED_STALLED_CLOUD_RUN = "fenced a Cloud Run attempt that made no progress"
 
 #: Findings repaired by terminating a Job and never by fencing it.
 _TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
+#: What the reconciler writes as a lost-after-finish attempt's cause, at the
+#: head of its `error` (#380). Not an `EndCause`: that names how a TASK ended,
+#: and this repair leaves the task's own cause as its worker wrote it.
+LOST_AFTER_FINISH_CAUSE = FindingKind.LOST_AFTER_FINISH.value
 #: Findings repaired by fencing alone in the pass that finds them. See
 #: `_repair_stuck` for why the kill waits for the next pass.
 _FENCE_ONLY = (FindingKind.STUCK_NO_PROGRESS,)
@@ -457,6 +463,10 @@ class Reconciler:
         #: logged once per lease per hour. Per instance: a cold instance logs a
         #: still-held lease once more, which errs toward being heard.
         self._held_alerted: dict[str, datetime] = {}
+        #: attempt id -> the unended attempt of a finished task this pass read
+        #: (`_read_finished`). Reset every pass; `_admit` judges a
+        #: lost-after-finish finding on the backend this attempt names.
+        self._finished: dict[str, AttemptView] = {}
         if self._holds is None:
             # Said once, here, because the per-fence path returns silently: a
             # deployment missing QUOTA_BROKER_URL would otherwise look exactly
@@ -496,10 +506,19 @@ class Reconciler:
         # How the current attempts' FINISHED executions ended. Only those the
         # cannot-start rule could act on, so an ordinary pass reads nothing.
         self._read_terminations(snapshot, sight, report)
+        # Finished tasks whose attempt never recorded its end (#380). Read
+        # apart from the snapshot, which reaches attempts only through
+        # unreleased leases.
+        finished = self._read_finished(snapshot, report)
 
-        findings = detect_all(
-            snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
-        )
+        findings = [
+            *detect_all(
+                snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
+            ),
+            *detect_lost_after_finish(
+                finished, sight.executions, self._config, now=snapshot.taken_at
+            ),
+        ]
         actionable: list[Finding] = []
         seen: set[tuple[str, str | None, str | None]] = set()
         for finding in findings:
@@ -512,9 +531,11 @@ class Reconciler:
                 continue
             # A probe can turn a stale_lease and a missing_execution about the
             # same lease into the same dead_worker; act on it once.
+            # A finding with no lease is told apart by its attempt: two
+            # lost-after-finish findings name none, and must not be one.
             key = (
                 admitted.kind.value,
-                admitted.lease_id,
+                admitted.lease_id or admitted.attempt_id,
                 admitted.execution.name if admitted.execution else None,
             )
             if key in seen:
@@ -957,6 +978,30 @@ class Reconciler:
                     because=verdict.unjudged_because,
                 )
 
+    def _read_finished(
+        self, snapshot: ControlSnapshot, report: ReconcileReport
+    ) -> list[tuple[TaskView, AttemptView]]:
+        """Each task finished inside the lookback and past the grace, with its unended attempt.
+
+        The input of `detect_lost_after_finish` (#380). A read that FAILS is an
+        error on the report and yields nothing: "no such attempt" and "could
+        not look" must not lead to the same write, and an attempt not judged
+        this pass keeps its hold no longer than its TTL.
+        """
+        self._finished = {}
+        now = snapshot.taken_at
+        try:
+            pairs = self._store.finished_attempts(
+                since=now - timedelta(seconds=self._config.lost_after_finish_lookback_seconds),
+                until=now - timedelta(seconds=self._config.lost_after_finish_grace_seconds),
+            )
+        except Exception as exc:
+            self._log.exception("could not read finished tasks' unended attempts", exc)
+            report.errors.append(f"lost_after_finish: reading finished attempts failed: {exc}")
+            return []
+        self._finished = {attempt.attempt_id: attempt for _, attempt in pairs}
+        return pairs
+
     def _read_terminations(
         self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport
     ) -> None:
@@ -1199,6 +1244,8 @@ class Reconciler:
         suppressed. `_DISPROVED` means a probe showed the finding was wrong,
         and it is dropped without either.
         """
+        if finding.kind is FindingKind.LOST_AFTER_FINISH:
+            return self._admit_lost_after_finish(finding, sight)
         actionable = self._is_actionable(finding, snapshot, sight)
         if actionable and not self._must_confirm_by_name(finding, snapshot, sight):
             return finding
@@ -1453,10 +1500,41 @@ class Reconciler:
             sight.handles[attempt.backend], attempt, sight.tenant_namespaces
         )
 
+    def _admit_lost_after_finish(self, finding: Finding, sight: _Sight) -> Finding | None:
+        """Only on a listing that could have shown the attempt's execution (#532, #372).
+
+        The finding rests on an absence -- nothing of the attempt runs -- and an
+        absence read off a backend that could not be listed is no absence at
+        all. So the backend the attempt names, and on a namespaced backend
+        its own namespace, must have been read this pass
+        (`_attempt_visible`); an attempt that names no backend needs every
+        backend its tenant could be on. There is no probe by name: nothing
+        here is waiting on capacity, so holding costs one hold for at most its
+        TTL, and the next readable pass repairs it.
+        """
+        attempt = self._finished.get(finding.attempt_id or "")
+        if attempt is not None and attempt.backend:
+            visible = self._attempt_visible(attempt, sight)
+        else:
+            visible = self._everything_visible_for(finding, sight)
+        if visible:
+            return finding
+        self._log.warning(
+            NOT_REPAIRING,
+            task_id=finding.task_id,
+            attempt_id=finding.attempt_id,
+            kind=finding.kind.value,
+            backend=attempt.backend if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
+        return None
+
     def _suppressed(
         self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
     ) -> SuppressedFinding:
-        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        attempt = snapshot.attempts.get(finding.attempt_id or "") or self._finished.get(
+            finding.attempt_id or ""
+        )
         return SuppressedFinding(
             kind=finding.kind.value,
             lease_id=finding.lease_id,
@@ -1486,6 +1564,8 @@ class Reconciler:
             lease_id=finding.lease_id,
             execution=finding.execution.name if finding.execution else None,
         )
+        if finding.kind is FindingKind.LOST_AFTER_FINISH:
+            return self._repair_lost_after_finish(finding, outcome)
         if finding.kind in _TERMINATE_ONLY:
             return self._repair_left_running(finding, outcome, handles)
         if finding.kind in _FENCE_ONLY:
@@ -1647,7 +1727,7 @@ class Reconciler:
                 lease_id=finding.lease_id,
                 generation=finding.generation,
             )
-            self._release_fenced_holds(finding, outcome)
+            self._release_attempt_holds(finding, outcome)
         if done.release_refused:
             outcome.actions.append(
                 f"did NOT release {finding.lease_id}: its task still holds it at its generation"
@@ -1850,17 +1930,19 @@ class Reconciler:
             lease_id=finding.lease_id,
             generation=finding.generation,
         )
-        self._release_fenced_holds(finding, outcome)
+        self._release_attempt_holds(finding, outcome)
         outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
         self._log_eviction(finding, outcome)
         return outcome
 
-    def _release_fenced_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
-        """Give back the account holds of the attempt this pass just fenced (#380).
+    def _release_attempt_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
+        """Give back the account holds of the attempt this pass just ended (#380).
 
-        CALLED ONLY ONCE THE FENCE HAS COMMITTED -- `invalidate_generation`
-        returned the new generation. A fence that was refused or lost its race
-        (#372) returns None, and then nothing is released: the attempt may be
+        CALLED ONLY ONCE THE ATTEMPT IS PROVABLY OVER: its fence has COMMITTED
+        -- `invalidate_generation` returned the new generation -- or, for a
+        `left_running` Job, which has no generation left to fence, its kill was
+        confirmed. A fence that was refused or lost its race (#372) returns
+        None, and then nothing is released: the attempt may be
         a live worker still using its account, and taking its hold away would
         let `choose()` stack another agent onto it. After a committed fence the
         worker can no longer write anything for its generation and stops at its
@@ -1868,8 +1950,10 @@ class Reconciler:
 
         A fenced worker never reaches its own release (`lifecycle._give_back`),
         so without this the hold counted for its whole TTL. Never raises: the
-        TTL, pruned by the broker's sweep, is still the backstop, and a broker
-        outage must not stop the rest of the repair.
+        broker's own sweep releases the holds of an attempt whose record shows
+        it ended (`quota_broker.main._release_ended_attempt_holds`), the TTL is
+        the backstop behind that, and a broker outage must not stop the rest
+        of the repair.
         """
         if self._holds is None or not finding.task_id or not finding.attempt_id:
             return
@@ -1879,8 +1963,8 @@ class Reconciler:
             )
         except Exception as exc:
             self._log.warning(
-                "could not release a fenced attempt's account holds; they will "
-                "age out on their TTL",
+                "could not release an ended attempt's account holds; the "
+                "broker's sweep or their TTL will",
                 task_id=finding.task_id,
                 attempt_id=finding.attempt_id,
                 error=str(exc)[:300],
@@ -1893,6 +1977,65 @@ class Reconciler:
             outcome.actions.append(
                 f"released {released} account hold(s) of {finding.attempt_id}"
             )
+
+    def _repair_lost_after_finish(
+        self, finding: Finding, outcome: RepairOutcome
+    ) -> RepairOutcome:
+        """Record the attempt's end for its lost worker, then give back its account holds (#380).
+
+        No kill (nothing of it runs: `_admit_lost_after_finish`), no fence (a
+        terminal task has no generation left to fence), no lease (the
+        orphan-lease rule releases one `finish` left behind, as it always
+        has), and the task document is not written: its state and end cause
+        are what its worker decided. The end is written in one transaction
+        that refuses unless the task is still terminal at the attempt's
+        generation and the attempt is still unended
+        (`ControlStore.record_lost_attempt_end`), and the holds are released
+        ONLY when that write committed -- the same "only after our own write"
+        rule the fence follows. A refused write releases nothing: the attempt
+        is a newer writer's now (invariant 5), or its worker ended it itself
+        and its own release runs.
+
+        The cause is `lost_after_finish`, in the attempt's `error`: the
+        attempt document has no cause field, and the frozen `EndCause` names a
+        task's end, which this does not change. With `completed_at` written,
+        a failed broker call is still covered: the broker's sweep gives back
+        the holds of an attempt that recorded its end
+        (`quota_broker.main._release_ended_attempt_holds`).
+        """
+        attempt_id = finding.attempt_id or ""
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would record the end of {attempt_id} as {LOST_AFTER_FINISH_CAUSE} "
+                "and release its account holds"
+            )
+            return outcome
+        if not finding.task_id or not attempt_id or finding.generation is None:
+            outcome.skipped = "no attempt to end"
+            return outcome
+        recorded = self._store.record_lost_attempt_end(
+            finding.task_id,
+            attempt_id,
+            expected_generation=finding.generation,
+            error=f"{LOST_AFTER_FINISH_CAUSE}: {finding.reason}",
+        )
+        if not recorded:
+            outcome.actions.append(
+                f"did NOT record the end of {attempt_id}: its task or attempt moved "
+                "since this pass read them"
+            )
+            return outcome
+        outcome.actions.append(f"recorded the end of {attempt_id} as {LOST_AFTER_FINISH_CAUSE}")
+        self._log.warning(
+            "recorded the end of an attempt whose worker ended its task and not its attempt",
+            task_id=finding.task_id,
+            attempt_id=attempt_id,
+            generation=finding.generation,
+            cause=LOST_AFTER_FINISH_CAUSE,
+        )
+        self._release_attempt_holds(finding, outcome)
+        return outcome
 
     def _repair_left_running(
         self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]
@@ -1919,6 +2062,12 @@ class Reconciler:
             return outcome
         if not self._terminate(finding, outcome, handles):
             return outcome
+        # The Job's worker died with it, before its own `finally` could give
+        # its account back, and with no fence here nothing else releases for
+        # this attempt until the hold's TTL (#380). The confirmed kill is the
+        # evidence: the same strength as a committed fence, which is why it
+        # sits after `_terminate` and never before.
+        self._release_attempt_holds(finding, outcome)
         if finding.lease_id:
             outcome.released = self._store.release_lease(
                 finding.lease_id, f"reconciler:{finding.kind.value}"

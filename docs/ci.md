@@ -1214,9 +1214,14 @@ it is not configured, and submits nothing.
   refuses the repository-wide forms. The plan also refuses an account that is
   the deployer, or that is not in `frontend_iap_members`.
 * **Its tenant must be the tenant that owns the swarm pull requests.** The API
-  refuses to continue another tenant's task, by design. So the account has to
-  be admitted (`allowed_users`) and a member of that tenant's Google group, or
-  its personal tenant `u-<name>` will own nothing it can fix. The fix step runs
+  refuses to continue another tenant's task, by design. So the account is
+  LISTED on that tenant, in `tenants.<tenant>.service_accounts` in
+  `terraform/environments/<env>/<env>.tfvars`, which resolves it by exact
+  email and unique id (contract request 30). It is NOT added to the tenant's
+  Google group: `eng@saga.xyz` holds project-wide admin roles on this shared
+  project, and membership would hand those to a workflow. Without the listing
+  its personal tenant `u-<name>` owns nothing it can fix (owner decision,
+  2026-10-05; `swarm-ci-fix` is listed on `eng`). The fix step runs
   on that tenant's `claude-code` credential and pushes with its
   `swarm-tenant-<tenant>-git` token, like every other `direct-pr` step.
 * **`SWARM_API_HOST`**, optional: empty resolves the front door from

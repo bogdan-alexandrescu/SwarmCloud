@@ -226,8 +226,12 @@ describe('the diff bar', () => {
     expect(within(bar).getByRole('button', { name: 'Split' })).toBeDefined()
     expect(within(bar).getByRole('button', { name: 'Copy patch' })).toBeDefined()
     expect(within(bar).getByRole('button', { name: 'Download' })).toBeDefined()
-    // No whole-patch reading mode.
-    expect(within(bar).queryByRole('button', { name: /whole|all files|expand all/i })).toBeNull()
+    // No whole-patch reading mode. Expand all (owner decision 2026-10-05)
+    // unfolds collapsed files; it still draws only the open one.
+    expect(within(bar).queryByRole('button', { name: /whole|all files/i })).toBeNull()
+    fireEvent.click(within(bar).getByRole('button', { name: 'Collapse all' }))
+    fireEvent.click(within(bar).getByRole('button', { name: 'Expand all' }))
+    expect(drawnPaths()).toEqual(['src/app/one.ts'])
   })
 
   it('copies the whole patch', async () => {

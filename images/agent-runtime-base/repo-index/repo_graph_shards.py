@@ -56,6 +56,14 @@ references it cannot see. Run as the tenant's own worker account, which may
 delete under `tenants/<tenant>/` and nowhere else (invariant 9); swarm-api
 reads the bucket and cannot delete, by design (`objects.py`).
 
+WHERE IT WRITES (lane RI9b). The indexer prompt (swarm_api.repoindex) runs
+`swarm-repo-graph write --graph <file> --repo-id <r> --destination
+tenants/<t>/repos/<r>/graph --index <repo-index.json>` and names no bucket and
+no tenant: both are the step's own configuration (`TENANT_ID`,
+`ARTIFACT_BUCKET`, set by dispatch), read by `resolve_target`. A destination,
+`--tenant` or `gs://` store that configuration contradicts is refused before
+anything is read or written (invariant 9).
+
 Standard library only: it runs with the image's python3.11, outside the
 extractor's tree-sitter environment, and on GCS through the image's `gcloud`
 with the account the step already has. No credential passes through it.
@@ -516,6 +524,72 @@ def self_test() -> int:
     return 0
 
 
+#: Where the step's own configuration is read: PID 1's environment. Dispatch
+#: sets `TENANT_ID` and `ARTIFACT_BUCKET` on the worker's container
+#: (scheduler/dispatch.py `worker_env`), where no caller can reach them; the
+#: agent this tool runs under gets an allowlisted environment without either
+#: (runners/cliagent.py), and can set its own environment to anything, but not
+#: PID 1's, which every process of the container can read (hardening.py, "what
+#: it does not cover"). The process's own environment is the fallback, for a
+#: run outside a worker.
+CONTAINER_ENVIRON = Path("/proc/1/environ")
+TENANT_ENV = "TENANT_ID"
+BUCKET_ENV = "ARTIFACT_BUCKET"
+
+
+def configuration(name: str) -> str | None:
+    """`name` from the container's configuration, else this process's; None when neither has it."""
+    try:
+        raw = CONTAINER_ENVIRON.read_bytes()
+    except OSError:
+        raw = b""
+    for entry in raw.split(b"\0"):
+        key, sep, value = entry.partition(b"=")
+        if sep and key.decode("utf-8", "replace") == name:
+            text = value.decode("utf-8", "replace").strip()
+            if text:
+                return text
+    return os.environ.get(name, "").strip() or None
+
+
+def resolve_target(*, tenant: str | None, store: str | None, repo_id: str,
+                   destination: str | None) -> tuple[str, str]:
+    """(tenant, store spec) for one run, from the step's configuration.
+
+    The indexer prompt names the repo_id and the destination; the tenant and
+    the bucket are this step's own. A `--tenant` or `gs://` `--store` the
+    configuration contradicts is refused, not preferred: the writer writes
+    only under its own tenant's prefix (invariant 9), in its own bucket. A
+    local `--store` is a directory standing in for the bucket and is allowed.
+    A `--destination` must be exactly the registration's graph prefix under
+    that tenant; anything else is outside it and refused before anything is
+    read or written.
+    """
+    configured = configuration(TENANT_ENV)
+    if tenant and configured and tenant != configured:
+        raise ValueError(f"--tenant {tenant!r} is not this step's tenant; the configuration "
+                         f"names another")
+    tenant = configured or tenant
+    if not tenant:
+        raise ValueError(f"no tenant: {TENANT_ENV} is not in this step's configuration and "
+                         "--tenant was not given")
+    bucket = configuration(BUCKET_ENV)
+    if store is None:
+        if not bucket:
+            raise ValueError(f"no store: {BUCKET_ENV} is not in this step's configuration and "
+                             "--store was not given")
+        store = f"gs://{bucket}"
+    elif store.startswith("gs://") and bucket and store[len("gs://"):].rstrip("/") != bucket:
+        raise ValueError(f"--store {store} is not this step's bucket; the configuration names "
+                         "another")
+    if destination is not None:
+        expected = graph_root(tenant, repo_id)
+        if destination.strip().rstrip("/") != expected:
+            raise ValueError(f"--destination {destination!r} is outside this step's tenant "
+                             f"prefix for {repo_id!r}: it must be {expected}")
+    return tenant, store
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=TOOL_NAME,
@@ -526,10 +600,16 @@ def main(argv: list[str] | None = None) -> int:
     write = sub.add_parser("write", help="shard a swarm-repo-index --graph-out document")
     sweeper = sub.add_parser("sweep", help="delete blobs no manifest names")
     for command in (write, sweeper):
-        command.add_argument("--store", required=True,
-                             help="gs://<bucket>, or a local directory standing in for it")
-        command.add_argument("--tenant", required=True)
+        command.add_argument("--store",
+                             help="gs://<bucket>, or a local directory standing in for it "
+                                  f"(default: gs://${BUCKET_ENV} from the step's configuration)")
+        command.add_argument("--tenant",
+                             help=f"default: ${TENANT_ENV} from the step's configuration, "
+                                  "which a different value contradicts")
         command.add_argument("--repo-id", required=True)
+        command.add_argument("--destination",
+                             help="tenants/<tenant>/repos/<repo_id>/graph, as the task names it; "
+                                  "refused unless it is exactly this step's tenant's prefix")
     write.add_argument("--graph", required=True, help="the --graph-out file")
     write.add_argument("--index", help="repo-index.json: its graph.manifest_digest is set")
     write.add_argument("--max-commit-bytes", type=int, default=MAX_COMMIT_BYTES)
@@ -541,12 +621,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         return 2
     try:
-        store = open_store(args.store)
+        tenant, spec = resolve_target(tenant=args.tenant, store=args.store,
+                                      repo_id=args.repo_id, destination=args.destination)
+        store = open_store(spec)
         if args.command == "sweep":
-            report: dict = {"sweep": sweep(store, tenant_id=args.tenant, repo_id=args.repo_id)}
+            report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id)}
         else:
             raw = Path(args.graph).read_bytes()
-            report = write_graph(json.loads(raw), store, tenant_id=args.tenant,
+            report = write_graph(json.loads(raw), store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
                                  graph_digest=digest_of(raw))
             if args.index:
@@ -557,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
                 index["graph"] = graph
                 index_path.write_bytes(canonical(index) + b"\n")
             if not args.no_sweep:
-                report["sweep"] = sweep(store, tenant_id=args.tenant, repo_id=args.repo_id)
+                report["sweep"] = sweep(store, tenant_id=tenant, repo_id=args.repo_id)
     except (ValueError, StoreError, OSError) as exc:
         print(f"{TOOL_NAME}: {exc}", file=sys.stderr)
         return 1

@@ -36,6 +36,18 @@
 //      only inside the scroller's window (rows.ts), so 50,000 lines is two
 //      spacers and a hundred-odd rows.
 //
+// EACH FILE COLLAPSES (owner decision 2026-10-05). The open file's header
+// row is a button with aria-expanded that toggles its body; a file of more
+// than LARGE_FILE_LINES changed lines (rows.ts) opens collapsed and its header
+// says `collapsed: large`, so the reader knows the body was hidden for its
+// size and not lost. Collapse all / Expand all in the bar set every file at
+// once. The state is per file and lives in this component, like viewed: a
+// remount starts again from the size rule. Collapsing does not change the
+// windowing -- an expanded 50,000-line file is still two spacers and a window.
+// Find, j and k REACH INTO a collapsed file: a match or a hunk inside it
+// expands it first, so neither stops working because a body is hidden. n and
+// p move between files as before and leave each file as the reader left it.
+//
 // FIND IS ACROSS THE WHOLE PATCH (find.ts). The box above the lines searches
 // every file, counts `n of N`, and next / previous switch the open file when
 // the match lives in another one; the matches in the drawn rows are marked.
@@ -43,8 +55,8 @@
 // holds, still as React text nodes.
 //
 // Keys, while focus is anywhere inside the viewer except a text field:
-// n / p next and previous file, j / k next and previous hunk, / find in the
-// diff. In the find box, Enter and Shift+Enter are the next and previous
+// n / p next and previous file, j / k next and previous hunk (in a collapsed
+// file: expand it, then its first or last hunk), / find in the diff. In the find box, Enter and Shift+Enter are the next and previous
 // match and Escape clears it. Each one handled calls preventDefault: the Sky
 // shell's global N opens Submit otherwise (Spine.tsx). Escape that clears a
 // non-empty find or path filter also stops there, because the agent drawer
@@ -68,6 +80,7 @@ import {
   rowOffsets,
   ROW_H,
   splitFile,
+  startsCollapsed,
   widestLine,
   type ContextState,
   type Row,
@@ -185,7 +198,8 @@ function Bar({
   copy: copyWhat,
   download: downloadFrom,
   layout,
-}: DiffViewProps & { layout?: ReactNode }) {
+  fold,
+}: DiffViewProps & { layout?: ReactNode; fold?: ReactNode }) {
   const [copy, setCopy] = useState<'idle' | 'done' | 'failed'>('idle')
   const copyText = copyWhat?.text ?? patch
   const copyLabel = copyWhat?.label ?? 'Copy patch'
@@ -223,6 +237,7 @@ function Bar({
       {attempt ? <span className="diff-meta">attempt {attempt}</span> : null}
       {note}
       <span className="diff-bar-end">
+        {fold}
         {layout}
         <Button size="sm" onClick={copyPatch} aria-live="polite">
           {copy === 'done' ? 'Copied' : copy === 'failed' ? 'Copy failed' : copyLabel}
@@ -269,6 +284,12 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   const [found, setFound] = useState<{ query: string; matches: FindMatch[] }>({ query: '', matches: [] })
   const [current, setCurrent] = useState(-1)
   const [reveal, setReveal] = useState<FindMatch | null>(null)
+  // Collapsed files: every large one to begin with. And the hunk j or k is
+  // still to scroll to once the collapsed file it expanded has its rows.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(
+    () => new Set(files.flatMap((f, fi) => (startsCollapsed(f) ? [fi] : []))),
+  )
+  const [hunkReveal, setHunkReveal] = useState<{ file: number; hunk: number } | null>(null)
 
   const narrow = width < SPLIT_MIN_WIDTH
   const mode: ViewMode = narrow ? 'unified' : preferred
@@ -320,9 +341,10 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     return { add, del }
   }, [files])
 
+  const isCollapsed = collapsed.has(selected)
   const rows = useMemo(
-    () => buildRows({ files, file: selected, mode, canExpand: getFile !== undefined, context, opened }),
-    [files, selected, mode, getFile, context, opened],
+    () => buildRows({ files, file: selected, mode, canExpand: getFile !== undefined, context, opened, collapsed: isCollapsed }),
+    [files, selected, mode, getFile, context, opened, isCollapsed],
   )
   const offsets = useMemo(() => rowOffsets(rows), [rows])
   const total = offsets[rows.length] ?? 0
@@ -355,7 +377,39 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     if (next !== undefined && next !== selected) open(next)
   }
 
+  const expand = (fi: number): void => {
+    setCollapsed((prev) => {
+      if (!prev.has(fi)) return prev
+      const next = new Set(prev)
+      next.delete(fi)
+      return next
+    })
+  }
+
+  const toggle = (fi: number): void => {
+    if (!collapsed.has(fi)) {
+      setCollapsed((prev) => new Set(prev).add(fi))
+      // The body is gone, so is everything below the header to scroll to.
+      scrollTo(0)
+    } else expand(fi)
+  }
+
+  const collapseAll = (): void => {
+    setCollapsed(new Set(files.map((_, fi) => fi)))
+    scrollTo(0)
+  }
+
+  const expandAll = (): void => setCollapsed(new Set())
+
   const jumpHunk = (dir: 1 | -1): void => {
+    if (collapsed.has(selected)) {
+      // A hunk inside a collapsed file is reached by expanding it: j lands on
+      // its first hunk, k on its last, once the rows exist (effect below).
+      const n = files[selected]!.hunks.length
+      expand(selected)
+      if (n > 0) setHunkReveal({ file: selected, hunk: dir === 1 ? 0 : n - 1 })
+      return
+    }
     const y = scrollTop
     if (dir === 1) {
       for (let i = 0; i < rows.length; i++) {
@@ -373,6 +427,9 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     setCurrent(m === undefined ? -1 : i)
     if (m === undefined) return
     if (m.file !== selected) open(m.file)
+    // A match inside a collapsed file opens its body: a counter that says
+    // `3 of 9` over a hidden line would point at nothing.
+    expand(m.file)
     setReveal(m)
   }
 
@@ -403,6 +460,14 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     const view = scrollRef.current?.clientHeight || viewport
     if (top < scrollTop || top + ROW_H > scrollTop + view) scrollTo(top - Math.floor(view / 3))
   }, [reveal, selected, rows, offsets, scrollTop, viewport, scrollTo])
+
+  // The hunk j or k expanded a collapsed file to reach, scrolled to the top.
+  useEffect(() => {
+    if (hunkReveal === null || hunkReveal.file !== selected || isCollapsed) return
+    const i = rows.findIndex((r) => r.t === 'hunk' && r.hunk === hunkReveal.hunk)
+    setHunkReveal(null)
+    if (i !== -1) scrollTo(offsets[i]!)
+  }, [hunkReveal, selected, isCollapsed, rows, offsets, scrollTo])
 
   const hits = useMemo(() => hitsInFile(found.matches, selected), [found.matches, selected])
 
@@ -484,6 +549,8 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         onExpandGap={expandGap}
         hits={hits}
         current={current}
+        collapsed={isCollapsed}
+        onToggle={toggle}
       />,
     )
   }
@@ -500,11 +567,24 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     </span>
   )
 
+  // Offered at every width: the phone picker shows one file too, and a large
+  // one starts collapsed there as well.
+  const fold = (
+    <span className="diff-seg" role="group" aria-label="Files">
+      <Button size="sm" disabled={collapsed.size === files.length} onClick={collapseAll}>
+        Collapse all
+      </Button>
+      <Button size="sm" disabled={collapsed.size === 0} onClick={expandAll}>
+        Expand all
+      </Button>
+    </span>
+  )
+
   const shownCount = listOrder(groups).length
 
   return (
     <section className={`diff${narrow ? ' is-narrow' : ''}`} aria-label="Diff" ref={rootRef} onKeyDown={onKey}>
-      <Bar {...props} layout={layout} />
+      <Bar {...props} layout={layout} fold={fold} />
       {props.meta}
       <div className="diff-body">
         {narrow ? (
@@ -755,17 +835,32 @@ interface RowProps {
   hits: ReadonlyMap<string, LineHit[]>
   /** The current match's index in the whole patch's matches, -1 for none. */
   current: number
+  /** The open file is collapsed: its header is the only row. */
+  collapsed: boolean
+  onToggle: (file: number) => void
 }
 
-function RowView({ row, files, context, canExpand, onExpandGap, hits, current }: RowProps) {
+function RowView({ row, files, context, canExpand, onExpandGap, hits, current, collapsed, onToggle }: RowProps) {
   const f = files[row.file]!
   const common = { 'data-path': f.path, style: { height: rowHeight(row) } }
 
   switch (row.t) {
     case 'file': {
       const moved = (f.status === 'renamed' || f.status === 'copied') && f.oldPath !== null && f.oldPath !== f.path
+      const large = startsCollapsed(f)
       return (
-        <div className="diff-row is-file" data-diff-row="file" {...common}>
+        <button
+          type="button"
+          className={`diff-row is-file${collapsed ? ' is-collapsed' : ''}`}
+          data-diff-row="file"
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Expand this file' : 'Collapse this file'}
+          onClick={() => onToggle(row.file)}
+          {...common}
+        >
+          <span className="diff-fold" aria-hidden="true">
+            {collapsed ? '▸' : '▾'}
+          </span>
           <span className="diff-path">
             {moved ? `${f.oldPath} → ` : ''}
             {f.path}
@@ -776,7 +871,8 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current }:
             </span>
           ))}
           <Counts file={f} />
-        </div>
+          {collapsed ? <span className="diff-folded">{large ? 'collapsed: large' : 'collapsed'}</span> : null}
+        </button>
       )
     }
     case 'note':

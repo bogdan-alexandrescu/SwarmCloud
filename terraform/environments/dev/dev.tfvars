@@ -245,6 +245,12 @@ tenants = {
     providers       = ["anthropic", "openai"]
     max_active      = 40
     capacity_units  = 40
+    # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
+    # owns the swarm pull requests it fixes. Listed here, NOT added to
+    # eng@saga.xyz: that group holds project-wide admin roles on this shared
+    # project, and a listed service account resolves by exact email + unique
+    # id instead (contract request 30). Owner decision, 2026-10-05.
+    service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
   }
 
   # The mock runner needs no provider key, so this tenant can smoke-test the
