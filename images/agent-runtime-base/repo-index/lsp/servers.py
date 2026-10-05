@@ -80,7 +80,18 @@ SERVERS: dict[str, ServerSpec] = {
                       ".tsx": "typescriptreact", ".js": "javascript", ".mjs": "javascript",
                       ".cjs": "javascript", ".jsx": "javascriptreact"},
         # No automatic type acquisition: it downloads @types packages.
+        #
+        # useSyntaxServer "never": typescript-language-server's default
+        # ("auto") starts a second, partial-semantic tsserver and routes
+        # definition, references and the like to it for as long as the
+        # semantic server is still loading the project (its first-start
+        # state, until a projectLoadingFinish or diagnostics event). This
+        # driver asks for a definition right after didOpen, so every answer
+        # came from the syntax server, which cannot follow an import to
+        # another file: the build's LSP self-test got "typescript: ok, 0 lsp
+        # edge(s)" (main, 2026-10-05). "never" runs one full server.
         initialization_options={"disableAutomaticTypingAcquisition": True,
+                                "tsserver": {"useSyntaxServer": "never"},
                                 "preferences": {"includeCompletionsForModuleExports": False}},
     ),
     "gopls": ServerSpec(
