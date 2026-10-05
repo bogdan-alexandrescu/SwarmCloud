@@ -55,6 +55,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 44 | `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED` (functionality wave 1, lane B4) | open |
 | 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 | 46 | `models.py`: a pull-request step that published nothing has no end cause (functionality wave 3, lane B46) | open |
+| 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 
 ---
 
@@ -8619,3 +8620,85 @@ section says otherwise.
 - **Invariant 10.** A caller chooses the step by naming the `merge` profile or
   by `metadata.merge`; nothing a caller sends picks an image, a command or a
   credential.
+
+---
+
+## 48. `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain
+
+**Status:** open, filed 2026-10-05 with #625 (functionality wave 8, lane IMG).
+A request, not a change. It is the image half of docs/repo-index.md §6.3
+request (B), in the smallest form that restores what index runs had.
+
+### What is true today
+
+#625 moved the repository index's toolchain out of `agent-runtime-base` into
+its own image, `agent-runtime-indexer` (docs/worker-images.md). Every
+claude-code start pulled about 133 MB of it, compressed, and only index runs
+used it. The image is built, promoted and scanned with the others.
+
+No profile names it. `RunnerProfile.image` in `RUNNER_PROFILES` is the only
+map from a profile to its image. `terraform/infra/locals.tf` mirrors it, and
+`tests/terraform/catalogue.tftest.hcl` holds the mirror equal. Index runs are
+submitted as `claude-code` (`swarm_api.repoindex.INDEXER_PROFILE`), which runs
+`agent-runtime-base`. An index run therefore records "not installed in this
+image", writes no graph, and an impact query on that index plans every changed
+file as `unindexed`.
+
+### The requested change
+
+A profile identical to `claude-code` in everything but its name, its image and
+its inputs, so the existing indexer prompt runs on the image that carries the
+tools it names:
+
+```python
+    #: Index runs only (#625, docs/worker-images.md): claude-code's runner on
+    #: the image that carries the repository index's toolchain. Submitted by
+    #: swarm-api's index runs, never chosen with a caller's image (invariant 10).
+    "repo-indexer": RunnerProfile(
+        name="repo-indexer",
+        image="agent-runtime-indexer",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs={},
+    ),
+```
+
+`inputs={}`: an index run's input is its prompt alone, which swarm-api
+composes. 7200 s is the largest row of §3.5's budget table (120 minutes). The
+agent-free shape that §6.3 (B) describes for P1 and P3, with the tool pass as a
+worker-run step, remains a later change and does not depend on this one.
+
+### What it would break if accepted
+
+Nothing that exists. The work that follows acceptance:
+
+* the Terraform mirror gains the entry. `runner_images` then includes
+  `agent-runtime-indexer`, `WORKER_IMAGE_REFS` carries its digest, and each
+  tenant that registers `anthropic` gets a `repo-indexer` Job running as its
+  worker account;
+* the entry needs a pool ceiling;
+* `INDEXER_PROFILE` becomes `"repo-indexer"`;
+* the tests that enumerate `RUNNER_PROFILES` gain the entry.
+
+### If it is declined
+
+There are two choices, both measured in docs/worker-images.md:
+
+* Index runs stay on `claude-code` without the extractor or a graph.
+* The toolchain goes back into `agent-runtime-base`, and every agent start
+  pays for it again.
+
+### Invariants
+
+- **Invariant 10.** swarm-api names the profile for its own index runs. No
+  caller sends an image, and the image is named by the catalogue.
+- **Invariant 7.** `standard` is `requests == limits`, as for `claude-code`.
+- **Invariant 9.** The Job runs as the tenant's own worker account and writes
+  the graph under the tenant's own prefix, as index runs do today.
+- **Invariants 1-3.** It is an ordinary profile: QUEUED until admitted,
+  counted from LEASED.
