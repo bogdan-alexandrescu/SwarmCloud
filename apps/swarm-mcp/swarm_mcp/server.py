@@ -1694,6 +1694,13 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
+    # as the API served them, the last attempt's beside them, and `cost` --
+    # the total in words, `at least` when an attempt recorded none.
+    # As served, never an extra read: a successful result pays no round trip.
+    totals = progress.spend_totals(client, task, read_attempts=False)
+    described.update(totals)
+    described["cost"] = progress.cost_words(totals)
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
