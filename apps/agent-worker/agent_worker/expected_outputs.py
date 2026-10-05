@@ -514,3 +514,109 @@ def missing_error(missing: Sequence[str], *, causes: Mapping[str, str] | None = 
         + "A later step of this workflow stages them from this task, and another "
         "attempt would meet the same cause, so the task failed without a retry."
     )
+
+
+# ---------------------------------------------------------------------------
+# An empty diff that is a result, and the steps that needed a change
+# ---------------------------------------------------------------------------
+#
+# Owner decision, 2026-10-05 (lane review P2). A step may say that changing
+# nothing is a correct outcome -- "fix it if it is broken" -- with
+# `allow_empty_diff: true`, which swarm-api stores in the signed dispatch
+# block. Such a step whose diff is empty ends SUCCEEDED with
+# `result_summary.no_change: true`, its other artifacts (the verification it
+# ran) uploaded as usual, instead of failing on `empty_diff`. A step that
+# NEEDED its change then has nothing to work on, and ends SUCCEEDED with
+# `result_summary.skipped`, without an agent and without a clone. The frozen
+# `TaskState` has no SKIPPED and forbids PARKED -> SUCCEEDED, so the skip is
+# made by the worker, on the attempt the scheduler leased, as the verdict
+# gate's no-agent ending is (#264); swarm-api's rollup reads the marker.
+
+#: The dispatch-block keys, as swarm-api's `DispatchOptions.to_metadata`
+#: writes them (tests/unit/control_plane/test_allow_empty_diff_workflow.py).
+ALLOW_EMPTY_DIFF_KEY = "allow_empty_diff"
+PR_LABEL_KEY = "pr_label"
+#: `result_summary` keys. `SKIPPED_SUMMARY_KEY` is spelled again in
+#: `swarm_api.rollup`, which cannot import this module.
+NO_CHANGE_SUMMARY_KEY = "no_change"
+SKIPPED_SUMMARY_KEY = "skipped"
+#: `result_summary.skipped.reason`, the owner's words.
+NOTHING_TO_CHANGE = "nothing to change"
+#: The patch the harvest writes; `lifecycle.PATCH_NAME` is the same name.
+WORK_PATCH_NAME = "swarm-work.patch"
+
+
+def allows_empty_diff(dispatch: Any) -> bool:
+    """Whether this step's signed dispatch block allows an empty diff. Only a
+    literal true does: anything else is the default, which fails on one."""
+    return isinstance(dispatch, Mapping) and dispatch.get(ALLOW_EMPTY_DIFF_KEY) is True
+
+
+def changed_nothing(git: Any) -> bool:
+    """True when `result_summary["git"]` records a clone left exactly as cloned.
+
+    The harvest ran (no `error`), had a base to diff against, wrote no patch
+    because the diff was EMPTY (`patch_cause` is `empty_diff`, not a patch
+    over its cap), and found no commit and no uncommitted path.
+    """
+    if patch_cause(git) != CAUSE_EMPTY_DIFF:
+        return False
+    return git.get("commit_count", 0) == 0 and git.get("dirty_count", 0) == 0
+
+
+def left_nothing(summary: Any) -> str | None:
+    """What an upstream step's `result_summary` says it left: `no_change`
+    (it ran, with nothing to change), `skipped` (it did not run), or None."""
+    if not isinstance(summary, Mapping):
+        return None
+    if isinstance(summary.get(SKIPPED_SUMMARY_KEY), Mapping):
+        return SKIPPED_SUMMARY_KEY
+    if summary.get(NO_CHANGE_SUMMARY_KEY) is True:
+        return NO_CHANGE_SUMMARY_KEY
+    return None
+
+
+def nothing_to_work_on(
+    *,
+    input_from: Mapping[str, str],
+    branch_from: Sequence[str],
+    integrates: Sequence[str],
+    left: Mapping[str, str | None],
+) -> list[str]:
+    """The upstream task ids whose missing change leaves this step nothing to
+    do, in the order met; empty when the step runs.
+
+    `left` is `left_nothing` of each upstream read. A step NEEDS an upstream's
+    change when it:
+
+      * stages that upstream's `swarm-work.patch` (`input_from`) -- or stages
+        anything at all from a SKIPPED upstream, which wrote nothing;
+      * starts from that upstream's branch (`branch_from`: `builds_on`, a
+        `single-pr` author, a merge step's pull request), which a step with
+        no change never pushed;
+      * integrates it, and every upstream it integrates left nothing. An
+        integrator with one contributor that changed something still runs,
+        and merges only that one (`Worker._integrates_with_changes`).
+
+    A step that stages only another file from a `no_change` upstream -- the
+    verification it ran -- still runs: that file exists.
+    """
+    needed: list[str] = []
+
+    def add(task_id: str) -> None:
+        if task_id not in needed:
+            needed.append(task_id)
+
+    for task_id, filename in input_from.items():
+        what = left.get(task_id)
+        if what == SKIPPED_SUMMARY_KEY or (
+            what == NO_CHANGE_SUMMARY_KEY and filename == WORK_PATCH_NAME
+        ):
+            add(task_id)
+    for task_id in branch_from:
+        if left.get(task_id) is not None:
+            add(task_id)
+    if integrates and all(left.get(task_id) is not None for task_id in integrates):
+        for task_id in integrates:
+            add(task_id)
+    return needed

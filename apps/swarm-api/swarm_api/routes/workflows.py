@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 
 from ..auth import AuthContext
 from ..children import PARENT_CANCELLED, ChildService
@@ -39,6 +39,7 @@ from ..deps import (
     tenant_scope,
 )
 from ..schemas import WorkflowCreate
+from ..stalls import stalled_workflows
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +139,11 @@ def list_workflows(
         # UNKNOWN because this route stopped reading, not because anything is
         # wrong with those workflows.
         "rollup_report": report.to_api(),
+        # What the reconciler's workflow stall check last found for this
+        # tenant (#616): the console's Overview "Needs a look" and `sc trouble`
+        # read it here. `count` is null, with `check_error` saying why, when
+        # the check's result is not known -- never zero (swarm_api.stalls).
+        "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
 
 
@@ -192,22 +198,34 @@ def get_workflow(
 def cancel_workflow(
     workflow_id: str,
     # The scope decides whose workflow may be cancelled; `auth` records who did.
+    background: BackgroundTasks,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    targets: list = []
     result = ctx.store.cancel_workflow(
-        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member
+        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
+        targets=targets,
     )
+    # Each running step's execution is asked to stop now, as the task route
+    # does (#627); a step cancelled before names none.
+    for target in targets:
+        background.add_task(ctx.executions.cancel, target)
     # A cancelled step's children are cancelled with it (OD-B15-4,
     # docs/design/child-tasks.md §3.4); the scheduler's sweep makes it certain.
     service = ChildService(
         settings=ctx.settings, db=ctx.db, store=ctx.store, submissions=ctx.submissions,
         verifier=None, now=ctx.now,
     )
+    children: list = []
     for task_id in result.get("tasks_cancelled") or []:
         try:
-            service.cascade(tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email)
+            service.cascade(
+                tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email, targets=children
+            )
         except Exception:
             log.exception("child cascade of step %s failed; the scheduler sweep retries it", task_id)
+    for child_target in children:
+        background.add_task(ctx.executions.cancel, child_target)
     return result

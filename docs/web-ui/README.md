@@ -230,7 +230,7 @@ is under `/v1`.
 | Admin action log | partly shipped: pool writes stamp the latest actor; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py:134` |
 | Dead-letter queue | still refused | — |
 | Pub/Sub dead-lettered message list | still refused | — |
-| A2 — Workflows per engineer by outcome | partly shipped: the rollup now writes `workflow.state`; no per-engineer workflow outcome view | `apps/swarm-api/swarm_api/rollup.py:626`, `apps/swarm-api/swarm_api/routes/admin.py:562` |
+| A2 — Workflows per engineer by outcome | partly shipped: the rollup now writes `workflow.state`; no per-engineer workflow outcome view | `apps/swarm-api/swarm_api/rollup.py:224`, `apps/swarm-api/swarm_api/routes/admin.py:562` |
 | A3 — Agents started (Cloud Monitoring) | still blocked: no `monitoring.viewer` and no proxy | `terraform/modules/iam/bindings.tf:75` |
 | A3 — Agents started per engineer | partly shipped: `GET /v1/outcomes` groups by `submitted_by` from Firestore; the Monitoring path is still blocked | `apps/swarm-api/swarm_api/routes/outcomes.py:58` |
 | A4 — Per-tenant budget column | still blocked, permanently: there are no budgets (owner, 2026-10-01) and the column is omitted | `apps/swarm-api/swarm_api/routes/admin.py:266` |

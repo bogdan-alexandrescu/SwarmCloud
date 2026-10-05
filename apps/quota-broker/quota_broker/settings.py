@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 
 from swarm_common.config import Settings
 
 from .aimd import AimdConfig
+from .credentials import DEFAULT_HELD_REFRESH_MARGIN
 
 
 def _int(name: str, default: int) -> int:
@@ -28,6 +30,23 @@ def _float(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:  # pragma: no cover
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
+def held_refresh_margin() -> timedelta:
+    """ACCOUNT_HELD_REFRESH_MARGIN_SECONDS, or the default (#626).
+
+    The reason for the default is beside `DEFAULT_HELD_REFRESH_MARGIN`. A
+    negative margin is refused rather than read as zero: zero already means
+    "never refresh a held account until its token has expired", which is a
+    choice somebody should make on purpose.
+    """
+    default = int(DEFAULT_HELD_REFRESH_MARGIN.total_seconds())
+    seconds = _int("ACCOUNT_HELD_REFRESH_MARGIN_SECONDS", default)
+    if seconds < 0:
+        raise ValueError(
+            f"ACCOUNT_HELD_REFRESH_MARGIN_SECONDS must be zero or more, got {seconds}"
+        )
+    return timedelta(seconds=seconds)
 
 
 @dataclass(frozen=True)

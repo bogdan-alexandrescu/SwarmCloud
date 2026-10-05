@@ -1117,23 +1117,32 @@ _api_explain_iap() {
 }
 
 # api_request METHOD PATH [BODY] -> body on stdout, HTTP status in API_STATUS
+#
+# SWARM_API_TENANT, when set, is sent as `X-Swarm-Tenant`: the tenant switcher
+# swarm-api honours for a caller in several registered groups. It SELECTS
+# among the caller's verified memberships and never grants (403 otherwise).
+# The acceptance suite sets it to run in `smoke` rather than the caller's
+# default tenant (scripts/acceptance/config.sh, #628). Unset, nothing changes.
 API_STATUS=0
 api_request() {
   local method="$1" path="$2" body="${3:-}"
   local url token response
+  local tenant_header=()
   url="$(api_url)${path}"
   token="$(api_credential)"
+  [[ -z "${SWARM_API_TENANT:-}" ]] || tenant_header=(-H "X-Swarm-Tenant: ${SWARM_API_TENANT}")
 
   # -K - : the Authorization header arrives on stdin, never in argv. See
   # auth_config above for why that distinction matters for an ID token.
   if [[ -n "${body}" ]]; then
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
       -w $'\n%{http_code}' -X "${method}" \
-      -H "Content-Type: application/json" \
+      -H "Content-Type: application/json" ${tenant_header[@]+"${tenant_header[@]}"} \
       --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
   else
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
-      -w $'\n%{http_code}' -X "${method}" "${url}")" || { API_STATUS=0; return 1; }
+      -w $'\n%{http_code}' -X "${method}" ${tenant_header[@]+"${tenant_header[@]}"} \
+      "${url}")" || { API_STATUS=0; return 1; }
   fi
 
   API_STATUS="${response##*$'\n'}"
@@ -1533,12 +1542,19 @@ def fv:
 def doc: { id: (.name | split("/") | last) }
          + ( (.fields // {}) | with_entries(.value |= fv) );
 # Mirrors swarm_common.models.SlotPool.effective_limit exactly: the minimum of
-# the hard limit and any adaptive or quota-derived cap, floored at zero.
+# the hard limit and any adaptive or quota-derived cap, floored at zero. A pool
+# with no hard_limit (absent or null) has NO effective limit: null, not 0 and not
+# unlimited -- admission refuses through it as POOL_LIMIT_UNSET (contract
+# request 38, #374). A caller that compares against this must handle null; in jq
+# every number is greater than null.
 def effective_limit:
-  [ (.hard_limit // 0) ]
-  + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
-  + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
-  | min | if . < 0 then 0 else . end;
+  if .hard_limit == null then null
+  else
+    [ .hard_limit ]
+    + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
+    + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
+    | min | if . < 0 then 0 else . end
+  end;
 '
 
 # fs_query COLLECTION WHERE_JSON [LIMIT] -> one document JSON per line
@@ -1793,6 +1809,93 @@ git_dirty() {
 }
 
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ---------------------------------------------------------------------------
+# What a Dockerfile copies in from its build context.
+# ---------------------------------------------------------------------------
+# dockerfile_copy_sources FILE prints the context paths every COPY and ADD in
+# FILE names, one per line, as written. `COPY --from=<stage>` is skipped: its
+# sources are paths inside another stage, not files in the repository.
+#
+# It exists for build-images.sh --affected-by (#650): a pull request builds the
+# images whose inputs it changed, and those inputs are READ from here rather
+# than listed by hand, so a COPY added to a Dockerfile is an input the day it
+# lands.
+#
+# A form it cannot read is REFUSED, never skipped: the JSON form
+# (`COPY ["a", "b"]`), a heredoc (`COPY <<EOF`), a source built from a
+# variable, an ADD of a URL. A skipped source is a file whose change would not
+# build the image that copies it -- the green-but-broken check #650 is about.
+# Continuation lines are joined and comment lines dropped, as Docker does, and
+# a RUN heredoc's body is skipped so a line inside it cannot read as an
+# instruction.
+DOCKERFILE_COPY_AWK="$(cat <<'AWK'
+function refuse(msg) {
+  printf "%s:%d: %s\n", FILENAME, start, msg > "/dev/stderr"
+  bad = 1
+}
+{
+  if (hd != "") {
+    s = $0
+    if (hd_strip) sub(/^\t+/, "", s)
+    if (s == hd) hd = ""
+    next
+  }
+  if (cont == "") {
+    if ($0 ~ /^[ \t]*(#.*)?$/) next
+    start = FNR
+  } else if ($0 ~ /^[ \t]*#/) {
+    next
+  }
+  line = $0
+  if (line ~ /\\[ \t]*$/) {
+    sub(/\\[ \t]*$/, "", line)
+    cont = cont line " "
+    next
+  }
+  logical = cont line
+  cont = ""
+
+  heredoc = 0
+  if (match(logical, /<<-?["']?[A-Za-z_][A-Za-z0-9_]*/)) {
+    word = substr(logical, RSTART + 2, RLENGTH - 2)
+    hd_strip = 0
+    if (substr(word, 1, 1) == "-") { hd_strip = 1; word = substr(word, 2) }
+    gsub(/["']/, "", word)
+    hd = word
+    heredoc = 1
+  }
+
+  n = split(logical, t, " ")
+  ins = toupper(t[1])
+  if (ins != "COPY" && ins != "ADD") next
+  if (heredoc) { refuse(ins " from a heredoc: its content is not a file this reader can map"); next }
+
+  from = 0; k = 0; json = 0
+  for (i = 2; i <= n; i++) {
+    if (k == 0 && t[i] ~ /^--/) {
+      if (t[i] ~ /^--from=/) from = 1
+      continue
+    }
+    if (k == 0 && substr(t[i], 1, 1) == "[") json = 1
+    a[++k] = t[i]
+  }
+  if (from) next
+  if (json) { refuse(ins " in JSON form: write it as `" ins " <src>... <dest>`"); next }
+  if (k < 2) { refuse(ins " with no source"); next }
+  for (i = 1; i < k; i++) {
+    if (a[i] ~ /\$/) { refuse(ins " source " a[i] " is built from a variable"); continue }
+    if (a[i] ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) { refuse(ins " of a URL, " a[i]); continue }
+    print a[i]
+  }
+}
+END { exit bad }
+AWK
+)"
+
+dockerfile_copy_sources() {
+  awk "${DOCKERFILE_COPY_AWK}" "$1"
+}
 
 # Mask anything that looks like a credential before it reaches a terminal or a
 # CI log.

@@ -20,16 +20,31 @@
  * after the pane -- each turns a case red.
  */
 import { render, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { landed } from './reads'
+
+// The fixtures still answer every read; the Details read is only watched, so
+// a case can wait for it to land before it ends (#605, below).
+const watched = vi.hoisted(() => ({ loadAgentRun: vi.fn() }))
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, loadAgentRun: watched.loadAgentRun }
+})
+
+const { App } = await import('../App')
+const { loadAgentRun: realAgentRun } = await vi.importActual<typeof import('../api')>('../api')
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const RUNNING = 'task_a073aff5'
 const FINISHED = 'task_a3881bec'
+
+beforeEach(() => {
+  // `restoreMocks` strips the implementation between cases; put it back.
+  watched.loadAgentRun.mockImplementation(realAgentRun)
+})
 
 afterEach(() => {
   window.location.hash = ''
@@ -40,15 +55,23 @@ afterEach(() => {
 async function split(id: string): Promise<HTMLElement> {
   window.location.hash = `#work/task/${id}`
   render(<App />)
-  return waitFor(() => {
-    const s = document.querySelector<HTMLElement>('.ag-split')
-    expect(s).not.toBeNull()
+  const s = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>('.ag-split')
+    expect(el).not.toBeNull()
     // The header has the task, and the Details pane has its run.
-    expect(s!.querySelector('.ag-head-facts')).not.toBeNull()
+    expect(el!.querySelector('.ag-head-facts')).not.toBeNull()
     // A finished agent opens on Details, a running one on its log (U11a).
-    expect(s!.querySelector(id === RUNNING ? '.ag-split-pane > .ag-logs' : '.ag-split-pane .run-stack')).not.toBeNull()
-    return s!
-  }, WAIT)
+    expect(el!.querySelector(id === RUNNING ? '.ag-split-pane > .ag-logs' : '.ag-split-pane .run-stack')).not.toBeNull()
+    return el!
+  })
+  // EVERY DETAILS READ THIS SPLIT STARTED HAS LANDED BEFORE THE CASE GOES ON
+  // (#605). A running agent's split mounts Details, then moves to Logs, so its
+  // read can outlive the pane; one that landed after the case's environment
+  // was torn down failed a CI run whose every test had passed (`window is not
+  // defined`, AgentDetail.tsx's load). `0`: wait for the reads made, whether
+  // or not this agent's split made one.
+  await landed(watched.loadAgentRun, 0)
+  return s
 }
 
 /** How many times `needle` is in the visible text of `root` (attributes are not text). */

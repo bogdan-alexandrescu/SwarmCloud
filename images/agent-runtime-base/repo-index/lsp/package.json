@@ -1,0 +1,9 @@
+{
+  "name": "swarm-repo-index-language-servers",
+  "private": true,
+  "dependencies": {
+    "pyright": "1.1.414",
+    "typescript": "6.0.3",
+    "typescript-language-server": "6.0.1"
+  }
+}

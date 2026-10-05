@@ -13,6 +13,7 @@ import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
 import type { AttemptRow, AttemptsPage, Task, TaskEvent, TaskEventsPage, TaskPage } from '../types'
 import type { WorkflowRead } from '../api'
+import { landed } from './reads'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -145,7 +146,12 @@ describe('Lanes: the drawing', () => {
 
   it('spans a held bar from its attempt start to its end at a visible width (Q6)', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(lane('task_plan').querySelector('.tl-mkr[data-mark="succeeded"]')).not.toBeNull())
+    // The bar is the attempts read's and the marks are task_plan's events
+    // page, read once per lane after the attempts land: wait on those reads,
+    // then look once (#605: this wait went red on a loaded runner).
+    await landed(api.loadAttemptsPage)
+    await landed(api.loadTaskEventsPage, 3)
+    expect(lane('task_plan').querySelector('.tl-mkr[data-mark="succeeded"]')).not.toBeNull()
     const plan = lane('task_plan')
     const bar = plan.querySelector<HTMLElement>('[data-seg="hold"]')!
     const left = parseFloat(bar.style.left)

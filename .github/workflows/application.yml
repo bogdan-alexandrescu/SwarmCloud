@@ -65,6 +65,13 @@ on:
       # (scripts/ci-gate.sh is already under scripts/**; named for the record).
       - ".github/workflows/ci-gate.yml"
       - "scripts/ci-gate.sh"
+      # What every image build's context is filtered through, so an input of
+      # every image (`build-images.sh --inputs`). Without these a pull request
+      # changing only one started no run, and `build changed images without
+      # pushing` never saw it (tests/unit/scripts/test_build_images_pr_check.py
+      # holds every image input to this list).
+      - ".dockerignore"
+      - ".gcloudignore"
   workflow_dispatch:
 
 # Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
@@ -533,9 +540,74 @@ jobs:
         # production cluster, so it is verified on every run, not before use.
         run: ./scripts/destroy.sh --self-test
 
+  ui-changes:
+    # WHETHER THIS CHANGE CAN REACH swarm-ui (owner decision 2026-10-05, #605).
+    # The ui job below runs ~9 minutes of jsdom; a pull request that changes
+    # only the scheduler (#601) ran it, and went red on a load flake in code it
+    # never touched. It now runs on a pull request only when the change is in
+    # apps/swarm-ui/**, the API's route surface (apps/swarm-api/swarm_api/routes/**
+    # and swarm_api/main.py, which the UI's reads are written against), or this
+    # file. On a push to main and on a dispatch it always runs: main is the
+    # build release.yml promotes, so it is tested whole.
+    #
+    # A GATE JOB, NOT `on.pull_request.paths`: a path filter skips the WHOLE
+    # workflow, and this workflow's other jobs must still run. Skipped by its
+    # `if:`, the ui job reports `skipped`, which GitHub counts as passing for a
+    # required check and which scripts/ci-gate.sh counts as a pass inside a run
+    # that concluded `success` (its "WHAT `skipped` MEANS"). If THIS job fails,
+    # the ui job is skipped as a dependant and the run concludes `failure`, so
+    # ci-gate fails closed rather than reading a broken gate as "no UI change".
+    # Any doubt -- a base it cannot diff against -- runs the ui job.
+    name: does this change reach swarm-ui
+    runs-on: ubuntu-24.04
+    outputs:
+      ui: ${{ steps.diff.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # `base...head` needs both commits and their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: diff the pull request against its base
+        id: diff
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" != "pull_request" ]; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            echo "${EVENT}: the ui job always runs"
+            exit 0
+          fi
+          # Three dots: the change since the merge base, which is what the pull
+          # request merges. base.sha does not move when main moves, so two dots
+          # would also count everything main gained since the PR was opened.
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; running the ui job rather than guessing"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
+          grep -E '^(apps/swarm-ui/|apps/swarm-api/swarm_api/routes/|apps/swarm-api/swarm_api/main\.py$|\.github/workflows/application\.yml$)' \
+            "${RUNNER_TEMP}/changed" > "${RUNNER_TEMP}/ui" || true
+          hits="$(grep -c . "${RUNNER_TEMP}/ui" || true)"
+          echo "${total} changed file(s), ${hits} of them reach swarm-ui"
+          if [ "${hits}" -gt 0 ]; then
+            sed 's/^/  /' "${RUNNER_TEMP}/ui"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ui=false" >> "$GITHUB_OUTPUT"
+          fi
+
   ui:
     name: swarm-ui typecheck / component tests
     runs-on: ubuntu-24.04
+    needs: ui-changes
+    if: needs.ui-changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -626,6 +698,19 @@ jobs:
         # the LAST command in the chain, not to vitest, so node tests/run.mjs
         # would receive a flag it never asked for. `vitest run` is already
         # non-watching.
+        #
+        # WORKERS STAY AT VITEST'S DEFAULT, and that is a measured choice
+        # (#605). vitest 3.2's forks pool runs `availableParallelism() - 1`
+        # workers outside watch mode: 3 on this 4-vCPU runner, one core left
+        # for the main process. That is not oversubscription, and the issue's
+        # own numbers agree -- 946 s of tests in a 517 s run is ~1.8 files at
+        # a time, under the 3 allowed; a 2-worker run of the whole suite on
+        # 2026-10-05 took 526 s, the same. The flakes were waits, not
+        # starvation: each `*ByRole` poll over the agent split cost ~850 ms of
+        # `getComputedStyle` even on an idle machine, so a 1000 ms `findBy`
+        # held one poll. The tests now wait on their read instead
+        # (src/__tests__/reads.ts); in that 526 s run no wait took over
+        # 1000 ms, and setup.ts's asyncUtilTimeout is 2000 ms.
         run: npm test
 
       - name: production build
@@ -775,31 +860,147 @@ jobs:
       # runs, which is also what `make lint` runs. There is nothing left to
       # restate here, so this step is gone rather than reduced to a call.
 
-  build-not-run:
-    # NOT a no-op, for the reason this repository keeps relearning: a skipped
-    # job is invisible in the checks list, and silence here has meant "did not
-    # run" far more often than "nothing to report".
-    name: build images (not run on a pull request)
+  build-check:
+    # A PULL REQUEST BUILDS THE IMAGES IT CHANGES, AND PUSHES NOTHING (#650,
+    # owner decision 2026-10-05). Until then images were built only on main, so
+    # #641 -- which changed agent-runtime-base's Dockerfile and its repo-index
+    # LSP package -- was green here and broke main after merge, when
+    # `swarm-repo-index --lsp-self-test` failed in the first build of it.
+    #
+    # WHICH IMAGES: `build-images.sh --affected-by` reads the pull request's
+    # changed paths against every image's inputs -- its recipe's directory,
+    # every COPY/ADD source its Dockerfile names, .dockerignore and
+    # .gcloudignore -- and adds every image built FROM one it reached. Read
+    # from the Dockerfiles, never listed here: a list here is a second copy,
+    # and the second copy is the one that drifts.
+    #
+    # HOW: `build-images.sh --build-only`, the same script and the same
+    # Dockerfile steps main runs, self-tests included, with no `images:` in any
+    # config, no registry call, no tag and no manifest. Only these pull
+    # requests pay the minutes; main's `build images` below is unchanged.
+    #
+    # WHO: NOT the deployer. The workload identity pool refuses a pull
+    # request's ref (`build images` below says why that pin must stay), and a
+    # pull request's checkout chooses what runs -- so whatever this identity
+    # can do, anyone who can push a branch can do. It is a separate identity,
+    # from repository variables, that can submit a build and nothing else, and
+    # whose build runs as an account that cannot push (docs/ci.md, "Images are
+    # built on a pull request, without pushing", names the grants for the
+    # owner to make).
+    #
+    # SKIPPED STEPS, NOT A SKIPPED JOB. The job runs on every pull request and
+    # says in its summary what it built, or why it built nothing: no image
+    # input changed; the identity is not configured yet; a fork's pull
+    # request, which GitHub gives no OIDC token. Each of those concludes
+    # `success`, so a required check and ci-gate pass. A failed build, or an
+    # identity configured by halves, fails it -- and ci-gate with it.
+    name: build changed images without pushing
     runs-on: ubuntu-24.04
+    # A build costs money, so it runs after the free checks, as `build` does.
+    needs: [python, shell, manifests]
     if: github.event_name == 'pull_request'
+    # Mints the pull-request build identity's token, and only when a step below
+    # authenticates (the workflow grants id-token to no one by default).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      # As main builds it: swarm-ui bakes its environment in at build time.
+      ENVIRONMENT: dev
+      # The account the build RUNS as. Required: unset, Cloud Build would run a
+      # pull request's steps as the project's default compute account.
+      CLOUDBUILD_SERVICE_ACCOUNT: ${{ vars.GCP_PR_BUILD_RUNNER_SA }}
+      # gs://<bucket>/<prefix> the source tarball is uploaded to.
+      CLOUDBUILD_SOURCE_STAGING_DIR: ${{ vars.GCP_PR_BUILD_STAGING }}
     steps:
-      - name: say what was not built
+      - uses: actions/checkout@v5
+        with:
+          # `base...head` needs both commits and their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: which images does this pull request reach
+        id: plan
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          WIF_PROVIDER: ${{ vars.GCP_PR_BUILD_WIF_PROVIDER }}
+          BUILD_SA: ${{ vars.GCP_PR_BUILD_SA }}
         run: |
           set -euo pipefail
+          # Three dots: the change since the merge base, which is what the pull
+          # request merges.
+          if git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
+            ./scripts/build-images.sh --affected-by "${RUNNER_TEMP}/changed" > "${RUNNER_TEMP}/images"
+          else
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; building every image rather than guessing"
+            ./scripts/build-images.sh --inputs | cut -f1 | uniq > "${RUNNER_TEMP}/images"
+          fi
+          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
+          count="$(grep -c . "${RUNNER_TEMP}/images" || true)"
+          images="$(paste -sd' ' "${RUNNER_TEMP}/images")"
+          echo "${total:-0} changed file(s) reach ${count} image(s): ${images:-none}"
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+
+          build=true
+          why=""
+          if [ "${count}" -eq 0 ]; then
+            build=false
+            why="no image input changed, so there is nothing to build"
+          elif [ "${HEAD_REPO}" != "${REPOSITORY}" ]; then
+            build=false
+            why="a pull request from a fork is given no OIDC token, so it cannot authenticate to build"
+          else
+            missing=""
+            [ -n "${WIF_PROVIDER}" ] || missing="${missing} GCP_PR_BUILD_WIF_PROVIDER"
+            [ -n "${BUILD_SA}" ] || missing="${missing} GCP_PR_BUILD_SA"
+            [ -n "${CLOUDBUILD_SERVICE_ACCOUNT}" ] || missing="${missing} GCP_PR_BUILD_RUNNER_SA"
+            [ -n "${CLOUDBUILD_SOURCE_STAGING_DIR}" ] || missing="${missing} GCP_PR_BUILD_STAGING"
+            if [ "${missing}" = " GCP_PR_BUILD_WIF_PROVIDER GCP_PR_BUILD_SA GCP_PR_BUILD_RUNNER_SA GCP_PR_BUILD_STAGING" ]; then
+              build=false
+              why="the pull-request build identity is not configured yet (docs/ci.md, \"Images are built on a pull request, without pushing\")"
+              echo "::warning title=images not built::${images} would be built without pushing, but ${why}"
+            elif [ -n "${missing}" ]; then
+              echo "::error title=images not built::the pull-request build identity is configured by halves; missing repository variable(s):${missing}"
+              exit 1
+            fi
+          fi
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
           {
-            echo "### Images were not built"
+            echo "### Images built without pushing"
             echo
-            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
-            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token is"
-            echo "minted here. That pin is the security boundary, not a misconfiguration:"
-            echo "\`build-images.sh\` runs a checked-in \`cloudbuild.yaml\` from this branch,"
-            echo "as an identity holding \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo "Changed files reach: \`${images:-none}\`."
             echo
-            echo "**Checked on this pull request:** every test, lint and manifest job above."
-            echo "**Not checked here:** that the images build. They are built once per commit"
-            echo "on \`main\`, by this workflow's \`build images\` job, and \`release.yml\`"
-            echo "promotes exactly the digests that job recorded."
+            if [ "${build}" = true ]; then
+              echo "Each is built in Cloud Build, with its Dockerfile's self-tests, and nothing is pushed."
+            else
+              echo "**Not built:** ${why}."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - id: auth
+        if: steps.plan.outputs.build == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_PR_BUILD_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PR_BUILD_SA }}
+
+      - if: steps.plan.outputs.build == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: build with Cloud Build, pushing nothing
+        if: steps.plan.outputs.build == 'true'
+        env:
+          IMAGES: ${{ steps.plan.outputs.images }}
+        run: |
+          set -euo pipefail
+          read -r -a images <<<"${IMAGES}"
+          ./scripts/build-images.sh --build-only "${images[@]}"
 
   build:
     name: build images
@@ -855,8 +1056,8 @@ jobs:
     # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
     # -- which is the one change that must never be made. Leaving it red does not
     # protect anything; it only makes the protection look like a bug.
-    # `build-not-run` above says so in the run summary, so a green pull request
-    # is not mistaken for a built one.
+    # A pull request builds the images it changes in `build-check` above, as a
+    # different identity that cannot push, and pushes nothing.
     if: github.event_name != 'pull_request'
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this

@@ -53,9 +53,18 @@ wall clock stays out; whoever promotes the index stamps it.
 EVIDENCE AND CONFIDENCE follow §2.5: `ast` 0.6 for a call whose name matches
 exactly one definition in scope or in an imported module, 0.3 for each of
 several; `import` 0.4; `naming` 0.3; `co-change` the pair's Jaccard support,
-capped at 0.5. No language server runs here (that is lane RI10), so every
-language's server status is `unsupported` with "edges are syntactic", and
-only in-repository edges are resolved.
+capped at 0.5. Only in-repository edges are resolved.
+
+THE LSP PASS (lane RI10, lsp/). After the tree-sitter pass each language's
+server (pyright, tsserver, gopls, terraform-ls) is started headless over
+stdio and asked about every candidate site; a resolved site becomes an `lsp`
+edge at 0.95 (0.8 through an inferred receiver type), keeping `ast` in
+`also_evidence`. Each language's row in `languages` says `ok`, `timed_out`,
+`failing` or `unsupported`, with the reason; a language whose server was
+stopped keeps only its `ast` edges, and the run still succeeds. `--no-lsp`
+skips the pass: every language is then `unsupported` with "edges are
+syntactic", as before RI10. lsp/driver.py documents the budget, the memory
+stop and the server's environment.
 
 BUDGET. A file over `--max-file-bytes` is listed `too_large`; once the
 parsed bytes reach `--max-total-bytes` the rest are `over_budget`; files past
@@ -96,6 +105,12 @@ import tree_sitter_hcl
 import tree_sitter_javascript
 import tree_sitter_python
 import tree_sitter_typescript
+
+# The LSP pass lives beside this script, in lsp/. The image runs the script
+# under `python -I`, which puts nothing on sys.path, so its own directory is
+# added here (root-owned and read-only in the image, like the script).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lsp as lsp_pass  # noqa: E402
 
 SCHEMA = "swarm.repo-index/v1"
 # The graph's own document, for the shard writer (lane RI9). §2.2 keeps the
@@ -151,13 +166,14 @@ GRAMMAR_PACKAGES = {
     "hcl": "tree-sitter-hcl",
 }
 
-# The language server §3.5 assigns each language; none runs here.
+# The language server §3.5 assigns each language (lsp/servers.py starts them).
 LANGUAGE_SERVERS = {
     "python": "pyright",
     "typescript": "tsserver",
     "javascript": "tsserver",
     "go": "gopls",
-    "hcl": "terraform-ls",
+    # "hcl": terraform-ls is out of the image for now (lsp/servers.py
+    # DISABLED_SERVERS); HCL is tree-sitter only.
 }
 
 # extension -> (language, grammar key)
@@ -206,6 +222,7 @@ _SHEBANG_LANGUAGES = (
 
 UNSUPPORTED_REASON = "file level only"
 UNSUPPORTED_FALLBACK = "line counts, co-change and hot spots"
+# The reason when the LSP pass is skipped (--no-lsp).
 SERVER_REASON = "no language server run by this extractor; edges are syntactic"
 
 _LANGUAGE_FACTORIES: dict[str, Callable[[], Any]] = {
@@ -1593,8 +1610,13 @@ def _parse_file(parsers: _Parsers, grammar: str, data: bytes, facts: Facts,
     _EXTRACTORS[grammar](facts, tree.root_node, data, _Clock(deadline))
 
 
-def extract(root: Path, budget: Budget | None = None) -> dict:
-    """The mechanical index of the checkout at `root`."""
+def extract(root: Path, budget: Budget | None = None,
+            lsp: "lsp_pass.LspOptions | None" = None) -> dict:
+    """The mechanical index of the checkout at `root`.
+
+    With `lsp` the LSP pass runs after the tree-sitter pass and its resolved
+    sites become `lsp` edges; without it no server is started.
+    """
     budget = budget or Budget()
     root = Path(root).resolve()
     if not root.is_dir():
@@ -1700,6 +1722,12 @@ def extract(root: Path, budget: Budget | None = None) -> dict:
     edges, imports_of = _build_edges(resolver, facts)
 
     symbols = [s for path in sorted(facts) for s in facts[path].symbols]
+    lsp_result = None
+    if lsp is not None:
+        lsp_result = lsp_pass.run_pass(root, {path: facts[path].language for path in facts},
+                                       symbols, _lsp_sites(facts), lsp)
+        for edge in lsp_result.edges:
+            edges.add(edge.frm, edge.to, edge.kind, "lsp", edge.confidence, edge.path, edge.line)
     routes = [r for path in sorted(facts) for r in facts[path].routes]
     by_route = {}
     for (frm, to, kind), edge in edges.edges.items():
@@ -1749,7 +1777,7 @@ def extract(root: Path, budget: Budget | None = None) -> dict:
         "symbol_test_map": sorted(symbol_test_map, key=lambda m: (m["symbol"], m["test"])),
         "test_map": sorted(test_edges, key=lambda t: (t["source"], t["test"])),
         "hot_spots": hot_spots,
-        "languages": _languages(files),
+        "languages": _languages(files, lsp_result),
         "files": files,
         "truncated": sorted(truncated),
         "extractor": {
@@ -1762,8 +1790,53 @@ def extract(root: Path, budget: Budget | None = None) -> dict:
                        "file_timeout_seconds": budget.file_timeout_seconds},
             "files_not_listed": not_listed,
             "history": history,
+            "lsp": None if lsp_result is None else {
+                "servers": dict(sorted(lsp_result.servers.items())),
+                "request_timeout_seconds": lsp_result.request_timeout_seconds,
+                "server_budget_seconds": lsp_result.server_budget_seconds,
+                "total_budget_seconds": lsp_result.total_budget_seconds,
+                "memory_limit_mib": lsp_result.memory_limit_mib,
+            },
         },
     }
+
+
+_SAME_SCOPE_QUALIFIERS = {"self", "this", "cls", "super"}
+
+
+def _lsp_sites(facts: dict[str, Facts]) -> list:
+    """Every candidate call, base class, route handler and HCL reference.
+
+    `via_receiver` marks a call made through an object (`s.get()`) rather
+    than through a module, an imported name, a class of this file or the
+    enclosing class: a server can only resolve that through the type it
+    inferred for the object, which §2.5 trusts at 0.8, not 0.95.
+    """
+    sites = []
+    for path in sorted(facts):
+        fact = facts[path]
+        declared = set(_SAME_SCOPE_QUALIFIERS) | set(fact.aliases) | set(fact.bindings)
+        declared |= {lsp_pass.simple_name(s["id"]) for s in fact.symbols}
+        for imp in fact.imports:
+            if imp.get("alias"):
+                declared.add(imp["alias"])
+            if isinstance(imp.get("path"), str):
+                declared.add(imp["path"].rstrip("/").rsplit("/", 1)[-1])
+        for kind, items in (("call", fact.calls), ("inherit", fact.inherits),
+                            ("route_handler", fact.handlers)):
+            for caller, name, qualifier, line in items:
+                sites.append(lsp_pass.Site(
+                    language=fact.language, path=path, caller=caller, name=name, line=line,
+                    kind=kind, qualified=qualifier is not None,
+                    via_receiver=qualifier is not None and qualifier not in declared))
+        # A Terraform reference (`var.region`, `module.network.id`) is asked
+        # at its last resolved label, which terraform-ls answers with the
+        # block that declares it.
+        for caller, address, line in fact.references:
+            sites.append(lsp_pass.Site(
+                language=fact.language, path=path, caller=caller,
+                name=address.rsplit(".", 1)[-1], line=line, kind="reference", qualified=True))
+    return sites
 
 
 def _test_map(files: list[dict], imports_of: dict[str, set[str]], symbol_test_map: list[dict],
@@ -1862,8 +1935,15 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
     return modules[:MAX_MODULES]
 
 
-def _languages(files: list[dict]) -> list[dict]:
-    """The `languages` table: what each language got, and why."""
+def _languages(files: list[dict], lsp_result: Any = None) -> list[dict]:
+    """The `languages` table: what each language got, and why.
+
+    Without the LSP pass every language with a grammar is `unsupported`
+    ("edges are syntactic"). With it, each takes its server's status and
+    reason, `fallback` is "ast" unless the status is `ok`, and `lsp` carries
+    the server's counts: requests, resolved and unresolved sites, request
+    timeouts, errors, edges, and the version the server reported.
+    """
     table: dict[str, dict] = {}
     for f in files:
         language = f["language"]
@@ -1883,6 +1963,12 @@ def _languages(files: list[dict]) -> list[dict]:
                 "fallback": "ast" if supported else UNSUPPORTED_FALLBACK,
                 "parsed": 0, "timed_out": 0, "failed": 0, "too_large": 0, "over_budget": 0,
             }
+            ran = None if lsp_result is None else lsp_result.languages.get(language)
+            if supported and ran is not None:
+                entry.update(status=ran.status, reason=ran.reason,
+                             fallback=None if ran.status == "ok" else "ast")
+                if ran.server is not None:
+                    entry.update(server=ran.server, lsp=dict(sorted(ran.counts.items())))
             table[language] = entry
         entry["files"] += 1
         if f["status"] in ("parsed", "timed_out", "failed", "too_large", "over_budget"):
@@ -2104,6 +2190,62 @@ def self_test() -> int:
     return 0
 
 
+# One small workspace per server: a caller in one file, its callee in
+# another, so a pass that resolves nothing is caught, not just one that
+# cannot start.
+_LSP_SELF_TEST_FILES = {
+    "py/a.py": "def alpha():\n    return 1\n",
+    "py/b.py": "from a import alpha\n\n\ndef beta():\n    return alpha()\n",
+    "ts/a.ts": "export function alpha(): number {\n  return 1;\n}\n",
+    "ts/b.ts": "import { alpha } from \"./a\";\n\nexport function beta(): number {\n  return alpha();\n}\n",
+    "go/go.mod": "module example.com/selftest\n\ngo 1.22\n",
+    "go/a.go": "package selftest\n\nfunc Alpha() int {\n\treturn 1\n}\n",
+    "go/b.go": "package selftest\n\nfunc Beta() int {\n\treturn Alpha()\n}\n",
+}
+_LSP_SELF_TEST_EDGES = {
+    "python": ("py/b.py#beta", "py/a.py#alpha"),
+    "typescript": ("ts/b.ts#beta", "ts/a.ts#alpha"),
+    "go": ("go/b.go#Beta", "go/a.go#Alpha"),
+}
+
+
+def lsp_self_test(bin_dir: Path, request_timeout_seconds: float = 30.0) -> int:
+    """Start each installed server and require one `lsp` edge from each.
+
+    The image build runs this as the agent user, so an image whose servers
+    cannot start, or start and resolve nothing, never ships to an indexer.
+    Each language is its own workspace, as a repository's would be.
+    """
+    broken: list[str] = []
+    for language, (frm, to) in sorted(_LSP_SELF_TEST_EDGES.items()):
+        top = frm.split("/", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="repo-lsp-self-test-") as scratch:
+            root = Path(scratch)
+            for name, text in _LSP_SELF_TEST_FILES.items():
+                if name.startswith(top + "/"):
+                    (root / top).mkdir(exist_ok=True)
+                    (root / name).write_text(text, encoding="utf-8")
+            options = lsp_pass.LspOptions(bin_dir=bin_dir, request_timeout_seconds=request_timeout_seconds,
+                                          server_budget_seconds=300.0)
+            started = time.monotonic()
+            index = extract(root / top, Budget(file_timeout_seconds=30.0), lsp=options)
+        row = next((r for r in index["languages"] if r["language"] == language), None)
+        relative = (frm.split("/", 1)[1], to.split("/", 1)[1])
+        found = [e for e in index["call_edges"]
+                 if (e["from"], e["to"]) == relative and e["evidence"] == "lsp"]
+        status = row["status"] if row else "absent"
+        print(f"repo-index lsp self-test: {language}: {status}"
+              f"{'' if not row or not row.get('reason') else ' (' + row['reason'] + ')'}, "
+              f"{len(found)} lsp edge(s), {time.monotonic() - started:.1f}s")
+        if status != "ok" or not found:
+            broken.append(language)
+    if broken:
+        print(f"repo-index lsp self-test: failed for {', '.join(broken)}", file=sys.stderr)
+        return 1
+    print(f"repo-index lsp self-test: {len(_LSP_SELF_TEST_EDGES)} servers ok")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=EXTRACTOR_NAME,
@@ -2123,16 +2265,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file-timeout-seconds", type=float, default=defaults.file_timeout_seconds)
     parser.add_argument("--self-test", action="store_true",
                         help="parse one file per grammar and exit")
+    parser.add_argument("--no-lsp", action="store_true",
+                        help="skip the LSP pass: tree-sitter edges only, every language unsupported")
+    parser.add_argument("--lsp-bin-dir", default=str(lsp_pass.DEFAULT_BIN_DIR),
+                        help="where the language servers are installed (default: the image's)")
+    parser.add_argument("--lsp-request-timeout-seconds", type=float,
+                        default=lsp_pass.LspOptions().request_timeout_seconds)
+    parser.add_argument("--lsp-server-budget-seconds", type=float, default=None,
+                        help="per language server (default: §3.5's table, by repository size)")
+    parser.add_argument("--lsp-total-budget-seconds", type=float, default=None,
+                        help="the whole LSP pass, every server together (default: half of "
+                             "§3.5's full-run budget, by repository size; lsp/driver.py says why)")
+    parser.add_argument("--lsp-memory-mib", type=int, default=None,
+                        help="stop a server above this resident memory "
+                             "(default: 3/4 of the container's limit, or 4096)")
+    parser.add_argument("--lsp-self-test", action="store_true",
+                        help="start each language server on a scratch workspace and exit")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.lsp_self_test:
+        return lsp_self_test(Path(args.lsp_bin_dir))
     root = Path(args.repo)
     if not root.is_dir():
         print(f"{EXTRACTOR_NAME}: {args.repo} is not a directory", file=sys.stderr)
         return 2
     budget = Budget(max_file_bytes=args.max_file_bytes, max_total_bytes=args.max_total_bytes,
                     max_files=args.max_files, file_timeout_seconds=args.file_timeout_seconds)
-    facts = extract(root, budget)
+    lsp_options = None if args.no_lsp else lsp_pass.LspOptions(
+        bin_dir=Path(args.lsp_bin_dir), request_timeout_seconds=args.lsp_request_timeout_seconds,
+        server_budget_seconds=args.lsp_server_budget_seconds,
+        total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
+    facts = extract(root, budget, lsp=lsp_options)
     graph_payload = dumps(graph_document(facts))
     index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
     payload = dumps(index)
@@ -2153,7 +2317,8 @@ def main(argv: list[str] | None = None) -> int:
         f"statuses={json.dumps(summary['files_by_status'], sort_keys=True)} "
         f"index_bytes={len(payload)} graph_bytes={len(graph_payload)} "
         f"truncated={','.join(index['truncated']) or 'none'} "
-        f"graph_truncated={','.join(summary['truncated']) or 'none'}",
+        f"graph_truncated={','.join(summary['truncated']) or 'none'} "
+        f"lsp={','.join(r['language'] + ':' + r['status'] for r in index['languages'] if 'lsp' in r) or 'off'}",
         file=sys.stderr,
     )
     return 0

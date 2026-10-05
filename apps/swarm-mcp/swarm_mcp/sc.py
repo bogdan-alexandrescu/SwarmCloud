@@ -322,6 +322,57 @@ def fetch_task(client: SwarmClient, task_id: str) -> dict[str, Any]:
     return client.task(task_id)
 
 
+#: The read the console's Overview "Needs a look" takes its Leases check from
+#: (`swarm-ui/src/api.ts` `loadLeases`), with the same window, so a lease held
+#: past its TTL is counted over the same rows on both surfaces (#532, 5b).
+LEASES_PATH = "/v1/admin/leases?active_only=true&limit=200"
+
+
+class LeasesRefused(SwarmError):
+    """The API refused the lease read rather than failing it.
+
+    `/v1/admin/leases` is admin-gated, as the console's check is, so a caller
+    who is not an admin gets a 403 on every run; a deployment older than the
+    route gets the API's own 404. Neither says anything is wrong with a
+    lease, so the caller grades it as information, as `AccountsRouteAbsent`.
+    """
+
+
+def fetch_leases(client: SwarmClient) -> dict[str, Any]:
+    """Every unreleased lease the console's Overview reads, as one page."""
+    try:
+        data = client.request("GET", LEASES_PATH)
+    except SwarmError as exc:
+        if exc.status == 403 or (exc.status == 404 and not exc.edge):
+            raise LeasesRefused(
+                f"{exc} -- /v1/admin/leases is admin-gated, as the console's "
+                "Leases check is; a lease held past its TTL is UNKNOWN from "
+                "here, not absent"
+                if exc.status == 403
+                else f"{exc} -- this deployment's swarm-api has no "
+                "/v1/admin/leases route"
+            ) from None
+        raise
+    if not isinstance(data, dict) or not isinstance(data.get("leases"), list):
+        raise SwarmError("the leases response carried no `leases` list")
+    return data
+
+
+#: The console's Overview reads `/v1/workflows` for its Workflows check, and
+#: that response carries the reconciler's `stalled_workflows` (#616). One row
+#: is asked for: the stalled list does not depend on the page, and every
+#: workflow on the page costs a read per step to derive.
+WORKFLOWS_PATH = "/v1/workflows?limit=1"
+
+
+def fetch_workflows(client: SwarmClient) -> dict[str, Any]:
+    """The workflow page whose `stalled_workflows` `sc trouble` lists."""
+    data = client.request("GET", WORKFLOWS_PATH)
+    if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
+        raise SwarmError("the workflows response carried no `workflows` list")
+    return data
+
+
 class AccountsRouteAbsent(SwarmError):
     """swarm-api has no `/v1/accounts` route on this deployment.
 
@@ -387,21 +438,21 @@ def fetch_accounts(client: SwarmClient) -> list[dict[str, Any]]:
 #: none of it: a round trip whose failure was invisible on screen and could
 #: not honestly be allowed to change the exit code either.
 NEEDS = {
-    "overview": ("tenant", "stats", "capacity", "accounts", "tasks"),
+    "overview": ("tenant", "stats", "capacity", "accounts", "tasks", "leases"),
     "accounts": ("accounts",),
     "agents": ("tasks",),
     "capacity": ("capacity",),
-    "trouble": ("tenant", "stats", "capacity", "accounts", "tasks"),
+    "trouble": ("tenant", "stats", "capacity", "accounts", "tasks", "leases", "workflows"),
 }
 
 
 def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
     """Fetch what a command needs, concurrently, recording each failure.
 
-    Concurrent because these are four independent round trips through IAP and a
+    Concurrent because these are independent round trips through IAP and a
     status command that takes four seconds gets replaced by a guess. The ID
-    token is minted once, up front, rather than raced for by four threads that
-    would each shell out to gcloud.
+    token is minted once, up front, rather than raced for by one thread per fetch, each
+    of which would shell out to gcloud.
     """
     snap = Snapshot(now=datetime.now(timezone.utc))
     snap.api_url = client.base_url
@@ -420,6 +471,10 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
         jobs["accounts"] = lambda: fetch_accounts(client)
     if "tasks" in wanted:
         jobs["tasks"] = lambda: fetch_tasks(client)
+    if "leases" in wanted:
+        jobs["leases"] = lambda: fetch_leases(client)
+    if "workflows" in wanted:
+        jobs["workflows"] = lambda: fetch_workflows(client)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
@@ -434,6 +489,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
                     # pool is broken" read the same on screen and must not
                     # grade the same.
                     snap.accounts_absent = True
+                if name == "leases" and isinstance(error, LeasesRefused):
+                    snap.leases_refused = True
     return snap
 
 
@@ -458,7 +515,7 @@ def _cluster_exit(snap: Snapshot, findings: Sequence[Finding]) -> int:
     would make `sc` report a healthy, unchanged production cluster as broken
     -- the one backwards-compatibility bar this surface has. `sc accounts`
     still fails on it, because that view is ABOUT the pool and has nothing
-    else to show; the overview has four other areas and prints the reason.
+    else to show; the overview has five other areas and prints the reason.
     """
     unreadable = [
         error
@@ -468,6 +525,8 @@ def _cluster_exit(snap: Snapshot, findings: Sequence[Finding]) -> int:
             snap.capacity_error,
             snap.tasks_error,
             None if snap.accounts_absent else snap.accounts_error,
+            None if snap.leases_refused else snap.leases_error,
+            snap.workflows_error,
         )
         if error
     ]
@@ -905,6 +964,9 @@ def _dump(snap: Snapshot, out) -> None:
         "accounts_absent": snap.accounts_absent,
         "tasks": snap.tasks,
         "tasks_error": snap.tasks_error,
+        "leases": snap.leases,
+        "leases_error": snap.leases_error,
+        "leases_refused": snap.leases_refused,
         # What the task listing did NOT read, as it says on screen: `[]` is a
         # whole listing, a sentence is a floor (#88, SC-F11).
         "tasks_incomplete": render.listing_gaps(snap.tasks),

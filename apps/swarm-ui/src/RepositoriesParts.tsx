@@ -185,9 +185,11 @@ export const GT_PAGE = 'work/repositories?page=tokens'
 export const PERMISSIONS = 'work/repositories?page=permissions'
 
 /** The address of one repository, or one of its tabs. */
-export function repoAddress(repoId: string, tab: string | null = null): string {
+export function repoAddress(repoId: string, tab: string | null = null, pr: number | null = null): string {
   const q = new URLSearchParams({ repo: repoId })
   if (tab !== null && tab !== 'overview') q.set('tab', tab)
+  // The run page's PR card opens Impact on its pull request (screen 9).
+  if (tab === 'impact' && pr !== null) q.set('pr', String(pr))
   return `${LIST}?${q.toString()}`
 }
 

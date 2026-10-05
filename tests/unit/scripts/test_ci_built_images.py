@@ -101,6 +101,9 @@ def application_build() -> dict:
         for job_id, job in jobs.items()
         for step in job.get("steps") or []
         if "scripts/build-images.sh" in _uncommented(step.get("run", ""))
+        # The pull-request job's runs (#650) map a change to images and build
+        # them WITHOUT pushing; neither records a build a release could use.
+        and not re.search(r"--(build-only|affected-by|inputs)\b", _uncommented(step.get("run", "")))
     ]
     assert len(builders) == 1, (
         f"expected exactly one job in application.yml to run build-images.sh, found "

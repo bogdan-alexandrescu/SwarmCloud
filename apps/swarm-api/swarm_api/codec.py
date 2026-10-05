@@ -220,6 +220,9 @@ def dispatch_of(task: Task) -> dict[str, Any]:
         out["builds_on"] = block["builds_on"]
     if isinstance(block.get("verdict_gate"), dict):
         out["verdict_gate"] = dict(block["verdict_gate"])
+    # The step's empty-diff permission (2026-10-05), only when it was given.
+    if block.get("allow_empty_diff") is True:
+        out["allow_empty_diff"] = True
     return out
 
 
@@ -563,34 +566,21 @@ def lease_from_dict(data: dict[str, Any]) -> Lease:
 # Pools / quota / tenants
 # --------------------------------------------------------------------------
 
-class UnsetLimitPool(SlotPool):
-    """A pool whose document has no `hard_limit`: its ceiling is UNKNOWN (#374).
-
-    Adds no field and overrides nothing, so every reader that takes a
-    `SlotPool` reads it as the frozen admission transaction reads the same
-    document -- `d.get("hard_limit", 0)`, a ceiling of 0. What it adds is that
-    the 0 is KNOWN to be a stand-in: `pool_to_api` serves the limit as null,
-    because a 0 on the wire says an operator set the pool to zero, and nobody
-    did. The scheduler's codec carries the same class (the two images do not
-    import each other).
-    """
-
-
 def hard_limit_known(pool: SlotPool) -> bool:
-    """False for a pool whose document carried no `hard_limit` (`UnsetLimitPool`)."""
-    return not isinstance(pool, UnsetLimitPool)
+    """False for a pool whose document carried no `hard_limit` (contract request 38)."""
+    return pool.hard_limit is not None
 
 
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
-    """A pool document as a `SlotPool`; an `UnsetLimitPool` when no `hard_limit` was written.
+    """A pool document as a `SlotPool`.
 
-    A missing (or null) `hard_limit` is UNKNOWN, never 0 (#374).
+    A missing (or null) `hard_limit` is None -- no ceiling set, UNKNOWN, never
+    0 -- exactly as the frozen admission transaction reads it (request 38, #374).
     """
     raw_limit = data.get("hard_limit")
-    cls = SlotPool if raw_limit is not None else UnsetLimitPool
-    pool = cls(
+    pool = SlotPool(
         name=name,
-        hard_limit=int(raw_limit) if raw_limit is not None else 0,
+        hard_limit=int(raw_limit) if raw_limit is not None else None,
         adaptive_target=data.get("adaptive_target"),
         quota_derived_limit=data.get("quota_derived_limit"),
         active=int(data.get("active", 0)),
@@ -770,17 +760,16 @@ def _age_seconds(at: datetime | None, now: datetime | None) -> float | None:
 
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
     # A ceiling nobody set is served as null, and so is everything computed
-    # from it: an effective limit or an availability derived from a stand-in 0
-    # is the same untruth one step removed (#374).
-    known = hard_limit_known(pool)
+    # from it (#374): the contract's `SlotPool` already says None for all
+    # three (request 38), so nothing here may substitute a 0.
     return {
         "name": pool.name,
-        "hard_limit": pool.hard_limit if known else None,
+        "hard_limit": pool.hard_limit,
         "adaptive_target": pool.adaptive_target,
         "quota_derived_limit": pool.quota_derived_limit,
-        "effective_limit": pool.effective_limit if known else None,
+        "effective_limit": pool.effective_limit,
         "active": pool.active,
-        "available": pool.available if known else None,
+        "available": pool.available,
         "enabled": pool.enabled,
         "updated_at": pool.updated_at,
     }

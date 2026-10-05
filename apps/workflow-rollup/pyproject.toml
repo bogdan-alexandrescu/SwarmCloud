@@ -1,0 +1,30 @@
+# The workflow state derivation, shared by swarm-api (every read route, and the
+# rollup sweep) and the reconciler (the workflow stall check, #616). Pure: it
+# imports the frozen contract's types and nothing else, and does no I/O.
+#
+# NOT part of the frozen contract in apps/common, for the reason
+# apps/redaction is not: a precedence change here is an ordinary reviewed
+# change. Contract request 7 (docs/contract-change-requests.md) asks for this
+# derivation's home to be `swarm_common`; until that is decided, this package is
+# the one place it is written, so the API and the reconciler cannot derive a
+# workflow's state by two different rules.
+#
+# A plain, self-contained package like apps/common and apps/redaction: a static
+# [project] table, a build backend, and a path source only for swarm-common, so
+# an image can build it into its wheelhouse beside swarm-common.
+[project]
+name = "swarm-workflow-rollup"
+version = "0.1.0"
+description = "Workflow state derived from its step tasks, shared by swarm-api and the reconciler."
+requires-python = ">=3.11"
+dependencies = ["swarm-common"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_rollup"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }

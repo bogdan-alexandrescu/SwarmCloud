@@ -38,6 +38,8 @@ steps:
         mkdir -p /workspace/verify-ctx
         cp -R scripts /workspace/verify-ctx/scripts
         cp Makefile /workspace/verify-ctx/Makefile
+        mkdir -p /workspace/verify-ctx/tests/acceptance
+        cp -R tests/acceptance/fixtures /workspace/verify-ctx/tests/acceptance/fixtures
         cp images/swarm-verify/Dockerfile /workspace/verify-ctx/Dockerfile
         # Fail here, loudly, rather than producing an image whose entrypoint is
         # missing and discovering it at 3am when the gate is finally run.
@@ -45,6 +47,7 @@ steps:
         test -f /workspace/verify-ctx/scripts/concurrency-test.sh
         test -f /workspace/verify-ctx/scripts/race-test.sh
         test -f /workspace/verify-ctx/scripts/lib/common.sh
+        test -f /workspace/verify-ctx/tests/acceptance/fixtures/claude-code/calc.py
 
   - id: build
     name: gcr.io/cloud-builders/docker

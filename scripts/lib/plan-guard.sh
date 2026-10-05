@@ -181,12 +181,10 @@ write_iam_summary() {
 require_valid_verdict() {
   local verdict="$1" field err
 
-  # SLURPED, so an EMPTY file is a refusal on every jq. jq 1.6's `-e` exits 0
-  # when the input yields no output at all, so `jq -e 'type == "object"'` over
-  # an empty verdict approved it (the self-test's "an empty verdict" case,
-  # failing under jq-1.6, 2026-10-05). `length == 1` also refuses two documents
-  # glued together.
-  if ! err="$(jq -e -s 'length == 1 and (.[0] | type == "object")' "${verdict}" 2>&1)"; then
+  # `-n` and `input`, not a plain filter: jq 1.6 runs a filter over an EMPTY
+  # file zero times and `-e` then exits 0, so an empty verdict read as valid
+  # (jq 1.7 exits 4). `input` on no input is an error under every version.
+  if ! err="$(jq -n -e 'input | type == "object"' "${verdict}" 2>&1)"; then
     hr
     err "the plan guard's verdict is not readable JSON:"
     printf '%s\n' "${err}" | head -n 3 | sed 's/^/     /' >&2

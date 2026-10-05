@@ -28,7 +28,6 @@ import { painted } from './marks'
 import { cellStyle, crowded, fixedColumns, lengthPx, nowrap, textBox, type CellStyle, type TextBox } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The table's box at 1440 with the side panel open (walk.steps.test.tsx). */
 const AT_1440 = 1440 - 84 - 236 - 64 - 34
@@ -145,13 +144,13 @@ async function tableWithCard(): Promise<{ split: HTMLElement; wrap: HTMLElement;
     const w = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(w?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return w!
-  }, WAIT)
+  })
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
   const split = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.wf-split.has-panel')
     expect(s?.querySelector(':scope > .wf-panel'), 'the step card did not open beside the table').toBeTruthy()
     return s!
-  }, WAIT)
+  })
   return { split, wrap, t: wrap.querySelector('table')! }
 }
 

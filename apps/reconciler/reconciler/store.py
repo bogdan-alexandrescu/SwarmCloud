@@ -11,7 +11,9 @@ Two responsibilities, kept apart on purpose:
 * **Writing** exposes precisely four mutations: invalidate a generation, release
   a lease, repair a task's state, record an event -- and `fence_release_repair`,
   which commits the first three in ONE transaction, so a repair never leaves a
-  fenced generation behind a held lease (#560). Every one of them runs in a
+  fenced generation behind a held lease (#560). A fence (`fence_attempt`, and
+  `fence_release_repair` given an attempt) also records the end of the attempt
+  it superseded in that same commit (#630). Every one of them runs in a
   transaction and re-reads what it is about to change, so a reconciler racing a
   live worker loses rather than corrupts.
 
@@ -33,6 +35,7 @@ from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
     EventType,
+    ParkReason,
     TaskState,
     can_transition,
 )
@@ -42,7 +45,10 @@ from .model import (
     AttemptView,
     ControlSnapshot,
     LeaseView,
+    StepTaskView,
     TaskView,
+    WorkflowRead,
+    WorkflowView,
     cancel_end_cause,
     count_startup_end,
     startup_refunds_used,
@@ -82,6 +88,14 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
 _MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
 
 
+def _generation_of(data: dict[str, Any]) -> int | None:
+    """A task document's generation, or None when it cannot be read as one."""
+    try:
+        return int(data.get("current_generation", 0))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _named_task(data: Any) -> str:
     """The task id a raw document names, or "" when it names none readably."""
     task_id = data.get("task_id") if isinstance(data, dict) else None
@@ -104,6 +118,27 @@ def _withhold(snapshot: ControlSnapshot, task_ids: set[str]) -> None:
             continue
         snapshot.tasks.pop(task_id, None)
         snapshot.unreadable_tasks.add(task_id)
+
+
+#: What a fence or a reclaim writes at the head of the superseded attempt's
+#: `error`, beside its `completed_at` (#630). Not an `EndCause`: that frozen
+#: enum names how a TASK ended, and the frozen `Attempt` has no cause field of
+#: its own, so the attempt carries it where `lost_after_finish` already does
+#: (#380). `fenced`: the generation was bumped and nothing else -- the stuck
+#: rule, whose live worker stops at its next poll. `reclaimed`: the same
+#: transaction also released the lease or moved the task off it.
+ATTEMPT_FENCED = "fenced"
+ATTEMPT_RECLAIMED = "reclaimed"
+
+
+@dataclass(frozen=True)
+class Fenced:
+    """What one `fence_attempt` transaction committed."""
+
+    #: The generation this transaction fenced the task to; None if it did not.
+    new_generation: int | None
+    #: The cause written onto the superseded attempt; None if none was written.
+    attempt_ended: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +166,9 @@ class OneRepair:
     #: The release (and with it the repair) was refused because the task
     #: still holds the lease at its generation.
     release_refused: bool = False
+    #: The cause written onto the superseded attempt in the same transaction
+    #: (`ATTEMPT_FENCED` or `ATTEMPT_RECLAIMED`); None if none was written.
+    attempt_ended: str | None = None
 
 
 class ControlStore:
@@ -404,6 +442,172 @@ class ControlStore:
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
+    # -- workflows (#616) ------------------------------------------------
+    def workflows_for_stall_check(self, *, limit: int) -> WorkflowRead:
+        """Every non-terminal workflow (up to `limit`) and its step tasks.
+
+        NON-TERMINAL BY THE STORED STATE, which is the API's sweep rule too
+        (`swarm_api.rollup.WorkflowRollups.sweep`): a stored terminal state is
+        written only from a complete derivation, and re-reading every finished
+        workflow's steps each minute would make this read grow with the
+        platform's history rather than with its live work.
+
+        POINT READS for the step tasks: each step carries its task id, so a
+        query would only re-derive them. A parent a step task names outside its
+        own workflow's steps is read too, so the dependency rule never judges a
+        parent it did not read.
+
+        A QUERY THAT FAILS RAISES. The caller turns that into a finding on the
+        pass: "the workflows could not be read" must never look like "no
+        workflow is stalled". One malformed document is recorded and skipped,
+        as `snapshot()` does for a task, so it cannot blind the check to every
+        other tenant's workflows.
+        """
+        live = sorted(state.value for state in TaskState if state not in TERMINAL_STATES)
+        query = (
+            self._db.collection("workflows")
+            .where(filter=self._filter("state", "in", live))
+            .limit(limit + 1)
+        )
+        read = WorkflowRead()
+        docs = list(query.stream())
+        if len(docs) > limit:
+            read.truncated = True
+            docs = docs[:limit]
+        for doc in docs:
+            data = doc.to_dict() or {}
+            try:
+                read.workflows.append(WorkflowView.from_doc(data, doc.id))
+            except _MALFORMED_TASK_DOC as exc:
+                tenant = data.get("tenant_id") if isinstance(data, dict) else None
+                read.malformed.append(
+                    {
+                        "workflow_id": doc.id,
+                        "tenant_id": tenant if isinstance(tenant, str) else None,
+                        "error": type(exc).__name__,
+                    }
+                )
+        wanted = {
+            step.task_id for workflow in read.workflows for step in workflow.steps if step.task_id
+        }
+        self._read_step_tasks(read, wanted)
+        parents = {
+            parent
+            for task in read.tasks.values()
+            for parent in task.depends_on
+            if parent not in read.tasks and parent not in read.absent
+        }
+        self._read_step_tasks(read, parents - read.unreadable_tasks)
+        return read
+
+    def _read_step_tasks(self, read: WorkflowRead, task_ids: Iterable[str]) -> None:
+        for task_id in sorted(task_ids):
+            snap = self._db.collection("tasks").document(task_id).get()
+            if not snap.exists:
+                read.absent.add(task_id)
+                continue
+            try:
+                read.tasks[task_id] = StepTaskView.from_doc(snap.to_dict() or {}, task_id)
+            except _MALFORMED_TASK_DOC:
+                read.unreadable_tasks.add(task_id)
+
+    def promote_workflow_step(
+        self, task_id: str, *, generation: int | None, parent_task_ids: Iterable[str]
+    ) -> str | None:
+        """PARKED(DEPENDENCY_INCOMPLETE) -> READY, as the scheduler's sweep does.
+
+        The same write as `SchedulerStore.promote_to_ready` -- state READY, the
+        park reason, `next_eligible_at` and `blocked_by` cleared -- under the
+        same guard: the stored state AND park reason must still be the ones the
+        pass read. Two more, because this writer is not the scheduler: the
+        task's generation must be the one the pass read (invariant 5: nothing
+        decided at one generation lands on another), and every parent is
+        RE-READ in this transaction and must still be SUCCEEDED. Every read
+        precedes the write, as Firestore requires.
+
+        Returns None when it wrote, else why it did not. A scheduler sweep
+        that got there first reads `state_changed`, which is the guard working,
+        and the reason a step is promoted once and never twice.
+        """
+        task_ref = self._db.collection("tasks").document(task_id)
+        parent_refs = [
+            (parent, self._db.collection("tasks").document(parent)) for parent in parent_task_ids
+        ]
+
+        def _apply(txn: Any) -> str | None:
+            snap = _snapshot(txn.get(task_ref))
+            parents = [(parent, _snapshot(txn.get(ref))) for parent, ref in parent_refs]
+            if not snap.exists:
+                return "task_missing"
+            data = snap.to_dict() or {}
+            if data.get("state") != TaskState.PARKED.value:
+                return "state_changed"
+            if (data.get("park_reason") or None) != ParkReason.DEPENDENCY_INCOMPLETE.value:
+                return "park_reason_changed"
+            if generation is None or _generation_of(data) != generation:
+                return "generation_changed"
+            for _parent, parent_snap in parents:
+                stored = (parent_snap.to_dict() or {}) if parent_snap.exists else {}
+                if stored.get("state") != TaskState.SUCCEEDED.value:
+                    return "parent_not_succeeded"
+            if not can_transition(TaskState.PARKED, TaskState.READY):
+                return "illegal_transition"
+            txn.update(
+                task_ref,
+                {
+                    "state": TaskState.READY.value,
+                    "park_reason": None,
+                    "next_eligible_at": None,
+                    "blocked_by": [],
+                    "updated_at": utcnow(),
+                },
+            )
+            return None
+
+        return self._txn.run(_apply)
+
+    def write_derived_workflow_state(
+        self, workflow_id: str, *, expected: TaskState, to: TaskState
+    ) -> str | None:
+        """Write the derived state over a stored one that disagreed with it.
+
+        The write `swarm_api.store.Store.set_workflow_state` makes -- `state`
+        and `updated_at` -- as a compare-and-set: only when the stored state is
+        still `expected`, the value this pass read and found wrong. A reader of
+        the API that repaired it first, or a cancel, wins, and this writes
+        nothing. Takes a `TaskState`, so `UNKNOWN` can never be written.
+
+        Returns None when it wrote, else why it did not.
+        """
+        ref = self._db.collection("workflows").document(workflow_id)
+
+        def _apply(txn: Any) -> str | None:
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists:
+                return "workflow_missing"
+            if (snap.to_dict() or {}).get("state") != expected.value:
+                return "state_changed"
+            txn.update(ref, {"state": to.value, "updated_at": utcnow()})
+            return None
+
+        return self._txn.run(_apply)
+
+    def task_and_attempt_docs(
+        self, task_id: str, attempt_id: str
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The raw task and attempt documents a stop request names (#627).
+
+        None for a document that does not exist. A READ THAT FAILS raises, as
+        `task_by_id` does: "there is no such attempt" must never be what a
+        failed read looks like to the caller deciding whether to stop it.
+        """
+        task = self._db.collection("tasks").document(task_id).get()
+        attempt = self._db.collection("attempts").document(attempt_id).get()
+        return (
+            (task.to_dict() or {}) if task.exists else None,
+            (attempt.to_dict() or {}) if attempt.exists else None,
+        )
+
     def attempt_events(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
         """Every event one attempt has written to its task's stream.
 
@@ -522,13 +726,50 @@ class ControlStore:
         Such a task is not an orphan's task, it is the lease's rightful owner
         (#332). The generation needs no second check: `expected_generation` is
         the lease's, and a task fenced past it is already refused below.
+
+        Writes no attempt: `fence_attempt` is the fence that also records the
+        superseded attempt's end (#630).
+        """
+        return self.fence_attempt(
+            task_id,
+            expected_generation,
+            only_from=only_from,
+            unless_holding_lease=unless_holding_lease,
+        ).new_generation
+
+    def fence_attempt(
+        self,
+        task_id: str,
+        expected_generation: int,
+        *,
+        attempt_id: str | None = None,
+        attempt_reason: str | None = None,
+        only_from: tuple[TaskState, ...] | None = None,
+        unless_holding_lease: str | None = None,
+    ) -> Fenced:
+        """`invalidate_generation`, and the fenced attempt's end in the same commit (#630).
+
+        A fenced worker exits without writing anything -- that is what the
+        fence is for -- so the attempt it was running kept no `completed_at`
+        for ever, and every figure read from attempts counted it as still
+        running. The end is written ONLY on this transaction's own fence, and
+        only onto an attempt `_superseded_attempt_end` accepts: this task's,
+        at exactly `expected_generation`, not yet ended. A newer generation's
+        attempt is never written (invariant 5), and a worker that recorded its
+        own end keeps it. The cause is `ATTEMPT_FENCED`: nothing but the
+        generation moved, and a live worker stops at its next poll.
         """
         task_ref = self._db.collection("tasks").document(task_id)
+        attempt_ref = (
+            self._db.collection("attempts").document(attempt_id) if attempt_id else None
+        )
 
-        def _apply(txn: Any) -> int | None:
+        def _apply(txn: Any) -> Fenced:
+            # Every read before any write.
             snap = _snapshot(txn.get(task_ref))
+            attempt = self._read_attempt(txn, attempt_ref)
             if not snap.exists:
-                return None
+                return Fenced(None)
             data = snap.to_dict() or {}
             new_generation = self._fence_decision(
                 data,
@@ -538,7 +779,7 @@ class ControlStore:
                 unless_holding_lease=unless_holding_lease,
             )
             if new_generation is None:
-                return None
+                return Fenced(None)
             txn.update(
                 task_ref,
                 {
@@ -546,9 +787,76 @@ class ControlStore:
                     "updated_at": utcnow(),
                 },
             )
-            return new_generation
+            ended = self._superseded_attempt_end(
+                attempt,
+                task_id=task_id,
+                expected_generation=expected_generation,
+                task_generation=new_generation,
+                cause=ATTEMPT_FENCED,
+                reason=attempt_reason,
+                tenant_id=data.get("tenant_id"),
+            )
+            if ended is not None and attempt_ref is not None:
+                txn.update(attempt_ref, ended)
+                return Fenced(new_generation, ATTEMPT_FENCED)
+            return Fenced(new_generation)
 
         return self._txn.run(_apply)
+
+    @staticmethod
+    def _read_attempt(txn: Any, attempt_ref: Any) -> dict[str, Any] | None:
+        if attempt_ref is None:
+            return None
+        snap = _snapshot(txn.get(attempt_ref))
+        return (snap.to_dict() or {}) if snap.exists else None
+
+    def _superseded_attempt_end(
+        self,
+        attempt: dict[str, Any] | None,
+        *,
+        task_id: str,
+        expected_generation: int,
+        task_generation: int,
+        cause: str,
+        reason: str | None,
+        tenant_id: Any,
+    ) -> dict[str, Any] | None:
+        """The end a fence or reclaim writes onto the attempt it superseded, or None.
+
+        Every condition is about the attempt document read in the caller's
+        transaction, beside the task as that transaction leaves it:
+
+        * the attempt is this task's and at EXACTLY the generation being
+          fenced -- a finding whose attempt id names any other generation
+          writes nothing;
+        * the task is past that generation, so the attempt really is
+          superseded: an attempt at the task's current generation is the live
+          one, whoever fenced what (invariant 5);
+        * the attempt has no `completed_at`: a worker that recorded its own
+          end keeps its exit code and its error.
+
+        The fields are those `ControlPlane.record_attempt_end` writes. No exit
+        code is known, and none is invented; the cause heads `error`.
+        """
+        if attempt is None:
+            return None
+        try:
+            generation = int(attempt.get("generation", -1))
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if (
+            attempt.get("task_id") != task_id
+            or generation != expected_generation
+            or task_generation <= generation
+            or attempt.get("completed_at") is not None
+        ):
+            return None
+        return {
+            "completed_at": utcnow(),
+            "exit_code": None,
+            "error": (f"{cause}: {reason}" if reason else cause)[:2000],
+            "tenant_id": attempt.get("tenant_id") or tenant_id,
+        }
 
     def _fence_decision(
         self,
@@ -882,6 +1190,8 @@ class ControlStore:
         only_from: tuple[TaskState, ...] | None = None,
         unless_holding_lease: str | None = None,
         refuse_while_task_holds_it: bool = False,
+        attempt_id: str | None = None,
+        attempt_reason: str | None = None,
     ) -> OneRepair:
         """Fence, release and repair in ONE transaction (#560).
 
@@ -913,9 +1223,24 @@ class ControlStore:
         The ended-at-startup refund (#67) is decided against this
         transaction's own fence, as it was against the fence the pass had just
         written.
+
+        `attempt_id`, when given, is the attempt the finding is about, and its
+        end is written in this same commit (#630) whenever the task, as this
+        transaction leaves it, is past that attempt's generation -- by this
+        fence or by an earlier one -- and the release was not refused:
+        `ATTEMPT_RECLAIMED` when the lease was released or the task moved off
+        it here, `ATTEMPT_FENCED` when only the generation moved. The caller
+        has already stopped the execution (or proved it never started), so
+        nothing of the attempt runs. `_superseded_attempt_end` decides which
+        attempt document may be written; a newer generation's never is.
         """
         task_ref = self._db.collection("tasks").document(task_id) if task_id else None
         lease_ref = self._db.collection("leases").document(lease_id) if lease_id else None
+        attempt_ref = (
+            self._db.collection("attempts").document(attempt_id)
+            if attempt_id and task_id
+            else None
+        )
 
         def _apply(txn: Any) -> OneRepair:
             # ---- every read, before any write -------------------------
@@ -938,6 +1263,7 @@ class ControlStore:
                         txn.get(self._db.collection("tasks").document(lease_task_id))
                     )
                     lease_task = (snap.to_dict() or {}) if snap.exists else None
+            attempt = self._read_attempt(txn, attempt_ref)
 
             # ---- decisions ---------------------------------------------
             new_generation: int | None = None
@@ -995,11 +1321,39 @@ class ControlStore:
                 update.update(decided[1])
             if update and task_ref is not None:
                 txn.update(task_ref, update)
+            attempt_ended: str | None = None
+            if (
+                attempt_ref is not None
+                and after is not None
+                and task_id
+                and expected_generation is not None
+                and not refused
+            ):
+                cause = (
+                    ATTEMPT_RECLAIMED if released or decided is not None else ATTEMPT_FENCED
+                )
+                try:
+                    task_generation = int(after.get("current_generation", 0))
+                except (ValueError, TypeError, OverflowError):
+                    task_generation = expected_generation
+                ended = self._superseded_attempt_end(
+                    attempt,
+                    task_id=task_id,
+                    expected_generation=expected_generation,
+                    task_generation=task_generation,
+                    cause=cause,
+                    reason=attempt_reason,
+                    tenant_id=after.get("tenant_id"),
+                )
+                if ended is not None:
+                    txn.update(attempt_ref, ended)
+                    attempt_ended = cause
             return OneRepair(
                 new_generation=new_generation,
                 released=released,
                 repaired_to=decided[0] if decided is not None else None,
                 release_refused=refused,
+                attempt_ended=attempt_ended,
             )
 
         return self._txn.run(_apply)

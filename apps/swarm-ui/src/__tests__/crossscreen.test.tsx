@@ -230,7 +230,7 @@ describe('#98: one read age per screen', () => {
       const { App: LiveApp } = await import('../App')
       render(<LiveApp />)
       const listSub = () => document.querySelector('main.work .sub')?.textContent ?? ''
-      await waitFor(() => expect(listSub()).toMatch(/\bread (just now|\d+s ago)/), { timeout: 8000 })
+      await waitFor(() => expect(listSub()).toMatch(/\bread (just now|\d+s ago)/))
     } finally {
       globalThis.fetch = real
       vi.unstubAllEnvs()

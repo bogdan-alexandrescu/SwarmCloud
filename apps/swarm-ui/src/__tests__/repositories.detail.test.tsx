@@ -1,5 +1,6 @@
 // WORK › REPOSITORIES › ONE REPOSITORY (repositories.html screen 4, pick A:
-// tabs Overview, Test map, Hot-spots, Index runs, Settings, Used by; and
+// tabs Overview, Graph, Impact, Test map, Hot-spots, Index runs, Settings,
+// Used by; and
 // screen 11, Settings A: cards for the schedule, languages, graph, selection
 // policy and the token that resolves, with its capability row).
 //
@@ -7,7 +8,7 @@
 //   * the head names the repository, its freshness and Index now; the meta
 //     line names the commit each figure describes; behind the head, a banner
 //     leads saying by how much and whether a run is in flight;
-//   * the six tabs, in the picked order, each its own address;
+//   * the eight tabs, in the picked order, each its own address;
 //   * Overview's figures come from the index document; Modules, Hot-spots,
 //     Index runs, the schedule and Used by are cards;
 //   * each region whose route is not there yet says so and names the route,
@@ -149,23 +150,26 @@ describe('the repository page leads with what the index says about the head (Det
     expect(visible(banner)).toContain('An index run is in flight')
   })
 
-  it('draws the six tabs in the picked order, each with its own address', async () => {
+  it('draws the eight tabs in the picked order, each with its own address', async () => {
     routes()
     await mount()
     await loaded()
     const tabs = Array.from(document.querySelectorAll<HTMLAnchorElement>('.ur-tabs a'))
-    expect(tabs.map((t) => visible(t.querySelector('.c-tab-label')))).toEqual(['Overview', 'Test map', 'Hot-spots', 'Index runs', 'Settings', 'Used by'])
+    // Graph and Impact (screens 8 and 9) sit after Overview, as their frames draw them.
+    expect(tabs.map((t) => visible(t.querySelector('.c-tab-label')))).toEqual(['Overview', 'Graph', 'Impact', 'Test map', 'Hot-spots', 'Index runs', 'Settings', 'Used by'])
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual([
       `/repositories/${ID}`,
+      `/repositories/${ID}/graph`,
+      `/repositories/${ID}/impact`,
       `/repositories/${ID}/test-map`,
       `/repositories/${ID}/hot-spots`,
       `/repositories/${ID}/index-runs`,
       `/repositories/${ID}/settings`,
       `/repositories/${ID}/used-by`,
     ])
-    expect(visible(tabs[1]!.querySelector('em'))).toBe('61%')
-    expect(visible(tabs[3]!.querySelector('em'))).toBe('3')
-    expect(visible(tabs[5]!.querySelector('em'))).toBe('2')
+    expect(visible(tabs[3]!.querySelector('em'))).toBe('61%')
+    expect(visible(tabs[5]!.querySelector('em'))).toBe('3')
+    expect(visible(tabs[7]!.querySelector('em'))).toBe('2')
     expect(tabs[0]!.getAttribute('aria-current')).toBe('page')
   })
 
