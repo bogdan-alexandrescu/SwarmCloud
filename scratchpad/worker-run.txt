@@ -1,0 +1,99 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+........................................................................ [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 37%]
+........................................................................ [ 40%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 74%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 83%]
+........................................................................ [ 86%]
+........................................................................ [ 89%]
+.....FF................................................................. [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+.....................................................                    [100%]Traceback (most recent call last):
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 167, in _multicall
+    raise exception
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/main.py", line 377, in pytest_cmdline_main
+    return wrap_session(config, _main)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/main.py", line 365, in wrap_session
+    config.hook.pytest_sessionfinish(
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 167, in _multicall
+    raise exception
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/logging.py", line 888, in pytest_sessionfinish
+    return (yield)
+            ^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/terminal.py", line 961, in pytest_sessionfinish
+    result = yield
+             ^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/tmpdir.py", line 340, in pytest_sessionfinish
+    tmp_path_factory._exit_stack.close()
+  File "/usr/local/lib/python3.11/contextlib.py", line 609, in close
+    self.__exit__(None, None, None)
+  File "/usr/local/lib/python3.11/contextlib.py", line 601, in __exit__
+    raise exc_details[1]
+  File "/usr/local/lib/python3.11/contextlib.py", line 586, in __exit__
+    if cb(*exc_details):
+       ^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/contextlib.py", line 469, in _exit_wrapper
+    callback(*args, **kwds)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/pathlib.py", line 367, in cleanup_numbered_dir
+    try_cleanup(path, consider_lock_dead_if_created_before)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/pathlib.py", line 338, in try_cleanup
+    maybe_delete_a_numbered_dir(path)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/pathlib.py", line 290, in maybe_delete_a_numbered_dir
+    rm_rf(garbage)
+  File "/workspace/att_7ddbea2b18b84f2d9043/work/repo/.venv/lib/python3.11/site-packages/_pytest/pathlib.py", line 169, in rm_rf
+    shutil.rmtree(str(path), onerror=onerror)
+  File "/usr/local/lib/python3.11/shutil.py", line 752, in rmtree
+    _rmtree_safe_fd(fd, path, onerror)
+  File "/usr/local/lib/python3.11/shutil.py", line 672, in _rmtree_safe_fd
+    _rmtree_safe_fd(dirfd, fullname, onerror)
+  File "/usr/local/lib/python3.11/shutil.py", line 672, in _rmtree_safe_fd
+    _rmtree_safe_fd(dirfd, fullname, onerror)
+  File "/usr/local/lib/python3.11/shutil.py", line 672, in _rmtree_safe_fd
+    _rmtree_safe_fd(dirfd, fullname, onerror)
+  [Previous line repeated 973 more times]
+  File "/usr/local/lib/python3.11/shutil.py", line 650, in _rmtree_safe_fd
+    fullname = os.path.join(path, entry.name)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen posixpath>", line 77, in join
+RecursionError: maximum recursion depth exceeded
