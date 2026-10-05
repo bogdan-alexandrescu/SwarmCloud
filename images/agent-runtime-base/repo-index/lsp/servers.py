@@ -120,3 +120,11 @@ SERVERS: dict[str, ServerSpec] = {
                                 "validation": {"enableEnhancedValidation": False}},
     ),
 }
+
+# terraform-ls is NOT in the image for now (owner decision 2026-10-05). The
+# vendor zip carried HIGH CVEs (release 37289476429), and a source build with
+# the golang.org/x modules raised answered 0 references in the image's LSP
+# self-test (main a3621325, "hcl: ok, 0 lsp edge(s)"). So HCL is indexed by
+# tree-sitter alone and reports `unsupported` in the LSP pass. The spec is kept
+# here so lane IDX can re-enable it in agent-runtime-indexer once it resolves.
+DISABLED_SERVERS: dict[str, ServerSpec] = {"terraform-ls": SERVERS.pop("terraform-ls")}
