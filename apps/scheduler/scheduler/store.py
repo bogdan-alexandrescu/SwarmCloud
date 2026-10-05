@@ -242,6 +242,66 @@ def _lease_refusal(stored: dict[str, Any] | None, lease: Lease) -> str | None:
     return None
 
 
+class _PoolSnapshot:
+    """A pool snapshot whose `to_dict` leaves out a `hard_limit` stored as null."""
+
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
+
+    def to_dict(self) -> dict[str, Any] | None:
+        data = self._snapshot.to_dict()
+        if isinstance(data, dict) and "hard_limit" in data and data["hard_limit"] is None:
+            data = {k: v for k, v in data.items() if k != "hard_limit"}
+        return data
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._snapshot, name)
+
+
+class _UnsetLimitReads:
+    """The admission transaction, with a pool's null `hard_limit` read as absent (#374).
+
+    The frozen `acquire_lease_in_transaction` reads a pool's ceiling as
+    `d.get("hard_limit", 0)`. A document WITHOUT the key is a ceiling of 0 and
+    is refused, which is the right answer for a ceiling nobody set. A document
+    whose key is stored as null gets the None instead of the 0, and
+    `SlotPool.effective_limit` raises TypeError on it -- out of `_admit_one`,
+    which catches only AdmissionDenied, and out of the whole drain, so one
+    hand-edited pool stopped admission for every tenant.
+
+    Both codecs already read a null limit exactly as a missing one
+    (`pool_from_dict`), so this makes the transaction agree with them: the
+    null is dropped from what the frozen function reads, it refuses with
+    limit 0, and `Scheduler._name_unset_limits` names that POOL_LIMIT_UNSET.
+    Only reads change, and only that one field of a `pools/` document: every
+    get still goes through the real transaction (so a concurrent writer still
+    aborts and re-runs it, invariant 2), every write goes straight to it, and
+    the stored document is never rewritten.
+    """
+
+    def __init__(self, txn: Any) -> None:
+        self._txn = txn
+
+    def get(self, ref: Any, *args: Any, **kwargs: Any) -> Any:
+        result = self._txn.get(ref, *args, **kwargs)
+        if not str(getattr(ref, "path", "")).startswith(f"{POOLS}/"):
+            return result
+        # `Transaction.get` returns a generator in google-cloud-firestore and a
+        # snapshot in the test doubles; the frozen `_snapshot` accepts both.
+        if not hasattr(result, "exists"):
+            result = next(iter(result))
+        return _PoolSnapshot(result)
+
+    def set(self, ref: Any, data: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+        self._txn.set(ref, data, *args, **kwargs)
+
+    def update(self, ref: Any, data: dict[str, Any], *args: Any, **kwargs: Any) -> None:
+        self._txn.update(ref, data, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._txn, name)
+
+
 class SchedulerStore:
     def __init__(self, db: Any, *, now: Callable[[], datetime] = utcnow) -> None:
         self._db = db
@@ -1397,7 +1457,7 @@ class SchedulerStore:
             nonlocal runs
             runs += 1
             return acquire_lease_in_transaction(
-                txn,
+                _UnsetLimitReads(txn),
                 db=self._db,
                 task=task,
                 units=units,

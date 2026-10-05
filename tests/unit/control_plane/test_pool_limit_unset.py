@@ -190,3 +190,96 @@ def test_capacity_still_measures_a_pool_set_to_zero_on_purpose(client, db):
     )
     assert profile["admission"]["headroom"] == 0
     assert profile["admission"]["basis"] == "measured"
+
+
+# --------------------------------------------------------------------------
+# An explicit null is unset too, and must not crash the drain
+# --------------------------------------------------------------------------
+#
+# Both codecs read `hard_limit: null` as unset, but the frozen transaction
+# reads it with `d.get("hard_limit", 0)` -- which returns the None, not the 0
+# -- and `SlotPool.effective_limit` is then `max(0, min([None]))`: a
+# TypeError. Before the fix it escaped `_admit_one` (which catches only
+# AdmissionDenied) and ended the WHOLE drain, so one tenant's hand-edited pool
+# stopped admission for every tenant behind it.
+
+OTHER = "ops"
+
+
+def test_admission_through_a_null_limit_pool_refuses_it_as_unset(db, make_scheduler, dispatcher):
+    seed_pool(db, "global", hard_limit=10)
+    seed_tenant(db, TENANT)
+    db.docs[f"pools/tenant:{TENANT}"] = unset(f"tenant:{TENANT}", hard_limit=None)
+    seed_task(db, task_id="task_n", tenant_id=TENANT)
+
+    report = make_scheduler(now=lambda: NOW).drain()
+
+    doc = db.docs["tasks/task_n"]
+    assert doc["state"] == "READY"
+    assert dispatcher.dispatched == []
+    assert [path for path in db.docs if path.startswith("leases/")] == []
+    blocker = next(b for b in doc["blocked_by"] if b["pool"] == f"tenant:{TENANT}")
+    assert blocker["reason"] == POOL_LIMIT_UNSET
+    assert blocker["limit"] is None
+    assert report.blockers.get(POOL_LIMIT_UNSET) == 1
+    # Still all-or-nothing: the refused task reserved nothing anywhere.
+    assert db.docs["pools/global"]["active"] == 0
+    assert db.docs[f"pools/tenant:{TENANT}"]["active"] == 0
+    # The stored document is read, never rewritten: the null stays a null.
+    assert db.docs[f"pools/tenant:{TENANT}"]["hard_limit"] is None
+
+
+def test_a_null_limit_pool_does_not_stop_another_tenants_admission(db, make_scheduler):
+    """The control: the other tenant's task is admitted in the same drain."""
+    seed_pool(db, "global", hard_limit=10)
+    seed_tenant(db, TENANT)
+    seed_tenant(db, OTHER)
+    db.docs[f"pools/tenant:{TENANT}"] = unset(
+        f"tenant:{TENANT}", hard_limit=None, adaptive_target=4
+    )
+    seed_pool(db, f"tenant:{OTHER}", hard_limit=5)
+    seed_task(db, task_id="task_null", tenant_id=TENANT, priority=100)
+    seed_task(db, task_id="task_ok", tenant_id=OTHER)
+
+    report = make_scheduler(now=lambda: NOW).drain()
+
+    assert db.docs["tasks/task_null"]["state"] == "READY"
+    assert db.docs["tasks/task_ok"]["state"] != "READY"
+    assert report.leased == 1
+    assert db.docs[f"pools/tenant:{OTHER}"]["active"] == 1
+    assert db.docs[f"pools/tenant:{TENANT}"]["active"] == 0
+
+
+def test_a_paused_null_limit_pool_is_still_reported_paused(db, make_scheduler):
+    seed_pool(db, "global", hard_limit=10)
+    seed_tenant(db, TENANT)
+    db.docs[f"pools/tenant:{TENANT}"] = unset(f"tenant:{TENANT}", hard_limit=None, enabled=False)
+    seed_task(db, task_id="task_pn", tenant_id=TENANT)
+
+    make_scheduler(now=lambda: NOW).drain()
+
+    blocker = next(
+        b for b in db.docs["tasks/task_pn"]["blocked_by"] if b["pool"] == f"tenant:{TENANT}"
+    )
+    assert blocker["reason"] == "MANUAL_PAUSE"
+
+
+def test_the_null_limit_read_handles_the_generator_a_real_transaction_returns(db):
+    """`Transaction.get` yields in google-cloud-firestore; the fakes return a snapshot."""
+    from scheduler.store import _UnsetLimitReads
+
+    db.docs["pools/tenant:eng"] = unset("tenant:eng", hard_limit=None, active=1)
+    db.docs["tasks/t"] = {"id": "t", "hard_limit": None}
+
+    class YieldingTxn:
+        def get(self, ref, **kwargs):
+            yield ref.get()
+
+    reads = _UnsetLimitReads(YieldingTxn())
+    pool = reads.get(db.collection("pools").document("tenant:eng"))
+    assert pool.exists
+    assert "hard_limit" not in pool.to_dict()
+    assert pool.to_dict()["active"] == 1
+    # Only a pool document is touched: anything else is passed through as read.
+    task = next(iter(reads.get(db.collection("tasks").document("t"))))
+    assert task.to_dict()["hard_limit"] is None
