@@ -171,9 +171,13 @@ describe('reaching into a collapsed file', () => {
     render(<DiffView patch={MIXED} />)
     fireEvent.change(screen.getByRole('searchbox', { name: 'Find in diff' }), { target: { value: 'needle' } })
     expect(screen.getByTestId('diff-find-count').textContent).toBe('1 of 1')
-    expect(header().getAttribute('data-path')).toBe('large.txt')
-    expect(header().getAttribute('aria-expanded')).toBe('true')
+    expect(scroller().getAttribute('data-open-file')).toBe('large.txt')
+    expect(Number(scroller().getAttribute('data-total-rows'))).toBeGreaterThan(1000)
+    // The match is the file's last line, so the window moved down to it...
     expect(scroller().querySelector('mark.diff-hit.is-current')?.textContent).toBe('needle')
+    // ...and back at the top, the header says the file is open.
+    fireEvent.scroll(scroller(), { target: { scrollTop: 0 } })
+    expect(header().getAttribute('aria-expanded')).toBe('true')
   })
 
   it('j expands a collapsed open file and moves to its first hunk', () => {

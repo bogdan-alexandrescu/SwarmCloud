@@ -10060,6 +10060,19 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   color: var(--text);
   font-weight: 600;
 }
+/* The file header is the collapse toggle (#310): a button drawn as the row it was. */
+button.diff-row.is-file {
+  width: 100%;
+  margin: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  text-align: left;
+  cursor: pointer;
+}
+button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.diff-fold { width: 1ch; color: var(--text-dim); }
+.diff-folded { color: var(--text-faint); font: 400 var(--t-micro)/var(--lh-micro) var(--font); }
 .diff-row.is-hunk { padding: 0 var(--ctl-s2); background: var(--surface-2); color: var(--text-dim); }
 .diff-row.is-gap,
 .diff-row.is-note {
