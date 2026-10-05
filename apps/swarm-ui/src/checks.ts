@@ -1,3 +1,4 @@
+import { PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT } from './pageLimits'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import {
   CONCURRENCY_STATES,
@@ -101,6 +102,24 @@ export interface CheckInputs {
   accounts: Result<AccountsPage>
   stats: Result<Stats>
   workflows: Result<WorkflowPage>
+  /**
+   * Whether `tasks` is the phone's page (`PHONE_PAGE_LIMIT` rows) rather than
+   * the api's full one (`TASK_PAGE_LIMIT`). Absent reads as the full page.
+   */
+  phonePage?: boolean
+}
+
+/**
+ * THE TWO WINDOWS, SAID (owner QA R12, 2026-10-04). At the same moment a phone
+ * said "8 failed among the 50 most recent" and the desktop "26 among the 200":
+ * each counts the page its own agent list reads (OV-10), and a phone reads 50
+ * rows because every row carries its input and output on a 20s poll (§2.5).
+ * Both stay; each figure now says that the other width reads another window.
+ */
+export function windowNote(phonePage: boolean, phoneRows: number, wideRows: number): string {
+  return phonePage
+    ? ` · a phone reads the newest ${phoneRows}, a wider screen the newest ${wideRows}`
+    : ` · a phone reads only the newest ${phoneRows}`
 }
 
 /**
@@ -139,7 +158,7 @@ export function deriveChecks(s: CheckInputs, now: number): Check[] {
     quotaCheck(s.providers, now),
     accountCheck(s.accounts),
     poolCheck(s.capacity),
-    failureCheck(s.tasks, now),
+    failureCheck(s.tasks, now, s.phonePage ?? false),
   ]
 }
 
@@ -433,7 +452,7 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * not the tenant's total and does not claim to be; the exact per-state count
  * lives on Platform counts.
  */
-function failureCheck(tasks: Result<TaskPage>, now: number): Check {
+function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean): Check {
   const label = 'Failures'
   if (tasks.status === 'loading') return { label, status: 'reading' }
   if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
@@ -449,7 +468,7 @@ function failureCheck(tasks: Result<TaskPage>, now: number): Check {
     return {
       label,
       status: 'clear',
-      note: `none of the ${rows.length} most recently created tasks is FAILED`,
+      note: `none of the ${rows.length} most recently created tasks is FAILED${windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT)}`,
     }
   }
 
@@ -469,7 +488,8 @@ function failureCheck(tasks: Result<TaskPage>, now: number): Check {
         headline:
           `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent` +
           newestFailureClause(failed, now) +
-          workflowClause(failed),
+          workflowClause(failed) +
+          windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT),
         detail:
           exhausted.length > 0
             ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`

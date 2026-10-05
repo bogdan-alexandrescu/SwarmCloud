@@ -357,10 +357,16 @@ describe('spacing', () => {
     // the SwarmCloud container (2026-10-02, after O1 and H1 added cards to
     // Overview and Help), and one loaded full run went past 240 s. A timeout
     // is not what this test asserts; the findings are.
+    // 480 s, not 360: on 2026-10-04 the same container measured 349 s alone
+    // for origin/main 8455be3 and 383 s alone after lane U12 (same 1742
+    // shapes, the same exempt findings) -- the run page's stacked cards and
+    // the Submit card's recent reads cost about 10%, and 360 s left no room.
     // 600 s, not 360 (agent Details v3, 2026-10-04): the base it was cut for
     // measured 347 s alone on the SwarmCloud container -- 13 s of headroom --
     // and the v3 branch, which adds details.css to every element's cascade
     // and the Details tab's cards to the DOM it sweeps, measured 397 s alone
     // with identical findings (dark 1741 shapes / 13, light 422 / 12).
+    // Both landed in one tree (#572 merged into U12, 2026-10-05): each added
+    // about 10% alone, so the sum is near 440 s, still inside 600.
   }, 600000)
 })

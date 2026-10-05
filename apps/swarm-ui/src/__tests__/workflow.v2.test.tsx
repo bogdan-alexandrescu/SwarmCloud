@@ -715,7 +715,7 @@ describe('the list row: shape, runners and spend', () => {
 
   it('prints a REPORTED zero as a number, because that one was measured', async () => {
     const cell = await spendCell([0, 0])
-    expect(cell.textContent).toContain('$0.0000')
+    expect(cell.textContent).toContain('$0.00')
     expect(cell.className).not.toContain('absent')
   })
 

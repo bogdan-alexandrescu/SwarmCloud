@@ -1,9 +1,9 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, loadWorkflow, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
-import { Banner, Button, Card, Chip, CodeBlock, WarnMark } from './components'
+import { Banner, Button, Card, Chip, CIcon, CodeBlock, WarnMark } from './components'
 import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
@@ -148,11 +148,53 @@ function runOf(view: string | null): string | null {
   return id === null || id === '' ? null : id
 }
 
+/**
+ * THE META CHIP OPENS ON A TAP (owner QA F, 2026-10-04): on a phone the chip
+ * `owner/repo#N · run_… · created by …` was cut to its first words, and a
+ * title is no help where there is no hover. A tap draws it whole, wrapped; a
+ * second folds it. Its text is its children, so the page head's `textOf`
+ * still gives the chip its title.
+ */
+function RunMeta({ children }: { children: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <button type="button" className={open ? 'rn-meta is-open' : 'rn-meta'} aria-expanded={open} title={children}
+      onClick={() => setOpen((o) => !o)}>
+      {children}
+    </button>
+  )
+}
+
+/**
+ * A value cut ONLY at a safe point (owner QA A and C, 2026-10-04): after a
+ * `/`, `#`, `_` or `::` -- the joints of a reference, a path or a test id --
+ * and at a space. Each joint is followed by a `<wbr>`, and the value's
+ * `overflow-wrap` stays normal, so a line never breaks mid-identifier
+ * ('…_is_rec / orded_on…' was the measured break). `marks` narrows the joints
+ * (a test id's list breaks at `/`, `::` and `_` only).
+ */
+export function breakAt(text: string, marks: RegExp = /::|[/#_]/g): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const m of text.matchAll(new RegExp(marks.source, 'g'))) {
+    const end = (m.index ?? 0) + m[0].length
+    if (end >= text.length || end === at) continue
+    out.push(text.slice(at, end), <wbr key={end} />)
+    at = end
+  }
+  out.push(text.slice(at))
+  return out.filter((p) => p !== '')
+}
+
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
-function InApp({ to, href, go, children }: { to: string; href: string; go: (to: string) => void; children: string }) {
+function InApp({ to, href, go, children, cut = false }: {
+  to: string; href: string; go: (to: string) => void; children: string
+  /** A single-token id: one line, cut with an ellipsis (`.rn-id`), whole in its title. */
+  cut?: boolean
+}) {
   // Its whole text is its title: an id cut to its card says what it was (D3).
   return (
-    <a href={href} className="mono" title={children} onClick={(e) => {
+    <a href={href} className={cut ? 'mono rn-id' : 'mono'} title={children} onClick={(e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       e.preventDefault()
       go(to)
@@ -198,7 +240,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
           title={pageTitle}
           load={() => loadRun(runId)}
           pollMs={(d) => (d === null || d.run.terminal ? null : RUN_POLL_MS)}
-          summary={(d) => `${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by || '—'}`}
+          summary={(d) => <RunMeta>{`${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by || '—'}`}</RunMeta>}
         >
           {(d) => (
             <RunPage
@@ -315,6 +357,9 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
 // one run
 // ---------------------------------------------------------------------------
 
+/** Where a PLANNED run's actions are drawn: the waiting banner, or the plan's sticky foot. */
+type ActionsAt = 'top' | 'foot'
+
 type Acting =
   | { kind: 'idle' }
   | { kind: 'busy'; what: 'approve' | 'edit' | 'reject' }
@@ -392,7 +437,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
   useEffect(() => onHeading(title), [title])
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
   // The editor records the digest it opened on, and saves with that one.
-  const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject' }>(
+  // `at`: which of the two action rows asked to reject, so its form opens where the reader is.
+  const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject'; at: ActionsAt }>(
     { kind: 'none' },
   )
   const close = () => setOpen({ kind: 'none' })
@@ -438,6 +484,26 @@ function RunPage({ run: served, reread, go, onHeading }: {
 
   const digest = run.plan_digest
   const wfPr = useWorkflowPullRequest(run)
+  /** Approve, Edit and Reject -- or the rejection form, where it was asked for. Null while editing. */
+  const actions = (at: ActionsAt): ReactNode => {
+    if (!canAct || open.kind === 'edit') return null
+    if (open.kind === 'reject' && open.at === at) {
+      return (
+        <RejectForm busy={busy} onCancel={close}
+          onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />
+      )
+    }
+    return (
+      <div className="rn-actions">
+        <Button kind="primary" disabled={busy}
+          onClick={() => void act('approve', () => approvePlan(run.id, digest!))}>
+          {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
+        </Button>
+        <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</Button>
+        <Button disabled={busy} onClick={() => setOpen({ kind: 'reject', at })}>Reject</Button>
+      </div>
+    )
+  }
   return (
     <div className="rn-page">
       <section className="rn-main">
@@ -463,11 +529,22 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </p>
         )}
 
-        {run.state === 'PLANNED' && run.plan_approval === 'required' && (
+        {/* THE ACTIONS ARE AT THE TOP (owner QA D, 2026-10-04): they were
+            only at the very foot, under the overlaps, the plan and the
+            requirements. The banner carries them; the plan's own foot
+            carries them again, in a bar that sticks to the bottom edge. */}
+        {canAct && (
           <div className="rn-wait">
-            <b>Waiting for a person.</b> Anyone in tenant <code>{run.tenant_id}</code> may approve, edit or reject.
-            Approving carries this plan&rsquo;s digest, so a plan edited by someone else since you opened it is refused
-            rather than run.
+            <p className="rn-wait-t">
+              {run.plan_approval === 'required' ? (
+                <><b>Waiting for a person.</b> Anyone in tenant <code>{run.tenant_id}</code> may approve, edit or reject.</>
+              ) : (
+                <><b>Approval is automatic:</b> the next read approves this plan. Anyone in tenant <code>{run.tenant_id}</code> may act on it first.</>
+              )}{' '}
+              Approving carries this plan&rsquo;s digest, so a plan edited by someone else since you opened it is refused
+              rather than run.
+            </p>
+            {actions('top')}
           </div>
         )}
 
@@ -534,6 +611,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
               <PlanBody plan={run.plan} unmet={run.requirements_unmet ?? []} />
             </>
           )}
+          {canAct && open.kind !== 'edit' && <div className="rn-actbar">{actions('foot')}</div>}
         </section>
 
         <CiCard run={run} go={go} wfPr={wfPr} />
@@ -546,23 +624,6 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </section>
         )}
 
-        {canAct && open.kind !== 'edit' && (
-          <div className="rn-actions">
-            {open.kind === 'reject' ? (
-              <RejectForm busy={busy} onCancel={close}
-                onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />
-            ) : (
-              <>
-                <Button kind="primary" disabled={busy}
-                  onClick={() => void act('approve', () => approvePlan(run.id, digest!))}>
-                  {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
-                </Button>
-                <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</Button>
-                <Button disabled={busy} onClick={() => setOpen({ kind: 'reject' })}>Reject</Button>
-              </>
-            )}
-          </div>
-        )}
         {acting.kind === 'failed' && <FailedPanel error={acting.error} onRetry={() => setActing({ kind: 'idle' })} />}
 
         <section className="rn-history" aria-label="History">
@@ -595,14 +656,14 @@ function RunPage({ run: served, reread, go, onHeading }: {
               <b>Planner</b>
               {run.planner_task_id === ''
                 ? <i className="ctl-em" title="The run records no planner task.">&mdash; not recorded</i>
-                : <InApp go={go} to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
+                : <InApp go={go} cut to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
                   href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>{run.planner_task_id}</InApp>}
             </li>
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>
               {run.workflow_id === null
                 ? <i className="ctl-em" title="None yet: the workflow is created when the plan is approved.">none yet · created on approval</i>
-                : <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: run.workflow_id }).toString()}`}
+                : <InApp go={go} cut to={`work/workflows?${new URLSearchParams({ wf: run.workflow_id }).toString()}`}
                   href={`/workflows/${encodeURIComponent(run.workflow_id)}`}>{run.workflow_id}</InApp>}
             </li>
             <PullRequestFact run={run} wfPr={wfPr} />
@@ -612,10 +673,12 @@ function RunPage({ run: served, reread, go, onHeading }: {
         <section className="rn-card rn-chosen" aria-label="Chosen at submission">
           <h3>Chosen at submission</h3>
           <ul className="ctl-facts">
-            <li className="ctl-fact"><b>plan approval</b>{run.plan_approval}</li>
-            <li className="ctl-fact"><b>auto-merge</b>{run.auto_merge ? 'on' : 'off'}</li>
-            <li className="ctl-fact"><b>fix rounds</b>up to {run.fix_rounds}</li>
-            <li className="ctl-fact"><b>by</b>{run.created_by || <i className="ctl-em">&mdash; not recorded</i>}</li>
+            <li className="ctl-fact"><b>plan approval</b><span>{run.plan_approval}</span></li>
+            <li className="ctl-fact"><b>auto-merge</b><span>{run.auto_merge ? 'on' : 'off'}</span></li>
+            <li className="ctl-fact"><b>fix rounds</b><span>up to {run.fix_rounds}</span></li>
+            <li className="ctl-fact"><b>by</b>{run.created_by
+              ? <span className="rn-id" title={run.created_by}>{run.created_by}</span>
+              : <i className="ctl-em">&mdash; not recorded</i>}</li>
             <li className="ctl-fact is-absent"><b>cost so far</b><i className="ctl-em">&mdash; not served per run</i></li>
           </ul>
         </section>
@@ -658,14 +721,15 @@ function put<T extends object, K extends keyof T>(target: T, key: K, value: T[K]
 }
 
 /**
- * `owner/repo#N`, linked, on ONE line (item 6): it wrapped at the owner's
- * hyphen ('bogdan- / alexandrescu/SwarmCloud#454'). Cut with an ellipsis where
- * it does not fit, its whole text in the title.
+ * `owner/repo#N`, linked. It wrapped at the owner's hyphen ('bogdan- /
+ * alexandrescu/SwarmCloud#454', item 6), then was cut to one line past the
+ * card's edge (owner QA A, 2026-10-04). It takes the card's whole width under
+ * its label and breaks only after `/` or `#`; its whole text is the title.
  */
 function IssueLink({ run }: { run: IssueRun }) {
   return (
-    <a href={run.issue_read?.url || run.issue.url} target="_blank" rel="noreferrer" className="mono rn-ref" title={run.issue.ref}>
-      {run.issue.ref}
+    <a href={run.issue_read?.url || run.issue.url} target="_blank" rel="noreferrer" className="mono rn-ref" title={run.issue.ref} aria-label={run.issue.ref}>
+      {breakAt(run.issue.ref)}
     </a>
   )
 }
@@ -677,27 +741,47 @@ export function textList(value: unknown): string[] | null {
   return items.length === 0 ? null : items
 }
 
-/** The most a plan's lead may run to: two or three lines in the plan's column. */
+/** The most a plan's lead may run to, in RENDERED characters: two or three lines in the plan's column. */
 export const PLAN_LEAD_CHARS = 240
+
+/** What a run of plan text draws: its code spans' backticks are markup, not text (`InlineText`). */
+function rendered(text: string): string {
+  return text.replace(/`([^`\n]+)`/g, '$1')
+}
 
 /**
  * The plan's summary cut to its lead (item 5): its first sentences, up to
  * three and `PLAN_LEAD_CHARS`, and whether anything was left out. The whole
- * summary is under "Show the full plan". A first sentence longer than the
- * limit is cut at a word with an ellipsis.
+ * summary is one "Read more" away. A first sentence longer than the limit is
+ * cut at a word with an ellipsis.
+ *
+ * CUT ON THE RENDERED TEXT (owner QA N18, 2026-10-04): the limit counted the
+ * markdown source, and a cut inside `` `apps/…` `` left an unpaired backtick
+ * that `InlineText` drew raw. A code span is now one word: the lead keeps it
+ * whole or stops before it, and the limit counts what is drawn. A sentence
+ * ends at `.`, `!` or `?` before a space, so `runs.py` is not two sentences.
  */
 export function planLead(summary: string): { lead: string; cut: boolean } {
   const text = summary.trim().replace(/\s+/g, ' ')
-  const sentences = text.match(/[^.!?]+(?:[.!?]+|$)\s*/g) ?? [text]
+  const sentences = text.split(/(?<=[.!?])\s+(?=[^\s])/)
   let lead = ''
   for (const sentence of sentences.slice(0, 3)) {
-    if (lead !== '' && (lead + sentence).trim().length > PLAN_LEAD_CHARS) break
-    lead += sentence
+    const next = lead === '' ? sentence : `${lead} ${sentence}`
+    if (lead !== '' && rendered(next).length > PLAN_LEAD_CHARS) break
+    lead = next
   }
-  lead = lead.trim()
-  if (lead.length > PLAN_LEAD_CHARS) {
-    const at = lead.lastIndexOf(' ', PLAN_LEAD_CHARS - 1)
-    return { lead: oneEllipsis(lead.slice(0, at > 0 ? at : PLAN_LEAD_CHARS - 1)), cut: true }
+  if (rendered(lead).length > PLAN_LEAD_CHARS) {
+    // Words, each code span whole inside the word it sits in.
+    const words = lead.match(/(?:`[^`\n]+`|[^\s`]|`)+/g) ?? [lead]
+    let kept = ''
+    for (const w of words) {
+      const next = kept === '' ? w : `${kept} ${w}`
+      if (rendered(next).length > PLAN_LEAD_CHARS - 1) break
+      kept = next
+    }
+    // One word longer than the whole lead: its drawn text, cut.
+    if (kept === '') kept = rendered(words[0]!).slice(0, PLAN_LEAD_CHARS - 1)
+    return { lead: oneEllipsis(kept), cut: true }
   }
   const cut = lead.length < text.length
   return { lead: cut ? oneEllipsis(lead) : lead, cut }
@@ -719,11 +803,22 @@ function oneEllipsis(lead: string): string {
  * disclosure. On a phone the plan was one paragraph with no end.
  */
 function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
-  const { lead } = planLead(plan.summary)
+  const { lead, cut } = planLead(plan.summary)
+  // "READ MORE" BESIDE THE CUT (owner QA F, 2026-10-04): the lead ended in
+  // `…` and the rest was behind "Show the full plan", under the steps.
+  const [whole, setWhole] = useState(false)
   return (
     <>
       <p className="rn-summary">
-        <RnText text={lead} />
+        <RnText text={whole ? plan.summary.trim().replace(/\s+/g, ' ') : lead} />
+        {cut && (
+          <>
+            {' '}
+            <button type="button" className="rn-more-btn" aria-expanded={whole} onClick={() => setWhole((w) => !w)}>
+              {whole ? 'Show less' : 'Read more'}
+            </button>
+          </>
+        )}
       </p>
       <Requirements plan={plan} unmet={unmet} />
       <ol className="rn-steps">
@@ -756,18 +851,59 @@ function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
           </span>
         )}
       </span>
-      {(files !== null || tests !== null || estimate !== null) && (
-        <span className="rn-step-meta sb-note">
-          {files !== null && <span>touches {files.map((f, i) => <Fragment key={f}>{i > 0 && ', '}<code>{f}</code></Fragment>)}</span>}
-          {tests !== null && <span>tests {tests.map((t, i) => <Fragment key={t}>{i > 0 && ', '}<code>{t}</code></Fragment>)}</span>}
-          {estimate !== null && <span>{estimate}</span>}
-        </span>
-      )}
+      {files !== null && <StepList label="Touches" items={files} />}
+      {tests !== null && <StepList label="Tests" items={tests} />}
+      {estimate !== null && <span className="rn-step-meta sb-note">{estimate}</span>}
       <details className="rn-prompt-d">
         <summary>Prompt</summary>
         <p className="rn-prompt"><RnText text={step.prompt} /></p>
       </details>
     </li>
+  )
+}
+
+/** A path or test id breaks after `/`, `::` or `_`, never inside a name (owner QA C). */
+const STEP_JOINTS = /::|[/_]/g
+
+/**
+ * A STEP'S TOUCHES OR TESTS AS A LIST (owner QA C, 2026-10-04): one comma
+ * line broke anywhere ('…_is_rec / orded_on…'). One item per line, broken
+ * only at a joint, each with a copy button -- a reader pastes these.
+ */
+function StepList({ label, items }: { label: 'Touches' | 'Tests'; items: string[] }) {
+  return (
+    <div className="rn-step-l">
+      <b className="rn-sub">{label}</b>
+      <ul className="rn-step-list" aria-label={label}>
+        {items.map((item, i) => (
+          <li key={`${i}-${item}`}>
+            <code title={item}>{breakAt(item, STEP_JOINTS)}</code>
+            <CopyText text={item} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** A copy button for one value; says so when the browser refused the clipboard. */
+function CopyText({ text }: { text: string }) {
+  const [said, setSaid] = useState<'copied' | 'refused' | null>(null)
+  const copy = () => {
+    // `navigator.clipboard` is undefined outside a secure context and a write can be denied.
+    const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clip === undefined) {
+      setSaid('refused')
+      return
+    }
+    clip.writeText(text).then(() => setSaid('copied'), () => setSaid('refused'))
+  }
+  return (
+    <button type="button" className="rn-copy" aria-label={`Copy ${text}`}
+      title={said === 'refused' ? 'This browser refused the clipboard: select the text instead.' : said === 'copied' ? 'Copied' : `Copy ${text}`}
+      onClick={copy}>
+      <CIcon name={said === 'copied' ? 'check' : 'copy'} />
+    </button>
   )
 }
 
@@ -793,9 +929,9 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
         <li className="ctl-fact"><b>issue</b><IssueLink run={run} /></li>
         {read === null ? null : (
           <>
-            <li className="ctl-fact"><b>title</b><span className="rn-read-v">{read.title}</span></li>
+            <li className="ctl-fact"><b>title</b><span title={read.title}><RnText text={read.title} /></span></li>
             <li className="ctl-fact"><b>state</b><span>{read.state}</span></li>
-            <li className="ctl-fact"><b>labels</b><span className="rn-read-v">{read.labels.length === 0 ? 'none' : read.labels.join(' · ')}</span></li>
+            <li className="ctl-fact"><b>labels</b><span>{read.labels.length === 0 ? 'none' : breakAt(read.labels.join(' · '))}</span></li>
             <li className="ctl-fact">
               <b>body</b>
               <span>
@@ -921,17 +1057,57 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
 }
 
 /**
+ * WHAT THE PLANNER DECIDED ABOUT ONE OVERLAP, read off its note. The plan
+ * schema has no verdict field (`issueruns.PlanOverlap` is ref, kind, note);
+ * the planner is told to say "what this plan does about it", and says "No
+ * action: ..." when it does nothing. A note that does not open with those
+ * words is counted as needing action: an unread verdict is never "no action".
+ */
+export function overlapVerdict(note: string): { needs: boolean; word: string; why: string } {
+  if (typeof note !== 'string') return { needs: true, word: 'Needs action', why: '' }
+  const m = /^\s*no action\b\s*(?:[:.;,]|--?|—|–)?\s*/i.exec(note)
+  if (m !== null) return { needs: false, word: 'No action', why: note.slice(m[0].length) || note }
+  return { needs: true, word: 'Needs action', why: note }
+}
+
+/**
+ * ONE OVERLAP AS SERVED, read as `PlanOverlap`. A plan stored before overlaps
+ * were objects carries each as a bare sentence; the planner wrote it either
+ * way, so it is drawn as its note with no ref, never dropped and never allowed
+ * to throw while the page renders.
+ */
+function overlapRead(o: unknown): PlanOverlap {
+  if (typeof o === 'string') return { ref: '', kind: 'issue', note: o }
+  const r = (o ?? {}) as Partial<Record<keyof PlanOverlap, unknown>>
+  return {
+    ref: typeof r.ref === 'string' ? r.ref : '',
+    kind: r.kind === 'pull_request' ? 'pull_request' : 'issue',
+    note: typeof r.note === 'string' ? r.note : '',
+  }
+}
+
+/**
  * THE OVERLAPS THE PLANNER FOUND, above the plan. Each is a link to the issue
- * or pull request in flight, with its kind and the planner's note. A plan
- * that has no `overlaps` field was written before the planner read open work,
- * and says so; an empty list is a finding, and names what was read.
+ * or pull request in flight, with its kind and the planner's verdict, and
+ * opens to the planner's reasoning. A plan that has no `overlaps` field was
+ * written before the planner read open work, and says so; an empty list is a
+ * finding, and names what was read.
+ *
+ * AMBER ONLY WHEN ONE NEEDS ACTION (owner QA E, 2026-10-04): five long
+ * paragraphs that each said "no action" sat in a warn-edged card that read as
+ * a warning. The card is neutral until an overlap needs action, and its
+ * heading counts both: "5 checked · 0 need action".
  */
 function Overlaps({ plan, openWork }: { plan: RunPlan; openWork: OpenWork | null }) {
-  const overlaps = plan.overlaps
+  const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
+  const verdicts = found ? overlaps!.map((o) => overlapVerdict(o.note)) : []
+  const needing = verdicts.filter((v) => v.needs).length
   return (
-    <Card level={3} className={`rn-overlaps${found ? ' is-found' : ''}`}
-      title={found ? `Overlaps the planner found · ${overlaps!.length}` : 'Overlaps the planner found'}>
+    <Card level={3} className={`rn-overlaps${needing > 0 ? ' is-found' : ''}`}
+      title={found
+        ? `Overlaps the planner found · ${overlaps!.length} checked · ${needing} ${needing === 1 ? 'needs' : 'need'} action`
+        : 'Overlaps the planner found'}>
       {overlaps === undefined || overlaps === null ? (
         <p className="sb-note">
           This plan does not say: it was written without the planner&rsquo;s read of the repository&rsquo;s open issues
@@ -949,13 +1125,21 @@ function Overlaps({ plan, openWork }: { plan: RunPlan; openWork: OpenWork | null
         <ul className="rn-overlap-list">
           {overlaps.map((o, i) => {
             const url = overlapUrl(o)
+            const v = verdicts[i]!
             return (
-              <li key={`${o.ref}-${i}`} className="rn-overlap">
-                {url === null
-                  ? <span className="mono">{o.ref}</span>
-                  : <a href={url} target="_blank" rel="noreferrer" className="mono">{o.ref}</a>}
-                <Chip>{o.kind === 'pull_request' ? 'pull request' : 'issue'}</Chip>
-                <span className="rn-overlap-note">{o.note}</span>
+              <li key={`${o.ref}-${i}`}>
+                <details className={v.needs ? 'rn-overlap is-needs' : 'rn-overlap'}>
+                  <summary>
+                    {o.ref === ''
+                      ? null
+                      : url === null
+                      ? <span className="mono">{o.ref}</span>
+                      : <a href={url} target="_blank" rel="noreferrer" className="mono">{o.ref}</a>}
+                    {o.ref === '' ? null : <Chip>{o.kind === 'pull_request' ? 'pull request' : 'issue'}</Chip>}
+                    <span className="rn-overlap-v" title="Read from the planner's note">{v.word}</span>
+                  </summary>
+                  <p className="rn-overlap-note"><RnText text={v.why} /></p>
+                </details>
               </li>
             )
           })}

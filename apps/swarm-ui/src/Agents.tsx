@@ -966,7 +966,7 @@ export const CANCEL_NOTE = 'to cancel'
  * The rest -- when it started, the account, the class, the dispatch -- is the
  * detail's, one click away, where it has room.
  */
-function TaskRow({
+export function TaskRow({
   task,
   now,
   onOpen,
@@ -1181,6 +1181,11 @@ function CompactRow({
         )}
       </span>
       {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
+      {/* THE STRIP ROW'S NAME (owner QA R7, 2026-10-04): folded to 64px the
+          row draws only its mark, and its accessible name was the state word.
+          Drawn only in the strip (styles/agents.css), for a screen reader;
+          a pointer gets the same from the strip's hover card. */}
+      <span className="cr-vh">{name} · {task.id}</span>
       {card !== null &&
         createPortal(
           <div id={cardId} role="tooltip" className="ag-hovcard" style={{ top: card.top, left: card.left }}>

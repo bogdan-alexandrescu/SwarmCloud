@@ -26,6 +26,7 @@ import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
+import { checkpointsLine, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
@@ -106,6 +107,7 @@ export function AgentDetailScreen({
   taskId,
   onClose,
   headed = false,
+  checkpoints,
   links,
   lastLine,
 }: {
@@ -115,6 +117,14 @@ export function AgentDetailScreen({
   links?: DetailLinks
   /** The split's last log line, drawn in the leading card (`Run`). */
   lastLine?: ReactNode
+  /**
+   * THE CHECKPOINTS TAB'S READ, when the split has one (owner QA D21,
+   * 2026-10-04): the tile said 4 then 6 while the tab said `2 of 2`, two reads
+   * of a moving count. Passed, the tile draws this read and no other, so the
+   * two always agree; null while it has not answered. Undefined outside the
+   * split, where the tile reads its own.
+   */
+  checkpoints?: CheckpointCount | null
   /**
    * Drawn under the split's header row (AgentSplit.tsx), which carries the
    * state pill, the name and Stop for every tab: this pane then draws no
@@ -191,7 +201,7 @@ export function AgentDetailScreen({
         {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
             poll past it, and the checkpoint and log panels re-read when it
             moves, so every part of the drawer is as of the same read. */}
-        {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} links={links} lastLine={lastLine} />}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
   if (headed) return screenEl
@@ -294,10 +304,13 @@ export function Run({
   reload,
   reading,
   headed = false,
+  checkpoints,
   links,
   lastLine,
 }: {
   run: AgentRun
+  /** The Checkpoints tab's read, for the tile (`AgentDetailScreen`). */
+  checkpoints?: CheckpointCount | null
   reload?: () => void
   /** The split's tab switches, for each card's link; absent outside the split. */
   links?: DetailLinks
@@ -363,9 +376,9 @@ export function Run({
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
       ) : lead === 'outcome' ? (
-        <Output run={run} readAt={readAt} lead={{ now, listing, links, lastLine }} />
+        <Output run={run} readAt={readAt} lead={{ now, listing, links, lastLine, checkpoints }} />
       ) : (
-        <DtNow run={run} now={now} listing={listing} lastLine={lastLine} stop={stop} />
+        <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
       {lead !== 'failed' && <ErrorBanner run={run} />}
       <DtStrip run={run} now={now} />
@@ -507,11 +520,15 @@ function DtCheckpoints({
   run,
   now,
   listing,
+  checkpoints,
 }: {
   run: AgentRun
   now: number
   listing: CheckpointListing | undefined
+  /** The Checkpoints tab's read: when passed, the fact's only source (D21). */
+  checkpoints?: CheckpointCount | null
 }) {
+  if (checkpoints !== undefined) return <SharedCheckpoints c={checkpoints} />
   const { attempts, events } = run
   if (attempts === null) {
     return (
@@ -557,6 +574,43 @@ function DtCheckpoints({
               />
             </>
           )}
+        </>
+      )}
+    </span>
+  )
+}
+
+/**
+ * THE CHECKPOINT FACT FROM THE TAB'S READ (owner QA D21, 2026-10-04). While
+ * an agent ran the Details figure said 4, then 6, and the tab `2 of 2`: two
+ * reads of a count that moves between them. In the split the Now and Outcome
+ * cards draw the tab's read, so both say the same number from the same
+ * moment. A read not answered yet is said as reading; a part it could not
+ * read is a dash with its reason.
+ */
+function SharedCheckpoints({ c }: { c: CheckpointCount | null }) {
+  if (c === null) {
+    return (
+      <span className="dt-nf is-absent" data-checkpoints="shared">
+        Checkpoints <b>reading</b>
+      </span>
+    )
+  }
+  if (c.written === null) {
+    return (
+      <span className="dt-nf is-absent" data-checkpoints="shared">
+        Checkpoints <b>—</b> not read <Mark kind="partial" say={checkpointsSay(c)} />
+      </span>
+    )
+  }
+  const line = checkpointsLine(c)
+  return (
+    <span className="dt-nf" data-checkpoints="shared">
+      Checkpoints <b>{c.written}</b> · {line ?? <>{c.written} written, kept not read</>}
+      {(c.kept === null || c.kept !== c.written) && (
+        <>
+          {' '}
+          <Mark kind="partial" say={checkpointsSay(c)} />
         </>
       )}
     </span>
@@ -620,12 +674,15 @@ function DtNow({
   run,
   now,
   listing,
+  checkpoints,
   lastLine,
   stop,
 }: {
   run: AgentRun
   now: number
   listing: CheckpointListing | undefined
+  /** The Checkpoints tab's read (D21); undefined outside the split. */
+  checkpoints?: CheckpointCount | null
   lastLine: ReactNode
   stop: ReactNode
 }) {
@@ -645,7 +702,7 @@ function DtNow({
             Heartbeat <LivenessBadge task={task} events={events} now={now} />
           </span>
         )}
-        <DtCheckpoints run={run} now={now} listing={listing} />
+        <DtCheckpoints run={run} now={now} listing={listing} checkpoints={checkpoints} />
         {task.result_summary == null && (
           <span className="dt-nf">
             Output <b>none yet</b> · written when the attempt ends
@@ -1540,7 +1597,6 @@ export function attemptLabel(ordinal: number, generation: number): string {
 // `agentName` and `workflowHref` live in `agentlist.ts` so the Agents list
 // and Overview name an agent and link its workflow by the same rule.
 export { agentName, workflowHref }
-
 
 /**
  * Why there is no ceiling to read a measurement against -- or null when there
@@ -3188,7 +3244,14 @@ function Output({
    * is then headed Outcome, links to Artifacts, and carries the checkpoint
    * fact and the last log line the Now card carried while it ran.
    */
-  lead?: { now: number; listing: CheckpointListing | undefined; links: DetailLinks | undefined; lastLine: ReactNode }
+  lead?: {
+    now: number
+    listing: CheckpointListing | undefined
+    links: DetailLinks | undefined
+    lastLine: ReactNode
+    /** The Checkpoints tab's read, when the split has one (D21). */
+    checkpoints?: CheckpointCount | null
+  }
 }) {
   const { task, attempts } = run
   const summary = (task.result_summary ?? null) as ResultSummary | null
@@ -3303,7 +3366,7 @@ function Output({
       )}
       {lead !== undefined && (
         <p className="dt-nfs">
-          <DtCheckpoints run={run} now={lead.now} listing={lead.listing} />
+          <DtCheckpoints run={run} now={lead.now} listing={lead.listing} checkpoints={lead.checkpoints} />
         </p>
       )}
       {lead?.lastLine}

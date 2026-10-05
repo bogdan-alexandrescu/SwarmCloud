@@ -73,6 +73,7 @@ import {
   durationText,
   measuredCell,
   tokenCell,
+  usd,
   type Absence,
   type Cell,
   FINISH_NOT_RECORDED,
@@ -413,8 +414,21 @@ function pageSummary(d: WorkflowBoard, id: string): string {
     `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
     rollupLine(w, d.taskById).text,
     `by ${ownerShort(w.submitted_by)}`,
-    `started ${started.text}`,
+    startedPhrase(started),
   ].join(' · ')
+}
+
+/**
+ * THE HEAD'S START, IN WORDS THAT READ (owner QA R16, 2026-10-04): it was
+ * `started ${text}` whatever the text, so an unread start printed "started
+ * start not read" and a workflow with no step running "started never
+ * started". An unread start is "started — not read"; one that never happened
+ * is said as that; a known one is "started 8m ago".
+ */
+export function startedPhrase(started: { text: string; kind: 'never' | 'unread' | 'at' }): string {
+  if (started.kind === 'unread') return 'started — not read'
+  if (started.kind === 'never') return started.text
+  return `started ${started.text}`
 }
 
 /** `2 running · 31 finished · 1 failed`, the list's sub-line. */
@@ -429,22 +443,43 @@ function listSummary(workflows: readonly Workflow[]): string {
  * past the board's 100 is read on its own (`GET /v1/workflows/{id}`) and
  * joined in, so a pasted link to an old workflow still opens it.
  */
-async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard>> {
-  const b = await loadWorkflowBoard()
-  if ((b.status === 'ok' || b.status === 'stale') && b.data.workflows.some((w) => w.workflow_id === id)) return b
-  if (b.status === 'loading' || b.status === 'error') return b
-  const one = await loadWorkflow(id)
-  if (one.status !== 'ok') return b
+export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard>> {
+  // THE PAGE'S OWN STEPS ARE READ BY ID, EVERY TIME (owner QA R8,
+  // 2026-10-04). The board joins states through `GET /v1/tasks?limit=200`, a
+  // window of the tenant's newest tasks, so an older workflow's steps fell
+  // outside it: a succeeded 10/10 workflow drew every step `state unread`
+  // and every cell `task unread` (12 of 267 joined) while its step card read
+  // exit 0, 2m 56s and $0.89 for the same step. `GET /v1/workflows/{id}`
+  // returns the workflow's own step tasks, so they are joined whether or not
+  // the window reached them.
+  const [b, one] = await Promise.all([loadWorkflowBoard(), loadWorkflow(id)])
+  if (b.status === 'loading' || b.status === 'error') {
+    // No board: the page is still its own workflow, if that read answered.
+    if (one.status !== 'ok' && one.status !== 'stale') return b
+    return {
+      status: 'ok',
+      fetchedAt: one.fetchedAt,
+      data: { workflows: [one.data.workflow], taskById: new Map(one.data.tasks.map((t) => [t.id, t])), statesDetail: null },
+    }
+  }
+  if (one.status !== 'ok' && one.status !== 'stale') return b
   const base: WorkflowBoard =
     b.status === 'ok' || b.status === 'stale' ? b.data : { workflows: [], taskById: new Map(), statesDetail: null }
-  // A task read that failed stays failed: adding this workflow's tasks to a
-  // null map would make every OTHER workflow's steps read "not started".
-  const taskById = base.taskById === null ? null : new Map(base.taskById)
-  if (taskById !== null) for (const t of one.data.tasks) taskById.set(t.id, t)
+  // A task read that failed stays failed for the OTHER workflows: their
+  // steps were not read. This workflow's steps were, so a failed window
+  // starts a map that holds only them, and the other workflows' steps --
+  // absent from it -- still read as unread, never "not started".
+  const taskById = new Map(base.taskById ?? [])
+  for (const t of one.data.tasks) taskById.set(t.id, t)
+  const inBoard = base.workflows.some((w) => w.workflow_id === id)
   return {
     status: 'ok',
     fetchedAt: b.status === 'ok' || b.status === 'stale' ? b.fetchedAt : one.fetchedAt,
-    data: { ...base, workflows: [...base.workflows, one.data.workflow], taskById },
+    data: {
+      ...base,
+      workflows: inBoard ? base.workflows : [...base.workflows, one.data.workflow],
+      taskById: base.taskById === null && one.data.tasks.length === 0 ? null : taskById,
+    },
   }
 }
 
@@ -1520,11 +1555,14 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
   )
 }
 
-/** Dollars of token cost. Four decimals under ten dollars: a single attempt is
- *  routinely worth $0.0312, and rounding that to $0.03 loses a third of the
- *  figures on this board to "$0.00". */
+/**
+ * Dollars of token cost, in the one format every workflow figure uses
+ * (`measure.usd`; owner QA R10, 2026-10-04): the list printed '$0.4950',
+ * '$7.6778' and '$12.92' side by side. Two decimals from a dollar up, three
+ * significant figures below it -- $0.0312 keeps what $0.03 would lose.
+ */
 function money(v: number): string {
-  return v < 10 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`
+  return usd(v)
 }
 
 /**

@@ -122,6 +122,17 @@
   color: var(--text-dim);
 }
 .cr-sub .id { font-family: var(--mono); }
+/* ONE ROW FORMAT (owner QA R13, 2026-10-04): a workflow step's row -- the
+   'upstream' step of the mock group -- prints its short id on line two, and
+   styles.css's `.row .id` (500 weight at --t-body, later in the bundle) drew
+   it bold and larger than the line it sits in. On line two it is line two's
+   size and weight, mono. */
+.row.is-compact > .cr-sub .id { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: inherit; }
+/* THE STRIP ROW'S NAME (owner QA R7): folded to 64px the row shows only its
+   mark, so its accessible name was the state word ('running'). These words --
+   the agent's name and id -- are drawn only in the strip, for a screen
+   reader; a pointer gets them from the strip's hover card. */
+.row.is-compact > .cr-vh { display: none; }
 .cr-try.is-over { color: var(--bad); font-weight: 600; }
 
 /* --- the 64px strip: the list folded by «, [ or the divider --------------- */
@@ -130,7 +141,10 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .cr-vh {
+    display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact { grid-template-columns: 1fr; justify-items: center; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-tabs,
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head > :not(.ag-collapse),
@@ -347,6 +361,15 @@
     height: calc(100vh - var(--dock-h, 28px) - 16px);
     max-height: calc(100vh - var(--dock-h, 28px) - 16px);
   }
+  /* THE HEADER STAYS IN VIEW AT THE FOOT OF A LONG LIST (owner QA R4,
+     2026-10-04). At the bottom of Live and Recent (12,499px) the column
+     moved from top 16 to -32 and cut off Copy link, Stop and Close: a sticky
+     box may not leave its grid area, and the area ended at `.app`'s content
+     edge, 48px above the scrollport's foot, where `.app`'s bottom padding
+     begins. The padding moves onto the list, so the grid area runs to the
+     scrollport's foot and the column can stay 16px down to the last pixel. */
+  .sk-main > .ctl-scroll > .app.has-inspector { padding-bottom: 0; }
+  .app.has-inspector > .work { padding-bottom: 48px; }
 }
 /* --- the Logs tab (U11a, owner decision 2026-10-04) ---------------------- */
 /* THE WHOLE DETAIL AREA UNDER THE HEADER, AND NOTHING BENEATH IT. The pane
@@ -425,6 +448,13 @@
   .ag-logs-bar > .ag-logs-streams { flex: 1 0 100%; }
   .ag-logs-bar > .ag-logs-streams > button { flex: 1 1 auto; justify-content: center; }
 }
+/* A TOUCH-SIZED CONTROL ON A PHONE (owner QA R6, 2026-10-04): the stream
+   buttons took the phone's 44px target (components.css) inside the small
+   control's fixed 28px, so every label was cut in half. The control grows
+   with its buttons. */
+@media (max-width: 560px) {
+  .ag-logs-bar > .ag-logs-streams.c-seg.is-sm { height: auto; }
+}
 .ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logs-attempt select {
   max-width: 220px;
@@ -437,6 +467,15 @@
 }
 .ag-logs-search { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 180px; min-width: 0; }
 .ag-logs-bar > .ag-logs-search { flex: 1 1 160px; min-width: 56px; }
+/* ROOM TO SEARCH (owner QA R9, 2026-10-04): in a wide bar the search was
+   85-130px and cut its own placeholder ('Search this wi…') and what was
+   typed ('repositor×'). A bar with room for long labels gives the search a
+   floor that holds its placeholder and a typed word; the controls past it
+   spill into More first (`BAR_SPILL`). At the 380px split the bar keeps
+   Follow and Error in the row (U11a), so the narrow floor stays. */
+@container ag-logbar (min-width: 721px) {
+  .ag-logs-bar > .ag-logs-search { min-width: 200px; }
+}
 .ag-logs-search > input {
   flex: 1;
   min-width: 0;
@@ -523,6 +562,17 @@
 .ag-logmeta { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ag-logmeta > summary { cursor: pointer; padding: 2px 0; }
 .ag-logs-body .logwin-body { max-height: none; }
+/* THE STREAM TABLE FITS THE LOG (owner QA R7, 2026-10-04): beside the 64px
+   strip the detail is wide, the table is not stacked, and the row header's
+   uri ran it to 2049px in an 899px log with Size and Age 1100px off to the
+   right. Fixed columns: the stream takes what Size and Age leave, and its uri
+   is one line, cut, whole in its title and in `copy gsutil`. */
+.ag-logs-body .ctl-table > table { table-layout: fixed; width: 100%; }
+.ag-logs-body .ctl-table > table > thead th:nth-child(2) { width: 112px; }
+.ag-logs-body .ctl-table > table > thead th:nth-child(3) { width: 128px; }
+.ag-logs-body .ctl-table > table > tbody > tr > th > .uri {
+  display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* THE DETAILS TAB'S ONE LOG LINE: the newest line and `Open logs`, which
    switches to the Logs tab. In the pane's flow, at its top: nothing is drawn

@@ -428,14 +428,18 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
       {/* EACH SEPARATOR ENDS ITS ITEM (N20): between items, a wrapped line
           opened on "·". Now an item carries the dot after it, so a line can
           end on one but never start with one. */}
+      {/* NO DANGLING DOT (owner QA R15, 2026-10-04): the read's provenance
+          wrapped under its own dot, leaving "3 comments ·" at a line's end
+          with nothing after it. The issue's three facts are one line, dotted
+          between and never after the last; when it was read is its own. */}
       <p className="in-meta">
         <span className="in-meta-i"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a> ·</span>
         <span className="in-meta-i">
           <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} /> ·
         </span>
-        <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`} ·</span>
-        <span className="in-meta-i" title={time?.title}>read {time?.text ?? 'at an unknown time'} with this tenant&rsquo;s forge credential</span>
+        <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}</span>
       </p>
+      <p className="in-meta in-read-at" title={time?.title}>read {time?.text ?? 'at an unknown time'} with this tenant&rsquo;s forge credential</p>
       {issue.labels.length > 0 ? (
         <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>
       ) : (

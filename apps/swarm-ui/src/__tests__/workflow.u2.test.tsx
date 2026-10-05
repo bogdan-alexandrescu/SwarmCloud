@@ -247,7 +247,11 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
     const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
     for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
     const used = named.reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
-    expect(1056 - used, 'the name column at 1056px').toBeGreaterThanOrEqual(200)
+    // 200px until U12 R10 (owner QA, 2026-10-04): Cost and Owner were cut
+    // ('$0.6024 1/3' by 3px, 'swarm-…' in 74px), and each now holds what it
+    // shows. The name still keeps the most room of any column (D8), cut with
+    // its whole text in its title.
+    expect(1056 - used, 'the name column at 1056px').toBeGreaterThanOrEqual(160)
   })
 
   it('prints the owner as the name before the @, with the address whole in its title', async () => {

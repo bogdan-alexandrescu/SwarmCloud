@@ -39,7 +39,9 @@ import { transformWithEsbuild } from 'vite'
  * the right fix is on that side, not here.
  */
 export async function resolve(specifier, context, next) {
-  if (specifier.startsWith('.') && !/\.[a-z]+$/i.test(specifier)) {
+  // A dotted module name such as `./outcomes.fixture` is still extensionless:
+  // only a real module extension means the specifier names its file.
+  if (specifier.startsWith('.') && !/\.(?:[cm]?[jt]sx?|json)$/i.test(specifier)) {
     return next(`${specifier}.ts`, context)
   }
   return next(specifier, context)

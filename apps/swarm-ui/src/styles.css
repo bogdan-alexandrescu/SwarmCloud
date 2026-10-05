@@ -10437,7 +10437,17 @@ span.sk-ttile { cursor: default; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }
   .sk-app.has-drawer .sk-ri { width: 58px; font-size: var(--t-micro); }
-  .sk-app.has-drawer .sk-panel { flex: 1; width: auto; }
+  /* THE PANEL IS THE DRAWER'S WIDTH, NOT ITS LONGEST NAME'S (owner QA R5,
+     2026-10-04). `flex: 1` with no `min-width: 0` let the panel take the
+     min-content of its widest child -- a long Recent workflow name, 1298px
+     -- so `nav.sk-panel` was 1394px wide and the Recent names, the Global
+     pool's number and the Dark and System theme buttons were off-screen. At
+     zero the panel is what the drawer leaves beside the spine, and a Recent
+     row is cut with an ellipsis, whole in its title (names.css). The Recent
+     row is matched by attribute because its class name, written after a dot,
+     reads as an API key to the worker's publish scan (rules.py openai_key). */
+  .sk-app.has-drawer .sk-panel { flex: 1 1 0%; width: auto; min-width: 0; }
+  .sk-app.has-drawer .sk-kid[class*="recent-kid"] { min-width: 0; max-width: 100%; }
   .sk-app.has-drawer .sk-collapse { display: none; }
   .sk-flyout { display: none; }
   /* THE HEADER GIVES BACK ITS HEIGHT ON SCROLL (#139): 36px once the page is

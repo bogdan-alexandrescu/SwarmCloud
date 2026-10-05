@@ -943,12 +943,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'recent-submissions': {
     group: 'submitting-work',
-    title: 'Why there are no recent submissions',
+    title: 'Where your recent submissions come from',
     short:
-      'Starting again from something you submitted needs the API to keep a short list, per person, of what each of us submitted: task or workflow, name, settings and when. It does not keep one yet, so the card stays empty rather than guessing from the agent list.',
+      'The API keeps no list of what each person submitted, but it says who submitted every task, workflow and issue run, and who you are. The card lists your newest lone tasks, workflows and issue runs from those reads, each a link to its page, and says which windows it looked in.',
     long: [
-      'The agent list is not that list: it holds everyone’s agents, not your submissions, and a workflow is many agents. A card filled from it would offer things you never submitted.',
-      'When the API keeps the list, the card fills from it, newest first.',
+      'A workflow’s steps and an agent’s children are not listed as tasks of their own: you submitted the workflow, or the agent did. Older submissions outside the windows read are not listed, and the card says how far it looked.',
+      'The settings a submission was made with are not served, so the card opens what you submitted rather than a form filled in from it. When who you are cannot be read, nothing is listed: nothing can be called yours.',
     ],
   },
 

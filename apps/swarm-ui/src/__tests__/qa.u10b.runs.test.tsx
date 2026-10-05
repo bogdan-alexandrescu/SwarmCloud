@@ -125,8 +125,13 @@ describe('D3: no id runs past its card', () => {
       expect(painted(c, 'min-width', WIDE), c.getAttribute('aria-label')!).toBe('0')
       expect(painted(c, 'overflow-wrap', WIDE) ?? 'normal').not.toBe('anywhere')
     }
-    const ids = [...linked.querySelectorAll<HTMLElement>('.ctl-fact > a')]
-    expect(ids.length).toBe(3)
+    // The issue ref wraps at its safe points instead (U12 A, 2026-10-04); only
+    // the single-token ids, the planner task and the workflow, are cut.
+    const ref = linked.querySelector<HTMLElement>('.ctl-fact > a.rn-ref')!
+    expect(ref.getAttribute('title')).toBe(REF)
+    expect(painted(ref, 'overflow-wrap', WIDE) ?? 'normal').toBe('normal')
+    const ids = [...linked.querySelectorAll<HTMLElement>('.ctl-fact > a.rn-id')]
+    expect(ids.length).toBe(2)
     for (const a of ids) {
       expect(a.getAttribute('title'), a.textContent!).toBe(a.textContent)
       expect(painted(a, 'white-space', WIDE)).toBe('nowrap')

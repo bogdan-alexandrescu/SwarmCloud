@@ -1403,7 +1403,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     expect(figure('b')).toBeCloseTo(0.2, 6)
     expect(cell(root, 'a', 'cost').querySelector('.wf-src'), 'a telemetry figure is marked as the result’s').toBeNull()
     const total = root.querySelector<HTMLElement>('.wf-spend')!
-    expect(total.textContent, 'the row’s total is not the sum of its steps').toBe('$0.7000')
+    expect(total.textContent, 'the row’s total is not the sum of its steps').toBe('$0.70')
     // And the total says how much of it came from results.
     expect(total.getAttribute('title')).toContain('1 from the step’s result summary')
   })
@@ -1509,7 +1509,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // THE TOTAL IS WHAT THE STEPS SHOW: $0.20, from one of the two, and so a
     // floor rather than a total.
     const total = table.querySelector<HTMLElement>('.wf-spend')!
-    expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.2000')
+    expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.20')
     expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1/2')
 
     // And the node agrees with the table.

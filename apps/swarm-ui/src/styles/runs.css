@@ -12,16 +12,6 @@
    floor, sentence case, no letter-spacing (PICKS.md).
    ========================================================================== */
 
-/* ---- item 6: owner/repo#N on one line ------------------------------------- */
-/* 'bogdan- / alexandrescu/SwarmCloud#454' broke at the owner's hyphen under
-   `.rn-card a`'s `overflow-wrap: anywhere`. One line, cut with an ellipsis
-   where the card is narrower than the reference, the whole of it in the
-   link's title. `min-width: 0` lets it shrink beside its key in the fact row. */
-.rn-card .rn-ref {
-  display: inline-block; min-width: 0; max-width: 100%;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal;
-  vertical-align: bottom;
-}
 
 /* ---- item 5: the plan from its schema -------------------------------------- */
 /* The lead is a few sentences (`planLead`); the steps are numbered cards with
@@ -29,7 +19,31 @@
 .rn-step-h { font-weight: 600; color: var(--text); }
 .rn-step-id, .rn-step-meta { display: flex; flex-wrap: wrap; gap: 0 8px; margin: 0; }
 .rn-step-id > .mono { overflow-wrap: anywhere; }
-.rn-step-meta code { font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; }
+/* A STEP'S TOUCHES AND TESTS, ONE PER LINE (owner QA C, 2026-10-04): each
+   breaks only at the `<wbr>` after `/`, `::` or `_` (`breakAt`), never
+   mid-identifier, and carries its own copy button. */
+.rn-step-l { display: grid; gap: 2px; min-width: 0; margin-top: 4px; }
+.rn-step-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
+.rn-step-list > li { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.rn-step-list code {
+  flex: 0 1 auto; min-width: 0; padding-top: 6px;
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: normal; overflow-wrap: normal; word-break: normal;
+}
+.rn-copy {
+  flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--ctl-radius-sm);
+  background: none; color: var(--text-dim); cursor: pointer;
+}
+.rn-copy:hover { border-color: var(--line); color: var(--text); }
+.rn-copy:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.rn-copy > svg { width: 14px; height: 14px; }
+/* "Read more" beside the cut lead (owner QA F): a link-shaped button, inline. */
+.rn-more-btn {
+  display: inline; margin: 0; padding: 0; border: 0; background: none;
+  font: inherit; color: var(--sk-ac); cursor: pointer;
+}
+.rn-more-btn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .rn-prompt-d, .rn-raw, .rn-read-body { min-width: 0; }
 .rn-prompt-d > summary, .rn-raw > summary, .rn-read-body > summary {
   display: inline-flex; align-items: center; min-height: 32px;
@@ -49,6 +63,3 @@
 }
 .rn-list-items { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 
-/* ---- item 4: what the issue said at submission ------------------------------ */
-/* A title or a label set is prose, so it wraps -- at spaces -- under its key. */
-.rn-read .rn-read-v { min-width: 0; text-align: right; overflow-wrap: break-word; }
