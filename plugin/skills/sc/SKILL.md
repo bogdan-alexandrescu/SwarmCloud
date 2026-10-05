@@ -80,10 +80,24 @@ plugin's own read tools and work outside a checkout; they are not pre-granted
 here -- this skill's grants mark it as the checkout-bound view surface -- so
 the session may ask once before the first read.
 
+### Every run is titled after its workflow
+
+A SwarmCloud workflow run here is titled `SwarmCloud · <name> · N steps` (at
+most 100 characters), not `swarmcloud`: <name> is the spec's `title`, else
+its `label` cut at a word, else the title or label SwarmCloud stored, else the
+workflow id. A run's name is fixed when it is launched, so `run` and `attach`
+first call `swarm_workflow_launch`, which writes a copy of the
+`/sc:swarmcloud` script with that name and returns its `script_path`, and
+then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
+args: ...}`. If `swarm_workflow_launch` answers an error, say so in one line
+and run the `/sc:swarmcloud` workflow by name with the same args: the rows are
+the same, only the run's title is the generic one.
+
 ### `attach <wf_id>`
 
-Runs the `/sc:swarmcloud` workflow with args `{attach: <wf_id>}` — the id as
-given, nothing else. It submits nothing: it reads the workflow once, reports
+Call `swarm_workflow_launch` with `{attach: "<wf_id>"}`, then run the script it
+returned with the args it returned — `{attach: <wf_id>}` plus the `title`
+it chose, nothing else. It submits nothing: it reads the workflow once, reports
 its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
@@ -103,18 +117,26 @@ answer, not an error. Never poll; offer `/sc attach --all` when any run.
 
 ### `attach --all`
 
-Runs the `/sc:swarmcloud` workflow with args `{attach: "all"}` — nothing
-else. It lists the caller's tenant's running workflows once and attaches the
-newest 10 exactly as `attach <wf_id>` attaches one: finished steps reported
-once, a live row for every unfinished step; every row's label carries its
-task's console link as served, from the moment the row starts, whatever the
-step's state, and each listed workflow's line carries its own. More than 10 are listed, each with
-the `/sc attach <wf_id>` that follows it, and not followed — every row is an
-agent of its own in this session, and past 10 workflows /workflows is no
-longer readable. Report the run's `state` (`ATTACHED`, `NOTHING_RUNNING` or
-`NOT_ATTACHED` with the API's error verbatim) and its `not_followed` list.
-This is what the plugin's SessionStart hook asks a new session to run first
-when workflows are running; it submits nothing either way.
+ONE CLAUDE CODE RUN PER SWARMCLOUD WORKFLOW, never one run over several: each
+workflow keeps its own step count, as the console shows it. Call
+`swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
+tenant's running workflows once and, for the newest 10, writes one titled
+script each; then make one Workflow call per entry of its `launches`,
+`{scriptPath: <its script_path>, args: <its args>}` — each attaches its
+workflow exactly as `attach <wf_id>` does: finished steps reported once, a
+live row for every unfinished step; every row's label carries its task's
+console link as served, from the moment the row starts, whatever the step's
+state. More than 10 come back in `not_followed`, each with the `/sc attach
+<wf_id>` that follows it, and are not launched — every row is an agent of its
+own in this session, and past 10 workflows /workflows is no longer readable.
+`count: 0` is an answer: nothing is running. Report each run's `state`
+(`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
+If `swarm_workflow_launch` answers an error, run the `/sc:swarmcloud`
+workflow by name with args `{attach: "all"}`: it lists the running workflows
+and returns `attach_calls`, the exact `{attach: "<wf_id>", title}` args of
+each — run `/sc:swarmcloud` once per entry with those args. This is what the
+plugin's SessionStart hook asks a new session to run first when workflows are
+running; it submits nothing either way.
 
 ### `run <spec path|JSON>`
 
@@ -127,7 +149,10 @@ The one verb that writes: it spends the shared pool, a step at a time.
    `<label or path>`: <n> steps (<step ids>) — they run remotely and spend the
    shared pool". Then run it; do not wait for a reply the developer did not
    ask to give.
-3. Run the `/sc:swarmcloud` workflow with the spec OBJECT as its args — never
+3. Call `swarm_workflow_launch` with `{spec_path: "<its absolute path>"}`
+   given a file, or `{spec: <the spec object>}` given JSON text, and launch
+   the `script_path` it returns (see "Every run is titled after its
+   workflow"). Run that script with the spec OBJECT as its args — never
    a bare path, and never the JSON as a string: a path makes a haiku agent
    retype the spec, which is how long specs came back altered and were
    refused. Given a file, the args are `{spec: <the spec object>, spec_path:
