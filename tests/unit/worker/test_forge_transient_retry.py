@@ -483,7 +483,7 @@ def test_a_probe_answered_503_is_an_outage(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _blip_once(chain: Chain, path: str, answer: tuple[int, dict[str, str], Any]) -> list[int]:
+def _blip_once(chain: Any, path: str, answer: tuple[int, dict[str, str], Any]) -> list[int]:
     """`path` answers `answer` once, then what it answered before."""
     original = chain.github.routes[("GET", path)]
     seen: list[int] = []
@@ -529,21 +529,27 @@ def test_the_pinned_client_reads_a_plain_403_as_an_answer():
 
 
 def test_a_merge_whose_read_blips_once_still_merges(tmp_path):
-    chain = Chain(tmp_path)
-    seen = _blip_once(chain, f"{PR}", (502, {}, {"message": "Bad Gateway"}))
-    outcome = merge.run_merge(chain.context())
+    from merge_world import PR as MERGE_PR, MergeWorld
+
+    world = MergeWorld(tmp_path)
+    seen = _blip_once(world, MERGE_PR, (502, {}, {"message": "Bad Gateway"}))
+    outcome = merge.run_merge(world.context())
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
     assert len(seen) >= 2
-    assert forge_mod.BACKOFF_BASE_SECONDS in chain.slept
+    assert forge_mod.BACKOFF_BASE_SECONDS in world.slept
 
 
 def test_a_merge_whose_read_hits_a_secondary_rate_limit_ends_retryable(tmp_path):
-    chain = Chain(tmp_path)
-    chain.github.route("GET", f"{PR}/reviews", (403, {"Retry-After": "600"}, {"message": SECONDARY}))
-    outcome = merge.run_merge(chain.context())
+    from merge_world import API, PINNED, MergeWorld
+
+    world = MergeWorld(tmp_path)
+    world.github.route("GET", f"{API}/commits/{PINNED}/status",
+                       (403, {"Retry-After": "600"}, {"message": SECONDARY}))
+    outcome = merge.run_merge(world.context())
     assert outcome.retryable is True
     assert outcome.end_cause is EndCause.MERGE_FAILED
     assert outcome.retry_delay_seconds == 600
+    assert world.merge_calls() == []
 
 
 def test_a_post_verdict_whose_pull_request_read_blips_once_still_posts(tmp_path):
