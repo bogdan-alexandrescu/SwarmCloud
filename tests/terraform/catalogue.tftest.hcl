@@ -51,6 +51,7 @@ variables {
     "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
 
@@ -102,7 +103,7 @@ run "runner_backends_match_resolve_backend" {
   # /dev/shm that only GKE lets us control, so browser work stays on Autopilot.
   assert {
     condition = alltrue([
-      for profile in ["mock", "generic", "claude-code", "codex"] :
+      for profile in ["mock", "generic", "claude-code", "codex", "indexer"] :
       output.runner_backends[profile] == "CLOUD_RUN_JOB"
     ])
     error_message = "every profile Cloud Run can hold must run on Cloud Run Jobs"
@@ -114,8 +115,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 8
-    error_message = "eight runner profiles: mock, generic, claude-code, codex, browser, and #295's merge, post-verdict, claude-code-review"
+    condition     = length(output.runner_backends) == 9
+    error_message = "nine runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, and contract request 48's indexer"
   }
 }
 
@@ -153,6 +154,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
+        "runner:indexer",
       ] :
       contains(output.pool_names, r)
     ])
@@ -206,7 +208,7 @@ run "jobs_exist_only_where_a_credential_does" {
   # as CREDENTIAL_MISSING and cost nothing.
   assert {
     condition = alltrue([
-      for name in ["swarm-job-eng-mock", "swarm-job-eng-generic", "swarm-job-eng-claude-code", "swarm-job-eng-codex"] :
+      for name in ["swarm-job-eng-mock", "swarm-job-eng-generic", "swarm-job-eng-claude-code", "swarm-job-eng-codex", "swarm-job-eng-indexer"] :
       contains(output.job_names, name)
     ])
     error_message = "a tenant with anthropic and openai keys gets every Cloud Run profile"
@@ -218,7 +220,7 @@ run "jobs_exist_only_where_a_credential_does" {
   }
 
   assert {
-    condition     = !contains(output.job_names, "swarm-job-smoke-claude-code")
+    condition     = !contains(output.job_names, "swarm-job-smoke-claude-code") && !contains(output.job_names, "swarm-job-smoke-indexer")
     error_message = "a tenant with no anthropic key must not get a claude-code Job resource"
   }
 
@@ -230,8 +232,8 @@ run "jobs_exist_only_where_a_credential_does" {
   }
 
   assert {
-    condition     = length(output.job_names) == 6
-    error_message = "4 Cloud-Run profiles for eng plus 2 credential-free ones for smoke"
+    condition     = length(output.job_names) == 7
+    error_message = "5 Cloud-Run profiles for eng (mock, generic, claude-code, codex, indexer) plus 2 credential-free ones for smoke"
   }
 
   # #295: post-verdict and claude-code-review each run as their own
@@ -326,8 +328,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 8
-    error_message = "expected 8 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review); the parser read a different number"
+    condition     = length(output.runner_profiles) == 9
+    error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
   }
 
   assert {

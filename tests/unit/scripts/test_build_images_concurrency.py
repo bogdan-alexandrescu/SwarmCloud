@@ -365,6 +365,31 @@ def test_the_browser_image_waits_for_the_base_it_is_built_from(tmp_path):
     )
 
 
+def test_the_indexer_image_waits_for_the_base_it_is_built_from(tmp_path):
+    """images/agent-runtime-indexer/cloudbuild.yaml pulls agent-runtime-base:<tag>
+    exactly as the browser's does (#625)."""
+    _, proc, events = _run(
+        tmp_path,
+        ["agent-runtime-indexer", "swarm-api", "agent-runtime-base"],
+        parallel=3,
+    )
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    windows = _windows(events)
+    _, base_end = windows["agent-runtime-base"]
+    indexer_start, _ = windows["agent-runtime-indexer"]
+    assert indexer_start >= base_end, "agent-runtime-indexer was submitted before agent-runtime-base finished"
+
+
+@pytest.mark.parametrize("derived", ["agent-runtime-browser", "agent-runtime-indexer"])
+def test_async_warns_for_every_image_built_from_a_base_in_the_same_run(tmp_path, derived):
+    """--async returns once a build is QUEUED, so an image built FROM another
+    in the same run cannot wait for it; the run says so up front, naming the
+    image, rather than leaving it to the derived build's log."""
+    _, proc, _ = _run(tmp_path, ["--async", "agent-runtime-base", derived], parallel=2)
+    warning = f"--async: {derived} is submitted once agent-runtime-base is QUEUED"
+    assert warning in proc.stderr, proc.stderr[-3000:]
+
+
 def test_every_failed_image_is_named_and_the_rest_are_still_built(tmp_path):
     targets = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
     root, proc, events = _run(

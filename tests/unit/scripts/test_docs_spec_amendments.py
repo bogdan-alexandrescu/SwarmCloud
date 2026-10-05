@@ -79,6 +79,8 @@ def test_the_catalogue_is_what_the_amendment_describes():
         "merge",
         "post-verdict",
         "claude-code-review",
+        # Contract request 48 (accepted by the owner 2026-10-05, #625).
+        "indexer",
     }
 
 

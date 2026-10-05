@@ -1,7 +1,7 @@
 """The `index:run` task writes the graph (docs/repo-index.md §2.5, lane RI9b).
 
-RI9 shipped the shard writer (`swarm-repo-graph`, images/agent-runtime-base/
-repo-index/repo_graph_shards.py) and promotion's check of the manifest it
+RI9 shipped the shard writer (`swarm-repo-graph`, images/agent-runtime-indexer/
+repo-index/repo_graph_shards.py since #625) and promotion's check of the manifest it
 writes, but nothing in production ran it: the indexer prompt did not name it,
 named an extractor the image does not ship, and the task carried neither the
 repo_id nor the destination the writer needs. These hold the wiring:
@@ -10,8 +10,8 @@ repo_id nor the destination the writer needs. These hold the wiring:
   shard writer on that graph, with `--index` on the artifact promotion reads,
   so `graph.manifest_digest` is set by the writer and never by the agent;
 * the task's input carries the repo_id and the destination, inside the one
-  input key every profile takes (`prompt`): `claude-code` declares no other
-  key that could hold them, and a key it does not declare is refused at
+  input key every profile takes (`prompt`): `indexer` (claude-code on the
+  indexer image, contract request 48) declares no other key that could hold them, and a key it does not declare is refused at
   submission (invariant 10, contract request 25);
 * the destination is exactly the prefix promotion reads the manifest from
   (`repograph.manifest_key`), under the task's own tenant (invariant 9);

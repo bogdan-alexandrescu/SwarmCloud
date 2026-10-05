@@ -117,7 +117,7 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
     assert task["state"] in ("QUEUED", "READY") and run["state"] == task["state"]
     assert task.get("current_lease_id") is None
     # By NAME, and nothing a caller could have chosen (invariant 10).
-    assert task["runner_profile"] == "claude-code"
+    assert task["runner_profile"] == "indexer"  # contract request 48
     assert set(task["input"]) == {"prompt"}
     assert task["repository_url"] == "https://github.com/saga-xyz/widgets"
     assert task["repository_ref"] == ONE

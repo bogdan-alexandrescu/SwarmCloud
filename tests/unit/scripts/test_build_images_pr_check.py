@@ -60,7 +60,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
-WORKER = {"agent-runtime-base", "agent-runtime-browser"}
+WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify"}
 
 
@@ -112,9 +112,13 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
 @pytest.mark.parametrize(
     "changed, expected",
     [
-        # #641's shape: the base's own package, and the browser built FROM it.
-        (["images/agent-runtime-base/repo-index/lsp/servers.py"], WORKER),
+        # #641's shape: the base's Dockerfile reaches the base and both images
+        # built FROM it; the repo-index package lives beside the indexer since
+        # #625, so it reaches the indexer alone.
         (["images/agent-runtime-base/Dockerfile"], WORKER),
+        (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
+        (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
+        (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-browser/Dockerfile"], {"agent-runtime-browser"}),
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
