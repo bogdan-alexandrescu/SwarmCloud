@@ -307,6 +307,33 @@ def test_a_declared_name_longer_than_the_shown_cut_keeps_its_cap_cause(
     assert "retried" not in task["last_error"]
 
 
+def test_a_declared_name_past_the_exempt_count_and_over_the_bound_is_refused_for_good(
+    db, worker_factory, series_cli
+):
+    """#165: the name bound is a cause a retry cannot change. Past the first
+    49 declared names the exemption from the 256-byte bound ends, so the 50th,
+    at 300 bytes, is refused at every attempt. Its cause, looked up by the
+    name as declared, is `refused`, and the attempt fails for good."""
+    exempt = [f"out-{index:02d}.md" for index in range(49)]
+    # Sorting after every `out-` name, so it is the 50th in any order.
+    long_name = f"{'z' * 140}/{'e' * 159}"
+    _seed(
+        db,
+        {"series": [[long_name, 1]]},
+        metadata={"expected_outputs": [*exempt, long_name]},
+    )
+
+    assert _run(worker_factory) == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    causes = {
+        entry["name"]: entry["cause"]
+        for entry in _summary(db)["expected_outputs_missing_causes"]
+    }
+    assert causes[long_name] == "refused"
+    assert task["state"] == "FAILED", "a retry meets the same name bound"
+    assert task["end_cause"] == "outputs_missing"
+
+
 # ---------------------------------------------------------------------------
 # platform files first: they never lose their head-of-queue place
 # ---------------------------------------------------------------------------
