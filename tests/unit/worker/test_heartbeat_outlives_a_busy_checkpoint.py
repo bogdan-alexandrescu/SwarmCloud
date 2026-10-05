@@ -189,6 +189,36 @@ def test_the_first_beat_during_a_checkpoint_is_due_from_the_last_beat(db, worker
     )
 
 
+def test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating(
+    db, worker_factory
+):
+    """Held to one interval, a beat that cannot land is one of the missed
+    beats the interval is sized for; the thread asks for the next on time. It
+    used to end the thread, leaving the rest of the checkpoint unbeaten. The
+    control: a fence still ends it (the fenced test in
+    test_checkpoint_tool_caches.py), and here a beat after the failures lands."""
+    from google.api_core import exceptions as core_exceptions
+
+    seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+    worker, _, _ = worker_factory(heartbeat_interval_seconds=1)
+    real = worker.control.heartbeat
+    calls: list[str] = []
+
+    def flaky():
+        if len(calls) < 2:
+            calls.append("unreachable")
+            raise core_exceptions.ServiceUnavailable("firestore is unreachable")
+        calls.append("landed")
+        return real()
+
+    worker.control.heartbeat = flaky  # type: ignore[method-assign]
+    before = db.doc("leases/lease_1").get("heartbeat_at")
+    with worker._heartbeat_meanwhile("checkpoint (test)"):
+        time.sleep(3.6)
+    assert calls[:3] == ["unreachable", "unreachable", "landed"], calls
+    assert db.doc("leases/lease_1").get("heartbeat_at") != before
+
+
 # ---------------------------------------------------------------------------
 # 4. the whole checkpoint is covered, not only its archive
 # ---------------------------------------------------------------------------

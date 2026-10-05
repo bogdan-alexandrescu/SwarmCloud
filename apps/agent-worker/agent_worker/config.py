@@ -54,6 +54,81 @@ def _int_env(name: str, default: int) -> int:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+
+# ---------------------------------------------------------------------------
+# THE LEASE'S SILENCE GRACE AND THE BEAT THAT HAS TO FIT INSIDE IT (#426)
+# ---------------------------------------------------------------------------
+#
+# Stated together here, because the one is only meaningful against the other.
+# The reconciler reclaims a lease that has been silent for longer than
+# `heartbeat_grace_seconds` (`reconciler.config.ReconcilerConfig`), as
+# `lost_worker`. At the platform's defaults that was a 90 s grace against a
+# 30 s beat: the THIRD beat was due on the grace itself, so two missed beats
+# and any latency on the third were a reclaim. On 2026-10-01 a claude-code
+# worker compiling on every core went 98 s silent across a checkpoint and was
+# reclaimed alive.
+#
+# So the worker derives its beat from the grace: two consecutive beats may be
+# lost, and the third still has a whole interval to land before the grace runs
+# out -- `(MISSED_BEATS_TOLERATED + 2) x beat <= grace`, 4 x 22 = 88 <= 90.
+# A grace with room to spare keeps the platform's interval: a beat is a
+# Firestore transaction, and beating more often than the grace needs costs
+# writes for nothing.
+#
+# `heartbeat_grace_seconds` restates the reconciler's default formula, and
+# reads the same `HEARTBEAT_GRACE_SECONDS` override it does; the parity is held
+# by tests/unit/worker/test_heartbeat_outlives_a_busy_checkpoint.py. The
+# worker cannot import the reconciler, and the platform `Settings` that both
+# read is frozen: moving the grace there is a contract change request, not a
+# change made here.
+
+#: The reconciler's floor under the grace: `max(90, 3 x interval)`.
+HEARTBEAT_GRACE_FLOOR_SECONDS = 90
+#: How many consecutive beats may be lost -- a slow transaction, a scheduling
+#: stall under a saturated CPU -- with the lease still inside its grace.
+MISSED_BEATS_TOLERATED = 2
+
+
+def heartbeat_grace_seconds(platform_interval_seconds: int) -> int:
+    """The silence the reconciler tolerates before it reclaims a lease.
+
+    The reconciler's own derivation (`ReconcilerConfig.from_env`): the
+    `HEARTBEAT_GRACE_SECONDS` override, else `max(90, 3 x interval)` of the
+    platform's `HEARTBEAT_INTERVAL_SECONDS`.
+    """
+    return _int_env(
+        "HEARTBEAT_GRACE_SECONDS",
+        max(HEARTBEAT_GRACE_FLOOR_SECONDS, 3 * platform_interval_seconds),
+    )
+
+
+def heartbeat_beat_seconds(grace_seconds: int, platform_interval_seconds: int) -> int:
+    """The worker's beat: the platform's interval, shortened until it fits the grace.
+
+    `(MISSED_BEATS_TOLERATED + 2) x beat <= grace`: the beats after the last
+    one that landed may be lost `MISSED_BEATS_TOLERATED` times, and the next
+    one still has a whole interval to land in.
+    """
+    beat = min(platform_interval_seconds, grace_seconds // (MISSED_BEATS_TOLERATED + 2))
+    if beat < 1:
+        raise ConfigError(
+            f"a {grace_seconds} s heartbeat grace leaves no room for "
+            f"{MISSED_BEATS_TOLERATED} missed beats; raise HEARTBEAT_GRACE_SECONDS"
+        )
+    return beat
+
+
+#: How far below the worker the runner child runs (`nice`, 0-19), and every
+#: process it forks with it: the agent, its compilers, its test runners. A
+#: build with `-p` equal to the core count competed with the heartbeat at the
+#: SAME priority (#426). Linux lets a process lower its own priority, or its
+#: child's, without a capability, but not raise it, so the heartbeat is put
+#: above the agent by lowering the agent. 10 gives the worker about nine times
+#: an agent process's CPU weight under the kernel's fair scheduler (1024
+#: against 110) when both want the CPU, and costs the agent nothing when the
+#: worker is idle, which is nearly always.
+RUNNER_NICENESS_DEFAULT = 10
+
 @dataclass(frozen=True)
 class WorkerConfig:
     # --- identity of this attempt -------------------------------------------
@@ -79,7 +154,12 @@ class WorkerConfig:
     workspace_root: Path = Path("/workspace")
 
     # --- timing --------------------------------------------------------------
-    heartbeat_interval_seconds: int = 30
+    #: The worker's beat, `heartbeat_beat_seconds` of the grace -- not the
+    #: platform's `HEARTBEAT_INTERVAL_SECONDS` as such (#426). 22 at the
+    #: platform's defaults (a 90 s grace).
+    heartbeat_interval_seconds: int = 22
+    #: `RUNNER_NICENESS_DEFAULT`: the runner child runs this far below the worker.
+    runner_niceness: int = RUNNER_NICENESS_DEFAULT
     checkpoint_interval_seconds: int = 120
     max_in_worker_retry_delay_seconds: int = 45
     #: How many times one forge call the worker makes before or after the
@@ -346,6 +426,11 @@ class WorkerConfig:
         _ = self.profile
         if self.heartbeat_interval_seconds <= 0:
             raise ConfigError("heartbeat interval must be positive")
+        if not 0 <= self.runner_niceness <= 19:
+            raise ConfigError(
+                f"runner niceness must be 0-19 (a lower priority than the worker), "
+                f"got {self.runner_niceness}"
+            )
         if self.heartbeat_meanwhile_max_seconds <= 0:
             raise ConfigError("the checkpoint heartbeat's bound must be positive")
         if self.checkpoint_interval_seconds <= 0:
@@ -402,7 +487,11 @@ class WorkerConfig:
             firestore_database=settings.firestore_database,
             artifact_bucket=os.environ.get("ARTIFACT_BUCKET", settings.artifact_bucket),
             workspace_root=Path(os.environ.get("WORKSPACE_ROOT", "/workspace")),
-            heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
+            heartbeat_interval_seconds=heartbeat_beat_seconds(
+                heartbeat_grace_seconds(settings.heartbeat_interval_seconds),
+                settings.heartbeat_interval_seconds,
+            ),
+            runner_niceness=_int_env("RUNNER_NICENESS", RUNNER_NICENESS_DEFAULT),
             checkpoint_interval_seconds=_int_env(
                 "CHECKPOINT_INTERVAL_SECONDS", profile.checkpoint_interval_seconds
             ),
