@@ -4573,6 +4573,12 @@ export interface PlanOverlap {
   /** `owner/repo#N`. */
   ref: string
   kind: 'issue' | 'pull_request'
+  /**
+   * The planner's verdict (#587): `none` when the plan does nothing about the
+   * overlap, `required` when the plan or a person must act. Absent on a plan
+   * stored before the field, whose verdict is read off `note`.
+   */
+  action?: 'none' | 'required'
   note: string
 }
 
