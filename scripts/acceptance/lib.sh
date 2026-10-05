@@ -28,18 +28,20 @@ source "${REPO_ROOT}/scripts/acceptance/parsers.sh"
 
 ACC_DIR="${REPO_ROOT}/scripts/acceptance"
 
-#: The repository every task that clones clones. This repository, public, so a
-#: clone needs no credential; the fixtures live in tests/acceptance/fixtures.
-ACC_REPOSITORY_URL="${SWARM_ACCEPTANCE_REPOSITORY_URL:-https://github.com/bogdan-alexandrescu/SwarmCloud.git}"
-#: The ref cloned. `main` because the release deploys main, so the fixtures a
-#: run clones are the ones merged with the code it tests. verify-remote.sh
-#: cannot pass an environment variable into the swarm-verify job, so a release
-#: run always reads main; set it by hand to prove a branch.
-ACC_REF="${SWARM_ACCEPTANCE_REF:-main}"
-#: owner/repo on GitHub, derived from the URL: where pull requests open, and
-#: where the suite reads them back from.
-ACC_GITHUB_REPO="$(printf '%s' "${ACC_REPOSITORY_URL}" | sed -E 's#^https://github.com/##; s#\.git$##')"
-ACC_GITHUB_API="${SWARM_ACCEPTANCE_GITHUB_API:-https://api.github.com}"
+# WHERE the suite works -- ACC_TENANT, ACC_REPOSITORY_URL, ACC_REF,
+# ACC_GITHUB_REPO, ACC_GITHUB_API, ACC_ISSUE -- is config.sh's, stated once
+# for this file, github-cleanup.sh and sandbox-sync.sh. A target it refuses
+# stops the suite here, before anything is submitted.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=config.sh
+source "${REPO_ROOT}/scripts/acceptance/config.sh"
+acc_config_problem || exit 1
+
+#: Every API call this run makes carries `X-Swarm-Tenant: ${ACC_TENANT}`:
+#: common.sh's api_request sends the header whenever this is set. Exported, so
+#: a helper run in a child process selects the same tenant.
+export SWARM_API_TENANT="${ACC_TENANT}"
+
 #: How long one task may take, end to end. Cloud Run Jobs start in about a
 #: minute; the slowest mock check sleeps 150 s; a claude-code task on a tiny
 #: prompt takes a few minutes.
@@ -61,6 +63,64 @@ acc_init() {
 acc_cleanup() {
   cancel_all ${ACC_TASKS[@]+"${ACC_TASKS[@]}"}
   [[ -z "${ACC_WORK}" ]] || rm -rf "${ACC_WORK}"
+}
+
+# ---------------------------------------------------------------------------
+# The target: checked against the platform and GitHub before anything is
+# submitted (#628). Each dies rather than reporting a FAIL: a suite run in the
+# wrong tenant or on a public repository has already done the damage the
+# check exists to stop, whatever it then reports.
+# ---------------------------------------------------------------------------
+
+# acc_require_tenant -> returns when the API resolves this caller, with
+# X-Swarm-Tenant: ACC_TENANT, to ACC_TENANT; dies otherwise.
+#
+# A refusal is a 403 `tenant_not_member`: the caller is not a CONFIRMED member
+# of the tenant's registered directory group. Never retried without the
+# header -- that is how acceptance came to fill eng.
+acc_require_tenant() {
+  local out got
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-acc-me.XXXXXX")"
+  if ! api_get "/tenants/me" >"${out}"; then
+    got="$(acc_error_code <"${out}" 2>/dev/null || true)"
+    rm -f "${out}"
+    die "GET /tenants/me with X-Swarm-Tenant: ${ACC_TENANT} answered HTTP ${API_STATUS} ${got:-}: this caller cannot select tenant '${ACC_TENANT}'. It must be a member of ${ACC_TENANT}'s directory group and the group registered in dev.tfvars (docs/ci.md, \"Release acceptance runs in the smoke tenant\"). Not running in the caller's default tenant instead."
+  fi
+  got="$(jq -r '.tenant.tenant_id // empty' <"${out}" 2>/dev/null || true)"
+  rm -f "${out}"
+  [[ "${got}" == "${ACC_TENANT}" ]] \
+    || die "the API resolved this caller to tenant '${got:-none}', not '${ACC_TENANT}': refusing to run acceptance there"
+  info "tenant ${got} (X-Swarm-Tenant)"
+}
+
+# acc_require_private_repository -> returns when an ANONYMOUS read of
+# ACC_GITHUB_REPO is a 404; dies when anybody can read it, or when GitHub's
+# answer cannot be had.
+#
+# Anonymous on purpose: a token reads a private repository too. A 404 is
+# private or absent, and the clone tells those apart. A 200 is public, which
+# the sandbox is not -- and every public repository is one whose readers a
+# fixture pull request reaches. Anything else is asked once more, then is a
+# refusal: "could not tell" is not "private".
+acc_require_private_repository() {
+  local code attempt
+  for attempt in 1 2; do
+    code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' \
+      -H "Accept: application/vnd.github+json" \
+      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}" 2>/dev/null)" || code="000"
+    case "${code}" in
+      404) info "repository ${ACC_GITHUB_REPO} is not publicly readable"; return 0 ;;
+      200) die "${ACC_GITHUB_REPO} is publicly readable: acceptance opens real pull requests and runs only against a private sandbox (#628)" ;;
+    esac
+    [[ "${attempt}" -eq 2 ]] || sleep 5
+  done
+  # 403 and 429 are what GitHub answers an anonymous caller over its 60
+  # requests an hour, counted per source IP -- the swarm-verify job's NAT
+  # address. Not a platform failure, and not a public repository: say so.
+  case "${code}" in
+    403|429) die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read, which is its unauthenticated rate limit (60 an hour per source IP), not an answer about the repository; re-run the job once the hour has passed" ;;
+  esac
+  die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read"
 }
 
 # ---------------------------------------------------------------------------
@@ -117,7 +177,7 @@ acc_extra() {
   jq -nc --argjson m "$(acc_metadata)" --argjson x "${1:-$empty}" '{priority: 10, metadata: $m} + $x'
 }
 
-# acc_repo_extra [EXTRA_JSON] -> acc_extra plus this repository at ACC_REF.
+# acc_repo_extra [EXTRA_JSON] -> acc_extra plus the sandbox (ACC_REPOSITORY_URL) at ACC_REF.
 acc_repo_extra() {
   local empty='{}'
   acc_extra "$(jq -nc --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" --argjson x "${1:-$empty}" \
@@ -343,11 +403,13 @@ acc_leases_released() {
 # bytes and the trailing newline -- so "the downloaded bytes match exactly"
 # could never be true of a PNG, and could be false of a text file for a reason
 # that is the suite's own. curl writes straight to the file, the header on
-# stdin as common.sh's auth_config does everywhere.
+# stdin as common.sh's auth_config does everywhere -- and X-Swarm-Tenant, as
+# api_request sends it, or the task is another tenant's and answers 404.
 acc_raw_artifact() {
   local task="$1" name="$2" out="$3" q code
   q="$(jq -rn --arg n "${name}" '$n | @uri')"
   if ! code="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" -w '%{http_code}' \
+      -H "X-Swarm-Tenant: ${ACC_TENANT}" \
       "$(api_url)${API_PREFIX}/tasks/${task}/artifacts/raw?name=${q}&disposition=attachment")"; then
     return 1
   fi
@@ -387,11 +449,31 @@ acc_events() { task_events "$1"; }
 # GitHub: read a pull request back, and clean up after one.
 # ---------------------------------------------------------------------------
 
-#: A token for cleanup, when this run has one. The swarm-verify job has none,
-#: on purpose; the release's acceptance job sweeps with its own GITHUB_TOKEN
-#: afterwards (scripts/acceptance/github-cleanup.sh). Reads need none: the
-#: repository is public.
+#: A token that can read and write the sandbox, when this run has one. The
+#: swarm-verify job has none, on purpose: its identity holds no secret, and a
+#: forge token lives only in Secret Manager for the worker (CLAUDE.md). The
+#: release's acceptance job sweeps afterwards with the sandbox's own token
+#: (scripts/acceptance/github-cleanup.sh, secret SWARM_SANDBOX_GITHUB_TOKEN).
 ACC_GITHUB_TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+
+# acc_github_can_read -> 0 when this run can read ACC_GITHUB_REPO back.
+#
+# The sandbox is PRIVATE (run.sh's acc_require_private_repository refuses
+# anything else), so without a token every read is a 404. A check asks this
+# first and SKIPs what it cannot look at, naming why -- never a FAIL for a
+# read it could not make, and never a PASS for one it did not. In the release
+# that is every pull-request read-back: the platform-side assertions (the
+# pull request was opened, its title is the agent's, the artifacts exist) run
+# here, and the release's acceptance job then makes the read-back ones on the
+# GitHub runner, with the sandbox token, before anything is closed
+# (scripts/acceptance/github-verify.sh). An operator run with
+# SWARM_ACCEPTANCE_GITHUB_TOKEN measures them here too.
+acc_github_can_read() { [[ -n "${ACC_GITHUB_TOKEN}" ]]; }
+
+# acc_github_skip_reason -> the one sentence every such SKIP gives.
+acc_github_skip_reason() {
+  printf 'not measured here: %s is private and this run holds no token to read it (the swarm-verify job carries none). The release measures it after the suite with scripts/acceptance/github-verify.sh; set SWARM_ACCEPTANCE_GITHUB_TOKEN to measure it here' "${ACC_GITHUB_REPO}"
+}
 
 # acc_github METHOD PATH [BODY] -> the response body; fails on non-2xx.
 acc_github() {
@@ -409,6 +491,19 @@ acc_github() {
   cat "${out}"
   rm -f "${out}"
   [[ "${code}" =~ ^2 ]]
+}
+
+# acc_github_raw PATH_IN_REPO OUTFILE -> the file's bytes at ACC_REF, through
+# the contents API with this run's token. Not raw.githubusercontent.com: it
+# serves a private repository's files to nobody without one.
+acc_github_raw() {
+  local path="$1" out="$2" code q
+  q="$(jq -rn --arg r "${ACC_REF}" '$r | @uri')"
+  code="$(auth_config "${ACC_GITHUB_TOKEN}" \
+    | curl -K - -sS -m 30 -o "${out}" -w '%{http_code}' \
+      -H "Accept: application/vnd.github.raw" -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}/contents/${path}?ref=${q}")" || return 1
+  [[ "${code}" == "200" ]]
 }
 
 # acc_pr_files_vs_ref HEAD_BRANCH -> the files GitHub's compare API says

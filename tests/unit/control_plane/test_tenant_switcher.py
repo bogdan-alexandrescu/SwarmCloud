@@ -43,6 +43,8 @@ from .conftest import (
     seed_tenant,
 )
 from .fakes import FakeFirestore
+from .test_checkpoint_content import WORKSPACE, put_checkpoint, tar_gz
+from .test_checkpoint_content import seed as seed_checkpoint_task
 
 
 class CountingFirestore(FakeFirestore):
@@ -354,9 +356,16 @@ def raw_url(task: str, **params: str) -> str:
     return f"/v1/tasks/{task}/artifacts/raw?{query}"
 
 
-def test_the_query_parameter_is_accepted_on_the_raw_artifact_route_only():
+def test_the_query_parameter_is_accepted_on_the_browser_fetched_routes_only():
+    # The raw artifact (an <img src>, a download, an "open full" tab) and the
+    # checkpoint archive (a plain download link, so the browser can stream a
+    # large file to disk) -- the two routes the console hands the browser to
+    # fetch by itself, with no header.
     assert TENANT_QUERY == "tenant"
-    assert TENANT_QUERY_ROUTES == frozenset({("GET", "/v1/tasks/{task_id}/artifacts/raw")})
+    assert TENANT_QUERY_ROUTES == frozenset({
+        ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+        ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+    })
 
 
 def test_a_chosen_tenants_artifact_is_served_with_the_query_parameter(client, db, objects):
@@ -396,3 +405,41 @@ def test_header_and_query_naming_different_tenants_is_refused(client, db, object
     # Identity is still checked first: no credential is a 401, not a 422.
     anonymous = client.get(raw_url("task_r", tenant="research"), headers={TENANT_HEADER: "eng"})
     assert anonymous.status_code == 401
+
+
+def a_checkpoint_in(db, objects, tenant: str, task: str) -> bytes:
+    seed_checkpoint_task(db, tenant=tenant, task=task)
+    archive = tar_gz(WORKSPACE)
+    put_checkpoint(objects, tenant=tenant, task=task, archive=archive, file_count=4)
+    return archive
+
+
+def checkpoint_url(task: str, **params: str) -> str:
+    query = "&".join(f"{k}={v}" for k, v in {"attempt_id": "att_1", **params}.items())
+    return f"/v1/tasks/{task}/checkpoints/ckpt-00001/content?{query}"
+
+
+def test_a_chosen_tenants_checkpoint_downloads_with_the_query_parameter(client, db, objects):
+    archive = a_checkpoint_in(db, objects, "research", "task_r")
+    chosen = client.get(checkpoint_url("task_r", tenant="research"), headers=as_("dave"))
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.content == archive
+    # The control: the download link carries no header, so without the query
+    # parameter it is the DEFAULT tenant's (eng), where the research task is
+    # not -- the 404 a console switched to research used to get.
+    assert client.get(checkpoint_url("task_r"), headers=as_("dave")).status_code == 404
+
+
+def test_the_query_parameter_cannot_grant_a_checkpoint(client, db, objects):
+    a_checkpoint_in(db, objects, "research", "task_r")
+    before = dict(db.docs)
+    touched = db.touched
+    refused = client.get(checkpoint_url("task_r", tenant="research"), headers=as_("alice"))
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["code"] == "tenant_not_member"
+    assert db.docs == before
+    assert db.touched == touched
+    # Agreeing header and query are one selection; disagreeing ones are refused.
+    assert client.get(
+        checkpoint_url("task_r", tenant="research"), headers=as_("dave", "eng")
+    ).status_code == 422

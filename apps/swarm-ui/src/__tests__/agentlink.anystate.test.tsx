@@ -20,7 +20,6 @@ import { render, waitFor } from '@testing-library/react'
 import type { Task, TaskState } from '../types'
 import { task as baseTask } from './runfixture'
 
-const WAIT = { timeout: 8000 }
 const PROFILE = 'linkprobe-runner'
 const OTHER = 'task_0ther0running0000000'
 
@@ -91,7 +90,7 @@ describe('agent link drawer opens in any state (path /agents/live/<id>)', () => 
         // The task's own read is drawn: its profile is on no other task.
         expect(drawer!.textContent ?? '').toContain(PROFILE)
         expect(drawer!.textContent ?? '').not.toContain(OTHER)
-      }, WAIT)
+      })
 
       // Read by id, not found among the list's rows.
       const paths = calls.map((c) => new URL(c, 'http://ui.test').pathname)

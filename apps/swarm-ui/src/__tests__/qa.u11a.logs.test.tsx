@@ -23,6 +23,7 @@ import type { Result } from '../fetch'
 import type { LogStream, Task, TaskLogs } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { landed } from './reads'
 import { attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -116,6 +117,18 @@ function serve(t: Task) {
   )
 }
 
+/**
+ * THE TWO READS A DETAILS PANE IS DRAWN FROM (#605): the split's header read
+ * of the task (`loadTask`), which decides the pane, then the Details pane's
+ * own `loadAgentRun`, whose answer draws the leading card with the last log
+ * line. Waiting on these rather than on `findByRole` is what keeps these
+ * cases inside a 2 s window on a loaded runner: see reads.ts.
+ */
+async function detailsLanded(): Promise<void> {
+  await landed(api.loadTask)
+  await landed(api.loadAgentRun)
+}
+
 type Pane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
 const PANES: readonly Pane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
 
@@ -164,7 +177,8 @@ describe('the Logs tab: its address, its place, and all four streams', () => {
     serve(finished())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
-    await screen.findByRole('button', { name: /^Last log line/ })
+    await detailsLanded()
+    screen.getByRole('button', { name: /^Last log line/ })
     const names = within(screen.getByRole('tablist', { name: 'Agent panes' }))
       .getAllByRole('tab')
       .map((t) => t.querySelector('.c-tab-label')?.textContent)
@@ -228,9 +242,13 @@ describe('no element of the detail is covered by a log element, at any split wid
   async function check(start: Pane, task: Task) {
     serve(task)
     const r = render(<Routed start={start} onGo={() => {}} />)
-    await waitFor(() => expect(document.querySelector('.ag-head-facts')).not.toBeNull())
+    await landed(api.loadTask)
+    expect(document.querySelector('.ag-head-facts')).not.toBeNull()
     // Details draws its pane from a second read (loadAgentRun); wait for it, or a loaded runner asserts on "Reading…".
-    if (start === 'detail') await waitFor(() => expect(document.querySelector('.ag-loglast')).not.toBeNull())
+    if (start === 'detail') {
+      await landed(api.loadAgentRun)
+      expect(document.querySelector('.ag-loglast')).not.toBeNull()
+    }
     return r
   }
 
@@ -290,12 +308,16 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
     serve(running())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
-    await screen.findByRole('region', { name: 'Logs' })
+    await landed(api.loadTask)
+    screen.getByRole('region', { name: 'Logs' })
     expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
     expect(tab('Logs').getAttribute('aria-selected')).toBe('true')
-    // A reader who then picks Details stays there.
+    // A reader who then picks Details stays there. Its read starts only now:
+    // a running agent's Details are not read on the way to its log.
+    expect(api.loadAgentRun).not.toHaveBeenCalled()
     fireEvent.click(tab('Details'))
-    await screen.findByRole('button', { name: /^Last log line/ })
+    await landed(api.loadAgentRun)
+    screen.getByRole('button', { name: /^Last log line/ })
     expect(tab('Details').getAttribute('aria-selected')).toBe('true')
     expect(go).toHaveBeenCalledTimes(2)
   })
@@ -304,13 +326,16 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
     serve(finished())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
-    const line = await screen.findByRole('button', { name: /^Last log line/ })
+    await detailsLanded()
+    const line = screen.getByRole('button', { name: /^Last log line/ })
     expect(go).not.toHaveBeenCalled()
     expect(screen.queryByRole('region', { name: 'Logs' })).toBeNull()
-    await waitFor(() => expect(line.textContent).toContain('three'))
+    // The line is the log read's, which the last-line strip makes itself.
+    await landed(api.loadTaskLogs)
+    expect(line.textContent).toContain('three')
     fireEvent.click(line)
     expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
-    expect(await screen.findByRole('region', { name: 'Logs' })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Logs' })).toBeTruthy()
   })
 
   // "Running" is an attempt in flight (CONTRACT.md invariant 1). A waiting
@@ -320,7 +345,8 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
       serve(running({ state, attempt_count: 0 }))
       const go = vi.fn()
       render(<Routed start="detail" onGo={go} />)
-      await screen.findByRole('button', { name: /^Last log line/ })
+      await detailsLanded()
+      screen.getByRole('button', { name: /^Last log line/ })
       expect(go).not.toHaveBeenCalled()
       expect(tab('Details').getAttribute('aria-selected')).toBe('true')
       expect(screen.queryByRole('region', { name: 'Logs' })).toBeNull()
@@ -332,7 +358,8 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
       serve(running({ state }))
       const go = vi.fn()
       render(<Routed start="detail" onGo={go} />)
-      await screen.findByRole('region', { name: 'Logs' })
+      await landed(api.loadTask)
+      screen.getByRole('region', { name: 'Logs' })
       expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
     })
   }
@@ -341,7 +368,8 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
     serve(running())
     const go = vi.fn()
     render(<Routed start="attempts" onGo={go} />)
-    await waitFor(() => expect(document.querySelector('.ag-head-facts')).not.toBeNull())
+    await landed(api.loadTask)
+    expect(document.querySelector('.ag-head-facts')).not.toBeNull()
     expect(go).not.toHaveBeenCalled()
     expect(tab('Attempts').getAttribute('aria-selected')).toBe('true')
   })
@@ -352,7 +380,8 @@ describe('N11: Escape in More closes the menu, and only the menu', () => {
     serve(running())
     const go = vi.fn()
     render(<Routed start="logs" onGo={go} />)
-    const region = await screen.findByRole('region', { name: 'Logs' })
+    await landed(api.loadTask)
+    const region = screen.getByRole('region', { name: 'Logs' })
     const more = region.querySelector<HTMLDetailsElement>('details.ag-logs-more')!
     more.open = true
     const summary = more.querySelector<HTMLElement>('summary')!
@@ -371,7 +400,8 @@ describe('N11: Escape in More closes the menu, and only the menu', () => {
     serve(running())
     const go = vi.fn()
     render(<Routed start="logs" onGo={go} />)
-    const region = await screen.findByRole('region', { name: 'Logs' })
+    await landed(api.loadTask)
+    const region = screen.getByRole('region', { name: 'Logs' })
     const more = region.querySelector<HTMLDetailsElement>('details.ag-logs-more')!
     more.open = true
     const inside = more.querySelector<HTMLElement>('.ag-logs-menu')!

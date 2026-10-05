@@ -198,6 +198,7 @@ from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
     GitError,
+    GitTransient,
     MergeOutcome,
     clone_at_commit,
     commit_dirty,
@@ -210,6 +211,7 @@ from .gitops import (
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    retry_clone,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
@@ -240,6 +242,9 @@ from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
+    RESUME_MOVED,
+    RESUME_REASON_ENV,
+    RESUME_RELOADED,
     RESUME_SESSION_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
@@ -538,6 +543,21 @@ class Outcome:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+class _CloneUnreachable(WorkerError):
+    """The clone's forge did not answer through every in-process try (#623).
+
+    Raised by `_maybe_clone` and turned by `_prepare` into a retryable end of
+    the attempt (`_fail_clone_unreachable`). A `WorkerError`, so a caller
+    that does not tell it apart still fails deliberately rather than crashing.
+    `reason` is already scrubbed.
+    """
+
+    def __init__(self, reason: str, tries: int) -> None:
+        super().__init__(f"repository clone failed: {reason}")
+        self.reason = reason
+        self.tries = tries
+
+
 class Worker:
     """One attempt, start to finish."""
 
@@ -633,6 +653,13 @@ class Worker:
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
+        # Where the pull request text of a step whose verdict gate stayed shut
+        # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
+        # `implementer`, `label` or None; None when the gate did not shut.
+        self._pr_text_from: dict[str, str | None] | None = None
+        # The contributors this integrator left out of its merge because they
+        # changed nothing (`_integrates_with_changes`, 2026-10-05).
+        self._no_change_contributors: list[str] = []
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -687,6 +714,9 @@ class Worker:
         # the moves so far; and whether the last start followed a swap.
         self._session_id: str | None = None
         self._resume_session: str | None = None
+        #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
+        #: decides what the resumed CLI is told.
+        self._resume_reason: str | None = None
         self._readings: ReadingForwarder | None = None
         self._turns_checked = 0
         self._channel_seen: int | None = None
@@ -949,11 +979,27 @@ class Worker:
                 refusal = self._credential_refusal()
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
+                    # RESUMED, NOT STARTED AGAIN (#626). A restart from the
+                    # prompt threw away everything the agent had done -- 26
+                    # restarts and ~169 agent-minutes in the 2026-10-05
+                    # history. On a held account the runner's channel named
+                    # the session (`_move_account_after` read it above), and
+                    # the restart continues it with `--resume`, exactly as an
+                    # account move does. A run that named no session, or a
+                    # runner that cannot resume (the channel exists only for
+                    # one that can), restarts from the prompt as before.
+                    resumed = self._account is not None and self._session_id is not None
+                    if resumed:
+                        self._resume_session = self._session_id
+                        self._resume_reason = RESUME_RELOADED
+                        # The next runner counts its turns from zero.
+                        self._turns_checked = 0
                     self.log.warning(
                         "credential refused; reloading it and restarting in place",
                         provider=refusal.get("provider"),
                         marker=refusal.get("marker"),
                         reload=credential_reloads,
+                        resumed=resumed,
                     )
                     self.control.emit(
                         EventType.RETRYING,
@@ -961,6 +1007,7 @@ class Worker:
                             "cause": "credential_reloaded",
                             "provider": refusal.get("provider"),
                             "reload": credential_reloads,
+                            "resumed": resumed,
                         },
                     )
                     ws.credential_path.unlink(missing_ok=True)
@@ -1445,6 +1492,21 @@ class Worker:
         if waiting_on:
             return functools.partial(self._park_dependency_incomplete, waiting_on)
 
+        # ---- STEP 4a'': an upstream this step needs changed nothing ---------
+        # Owner decision, 2026-10-05. A step allowed an empty diff
+        # (`allow_empty_diff`) and had nothing to change; this step needed
+        # that change -- its patch, its branch, or every branch it integrates
+        # -- or stages from a step that was itself skipped. It ends SUCCEEDED
+        # with `result_summary.skipped` here, on the same verified document,
+        # before a checkpoint is restored, a repository cloned (the branch it
+        # would start from was never pushed), an input staged (the patch was
+        # never written) or a credential read. After the window closes, like
+        # every other ending `_prepare` decides on.
+        self._task = task
+        nothing = self._nothing_to_work_on(task)
+        if nothing:
+            return functools.partial(self._finish_nothing_to_change, nothing)
+
         # ---- STEP 4a': a WORKER ACTION starts no runner (contract request 33)
         # `merge` and `post-verdict` name a `WorkerAction` in the frozen
         # catalogue and have no runner_argv: the worker performs the action
@@ -1506,7 +1568,12 @@ class Worker:
 
         # ---- STEP 5: optional shallow clone -----------------------------
         self.phases.enter("clone")
-        repo_info = self._maybe_clone(task)
+        try:
+            repo_info = self._maybe_clone(task)
+        except _CloneUnreachable as exc:
+            # The forge did not answer through every in-process try (#623):
+            # the ATTEMPT ends retryably, after the startup window closes.
+            return functools.partial(self._fail_clone_unreachable, exc.reason, exc.tries)
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
@@ -2003,18 +2070,7 @@ class Worker:
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
             self._child_ended()
-            self._checkpoint("cancellation")
-            summary = self._upload_outputs()
-            self._add_runner_block(summary)
-            self._export_metrics()
-            self.control.finish(
-                state=TaskState.CANCELLED,
-                exit_code=None,
-                error="cancelled by request",
-                result_summary=summary,
-                end_cause=self.control.cancel_cause(),
-            )
-            return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
+            return self._finish_cancelled()
 
         quota = signal_from_control(signals, cfg.provider)
         if quota is not None:
@@ -2075,6 +2131,21 @@ class Worker:
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
+        if self._cancel_requested_now():
+            # THE CANCEL ARRIVING AS A SIGTERM (#627). The API's cancel route
+            # asks the backend to cancel the execution directly, and Cloud
+            # Run's cancel and a GKE Job delete both reach this process as a
+            # SIGTERM -- usually before the next control poll has read the
+            # flag. Parking would put a task somebody stopped back in line, so
+            # it ends CANCELLED here, with its spend and its end recorded, the
+            # way the control poll's cancel ends it.
+            self.log.warning("SIGTERM on a task whose cancel was requested; ending it cancelled")
+            try:
+                return self._finish_cancelled()
+            except FencedError as exc:
+                return Outcome(
+                    exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
+                )
         try:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
@@ -2089,6 +2160,42 @@ class Worker:
                 exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
             )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _cancel_requested_now(self) -> bool:
+        """Whether the task's cancel has been requested, read now. Never raises.
+
+        A read that fails answers False: the SIGTERM path then parks as it
+        always has, and a parked task with a cancel on it is cancelled by the
+        scheduler's drain rather than run again.
+        """
+        try:
+            return bool((self.control.fetch_task() or {}).get("cancel_requested"))
+        except Exception as exc:
+            self.log.warning(
+                "could not read whether a cancel was requested",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+
+    def _finish_cancelled(self) -> Outcome:
+        """End a cancelled task once its runner has stopped and been collected.
+
+        The checkpoint, then the uploads (which record the attempt's spend,
+        `_upload_outputs`), then the terminal write, which records the
+        attempt's end and releases the lease (`control.finish`).
+        """
+        self._checkpoint("cancellation")
+        summary = self._upload_outputs()
+        self._add_runner_block(summary)
+        self._export_metrics()
+        self.control.finish(
+            state=TaskState.CANCELLED,
+            exit_code=None,
+            error="cancelled by request",
+            result_summary=summary,
+            end_cause=self.control.cancel_cause(),
+        )
+        return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
     # -- the fenced exits ---------------------------------------------------
     def _exit_fenced_mid_run(
@@ -2247,6 +2354,15 @@ class Worker:
         # runs and the publish WAITS (#165, owner decision 2026-09-28): it is
         # made below, only once the upload manifest has passed the check.
         summary = self._upload_outputs(defer_publish=True)
+        if ran_clean and self._no_change(summary):
+            # An empty diff this step was allowed (2026-10-05): its result,
+            # which the missing-output check and `_published_nothing` read,
+            # and which a dependant that needed the change skips on.
+            summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+            self.log.info(
+                "nothing to change: the diff is empty and this step allows it",
+                allow_empty_diff=True,
+            )
         # Before the check, which counts what is carried as present (#166).
         self._carry_parked_uploads(summary)
         # Here, where the runner ended on its own, and not on the park, cancel
@@ -2265,6 +2381,12 @@ class Worker:
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         if self._verdict is not None:
             summary["verdict_gate"] = dict(self._verdict)
+            if not self._verdict.get("agent_ran", True):
+                # The owner's words for it (2026-10-05): on MERGE, no fix
+                # agent; the step only published the reviewed work.
+                summary["skipped_agent"] = f"review verdict {self._verdict['verdict']}"
+        if self._pr_text_from is not None:
+            summary["pull_request_text_from"] = dict(self._pr_text_from)
         self._export_metrics()
 
         runner_result = self._add_runner_block(summary)
@@ -2524,6 +2646,12 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        if self._spend.get("cost_estimated"):
+            # The attempt's `cost_usd` includes an estimate for a run stopped
+            # before it reported one (#627). Said here, at the top, because a
+            # CLI runner stopped on SIGTERM may leave no result for the block
+            # below to be written from.
+            summary["cost_estimated"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -3109,9 +3237,26 @@ class Worker:
         # clones; a private one fails, and the error below says why.
         refusal = self._git_token_refusal()
         clone = None
+        # A clone or fetch the forge did not answer -- a connect or read
+        # timeout, DNS, a reset, a 5xx (`gitops.GitTransient`) -- is tried
+        # again in this process after 10 s and 30 s, within the platform's
+        # in-worker wait and the step's deadline (`gitops.retry_clone`). Past
+        # that the attempt ends RETRYABLY (`_fail_clone_unreachable`), so the
+        # task's attempt budget applies. A missing repository, refused
+        # authentication or a bad ref is a plain `GitError` and stays
+        # terminal, at once (#623).
+        retry = functools.partial(
+            retry_clone,
+            destination=destination,
+            max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            remaining_seconds=self._remaining_seconds,
+            logger=self.log,
+            sleep=self.forge_sleep,
+            on_retry=self._heartbeat,
+        )
         if pinned_sha is not None:
             try:
-                clone = clone_at_commit(
+                clone = retry(lambda: clone_at_commit(
                     url=url,
                     branch=ref,
                     commit=pinned_sha,
@@ -3121,7 +3266,11 @@ class Worker:
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
                     token=None if refusal else self._git_token(),
-                )
+                ))
+            except GitTransient as exc:
+                # Not a fall back to the branch tip: the tip is on the same
+                # forge, and an unpinned clone would be a silent change of base.
+                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
                 # Not the end of the step: the branch tip is what every step
                 # started from before the pin existed. Said, so a patch that
@@ -3134,7 +3283,7 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         try:
-            clone = clone or shallow_clone(
+            clone = clone or retry(lambda: shallow_clone(
                 url=url,
                 ref=ref,
                 destination=destination,
@@ -3147,7 +3296,9 @@ class Worker:
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
                 token=None if refusal else self._git_token(),
-            )
+            ))
+        except GitTransient as exc:
+            raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -3193,6 +3344,42 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
+        """A retryable failure before the agent ran: the clone's forge did not answer.
+
+        Measured 2026-10-05 (#623): task_943349914a88 and task_cb020e97d585
+        failed for good on attempt 1 of 3 on "Failed to connect to github.com
+        port 443 after 134 s". An outage says nothing about the repository,
+        so this ends only the ATTEMPT (`fail_retryably`), as
+        `_fail_issue_unreachable` does for the issue fetch: the task goes back
+        to READY while it has attempts left, its lease and capacity are
+        released, and a task whose attempts are spent ends CANNOT_START.
+        """
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: the repository could not be cloned, the forge "
+            f"did not answer after {tries} tries: {reason}. The agent was not "
+            "started; the attempt is retried while the task has attempts left."
+        )
+        self.log.warning(
+            "the clone's forge did not answer; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            tries=tries,
+        )
+        summary = self._upload_outputs()
+        summary["clone_check"] = {"cause": FORGE_UNREACHABLE, "tries": tries}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+            detail={"clone": "repository", "tries": tries},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _upstream_base_pin(
         self, task: dict[str, Any]
@@ -3364,6 +3551,133 @@ class Worker:
         )
         return staged
 
+    # -- an empty diff that is a result (owner decision, 2026-10-05) --------
+
+    def _allows_empty_diff(self) -> bool:
+        """Whether this step's signed dispatch block says an empty diff is a
+        result (`allow_empty_diff`), not the `empty_diff` failure."""
+        return expected_mod.allows_empty_diff(self._dispatch_block())
+
+    def _no_change(self, summary: dict[str, Any]) -> bool:
+        """True when this attempt may end SUCCEEDED with `no_change`: it is
+        allowed an empty diff and the harvest found one. Never for an
+        integrator still owed a merge of its contributors, whose deliverable
+        is their work, not its own diff."""
+        return (
+            self._allows_empty_diff()
+            and not self._integration_is_pending()
+            and expected_mod.changed_nothing(summary.get("git"))
+        )
+
+    def _upstream_left(self, task_id: str) -> str | None:
+        """`expected_mod.left_nothing` of one upstream, read through the
+        tenant-checked upstream read; None for one that did not SUCCEED.
+
+        None too for one that cannot be read -- no document, another
+        tenant's: that is not evidence it changed nothing, and the step goes
+        on to meet the refusal where it always did (staging, the clone, the
+        merge's "missing"), with the words those give.
+        """
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=task_id,
+                tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except InputUnavailable:
+            return None
+        if upstream.get("state") != TaskState.SUCCEEDED.value:
+            return None
+        return expected_mod.left_nothing(upstream.get("result_summary"))
+
+    def _nothing_to_work_on(self, task: dict[str, Any]) -> list[str]:
+        """The upstream task ids whose missing change leaves this step nothing
+        to do (`expected_mod.nothing_to_work_on`), or [] when it runs.
+
+        Every id comes from the verified spec: `metadata.input_from`'s keys
+        and the signed dispatch block's `builds_on`, `pr_author` (a
+        `single-pr` reader or amender clones the author's branch), merge
+        target and `integrates`. A step that names none reads nothing.
+        """
+        block = self._dispatch_block()
+        declared = (task.get("metadata") or {}).get("input_from")
+        input_from = {
+            key.strip(): value
+            for key, value in (declared.items() if isinstance(declared, dict) else ())
+            if isinstance(key, str) and isinstance(value, str) and _TASK_ID_RE.match(key.strip())
+        }
+        branch_from: list[str] = []
+        builds_on = self._dispatch_builds_on()
+        if builds_on:
+            branch_from.append(builds_on)
+        author = block.get("pr_author")
+        if self._pr_role() in ("reader", "amender") and isinstance(author, str) and (
+            _TASK_ID_RE.match(author.strip())
+        ):
+            branch_from.append(author.strip())
+        target = block.get(merge_mod.MERGE_TARGET_FIELD)
+        pull = target.get("pull_request") if isinstance(target, dict) else None
+        if isinstance(pull, str) and _TASK_ID_RE.match(pull.strip()):
+            branch_from.append(pull.strip())
+        integrates = (
+            [t for t in self._dispatch_integrates() if _TASK_ID_RE.match(t)]
+            if self._integration_is_pending() else []
+        )
+        upstream = list(dict.fromkeys([*input_from, *branch_from, *integrates]))
+        if not upstream:
+            return []
+        left = {task_id: self._upstream_left(task_id) for task_id in upstream}
+        return expected_mod.nothing_to_work_on(
+            input_from=input_from, branch_from=branch_from, integrates=integrates, left=left,
+        )
+
+    def _finish_nothing_to_change(self, upstream: list[str]) -> Outcome:
+        """End this step SUCCEEDED, SKIPPED for "nothing to change" (2026-10-05).
+
+        No agent, no clone, no staging, no publish: the change this step was
+        to work on does not exist. The generation is checked first, as before
+        any ending, and the finish is the fenced write every other ending
+        makes, which releases the lease. SUCCEEDED, not CANCELLED: the
+        workflow reads a skipped step as a success (`swarm_api.rollup`), and
+        its own dependants are promoted, read this marker and skip in turn.
+        The frozen `TaskState` has no SKIPPED; the marker is
+        `result_summary.skipped`.
+        """
+        self.phases.enter("nothing_to_change")
+        self.control.validate_generation()
+        summary: dict[str, Any] = {
+            expected_mod.SKIPPED_SUMMARY_KEY: {
+                "reason": expected_mod.NOTHING_TO_CHANGE,
+                "upstream": list(upstream),
+            },
+        }
+        self._export_metrics()
+        self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        self.log.info(
+            "nothing to change: a step this one needs changed nothing; no agent ran",
+            upstream=list(upstream),
+        )
+        return Outcome(exit_code=ExitCode.OK, state=TaskState.SUCCEEDED)
+
+    def _integrates_with_changes(self) -> list[str]:
+        """The contributors this integrator merges: `integrates`, less every
+        one that ended with nothing to change (`no_change`, or skipped). Those
+        pushed no branch, so merging them would name them "missing" on the
+        pull request, as an incomplete integration they are not. They are
+        recorded in `_no_change_contributors`, and the publish says so."""
+        kept: list[str] = []
+        self._no_change_contributors = []
+        for task_id in self._dispatch_integrates():
+            # One that cannot be read is merged as before, and the merge
+            # names a branch it cannot find.
+            left = self._upstream_left(task_id) if _TASK_ID_RE.match(task_id) else None
+            if left is None:
+                kept.append(task_id)
+            else:
+                self._no_change_contributors.append(task_id)
+        return kept
+
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
         """Read this step's verdict gate (#264). None: no gate. True/False: run the agent or not.
 
@@ -3418,6 +3732,11 @@ class Worker:
         ws = self.ws
         assert ws is not None and self._verdict is not None
         self._take_workdir_baseline()
+        if self._opens_pull_request():
+            # Before the result is written and the finish reads the artifacts
+            # folder: the pull request this step owes is titled by the
+            # implementer's own text, or the workflow's label (2026-10-05).
+            self._adopt_pull_request_text()
         ws.result_path.write_text(
             json.dumps(
                 {
@@ -3445,6 +3764,117 @@ class Worker:
                 stderr_truncated=False,
             )
         )
+
+    def _pr_label(self) -> str | None:
+        """The workflow's label from the signed dispatch block (`pr_label`),
+        as one line, or None. swarm-api writes it on a gated step only."""
+        raw = self._dispatch_block().get(expected_mod.PR_LABEL_KEY)
+        if not isinstance(raw, str):
+            return None
+        text = " ".join(raw.split())
+        return text or None
+
+    def _adopt_pull_request_text(self) -> None:
+        """Title and describe the pull request of a step whose gate stayed shut.
+
+        Owner decision, 2026-10-05: after a MERGE verdict no fix agent runs,
+        so nothing writes the `pr-title.txt` an integrator owes. In order:
+
+          1. the implementer's own `pr-title.txt` and `pr-body.md` -- the
+             uploaded artifacts of the `builds_on` step, located through the
+             tenant-checked upstream read and its successful attempt's
+             manifest (`inputs.artifact_reference`, whose key must lie under
+             this tenant's prefix for that task), at most
+             `PR_READ_LIMIT_BYTES` each;
+          2. for whichever is absent or, for the title, unusable: text made
+             from the workflow's label (`_pr_label`).
+
+        Each is written into this attempt's artifacts folder, where the
+        publish reads an agent's (`_agent_pull_request_text`), so it is
+        scrubbed, refused on attribution or a task id, and its mentions
+        neutralised exactly as an agent's own text is. With neither, nothing
+        is written, and the missing title fails the attempt as before. Where
+        each came from is `result_summary.pull_request_text_from`.
+        """
+        ws = self.ws
+        assert ws is not None and self._verdict is not None
+        source: dict[str, str | None] = {"title": None, "body": None}
+        upstream = self._dispatch_builds_on()
+        document: dict[str, Any] | None = None
+        if upstream:
+            try:
+                document = inputs_mod.fetch_upstream_task(
+                    self.db,
+                    upstream_task_id=upstream,
+                    tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                )
+            except InputUnavailable as exc:
+                self.log.warning(
+                    "the implementer's pull request text could not be read",
+                    upstream=upstream, error=str(self._scrub(str(exc))),
+                )
+        if document is not None:
+            for name, part in ((PR_TITLE_FILE, "title"), (PR_BODY_FILE, "body")):
+                if self._copy_upstream_text(document, upstream, name):
+                    source[part] = "implementer"
+        if source["title"] is not None:
+            refused: list[str] = []
+            if self._agent_title(refused) is None:
+                # A title the publish would refuse is no title: the label's
+                # stands in rather than the attempt failing on it.
+                (ws.artifacts / PR_TITLE_FILE).unlink(missing_ok=True)
+                source["title"] = None
+                self.log.warning(
+                    "the implementer's pr-title.txt was not usable; the label's is used",
+                    refused=refused,
+                )
+        label = self._pr_label()
+        if label is not None:
+            if source["title"] is None and not (ws.artifacts / PR_TITLE_FILE).exists():
+                (ws.artifacts / PR_TITLE_FILE).write_text(label + "\n", encoding="utf-8")
+                source["title"] = "label"
+            if source["body"] is None and not (ws.artifacts / PR_BODY_FILE).exists():
+                verdict = self._verdict["verdict"]
+                (ws.artifacts / PR_BODY_FILE).write_text(
+                    f"{label}\n\nThe review's verdict was {verdict}, so no fix agent "
+                    "ran: this pull request carries the implementer's work as it was "
+                    "reviewed.\n",
+                    encoding="utf-8",
+                )
+                source["body"] = "label"
+        self._pr_text_from = source
+        self.log.info("the shut gate's pull request text", title=source["title"],
+                      body=source["body"])
+
+    def _copy_upstream_text(self, document: dict[str, Any], upstream: str, name: str) -> bool:
+        """Copy `name` from the upstream's successful attempt into this
+        attempt's artifacts folder. False, and nothing written, when it has
+        none, it is over `PR_READ_LIMIT_BYTES`, the read fails, or the folder
+        already holds the name."""
+        ws = self.ws
+        assert ws is not None
+        destination = ws.artifacts / name
+        if destination.exists() or destination.is_symlink():
+            return False
+        try:
+            reference = inputs_mod.artifact_reference(
+                document, tenant_id=self.cfg.tenant_id, upstream_task_id=upstream, filename=name,
+            )
+        except InputUnavailable:
+            return False
+        if reference.size_bytes > PR_READ_LIMIT_BYTES:
+            self.log.warning("the implementer's file is over the read limit; not used",
+                             file=name, bytes=reference.size_bytes)
+            return False
+        try:
+            data = self.store.download_bytes(reference.key)
+        except Exception as exc:  # the store's own errors vary by backend
+            self.log.warning("the implementer's file could not be read; not used",
+                             file=name, error=type(exc).__name__)
+            return False
+        destination.write_bytes(data[:PR_READ_LIMIT_BYTES])
+        return True
 
     def _link_artifacts(self) -> None:
         """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
@@ -3943,6 +4373,11 @@ class Worker:
             if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         ]
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
+        if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+            # An allowed empty diff (2026-10-05) writes no patch and opens no
+            # pull request, so neither the patch nor a title is owed; every
+            # other expected output still is.
+            missing = [name for name in missing if name not in (PATCH_NAME, PR_TITLE_FILE)]
         if not missing:
             return []
         causes = self._missing_causes(summary)
@@ -4202,6 +4637,10 @@ class Worker:
         if not self._opens_pull_request():
             return None
         if self._verdict is not None and not self._verdict.get("agent_ran", True):
+            return None
+        if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+            # `allow_empty_diff` (2026-10-05): changing nothing is this
+            # step's result, and there was nothing to open a pull request for.
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
@@ -4723,6 +5162,7 @@ class Worker:
         env = {ACCOUNT_STREAM_ENV: str(stream), ACCOUNT_MOVE_ENV: str(move)}
         if self._resume_session:
             env[RESUME_SESSION_ENV] = self._resume_session
+            env[RESUME_REASON_ENV] = self._resume_reason or RESUME_MOVED
         return env
 
     def _read_account_channel(self) -> dict[str, Any]:
@@ -4900,6 +5340,7 @@ class Worker:
                 current, reason = outcome, SWAP_UNUSABLE
                 continue
             self._resume_session = self._session_id
+            self._resume_reason = RESUME_MOVED
             self._just_swapped = True
             self._readings = None
             self._turns_checked = 0
@@ -7360,7 +7801,7 @@ class Worker:
             # at an arbitrary ref.
             if role == "integrator":
                 upstream = [
-                    f"{cfg.git_branch_prefix}{tid}" for tid in self._dispatch_integrates()
+                    f"{cfg.git_branch_prefix}{tid}" for tid in self._integrates_with_changes()
                 ]
                 if upstream:
                     merge = merge_branches(
@@ -7382,6 +7823,12 @@ class Worker:
                         "missing": list(merge.missing),
                         "complete": merge.complete,
                     }
+                if self._no_change_contributors:
+                    # Not merged, and not missing: they had nothing to change
+                    # (`allow_empty_diff`), so they pushed no branch.
+                    out.setdefault("integrated", {})["no_change"] = [
+                        f"{cfg.git_branch_prefix}{tid}" for tid in self._no_change_contributors
+                    ]
 
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
@@ -8354,8 +8801,30 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        if "total_cost_usd" not in usage:
+            # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
+            # cancel, a SIGTERM, a fence or a timeout prints no result event.
+            # What its stream showed is estimated, and only the keys the run
+            # did not report itself are taken, so nothing is counted twice.
+            estimate = self._stopped_run_estimate()
+            more = {k: v for k, v in estimate.items() if k not in usage}
+            if more:
+                usage = {**usage, **more}
+                if "total_cost_usd" in more:
+                    self._spend["cost_estimated"] = True
         if usage:
             self._spend = _add_spend(self._spend, usage)
+
+    def _stopped_run_estimate(self) -> dict[str, Any]:
+        """`_stream_spend_estimate` over this profile's agent capture, or {}."""
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is None or self.ws is None:
+            return {}
+        try:
+            return _stream_spend_estimate(self.ws.artifacts / files.stdout)
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not estimate the stopped run's spend", error=str(exc))
+            return {}
 
     def _record_spend(self) -> None:
         """Write what this attempt has spent onto its attempt document. Never raises.
@@ -10321,6 +10790,142 @@ def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
     if models:
         out["models"] = sorted(models)
     return out
+
+
+#: LIST PRICES, USD per million tokens: (input, output, cache read), for the
+#: one use below -- estimating what a CLI run cost when it was stopped before
+#: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
+#: write rate. Input and output are Anthropic's first-party API rates as the
+#: Claude API reference's model table gives them (cached 2026-06-24, checked
+#: 2026-10-05). Two that look wrong are not: `claude-mythos-5-1` is the
+#: Project Glasswing counterpart of Fable 5.1, at Fable 5.1's price, and
+#: `claude-opus-5-5` is priced BELOW Opus 5 ($4/$20). Cache reads are that
+#: table's where it gives one (Fable 5.1 $0.25, Opus 5.5 $0.20) and 0.1x input
+#: elsewhere. A model missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
+#: cost is honest, a guessed one is a wrong figure. Add a model when the
+#: platform starts running it; change a price only with the date it changed.
+_LIST_PRICES: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4-8": (5.0, 25.0, 0.50),
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+}
+_CACHE_WRITE_FACTOR = 1.25
+
+#: `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: the priced name, then
+#: at most a date and a context marker. Anything else is not that model.
+_MODEL_SUFFIX = re.compile(r"(?:-\d{8})?(?:\[[a-z0-9]+\])?")
+
+#: The most of a capture file read for an estimate. The capture is itself
+#: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
+_ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
+
+
+def _list_price(model: Any) -> tuple[float, float, float] | None:
+    if not isinstance(model, str):
+        return None
+    for name, price in _LIST_PRICES.items():
+        if model.startswith(name) and _MODEL_SUFFIX.fullmatch(model[len(name):]):
+            return price
+    return None
+
+
+def _stream_spend_estimate(path: Path) -> dict[str, Any]:
+    """What a stopped CLI run spent, from the per-message usage its stream carried.
+
+    A CLI stopped on SIGTERM -- a cancel, a SIGTERM to the worker, a fence, a
+    timeout -- prints no `result` event, and that event is the only place it
+    reports `total_cost_usd`; every such attempt used to read "not reported"
+    however long it had worked (#627: cancelled attempts priced 0 of 87). Each
+    `assistant` event carries its message's `usage` and `model`, so the tokens
+    are summed per message -- the LAST copy of each message id, because the
+    stream repeats a message once per content block with the output count
+    growing -- and priced at `_LIST_PRICES`.
+
+    A FLOOR, not an exact figure: a capture past its cap keeps its head and
+    tail, so a long run's middle is not counted. The caller marks the figure
+    as an estimate. `total_cost_usd` is left out when any message's model has
+    no price, and {} comes back when the stream carried no usage at all.
+
+    The capture is in `artifacts/`, which the agent can write, so a link put
+    in its place is refused at the open, not followed (as `_publish_tail`
+    does). Never raises.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return {}
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read(_ESTIMATE_READ_LIMIT)
+    except OSError:
+        return {}
+    messages: dict[str, tuple[Any, dict[str, Any]]] = {}
+    anonymous = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith(b"{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+            continue
+        key = message.get("id")
+        if not isinstance(key, str) or not key:
+            anonymous += 1
+            key = f"\x00{anonymous}"
+        messages[key] = (message.get("model"), message["usage"])
+    if not messages:
+        return {}
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+    totals = dict.fromkeys(fields, 0)
+    cost = 0.0
+    priced = True
+    models: set[str] = set()
+    for model, usage in messages.values():
+        counts = {
+            k: usage[k] if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+            else 0
+            for k in fields
+        }
+        for k in fields:
+            totals[k] += counts[k]
+        if isinstance(model, str):
+            models.add(model)
+        price = _list_price(model)
+        if price is None:
+            priced = False
+            continue
+        inp, out, read = price
+        cost += (
+            counts["input_tokens"] * inp
+            + counts["output_tokens"] * out
+            + counts["cache_creation_input_tokens"] * inp * _CACHE_WRITE_FACTOR
+            + counts["cache_read_input_tokens"] * read
+        ) / 1_000_000
+    estimate: dict[str, Any] = dict(totals)
+    if priced:
+        estimate["total_cost_usd"] = round(cost, 10)
+    if models:
+        estimate["models"] = sorted(models)
+    return estimate
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:

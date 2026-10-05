@@ -14,7 +14,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { App } from '../App'
 import { nearestPath } from '../NotFound'
 
-const WAIT = { timeout: 8000 }
 
 afterEach(() => {
   window.history.replaceState(null, '', '/')
@@ -38,7 +37,7 @@ describe('an unknown route is a not-found state, not a redirect', () => {
   it('says which address has no page, keeps it in the bar, and links the nearest route', async () => {
     window.history.replaceState(null, '', '/capacity/quota')
     render(<App />)
-    const heading = await screen.findByRole('heading', { name: /No page at \/capacity\/quota/ }, WAIT)
+    const heading = await screen.findByRole('heading', { name: /No page at \/capacity\/quota/ })
     expect(heading).toBeTruthy()
     await waitFor(() => expect(window.location.pathname).toBe('/capacity/quota'))
     const page = within(document.querySelector<HTMLElement>('.nf-page')!)

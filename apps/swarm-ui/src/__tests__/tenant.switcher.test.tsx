@@ -23,6 +23,7 @@ import STYLES from '../styles.css?raw'
 import { TENANT_HEADER, TENANT_PREF, apiHeaders, chooseTenant, chosenTenant, read, route, write, type Result } from '../fetch'
 import { artifactRawUrl } from '../api'
 import { postWorkflow } from '../SubmitWorkflow'
+import { checkpointDownloadHref } from '../CheckpointBrowser'
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: JSON_HEADERS })
@@ -443,6 +444,19 @@ describe('a URL the browser fetches by itself', () => {
 
   it('carries nothing when no tenant was chosen', () => {
     const url = new URL(artifactRawUrl('task_r', 'out.txt', 'attachment'), 'http://x')
+    expect(url.searchParams.has('tenant')).toBe(false)
+  })
+
+  it('carries the chosen tenant on the checkpoint download link', () => {
+    chooseTenant('research')
+    const url = new URL(checkpointDownloadHref('task_r', 'att_1', 'ckpt-00001'), 'http://x')
+    expect(url.pathname).toBe('/v1/tasks/task_r/checkpoints/ckpt-00001/content')
+    expect(url.searchParams.get('tenant')).toBe('research')
+    expect(url.searchParams.get('attempt_id')).toBe('att_1')
+  })
+
+  it('carries nothing on the checkpoint download link when no tenant was chosen', () => {
+    const url = new URL(checkpointDownloadHref('task_r', 'att_1', 'ckpt-00001'), 'http://x')
     expect(url.searchParams.has('tenant')).toBe(false)
   })
 })

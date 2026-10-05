@@ -1,6 +1,6 @@
 """What an issue run writes on GitHub, as text: pure, no I/O (#454).
 
-Three texts, each built from the run document alone:
+Four texts, each built from the run document alone:
 
   * THE PLAN COMMENT -- summary, mode, estimate, requirements, the overlaps
     the planner named (as links), each step with its files, tests and
@@ -9,6 +9,10 @@ Three texts, each built from the run document alone:
   * THE STATUS COMMENT -- one comment, edited in place as the run moves
     (planning -> awaiting approval -> running -> PR opened -> checks green ->
     merged, or failed), with the pull request and the console links;
+  * THE VERIFICATION COMMENT (#646) -- for a run that ended DONE with
+    `outcome: already_on_main`: the build steps' verification tables, one
+    row per planned requirement, and whether the run closes the issue (every
+    row met) or leaves it open;
   * THE KEYWORD BLOCK in the pull request's body -- `Closes #N` only when
     every planned requirement is delivered, `part of #N` naming what is left
     otherwise (CLAUDE.md, "`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE").
@@ -46,7 +50,14 @@ import re
 from typing import Iterable, Sequence
 
 from .codec import run_console_url, workflow_console_url
-from .issueruns import AUTO_APPROVER, IssueRun, RunState
+from .issueruns import (
+    AUTO_APPROVER,
+    MAX_VERIFICATION_CHARS,
+    OUTCOME_ALREADY_ON_MAIN,
+    VERIFICATION_FILE,
+    IssueRun,
+    RunState,
+)
 from .redaction import redact
 
 #: GitHub refuses a comment or a body over 65,536 characters; this leaves room.
@@ -60,6 +71,7 @@ MAX_ERROR_CHARS = 1_500
 PLAN_KIND = "plan"
 STATUS_KIND = "status"
 KEYWORD_KIND = "keyword"
+VERIFICATION_KIND = "verification"
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _TRUNCATED = "\n\n… (cut: GitHub's size limit for a comment)\n"
@@ -322,6 +334,8 @@ def status_phase(run: IssueRun) -> str:
     if run.state == RunState.FIXING:
         return "CI red, fixing"
     if run.state == RunState.DONE:
+        if run.outcome == OUTCOME_ALREADY_ON_MAIN:
+            return "already done on main"
         if pull.get("merged"):
             return "merged"
         if checks == "green":
@@ -369,6 +383,8 @@ def render_status_comment(
                     + (f"{left} planned requirement(s) not confirmed by the review"
                        if left else "no planned requirement could be confirmed")
                 )
+    if run.outcome == OUTCOME_ALREADY_ON_MAIN:
+        out.append(f"- **Outcome:** `{OUTCOME_ALREADY_ON_MAIN}` -- " + _closing_words(run))
     if run.ci_fix_round:
         out.append(f"- **CI fix round:** {run.ci_fix_round} of {run.fix_rounds}")
     if run.state == RunState.PLANNED and run.plan_digest:
@@ -389,6 +405,70 @@ def render_status_comment(
         "",
         "_SwarmCloud edits this comment in place as the run moves._",
     ]
+    return bounded("\n".join(out) + "\n")
+
+
+# --------------------------------------------------------------------------
+# the verification comment (#646)
+# --------------------------------------------------------------------------
+
+def closes_issue(run: IssueRun) -> bool:
+    """Whether the write-back closes the issue: an already_on_main run whose
+    tables say EVERY planned requirement is met on main, and nothing less."""
+    return (
+        run.state == RunState.DONE
+        and run.outcome == OUTCOME_ALREADY_ON_MAIN
+        and run.requirements_met is True
+        and bool((run.plan or {}).get("requirements"))
+    )
+
+
+def _closing_words(run: IssueRun) -> str:
+    if closes_issue(run):
+        # Written in the same sync that closes the issue (`issuesync`); a
+        # close that fails is on the run as `writeback_error`, and retried.
+        return "every planned requirement is met on main, so this issue is closed as completed"
+    left = len(run.requirements_unmet)
+    return (
+        f"{left} planned requirement(s) not confirmed met on main, so this issue stays open"
+        if left else "no planned requirement could be confirmed met on main, so this issue stays open"
+    )
+
+
+def render_verification_comment(
+    run: IssueRun, *, literals: Sequence[str] = ()
+) -> str | None:
+    """The build's verification tables, for an already_on_main run; None for any other.
+
+    The tables are the agents' text, so they are neutralised like the plan
+    (`neutral`): masked again with the tenant's token as a literal, `<` and
+    `>` escaped, mentions broken, closing keywords turned into `refs`. They
+    keep their lines, so the Markdown table still renders.
+    """
+    if run.state != RunState.DONE or run.outcome != OUTCOME_ALREADY_ON_MAIN:
+        return None
+    out = [
+        marker(run.id, VERIFICATION_KIND),
+        "### SwarmCloud: already done on main",
+        "",
+        "The build changed nothing: its agent found this issue's work already on the "
+        f"default branch, and wrote what it verified ({VERIFICATION_FILE}, one row per "
+        "planned requirement).",
+        "",
+        neutral(run.verification or f"No build step wrote {VERIFICATION_FILE}.",
+                MAX_VERIFICATION_CHARS, literals=literals),
+        "",
+        f"**{_closing_words(run)[0].upper() + _closing_words(run)[1:]}.**",
+    ]
+    if not closes_issue(run):
+        if run.requirements_unmet:
+            out += ["", "Not confirmed:"]
+            out += [
+                f"- {neutral(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                for item in run.requirements_unmet[:60]
+            ]
+        if run.requirements_note:
+            out += ["", f"_{neutral(run.requirements_note, MAX_ERROR_CHARS, literals=literals, one_line=True)}_"]
     return bounded("\n".join(out) + "\n")
 
 

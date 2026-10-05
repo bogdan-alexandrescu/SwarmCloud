@@ -32,6 +32,7 @@ HEALTHY = {
     "/v1/capacity": {"pools": [], "runner_profiles": {}},
     "/v1/tasks": {"tasks": []},
     "/v1/accounts": {"accounts": []},
+    "/v1/admin/leases": {"leases": [], "active_beyond_window": 0},
 }
 
 

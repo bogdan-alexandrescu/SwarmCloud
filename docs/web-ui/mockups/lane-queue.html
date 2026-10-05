@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Lanes: the queue board, a lane, adding lanes, and the lane ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell, pills and the icon sprite are copied from repositories.html,
+   itself copied from the approved components.html (pick A as built) and agent-details-v3.html
+   (pick A). TYPE RULE (owner, 2026-10-01): 12px floor, no all-caps, no tracking. The frames
+   follow the page's theme toggle (light / dark / system), so one click shows every frame in
+   both themes. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:760px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.variant{margin-top:32px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.fr{margin:0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute)}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ======== frame tokens: .fx follows the page theme, .fd is always dark ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+:root[data-theme="dark"] .fx,.fd{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);min-width:1280px;width:1280px;min-height:760px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app a{color:inherit;text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee!important;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff!important}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e!important;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.pk .new{font:600 12px var(--f-mono);color:var(--f-ac)}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.ct h3{margin:0;font-size:21px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sub{font-size:13px;color:var(--f-mu);margin:0}
+/* brand state marks and pills */
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st svg{width:12px;height:12px;flex:none}
+.st.live{color:var(--s-live)}.st.park{color:var(--s-park)}.st.bad{color:var(--s-bad)}.st.warn{color:var(--s-warn)}.st.neu{color:var(--s-neu)}
+.st span{color:var(--f-ink);font-size:13px}
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.park{background:var(--s-parkb);color:var(--s-park)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}.sp.warn{background:var(--s-warnb);color:var(--s-warn)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ctx{background:var(--f-acs);color:var(--f-ac);border:1px solid var(--f-acl);font-family:var(--f-display);font-weight:600}
+.chip.ctx .ic{width:13px;height:13px}
+.chip.warn{background:var(--s-warnb);color:var(--s-warn)}
+.dash{color:var(--f-mu);border-bottom:1px dotted var(--f-mu);cursor:help}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.danger{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 55%,transparent)}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.more{color:var(--f-ac)!important;font-size:12.5px;white-space:nowrap;font-weight:550}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln)}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.bar{height:6px;border-radius:3px;background:var(--f-ln);overflow:hidden;display:flex;min-width:60px}
+.bar i{display:block;height:100%;background:var(--f-ac)}
+.bar i.l{background:var(--s-live)}.bar i.w{background:var(--s-warn)}
+.bar.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px);border:1px dashed var(--f-bd)}
+.inp{border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--f-mu);min-height:32px}
+.inp.val{color:var(--f-ink)}
+.inp.err{border-color:var(--s-bad)}
+.app code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.app .exd{color:var(--f-mu)}
+/* tables in frames */
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+table.t th{font-size:12px;font-weight:600;color:var(--f-mu);text-align:left;padding:7px 10px;border-bottom:1px solid var(--f-ln);white-space:nowrap}
+table.t td{padding:0 10px;height:40px;border-bottom:1px solid var(--f-ln);white-space:nowrap;vertical-align:middle}
+table.t tr:last-child td{border-bottom:0}
+table.t td.mu{color:var(--f-mu)}
+table.t .rn{display:flex;flex-direction:column;line-height:1.25}
+table.t .rn b{font-weight:600}
+table.t .rn small{font-size:12px;color:var(--f-mu)}
+table.t tr.sel td{background:var(--f-acs)}
+.fresh{display:inline-flex;align-items:center;gap:6px}
+.fresh small{font-size:12px;color:var(--f-mu)}
+.tm{display:grid;grid-template-columns:70px minmax(0,1fr) 44px;gap:8px;align-items:center;font-size:12.5px}
+/* forms */
+.fgrid{display:grid;grid-template-columns:200px minmax(0,1fr);gap:14px 18px;align-items:start}
+.fl{font-size:13px;font-weight:600;padding-top:6px}
+.fl small{display:block;font-weight:400;color:var(--f-mu);font-size:12px}
+.hint{font-size:12px;color:var(--f-mu);margin-top:4px}
+.hint.bad{color:var(--s-bad)}
+.radio{display:flex;gap:6px;flex-wrap:wrap}
+.radio span{border:1px solid var(--f-ln);border-radius:8px;padding:5px 10px;font-size:12.5px;color:var(--f-mu)}
+.radio span.on{border-color:var(--f-ac);background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.check{display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:12px}
+.check i{width:14px;height:14px;border:1px solid var(--f-bd);border-radius:4px;display:inline-block}
+.check i.on{background:var(--f-ac);border-color:var(--f-ac)}
+.check.off{color:var(--f-mu)}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:440px;background:var(--f-sf);border-left:1px solid var(--f-ln);box-shadow:var(--f-sh);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.28)}
+.steps{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.steps b{display:inline-flex;align-items:center;gap:6px;color:var(--f-ac);font-weight:600}
+.steps i{font-style:normal;width:20px;height:20px;border-radius:50%;border:1px solid currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.pick{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln)}
+.pick small{grid-column:2/4;font-size:12px;color:var(--f-mu)}
+.pick.on{background:var(--f-acs)}
+.pick .dot{width:14px;height:14px;border-radius:50%;border:1px solid var(--f-bd)}
+.pick.on .dot{border:4px solid var(--f-ac)}
+/* detail */
+.kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden}
+.kv>div{padding:9px 12px;border-left:1px solid var(--f-ln);display:flex;flex-direction:column;gap:2px;min-width:0}
+.kv>div:first-child{border-left:0}
+.kv .l{font-size:12px;color:var(--f-mu)}
+.kv .v{font:650 17px/1.25 var(--f-display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.kv .v small{font-size:12.5px;font-weight:500;color:var(--f-mu)}
+.kv .s{font-size:12px;color:var(--f-mu)}
+.kv .s.warn{color:var(--s-warn)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.cols3{display:grid;grid-template-columns:260px minmax(0,1fr) 300px;gap:12px;align-items:start}
+.mrow{display:grid;grid-template-columns:minmax(0,180px) minmax(0,1fr) 54px;gap:10px;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.mrow:first-child{border-top:0}
+.mrow code{justify-self:start}
+.mrow span{color:var(--f-mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.hs{display:grid;grid-template-columns:minmax(0,1fr) 120px 30px;gap:10px;align-items:center;font-size:12.5px;padding:4px 0}
+.hs .p{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hs em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.run{display:grid;grid-template-columns:18px 92px 110px minmax(0,1fr) 70px;gap:8px;align-items:center;font-size:12.5px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.run:first-child{border-top:0}
+.run em{font:normal 12px var(--f-mono);color:var(--f-mu)}
+.run small{color:var(--f-mu);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree{font:12.5px/1.9 var(--f-mono);margin:0;white-space:pre;color:var(--f-ink)}
+.tree .on{background:var(--f-acs);color:var(--f-ac);border-radius:4px;padding:0 4px}
+.tree i{font-style:normal;color:var(--f-mu)}
+.used{display:flex;flex-direction:column}
+.used>div{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px}
+.used>div:first-child{border-top:0}
+.used small{color:var(--f-mu);font-size:12px}
+.banner{display:flex;align-items:center;gap:10px;border:1px solid color-mix(in srgb,var(--s-warn) 45%,transparent);background:var(--s-warnb);color:var(--f-ink);border-radius:10px;padding:8px 12px;font-size:12.5px}
+.banner b{color:var(--s-warn)}
+.banner .btn{margin-left:auto}
+/* plan + agent details */
+.plan{display:flex;flex-direction:column;gap:8px}
+.pstep{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px 10px;border:1px solid var(--f-ln);border-radius:10px;padding:10px 12px;background:var(--f-sf)}
+.pstep .n{width:22px;height:22px;border-radius:50%;background:var(--f-hv);font:600 12px/22px var(--f-mono);text-align:center;color:var(--f-mu)}
+.pstep b{font-size:13.5px}
+.pstep .f{grid-column:2;display:flex;flex-wrap:wrap;gap:4px 8px;font-size:12px;color:var(--f-mu)}
+.pstep .f code{font-size:12px}
+.pop{position:absolute;z-index:4;width:340px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:12px;box-shadow:var(--f-sh);padding:12px 14px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.pop b{font-size:13px}.pop p{margin:0}.pop small{color:var(--f-mu);font-size:12px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.meta>span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.meta>span+span::before{content:"·";margin-right:3px}
+.meta b{color:var(--f-ink);font-weight:550}
+.meta.col{flex-direction:column;align-items:flex-start;gap:4px}.meta.col>span+span::before{content:none}
+.ctxcard{border:1px solid var(--f-acl);border-left:3px solid var(--f-ac);border-radius:12px;background:var(--f-sf);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.ctxcard ul{margin:0;padding-left:18px;font-size:12.5px}
+.ctxcard li{margin:2px 0}
+.half{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.pane{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.pane h4{margin:0;font-size:16px}
+/* ======== second pass (RI0b, 2026-10-05): graph explorer, impact, gate, settings, git tokens ======== */
+.gcanvas{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);position:relative;overflow:hidden}
+.gcanvas .tools{position:absolute;top:10px;left:10px;display:flex;gap:6px;flex-wrap:wrap}
+.gcanvas .legend{position:absolute;bottom:10px;left:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--f-mu);background:var(--f-sf);padding:4px 8px;border-radius:8px;border:1px solid var(--f-ln)}
+svg.g{display:block}
+svg.g text{font:12px var(--f-mono);fill:var(--f-ink)}
+svg.g text.mu{fill:var(--f-mu)}
+svg.g text.ac{fill:var(--f-ac);font-weight:600}
+svg.g .e{stroke:var(--f-bd);stroke-width:1.4;fill:none}
+svg.g .e.lsp{stroke:var(--f-ac);stroke-width:1.8}
+svg.g .e.ast{stroke:var(--f-mu);stroke-dasharray:5 4}
+svg.g .e.low{stroke:var(--s-warn);stroke-dasharray:2 4}
+svg.g .e.hot{stroke:var(--s-bad)}
+svg.g .n{fill:var(--f-sf);stroke:var(--f-bd);stroke-width:1.4}
+svg.g .n.sel{fill:var(--f-acs);stroke:var(--f-ac);stroke-width:2.2}
+svg.g .n.hot{fill:var(--s-badb);stroke:var(--s-bad)}
+svg.g .n.warm{fill:var(--s-warnb);stroke:var(--s-warn)}
+svg.g .n.cool{fill:var(--s-liveb);stroke:var(--s-live)}
+svg.g .n.test{fill:var(--s-parkb);stroke:var(--s-park)}
+svg.g .cl{fill:var(--f-hv);stroke:var(--f-ln);stroke-width:1}
+svg.g .cell{fill:var(--f-hv)}
+svg.g .cell.d1{fill:var(--f-acs)}
+svg.g .cell.d2{fill:var(--f-acl)}
+svg.g .cell.d3{fill:var(--f-ac)}
+svg.g .cell.cyc{fill:var(--s-badb);stroke:var(--s-bad)}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.lg i{display:inline-block;width:22px;height:0;border-top:2px solid var(--f-ac)}
+.lg i.ast{border-top:2px dashed var(--f-mu)}.lg i.low{border-top:2px dotted var(--s-warn)}
+.lg b{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid var(--s-bad);background:var(--s-badb)}
+.lg b.warm{border-color:var(--s-warn);background:var(--s-warnb)}.lg b.cool{border-color:var(--s-live);background:var(--s-liveb)}.lg b.test{border-color:var(--s-park);background:var(--s-parkb)}
+.ev{font:500 12px var(--f-mono);padding:1px 6px;border-radius:99px;border:1px solid var(--f-acl);color:var(--f-ac);background:var(--f-acs)}
+.ev.ast{border-style:dashed;border-color:var(--f-bd);color:var(--f-mu);background:none}
+.ev.low{border-color:color-mix(in srgb,var(--s-warn) 55%,transparent);color:var(--s-warn);background:var(--s-warnb)}
+.cap{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 7px;border-radius:99px;white-space:nowrap}
+.cap svg{width:12px;height:12px}
+.cap.ok{background:var(--s-liveb);color:var(--s-live)}.cap.missing{background:var(--s-badb);color:var(--s-bad)}.cap.unknown{background:var(--s-neub);color:var(--s-neu)}
+table.mx{border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+table.mx th{font-size:12px;font-weight:600;color:var(--f-mu);padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap;vertical-align:bottom}
+table.mx th.l,table.mx td.l{text-align:left}
+table.mx td{padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap}
+table.mx tr.grp td{background:var(--f-hv);font-weight:600;text-align:left}
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.flow .col{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.flow .col h5{margin:0;font-size:13px;display:flex;gap:6px;align-items:baseline}
+.flow .col h5 em{font:normal 600 17px var(--f-display);color:var(--f-ac)}
+.flow .it{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow .it small{display:block;font:12px var(--f-display);color:var(--f-mu);white-space:normal}
+.treerow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:5px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.treerow:first-child{border-top:0}
+.treerow code{justify-self:start}
+.treerow small{color:var(--f-mu);font-size:12px}
+.ind1{padding-left:18px}.ind2{padding-left:36px}.ind3{padding-left:54px}
+.prcard{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.gate{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:4px 10px;align-items:center;font-size:13px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.gate:first-of-type{border-top:0}
+.gate small{grid-column:2/4;color:var(--f-mu);font-size:12px}
+.gate svg{width:12px;height:12px}
+.term{background:#06101e;color:#d7e3f0;border-radius:10px;padding:10px 12px;font:12.5px/1.6 var(--f-mono);white-space:pre;overflow:auto;margin:0;border:1px solid var(--f-ln)}
+.term b{color:#7cc8f8;font-weight:500}.term i{font-style:normal;color:#4cd9a0}.term u{text-decoration:none;color:#f5c451}.term s{text-decoration:none;color:#9fb0c4}
+.ghcheck{border:1px solid var(--f-ln);border-radius:10px;overflow:hidden;background:var(--f-sf)}
+.ghcheck .hd{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln);font-size:13px;background:var(--f-hv)}
+.ghcheck .bd{padding:8px 12px;font-size:12.5px;display:flex;flex-direction:column;gap:4px}
+.paste{border:1px dashed var(--f-bd);border-radius:8px;padding:8px 10px;font:13px var(--f-mono);color:var(--f-mu);display:flex;align-items:center;gap:8px;min-height:36px}
+.lang{display:grid;grid-template-columns:120px 130px 120px minmax(0,1fr) 80px;gap:10px;align-items:center;font-size:12.5px;padding:7px 0;border-top:1px solid var(--f-ln)}
+.lang:first-child{border-top:0}
+.lang small{color:var(--f-mu);font-size:12px}
+.slider{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.slider .tr{position:relative;width:200px;height:4px;border-radius:2px;background:var(--f-ln)}
+.slider .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--f-ac)}
+.slider .tr b{position:absolute;top:-6px;width:16px;height:16px;border-radius:50%;background:var(--f-sf);border:2px solid var(--f-ac)}
+.ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:15px}
+.ask .inp{min-width:200px}
+.answer{border:1px solid color-mix(in srgb,var(--s-bad) 45%,transparent);border-left:3px solid var(--s-bad);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.answer.yes{border-color:color-mix(in srgb,var(--s-live) 45%,transparent);border-left-color:var(--s-live)}
+.pickt td:nth-child(2) a{margin-right:8px}
+/* ======== lane queue (LQD, 2026-10-05): board columns, lane cards, stepper, waiting bars ======== */
+.app .mu,.mu{color:var(--f-mu)}
+.kb{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;align-items:start}
+.kcol{background:var(--f-hv);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.kcol h5{margin:0;font-size:13px;display:flex;gap:6px;align-items:center;padding:2px 4px}
+.kcol h5 em{font:normal 500 12px var(--f-mono);color:var(--f-mu);margin-left:auto}
+.lc{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:5px;font-size:12.5px;min-width:0}
+.lc.bad{border-color:color-mix(in srgb,var(--s-bad) 45%,transparent);border-left:3px solid var(--s-bad)}
+.lc b{font-size:13px;font-weight:600}
+.lc a{color:var(--f-ac)!important}
+.lc .sp,.lc .chip{align-self:flex-start}
+.dep{color:var(--f-mu);font-size:12px}
+.lk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--f-mu)}
+.lk .ic{width:13px;height:13px}
+.lact{display:flex;gap:6px;flex-wrap:wrap}
+.tl{display:grid;grid-template-columns:minmax(0,190px) minmax(0,1fr) auto;gap:10px;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.tl:first-of-type{border-top:0}
+.tl code{justify-self:start}
+.stepper{display:flex;gap:4px;flex-wrap:wrap}
+.stepper span{flex:1;min-width:96px;border-top:3px solid var(--f-ln);padding:6px 4px 0;font-size:12.5px;color:var(--f-mu);display:flex;flex-direction:column}
+.stepper span small{font-size:12px}
+.stepper span.done{border-top-color:var(--s-live);color:var(--f-ink)}
+.stepper span.on{border-top-color:var(--s-warn);color:var(--f-ink);font-weight:600}
+.stack{display:flex;height:10px;border-radius:3px;overflow:hidden;background:var(--f-ln);min-width:120px}
+.stack i,.lgd i{display:block;height:100%}
+.stack i.dep,.lgd i.dep{background:var(--s-park)}
+.stack i.terr,.lgd i.terr{background:var(--s-warn)}
+.stack i.cap,.lgd i.cap{background:var(--s-neu)}
+.stack i.work,.lgd i.work{background:var(--f-ac)}
+.stack i.ci,.lgd i.ci{background:var(--s-live)}
+.stack i.merge,.lgd i.merge{background:var(--f-acl)}
+.lgd{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--f-mu);margin-right:8px}
+.lgd i{width:10px;height:10px;border-radius:2px;display:inline-block}
+table.t tr.grp td{background:var(--f-hv);font-weight:600;font-size:12.5px;height:30px}
+table.t tr.tot td{background:var(--f-acs);font-weight:550}
+table.t tr.tot small{font-size:12px;color:var(--f-mu)}
+svg.dag{display:block}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol><symbol id="i-repo" viewBox="0 0 24 24"><path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z"/><path d="M5.5 17.5a2 2 0 0 1 2-2h11"/><path d="M9 8.5h6"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol></defs></svg>
+<div class="wrap">
+<p class="kicker">SwarmCloud · Work · Lanes · design lane LQD · 2026-10-05</p>
+<h1>Lanes: the queue, a lane, adding lanes, and the ledger</h1>
+<p class="lede">The owner decided on 2026-10-05 (history V1, epic #640) that the implement → review → fix lane becomes a platform object: it waits for another lane's pull request to merge, holds a file-territory lock, runs the CI-fix loop on its pull request, labels <code>ready</code> when green and reviewed, and closes or comments on its issue. The lane outcome ledger (#639) is designed with it. These are the screens, in two or three variants each, for the owner to pick. The design behind them is <a href="../../lane-queue.md">docs/lane-queue.md</a>. <b>Nothing here is built</b>, and the section is not in the live console.</p>
+<p class="sub" style="color:var(--mute)">All data is <span class="exd">example data</span>: the tenant is <code>eng</code>, the user is Operator, the host is <code>swarm.example.com</code>, the repository is <code>example-org/example-api</code>, the group is <code>wave-8</code>, and every number, sha and pull request is invented.</p>
+<div class="themebar" role="group" aria-label="Theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#today">1 · Today</a></li><li><a href="#board">2 · Queue board</a></li><li><a href="#detail">3 · A lane</a></li><li><a href="#add">4 · Add lanes</a></li><li><a href="#ledger">5 · Lane ledger</a></li><li><a href="#rec">6 · Recommendation</a></li><li><a href="#map">7 · Every element, mapped to data</a></li><li><a href="#pick">8 · All screens to pick</a></li></ul>
+
+<h2 id="today"><span class="n">1</span>Today, measured from the code and the history</h2>
+<p>There is no lane screen because there is no lane record. What exists:</p>
+<div class="tw"><table class="doc"><thead><tr><th>Where</th><th>What it shows</th><th>Source</th></tr></thead><tbody>
+<tr><td>Work › Runs</td><td>issue runs (#454): one issue, its plan, its workflow, its pull request's CI and fix rounds. A run knows nothing about any other run.</td><td class="src"><code>apps/swarm-api/swarm_api/routes/runs.py</code></td></tr>
+<tr><td>Work › Workflows</td><td>the implement → review → fix workflow a lane compiles to, with no idea what it waits for or what files it holds</td><td class="src"><code>apps/swarm-api/swarm_api/issueruns.py</code></td></tr>
+<tr><td>Work › Timeline</td><td>task outcomes by the day they ended (<code>GET /v1/outcomes</code>); nothing per lane</td><td class="src"><code>apps/swarm-api/swarm_api/outcomes.py</code></td></tr>
+<tr><td>The operator's laptop</td><td>141 lanes in the 2026-10-05 history: a spec generator, PR watchers, a merge watcher, a watchdog and a launch queue in memory notes; claude-code peaked at 12 of 40</td><td class="src">sc-history-analysis.md (not in this repository)</td></tr>
+</tbody></table></div>
+<p>Where the new page sits: <b>Work › Lanes</b>, after Runs, with two tabs, Board and Ledger. Runs stays until build lane LQ8 makes an issue run a lane, then Runs becomes a filter of Lanes.</p>
+
+<!-- ================================================================== -->
+<h2 id="board"><span class="n">2</span>Queue board</h2>
+<p>Every lane of a group by state, what each one depends on, and what territory it holds or waits for. The question the board answers first is "what is stuck, and on what".</p>
+
+<div class="variant" id="board-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Columns by state, dependencies as chips</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › <b>Lanes</b></div>
+<div class="phead"><h3>Lanes</h3><span class="cnt">8 lanes · group wave-8 · tenant eng</span><div class="r"><span class="inp" style="width:170px">Group: wave-8</span><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Add lanes</span></div></div>
+<div class="tabs"><span class="on">Board</span><span>Ledger</span></div>
+<div class="kb">
+<div class="kcol"><h5><span class="st park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg></span>Waiting <em>2</em></h5>
+<div class="lc"><b>Territory locks</b><span class="dep">Depends on <a>Dependencies and the tick</a> · not merged</span><span class="mu">holds nothing</span></div>
+<div class="lc bad"><b>Retire the old cleanup job</b><span class="sp bad"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>Blocked</span><span class="dep">Depends on <code>example-org/example-api#688</code> · closed without merging</span><span class="lact"><span class="btn sm">Edit dependencies</span><span class="btn sm ghost">Cancel</span></span></div>
+</div>
+<div class="kcol"><h5><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span>Queued <em>1</em></h5>
+<div class="lc"><b>Console: lanes board</b><span class="dep">Territory: waiting for <code>web/src/App.tsx</code></span><span class="mu">held by <a>Console: runs filters</a> · Seam · policy T2</span></div>
+</div>
+<div class="kcol"><h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span>Running <em>1</em></h5>
+<div class="lc"><b>Console: runs filters</b><span class="mu">implement › <b>review</b> › fix › re-review · 41 min</span><span class="lk"><svg class="ic"><use href="#i-lock"/></svg>3 paths · Seam <code>web/src/App.tsx</code></span></div>
+</div>
+<div class="kcol"><h5><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span>Checking / fixing <em>1</em></h5>
+<div class="lc"><b>Dependencies and the tick</b><span>PR <a>#705</a> · CI fix round 1 of 3</span><span class="mu">red: <code>format / unit tests</code></span><span class="dep">Depends on <a>Lane document and routes</a> · merged <code>a1b2c3d</code></span></div>
+</div>
+<div class="kcol"><h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg></span>Ready <em>1</em></h5>
+<div class="lc"><b>Ledger route</b><span>PR <a>#709</a> · green · review MERGE</span><span class="chip">ready</span><span class="mu">labelled 6 min ago · GitHub merges at green</span></div>
+</div>
+<div class="kcol"><h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span>Done <em>2</em></h5>
+<div class="lc"><b>Lane document and routes</b><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Merged</span><span class="mu">PR #701 · commented on #640</span></div>
+<div class="lc"><b>Verify the plan guard refuses</b><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Verified</span><span class="chip">Verify only</span><span class="mu">no diff · commented on #612</span></div>
+</div>
+</div>
+<div class="cols">
+<div class="card"><div class="ch"><b>Territory</b><span class="cnt">example-org/example-api</span><div class="r"><a class="more">All locks</a></div></div>
+<div class="tl"><code>web/src/App.tsx</code><span>Console: runs filters</span><span class="mu">Seam · 1 waiting</span></div>
+<div class="tl"><code>app/lanes/</code><span>Dependencies and the tick</span><span class="mu">prefix · 0 waiting</span></div>
+<div class="tl"><code>app/main.py</code><span>Dependencies and the tick, Ledger route</span><span class="mu">Seam, shared under T2 · merge token: Ledger route</span></div>
+</div>
+<div class="card"><div class="ch"><b>Review minors</b><span class="cnt">5 open</span><div class="r"><span class="btn sm">File as epic</span></div></div>
+<div class="tl"><code>app/forge.py</code><span>a retry log line omits the attempt number</span><span class="mu">PR #701</span></div>
+<div class="tl"><code>web/src/Runs.tsx</code><span>an empty filter shows "0" where it means not loaded</span><span class="mu">PR #709</span></div>
+<p class="sub">The group has no epic yet, so minors stay here. With one, each is posted as one comment, once.</p>
+</div>
+</div>
+</main></div></div><figcaption>Variant A follows the page's theme toggle.</figcaption></figure>
+<div class="idea"><div><h4>Idea</h4><p>A column per state family, in the order a lane moves. A card carries only what explains its column: what it depends on while waiting, the lock it waits for while queued, the round while fixing.</p></div><div><h4>Pros</h4><ul><li>"What is stuck, and on what" is the first thing read: Waiting and Queued are left, each with its reason.</li><li>Territory and minors sit under the board, where a person decides about them.</li></ul></div><div><h4>Risks</h4><ul><li>Dependencies are chips, not lines; a chain of five reads as five chips. Variant C draws the chain.</li><li>Six columns need 1,100px; on a phone it becomes a list grouped by state.</li></ul></div></div>
+</div>
+
+<div class="variant" id="board-b">
+<div class="vh"><span class="vn">Variant B</span><h3>One table, grouped by state, with a depends-on column</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › <b>Lanes</b></div>
+<div class="phead"><h3>Lanes</h3><span class="cnt">8 lanes · group wave-8</span><div class="r"><span class="inp" style="width:220px"><svg class="ic"><use href="#i-search"/></svg>Filter lanes</span><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Add lanes</span></div></div>
+<div class="card" style="padding:0">
+<table class="t"><thead><tr><th>Lane</th><th>State</th><th>Depends on</th><th>Territory</th><th>Pull request</th><th>Waiting</th><th style="text-align:right">Cost</th></tr></thead><tbody>
+<tr class="grp"><td colspan="7">Stuck · 2</td></tr>
+<tr><td><div class="rn"><b>Retire the old cleanup job</b><small>brief · lane_7c1e</small></div></td><td><span class="sp bad"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg>Blocked</span></td><td><code>example-org/example-api#688</code> closed</td><td class="mu">2 paths</td><td><span class="dash" title="No pull request: the lane never started">—</span></td><td class="mu">2 h 10 min</td><td style="text-align:right"><span class="dash" title="Nothing has run, so nothing was spent; not zero, never measured">—</span></td></tr>
+<tr><td><div class="rn"><b>Console: lanes board</b><small>brief · lane_4d2a</small></div></td><td><span class="sp neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>Queued</span></td><td class="mu">none</td><td><span class="chip warn">waits for web/src/App.tsx</span></td><td><span class="dash" title="No pull request: the lane has not launched">—</span></td><td class="mu">18 min</td><td style="text-align:right"><span class="dash" title="Nothing has run yet">—</span></td></tr>
+<tr class="grp"><td colspan="7">Moving · 4</td></tr>
+<tr><td><div class="rn"><b>Territory locks</b><small>issue #642 · lane_9b3f</small></div></td><td><span class="sp park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg>Waiting</span></td><td>Dependencies and the tick</td><td class="mu">from the plan, once planned</td><td><span class="dash" title="No pull request yet">—</span></td><td class="mu">1 h 02 min</td><td style="text-align:right"><span class="dash" title="Nothing has run yet">—</span></td></tr>
+<tr><td><div class="rn"><b>Console: runs filters</b><small>brief · lane_2a8c</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>Running</span></td><td class="mu">none</td><td><span class="chip">3 paths · Seam</span></td><td><span class="dash" title="The workflow has not opened its pull request yet">—</span></td><td class="mu">4 min</td><td style="text-align:right">$2.84</td></tr>
+<tr><td><div class="rn"><b>Dependencies and the tick</b><small>brief · lane_5e0d</small></div></td><td><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>Fixing</span></td><td>Lane document and routes ✓</td><td><span class="chip">4 paths · Seam</span></td><td>#705 · CI fix round 1 of 3</td><td class="mu">22 min</td><td style="text-align:right">$6.10</td></tr>
+<tr><td><div class="rn"><b>Ledger route</b><small>brief · lane_8f61</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg>Ready</span></td><td>Lane document and routes ✓</td><td><span class="chip">2 paths</span></td><td>#709 · green · <span class="chip">ready</span></td><td class="mu">6 min</td><td style="text-align:right">$4.47</td></tr>
+<tr class="grp"><td colspan="7">Done · 2</td></tr>
+<tr><td><div class="rn"><b>Lane document and routes</b><small>brief · lane_1a2b</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Merged</span></td><td class="mu">none</td><td class="mu">released</td><td>#701 · merged</td><td class="mu">31 min</td><td style="text-align:right">$7.92</td></tr>
+<tr><td><div class="rn"><b>Verify the plan guard refuses</b><small>verify · lane_6c9e</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Verified</span></td><td class="mu">none</td><td class="mu">released</td><td><span class="dash" title="Verify only: a verify lane opens no pull request">—</span></td><td class="mu">3 min</td><td style="text-align:right">$0.91</td></tr>
+</tbody></table></div>
+<p class="sub">8 of 8 · <span class="exd">example data</span> · Waiting is the time in the current state</p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The Agents table, one row per lane, grouped as Stuck / Moving / Done so the stuck rows lead.</p></div><div><h4>Pros</h4><ul><li>Same table as Agents and Runs; nothing new to learn or build.</li><li>Sorts and filters; scales past forty lanes.</li></ul></div><div><h4>Risks</h4><ul><li>Seven columns; the reason a lane is stuck is in a cell, not a picture.</li><li>Territory is a count, so who holds the contested file is one click away.</li></ul></div></div>
+</div>
+
+<div class="variant" id="board-c">
+<div class="vh"><span class="vn">Variant C</span><h3>The dependency graph, with locks beside it</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › <b>Lanes</b></div>
+<div class="phead"><h3>Lanes</h3><span class="cnt">group wave-8 · drawn left to right in merge order</span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>Add lanes</span></div></div>
+<div class="half">
+<div class="gcanvas"><svg class="g dag" width="640" height="330" viewBox="0 0 640 330" role="img" aria-label="Lane dependency graph">
+<path class="e" d="M150 60 C190 60 190 60 230 60"/><path class="e" d="M150 60 C190 60 190 160 230 160"/><path class="e" d="M370 60 C410 60 410 60 450 60"/><path class="e low" d="M150 260 C190 260 190 260 230 260"/>
+<rect class="n cool" x="10" y="38" width="140" height="44" rx="10"/><text x="22" y="57">Lane document</text><text class="mu" x="22" y="73">merged · #701</text>
+<rect class="n warm" x="230" y="38" width="140" height="44" rx="10"/><text x="242" y="57">Dependencies</text><text class="mu" x="242" y="73">fixing · round 1 of 3</text>
+<rect class="n" x="450" y="38" width="140" height="44" rx="10"/><text x="462" y="57">Territory locks</text><text class="mu" x="462" y="73">waiting</text>
+<rect class="n cool" x="230" y="138" width="140" height="44" rx="10"/><text x="242" y="157">Ledger route</text><text class="mu" x="242" y="173">ready · #709</text>
+<rect class="n hot" x="10" y="238" width="140" height="44" rx="10"/><text x="22" y="257">example-api#688</text><text class="mu" x="22" y="273">closed, not merged</text>
+<rect class="n hot" x="230" y="238" width="140" height="44" rx="10"/><text x="242" y="257">Old cleanup</text><text class="mu" x="242" y="273">blocked</text>
+</svg>
+<div class="legend"><span class="lg"><b class="cool"></b>merged / ready</span><span class="lg"><b class="warm"></b>checking or fixing</span><span class="lg"><b></b>waiting</span><span class="lg"><b></b>blocked</span><span class="lg"><i class="low"></i>an external pull request</span></div>
+</div>
+<div class="pane"><h4>Territory</h4>
+<div class="tl"><code>web/src/App.tsx</code><span>Console: runs filters</span><span class="mu">Seam · Console: lanes board waits</span></div>
+<div class="tl"><code>app/main.py</code><span>2 holders</span><span class="mu">Seam, shared · merge token: Ledger route</span></div>
+<div class="tl"><code>app/lanes/</code><span>Dependencies and the tick</span><span class="mu">prefix</span></div>
+<h4>Not in the graph</h4>
+<div class="tl"><span>Console: runs filters</span><span class="mu">running · no dependencies</span></div>
+<div class="tl"><span>Verify the plan guard refuses</span><span class="mu">verified · Verify only</span></div>
+</div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Draw what the laptop kept in memory notes: the chain of merges. Each node is a lane or an external pull request, coloured by state; locks are the list beside it.</p></div><div><h4>Pros</h4><ul><li>A blocked chain is visible as a red root and everything right of it.</li><li>Shows which lanes merge next.</li></ul></div><div><h4>Risks</h4><ul><li>Lanes without dependencies (most of a wave) are a list beside the graph.</li><li>A graph needs a layout engine; past twenty nodes it needs panning, which Variant A never does.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="detail"><span class="n">3</span>A lane</h2>
+<p>One lane: where it is in its machine, what it waited for and how long, its pull request and CI, its review, its territory and its issue.</p>
+
+<div class="variant" id="detail-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A state stepper, then tabs</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Dependencies and the tick</b></div>
+<div class="phead"><h3>Dependencies and the tick</h3><span class="sp warn"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>Fixing</span><div class="r"><span class="btn">Edit dependencies</span><span class="btn danger">Cancel lane</span></div></div>
+<div class="meta"><span>brief</span><span>group <b>wave-8</b></span><span><code>example-org/example-api</code> → <code>main</code></span><span>added by <b>Operator</b> 1 h 12 min ago</span><span>merge: <b>label</b></span></div>
+<div class="stepper"><span class="done">Waiting<small>38 min</small></span><span class="done">Queued<small>2 min</small></span><span class="done">Running<small>24 min</small></span><span class="done">Checking<small>4 min</small></span><span class="on">Fixing<small>CI fix round 1 of 3</small></span><span>Ready</span><span>Merged</span></div>
+<div class="kv"><div><span class="l">Depends on</span><span class="v">1 <small>merged</small></span><span class="s">Lane document and routes · a1b2c3d</span></div><div><span class="l">Territory</span><span class="v">4 <small>paths</small></span><span class="s">Seam app/main.py, shared (T2)</span></div><div><span class="l">Pull request</span><span class="v">#705</span><span class="s warn">red at 9f8e7d6</span></div><div><span class="l">Cost so far</span><span class="v">$6.10</span><span class="s">5 attempts · 1 unreported</span></div></div>
+<div class="tabs"><span class="on">CI</span><span>Review</span><span>Territory</span><span>Issue</span><span>History <em>9</em></span></div>
+<div class="cols">
+<div class="card"><div class="ch"><b>CI at 9f8e7d6</b><div class="r"><span class="cnt">read 40 s ago</span></div></div>
+<div class="gate"><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg></span><span><code>format / unit tests</code></span><span class="mu">red</span><small>tests/unit/test_lanes.py::test_cycle_is_refused, excerpt given to round 1</small></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span><code>shellcheck</code></span><span class="mu">green</span></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span><code>integration tests (emulator)</code></span><span class="mu">green</span></div>
+</div>
+<div class="card"><div class="ch"><b>CI fix round 1 of 3</b><div class="r"><a class="more">Workflow</a></div></div>
+<div class="meta col"><span>continues the integrator's branch, as issue runs do (#545)</span><span>started 3 min ago · <span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>running</span></span></span><span>CI reds by job so far: <code>format / unit tests</code> 1</span></div>
+<p class="sub">When it pushes, CI is read at the new head. Ready needs green, the final review's MERGE (the re-review when the fix ran), and the keyword block on the pull request.</p>
+</div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The lane's machine as a stepper with the time spent in each state, four figures, and tabs for the detail, CI first while it is checking or fixing.</p></div><div><h4>Pros</h4><ul><li>"Where is it and why" in one line; the stepper is also the waiting breakdown.</li><li>Tabs follow the agent detail page (agent-details-v3, pick A).</li></ul></div><div><h4>Risks</h4><ul><li>The stepper hides PLANNING/PLANNED for brief lanes, so issue and brief lanes draw different steppers.</li></ul></div></div>
+</div>
+
+<div class="variant" id="detail-b">
+<div class="vh"><span class="vn">Variant B</span><h3>A long page: timeline left, facts right</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Ledger route</b></div>
+<div class="phead"><h3>Ledger route</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg>Ready</span><div class="r"><span class="btn">Open pull request</span><span class="btn danger">Cancel lane</span></div></div>
+<div class="half">
+<div class="pane"><h4>Timeline</h4>
+<div class="run"><span class="st park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg></span><em>09:02</em><b>Waiting</b><small>depends on Lane document and routes</small><em>31 min</em></div>
+<div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><em>09:33</em><b>Queued</b><small>Lane document and routes merged at a1b2c3d</small><em>0 min</em></div>
+<div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg></span><em>09:33</em><b>Running</b><small>territory acquired: 2 paths, Seam app/main.py shared</small><em>27 min</em></div>
+<div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg></span><em>10:00</em><b>Checking</b><small>PR #709 opened · all green at first read</small><em>9 min</em></div>
+<div class="run"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-ready"/></svg></span><em>10:09</em><b>Ready</b><small>review MERGE · Closes #639 written · label <code>ready</code> added · merge token for app/main.py</small><em>6 min</em></div>
+<div class="run"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><em>next</em><b>Merged</b><small>GitHub merges at green (auto-merge.yml)</small><em><span class="dash" title="Not merged yet; merge time is unknown until GitHub reports it">—</span></em></div>
+</div>
+<div class="pane"><h4>Review</h4><div class="meta col"><span>final review: re-review after the fix (round 2) · verdict <b>MERGE</b> · 0 blockers · 2 requirements met of 2</span><span>Review minors: 1, kept on the board (no epic for wave-8)</span></div>
+<h4>Territory</h4><div class="tl"><code>app/ledger/</code><span class="mu">prefix</span></div><div class="tl"><code>app/main.py</code><span class="mu">Seam · merge token held</span></div>
+<h4>Issue</h4><div class="meta col"><span><code>example-org/example-api#639</code></span><span>pull request says <b>Closes #639</b>; GitHub closes it on merge</span><span>status comment edited 6 min ago</span></div>
+<h4>Cost</h4><div class="meta col"><span><b>$4.47</b> over 4 attempts, all reported</span><span>Waiting 37 min · working 27 min</span></div>
+</div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Everything on one page, the lane's history as a timeline of its own transitions with the reason each happened.</p></div><div><h4>Pros</h4><ul><li>The timeline says why: which merge released it, which lock it took.</li><li>No tabs: a screenshot of the page is a full report.</li></ul></div><div><h4>Risks</h4><ul><li>A lane with three fix rounds and two rebase rounds has a long timeline; CI detail is a click further than in A.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="add"><span class="n">4</span>Add lanes</h2>
+<p>A wave is added at once, because lanes in it depend on each other. Nothing here names a runner profile, image or command: every step is <code>claude-code</code>, chosen by the API (invariant 10).</p>
+
+<div class="variant" id="add-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A grid of lanes, one row each</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Add lanes</b></div>
+<div class="phead"><h3>Add lanes</h3><div class="r"><span class="btn ghost">Cancel</span><span class="btn pri">Add 3 lanes</span></div></div>
+<div class="fgrid"><div class="fl">Repository<small>registered for eng</small></div><div><span class="inp val">example-org/example-api → main</span></div>
+<div class="fl">Group<small>the wave; minors and the ledger sum by it</small></div><div><span class="inp val">wave-8</span><div class="hint">Minors go to: <span class="inp val" style="display:inline-flex;min-height:26px">example-org/example-api#640</span></div></div>
+<div class="fl">Merge when ready</div><div class="radio"><span class="on">Label ready (auto-merge.yml)</span><span>Merge step</span><span>A person merges</span></div></div>
+<div class="card" style="padding:0">
+<table class="t"><thead><tr><th>Key</th><th>Title</th><th>Source</th><th>Depends on</th><th>Territory</th><th>Verify only</th></tr></thead><tbody>
+<tr><td><code>a</code></td><td>Dependencies and the tick</td><td>brief</td><td><span class="chip">lane: Lane document and routes</span></td><td><code>app/lanes/</code> <code>app/main.py</code></td><td><span class="check"><i></i></span></td></tr>
+<tr><td><code>b</code></td><td>Territory locks</td><td>issue <code>#642</code></td><td><span class="chip">key a</span></td><td class="mu">from the plan</td><td><span class="check"><i></i></span></td></tr>
+<tr class="sel"><td><code>c</code></td><td>Verify the plan guard refuses</td><td>verify</td><td><span class="chip">PR example-org/example-api#688</span></td><td class="mu">none</td><td><span class="check"><i class="on"></i></span></td></tr>
+</tbody></table></div>
+<div class="banner"><b>Seam</b> <code>app/main.py</code> is on this repository's seam list. Under the picked policy lanes share it while running and take turns to merge.<span class="btn sm">Seam list</span></div>
+<p class="hint">Row c is Verify only: an empty diff is its success, it opens no pull request, and it may close its issue only if the review confirms every requirement.</p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>A spreadsheet of lanes under the group's settings. Depends on is a picker of existing lanes, rows above (by key) or an external pull request.</p></div><div><h4>Pros</h4><ul><li>A wave of eight is one screen; dependencies between new lanes are typed once.</li><li>Cycles and conflicts are shown before submitting, per row.</li></ul></div><div><h4>Risks</h4><ul><li>The brief text needs a row expander; a grid is cramped for multi-paragraph briefs.</li></ul></div></div>
+</div>
+
+<div class="variant" id="add-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Paste a lane list, check it, add it</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Add lanes</b></div>
+<div class="phead"><h3>Add lanes</h3><div class="r"><span class="btn">Check</span><span class="btn pri">Add 3 lanes</span></div></div>
+<div class="cols">
+<pre class="term"><s># wave-8 · example-org/example-api</s>
+<b>a</b>: Dependencies and the tick
+   depends on: lane Lane document and routes
+   territory: app/lanes/, app/main.py
+<b>b</b>: Territory locks
+   issue: #642
+   depends on: a
+<b>c</b>: Verify the plan guard refuses
+   verify only
+   depends on: PR example-org/example-api#688</pre>
+<div class="pane"><h4>Checked</h4>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>3 lanes, no cycle</span><span></span></div>
+<div class="gate"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg></span><span>a holds Seam <code>app/main.py</code></span><span class="mu">shared</span><small>Ledger route holds it too; they take turns to merge</small></div>
+<div class="gate"><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><span>c: Verify only, no territory</span><span></span></div>
+<div class="gate"><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><span>b: Territory from its plan</span><span class="mu"><span class="dash" title="An issue lane plans after its dependencies merge, so its territory is unknown until then">—</span></span></div>
+</div>
+</div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>The format the operator already writes in memory notes, pasted, parsed and checked, so a wave moves off the laptop with no retyping.</p></div><div><h4>Pros</h4><ul><li>Fastest for a person who has the list already.</li><li>The same text is what the MCP tool and CLI send.</li></ul></div><div><h4>Risks</h4><ul><li>A text format is one more thing to document and keep parsing; a typo is found at Check, not as it is typed.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="ledger"><span class="n">5</span>Lane ledger</h2>
+<p>One record per lane (#639): cost summed over every attempt, wall and waiting time, the review, the pull request, CI reds by job, the merge, the issues closed or left. Not the task outcome ledger of Timeline. A null is a dash with its reason, never 0.</p>
+
+<div class="variant" id="ledger-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A table with a totals row</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Ledger</b></div>
+<div class="phead"><h3>Lane ledger</h3><span class="cnt">group wave-8 · ended 1-5 Oct</span><div class="r"><span class="btn">Export CSV</span></div></div>
+<div class="tabs"><span>Board</span><span class="on">Ledger</span></div>
+<div class="card" style="padding:0">
+<table class="t"><thead><tr><th>Lane</th><th>Outcome</th><th style="text-align:right">Cost</th><th>Wall</th><th>Waiting</th><th>Review</th><th>CI reds by job</th><th>Merge</th><th>Issues</th></tr></thead><tbody>
+<tr><td><div class="rn"><b>Lane document and routes</b><small>PR #701</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Merged</span></td><td style="text-align:right">$7.92</td><td>58 min</td><td><div class="stack" title="dependencies 0 · territory 0 · capacity 3 min · CI 9 min · merge 4 min"><i class="cap" style="width:5%"></i><i class="work" style="width:57%"></i><i class="ci" style="width:16%"></i><i class="merge" style="width:7%"></i></div></td><td>MERGE · 0</td><td><code>format / unit tests</code> 1</td><td>4 min</td><td>commented #640</td></tr>
+<tr><td><div class="rn"><b>Ledger route</b><small>PR #709</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Merged</span></td><td style="text-align:right">$4.47</td><td>1 h 19 min</td><td><div class="stack" title="dependencies 31 min · territory 0 · capacity 1 min · CI 9 min · merge 11 min"><i class="dep" style="width:39%"></i><i class="cap" style="width:1%"></i><i class="work" style="width:34%"></i><i class="ci" style="width:11%"></i><i class="merge" style="width:14%"></i></div></td><td>MERGE · 0</td><td class="mu">none</td><td>11 min</td><td>closed #639</td></tr>
+<tr><td><div class="rn"><b>Verify the plan guard refuses</b><small>no pull request</small></div></td><td><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>Verified</span></td><td style="text-align:right">$0.91</td><td>3 min</td><td><div class="stack"><i class="work" style="width:100%"></i></div></td><td>MERGE · 0</td><td><span class="dash" title="Verify only: no pull request, so no CI was read">—</span></td><td><span class="dash" title="Verify only: nothing to merge">—</span></td><td>commented #612</td></tr>
+<tr><td><div class="rn"><b>Retire the old cleanup job</b><small>no pull request</small></div></td><td><span class="sp neu"><svg viewBox="0 0 12 12"><use href="#s-cancelled"/></svg>Cancelled</span></td><td style="text-align:right"><span class="dash" title="Nothing ran before it was cancelled; cost was never measured, which is not $0">—</span></td><td>2 h 40 min</td><td><div class="stack"><i class="dep" style="width:100%"></i></div></td><td><span class="dash" title="The review never ran">—</span></td><td><span class="dash" title="No pull request">—</span></td><td><span class="dash" title="Not merged">—</span></td><td>left #655</td></tr>
+<tr class="tot"><td><b>4 lanes</b></td><td>2 merged · 1 verified · 1 cancelled</td><td style="text-align:right"><b>$13.30</b><small> a floor</small></td><td>5 h 00 min</td><td><span class="lgd"><i class="dep"></i>Waiting on dependencies 3 h 11 min</span></td><td>0 blockers · 3 minors</td><td><code>format / unit tests</code> 1</td><td>median 7 min</td><td>2 closed · 1 left</td></tr>
+</tbody></table></div>
+<p class="sub"><span class="lgd"><i class="dep"></i>dependencies</span> <span class="lgd"><i class="terr"></i>territory</span> <span class="lgd"><i class="cap"></i>capacity</span> <span class="lgd"><i class="work"></i>working</span> <span class="lgd"><i class="ci"></i>CI</span> <span class="lgd"><i class="merge"></i>merge</span> · Cost is a floor: 1 attempt did not report its cost.</p>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>One row per ended lane, every ledger field a column, waiting as a stacked bar, a totals row that says when the cost is a floor.</p></div><div><h4>Pros</h4><ul><li>Every field the owner named is on screen; the CSV is the same table.</li><li>The stacked bar shows at a glance whether a lane waited on dependencies, territory, capacity, CI or the merge.</li></ul></div><div><h4>Risks</h4><ul><li>Nine columns need 1,200px; on a phone it becomes cards.</li></ul></div></div>
+</div>
+
+<div class="variant" id="ledger-b">
+<div class="vh"><span class="vn">Variant B</span><h3>The group first, then the lanes</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Lanes"></div><main class="ct">
+<div class="crumb">Work › Lanes › <b>Ledger</b></div>
+<div class="phead"><h3>Lane ledger</h3><span class="cnt">group wave-8</span></div>
+<div class="tabs"><span>Board</span><span class="on">Ledger</span></div>
+<div class="kv"><div><span class="l">Cost</span><span class="v">$13.30</span><span class="s warn">a floor: 1 attempt unreported</span></div><div><span class="l">Lanes</span><span class="v">4 <small>ended</small></span><span class="s">2 merged · 1 verified · 1 cancelled</span></div><div><span class="l">Waiting</span><span class="v">3 h 57 min</span><span class="s">of 5 h 00 min wall; dependencies most</span></div><div><span class="l">Merge</span><span class="v">7 min <small>median</small></span><span class="s">ready to merged</span></div></div>
+<div class="cols">
+<div class="card"><div class="ch"><b>Where the time went</b></div>
+<div class="hs"><span>Waiting on dependencies</span><div class="bar"><i style="width:64%;background:var(--s-park)"></i></div><em>3 h 11 min</em></div>
+<div class="hs"><span>Waiting on territory</span><div class="bar"><i style="width:0%"></i></div><em>0 min</em></div>
+<div class="hs"><span>Waiting on capacity</span><div class="bar"><i style="width:1%;background:var(--s-neu)"></i></div><em>4 min</em></div>
+<div class="hs"><span>Working</span><div class="bar"><i style="width:18%"></i></div><em>55 min</em></div>
+<div class="hs"><span>Waiting on CI</span><div class="bar"><i class="l" style="width:6%"></i></div><em>18 min</em></div>
+<div class="hs"><span>Waiting on the merge</span><div class="bar"><i style="width:5%;background:var(--f-acl)"></i></div><em>15 min</em></div>
+</div>
+<div class="card"><div class="ch"><b>CI reds by job</b></div>
+<div class="hs"><code>format / unit tests</code><div class="bar"><i style="width:100%;background:var(--s-bad)"></i></div><em>1</em></div>
+<div class="hs"><code>swarm-ui typecheck</code><div class="bar"><i style="width:0%"></i></div><em>0</em></div>
+<div class="ch"><b>Review</b></div><div class="meta col"><span>0 blockers left at merge · 3 minors (on the board)</span><span>Issues: 2 closed · 1 left (#655, part of)</span></div>
+</div>
+</div>
+<div class="card" style="padding:0"><table class="t"><thead><tr><th>Lane</th><th>Outcome</th><th style="text-align:right">Cost</th><th>Wall</th><th>Pull request</th></tr></thead><tbody>
+<tr><td>Lane document and routes</td><td>Merged</td><td style="text-align:right">$7.92</td><td>58 min</td><td>#701</td></tr>
+<tr><td>Ledger route</td><td>Merged</td><td style="text-align:right">$4.47</td><td>1 h 19 min</td><td>#709</td></tr>
+</tbody></table></div>
+</main></div></div></figure>
+<div class="idea"><div><h4>Idea</h4><p>Answer "what did this wave cost and where did its time go" before listing lanes: four figures, two breakdowns, then the rows.</p></div><div><h4>Pros</h4><ul><li>The finding the history analysis needed a day to compute is the first panel.</li></ul></div><div><h4>Risks</h4><ul><li>A single lane's detail is a row away; comparing two lanes needs Variant A's columns.</li></ul></div></div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="rec"><span class="n">6</span>Recommendation</h2>
+<div class="recbox"><h3>Board A, lane detail A, add lanes A, ledger A</h3>
+<ul><li><b>Board A</b>: the question is "what is stuck, and on what", and columns put Waiting and Queued first with their reason on the card. Board C's graph is worth a toggle later, once waves have long chains.</li>
+<li><b>Lane detail A</b>: the stepper is the waiting breakdown, and CI is the first tab when it matters.</li>
+<li><b>Add lanes A</b>, with B's paste box as a "Paste a list" button that fills the grid: a wave moves off the laptop without a new text format to learn.</li>
+<li><b>Ledger A</b>, with B's four figures above the table.</li></ul></div>
+
+<h2 id="map"><span class="n">7</span>Every element, mapped to data</h2>
+<div class="tw"><table class="doc"><thead><tr><th>Element</th><th>Field</th><th>Source (docs/lane-queue.md)</th></tr></thead><tbody>
+<tr><td>State columns and pills</td><td><code>lanes.state</code></td><td class="src">§2.2</td></tr>
+<tr><td>Depends on chips, graph edges, Blocked</td><td><code>depends_on</code>, <code>dependency_merges</code>, <code>blocked_by</code></td><td class="src">§3</td></tr>
+<tr><td>Territory, Seam, merge token, "waits for"</td><td><code>lane_territories</code>, <code>seams</code>, <code>waiting_on</code></td><td class="src">§4</td></tr>
+<tr><td>CI fix round n of m, CI at head</td><td><code>ci_fix_round</code>, <code>fix_rounds</code>, <code>pull_request.checks</code></td><td class="src">§5.1</td></tr>
+<tr><td><code>ready</code> chip, Ready</td><td><code>merge</code>, <code>green_sha</code>, <code>review.verdict</code></td><td class="src">§5.2</td></tr>
+<tr><td>Closes / part of, status comment</td><td><code>requirements_met</code>, <code>requirements_unmet</code></td><td class="src">§5.3</td></tr>
+<tr><td>Verify only</td><td><code>source: verify</code>, <code>allow_empty_diff</code></td><td class="src">§6</td></tr>
+<tr><td>Review minors</td><td><code>lane_minors</code>, <code>minors_issue</code></td><td class="src">§7</td></tr>
+<tr><td>Ledger columns, Cost, Waiting, CI reds by job</td><td><code>lane_ledger</code></td><td class="src">§13</td></tr>
+</tbody></table></div>
+
+<h2 id="pick"><span class="n">8</span>All screens to pick</h2>
+<p>Every screen on this page with its variants, so the owner can pick in one pass. Picks are recorded by the owner in PICKS.md; this page does not edit it.</p>
+<div class="tw"><table class="doc pickt"><thead><tr><th>Screen</th><th>Variants</th><th>Recommended</th></tr></thead><tbody>
+<tr><td>2 · Queue board</td><td><a href="#board-a">A columns by state</a> <a href="#board-b">B grouped table</a> <a href="#board-c">C dependency graph</a></td><td>A</td></tr>
+<tr><td>3 · A lane</td><td><a href="#detail-a">A stepper + tabs</a> <a href="#detail-b">B long page</a></td><td>A</td></tr>
+<tr><td>4 · Add lanes</td><td><a href="#add-a">A grid</a> <a href="#add-b">B paste a list</a></td><td>A, with B's paste box</td></tr>
+<tr><td>5 · Lane ledger</td><td><a href="#ledger-a">A table + totals</a> <a href="#ledger-b">B group first</a></td><td>A, with B's four figures</td></tr>
+</tbody></table></div>
+<p class="sub" style="color:var(--mute)">Decisions that ride on these picks, from the design: the seam policy T1/T2/T3, the default merge (label or step), plan before or after a dependency merges, <code>close_on_verified</code>, and where minors go without an epic (docs/lane-queue.md §16).</p>
+<p class="sub" style="color:var(--mute);margin-top:24px">Drawn 2026-10-05 for design lane LQD. Picks are recorded by the owner in PICKS.md; this page does not edit it.</p>
+</div>
+
+<script>
+/* Page theme: light / dark / system, remembered for this page only. */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+
+/* Shell: Sky spine + panel, filled into every frame's .side[data-shell]. Work pages from
+   App.tsx SECTIONS, plus the proposed Lanes page. */
+(function(){
+  const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+  const rail=`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE}</div><a class="ri rcta">${I('i-submit')}<small>Submit</small></a><div class="rsep"></div><a class="ri">${I('i-overview')}<small>Overview</small></a><a class="ri on">${I('i-agents')}<small>Work</small></a><a class="ri">${I('i-pools')}<small>Capacity</small></a><a class="ri">${I('i-limits')}<small>Admin</small></a><div class="rgrow"></div><a class="ri">${I('i-help')}<small>Help</small></a><a class="ri">${I('i-api')}<small>API reads</small></a><span class="av">OP</span></nav>`;
+  const page=(on,icon,label,extra)=>`<a class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span>${extra||''}</a>`;
+  function panel(cur){
+    return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Work</div>${page(cur==='Agents','i-agents','Agents','<span class="cnt">6</span>')}${page(cur==='Workflows','i-workflows','Workflows','<span class="cnt">2</span>')}${page(cur==='Runs','i-branch','Runs')}${page(cur==='Timeline','i-timeline','Timeline')}${page(cur==='Lanes','i-branch','Lanes','<span class="new">new</span>')}${page(cur==='Repositories','i-repo','Repositories')}</div><div class="pfoot"><span class="pfrow"><b>Operator</b><span class="seg" role="group" aria-label="Theme"><button class="ibtn" title="Light">${I('i-sun')}</button><button class="ibtn" title="Dark">${I('i-moon')}</button><button class="ibtn on" title="System">${I('i-monitor')}</button></span><button class="ibtn" title="Sign out">${I('i-out')}</button></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com · ui and api at main</span></div></nav>`;
+  }
+  document.querySelectorAll('.side[data-shell]').forEach(el=>{el.innerHTML=rail+panel(el.dataset.shell)});
+})();
+</script>
+</body>
+</html>

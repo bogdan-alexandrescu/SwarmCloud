@@ -51,6 +51,14 @@ And two about how a worker ENDED, on either backend:
                        release and requeue now, with the exit code and the
                        execution in `last_error`, instead of waiting for the
                        dispatch deadline (#198; `detect_ended_at_startup`)
+
+And one about a worker that ended its task and not its attempt:
+
+    lost after finish  the task is terminal at the attempt's generation, the
+                       attempt never recorded its end, and no execution of
+                       it is live past a grace -> record the attempt's end
+                       and give back its account holds; the task and every
+                       lease are left alone (#380; `detect_lost_after_finish`)
 """
 
 from __future__ import annotations
@@ -138,6 +146,9 @@ class FindingKind(str, Enum):
     #: A task in LEASED/DISPATCHED/STARTING/RUNNING with no unreleased lease
     #: behind it: see `detect_leaseless_tasks` (#332).
     LEASELESS_TASK = "leaseless_task"
+    #: A terminal task whose current attempt never recorded its end and has no
+    #: live execution, past a grace: see `detect_lost_after_finish` (#380).
+    LOST_AFTER_FINISH = "lost_after_finish"
 
 
 @dataclass(frozen=True)
@@ -1545,6 +1556,104 @@ def detect_ended_at_startup(
 #: without failing it) on the strength of silence, where the exit code says
 #: the execution is over, and for a 78 that the next attempt would fail the
 #: same way.
+def _same_id(a: str | None, b: str | None) -> bool:
+    """Two identifiers name the same document, one possibly through a label."""
+    return bool(a) and bool(b) and sanitised(a) == sanitised(b)  # type: ignore[arg-type]
+
+
+def _live_for(execution: ExecutionView, task_id: str, attempt: AttemptView) -> bool:
+    """An active execution that could be running this attempt's agent.
+
+    Wider than `_is_attempts_own` on purpose: any active execution naming the
+    task, the attempt, or the exact name the attempt recorded. A Job the
+    dispatcher labelled with its task alone is still compute that may be
+    using the account, and the #372 listing came back with no attempt id.
+    """
+    if not execution.is_active:
+        return False
+    if _same_id(execution.task_id, task_id) or _same_id(execution.attempt_id, attempt.attempt_id):
+        return True
+    recorded = attempt.execution_name
+    if not recorded:
+        return False
+    names = {execution.name}
+    if execution.namespace:
+        names.add(f"{execution.namespace}/{execution.name}")
+    return recorded in names
+
+
+def detect_lost_after_finish(
+    finished: Iterable[tuple[TaskView, AttemptView]],
+    executions: Iterable[ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """A finished task whose current attempt never recorded its end (#380).
+
+    `ControlPlane.finish` writes the task's terminal state, then the attempt's
+    end, then releases the lease; the account goes back from the run's
+    `finally`. A worker killed after the first write leaves the task terminal,
+    the attempt with no `completed_at`, the generation unchanged and the Job
+    exited. Nothing fences a terminal task, so the release at the fence never
+    runs, and the broker's sweep gives back only an attempt that is fenced or
+    recorded its end: the attempt's account hold counted for its whole TTL.
+
+    `finished` is (task, attempt) pairs as `ControlStore.finished_attempts`
+    read them. A pair is a finding when ALL of these hold:
+
+      * the task is terminal and at the attempt's generation. An attempt of an
+        older generation was fenced, and the broker's sweep releases on that;
+        a task past it is somebody else's, never written here (invariant 5);
+      * the attempt is the task's and has no `completed_at`;
+      * the task finished at least `lost_after_finish_grace_seconds` ago. A
+        task with no clock is not judged: unlike a live Job, an unended
+        attempt costs only a hold that its TTL ends anyway;
+      * no listed execution that could be running it is active (`_live_for`).
+
+    A TERMINAL TASK ALONE IS NEVER PROOF (#372): a Job can outlive its task,
+    still running the agent on the account, and that is `left_running`'s. The
+    last condition is only as good as the listing, so the repair is admitted
+    only when the backend the attempt lives on was read (`Reconciler._admit`).
+    """
+    now = now or utcnow()
+    listed = [execution for execution in executions if execution.is_active]
+    findings: list[Finding] = []
+    for task, attempt in finished:
+        if not task.is_terminal or attempt.completed_at is not None:
+            continue
+        if attempt.task_id != task.task_id or attempt.generation != task.generation:
+            continue
+        ended = task.completed_at or task.updated_at
+        if ended is None:
+            continue
+        after = (now - _as_utc(ended)).total_seconds()
+        if after < config.lost_after_finish_grace_seconds:
+            continue
+        if any(_live_for(execution, task.task_id, attempt) for execution in listed):
+            continue
+        findings.append(
+            Finding(
+                kind=FindingKind.LOST_AFTER_FINISH,
+                reason=(
+                    f"task is {task.state.value} but attempt {attempt.attempt_id} never "
+                    f"recorded its end and nothing of it runs, {after:.0f}s after it "
+                    f"finished (grace {config.lost_after_finish_grace_seconds}s)"
+                ),
+                task_id=task.task_id,
+                attempt_id=attempt.attempt_id,
+                tenant_id=task.tenant_id or attempt.tenant_id,
+                generation=attempt.generation,
+                detail={
+                    "task_state": task.state.value,
+                    "finished_at": _as_utc(ended).isoformat(),
+                    "backend": attempt.backend,
+                    "execution": attempt.execution_name,
+                },
+            )
+        )
+    return findings
+
+
 _CANNOT_START_SUPERSEDES = (
     FindingKind.STALE_LEASE,
     FindingKind.MISSING_EXECUTION,

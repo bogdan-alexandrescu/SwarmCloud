@@ -30,6 +30,14 @@ The collection is this module's own, like `issue_runs`, and every read checks
 the record's tenant against the caller's: another tenant's token id is the
 same 404 as a missing one.
 
+THE DAILY RE-VERIFICATION (lane GT2b, §5.3) rides the repository poll:
+`RepoIndex.poll` calls `GitTokens.reverify` after its head reads, which
+probes each token x repository whose last complete probe is a day old, at
+most REVERIFY_MAX_PAIRS a pass, stalest first, and reports expiry (§3.4).
+`report_refusal` is how a step's 401 or 403 from the forge reaches it: the
+pair is due on the next pass, and a 403 turns its row `missing` with the
+step as the evidence (§5.2).
+
 `resolve_r2` is the resolution order as a pure function. Nothing calls it on
 the dispatch path yet: using a repository or user token in a task needs a
 field on the frozen `Task` (docs/git-tokens.md §8, request E), which is lane
@@ -45,7 +53,7 @@ import re
 import time as _time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Iterable
 from urllib.parse import quote as _quote
@@ -60,7 +68,7 @@ from swarm_common.states import ParkReason
 from . import forge as _forge
 from .errors import Conflict, NotFound, ValidationFailed
 from .forge import GIT_PROVIDER
-from .redaction import redact
+from .redaction import redact, redact_detail
 
 log = logging.getLogger(__name__)
 
@@ -219,6 +227,9 @@ class GitTokenRecord:
     probe_complete: bool | None = None
     probe_error: str | None = None
     rate_remaining: int | None = None
+    #: The last time a step reported a 401 or 403 from the forge for this
+    #: token (`report_refusal`): the pair it names is due on the next pass.
+    refusal_reported_at: datetime | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -247,6 +258,7 @@ class GitTokenRecord:
             "probe_complete": self.probe_complete,
             "probe_error": self.probe_error,
             "rate_remaining": self.rate_remaining,
+            "refusal_reported_at": self.refusal_reported_at,
         }
 
     @classmethod
@@ -280,19 +292,23 @@ class GitTokenRecord:
             probe_complete=data.get("probe_complete"),
             probe_error=data.get("probe_error"),
             rate_remaining=data.get("rate_remaining"),
+            refusal_reported_at=data.get("refusal_reported_at"),
         )
 
-    def to_api(self, pair_docs: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+    def to_api(self, pair_docs: Iterable[dict[str, Any]] = (), *,
+               now: datetime | None = None) -> dict[str, Any]:
         """The record as served, with its probe summary (§5, §6: the
-        permission matrix reads `probe.repositories`). `pair_docs` are this
+        permission matrix reads `probe.repositories`) and its expiry as the
+        console draws it (§3.4, `expiry_status`). `pair_docs` are this
         tenant's `git_token_checks` documents; only this record's are used."""
         body = self.to_firestore()
         for key in ("expires_at", "registered_at", "rotated_at", "verified_at", "revoked_at",
-                    "probe_attempted_at"):
+                    "probe_attempted_at", "refusal_reported_at"):
             body[key] = _iso(body[key])
         body["last4"] = self.last4
         body["store_command"] = store_command(self.tenant_id, self.provider_suffix)
         body["probe"] = probe_summary(self, pair_docs)
+        body["expiry"] = expiry_status(self, now or utcnow())
         return body
 
 
@@ -547,7 +563,10 @@ class GitTokens:
         return stored, result
 
     def _store_probe(self, record: GitTokenRecord, result: ProbeResult, *,
-                     scoped: tuple[str, str] | None) -> GitTokenRecord:
+                     scoped: tuple[str, str] | None, whole: bool = True) -> GitTokenRecord:
+        """Write each pair and the record. `whole` is False when the probe
+        covered only part of what the record is due for (the daily pass cut
+        it short): a complete probe then does not move `verified_at`."""
         for pair in result.pairs:
             ref = _check_ref(self._db, record.token_id, pair.repo_id)
             snap = ref.get()
@@ -593,7 +612,7 @@ class GitTokens:
                     fresh.rotated_at = now
                 fresh.last4 = result.last4
                 fresh.secret_version = result.version
-                if result.complete and scoped is None:
+                if result.complete and scoped is None and whole:
                     fresh.verified_at = now
                 if fresh.state is not TokenState.REVOKED:
                     if fresh.expires_at is not None and fresh.expires_at <= now:
@@ -604,6 +623,215 @@ class GitTokens:
             return fresh
 
         return _apply(transaction)
+
+    # -- the daily re-verification (§5.3; lane GT2b) ------------------------
+
+    def report_refusal(self, tenant_id: str, token_id: str, *, repo_id: str, capability: str,
+                       status: int, step: str) -> None:
+        """A step was refused by the forge with this token (§5.2, §5.3).
+
+        The pair is due on the next poll pass whatever its age, and a 403
+        turns `capability`'s row `missing` on that probe, with the step as
+        its evidence, until the secret is rotated or REFUSAL_HOLD passes. A
+        401 only makes the pair due: the probe's own account read measures
+        it. `step` names the step (a task id and step name), never a value;
+        it is masked and bounded before it is stored all the same.
+        """
+        if capability not in CAPABILITIES:
+            raise ValidationFailed(f"capability must be one of {', '.join(CAPABILITIES)}",
+                                   detail={"field": "capability"})
+        if status not in REFUSAL_STATUSES:
+            raise ValidationFailed("status must be 401 or 403", detail={"field": "status"})
+        if not REPO_ID.match(repo_id or ""):
+            raise ValidationFailed("repo_id must be repo_<16 hex>", detail={"field": "repo_id"})
+        record = self.get(tenant_id, token_id)
+        if not covers(record, repo_id):
+            raise ValidationFailed(f"git token {token_id!r} does not cover {repo_id}",
+                                   detail={"field": "repo_id"})
+        now = self._now()
+        entry = {"status": status, "at": now, "version": record.secret_version,
+                 "step": redact_detail(str(step or ""), limit=MAX_EVIDENCE_CHARS)}
+        ref = _check_ref(self._db, token_id, repo_id)
+        record_ref = self._ref(token_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            doc = snap.to_dict() if snap.exists else None
+            if doc is not None and doc.get("tenant_id") != tenant_id:
+                raise self._not_found(token_id)
+            if doc is None:
+                doc = {"token_id": token_id, "tenant_id": tenant_id, "repo_id": repo_id,
+                       "repository": record.repositories.get(repo_id), "capabilities": {},
+                       "verified_at": None, "attempted_at": None, "complete": False,
+                       "error": None, "expires_at": None, "rate_remaining": None}
+            refusals = dict(doc.get("refusals") or {})
+            refusals[capability] = entry
+            doc = {**doc, "refusals": refusals, "refused_at": now}
+            txn.set(ref, doc)
+            txn.update(record_ref, {"refusal_reported_at": now})
+
+        _apply(transaction)
+        log.info("git token refusal reported tenant=%s token_id=%s repo_id=%s capability=%s "
+                 "status=%d", tenant_id, token_id, repo_id, capability, status)
+
+    def reverify(
+        self,
+        tenant: Tenant | None,
+        tenant_id: str,
+        repositories: Iterable[tuple[str, str]],
+        *,
+        tokens: Any,
+        send: Any,
+        clock: Callable[[], float] = _time.monotonic,
+        budget_seconds: float | None = None,
+        max_pairs: int | None = None,
+    ) -> "ReverifyReport":
+        """One poll pass's re-verification of `tenant_id`'s tokens (§5.3).
+
+        `repositories` are the tenant's registrations the pass read, as
+        `(repo_id, "owner/repo")`; every non-revoked record is probed for
+        each one it covers (and each it already knows by name) whose last
+        complete probe is a day old, at most `max_pairs` pairs and within
+        `budget_seconds` by `clock`. The stalest go first -- reported
+        refusals, then never-verified pairs, then the oldest -- so what one
+        pass leaves, the next takes. A pair not reached is not written at
+        all. A token whose last attempt failed is retried after
+        REVERIFY_RETRY, not every tick. Only `tenant_id`'s records are read,
+        with its own slots (invariant 9). The defaults are one probe's
+        budget (PROBE_BUDGET_SECONDS) and REVERIFY_MAX_PAIRS.
+        """
+        if budget_seconds is None:
+            budget_seconds = PROBE_BUDGET_SECONDS
+        if max_pairs is None:
+            max_pairs = REVERIFY_MAX_PAIRS
+        report = ReverifyReport()
+        started = clock()
+        now = self._now()
+        if tenant is None or tenant.tenant_id != tenant_id:
+            tenant = Tenant(tenant_id=tenant_id, kind="group", principal="", created_at=utcnow())
+        records = self.list(tenant_id)
+        default_id = token_id_for(tenant_id, Scope.TENANT, "")
+        if not any(r.token_id == default_id for r in records):
+            created = self.ensure_tenant_default(tenant)
+            if created is not None:
+                records.insert(0, created)
+        records = [r for r in records if r.state is not TokenState.REVOKED]
+        named: dict[str, str] = {}
+        for repo_id, repository in repositories:
+            if REPO_ID.match(repo_id or "") and REPOSITORY.match(repository or ""):
+                named.setdefault(repo_id, repository)
+        docs = {(d.get("token_id"), d.get("repo_id")): d for d in self.pair_docs(tenant_id)}
+
+        # (priority, order, record index, repo_id or None, name)
+        units: list[tuple[tuple[Any, ...], int, str | None, str]] = []
+        due_count: dict[str, int] = {}
+        for index, record in enumerate(records):
+            report.tokens += 1
+            covered = {rid: name for rid, name in {**record.repositories, **named}.items()
+                       if covers(record, rid)}
+            pending = {rid for rid in covered if _refusal_pending(docs.get((record.token_id, rid)))}
+            attempted = record.probe_attempted_at
+            if (record.probe_complete is False and attempted is not None
+                    and now - attempted < REVERIFY_RETRY and not pending):
+                report.retry_later += 1
+                continue
+            mine = 0
+            for rid, name in sorted(covered.items(), key=lambda kv: kv[1]):
+                verified = (docs.get((record.token_id, rid)) or {}).get("verified_at")
+                if rid not in pending and _fresh(verified, now):
+                    report.fresh += 1
+                    continue
+                units.append((_priority(rid in pending, verified), index, rid, name))
+                mine += 1
+            if not covered and not _fresh(record.verified_at, now):
+                # A token covering no registered repository: its account read
+                # alone (login, expiry), once a day.
+                units.append((_priority(False, record.verified_at), index, None, ""))
+                mine += 1
+            due_count[record.token_id] = mine
+        units.sort(key=lambda unit: (unit[0], unit[1], unit[3]))
+        chosen, left = units[:max(0, max_pairs)], units[max(0, max_pairs):]
+        report.deferred += len(left)
+
+        probed: set[str] = set()
+        by_record: dict[int, list[tuple[str | None, str]]] = {}
+        for _, index, rid, name in chosen:
+            by_record.setdefault(index, []).append((rid, name))
+        for index in sorted(by_record):
+            record = records[index]
+            picked = by_record[index]
+            remaining = budget_seconds - (clock() - started)
+            if remaining <= 0:
+                report.deferred += len(picked)
+                continue
+            targets = [(rid, name) for rid, name in picked if rid is not None]
+            result = run_probe(record, tenant, targets, tokens=tokens, send=send, now=now,
+                               clock=clock, budget_seconds=remaining)
+            reached = tuple(p for p in result.pairs if p.reached)
+            unreached = len(result.pairs) - len(reached)
+            if unreached:
+                # Running out of time is not a failed attempt: what was not
+                # reached is due on the next pass, with no back-off.
+                result.pairs = reached
+                result.complete = result.account_complete and all(p.complete for p in reached)
+                result.error = result.error_reached
+                report.deferred += unreached
+            whole = not unreached and len(picked) == due_count.get(record.token_id, 0)
+            records[index] = self._store_probe(record, result, scoped=None, whole=whole)
+            probed.add(record.token_id)
+            report.probed += 1
+            report.pairs += len(reached)
+            if not result.complete:
+                report.failed += 1
+
+        for index, record in enumerate(records):
+            if (record.expires_at is not None and record.expires_at <= now
+                    and record.state not in UNUSABLE):
+                records[index] = record = self._mark_expired(record)
+            status = expiry_status(record, now)
+            if status["level"] not in EXPIRY_WARNING_LEVELS:
+                continue
+            report.warnings.append({
+                "token_id": record.token_id, "scope": record.scope.value,
+                "secret_name": record.secret_name, **status,
+            })
+            if record.token_id in probed:
+                # Once a day per token, when it is probed: names, never values.
+                log.warning("git token expiry tenant=%s token_id=%s secret=%s level=%s days=%s",
+                            tenant_id, record.token_id, record.secret_name, status["level"],
+                            status["days"])
+        log.info("git token reverify tenant=%s tokens=%d probed=%d pairs=%d fresh=%d "
+                 "deferred=%d failed=%d retry_later=%d warnings=%d", tenant_id, report.tokens,
+                 report.probed, report.pairs, report.fresh, report.deferred, report.failed,
+                 report.retry_later, len(report.warnings))
+        return report
+
+    def _mark_expired(self, record: GitTokenRecord) -> GitTokenRecord:
+        """§3.4: an expiry that passed between probes makes the record
+        `expired` on the next pass, so the resolver's park reason (§3.2) and
+        the page agree without waiting for the day's probe."""
+        ref = self._ref(record.token_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GitTokenRecord:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != record.tenant_id:
+                raise self._not_found(record.token_id)
+            fresh = GitTokenRecord.from_firestore(data)
+            if fresh.state not in UNUSABLE and fresh.expires_at is not None \
+                    and fresh.expires_at <= self._now():
+                fresh.state = TokenState.EXPIRED
+                txn.update(ref, {"state": fresh.state.value})
+            return fresh
+
+        expired = _apply(transaction)
+        log.info("git token expired tenant=%s token_id=%s secret=%s", record.tenant_id,
+                 record.token_id, record.secret_name)
+        return expired
 
 
 # --------------------------------------------------------------------------
@@ -901,6 +1129,9 @@ class PairResult:
     checks: dict[str, Check | None]
     complete: bool
     error: str | None = None
+    #: False when the probe's time ran out before this repository was read:
+    #: nothing was asked, and the daily pass leaves its document untouched.
+    reached: bool = True
 
 
 @dataclass
@@ -918,6 +1149,10 @@ class ProbeResult:
     #: The forge answered 401 to the account read: it does not accept the token.
     rejected: bool = False
     pairs: tuple[PairResult, ...] = ()
+    #: The account read came back (or was not asked, for an App token).
+    account_complete: bool = True
+    #: `error` without the repositories the time budget did not reach.
+    error_reached: str | None = None
     #: Set by `run_probe` from the value it read, never by `probe_token`.
     last4: str | None = None
     version: str | None = None
@@ -1298,12 +1533,14 @@ def probe_token(
                 user_complete = False
                 errors.append(str(unanswered))
         pairs: list[PairResult] = []
+        cut: list[str] = []
         for repo_id, repository in repositories:
             if clock() - started > budget_seconds:
-                errors.append(f"{repository}: not probed, the probe's time budget ran out")
+                cut.append(f"{repository}: not probed, the probe's time budget ran out")
                 pairs.append(PairResult(repo_id=repo_id, repository=repository,
                                         checks={cap: None for cap in CAPABILITIES},
-                                        complete=False, error="not probed: out of time"))
+                                        complete=False, error="not probed: out of time",
+                                        reached=False))
                 continue
             pair = _probe_repository(forge, repo_id, repository, kind)
             if pair.error:
@@ -1311,8 +1548,10 @@ def probe_token(
             pairs.append(pair)
         forge = None
     result.pairs = tuple(pairs)
+    result.account_complete = user_complete
     result.complete = user_complete and all(p.complete for p in pairs)
-    result.error = "; ".join(errors) if errors else None
+    result.error_reached = "; ".join(errors) if errors else None
+    result.error = "; ".join(errors + cut) if errors or cut else None
     return result
 
 
@@ -1324,6 +1563,8 @@ def run_probe(
     tokens: Any,
     send: Any,
     now: datetime,
+    clock: Callable[[], float] = _time.monotonic,
+    budget_seconds: float = PROBE_BUDGET_SECONDS,
 ) -> ProbeResult:
     """Read the record's slot and probe it. The value lives in this frame only.
 
@@ -1357,7 +1598,8 @@ def run_probe(
                            error=f"{record.secret_name} could not be read ({type(exc).__name__})")
     try:
         try:
-            result = probe_token(value, repositories, send=send, now=now)
+            result = probe_token(value, repositories, send=send, now=now, clock=clock,
+                                 budget_seconds=budget_seconds)
         except Exception as exc:
             # A bug in a reader: named by type, never by text, never raised on.
             log.warning("git token probe failed tenant=%s token_id=%s (%s)",
@@ -1403,6 +1645,24 @@ def _merge_pair(previous: dict[str, Any] | None, pair: PairResult, tenant_id: st
             capabilities[cap] = {"state": UNKNOWN, "reason": "not measured yet: "
                                  + (pair.error or "the read did not come back"),
                                  "evidence": "", "verified_at": None}
+    refusals = _standing_refusals(previous, result)
+    for cap, refusal in refusals.items():
+        cell = capabilities[cap]
+        if cell.get("state") == MISSING:
+            continue
+        # §5.2: a step that failed on the forge is evidence the probe's
+        # harmless reads cannot give, and it outranks their `unknown` -- and
+        # an `ok` inferred from the role -- for this secret version.
+        at = refusal.get("at")
+        capabilities[cap] = {
+            "state": MISSING,
+            "reason": (f"a step was refused by GitHub (HTTP {refusal.get('status')}); the "
+                       f"probe alone read {cell.get('state')}: {cell.get('reason') or ''}"
+                       )[:MAX_EVIDENCE_CHARS * 2],
+            "evidence": (f"step {refusal.get('step') or '(unnamed)'} -> HTTP "
+                         f"{refusal.get('status')}" + (f" at {_iso(at)}" if at else "")),
+            "verified_at": result.attempted_at,
+        }
     return {
         "token_id": token_id,
         "tenant_id": tenant_id,
@@ -1417,7 +1677,35 @@ def _merge_pair(previous: dict[str, Any] | None, pair: PairResult, tenant_id: st
         "expires_at": result.expires_at if result.expiry_read else (previous or {}).get(
             "expires_at"),
         "rate_remaining": result.rate_remaining,
+        "refusals": refusals,
+        "refused_at": (previous or {}).get("refused_at"),
     }
+
+
+def _same_secret(refusal: dict[str, Any], result: ProbeResult) -> bool:
+    """Whether the refusal was reported against the secret version just read.
+    Unknown on either side is the same: only a version change is a rotation."""
+    reported = refusal.get("version")
+    return reported is None or result.version is None or reported == result.version
+
+
+def _standing_refusals(previous: dict[str, Any] | None,
+                       result: ProbeResult) -> dict[str, dict[str, Any]]:
+    """The 403s a step reported that still hold: younger than REFUSAL_HOLD,
+    against the secret version this probe read. A rotation drops them (the
+    new value is measured afresh); so does age, so a grant widened on the
+    forge without a rotation is measured again within the hold."""
+    kept: dict[str, dict[str, Any]] = {}
+    for cap, refusal in ((previous or {}).get("refusals") or {}).items():
+        if cap not in CAPABILITIES or not isinstance(refusal, dict):
+            continue
+        at = refusal.get("at")
+        if refusal.get("status") != 403 or not isinstance(at, datetime):
+            continue
+        if result.attempted_at - at >= REFUSAL_HOLD or not _same_secret(refusal, result):
+            continue
+        kept[cap] = refusal
+    return kept
 
 
 def _pair_api(doc: dict[str, Any]) -> dict[str, Any]:
@@ -1463,3 +1751,130 @@ def _known_repositories(record: GitTokenRecord) -> list[tuple[str, str]]:
     return [(repo_id, name) for repo_id, name in sorted(record.repositories.items(),
                                                          key=lambda kv: kv[1])
             if covers(record, repo_id)]
+
+
+# --------------------------------------------------------------------------
+# the daily re-verification (§5.3; lane GT2b)
+# --------------------------------------------------------------------------
+#
+# INSIDE THE REPOSITORY POLL. `RepoIndex.poll` (repo-index.md §3.3) runs
+# `GitTokens.reverify` after its head reads, every five minutes, with what is
+# left of its own time. Each pass probes only what is DUE: a token x
+# repository whose last complete probe is a day old, or one a step reported
+# a refusal for. So a pair is probed about once a day whoever probed it last
+# -- registration, rotation, "Verify now" or an earlier pass -- and a pass
+# that runs out of pairs or time leaves the rest exactly as it was, stalest
+# first for the next one. Nothing here creates infrastructure demand: these
+# are GETs from swarm-api, not tasks (invariant 1).
+
+#: §5.3: "daily per token x repository it covers".
+REVERIFY_EVERY = timedelta(days=1)
+#: A probe that could not run -- no value stored, the forge unreachable --
+#: is tried again after this, not on every five-minute tick; the previous
+#: answer stands meanwhile, with "the last attempt failed" (§5.3).
+REVERIFY_RETRY = timedelta(hours=1)
+#: §5.3 sizes the platform at forty repositories x three tokens (the
+#: repository's, the tenant default and a user's): one pass probes at most
+#: that many pairs, so even a pass that finds every pair due stays under
+#: 1,000 GETs (x MAX_GETS_PER_REPOSITORY), against GitHub's 5,000 an hour per
+#: token. A tenant past it is caught up over the next passes, stalest first.
+REVERIFY_REPOSITORIES = 40
+REVERIFY_TOKENS_PER_REPOSITORY = 3
+REVERIFY_MAX_PAIRS = REVERIFY_REPOSITORIES * REVERIFY_TOKENS_PER_REPOSITORY
+#: How long a step's 403 holds a row `missing` against the same secret
+#: version. A rotation clears it at once; this bound clears it when a grant
+#: was widened on the forge without one (a fine-grained token's permissions
+#: can be edited in place), so the row is measured again within a week.
+REFUSAL_HOLD = timedelta(days=7)
+#: What a worker may report: the forge did not accept the token, or refused it.
+REFUSAL_STATUSES = (401, 403)
+#: §3.4: the warning colour from 14 days, red from 3.
+EXPIRY_WARNING_DAYS = 14
+EXPIRY_DANGER_DAYS = 3
+#: The levels a pass reports as warnings; `ok`, `by_design` and `unknown` are not.
+EXPIRY_WARNING_LEVELS = ("warning", "danger", "expired", "no_expiry")
+
+
+def _fresh(verified_at: datetime | None, now: datetime) -> bool:
+    return isinstance(verified_at, datetime) and now - verified_at < REVERIFY_EVERY
+
+
+def _refusal_pending(doc: dict[str, Any] | None) -> bool:
+    """A step reported a refusal for this pair since its last probe attempt."""
+    refused = (doc or {}).get("refused_at")
+    if not isinstance(refused, datetime):
+        return False
+    attempted = (doc or {}).get("attempted_at")
+    return not isinstance(attempted, datetime) or refused > attempted
+
+
+def _priority(pending: bool, verified_at: datetime | None) -> tuple[Any, ...]:
+    """Reported refusals first, then never verified, then the oldest."""
+    if pending:
+        return (0, 0.0)
+    if not isinstance(verified_at, datetime):
+        return (1, 0.0)
+    return (2, verified_at.timestamp())
+
+
+def expiry_status(record: GitTokenRecord, now: datetime) -> dict[str, Any]:
+    """§3.4 as the console draws it: `level`, whole `days` left and a line.
+
+    `ok`, `warning` (14 days or fewer), `danger` (3 or fewer), `expired`;
+    `no_expiry` -- itself a warning, GitHub's guidance being that every PAT
+    expires -- once a complete probe has read no expiry header; `by_design`
+    for an App installation token, minted per use; `unknown` before any
+    complete probe, rather than a guess.
+    """
+    expires = _iso(record.expires_at)
+    if record.kind == "app_installation":
+        return {"level": "by_design", "days": None, "expires_at": None,
+                "message": "an installation token is minted per use and expires in an hour by "
+                           "design; the App key behind it has no expiry"}
+    if record.expires_at is None:
+        if record.verified_at is None:
+            return {"level": "unknown", "days": None, "expires_at": None,
+                    "message": "not read yet: no complete probe has read this token's expiry"}
+        return {"level": "no_expiry", "days": None, "expires_at": None,
+                "message": "no expiry: GitHub's guidance is that every token expires"}
+    left = record.expires_at - now
+    if left <= timedelta(0):
+        return {"level": "expired", "days": 0, "expires_at": expires,
+                "message": f"expired {record.expires_at.date().isoformat()}"}
+    days = left.days
+    if days <= EXPIRY_DANGER_DAYS:
+        level = "danger"
+    elif days <= EXPIRY_WARNING_DAYS:
+        level = "warning"
+    else:
+        level = "ok"
+    message = ("expires in less than a day" if days == 0
+               else f"expires in {days} day{'' if days == 1 else 's'}")
+    return {"level": level, "days": days, "expires_at": expires, "message": message}
+
+
+@dataclass
+class ReverifyReport:
+    """What one pass's re-verification did, for the poll's answer and the log.
+    Token ids, secret names and counts: never a value."""
+
+    tokens: int = 0
+    #: Tokens probed this pass, and the token x repository pairs they covered.
+    probed: int = 0
+    pairs: int = 0
+    #: Pairs skipped because their last complete probe is under a day old.
+    fresh: int = 0
+    #: Pairs due and left for the next pass: past the pair cap or the time.
+    deferred: int = 0
+    #: Probes that did not complete (no value stored, the forge down).
+    failed: int = 0
+    #: Tokens skipped because their last attempt failed within REVERIFY_RETRY.
+    retry_later: int = 0
+    warnings: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "tokens": self.tokens, "probed": self.probed, "pairs": self.pairs,
+            "fresh": self.fresh, "deferred": self.deferred, "failed": self.failed,
+            "retry_later": self.retry_later, "warnings": list(self.warnings),
+        }

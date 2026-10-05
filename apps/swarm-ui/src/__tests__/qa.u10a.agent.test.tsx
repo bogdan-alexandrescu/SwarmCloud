@@ -22,6 +22,7 @@ import type { Result } from '../fetch'
 import type { CheckpointRecord, CheckpointsPage, Task, TaskPage } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { landed } from './reads'
 import { at, attempt, ev, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -154,7 +155,13 @@ describe('D36: Children has an address and one honest empty state', () => {
     api.loadTask.mockResolvedValue(ok(agent({ parent_task_id: null })))
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
-    await waitFor(() => expect(tab('Children').querySelector('em')?.textContent).toBe('0'))
+    // The count is the children read's, which starts once the header's read
+    // of the task says it can have children. Wait on the two reads, then
+    // query the tab once: a `waitFor` around `tab()` re-ran two role queries
+    // (~850 ms each, reads.ts) per poll, and timed out under load (#605).
+    await landed(api.loadTask)
+    await landed(api.loadChildren)
+    expect(tab('Children').querySelector('em')?.textContent).toBe('0')
     fireEvent.click(tab('Children'))
     expect(go).toHaveBeenCalledWith(`work/task/${ID}/children`)
     expect(tab('Children').getAttribute('aria-selected')).toBe('true')
@@ -168,8 +175,10 @@ describe('D36: Children has an address and one honest empty state', () => {
   it('says `no children` once, with nothing waited on and no cap beside it', async () => {
     api.loadTask.mockResolvedValue(ok(agent({ parent_task_id: null })))
     render(<Routed start="children" onGo={() => {}} />)
-    const pane = await screen.findByRole('region', { name: 'Children' })
-    await waitFor(() => expect(pane.textContent).toMatch(/no children/))
+    await landed(api.loadTask)
+    await landed(api.loadChildren)
+    const pane = screen.getByRole('region', { name: 'Children' })
+    expect(pane.textContent).toMatch(/no children/)
     expect(pane.textContent).not.toMatch(/waiting on/)
     expect(pane.textContent).not.toMatch(/of —/)
     expect(pane.querySelector('.ag-children-facts')).toBeNull()
@@ -229,8 +238,9 @@ describe('D21: the Checkpoints tab counts what its pane found', () => {
     api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1, { attempt_id: 'att_1' })] }))
     api.loadCheckpoints.mockResolvedValue(ok(listing()))
     render(<Routed start="checkpoints" onGo={() => {}} />)
-    await waitFor(() => expect(document.querySelector('.ag-ckpts')?.textContent).toMatch(/1 of 1/))
-    await waitFor(() => expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('1'))
+    await landed(api.loadCheckpoints)
+    expect(document.querySelector('.ag-ckpts')?.textContent).toMatch(/1 of 1/)
+    expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('1')
   })
 
   it('keeps the dash, with its reason, for a listing that was cut', async () => {

@@ -144,10 +144,24 @@ export function AgentDetailScreen({
   // A read still in flight for the previous agent must not head this one.
   const shown = useRef(taskId)
   shown.current = taskId
+  // NOR MAY A READ THAT LANDS AFTER THIS PANE IS GONE SET ITS NAME (#605).
+  // `Screen` drops a late answer itself (its effect's `live`); this `.then`
+  // runs before Screen's sees it, so it needs its own guard. Without one a
+  // read that outlived its pane scheduled a React update into a torn-down
+  // document: in CI, `ReferenceError: window is not defined` after
+  // walk.agent.test.tsx's environment was gone, failing a run whose every
+  // test had passed.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
-        if (shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
+        if (mounted.current && shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
         return r
       }),
     [taskId],

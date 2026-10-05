@@ -77,9 +77,16 @@ def disable_job(workflow: dict) -> dict:
     return jobs["disable"]
 
 
-def test_the_workflow_has_exactly_the_enable_and_disable_jobs(workflow: dict):
+@pytest.fixture(scope="module")
+def close_job(workflow: dict) -> dict:
     jobs = workflow.get("jobs") or {}
-    assert set(jobs) == {"enable", "disable"}, sorted(jobs)
+    assert "close-issues" in jobs, f"expected a job keyed 'close-issues', found {sorted(jobs)}"
+    return jobs["close-issues"]
+
+
+def test_the_workflow_has_exactly_the_enable_disable_and_close_issues_jobs(workflow: dict):
+    jobs = workflow.get("jobs") or {}
+    assert set(jobs) == {"enable", "disable", "close-issues"}, sorted(jobs)
 
 
 def _step(job: dict, step_id: str) -> dict:
@@ -94,9 +101,10 @@ def _step(job: dict, step_id: str) -> dict:
 
 
 def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflow: dict):
-    """MUTATION: add `pull_request` or `push`, or drop one of the four types --
+    """MUTATION: add `pull_request` or `push`, or drop one of the five types --
     each of `synchronize`/`reopened`/`edited` is what lets the `disable` job
-    catch a new head, and dropping one leaves that path unguarded."""
+    catch a new head, and dropping one leaves that path unguarded; `closed`
+    is what lets `close-issues` see the merge (#621)."""
     on = workflow["on"]
     assert set(on) == {"pull_request_target"}, on
     assert set(on["pull_request_target"]["types"]) == {
@@ -104,6 +112,7 @@ def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflo
         "synchronize",
         "reopened",
         "edited",
+        "closed",
     }, on["pull_request_target"]
 
 
@@ -654,6 +663,15 @@ def test_the_disable_job_runs_on_a_push_or_reopen_but_never_on_the_labeling_itse
     assert "edited" in condition and "changes.base" in condition, condition
 
 
+def test_the_disable_job_never_runs_on_the_close(disable_job: dict):
+    """A merged pull request still carries `ready`; without this guard its
+    `closed` event would try to disable auto-merge and comment "this pull
+    request's head changed" on a merged pull request.
+    MUTATION: drop the `action != 'closed'` guard."""
+    condition = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*!=\s*'closed'", condition), condition
+
+
 def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disable_job: dict):
     """MUTATION: add a checkout step, or widen permissions past pull-requests: write."""
     assert disable_job.get("permissions") == {"pull-requests": "write"}, disable_job.get("permissions")
@@ -925,3 +943,82 @@ def test_the_merge_squashes_under_the_same_subject_as_the_gate(job: dict):
     source = (REPO / "apps" / "agent-worker" / "agent_worker" / "merge.py").read_text()
     assert '"commit_title": f"{title} (#{number})"' in source
     assert '"merge_method": "squash"' in source
+
+
+# ---------------------------------------------------------------------------
+# The close-issues job: a merge closes the issues its keywords name (#621)
+# ---------------------------------------------------------------------------
+# GitHub parsed the keywords of the App's merges and closed 5 of 33 of their
+# issues (history analysis, 2026-10-05). Owner decision: close them here,
+# after the merge, with no change to the App's permissions. The script's own
+# decisions are run in test_close_merged_issues.py.
+
+
+def test_the_close_job_runs_only_on_a_merge_into_the_default_branch(close_job: dict):
+    """MUTATION: drop `merged == true` (a pull request closed unmerged would
+    close its issues), or the base-branch comparison."""
+    condition = str(close_job.get("if") or "")
+    assert re.search(r"github\.event\.action\s*==\s*'closed'", condition), condition
+    assert re.search(r"github\.event\.pull_request\.merged\s*==\s*true", condition), condition
+    assert re.search(
+        r"github\.event\.pull_request\.base\.ref\s*==\s*github\.event\.repository\.default_branch",
+        condition,
+    ), condition
+
+
+def test_the_enable_job_never_runs_on_the_close(job: dict):
+    """`enable` keys on the label just added; a `closed` event carries none."""
+    condition = str(job.get("if") or "")
+    assert "github.event.label.name == 'ready'" in condition, condition
+
+
+def test_issues_write_is_granted_to_the_close_job_and_nowhere_else(workflow: dict, close_job: dict):
+    """Least privilege: closing an issue needs issues: write; reading the
+    closing references needs pull-requests: read; the checkout of the default
+    branch's scripts needs contents: read. Nothing else, and no App token.
+    MUTATION: grant issues: write at the workflow level or to another job, or
+    widen pull-requests to write."""
+    assert close_job.get("permissions") == {
+        "contents": "read",
+        "pull-requests": "read",
+        "issues": "write",
+    }, close_job.get("permissions")
+    for job_id, other in (workflow.get("jobs") or {}).items():
+        if job_id != "close-issues":
+            assert "issues" not in (other.get("permissions") or {}), (job_id, other.get("permissions"))
+    text = json.dumps(close_job)
+    assert "app-token" not in text and "MERGE_APP" not in text, "the close job needs no App token"
+
+
+def test_the_close_job_checks_out_the_default_branch_never_the_pull_request(close_job: dict):
+    """pull_request_target with a write token: the code it runs is main's,
+    which the merge has just made -- never the pull request's head or fork.
+    MUTATION: check out `github.event.pull_request.head.sha`."""
+    steps = close_job.get("steps") or []
+    checkouts = [step for step in steps if "checkout" in str(step.get("uses") or "")]
+    assert len(checkouts) == 1, checkouts
+    inputs = checkouts[0].get("with") or {}
+    assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", inputs
+    assert inputs.get("persist-credentials") is False, inputs
+    assert "head" not in json.dumps(close_job), "the close job reads the pull request's head"
+
+
+def test_the_close_job_runs_the_script_with_the_number_through_env(close_job: dict):
+    steps = [step for step in close_job.get("steps") or [] if step.get("run")]
+    assert len(steps) == 1, steps
+    step = steps[0]
+    assert "github.event" not in step["run"], step["run"]
+    assert "scripts/close-merged-issues.sh" in step["run"], step["run"]
+    assert '--pr "${PR_NUMBER}"' in step["run"], step["run"]
+    env = {**(close_job.get("env") or {}), **(step.get("env") or {})}
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number }}", env
+    assert env.get("GH_TOKEN") == "${{ github.token }}", env
+
+
+def test_docs_describe_closing_the_merged_pull_requests_issues():
+    """MUTATION: drop the docs/ci.md section."""
+    text = CI_DOC.read_text()
+    assert "close-merged-issues.sh" in text
+    assert "closingIssuesReferences" in text
+    assert "part of #N" in text
+    assert "#621" in text

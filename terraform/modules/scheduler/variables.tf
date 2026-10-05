@@ -56,6 +56,28 @@ variable "reconciler_path" {
   default = "/reconcile"
 }
 
+variable "execution_cancel_path" {
+  description = "MUST match the route reconciler/service.py serves for a stop request (#627)."
+  type        = string
+  default     = "/stop-execution"
+}
+
+variable "execution_cancel_topic_name" {
+  description = <<-EOT
+    Name of the execution-cancel topic (#627). Passed in for the wake topic's
+    reason: the root puts the same string in swarm-api's environment
+    (EXECUTION_CANCEL_TOPIC) without a dependency on this module.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "execution_cancel_publisher_members" {
+  description = "Identities allowed to publish a stop request, keyed by component name. Only swarm-api writes a cancel."
+  type        = map(string)
+  default     = {}
+}
+
 variable "quota_broker_endpoint" {
   description = "HTTPS base URL of the swarm-quota-broker service."
   type        = string

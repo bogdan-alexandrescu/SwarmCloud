@@ -111,7 +111,9 @@ from .forge import (
     github_headers,
     is_pinned_host,
     neutral_line,
+    urllib_probe_send,
 )
+from .gittokens import GitTokens
 from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, RepoGraph
 from .repograph import graph_root as repograph_root
 from .repositories import COLLECTION as REPOSITORIES
@@ -512,8 +514,8 @@ _INDEX_SHAPE = (
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
     '   "hot_spots": [{"path", "changes", "co_changed": ["<path>"]}],\n'
     '   "notes": [{"text": "<one line>", "source"}],\n'
-    '   "languages": [{"language", "files", "grammar", "server": null, "status": "not_run",\n'
-    '                  "fallback"}],\n'
+    '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "unsupported" |\n'
+    '                  "failing" | "timed_out" | "not_run", "fallback"}],\n'
     '   "graph": {"symbols": <count>, "edges": <count>,\n'
     '             "top_symbols": [{"id": "<symbol id>", "callers": <count>}]},\n'
     '   "truncated": ["<a list you cut to fit, e.g. modules>"]}\n'
@@ -559,7 +561,13 @@ def indexer_prompt(
         "them into the shape below keeping only the keys the shape names (a hot spot's "
         '"changed_with" paths become "co_changed", at most 10). Its graph summary becomes '
         '"graph": {"symbols": <its symbols>, "edges": <its call_edges>, "top_symbols": '
-        '[{"id": <each most_called symbol>, "callers": <its callers>}]}. Record '
+        '[{"id": <each most_called symbol>, "callers": <its callers>}]}. '
+        # RI10: the extractor's language rows carry more than LanguageRow
+        # allows (`reason`, `parsed`, the per-file counts, `lsp`); the
+        # document refuses any other key, so the prompt names the mapping.
+        "Copy each of its languages rows with only the six keys of the shape: drop `reason`, "
+        "`parsed`, `lsp` and its other counts, and write `fallback` as its `reason` when it "
+        "gives one, else its `fallback`. Record "
         f'"extractor": {{"ran": true, "command": "{EXTRACTOR_COMMAND}", "version": '
         '"<its extractor.version>"}. If it is not installed, this image does not carry it '
         "yet: compute those fields yourself with git and the file tree (file and line "
@@ -809,13 +817,16 @@ class PollReport:
     skipped: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: The pass's git token re-verification (git-tokens.md §5.3,
+    #: `GitTokens.reverify`), or `{"error": <type>}` when it raised.
+    git_tokens: dict[str, Any] = field(default_factory=dict)
 
     def to_api(self) -> dict[str, Any]:
         return {
             "registrations": self.registrations, "read": self.read,
             "not_modified": self.not_modified, "submitted": self.submitted,
             "coalesced": self.coalesced, "skipped": self.skipped,
-            "truncated": self.truncated,
+            "truncated": self.truncated, "git_tokens": dict(self.git_tokens),
         }
 
 
@@ -1923,6 +1934,7 @@ class RepoIndex:
         report = PollReport()
         started = clock()
         token: str | None = None
+        seen: list[tuple[str, str]] = []
         while True:
             rows, token = self.registrations.list(tenant_id, limit=page_size, page_token=token)
             for record in rows:
@@ -1931,6 +1943,8 @@ class RepoIndex:
                     report.truncated = True
                     break
                 report.registrations += 1
+                seen.append((str(record.get("repo_id") or ""),
+                             f"{record.get('owner')}/{record.get('repo')}"))
                 try:
                     self._poll_one(tenant_id, record, tenant, owner_auth, report)
                 except ApiError as failed:
@@ -1946,6 +1960,19 @@ class RepoIndex:
                          tenant_id, record["repo_id"], code)
             if report.truncated or token is None:
                 break
+        # git-tokens.md §5.3: the daily token x repository re-verification
+        # rides this pass, after the head reads and inside what is left of
+        # their time. It never fails the poll.
+        try:
+            report.git_tokens = GitTokens(self._db, now=self._now).reverify(
+                tenant, tenant_id, seen, tokens=self._tokens,
+                send=getattr(self._forge, "probe_send", None) or urllib_probe_send,
+                clock=clock, budget_seconds=POLL_BUDGET_SECONDS - (clock() - started),
+            ).to_api()
+        except Exception as failed:
+            report.git_tokens = {"error": type(failed).__name__}
+            log.warning("repo index poll tenant=%s git token reverify error=%s",
+                        tenant_id, type(failed).__name__)
         log.info(
             "repo index poll tenant=%s registrations=%d read=%d not_modified=%d "
             "submitted=%d coalesced=%d failures=%d truncated=%s", tenant_id,

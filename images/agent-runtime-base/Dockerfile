@@ -43,6 +43,55 @@ FROM ${UV_IMAGE} AS uvbin
 FROM ${NODE_IMAGE} AS nodebin
 
 # ---------------------------------------------------------------------------
+# languageservers: the Go toolchain, gopls and terraform-ls for the
+# repository index's LSP pass (docs/repo-index.md §3.5, lane RI10). The two
+# npm servers (pyright, typescript-language-server) are installed in the
+# runtime stage from images/agent-runtime-base/repo-index/lsp/package-lock.json.
+# ---------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS languageservers
+
+# Go 1.27.1 (2026-10-05, the newest stable on https://go.dev/dl/?mode=json,
+# whose sha256 for go1.27.1.linux-amd64.tar.gz this is). gopls needs the
+# toolchain at run time, not only to build: it loads packages through
+# `go list`, so the runtime stage carries /usr/local/go too.
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+# gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05).
+# gopls ships NO prebuilt binary -- `go install` is the vendor's only
+# distribution -- so it is the one tool here compiled at build time, against
+# the module checksum database (sum.golang.org verifies every module's
+# bytes, the go.sum of the toolbox above). About 35 s; it runs in this
+# throwaway stage, so the compile cache never reaches the runtime.
+ARG GOPLS_VERSION=0.23.0
+# terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version on
+# 2026-10-05). Checksum:
+# https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_SHA256SUMS
+# (terraform-ls_0.39.0_linux_amd64.zip). Built by HashiCorp with go1.25.12.
+ARG TERRAFORM_LS_VERSION=0.39.0
+ARG TERRAFORM_LS_SHA256=7750edc736845fd8c04ff0fc6332423c12d8275b358668c8c17e8aedc43ef971
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+ && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+ && tar -C /usr/local -xzf /tmp/go.tar.gz \
+ && rm -rf /tmp/go.tar.gz /usr/local/go/test \
+ && GOPATH=/tmp/gopath GOCACHE=/tmp/gocache GOTOOLCHAIN=local GOTELEMETRY=off \
+      CGO_ENABLED=0 GOFLAGS=-trimpath \
+      /usr/local/go/bin/go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" \
+ && install -o root -g root -m 0755 /tmp/gopath/bin/gopls /usr/local/bin/gopls \
+ && rm -rf /tmp/gopath /tmp/gocache \
+ && curl -fsSL -o /tmp/terraform-ls.zip \
+      "https://releases.hashicorp.com/terraform-ls/${TERRAFORM_LS_VERSION}/terraform-ls_${TERRAFORM_LS_VERSION}_linux_amd64.zip" \
+ && echo "${TERRAFORM_LS_SHA256}  /tmp/terraform-ls.zip" | sha256sum -c - \
+ && unzip -q /tmp/terraform-ls.zip terraform-ls -d /tmp/terraform-ls \
+ && install -o root -g root -m 0755 /tmp/terraform-ls/terraform-ls /usr/local/bin/terraform-ls \
+ && rm -rf /tmp/terraform-ls /tmp/terraform-ls.zip \
+ && /usr/local/bin/gopls version && /usr/local/bin/terraform-ls version
+
+# ---------------------------------------------------------------------------
 # builder: compile wheels, produce /opt/venv
 # ---------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS builder
@@ -674,6 +723,38 @@ RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
       > /usr/local/bin/swarm-repo-graph \
  && chmod 0755 /usr/local/bin/swarm-repo-graph
 
+# The language servers of the index's LSP pass (docs/repo-index.md §3.5,
+# lane RI10): pyright, tsserver (through typescript-language-server), gopls
+# and terraform-ls, each linked into /opt/repo-index/servers/bin, the ONLY
+# place lsp/servers.py resolves a server from -- never PATH, which an agent
+# can change. The lsp/ package is the driver swarm-repo-index imports.
+#
+# The npm servers come from lsp/package-lock.json with `npm ci`: exact
+# versions and each tarball's sha512 integrity, nothing resolved at build
+# time, and --ignore-scripts so no package runs code while installing. The
+# three pins: pyright 1.1.414, typescript-language-server 6.0.1 (it needs
+# Node >= 22.22.2; NODE_IMAGE is Node 24), and typescript 6.0.3 -- NOT 7.x,
+# whose package is the native compiler and has no tsserver for
+# typescript-language-server to start. The cache goes to /tmp, not the agent
+# user's ~/.npm, and is removed in the same layer.
+#
+# /usr/local/go is the toolchain gopls runs `go list` with; `go` is linked
+# into the servers' bin directory only, not onto the agent's PATH.
+COPY --from=languageservers /usr/local/go /usr/local/go
+COPY --from=languageservers /usr/local/bin/gopls /usr/local/bin/terraform-ls /opt/repo-index/servers/bin/
+COPY images/agent-runtime-base/repo-index/lsp/ /opt/repo-index/lsp/
+RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /opt/repo-index/servers/ \
+ && cd /opt/repo-index/servers \
+ && NPM_CONFIG_CACHE=/tmp/npm-cache npm ci --ignore-scripts --omit=optional --no-audit --no-fund \
+ && rm -rf /tmp/npm-cache \
+ && ln -s ../node_modules/.bin/pyright-langserver /opt/repo-index/servers/bin/pyright-langserver \
+ && ln -s ../node_modules/.bin/typescript-language-server /opt/repo-index/servers/bin/typescript-language-server \
+ && ln -s /usr/local/go/bin/go /opt/repo-index/servers/bin/go \
+ && chmod -R a+rX,go-w /opt/repo-index/lsp /opt/repo-index/servers \
+ && for s in pyright-langserver typescript-language-server gopls terraform-ls go; do \
+      test -x "/opt/repo-index/servers/bin/$s" || { echo "language server missing: $s" >&2; exit 1; }; \
+    done
+
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
@@ -715,6 +796,9 @@ RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.life
 # file with each, as the agent user, or the indexer step would find out
 # instead of the build.
 RUN swarm-repo-index --self-test
+# And each of the four language servers must start, as the agent user, and
+# resolve one call across two files -- not merely start.
+RUN swarm-repo-index --lsp-self-test
 # And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
 RUN swarm-repo-graph --self-test
 

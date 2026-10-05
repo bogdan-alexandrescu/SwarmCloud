@@ -533,9 +533,74 @@ jobs:
         # production cluster, so it is verified on every run, not before use.
         run: ./scripts/destroy.sh --self-test
 
+  ui-changes:
+    # WHETHER THIS CHANGE CAN REACH swarm-ui (owner decision 2026-10-05, #605).
+    # The ui job below runs ~9 minutes of jsdom; a pull request that changes
+    # only the scheduler (#601) ran it, and went red on a load flake in code it
+    # never touched. It now runs on a pull request only when the change is in
+    # apps/swarm-ui/**, the API's route surface (apps/swarm-api/swarm_api/routes/**
+    # and swarm_api/main.py, which the UI's reads are written against), or this
+    # file. On a push to main and on a dispatch it always runs: main is the
+    # build release.yml promotes, so it is tested whole.
+    #
+    # A GATE JOB, NOT `on.pull_request.paths`: a path filter skips the WHOLE
+    # workflow, and this workflow's other jobs must still run. Skipped by its
+    # `if:`, the ui job reports `skipped`, which GitHub counts as passing for a
+    # required check and which scripts/ci-gate.sh counts as a pass inside a run
+    # that concluded `success` (its "WHAT `skipped` MEANS"). If THIS job fails,
+    # the ui job is skipped as a dependant and the run concludes `failure`, so
+    # ci-gate fails closed rather than reading a broken gate as "no UI change".
+    # Any doubt -- a base it cannot diff against -- runs the ui job.
+    name: does this change reach swarm-ui
+    runs-on: ubuntu-24.04
+    outputs:
+      ui: ${{ steps.diff.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # `base...head` needs both commits and their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: diff the pull request against its base
+        id: diff
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" != "pull_request" ]; then
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            echo "${EVENT}: the ui job always runs"
+            exit 0
+          fi
+          # Three dots: the change since the merge base, which is what the pull
+          # request merges. base.sha does not move when main moves, so two dots
+          # would also count everything main gained since the PR was opened.
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; running the ui job rather than guessing"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
+          grep -E '^(apps/swarm-ui/|apps/swarm-api/swarm_api/routes/|apps/swarm-api/swarm_api/main\.py$|\.github/workflows/application\.yml$)' \
+            "${RUNNER_TEMP}/changed" > "${RUNNER_TEMP}/ui" || true
+          hits="$(grep -c . "${RUNNER_TEMP}/ui" || true)"
+          echo "${total} changed file(s), ${hits} of them reach swarm-ui"
+          if [ "${hits}" -gt 0 ]; then
+            sed 's/^/  /' "${RUNNER_TEMP}/ui"
+            echo "ui=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ui=false" >> "$GITHUB_OUTPUT"
+          fi
+
   ui:
     name: swarm-ui typecheck / component tests
     runs-on: ubuntu-24.04
+    needs: ui-changes
+    if: needs.ui-changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -626,6 +691,19 @@ jobs:
         # the LAST command in the chain, not to vitest, so node tests/run.mjs
         # would receive a flag it never asked for. `vitest run` is already
         # non-watching.
+        #
+        # WORKERS STAY AT VITEST'S DEFAULT, and that is a measured choice
+        # (#605). vitest 3.2's forks pool runs `availableParallelism() - 1`
+        # workers outside watch mode: 3 on this 4-vCPU runner, one core left
+        # for the main process. That is not oversubscription, and the issue's
+        # own numbers agree -- 946 s of tests in a 517 s run is ~1.8 files at
+        # a time, under the 3 allowed; a 2-worker run of the whole suite on
+        # 2026-10-05 took 526 s, the same. The flakes were waits, not
+        # starvation: each `*ByRole` poll over the agent split cost ~850 ms of
+        # `getComputedStyle` even on an idle machine, so a 1000 ms `findBy`
+        # held one poll. The tests now wait on their read instead
+        # (src/__tests__/reads.ts); in that 526 s run no wait took over
+        # 1000 ms, and setup.ts's asyncUtilTimeout is 2000 ms.
         run: npm test
 
       - name: production build

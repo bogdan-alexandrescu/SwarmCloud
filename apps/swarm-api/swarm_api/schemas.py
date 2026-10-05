@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from .validation import (
     DEFAULT_CARRIER,
@@ -104,6 +104,13 @@ class WorkflowStepCreate(StrictModel):
     #: instead of the workflow's `repository_ref` (#264). A step id, never a
     #: ref: the worker derives the branch from the upstream's task id.
     builds_on: str | None = Field(default=None, min_length=1, max_length=64)
+    #: An empty diff is this step's result, not its failure (owner decision,
+    #: 2026-10-05): the step ends SUCCEEDED with `result_summary.no_change`,
+    #: and a later step that needs its change (its `swarm-work.patch`, its
+    #: branch) is skipped with "nothing to change" instead of failing. Strict:
+    #: `"yes"` is refused, not read as true. Stored in `metadata.dispatch`,
+    #: which the spec signature covers; see docs/workflows.md.
+    allow_empty_diff: StrictBool = False
     #: Free-form, like a task's: merged over the workflow's `metadata` onto this
     #: step's task, with the same reserved keys, size limit and storability
     #: checks. One key in it means something to the platform:

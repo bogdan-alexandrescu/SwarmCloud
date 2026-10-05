@@ -36,7 +36,6 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { fontPx, lengthPx, paddingX, textPx } from './tablefit'
 
-const WAIT = { timeout: 8000 }
 const RUNNING = 'task_a073aff5'
 /** The spine and the section panel beside the content column. */
 const CHROME = 84 + 236
@@ -61,7 +60,7 @@ async function split(pref: string): Promise<HTMLElement> {
     expect(s?.querySelector('.ag-head-facts')).toBeTruthy()
     expect(s!.querySelector('.ag-head .run-stop-btn'), 'a running agent draws no Stop').not.toBeNull()
     return s!
-  }, WAIT)
+  })
 }
 
 interface Box {
