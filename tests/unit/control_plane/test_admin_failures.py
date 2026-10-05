@@ -49,6 +49,11 @@ def test_an_admin_reads_every_tenants_failures_newest_first(client, db):
     # The same shape as a task row.
     member_row = client.get("/v1/tasks/fail_0", headers=auth_header("alice")).json()["task"]
     assert set(rows[-1]) == set(member_row)
+    # And the member task list's row, attempt totals included (P1 follow-up).
+    listed = client.get("/v1/tasks", headers=auth_header("alice")).json()["tasks"]
+    (list_row,) = [row for row in listed if row["id"] == "fail_0"]
+    assert set(list_row) == set(member_row)
+    assert "cost_usd_total" in list_row and "attempts_read" in list_row
 
 
 def test_it_pages_with_the_task_cursor(client, db):

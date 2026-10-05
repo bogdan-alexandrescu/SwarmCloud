@@ -184,6 +184,9 @@ def list_tasks(
     Each lease-holding row carries its worker's `heartbeat_at` and the
     reconciler's `heartbeat_grace_seconds` (#179), from batched reads of the
     page's current leases (`swarm_api.heartbeats`).
+
+    Every row, in both views, carries its task's attempt totals
+    (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
     """
     parsed_state: TaskState | None = None
     if state is not None:
@@ -222,15 +225,22 @@ def list_tasks(
     accounts = accounts_for(ctx.db, tenant_id, page.items)
     # #179: the lease-holding rows' current leases, one `get_all` per 100.
     beats = heartbeats_for_page(ctx.db, tenant_id, page.items, core=ctx.settings.core)
+    # EVERY ATTEMPT'S SPEND AND TIME on each row, both views (owner decision
+    # 2026-10-05, P1 follow-up): one batched attempts query per 30 rows of the
+    # page, never one per task (`swarm_api.attempt_totals.totals_for`).
+    totals = totals_for(ctx.db, tenant_id, [task.id for task in page.items])
     payload: dict = {
         "tasks": [
-            task_to_api(
-                task,
-                waiting.get(task.id),
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
-                heartbeat=beats.get(task.id),
-                summary=summary,
+            with_totals(
+                task_to_api(
+                    task,
+                    waiting.get(task.id),
+                    account=accounts.get(task.id),
+                    console_url=ctx.settings.console_url,
+                    heartbeat=beats.get(task.id),
+                    summary=summary,
+                ),
+                totals,
             )
             for task in page.items
         ],
@@ -302,9 +312,15 @@ def cancel_task(
     for child_target in children:
         background.add_task(ctx.executions.cancel, child_target)
     accounts = accounts_for(ctx.db, tenant_id, [task])
+    # A task cancelled between attempts has already spent: the response
+    # carries every attempt's totals, as `get_task` does (P1 follow-up).
+    totals = totals_for(ctx.db, tenant_id, [task.id])
     return {
-        "task": task_to_api(
-            task, account=accounts.get(task.id), console_url=ctx.settings.console_url
+        "task": with_totals(
+            task_to_api(
+                task, account=accounts.get(task.id), console_url=ctx.settings.console_url
+            ),
+            totals,
         ),
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would

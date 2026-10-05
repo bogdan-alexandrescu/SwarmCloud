@@ -16,6 +16,8 @@ import {
   type SpendRollup,
 } from './api'
 import { PHONE_PAGE_LIMIT, agentName } from './agentlist'
+import { totalCostCell, totalCostOf } from './dag'
+import { usd } from './measure'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
@@ -1206,9 +1208,50 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
  */
 const RUNNING_ROWS = 8
 
-/** Why the Cost so far column is a dash: the field is not served per task. */
+/**
+ * Why the Cost so far column is a dash for a row served without attempt
+ * totals: an API older than the P1 follow-up (2026-10-05), whose
+ * `GET /v1/tasks` carried no cost.
+ */
 const COST_NOT_SERVED =
-  'not served: GET /v1/tasks carries no cost. A task’s cost is on its attempts, one read per task, so Cost so far sums a sample on refresh instead.'
+  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Cost so far card sums a sample on refresh instead.'
+
+/** Why the column is a dash when the API read the attempts and none reported. */
+const COST_NOT_YET =
+  'not reported yet: no attempt of this task has recorded a cost. An attempt records its cost when it ends.'
+
+/** Why the column is a dash when the API could not read the attempts. */
+const COST_UNREAD = 'The attempts behind this task’s cost could not be read. Not $0: unknown.'
+
+/**
+ * COST SO FAR IS THE WHOLE TASK'S (owner decision 2026-10-05, P1 follow-up).
+ * `GET /v1/tasks` serves every attempt's total on each row, and the cell is
+ * the board's own reading of it (`totalCostCell`): `at least` while an
+ * attempt has not reported -- a running attempt reports at exit -- and the
+ * last attempt's figure as secondary text once there is more than one, the
+ * way the task page's Cost cell reads. A null total is a dash, never $0.
+ */
+function CostSoFar({ task }: { task: Task }) {
+  const served = totalCostCell(task)
+  const total = totalCostOf(task)
+  if (served !== null && total !== null) {
+    const n = total.attempts
+    return (
+      <span title={served.note}>
+        <span className="ov-cost">{served.text}</span>
+        {n !== null && n > 1 && (
+          <span className="ov-sub">last attempt {total.lastUsd === null ? 'not reported' : usd(total.lastUsd)}</span>
+        )}
+      </span>
+    )
+  }
+  const why = task.attempts_read === 'failed' ? COST_UNREAD : typeof task.attempts === 'number' ? COST_NOT_YET : COST_NOT_SERVED
+  return (
+    <span className="ov-dash" title={why}>
+      &mdash;
+    </span>
+  )
+}
 
 /**
  * Running now: State first, then Agent · profile, Runtime, Cost so far (O1).
@@ -1437,9 +1480,7 @@ export function RunningRow({
         <Runtime task={task} leasedAt={leasedAt} />
       </td>
       <td className="is-num">
-        <span className="ov-dash" title={COST_NOT_SERVED}>
-          &mdash;
-        </span>
+        <CostSoFar task={task} />
       </td>
     </tr>
   )
