@@ -484,3 +484,31 @@ def test_the_swap_is_not_attempted_past_the_cap(db, worker_factory, tmp_path, cl
 
 
 _ = (datetime, timedelta, timezone)
+
+
+# -- a credential revoked under a held account (#626) -------------------------
+
+
+def test_a_refused_credential_on_a_held_account_reloads_and_resumes_the_session(
+    db, worker_factory, tmp_path, cli, log_stream
+):
+    """The refresher revoked the token under a running agent. The worker
+    re-reads the SAME account's secret and restarts the CLI with `--resume`, so
+    the agent continues its conversation instead of starting it again (#626:
+    26 restarts, ~169 agent-minutes, every one of them from the top)."""
+    broker = FakeBroker()
+    code, worker, runs, tokens, sessions = _run(
+        db, worker_factory, tmp_path, broker, modes=["refused", "finish"]
+    )
+
+    assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
+    assert [r["resume"] for r in runs] == [None, sessions[0]]
+    # The same account: a reload is not a move.
+    assert broker.swaps == []
+    assert runs[1]["token"] == tokens[f"swarm-account-{TENANT}--first"]
+    reloads = [e["detail"] for e in db.events("task_1")
+               if (e.get("detail") or {}).get("cause") == "credential_reloaded"]
+    assert len(reloads) == 1
+    assert reloads[0].get("resumed") is True
+    assert sessions[0] not in json.dumps(reloads)
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value

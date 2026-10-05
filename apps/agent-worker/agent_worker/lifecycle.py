@@ -949,11 +949,26 @@ class Worker:
                 refusal = self._credential_refusal()
                 if refusal is not None and credential_reloads < MAX_CREDENTIAL_RELOADS:
                     credential_reloads += 1
+                    # RESUMED, NOT STARTED AGAIN (#626). A restart from the
+                    # prompt threw away everything the agent had done -- 26
+                    # restarts and ~169 agent-minutes in the 2026-10-05
+                    # history. On a held account the runner's channel named
+                    # the session (`_move_account_after` read it above), and
+                    # the restart continues it with `--resume`, exactly as an
+                    # account move does. A run that named no session, or a
+                    # runner that cannot resume (the channel exists only for
+                    # one that can), restarts from the prompt as before.
+                    resumed = self._account is not None and self._session_id is not None
+                    if resumed:
+                        self._resume_session = self._session_id
+                        # The next runner counts its turns from zero.
+                        self._turns_checked = 0
                     self.log.warning(
                         "credential refused; reloading it and restarting in place",
                         provider=refusal.get("provider"),
                         marker=refusal.get("marker"),
                         reload=credential_reloads,
+                        resumed=resumed,
                     )
                     self.control.emit(
                         EventType.RETRYING,
@@ -961,6 +976,7 @@ class Worker:
                             "cause": "credential_reloaded",
                             "provider": refusal.get("provider"),
                             "reload": credential_reloads,
+                            "resumed": resumed,
                         },
                     )
                     ws.credential_path.unlink(missing_ok=True)
