@@ -2456,7 +2456,9 @@ function Minimap({
         {layout.nodes.map((n) => (
           <rect
             key={n.step.step_id}
-            className={`wf-mini-node is-${present(stepState(n.step, taskById)).tone}`}
+            // THE NODE'S OWN TINT (#405, owner 2026-10-01): the state pair the
+            // card, the table row and the timeline span are drawn in.
+            className={`wf-mini-node ${lookClass(stepLook(stepState(n.step, taskById)))}`}
             x={n.x}
             y={n.y}
             width={layout.nodeW}
