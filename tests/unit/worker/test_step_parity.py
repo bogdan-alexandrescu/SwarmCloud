@@ -100,10 +100,21 @@ def _warnings_naming(log_stream: io.StringIO, name: str) -> list[dict[str, Any]]
     ]
 
 
+#: The sentence that follows the deliverables line (owner decision,
+#: 2026-10-05): the agent may ask the owner in `questions.json` instead of
+#: guessing. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
+
+
 def _deliverables_line(artifacts: Path) -> str:
     return (
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) "
-        "are uploaded and shown in Artifacts."
+        f"are uploaded and shown in Artifacts.\n{QUESTIONS_LINE}"
     )
 
 

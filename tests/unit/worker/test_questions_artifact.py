@@ -187,5 +187,6 @@ def test_a_file_that_was_not_uploaded_is_not_counted(tmp_path: Path):
     folder.mkdir()
     (folder / NAME).write_text(json.dumps(VALID))
 
-    got = questions.summarise(folder, uploaded=set(), cause="over the size cap")
-    assert got == {COUNT_KEY: 0, REJECTED_KEY: "not uploaded: over the size cap"}
+    because = "written but not uploaded: over the artifact cap (cap)"
+    got = questions.summarise(folder, uploaded=set(), cause=because)
+    assert got == {COUNT_KEY: 0, REJECTED_KEY: because}

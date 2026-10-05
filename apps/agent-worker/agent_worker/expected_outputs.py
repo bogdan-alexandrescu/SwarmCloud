@@ -254,6 +254,29 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
     )
 
 
+def questions_line() -> str:
+    """The ONE sentence telling a CLI agent it may ask the owner (2026-10-05).
+
+    Owner decision, 2026-10-05: a remote agent that meets a decision that is
+    the owner's writes it into `questions.json` rather than guessing, or
+    burying it in its answer and shipping `part of #N` (I310, W532). Follows
+    `deliverables_line`, so "there" is the folder that line named and the
+    prompt still names `$SWARM_ARTIFACTS_DIR` once. The shape is given inline
+    because the agent cannot read this platform's docs; the worker checks it
+    (`agent_worker.questions`). "Never acted on" is said because it is true:
+    the file is data for the operator, not a request to the platform.
+
+    Shared by claude-code and codex, like the line before it: both are told
+    about the folder in the one place, `agent_instructions`.
+    """
+    return (
+        "If a decision is the owner's to make, ask instead of guessing: write "
+        "questions.json there, a JSON list of {question, options: [{label, "
+        "description}], recommended, context}; it is shown to the owner and "
+        "never acted on."
+    )
+
+
 def staged_paths(value: Any, work_dir: Path | str) -> tuple[str, ...]:
     """The absolute paths of the inputs the worker staged, from `input.json`.
 
@@ -287,9 +310,11 @@ def agent_instructions(
 ) -> str:
     """The lines a CLI runner appends to the agent's prompt.
 
-    Always `deliverables_line`, once. Then, when later steps of a workflow
-    stage files from this one, their names and each file's full path, as the
-    one order this text gives: a dependant cannot run without them (#149).
+    Always `deliverables_line`, once, and `questions_line` after it, which
+    says the agent may ask the owner in `questions.json` there. Then, when
+    later steps of a workflow stage files from this one, their names and
+    each file's full path, as the one order this text gives: a dependant
+    cannot run without them (#149).
     The directory is not named a second time: "there" is the directory the
     first line named, so the prompt carries that line exactly once. "Outside the
     repository" is said because the working directory is where an agent
@@ -317,7 +342,7 @@ def agent_instructions(
     name.
     """
     directory = os.path.abspath(os.fspath(artifacts_dir))
-    lines = [deliverables_line(directory)]
+    lines = [deliverables_line(directory), questions_line()]
     if names:
         listed = ", ".join(names)
         lines += [

@@ -143,6 +143,7 @@ from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import questions as questions_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
@@ -8559,6 +8560,9 @@ class Worker:
         says why each comes first.
         """
         first = list(self._expected_outputs)
+        # The agent's questions for the owner (`agent_worker.questions`): a
+        # file the cap dropped would be questions nobody is told of.
+        first.append(questions_mod.NAME)
         files = agent_stream_files(self.cfg.runner_profile)
         if files is not None:
             first += files.names()
@@ -8822,6 +8826,25 @@ class Worker:
             summary["git"] = git_summary
         if workdir is not None:
             summary["workdir_outputs"] = workdir["summary"]
+        # THE AGENT'S QUESTIONS FOR THE OWNER (owner decision, 2026-10-05):
+        # `questions: N` for a valid `questions.json` the upload took, 0 with
+        # `questions_rejected` for one that is not, 0 alone for none. Counted,
+        # never acted on: no state below reads it. An invalid file is a line
+        # here, not a failed attempt. See `agent_worker.questions`.
+        cause = raw_causes.get(questions_mod.NAME) or self._not_uploaded_causes.get(
+            questions_mod.NAME
+        )
+        asked = questions_mod.summarise(
+            ws.artifacts,
+            uploaded={entry["name"] for entry in artifacts},
+            cause=expected_mod.cause_text(cause) if cause else None,
+        )
+        if questions_mod.REJECTED_KEY in asked:
+            self.log.warning(
+                "questions.json was not taken as questions for the owner",
+                reason=asked[questions_mod.REJECTED_KEY],
+            )
+        summary.update(asked)
         if skipped:
             # Each entry names the file and WHY it was skipped (#165): the
             # cap, an upload error, a refused file. Read through
