@@ -617,3 +617,20 @@ def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, gith
     compares = [u for u, _ in github.calls if "/compare/" in u]
     _get_index(client, repo_id)
     assert [u for u, _ in github.calls if "/compare/" in u] == compares
+
+
+def test_the_tenant_token_reads_the_head_and_is_never_stored_or_served(
+    client, db, objects, repo_id, github, secrets_reader
+):
+    body = _promoted(client, db, objects, repo_id)
+    _registration(db, repo_id)["index"]["head_sha"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 1}
+    read = _get_index(client, repo_id)
+    token = secrets_reader.issued["swarm-tenant-eng-git"]
+    forge_reads = [(u, h) for u, h in github.calls if "/git/ref/" in u or "/compare/" in u]
+    assert forge_reads
+    for url, headers in forge_reads:
+        assert url.startswith("https://api.github.com/")
+        assert headers["Authorization"] == f"Bearer {token}"
+    assert token not in json.dumps(body) and token not in read.text
+    assert token not in json.dumps(db.dump(), default=str)
