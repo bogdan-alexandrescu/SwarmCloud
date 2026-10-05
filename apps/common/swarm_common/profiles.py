@@ -1202,6 +1202,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     # of them either (terraform/infra/locals.tf, `profiles_without_a_job`):
     # until each runs as its own service account, a Job would run it as the
     # tenant's worker account, which is the hole these profiles exist to close.
+    #
+    # EXCEPT `merge`, ENABLED BY CONTRACT REQUEST 47 (owner, 2026-10-04, #295):
+    # merging moved off the GitHub-side App into this step, which uses the
+    # tenant's EXISTING `-git` token. The owner accepted, on #476, that an
+    # agent holding `-git` can therefore also merge: the token that pushes the
+    # branch is the token that lands it, so a separate merge App and account
+    # bought nothing an agent with `-git` could not already do. #342 (signed
+    # step specs) is closed, which lifted the other half of the gate.
     "merge": RunnerProfile(
         name="merge",
         image="agent-runtime-base",
@@ -1209,17 +1217,15 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=(),
         worker_action=WorkerAction.MERGE,
-        # The credential is never mounted: its secret is read by the worker at
-        # merge time, as `swarm-<tenant>-merge`, the Job's own service account.
-        # `provider` is what parks the step CREDENTIAL_MISSING, at no cost, for a
-        # tenant that has not registered one, and keeps Terraform from creating a
-        # merge Job for that tenant.
-        provider="git-merge",
+        # The credential is never mounted: the worker reads the tenant's `-git`
+        # secret at merge time only, after every check that needs none, and
+        # never puts it in the workspace, a file, an environment or a log
+        # (#219). `provider` is what parks the step CREDENTIAL_MISSING, at no
+        # cost, for a tenant that has not registered one.
+        provider="git",
         secrets=(),
         timeout_seconds=600,
         inputs={},
-        available=False,
-        disabled_reason=_DISABLED_UNTIL_342,
     ),
     "post-verdict": RunnerProfile(
         name="post-verdict",

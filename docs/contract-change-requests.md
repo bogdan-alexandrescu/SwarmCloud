@@ -8530,3 +8530,92 @@ prefix is the only way to count them apart.
   names the case, never a value.
 - **Invariant 1.** A FAILED step holds no capacity; the lease is released on
   the same finish as any other failure.
+
+---
+
+## 47. `profiles.py`: the `merge` profile is enabled, and reads the tenant's `-git` token
+
+**Status:** ACCEPTED by the owner on 2026-10-04 and applied by functionality
+wave 4, lane M1a. The decisions are recorded on #295; the risk acceptance on
+#476.
+
+### What was true before
+
+Contract request 33 put `merge` in the catalogue with `provider="git-merge"`:
+a GitHub App key, `swarm-tenant-<tenant>-git-merge`, read only by the Job's
+own service account `swarm-<tenant>-merge`, so that no container an agent
+had run in could ever hold a credential able to land code. The profile was
+`available=False` until #342 (signed step specs) was enforced and the owner
+had created the merge App. Meanwhile pull requests were merged on the GitHub
+side, by `.github/workflows/auto-merge.yml` and the `swarmcloud-merge` App.
+That App merged #564 and #562 and left #72 and #560 open, although GitHub
+listed both as their closing references (#569).
+
+### The change
+
+```python
+    "merge": RunnerProfile(
+        ...
+        worker_action=WorkerAction.MERGE,
+        provider="git",
+        secrets=(),
+        timeout_seconds=600,
+        inputs={},
+    ),
+```
+
+`available` returns to its default, True; `disabled_reason` is dropped; the
+provider is `git`, the tenant's existing forge token. Nothing else in
+`swarm_common` changed: `post-verdict` and `claude-code-review` stay disabled
+with their reason, and `WorkerAction`, the end causes and every other field
+are as request 33 left them.
+
+### Why (the owner's decisions, 2026-10-04)
+
+1. Merging moves off the GitHub-side App into a workflow `merge` step.
+2. The step uses the tenant's EXISTING `-git` token. The owner accepted, on
+   #476, that an agent holding `-git` can also merge: the token that pushes a
+   branch can already do everything the merge App was meant to keep from it,
+   so a second identity bought no isolation worth its cost.
+3. It works in any repository a workflow runs on, not one fixed by Terraform.
+4. It explicitly closes the issues the pull request closes, because the App
+   path did not (#569).
+5. It is an opt-in final step: a platform default (`merge_by_default`,
+   default off) or per job (`metadata.merge`: `on` | `off`).
+
+#342 is closed, so the gate request 33 named is lifted. The rest of
+docs/merge-step.md stands except where its "Revised 2026-10-04 (owner)"
+section says otherwise.
+
+### What it breaks
+
+* `validation.APP_CREDENTIAL_PROVIDERS` no longer derives `git-merge`.
+  `git` stays out of `known_providers()` for a different reason: the forge
+  token is registered only by `scripts/register-tenant.sh --add-provider git`
+  and stored only with `scripts/create-secrets.sh --stdin` (owner rule,
+  2026-09-25), never through the credential routes.
+* Terraform's catalogue mirror (`terraform/infra/locals.tf`) follows the
+  provider, and the merge Job runs as the tenant's worker account: it is
+  removed from the profiles that run as their own account. The
+  `swarm-<tenant>-merge` account definition in
+  `terraform/modules/service_account_ids` is no longer read for the merge
+  Job's identity; removing it is a follow-up outside this lane.
+* The App-shaped merge action (`merge.run_merge` over a `dispatch.merges`
+  block) is replaced by the `-git` merge over a signed `dispatch.merge_target`
+  block. A `single-pr` chain still cannot be submitted: it needs
+  `post-verdict`, which stays disabled.
+
+### Invariants
+
+- **Secrets.** The token is read at merge time only, after the reap and every
+  check that needs no credential (#219), registered with the log redaction,
+  and never written to the workspace, a file, an agent environment, an event,
+  a log line or `result_summary`.
+- **Invariant 1.** The merge step holds capacity only while LEASED through
+  RUNNING; a merge waiting on pending checks fails its attempt retryably and
+  waits READY with `next_eligible_at`, at no cost (invariant 4).
+- **Invariant 9.** The token is the tenant's own; the merge acts only on the
+  workflow's own `repository_url`, which the signed spec covers.
+- **Invariant 10.** A caller chooses the step by naming the `merge` profile or
+  by `metadata.merge`; nothing a caller sends picks an image, a command or a
+  credential.
