@@ -367,7 +367,34 @@ type Acting =
   | { kind: 'failed'; error: ApiError }
 
 /** What the run's state means, in one line under it. */
-function stateLine(run: IssueRun): string {
+/**
+ * `IssueRun.to_api().outcome` (#646): how a DONE run ended beyond its state.
+ * Read off the served run rather than added to `IssueRun` in types.ts, which
+ * this lane does not edit; absent from servers before #646.
+ */
+type RunOutcomeField = { outcome?: string | null }
+
+/**
+ * The outcome label (#646): "Already on main" for a run whose build found the
+ * issue's work already on the default branch -- DONE, no pull request, the
+ * build's verification table on the issue. Null for every other run.
+ */
+export function runOutcomeLabel(run: IssueRun): string | null {
+  return (run as IssueRun & RunOutcomeField).outcome === 'already_on_main' ? 'Already on main' : null
+}
+
+/** The outcome beside the state pill; nothing when the run has none. */
+export function RunOutcome({ run }: { run: IssueRun }) {
+  const label = runOutcomeLabel(run)
+  return label === null ? null : (
+    <span className="sb-note" data-outcome="already_on_main"
+      title="The build changed nothing: the work was already on the default branch (outcome already_on_main).">
+      {label}
+    </span>
+  )
+}
+
+export function runStateLine(run: IssueRun): string {
   switch (run.state) {
     case 'PLANNING':
       return 'A planner task is reading the issue and the repository. It changes nothing.'
@@ -384,6 +411,13 @@ function stateLine(run: IssueRun): string {
     case 'FIXING':
       return `CI was red: fix round ${run.ci_fix_round ?? 1} of ${run.fix_rounds} is pushing to the pull request.`
     case 'DONE':
+      // #646: no pull request, because nothing needed changing. The issue is
+      // closed only when the build's table says every requirement is met.
+      if (runOutcomeLabel(run) !== null) {
+        return run.requirements_met === true
+          ? 'The work was already on main: the build changed nothing, and its verification table on the issue shows every planned requirement met, so the issue was closed.'
+          : 'The work was already on main: the build changed nothing. Its verification table is on the issue, which stays open: not every planned requirement was shown met.'
+      }
       // The CI loop ends a run DONE when its PR merged OR when every required
       // check is green; the run does not serve which (`pull_request.merged`).
       return run.green_sha
@@ -522,7 +556,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
       <section className="rn-main">
         <div className="rn-state">
           <RunStateMark state={run.state} />
-          <span className="rn-state-t">{stateLine(run)}</span>
+          <RunOutcome run={run} />
+          <span className="rn-state-t">{runStateLine(run)}</span>
           {run.state === 'PLANNED' && <span className="sb-note">planned {timeAgo(run.updated_at, now)}</span>}
           {run.approved_by !== null && (
             <span className="sb-note">
