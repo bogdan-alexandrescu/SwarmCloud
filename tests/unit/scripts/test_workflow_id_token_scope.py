@@ -44,7 +44,9 @@ from .test_release_reuses_ci_images import REPO, WORKFLOWS, _code, _workflow
 # (test_release_id_token_scope.py) and is included here for the string and
 # trust-pin properties.
 NEEDS_ID_TOKEN = {
-    "application.yml": {"build", "build-check"},
+    # build-check builds on the runner with no Google identity (#650, owner
+    # decision 2026-10-05), so it holds no id-token.
+    "application.yml": {"build"},
     "terraform.yml": {"plan"},
     "security.yml": {"images"},
     "iam-refusal-probe.yml": {"probe"},

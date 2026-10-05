@@ -874,48 +874,60 @@ jobs:
     # from the Dockerfiles, never listed here: a list here is a second copy,
     # and the second copy is the one that drifts.
     #
-    # HOW: `build-images.sh --build-only`, the same script and the same
-    # Dockerfile steps main runs, self-tests included, with no `images:` in any
-    # config, no registry call, no tag and no manifest. Only these pull
-    # requests pay the minutes; main's `build images` below is unchanged.
+    # WHERE: ON THIS RUNNER, with `docker buildx`, and with NO Google identity.
+    # The owner chose not to create one for pull requests: a pull request's
+    # checkout chooses what runs, so whatever that identity could do -- run
+    # Cloud Build in the shared project -- anyone able to push a branch could
+    # do. So this job authenticates to nothing, logs in to no registry, reads
+    # no secret and holds no id-token, and `build-images.sh --build-only
+    # --local` exports to the build cache or a local OCI layout only. The
+    # configs it builds are the ones --build-only would submit to Cloud Build
+    # -- main's Dockerfiles, main's build args -- so the Dockerfiles' RUN
+    # self-tests run here as they run on main, and the script reads the list
+    # of them from the Dockerfiles into this job's summary. Nothing here names
+    # one. Main's `build images` below is unchanged.
     #
-    # WHO: NOT the deployer. The workload identity pool refuses a pull
-    # request's ref (`build images` below says why that pin must stay), and a
-    # pull request's checkout chooses what runs -- so whatever this identity
-    # can do, anyone who can push a branch can do. It is a separate identity,
-    # from repository variables, that can submit a build and nothing else, and
-    # whose build runs as an account that cannot push (docs/ci.md, "Images are
-    # built on a pull request, without pushing", names the grants for the
-    # owner to make).
-    #
-    # SKIPPED STEPS, NOT A SKIPPED JOB. The job runs on every pull request and
-    # says in its summary what it built, or why it built nothing: no image
-    # input changed; the identity is not configured yet; a fork's pull
-    # request, which GitHub gives no OIDC token. Each of those concludes
-    # `success`, so a required check and ci-gate pass. A failed build, or an
-    # identity configured by halves, fails it -- and ci-gate with it.
+    # SKIPPED STEPS, NOT A SKIPPED JOB. The job runs on every pull request, so
+    # ci-gate sees it and fails when it fails. It concludes `success` in
+    # seconds when no image input changed, and on a pull request from a fork,
+    # which the owner's brief (2026-10-05) says skips. A maintainer who wants a
+    # fork's images built pushes its branch here. Either way the summary says
+    # why.
     name: build changed images without pushing
     runs-on: ubuntu-24.04
-    # A build costs money, so it runs after the free checks, as `build` does.
-    needs: [python, shell, manifests]
+    # Not after the other checks, as `build` is: this spends no cloud money,
+    # and the image build is the slowest check, so it starts at once.
+    timeout-minutes: 120
     if: github.event_name == 'pull_request'
-    # Mints the pull-request build identity's token, and only when a step below
-    # authenticates (the workflow grants id-token to no one by default).
     permissions:
       contents: read
-      id-token: write
     env:
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      REGION: ${{ vars.GCP_REGION }}
       # As main builds it: swarm-ui bakes its environment in at build time.
       ENVIRONMENT: dev
-      # The account the build RUNS as. Required: unset, Cloud Build would run a
-      # pull request's steps as the project's default compute account.
-      CLOUDBUILD_SERVICE_ACCOUNT: ${{ vars.GCP_PR_BUILD_RUNNER_SA }}
-      # gs://<bucket>/<prefix> the source tarball is uploaded to.
-      CLOUDBUILD_SOURCE_STAGING_DIR: ${{ vars.GCP_PR_BUILD_STAGING }}
     steps:
+      # Before the checkout, so a fork's pull request is done in seconds.
+      - name: is this pull request built here
+        id: scope
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${HEAD_REPO}" != "${REPOSITORY}" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Images built without pushing"
+              echo
+              echo "**Not built:** a pull request from a fork (${HEAD_REPO}) is not built here; push the branch to ${REPOSITORY} to build its images."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "a pull request from a fork: no image is built"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v5
+        if: steps.scope.outputs.build == 'true'
         with:
           # `base...head` needs both commits and their merge base.
           fetch-depth: 0
@@ -923,14 +935,10 @@ jobs:
 
       - name: which images does this pull request reach
         id: plan
-        # Values reach the shell through env:, never through an expression in run:.
+        if: steps.scope.outputs.build == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          REPOSITORY: ${{ github.repository }}
-          WIF_PROVIDER: ${{ vars.GCP_PR_BUILD_WIF_PROVIDER }}
-          BUILD_SA: ${{ vars.GCP_PR_BUILD_SA }}
         run: |
           set -euo pipefail
           # Three dots: the change since the merge base, which is what the pull
@@ -946,30 +954,8 @@ jobs:
           images="$(paste -sd' ' "${RUNNER_TEMP}/images")"
           echo "${total:-0} changed file(s) reach ${count} image(s): ${images:-none}"
           echo "images=${images}" >> "$GITHUB_OUTPUT"
-
           build=true
-          why=""
-          if [ "${count}" -eq 0 ]; then
-            build=false
-            why="no image input changed, so there is nothing to build"
-          elif [ "${HEAD_REPO}" != "${REPOSITORY}" ]; then
-            build=false
-            why="a pull request from a fork is given no OIDC token, so it cannot authenticate to build"
-          else
-            missing=""
-            [ -n "${WIF_PROVIDER}" ] || missing="${missing} GCP_PR_BUILD_WIF_PROVIDER"
-            [ -n "${BUILD_SA}" ] || missing="${missing} GCP_PR_BUILD_SA"
-            [ -n "${CLOUDBUILD_SERVICE_ACCOUNT}" ] || missing="${missing} GCP_PR_BUILD_RUNNER_SA"
-            [ -n "${CLOUDBUILD_SOURCE_STAGING_DIR}" ] || missing="${missing} GCP_PR_BUILD_STAGING"
-            if [ "${missing}" = " GCP_PR_BUILD_WIF_PROVIDER GCP_PR_BUILD_SA GCP_PR_BUILD_RUNNER_SA GCP_PR_BUILD_STAGING" ]; then
-              build=false
-              why="the pull-request build identity is not configured yet (docs/ci.md, \"Images are built on a pull request, without pushing\")"
-              echo "::warning title=images not built::${images} would be built without pushing, but ${why}"
-            elif [ -n "${missing}" ]; then
-              echo "::error title=images not built::the pull-request build identity is configured by halves; missing repository variable(s):${missing}"
-              exit 1
-            fi
-          fi
+          [ "${count}" -gt 0 ] || build=false
           echo "build=${build}" >> "$GITHUB_OUTPUT"
           {
             echo "### Images built without pushing"
@@ -977,30 +963,58 @@ jobs:
             echo "Changed files reach: \`${images:-none}\`."
             echo
             if [ "${build}" = true ]; then
-              echo "Each is built in Cloud Build, with its Dockerfile's self-tests, and nothing is pushed."
+              echo "Each is built on this runner with docker buildx, uncached, with its Dockerfile's self-tests, and nothing is pushed."
             else
-              echo "**Not built:** ${why}."
+              echo "**Not built:** no image input changed, so there is nothing to build."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - id: auth
+      # agent-runtime-base is ~900 MB compressed and several GB unpacked, and
+      # BuildKit holds its builder stage, its runtime and the exported OCI
+      # layout at once, before the browser and the indexer (a Go toolchain and
+      # two compiled language servers) are built on it. The runner's free disk
+      # before and after is written to the summary, so the first run records
+      # what was there and what this freed.
+      - name: free runner disk
         if: steps.plan.outputs.build == 'true'
-        uses: google-github-actions/auth@v3
+        run: |
+          set -euo pipefail
+          before="$(df -h --output=avail / | tail -n 1 | tr -d ' ')"
+          # Toolchains this job never uses.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          docker image prune --all --force > /dev/null
+          after="$(df -h --output=avail / | tail -n 1 | tr -d ' ')"
+          echo "free disk on /: ${before} before, ${after} after"
+          echo "Free disk on \`/\`: ${before} before freeing, ${after} after." >> "$GITHUB_STEP_SUMMARY"
+
+      # build-images.sh reads each build config with PyYAML to replay it.
+      - uses: actions/setup-python@v6
+        if: steps.plan.outputs.build == 'true'
         with:
-          workload_identity_provider: ${{ vars.GCP_PR_BUILD_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_PR_BUILD_SA }}
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - if: steps.plan.outputs.build == 'true'
-        uses: google-github-actions/setup-gcloud@v3
+      - name: install PyYAML
+        if: steps.plan.outputs.build == 'true'
+        run: python3 -m pip install --quiet pyyaml
 
-      - name: build with Cloud Build, pushing nothing
+      - name: build with docker buildx, pushing nothing
         if: steps.plan.outputs.build == 'true'
         env:
           IMAGES: ${{ steps.plan.outputs.images }}
         run: |
           set -euo pipefail
           read -r -a images <<<"${IMAGES}"
-          ./scripts/build-images.sh --build-only "${images[@]}"
+          ./scripts/build-images.sh --build-only --local "${images[@]}"
+
+      - name: what each build ran
+        if: always() && steps.plan.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          if [ -f build/build-only/local-report.md ]; then
+            cat build/build-only/local-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          df -h /
 
   build:
     name: build images
@@ -1056,8 +1070,8 @@ jobs:
     # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
     # -- which is the one change that must never be made. Leaving it red does not
     # protect anything; it only makes the protection look like a bug.
-    # A pull request builds the images it changes in `build-check` above, as a
-    # different identity that cannot push, and pushes nothing.
+    # A pull request builds the images it changes in `build-check` above, on
+    # the runner, with no identity at all, and pushes nothing.
     if: github.event_name != 'pull_request'
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
