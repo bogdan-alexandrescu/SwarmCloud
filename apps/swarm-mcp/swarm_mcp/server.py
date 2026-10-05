@@ -382,7 +382,9 @@ TOOLS: list[dict[str, Any]] = [
             "no log lines at all, one short line per task only when it changed "
             "(state; elapsed; attempt n/m; last checkpoint age; tokens and cost "
             "so far; what a waiting task waits for), the state `transitions` "
-            "since `since`, `changed`, and a finished task's `outcome` -- a few "
+            "since `since`, `changed`, and a finished task's `outcome`; the "
+            "reply that says `stop: true` also carries `result`, the step's "
+            "answer with no null in it, to return as given -- a few "
             "hundred bytes a call. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
@@ -395,8 +397,8 @@ TOOLS: list[dict[str, Any]] = [
             "FOR AN AGENT THAT RELAYS A REMOTE AGENT'S WORK (`sc:remote`), "
             "pass `format: \"lines\"`: the answer is then short narrated lines -- "
             "what the remote agent said, which tools it called, where a waiting "
-            "task is waiting and why -- plus an opaque `since` token to pass back "
-            "unchanged, instead of the full report. With `wait_seconds` a call "
+            "task is waiting and why -- plus `since`, a short handle (such as "
+            "`r7f3a2`) to pass back unchanged, instead of the full report. With `wait_seconds` a call "
             "gathers for up to that long (max 300) and returns early when every "
             "task has finished or a task starts; the first call, without "
             "`since`, returns at once. A finished task carries `outcome`: its "
@@ -453,9 +455,16 @@ TOOLS: list[dict[str, Any]] = [
                 "since": {
                     "type": "string",
                     "description": (
-                        "The `since` string a previous call returned, passed back "
-                        "UNCHANGED -- the same position as `cursor`, as one opaque "
-                        "token. Omit it on the first call. Pass `since` or "
+                        "The `since` a previous call returned, passed back "
+                        "UNCHANGED. With `lines` and `progress` it is a short "
+                        "handle, `r` and five hex digits (such as `r7f3a2`): "
+                        "the bridge keeps the position behind it, and a handle "
+                        "changed on the way is refused -- copy it again from the "
+                        "previous reply. A full token from an older bridge is "
+                        "still read. The first call has none; with `lines` or "
+                        "`progress`, a later call that has none, for tasks this "
+                        "bridge already answered, resumes from the last position "
+                        "it returned and holds like any follow. Pass `since` or "
                         "`cursor`, not both."
                     ),
                 },
@@ -482,8 +491,9 @@ TOOLS: list[dict[str, Any]] = [
                         "returning. `lines` returns early when every task has "
                         "finished or a task starts, or the read budget is spent; "
                         "`progress` returns early only when a task's state "
-                        "changes or every task has finished. A call without "
-                        "`since` returns at once -- unless it names `parents`."
+                        "changes or every task has finished. The first call, "
+                        "for tasks this bridge has not answered yet, returns "
+                        "at once -- unless it names `parents`."
                     ),
                 },
                 "max_lines": {
@@ -2080,6 +2090,44 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     return json.dumps(runs.summary(client, run), indent=2, default=str)
 
 
+def _follow_rows(
+    client: SwarmClient,
+    args: dict[str, Any],
+    expected_step: Any,
+    parents: list[str] | None,
+    *,
+    keepalive: bool,
+) -> dict[str, Any]:
+    """A `lines` or `progress` follow's reply, read from `args["since"]` -- a
+    full token by now: `_call` has already resolved any handle."""
+    if args.get("format") == "progress":
+        # The slim row view (`compact.watch_progress`, owner decision
+        # 2026-10-01): no log, one line per task when it changed, compact
+        # JSON -- every byte here is re-read on each of the row's turns.
+        return compact.watch_progress(
+            client,
+            list(args["task_ids"]),
+            since=args.get("since"),
+            wait_seconds=_int_arg(args, "wait_seconds", 0),
+            step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+            parents=[p.strip() for p in parents] if parents else None,
+            max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
+        )
+    # The row view (`progress.watch`): narrated lines, one opaque token, a
+    # call that may gather for a window, and a finished task's outcome.
+    return progress.watch(
+        client,
+        list(args["task_ids"]),
+        since=args.get("since"),
+        wait_seconds=_int_arg(args, "wait_seconds", 0),
+        max_log_bytes=_int_arg(args, "max_log_bytes", progress.DEFAULT_LINES_LOG_BUDGET),
+        max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
+        max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
+        include_heartbeats=_flag(args, "include_heartbeats"),
+        step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+    )
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
@@ -2218,43 +2266,22 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if len(args.get("task_ids") or []) != 1:
             raise SwarmError("`parents` names the parents of ONE task; follow one task with it")
 
-    if name == "swarm_follow" and args.get("format") == "progress":
-        # The slim row view (`compact.watch_progress`, owner decision
-        # 2026-10-01): no log, one line per task when it changed, compact
-        # JSON -- every byte here is re-read on each of the row's turns.
-        return json.dumps(
-            compact.watch_progress(
-                client,
-                list(args["task_ids"]),
-                since=args.get("since"),
-                wait_seconds=_int_arg(args, "wait_seconds", 0),
-                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
-                parents=[p.strip() for p in parents] if parents else None,
-                max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
-            ),
-            separators=(",", ":"),
-            ensure_ascii=False,
-            default=str,
-        )
-
-    if name == "swarm_follow" and args.get("format") == "lines":
-        # The row view (`progress.watch`): narrated lines, one opaque token, a
-        # call that may gather for a window, and a finished task's outcome.
-        return json.dumps(
-            progress.watch(
-                client,
-                list(args["task_ids"]),
-                since=args.get("since"),
-                wait_seconds=_int_arg(args, "wait_seconds", 0),
-                max_log_bytes=_int_arg(args, "max_log_bytes", progress.DEFAULT_LINES_LOG_BUDGET),
-                max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
-                max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
-                include_heartbeats=_flag(args, "include_heartbeats"),
-                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
-            ),
-            indent=1,
-            default=str,
-        )
+    if name == "swarm_follow" and args.get("format") in ("lines", "progress"):
+        # THE HANDLE (owner decision, 2026-10-05, `progress.Handles`): the row
+        # passes back a short handle, an old full token, or -- having dropped
+        # it -- nothing, which for tasks this process already answered resumes
+        # from the last position it returned, so the call HOLDS rather than
+        # answering at once. The reply's `since` is a new handle.
+        follower = progress.HANDLES.follower(args["format"], list(args["task_ids"]))
+        since_token, since_note = progress.HANDLES.resolve(args.get("since"), follower)
+        args = {**args, "since": since_token}
+        reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
+        reply["since"] = progress.HANDLES.issue(follower, reply["since"])
+        if since_note:
+            reply["since_note"] = since_note
+        if args["format"] == "progress":
+            return json.dumps(reply, separators=(",", ":"), ensure_ascii=False, default=str)
+        return json.dumps(reply, indent=1, default=str)
 
     if name == "swarm_follow":
         # `cursor` crosses the model boundary, so it arrives as whatever the
@@ -2263,7 +2290,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # from the beginning rather than skipping ahead: a position that
         # quietly became zero costs a repeat, a position that quietly became
         # large loses output silently, and only one of those is recoverable.
-        since_cursor, since_states, since_said, _groups, since_note = progress.decode_since(args.get("since"))
+        # A handle (`progress.Handles`) is read as the token it stands for;
+        # no `since` here is still a read from the beginning.
+        given_since, handle_note = progress.HANDLES.resolve(
+            args.get("since"), progress.HANDLES.follower("json", list(args["task_ids"])), resume=False,
+        )
+        since_cursor, since_states, since_said, _groups, since_note = progress.decode_since(given_since)
+        since_note = since_note or handle_note
         report = follow(
             client,
             list(args["task_ids"]),
