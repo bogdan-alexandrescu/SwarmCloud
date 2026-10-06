@@ -614,6 +614,24 @@ export interface Task {
    */
   account?: TaskAccount | null
   /**
+   * #179. The worker's last beat, from the task's current LEASE (the worker
+   * never writes it to the task), read by `swarm_api/heartbeats.py` on
+   * `GET /v1/tasks` and `GET /v1/tasks/{id}` for LEASED, DISPATCHED, STARTING
+   * and RUNNING. Null when the lease has NEVER beaten -- never the lease's
+   * creation time -- and null for every other state. OPTIONAL because an
+   * older API does not send it. Read it through `silentWorkerLine`
+   * (Agents.tsx), and only when `heartbeat` is `'read'`.
+   */
+  heartbeat_at?: string | null
+  /** The reconciler's grace, resolved server-side; null where `heartbeat` is. */
+  heartbeat_grace_seconds?: number | null
+  /**
+   * What the reading is: `'read'` (the lease was read), `'not read'` (the
+   * read failed -- a null `heartbeat_at` then means unknown, never silent),
+   * `'no lease'`, or null for a task that holds no lease.
+   */
+  heartbeat?: 'read' | 'not read' | 'no lease' | string | null
+  /**
    * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
    * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
    * read. `result_summary` and `started_at` describe only the LAST attempt;
@@ -2722,8 +2740,9 @@ export function whyAgent(task: Task, units: number | null = null): string {
  * document and a worker's silence is not on it: `whyAgent` writes nothing for
  * a task that holds a slot, and the heartbeat is written to the lease. The
  * inspector, which reads the task's events, writes its own `--warn` line for
- * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx). The
- * Agents list cannot until a tenant-scoped route serves the heartbeat (#179).
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx); the
+ * Agents list draws its own from the lease heartbeat `GET /v1/tasks` carries
+ * on each slot-holding row (#179, `silentWorkerLine` in Agents.tsx).
  *
  * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
  * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
