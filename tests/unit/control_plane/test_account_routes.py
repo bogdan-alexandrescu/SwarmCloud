@@ -79,6 +79,15 @@ class _Secrets:
                 self.accessors[name].append(m)
         return created
 
+    def set_worker_readers(self, name, *, readers, manages, revoke=True):
+        # The lending sync (SecretManagerStore.set_worker_readers), modelled
+        # on the same accessor list `ensure_secret` writes.
+        present = self.accessors.setdefault(name, [])
+        added = [m for m in readers if m not in present]
+        removed = [m for m in present if manages(m) and m not in readers] if revoke else []
+        present[:] = [m for m in present if m not in removed] + added
+        return added, removed
+
     def add_version(self, name: str, payload: str) -> None:
         if name not in self.created:
             raise KeyError(f"{name} was never created")
