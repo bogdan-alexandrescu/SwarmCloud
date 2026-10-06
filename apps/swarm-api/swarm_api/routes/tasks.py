@@ -306,8 +306,10 @@ def cancel_task(
     # OD-B15-4: cancelling a parent cancels its children, at once; the
     # scheduler's sweep makes it certain (docs/design/child-tasks.md §3.4).
     children: list = []
+    ended_children: list[str] = []
     cascaded = cascade_children(
-        ctx, task, why=PARENT_CANCELLED, by=auth.email, targets=children
+        ctx, task, why=PARENT_CANCELLED, by=auth.email, targets=children,
+        ended=ended_children,
     )
     # A child cancelled with its parent is stopped the same way (#627).
     for child_target in children:
@@ -323,6 +325,16 @@ def cancel_task(
         background.add_task(
             ring, ctx.waker, ctx.metrics, TASK_FINISHED,
             task_id=task.id, tenant_id=task.tenant_id, state=task.state.value,
+        )
+    # The same for each child the cascade ENDED, whatever the parent did: a
+    # child with no live worker has nobody else to ring for it, and its own
+    # dependants waited a tick (#636, left by #741). A child only flagged is
+    # its worker's to ring. Same tenant as the parent: `cascade` refuses any
+    # other (invariant 9).
+    for child_id in ended_children:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, TASK_FINISHED,
+            task_id=child_id, tenant_id=task.tenant_id, state=TaskState.CANCELLED.value,
         )
     accounts = accounts_for(ctx.db, tenant_id, [task])
     # A task cancelled between attempts has already spent: the response

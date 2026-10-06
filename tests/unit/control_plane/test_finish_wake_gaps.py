@@ -216,3 +216,107 @@ def test_a_workflow_cancel_rings_one_drain(client, api_context, db):
     assert api_context.waker.calls == [
         ("workflow_cancelled", {"tenant_id": "eng", "workflow_id": workflow_id})
     ]
+
+
+# -- G-3: children the cancel cascade ends ring the wake too ------------------
+#
+# Left by #741: `cascade_children` ends a parent's children that hold no
+# capacity in transactions of its own, and no worker exists to ring for them.
+# A child's own dependants waited for the tick.
+
+
+def _child_of(db, task_id: str, parent: str, *, state: str = "READY") -> None:
+    seed_task(db, task_id=task_id, tenant_id="eng", state=state)
+    db.docs[f"tasks/{task_id}"]["parent_task_id"] = parent
+
+
+def _finish_rings(api_context) -> list[dict[str, str]]:
+    return [attrs for reason, attrs in api_context.waker.calls if reason == "task_finished"]
+
+
+def test_a_child_the_cascade_cancels_rings_task_finished_once(client, api_context, db):
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="PARKED")
+    _child_of(db, "task_kid", "task_parent")
+
+    body = client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice")).json()
+
+    assert body["children_cancelled"] == 1, body
+    assert db.docs["tasks/task_kid"]["state"] == "CANCELLED"
+    assert _finish_rings(api_context) == [
+        {"task_id": "task_parent", "tenant_id": "eng", "state": "CANCELLED"},
+        {"task_id": "task_kid", "tenant_id": "eng", "state": "CANCELLED"},
+    ]
+
+
+def test_a_child_of_a_running_parent_rings_although_the_parent_does_not(
+    client, api_context, db
+):
+    """The parent's worker rings for the parent; nobody would for the child."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="RUNNING")
+    _child_of(db, "task_kid", "task_parent")
+
+    client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice"))
+
+    assert _finish_rings(api_context) == [
+        {"task_id": "task_kid", "tenant_id": "eng", "state": "CANCELLED"}
+    ]
+
+
+def test_a_child_the_cascade_only_flags_rings_nothing(client, api_context, db):
+    """A child holding capacity keeps it; its own worker ends it and rings."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="RUNNING")
+    _child_of(db, "task_kid", "task_parent", state="RUNNING")
+
+    body = client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice")).json()
+
+    assert body["children_cancelled"] == 1, body
+    assert db.docs["tasks/task_kid"]["state"] == "RUNNING"
+    assert _finish_rings(api_context) == []
+
+
+def test_the_childs_wake_releases_its_dependant_before_any_tick(
+    client, api_context, db, make_scheduler, dispatcher
+):
+    _base(db)
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="RUNNING")
+    _child_of(db, "task_kid", "task_parent")
+    _waiting(db, "task_after", "task_kid")
+
+    client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice"))
+    [ring] = _finish_rings(api_context)
+    assert ring["task_id"] == "task_kid"
+    assert db.docs["tasks/task_after"]["state"] == "PARKED"
+
+    # Delivered: the wake alone resolves the dependant, with no drain first.
+    scheduler = make_scheduler()
+    report = scheduler.release_dependants(ring["task_id"])
+    assert db.docs["tasks/task_after"]["state"] == "CANCELLED"
+    assert report.cancelled == 1, report.to_dict()
+    # And the tick after has nothing left to do.
+    tick = scheduler.drain()
+    assert tick.cancelled == 0 and tick.stale_writes == 0, tick.to_dict()
+    assert dispatcher.dispatched == []
+
+
+def test_a_lost_child_wake_leaves_the_dependant_to_the_tick(
+    client, api_context, db, make_scheduler, dispatcher
+):
+    _base(db)
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="RUNNING")
+    _child_of(db, "task_kid", "task_parent")
+    _waiting(db, "task_after", "task_kid")
+
+    client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice"))
+    [ring] = _finish_rings(api_context)
+    assert db.docs["tasks/task_after"]["state"] == "PARKED"
+
+    # Lost: nothing delivered it. The tick resolves the dependant as before.
+    make_scheduler().drain()
+    assert db.docs["tasks/task_after"]["state"] == "CANCELLED"
+    # Delivered late, after the tick: a no-op.
+    report = make_scheduler().release_dependants(ring["task_id"])
+    assert report.cancelled == 0 and report.stale_writes == 0, report.to_dict()
+    assert dispatcher.dispatched == []
