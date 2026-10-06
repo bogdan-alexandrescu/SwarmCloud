@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from swarm_common.states import TERMINAL_STATES
 
 from ..auth import AuthContext
 from ..attempt_totals import totals_for, with_totals
@@ -43,6 +44,8 @@ from ..schemas import WorkflowCreate
 from ..stalls import stalled_workflows
 
 log = logging.getLogger(__name__)
+
+_TERMINAL = frozenset(s.value for s in TERMINAL_STATES)
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
 
@@ -95,6 +98,7 @@ def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     state: list[str] | None = Query(default=None),
+    active: bool = Query(default=False),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
@@ -102,20 +106,35 @@ def list_workflows(
     """One page of the tenant's workflows, newest first.
 
     `state` (repeatable) keeps only the workflows whose DERIVED state is one of
-    those named -- the bridge's `sc workflows` asks for the unfinished ones
-    (owner decision 2026-10-02: running workflows show in Claude Code without
-    attaching each by id). It filters THIS page after the rollup, because the
-    stored state is the cache this module exists not to trust, so a filtered
-    page can be short or empty and still carry a `next_page_token`; page on
-    until the token is null.
+    those named, and `active=true` only those whose derived state is not
+    terminal (UNKNOWN included) -- the bridge's `sc workflows` asks for the
+    unfinished ones (owner decision 2026-10-02: running workflows show in
+    Claude Code without attaching each by id).
+
+    TWO FILTERS, ONE ON EACH RECORD (owner decision 2026-10-06, P4). The QUERY
+    filters on the stored state (`Store.stored_states_for`): it leaves out only
+    the stored states no derivation can change (SUCCEEDED, CANCELLED), so a
+    workflow whose cache is stale is still fetched. Then each row is derived
+    and filtered on the derived state, which is still the only one served, and
+    the read repairs a stale cache. Before this the filter ran on the derived
+    state alone, over a page of the tenant's whole history: 4 pages of 50 to
+    find 7 running workflows. Now the running set is one page, newest first,
+    paged on the same (created_at, workflow_id) keyset. A page can still come
+    back short when stale rows derived terminal; page on until the token is
+    null. `filter.stored_states` says which stored states the query asked
+    for, and null when it could not narrow it (UNKNOWN named, or no filter).
     """
+    stored_states = ctx.store.stored_states_for(active=active, states=state)
     page = ctx.store.list_workflows(
         tenant_id,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
         submitted_by=submitted_by,
+        stored_states=stored_states,
     )
     results, report = ctx.rollups.for_workflows(tenant_id, page.items)
+    if active:
+        results = [r for r in results if r.to_api().get("state") not in _TERMINAL]
     if state:
         wanted = set(state)
         results = [r for r in results if r.to_api().get("state") in wanted]
@@ -135,6 +154,15 @@ def list_workflows(
         ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
+        # What was filtered and where. A client that sees `stored_states` knows
+        # the running set came from the indexed query, not a walk through
+        # history, and that one page holds it unless a token says otherwise; a
+        # deployment older than this serves no `filter` at all.
+        "filter": {
+            "active": active,
+            "states": list(state) if state else None,
+            "stored_states": stored_states,
+        },
         # What deriving this page cost and whether it was complete. A caller
         # that saw `step_read_budget_exhausted` knows some rows below read
         # UNKNOWN because this route stopped reading, not because anything is
