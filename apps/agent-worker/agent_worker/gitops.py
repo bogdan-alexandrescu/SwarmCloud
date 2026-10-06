@@ -39,6 +39,7 @@ leaves either way) and would turn away public repositories that work today.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -47,7 +48,8 @@ import stat
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
@@ -242,6 +244,284 @@ class CloneResult:
     #: is why `commit` is None. Established positively (no object at all), so
     #: a `rev-parse` that failed for any other reason is never read as "empty".
     empty: bool = False
+    #: Where the clone's time went, from git's own traces (`clone_phase_timings`):
+    #: numbers and git's version, nothing read from the wire. Empty when git
+    #: wrote no trace this function could read.
+    phases: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Where a clone's time goes (#667, lane OB1)
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-06 (chunk-1 observer): 229 clones in a day, median 37.8 s,
+# p90 70.9 s, clustered at ~38 s and ~71 s at every load level -- one depth-1
+# clone of a 33 MB tree, no retry, no NAT errors. A fixed stall, not bandwidth,
+# and nothing said which part of the clone it sat in.
+#
+# git says, if asked. Every clone and fetch runs with two traces, each to its
+# own file in the worker's private directory:
+#
+#   GIT_TRACE2_EVENT   JSON lines with absolute UTC times: each process's
+#                      start and exit, the index-pack child that receives the
+#                      pack, and the `unpack_trees` region that is the checkout;
+#   GIT_TRACE_CURL +   curl's own lines (`Trying`, `Connected to`, the TLS
+#   GIT_TRACE_PACKET   handshake, each request sent) and the protocol's packets
+#                      (`packfile`, the first `PACK` byte), stamped HH:MM:SS
+#                      in the process's local time, which TZ=UTC makes UTC.
+#
+# THE WIRE TRACE IS NEVER LOGGED, uploaded or kept. It holds the request
+# headers -- git redacts `Authorization` by default (GIT_TRACE_REDACT, set
+# explicitly here), and a header git does not know to redact is still a
+# header -- and the refs the forge advertised. `clone_phase_timings` reads both
+# files in this process, keeps only durations, counts and git's version, and
+# the files are removed before the clone function returns, on every path.
+# GIT_TRACE_CURL_NO_DATA keeps the pack's bytes out of the file: a 33 MB pack
+# dumped as text into a memory-backed workspace would cost more than the
+# clone it measures.
+
+#: The most of either trace file that is read. A clone's trace is tens of
+#: kilobytes; this bounds a repository that advertises a great many refs.
+CLONE_TRACE_MAX_BYTES = 8 * 1024 * 1024
+
+_TRACE_EVENTS_NAME = ".git-trace-events"
+_TRACE_WIRE_NAME = ".git-trace-wire"
+
+#: `HH:MM:SS.uuuuuu file.c:NNN   message`, git's classic trace line.
+_WIRE_LINE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{6})\s+\S+:\d+\s+(.*)$")
+_CURL_TRYING = re.compile(r"^== Info:\s+Trying\b")
+_CURL_CONNECTED = re.compile(r"^== Info:\s+Connected to\b")
+_CURL_TLS = re.compile(r"^== Info:\s+(?:SSL connection using|TLSv|ALPN|SSL certificate verify)")
+#: One per request: the header block's own line, `=> Send header, N bytes`.
+#: Never the header lines themselves, which follow it as `=> Send header: ...`.
+_CURL_REQUEST = re.compile(r"^=> Send header, ")
+_PKT_PACKFILE = re.compile(r"^packet:\s+\S+<\s+packfile\s*$")
+_PKT_PACK = re.compile(r"^packet:\s+\S+<\s+(?:\\1)?PACK\b")
+_PACK_RECEIVERS = ("index-pack", "unpack-objects")
+_GIT_VERSION = re.compile(r"^[0-9][0-9A-Za-z._-]{0,39}$")
+
+
+def _trace2_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _seconds(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None or end < start:
+        return None
+    return round((end - start).total_seconds(), 3)
+
+
+def clone_phase_timings(events_text: str, wire_text: str) -> dict[str, Any]:
+    """Durations of a clone's phases, from its trace2 events and its wire trace.
+
+    Returns only what both ends of were seen, each in seconds rounded to the
+    millisecond, plus counts and git's version:
+
+      total_seconds        the first git process's start to the last one's exit;
+      dns_seconds          that start to curl's first `Trying` (name resolution,
+                           and the few milliseconds git takes to start curl);
+      connect_seconds      the first `Trying` to `Connected to` -- a stall on an
+                           unreachable address and a fall back to the next one
+                           lands here, and `connect_tries` counts the tries;
+      tls_seconds          `Connected to` to the first request sent, when curl
+                           reported a TLS handshake in between;
+      negotiation_seconds  the first request (or the first process start, with
+                           no curl) to the server's `packfile` section: the ref
+                           advertisement, ls-refs and the want/have rounds;
+      pack_wait_seconds    `packfile` to the first byte of the pack: the forge
+                           counting and compressing objects before it sends any;
+      pack_seconds         `packfile` to the pack's receiver (index-pack or
+                           unpack-objects) exiting: the wait and the transfer;
+      checkout_seconds     the top-level `unpack_trees` regions, summed.
+
+    Never raises, and returns {} for a trace it cannot read. Nothing in the
+    result is text from the trace except a version string that matches
+    `_GIT_VERSION`: the wire trace holds request headers.
+    """
+    try:
+        return _clone_phase_timings(events_text or "", wire_text or "")
+    except Exception:  # noqa: BLE001 -- a timing is never worth a failed clone
+        return {}
+
+
+def _clone_phase_timings(events_text: str, wire_text: str) -> dict[str, Any]:
+    starts: list[datetime] = []
+    exits: list[datetime] = []
+    children: dict[tuple[str, Any], bool] = {}
+    pack_end: datetime | None = None
+    pack_child_start: datetime | None = None
+    checkout = 0.0
+    checkout_seen = False
+    open_checkout: dict[str, datetime] = {}
+    version: str | None = None
+    for line in events_text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        sid = event.get("sid")
+        at = _trace2_time(event.get("time"))
+        if not isinstance(sid, str) or at is None:
+            continue
+        kind = event.get("event")
+        top = "/" not in sid
+        if kind == "version" and top and version is None:
+            exe = event.get("exe")
+            if isinstance(exe, str) and _GIT_VERSION.match(exe):
+                version = exe
+        elif kind == "start" and top:
+            starts.append(at)
+        elif kind in ("exit", "atexit") and top:
+            exits.append(at)
+        elif kind == "child_start":
+            argv = event.get("argv")
+            receives = isinstance(argv, list) and any(
+                isinstance(arg, str) and arg in _PACK_RECEIVERS for arg in argv
+            )
+            children[(sid, event.get("child_id"))] = receives
+            if receives and pack_child_start is None:
+                pack_child_start = at
+        elif kind == "child_exit":
+            if children.get((sid, event.get("child_id"))):
+                pack_end = at if pack_end is None or at > pack_end else pack_end
+        elif top and event.get("category") == "unpack_trees" and event.get("label") == "unpack_trees":
+            if kind == "region_enter":
+                open_checkout.setdefault(sid, at)
+            elif kind == "region_leave" and sid in open_checkout:
+                spent = _seconds(open_checkout.pop(sid), at)
+                if spent is not None:
+                    checkout += spent
+                    checkout_seen = True
+
+    start = min(starts) if starts else None
+    end = max(exits) if exits else None
+
+    trying: datetime | None = None
+    connected: datetime | None = None
+    first_request: datetime | None = None
+    tls_seen = False
+    packfile: datetime | None = None
+    pack_data: datetime | None = None
+    first_packet: datetime | None = None
+    tries = connections = requests = 0
+    for line in wire_text.splitlines():
+        match = _WIRE_LINE.match(line)
+        if match is None or start is None:
+            continue
+        hour, minute, second, micro, message = match.groups()
+        try:
+            at = start.replace(
+                hour=int(hour), minute=int(minute), second=int(second), microsecond=int(micro)
+            )
+        except ValueError:
+            continue
+        # The wire trace carries a time of day only. Anchored on the day the
+        # first process started; a line half a day "before" it is past midnight.
+        if at < start - timedelta(hours=12):
+            at += timedelta(days=1)
+        if _CURL_TRYING.match(message):
+            tries += 1
+            trying = trying or at
+        elif _CURL_CONNECTED.match(message):
+            connections += 1
+            connected = connected or at
+        elif _CURL_TLS.match(message):
+            if connected is not None and first_request is None:
+                tls_seen = True
+        elif _CURL_REQUEST.match(message):
+            requests += 1
+            first_request = first_request or at
+        elif message.startswith("packet:"):
+            first_packet = first_packet or at
+            if packfile is None and _PKT_PACKFILE.match(message):
+                packfile = at
+            elif pack_data is None and _PKT_PACK.match(message):
+                pack_data = at
+
+    negotiated = packfile or pack_data or pack_child_start
+    phases: dict[str, Any] = {
+        "total_seconds": _seconds(start, end),
+        "dns_seconds": _seconds(start, trying),
+        "connect_seconds": _seconds(trying, connected),
+        "tls_seconds": _seconds(connected, first_request) if tls_seen else None,
+        "negotiation_seconds": _seconds(first_request or first_packet or start, negotiated),
+        "pack_wait_seconds": _seconds(packfile, pack_data),
+        "pack_seconds": _seconds(negotiated, pack_end),
+        "checkout_seconds": round(checkout, 3) if checkout_seen else None,
+    }
+    out: dict[str, Any] = {key: value for key, value in phases.items() if value is not None}
+    if not out:
+        return {}
+    if tries:
+        out["connect_tries"] = tries
+    if connections:
+        out["connections"] = connections
+    if requests:
+        out["http_requests"] = requests
+    if version:
+        out["git_version"] = version
+    return out
+
+
+@dataclass(frozen=True)
+class _CloneTrace:
+    """The two trace files one clone writes, in the worker's private directory."""
+
+    events: Path
+    wire: Path
+
+    @classmethod
+    def create(cls, private_dir: Path) -> "_CloneTrace":
+        trace = cls(private_dir / _TRACE_EVENTS_NAME, private_dir / _TRACE_WIRE_NAME)
+        # Unlinked first: git appends, so a file left by an earlier try (or a
+        # link planted at the name) would be read as part of this clone.
+        trace.discard()
+        return trace
+
+    def env(self, env: dict[str, str]) -> dict[str, str]:
+        return {
+            **env,
+            "GIT_TRACE2_EVENT": str(self.events),
+            "GIT_TRACE_CURL": str(self.wire),
+            "GIT_TRACE_CURL_NO_DATA": "1",
+            "GIT_TRACE_PACKET": str(self.wire),
+            "GIT_TRACE_REDACT": "1",
+            # The wire trace's clock is local time; this makes it UTC, the
+            # trace2 events' clock, so the two can be put on one timeline.
+            "TZ": "UTC",
+        }
+
+    def _read(self, path: Path) -> str:
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return ""
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                return handle.read(CLONE_TRACE_MAX_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def collect(self) -> dict[str, Any]:
+        """The timings, and both files removed. Never raises."""
+        try:
+            return clone_phase_timings(self._read(self.events), self._read(self.wire))
+        finally:
+            self.discard()
+
+    def discard(self) -> None:
+        for path in (self.events, self.wire):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def validate_repository_url(url: str) -> str:
@@ -516,13 +796,18 @@ def shallow_clone(
         clone += ["--", url, str(destination)]
         steps = [clone]
 
+    # Every step is traced into the same two files, so a by-sha clone's
+    # fetch and checkout land on one timeline (`clone_phase_timings`).
+    trace = _CloneTrace.create(private_dir)
+    phases: dict[str, Any] = {}
     try:
         total = _run_git_steps(
-            steps, url=url, token=token, private_dir=private_dir, env=env,
+            steps, url=url, token=token, private_dir=private_dir, env=trace.env(env),
             logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
         )
     finally:
         _remove_credentials(cred_file, logger)
+        phases = trace.collect()
 
     commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     empty = commit is None and _holds_no_objects(
@@ -530,10 +815,11 @@ def shallow_clone(
     )
     logger.info(
         "repository cloned", url=url, ref=ref, commit=commit, empty=empty,
-        seconds=round(total, 2),
+        seconds=round(total, 2), phases=phases,
     )
     return CloneResult(
-        path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty
+        path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty,
+        phases=phases,
     )
 
 
@@ -584,6 +870,9 @@ def clone_at_commit(
         [*g, "checkout", "--quiet", commit],
     ]
     total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    env = trace.env(env)
+    phases: dict[str, Any] = {}
     try:
         total += _run_git_steps(
             setup, url=url, token=token, private_dir=private_dir, env=env,
@@ -622,6 +911,7 @@ def clone_at_commit(
         raise
     finally:
         _remove_credentials(cred_file, logger)
+        phases = trace.collect()
 
     head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     if head != commit:
@@ -629,9 +919,12 @@ def clone_at_commit(
         raise GitError(f"the pinned checkout landed on {head!r}, not {commit}")
     logger.info(
         "repository cloned at the pinned commit", url=url, ref=branch, commit=head,
-        seconds=round(total, 2),
+        seconds=round(total, 2), phases=phases,
     )
-    return CloneResult(path=destination, url=url, ref=branch, commit=head, duration_seconds=total)
+    return CloneResult(
+        path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
+        phases=phases,
+    )
 
 
 def _empty_directory(path: Path) -> None:
@@ -2668,6 +2961,59 @@ def push_branch(
     head = text.strip() if code == 0 else ""
     logger.info("branch pushed", branch=branch, head=head or "unknown")
     return head
+
+
+#: The most commits a pushed branch's record lists (`branch_commits`). A
+#: step's branch carries a handful; the cap bounds the result summary, and
+#: `commits_truncated` says when it was reached.
+BRANCH_COMMITS_CAP = 50
+#: The most of a commit subject the record keeps.
+BRANCH_SUBJECT_MAX_CHARS = 200
+
+
+def branch_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    cap: int = BRANCH_COMMITS_CAP,
+) -> tuple[list[dict[str, str]], bool]:
+    """The commits HEAD adds over `base`, newest first: `[{sha, subject}]`, and
+    whether `cap` cut the list short.
+
+    Read from git in `repo`, which is the worker-owned publish repository the
+    push just ran in, so every sha here is one the push sent (#667, observer
+    P11). `base` None -- an empty repository's first push -- lists HEAD's own
+    history. A git that fails gives `([], False)`: the record then names the
+    branch and its head without commits, never commits it did not read.
+    """
+    revision = f"{base}..HEAD" if base and _FULL_SHA_RE.match(base) else "HEAD"
+    code, text = _git_text(
+        [
+            git_binary, *_NO_HOOKS, "log", "--no-color", f"--max-count={cap + 1}",
+            "--format=%H%x1f%s%x1e", revision, "--",
+        ],
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="publish-branch-commits",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        logger.warning("could not list the pushed branch's commits", exit_code=code)
+        return [], False
+    commits: list[dict[str, str]] = []
+    for record in text.split("\x1e"):
+        sha, sep, subject = record.strip("\n").partition("\x1f")
+        if sep and _FULL_SHA_RE.match(sha):
+            # The subject is the agent's text: cut, so the record stays small.
+            commits.append({"sha": sha, "subject": subject[:BRANCH_SUBJECT_MAX_CHARS]})
+    return commits[:cap], len(commits) > cap
 
 
 @dataclass(frozen=True)
