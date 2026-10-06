@@ -69,6 +69,7 @@ contract's and must not leak into it.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -118,6 +119,7 @@ from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, Repo
 from .repograph import graph_root as repograph_root
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import (
+    FULL_EVERY_DAYS_DEFAULT,
     INTERVAL_HOURS_DEFAULT,
     MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
@@ -177,6 +179,50 @@ EXTRACT_FILE = "$SWARM_WORK_DIR/repo-index.extract.json"
 GRAPH_FILE = "$SWARM_WORK_DIR/repo-graph.json"
 #: What the worker's extractor phase recorded: whether it ran, and why not.
 PHASES_FILE = "$SWARM_WORK_DIR/repo-index.phases.json"
+#: An incremental run's base index, which the worker stages by reference
+#: from the promoted version (`agent_worker.indexrun.BASE_INDEX_FILE`, lane IX2).
+BASE_INDEX_FILE = "$SWARM_WORK_DIR/repo-index.base.json"
+#: The prompt line that names an incremental run's base to the WORKER
+#: (`agent_worker.indexrun.BASE_LINE`). In the prompt because the prompt is
+#: inside the signed `input`, and `metadata.base_sha` is not: the worker acts
+#: only on what the spec signature covers, and `SIGNED_METADATA_KEYS` is
+#: frozen (contract request 34). `metadata.index_kind` and `base_sha` are
+#: this service's own record, read back by `_run_from_task`.
+BASE_LINE = "swarm-index-base: "
+
+#: §3.4: incremental only when the diff touches fewer than this many files.
+#: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
+#: is exactly one this side cannot see whole. The extractor applies the same
+#: bound to the diff it measures (`repo_index_extract.MAX_INCREMENTAL_CHANGES`,
+#: held equal by tests/unit/worker/test_repo_index_incremental.py).
+MAX_INCREMENTAL_CHANGES = 300
+#: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
+#: workflow or a language server's configuration changes what `commands`,
+#: `test_map` and the graph mean everywhere, so it forces a full run. The
+#: extractor holds the same three lists (`repo_index_extract.CONFIG_*`, the
+#: same test) and applies them again to the diff it reads; here they are
+#: applied first, so a run that would fall back is submitted full, with the
+#: full run's timeout. §3.5 asks only for the changed language to go full;
+#: the whole run does, because one index carries one `kind`.
+CONFIG_FILENAMES = frozenset({
+    "Makefile", "GNUmakefile", "makefile",
+    "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini", "noxfile.py",
+    "conftest.py", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lockb",
+    "go.mod", "go.sum", "go.work",
+    "pyrightconfig.json", ".terraform.lock.hcl",
+})
+CONFIG_GLOBS = (
+    "requirements*.txt", "tsconfig*.json", "jsconfig*.json", "jest.config.*",
+    "vitest.config.*", "vitest.workspace.*", "playwright.config.*", "karma.conf.*",
+    ".mocharc*",
+)
+CONFIG_DIRECTORIES = (".github/workflows/",)
+#: The kinds "Index now" may ask for. `incremental` is a request: the run is
+#: incremental when §3.4 allows it (`choose_kind`) and full, saying why, when
+#: it does not -- which is also what every poll and pending run asks for.
+RUN_KINDS = ("full", "incremental")
 
 #: The run documents, one per index task, keyed by the task id.
 RUNS_COLLECTION = "repo_index_runs"
@@ -508,10 +554,12 @@ def content_digest(text: str) -> str:
 
 _INDEX_SHAPE = (
     '  {"schema": "swarm.repo-index/v1", "commit_sha": "<the sha above>",\n'
-    '   "branch": "<the branch above>", "built_at": "<ISO 8601 UTC>", "kind": "full",\n'
+    '   "branch": "<the branch above>", "built_at": "<ISO 8601 UTC>",\n'
+    '   "kind": "full" | "incremental", "base_sha": "<incremental only: the base commit>",\n'
     '   "extractor": {"ran": true, "command": "' + EXTRACTOR_COMMAND + '", "version": "<its version>"}\n'
     '             or {"ran": false, "reason": "<why: e.g. not installed in this image>"},\n'
-    '   "modules": [{"path", "language", "purpose": "<one line>", "files", "lines"}],\n'
+    '   "modules": [{"path", "language", "purpose": "<one line>", "files", "lines",\n'
+    '                "commit_sha": "<incremental only: the commit the entry was read at>"}],\n'
     '   "entry_points": [{"path", "kind", "started_by"}],\n'
     '   "routes": [{"kind": "http" | "export" | "mcp", "method", "path", "name", "file", "handler"}],\n'
     '   "test_layout": [{"root", "framework", "command", "needs": ["emulator" | "credentials" |\n'
@@ -537,8 +585,30 @@ def graph_destination(tenant_id: str, repo_id: str) -> str:
     return repograph_root(tenant_id, repo_id)
 
 
+def _incremental_paragraph(base_sha: str) -> str:
+    """What an incremental run does with its base (§3.4); the extractor decides whether it is one.
+
+    It opens with `BASE_LINE`, a line of its own, which the worker reads.
+    """
+    return (
+        f"{BASE_LINE}{base_sha}\n"
+        f"THIS RUN MAY BUILD ON THE PREVIOUS INDEX, of commit {base_sha}. The worker staged it "
+        f"as {BASE_INDEX_FILE}. When {EXTRACT_FILE} says \"kind\": \"incremental\", copy its "
+        '"kind" and "base_sha"; its "changes" lists the files added, modified and deleted since '
+        "the base, and its modules already carry each entry's \"purpose\" and \"commit_sha\" "
+        "(the base's for a module the change did not touch -- keep those as they are -- and "
+        "this commit for one it did: read those again and correct the purpose). Its "
+        '"carried" holds the base\'s entry_points, test_layout, always_tests, territory, '
+        "commands and notes, without the rows that named a deleted file: copy them into those "
+        "keys and revise only what the changed files touch. When it says \"kind\": \"full\" "
+        f"(its extractor.incremental.reason, or {PHASES_FILE}, says why), this is a full run: "
+        'write "kind": "full", no "base_sha", and read the whole repository.\n\n'
+    )
+
+
 def indexer_prompt(
-    repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str
+    repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str,
+    base_sha: str | None = None,
 ) -> str:
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
@@ -581,8 +651,9 @@ def indexer_prompt(
         "counts, `git log --numstat --since=90.days` for hot_spots and co-change, imports "
         'and the naming convention for test_map), leave "graph" out, and record '
         '"extractor": {"ran": false, "reason": "<the reason the phases file gives, e.g. '
-        'not installed in this image>"}.\n\n'
-        "THEN read what needs reading: a one-line purpose per module, the territory rules "
+        'not installed in this image>"}, with "kind": "full".\n\n'
+        + (_incremental_paragraph(base_sha) if base_sha else "")
+        + "THEN read what needs reading: a one-line purpose per module, the territory rules "
         "the repository states (CLAUDE.md track tables, CODEOWNERS, frozen directories, "
         "do-not-edit notes, each quoted with its source file), the build, lint, test and CI "
         "commands with their source, and at most 20 notes a newcomer must know. Every entry "
@@ -604,20 +675,34 @@ def indexer_prompt(
     )
 
 
-def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full") -> TaskCreate:
-    """The index run: an ordinary task, signed by `submit_tasks` like any other."""
+def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full", *,
+                 base_sha: str | None = None) -> TaskCreate:
+    """The index run: an ordinary task, signed by `submit_tasks` like any other.
+
+    An incremental run names its base in the prompt's `BASE_LINE`, inside
+    the signed `input`, which is what the worker reads and stages by
+    reference (`agent_worker.indexrun.resolve_base`), checking what it
+    stages against the digests promotion recorded. `metadata.base_sha`,
+    beside `index_kind`, is this service's own record.
+    """
+    if kind == "incremental" and base_sha is None:
+        raise ValueError("an incremental index run names its base")
     repository = f"{record['owner']}/{record['repo']}"
+    metadata = {"repo_index": record["repo_id"], "commit_sha": commit_sha, "index_kind": kind}
+    if kind == "incremental":
+        metadata["base_sha"] = base_sha
     return TaskCreate(
         runner_profile=INDEXER_PROFILE,
         input={"prompt": indexer_prompt(
             repository, commit_sha, record["default_branch"],
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
+            base_sha=base_sha if kind == "incremental" else None,
         )},
         priority=INDEX_PRIORITY,
         repository_url=record["repository_url"],
         repository_ref=commit_sha,
         timeout_seconds=FULL_TIMEOUT_SECONDS if kind == "full" else INCREMENTAL_TIMEOUT_SECONDS,
-        metadata={"repo_index": record["repo_id"], "commit_sha": commit_sha, "index_kind": kind},
+        metadata=metadata,
     )
 
 
@@ -870,6 +955,126 @@ def read_relation(
         "base": base, "head": head, "status": data["status"],
         "ahead_by": ahead_by if isinstance(ahead_by, int) else None, "files": files,
     }
+
+
+def is_config_path(path: str) -> bool:
+    """Whether a change to `path` forces a full run (§3.4, §3.5)."""
+    name = path.rsplit("/", 1)[-1]
+    if name in CONFIG_FILENAMES:
+        return True
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in CONFIG_GLOBS):
+        return True
+    return any(path.startswith(prefix) for prefix in CONFIG_DIRECTORIES)
+
+
+def read_changes(
+    record: Mapping[str, Any], tenant: Tenant, base: str, head: str, *,
+    tokens: ForgeTokens, forge: GitHubIssues,
+) -> dict[str, Any]:
+    """How `head` relates to `base`, and EVERY path the comparison changed.
+
+    `read_relation`'s compare, without its display cut: GitHub lists at most
+    300 changed files on the comparison's first page, which is what §3.4's
+    bound is measured against. A rename names both paths, since a config
+    file renamed away changes what the old name meant. A 404 is `diverged`.
+    """
+    what = f"the files changed between {base[:12]} and {head[:12]}"
+    url = f"{_repo_url(record)}/compare/{base}...{head}?per_page=1"
+    token = tokens.token_for(tenant)
+    try:
+        data = _forge_json(forge, url, token, what)
+    except IssueNotFound:
+        return {"status": "diverged", "files": []}
+    finally:
+        token = ""
+    if not isinstance(data, dict) or data.get("status") not in (
+        "ahead", "behind", "diverged", "identical"
+    ):
+        raise IssueReadFailed(f"GitHub's answer for {what} is not a comparison")
+    files: list[str] = []
+    for entry in data.get("files") or []:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("filename", "previous_filename"):
+            name = entry.get(key)
+            if isinstance(name, str) and name and name not in files:
+                files.append(name)
+    return {"status": data["status"], "files": files}
+
+
+def last_full_at(index: Mapping[str, Any]) -> datetime | None:
+    """When the promoted index was last built in full.
+
+    `last_full_at` is written at promotion from lane IX2 on; an index
+    promoted before it, whose `last_kind` is full, was built in full when
+    it was indexed.
+    """
+    recorded = _parse_time(index.get("last_full_at"))
+    if recorded is not None:
+        return recorded
+    if index.get("last_kind") == "full":
+        return _parse_time(index.get("last_indexed_at"))
+    return None
+
+
+@dataclass(frozen=True)
+class KindChoice:
+    """What an index run is submitted as, and why it is not incremental when it is not."""
+
+    kind: str
+    base_sha: str | None = None
+    reason: str | None = None
+
+
+def choose_kind(
+    index: Mapping[str, Any], head: str, *, requested: str,
+    version: Mapping[str, Any] | None, changes: Mapping[str, Any] | None, now: datetime,
+) -> KindChoice:
+    """§3.4: incremental only when every condition holds, full otherwise, with the reason.
+
+    `version` is the promoted index's `index_versions` entry; `changes` is
+    `read_changes(current, head)`, None when GitHub could not answer. Pure:
+    the caller reads both. The conditions, in the order a reader checks them:
+    a previous index exists, is kept and has a graph; the last full run is
+    younger than `full_every_days` (the weekly full run, §3.3); it is an
+    ANCESTOR of the head; the diff touches fewer than
+    MAX_INCREMENTAL_CHANGES files; and no build or test configuration changed.
+    """
+    if requested == "full":
+        return KindChoice("full", reason="a full run was asked for")
+    current = index.get("current_sha")
+    if not current:
+        return KindChoice("full", reason="there is no promoted index to build on")
+    if current == head:
+        return KindChoice("full", reason="the head is the promoted index; it is rebuilt in full")
+    if version is None:
+        return KindChoice("full", reason="the promoted index's version is not kept")
+    if not version.get("graph_digest"):
+        return KindChoice("full", reason="the promoted index has no graph to build on")
+    days = _int_or(index.get("full_every_days"), FULL_EVERY_DAYS_DEFAULT)
+    full_at = last_full_at(index)
+    if full_at is None:
+        return KindChoice("full", reason="no full run is recorded for this repository")
+    if now - full_at >= timedelta(days=days):
+        return KindChoice("full", reason=(
+            f"the last full run is {(now - full_at).days} days old; one is due every {days}"))
+    if changes is None:
+        return KindChoice("full", reason=(
+            "GitHub could not say how the head relates to the promoted index"))
+    if changes.get("status") != "ahead":
+        return KindChoice("full", reason=(
+            f"the promoted index is not an ancestor of the head ({changes.get('status')})"))
+    files = list(changes.get("files") or [])
+    if len(files) >= MAX_INCREMENTAL_CHANGES:
+        return KindChoice("full", reason=(
+            f"{len(files)} or more files changed, at or over the "
+            f"{MAX_INCREMENTAL_CHANGES} an incremental run takes"))
+    config = [name for name in files if is_config_path(name)]
+    if config:
+        more = f" and {len(config) - 1} more" if len(config) > 1 else ""
+        return KindChoice("full", reason=(
+            f"a build, test or language-server configuration changed ({config[0]}{more})"))
+    return KindChoice("incremental", base_sha=current)
 
 
 def promotion_decision(
@@ -1292,21 +1497,16 @@ class SelectRequest(BaseModel):
 
 
 def check_run_kind(kind: str) -> str:
-    """Only `full` today, and why: an incremental run rewrites the previous
-    index's entries for the changed paths (§3.4), so it needs that JSON staged
-    into its workspace -- an `input_from` file, which only a workflow step can
-    receive from an earlier step of the same workflow. A standalone index task
-    cannot be given it, and an incremental run without it is a full run that
-    claims to be cheaper."""
-    if kind == "full":
+    """`full`, or `incremental` -- a request, granted when §3.4 allows (`choose_kind`).
+
+    Since lane IX2 an incremental run is given the previous promoted index by
+    reference: the worker stages its repo-index.json and graph from the
+    version promotion recorded (`agent_worker.indexrun`), so a standalone
+    index task needs no `input_from`.
+    """
+    if kind in RUN_KINDS:
         return kind
-    if kind == "incremental":
-        raise ValidationFailed(
-            "kind 'incremental' is not available yet: an incremental run needs the previous "
-            "index staged into its workspace, which a standalone index task cannot be given; "
-            "index with kind 'full'"
-        )
-    raise ValidationFailed("kind must be 'full'")
+    raise ValidationFailed("kind must be 'full' or 'incremental'")
 
 
 # --------------------------------------------------------------------------
@@ -1321,6 +1521,8 @@ def run_to_api(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "repo_id": run.get("repo_id"),
         "commit_sha": run.get("commit_sha"),
         "kind": run.get("kind"),
+        "base_sha": run.get("base_sha"),
+        "kind_reason": run.get("kind_reason"),
         "trigger": run.get("trigger"),
         "state": run.get("state"),
         "requested_by": run.get("requested_by"),
@@ -1492,11 +1694,48 @@ class RepoIndex:
 
         _apply(transaction)
 
+    def _choose(self, tenant_id: str, repo_id: str, sha: str, requested: str) -> KindChoice:
+        """`choose_kind` on the registration as it is now, never raising.
+
+        Read after the claim, so the promoted index it builds on is the one
+        no other run of this registration can move while this one is queued
+        (§3.1). Anything unreadable is a full run with the reason.
+        """
+        if requested == "full":
+            return choose_kind({}, sha, requested="full", version=None, changes=None,
+                               now=self._now())
+        try:
+            record = self.registrations.get(tenant_id, repo_id)
+            index = record.get("index") or {}
+            current = index.get("current_sha")
+            version = changes = None
+            if current and current != sha:
+                snap = self._version_ref(repo_id, current).get()
+                version = snap.to_dict() if snap.exists else None
+                if version is not None and version.get("graph_digest"):
+                    try:
+                        changes = read_changes(record, self.tenant(tenant_id), current, sha,
+                                               tokens=self._tokens, forge=self._forge)
+                    except ForgeReadError as unread:
+                        log.info("repo index kind tenant=%s repo_id=%s compare=%s",
+                                 tenant_id, repo_id, unread.code)
+            return choose_kind(index, sha, requested=requested, version=version,
+                               changes=changes, now=self._now())
+        except Exception as failed:  # the choice never stops a run: it is a full one
+            log.warning("repo index kind tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+            return KindChoice("full", reason="the incremental conditions could not be read")
+
     def _start(
         self, auth: AuthContext, tenant_id: str, record: Mapping[str, Any], sha: str, *,
         kind: str, trigger: str, requested_by: str, head_read: bool, from_pending: bool,
     ) -> tuple[dict[str, Any] | None, bool]:
-        """Claim, submit, record. (run, coalesced)."""
+        """Claim, choose the kind, submit, record. (run, coalesced).
+
+        `kind` is what was asked for: `full`, or `incremental`, which
+        `choose_kind` grants only when §3.4 allows. The run records what it
+        was submitted as, its base, and why it is full when it is.
+        """
         repo_id = record["repo_id"]
         claim, in_flight = self._claim(
             tenant_id, repo_id, sha, requested_by=requested_by, head_read=head_read,
@@ -1509,7 +1748,10 @@ class RepoIndex:
                 run = snap.to_dict() if snap.exists else None
             return run, True
         try:
-            submission = self._submissions.submit_tasks(auth, [indexer_task(record, sha, kind)])
+            choice = self._choose(tenant_id, repo_id, sha, kind)
+            submission = self._submissions.submit_tasks(
+                auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)]
+            )
         except Exception:
             self._confirm(tenant_id, repo_id, claim, None)
             raise
@@ -1520,7 +1762,10 @@ class RepoIndex:
             "tenant_id": task.tenant_id,
             "repo_id": repo_id,
             "commit_sha": sha,
-            "kind": kind,
+            "kind": choice.kind,
+            "base_sha": choice.base_sha,
+            "requested_kind": kind,
+            "kind_reason": choice.reason,
             "trigger": trigger,
             "state": task.state.value,
             "requested_by": requested_by,
@@ -1534,8 +1779,9 @@ class RepoIndex:
         self._confirm(tenant_id, repo_id, claim, task.id)
         self._prune_runs(tenant_id, repo_id)
         log.info(
-            "repo index run tenant=%s repo_id=%s task=%s sha=%s trigger=%s",
-            tenant_id, repo_id, task.id, sha[:12], trigger,
+            "repo index run tenant=%s repo_id=%s task=%s sha=%s trigger=%s kind=%s base=%s",
+            tenant_id, repo_id, task.id, sha[:12], trigger, choice.kind,
+            (choice.base_sha or "-")[:12],
         )
         return run, False
 
@@ -1604,7 +1850,7 @@ class RepoIndex:
             not index.get("in_flight_task_id") or _claim_expired(index, self._now())
         ):
             self._start(
-                auth, tenant_id, record, pending, kind="full", trigger="pending",
+                auth, tenant_id, record, pending, kind="incremental", trigger="pending",
                 requested_by=index.get("pending_requested_by") or auth.email,
                 head_read=False, from_pending=True,
             )
@@ -1620,7 +1866,9 @@ class RepoIndex:
             return None
         run = {
             "task_id": task.id, "tenant_id": task.tenant_id, "repo_id": repo_id,
-            "commit_sha": sha, "kind": meta.get("index_kind") or "full", "trigger": "manual",
+            "commit_sha": sha, "kind": meta.get("index_kind") or "full",
+            "base_sha": meta.get("base_sha") if meta.get("index_kind") == "incremental" else None,
+            "trigger": "manual",
             "state": task.state.value, "requested_by": task.submitted_by,
             "submitted_by": task.submitted_by, "queued_at": task.created_at, "ended_at": None,
             "end_cause": None, "promotion": None,
@@ -1727,6 +1975,17 @@ class RepoIndex:
                 f"commit {new}",
             )
             return
+        if document["kind"] == "incremental" and (
+            run.get("kind") != "incremental" or document.get("base_sha") != run.get("base_sha")
+        ):
+            given = run.get("base_sha") if run.get("kind") == "incremental" else None
+            self._refuse(
+                tenant_id, repo_id, run,
+                f"the index says it was built incrementally from {document.get('base_sha')}, "
+                + (f"but the run was given the base {given}" if given else
+                   "but the run was a full one, given no base"),
+            )
+            return
         digest = content_digest(content)
         # §2.5: the graph the index names is checked here, against the digest
         # the index carries, and recorded with it -- or the run is refused.
@@ -1801,16 +2060,23 @@ class RepoIndex:
                     current_built_at=document["built_at"], last_indexed_at=now,
                     last_kind=document["kind"], coverage=coverage(document),
                 )
+                if document["kind"] == "full":
+                    # What `full_every_days` counts from (§3.3, `choose_kind`).
+                    index["last_full_at"] = now
             if index.get("in_flight_task_id") == task.id:
                 index["in_flight_task_id"] = None
             txn.update(repo_ref, {"index": index})
             outcome = "promoted" if decision == "promote" else "superseded"
             txn.update(run_ref, {
                 "state": TaskState.SUCCEEDED.value, "ended_at": now, "end_cause": None,
-                "promotion": {"outcome": outcome, "digest": digest, "at": now, "reason": (
-                    None if outcome == "promoted" else
-                    "an index of a newer commit is already promoted; this one is kept by sha"
-                )},
+                "promotion": {
+                    "outcome": outcome, "digest": digest, "at": now,
+                    "kind": document["kind"], "base_sha": document.get("base_sha"),
+                    "reason": (
+                        None if outcome == "promoted" else
+                        "an index of a newer commit is already promoted; this one is kept by sha"
+                    ),
+                },
             })
             return outcome
 
@@ -2037,7 +2303,7 @@ class RepoIndex:
             ):
                 return
             self._start(
-                owner_auth(record), tenant_id, record, head, kind="full", trigger=trigger,
+                owner_auth(record), tenant_id, record, head, kind="incremental", trigger=trigger,
                 requested_by=POLL_REQUESTED_BY, head_read=False, from_pending=False,
             )
             report.coalesced += 1
@@ -2053,7 +2319,7 @@ class RepoIndex:
         # A claim clears the pending head: a newer head supersedes it, and
         # the pending one itself is this run when nothing newer triggered.
         _run, coalesced = self._start(
-            owner_auth(record), tenant_id, record, sha, kind="full",
+            owner_auth(record), tenant_id, record, sha, kind="incremental",
             trigger=trigger or "pending",
             requested_by=(POLL_REQUESTED_BY if trigger
                           else index.get("pending_requested_by") or POLL_REQUESTED_BY),
@@ -2102,8 +2368,10 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 
 __all__ = [
+    "BASE_INDEX_FILE", "BASE_LINE", "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
-    "PHASES_FILE",
+    "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
+    "VERSIONS_COLLECTION", "choose_kind", "is_config_path", "last_full_at", "read_changes",
     "IndexDigestMismatch",
     "IndexPaused", "IndexRunRequest", "IndexUnavailable", "InvalidIndex", "MAX_INDEX_BYTES",
     "MAX_SELECT_PATHS", "MAX_SUMMARY_BYTES", "POLL_BUDGET_SECONDS", "POLL_MAX_REGISTRATIONS",

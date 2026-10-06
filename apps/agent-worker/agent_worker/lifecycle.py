@@ -716,6 +716,9 @@ class Worker:
         # every other task. `_finalise` puts them in the result summary.
         self._index_phases: list[indexrun_mod.PhaseRecord] | None = None
         self._index_agent_started: float | None = None
+        # The base an incremental index run staged (lane IX2), for the graph
+        # write's `--base-commit`; None on a full run and on every other task.
+        self._index_base: str | None = None
         # The account this attempt holds, if the pool gave it one. Set once and
         # kept: a credential reload must re-read the SAME account's secret, not
         # move the agent onto a different subscription mid-run.
@@ -1191,11 +1194,19 @@ class Worker:
         self._index_phases = []
         # A restored checkpoint may hold an earlier attempt's outputs. They
         # are not this run's, and the agent must not start from them.
-        for name in (indexrun_mod.EXTRACT_FILE, indexrun_mod.GRAPH_FILE):
+        for name in (indexrun_mod.EXTRACT_FILE, indexrun_mod.GRAPH_FILE,
+                     indexrun_mod.BASE_INDEX_FILE, indexrun_mod.BASE_GRAPH_FILE):
             (ws.work / name).unlink(missing_ok=True)
         env = self._index_env()
         program = indexrun_mod.resolve(indexrun_mod.EXTRACTOR_COMMAND, env)
         checkout = ws.checkout()
+        base_sha: str | None = None
+        if checkout.is_dir() and program is not None:
+            staged = self._index_stage_base(env)
+            if isinstance(staged, Outcome):
+                return staged
+            base_sha = staged
+        self._index_base = base_sha
         if not checkout.is_dir():
             record = indexrun_mod.PhaseRecord(
                 "extract", "skipped", 0.0, reason="the task has no checkout"
@@ -1210,7 +1221,8 @@ class Worker:
             ran = self._run_index_phase(
                 "extract",
                 indexrun_mod.extractor_argv(
-                    program, checkout=checkout, work=ws.work, lsp_total=budget.lsp_total
+                    program, checkout=checkout, work=ws.work, lsp_total=budget.lsp_total,
+                    base_sha=base_sha,
                 ),
                 cwd=checkout,
                 env=env,
@@ -1222,6 +1234,101 @@ class Worker:
         self._note_index_phase(record)
         self._index_agent_started = time.monotonic()
         return None
+
+    def _index_stage_base(self, env: dict[str, str]) -> str | None | Outcome:
+        """Stage an incremental run's base (lane IX2): the base sha, None, or a stop.
+
+        None -- and a full run -- when the task asked for none, or when the
+        base cannot be staged; the `stage_base` record says why, and the
+        agent reads it in the phases file. See `indexrun`'s module doc for
+        what is read, from where, and what each read is checked against.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        task = self._task or {}
+        # The signed prompt names the base; the unsigned metadata is never read.
+        base_sha = indexrun_mod.requested_base(task.get("input"))
+        if base_sha is None:
+            return None
+        started = time.monotonic()
+
+        def skipped(reason: str) -> None:
+            for name in (indexrun_mod.BASE_INDEX_FILE, indexrun_mod.BASE_GRAPH_FILE):
+                (ws.work / name).unlink(missing_ok=True)
+            self._note_index_phase(indexrun_mod.PhaseRecord(
+                "stage_base", "skipped", round(time.monotonic() - started, 3),
+                reason=f"a full run: {reason}",
+            ))
+
+        # The signed spec's repository, as the graph write's; never metadata.
+        where = indexrun_mod.target(
+            cfg.tenant_id, task.get("repository_url") or cfg.repository_url
+        )
+        if isinstance(where, str):
+            skipped(where)
+            return None
+        program = indexrun_mod.resolve(indexrun_mod.GRAPH_WRITER_COMMAND, env)
+        if program is None:
+            skipped(f"{indexrun_mod.GRAPH_WRITER_COMMAND} is not installed in this image")
+            return None
+        self.phases.enter("index_stage_base")
+        try:
+            base = indexrun_mod.resolve_base(
+                self.db, tenant_id=cfg.tenant_id, where=where, base_sha=base_sha,
+                call_options=self.control.call_options("tenant"),
+            )
+        except Exception as exc:
+            skipped(f"the base version could not be read ({type(exc).__name__})")
+            return None
+        if isinstance(base, str):
+            skipped(base)
+            return None
+        # The base index: the staged-input path a workflow input takes -- the
+        # successful attempt's manifest, a key under this tenant's prefix.
+        try:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db, upstream_task_id=base.task_id, tenant_id=cfg.tenant_id,
+                call_options=self.control.call_options("tenant"),
+            )
+            reference = inputs_mod.artifact_reference(
+                upstream, tenant_id=cfg.tenant_id, upstream_task_id=base.task_id,
+                filename=indexrun_mod.INDEX_FILE,
+            )
+            if reference.size_bytes > indexrun_mod.MAX_BASE_INDEX_BYTES:
+                skipped(f"the base index is {reference.size_bytes} bytes, over the "
+                        f"{indexrun_mod.MAX_BASE_INDEX_BYTES} an index may be")
+                return None
+            destination = ws.work / indexrun_mod.BASE_INDEX_FILE
+            self.store.download_file(reference.key, destination)
+            data = destination.read_bytes()
+        except InputUnavailable as exc:
+            skipped(self._scrub(str(exc)))
+            return None
+        except Exception as exc:
+            skipped(f"the base index could not be fetched ({type(exc).__name__})")
+            return None
+        if indexrun_mod.content_digest(data) != base.digest:
+            skipped("the base index no longer matches the digest recorded when it was "
+                    "promoted, so it is not built on")
+            return None
+        ran = self._run_index_phase(
+            "stage_base",
+            indexrun_mod.graph_read_argv(
+                program, work=ws.work, where=where, bucket=cfg.artifact_bucket, base=base
+            ),
+            cwd=ws.work,
+            env=env,
+            timeout=indexrun_mod.budgets(cfg.timeout_seconds).base_read,
+        )
+        if isinstance(ran, Outcome):
+            return ran
+        if ran.status != "ok" or not (ws.work / indexrun_mod.BASE_GRAPH_FILE).is_file():
+            skipped(f"the base graph was not read ({ran.status}: {ran.reason or 'no file'})")
+            return None
+        ran.seconds = round(time.monotonic() - started, 3)
+        ran.reason = f"base {base_sha[:12]} staged"
+        self._note_index_phase(ran)
+        return base_sha
 
     def _index_after_agent(self, result: ChildResult) -> Outcome | None:
         """Record the agent's phase, then `swarm-repo-graph write`. None to go on.
@@ -1278,7 +1385,7 @@ class Worker:
             "graph_write",
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
-                bucket=cfg.artifact_bucket,
+                bucket=cfg.artifact_bucket, base_sha=self._index_base,
             ),
             cwd=ws.work,
             env=env,
