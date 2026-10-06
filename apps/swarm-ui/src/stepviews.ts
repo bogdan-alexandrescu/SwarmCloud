@@ -1176,7 +1176,7 @@ export function tokenKindsCaption(k: TokenKindCounts): string {
 export function tokenKindsCell(k: TokenKindCounts, note: string): Cell {
   const total = [k.input, k.output, k.cacheRead, k.cacheWrite]
     .map(reportedCount)
-    .reduce<number | null>((t, v) => (v === null ? t : (t ?? 0) + v), null)
+    .reduce<number | null>((t, v) => (v === null ? t : t === null ? v : t + v), null)
   if (total === null) return absentCell(TOKENS_NOT_REPORTED)
   return measuredCell(
     tokenCount(total),
