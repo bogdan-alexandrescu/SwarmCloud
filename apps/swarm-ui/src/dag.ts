@@ -2841,6 +2841,13 @@ export interface ResultUsage {
   readonly usd: number | null
   readonly inputTokens: number | null
   readonly outputTokens: number | null
+  /**
+   * THE TWO CACHE KINDS (#322). `_usage_summary` writes them beside input and
+   * output, and a step that read 1.34M cached tokens printed `52 in · 9,955
+   * out` while its cost was the whole run's.
+   */
+  readonly cacheReadTokens: number | null
+  readonly cacheCreationTokens: number | null
 }
 
 export function resultUsageOf(task: Task): ResultUsage | null {
@@ -2850,8 +2857,19 @@ export function resultUsageOf(task: Task): ResultUsage | null {
     const v = usage[key]
     return typeof v === 'number' && Number.isFinite(v) ? v : null
   }
-  const out = { usd: n('total_cost_usd'), inputTokens: n('input_tokens'), outputTokens: n('output_tokens') }
-  return out.usd === null && out.inputTokens === null && out.outputTokens === null ? null : out
+  const out = {
+    usd: n('total_cost_usd'),
+    inputTokens: n('input_tokens'),
+    outputTokens: n('output_tokens'),
+    cacheReadTokens: n('cache_read_input_tokens'),
+    cacheCreationTokens: n('cache_creation_input_tokens'),
+  }
+  return out.usd === null && !hasTokenKind(out) ? null : out
+}
+
+/** Whether any of the four token kinds was reported -- the test every borrowing site shares. */
+export function hasTokenKind(u: ResultUsage): boolean {
+  return [u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens].some((v) => v !== null)
 }
 
 /**

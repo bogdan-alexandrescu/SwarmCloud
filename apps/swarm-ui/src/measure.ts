@@ -198,6 +198,29 @@ export function tokenText(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
+/**
+ * A count as the tile prints it: whole below 10,000 (`9,955`, `52`), in three
+ * significant figures above (`59.7k`, `1.34M`) -- the shape of the owner's
+ * decided caption, where an exact seven-digit figure would outweigh the tile.
+ * Shared by Agent › Details and the Workflows views (#322), so a step's
+ * tokens read the same in both.
+ */
+export function tokenCount(n: number): string {
+  return n < 10_000 ? n.toLocaleString('en-US') : compactCount(n)
+}
+
+/**
+ * A token count in three significant figures: `1.01M`, `12.3k`, `940`. For a
+ * qualifier line, where the exact figure would outweigh the tile it sits under.
+ */
+export function compactCount(n: number): string {
+  if (n < 1000) return `${n}`
+  const k = Number((n / 1000).toPrecision(3))
+  // 999,999 rounds to `1000k`; that is `1M`.
+  if (k < 1000) return `${k}k`
+  return `${Number((n / 1_000_000).toPrecision(3))}M`
+}
+
 /** A plain count. Zero is a digit -- it was counted. */
 export function countText(n: number): string {
   return `${Math.round(n)}`

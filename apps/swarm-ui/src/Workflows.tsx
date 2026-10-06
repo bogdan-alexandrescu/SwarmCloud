@@ -30,6 +30,7 @@ import {
   edgePath,
   finishedResultOf,
   foldMix,
+  hasTokenKind,
   inputsByStep,
   layoutOf,
   levelsOf,
@@ -73,7 +74,6 @@ import {
   countCell,
   durationText,
   measuredCell,
-  tokenCell,
   usd,
   type Absence,
   type Cell,
@@ -81,7 +81,6 @@ import {
   NEVER_RAN,
   NO_ATTEMPT_YET,
   STATE_UNREAD,
-  TOKENS_NOT_REPORTED,
   USAGE_NOT_READ,
   USAGE_NOT_SAMPLED,
 } from './measure'
@@ -94,13 +93,14 @@ import {
   failureCause,
   nodeNote,
   parentsDoneOf,
+  resultTokenKinds,
   sameStepAcross,
   shapeSignature,
   stateRankOf,
   stepOrder,
   stepTimes,
   stepWhy,
-  tokenPairCell,
+  tokenKindsCell,
   workflowLabel,
   workflowPullRequest,
   VIEW_LABEL,
@@ -4046,8 +4046,8 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
         ? { cell: costCell(result.usd, boardResultNote(gap)), from: 'result' }
         : { cell: own, from: null }
   const tokensOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
-    own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
-      ? { cell: tokenPairCell(result.inputTokens, result.outputTokens, boardResultNote(gap)), from: 'result' }
+    own.kind === 'absent' && result !== null && hasTokenKind(result)
+      ? { cell: tokenKindsCell(resultTokenKinds(result), boardResultNote(gap)), from: 'result' }
       : { cell: own, from: null }
 
   const absentUsage = (a: Absence, gap: BoardTelemetryGap): StepFigures => {
@@ -4111,29 +4111,19 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
 }
 
 /**
- * Input and output tokens as one cell.
+ * A step's tokens as one cell: the total of all four kinds its attempts
+ * reported, each kind's sum in the note (#322, `tokenKindsCell`).
  *
- * EACH HALF SUMS SEPARATELY, so a step whose runner reported input and no
- * output shows the half it has and says which -- `(input ?? 0) + (output ?? 0)`
- * counts the missing half as a zero, which is the same defect
- * `AgentDetail.tsx:408` records having already been fixed once at the tile
- * level.
+ * EACH KIND SUMS SEPARATELY (`rollUpAttempts`), so a step whose runner
+ * reported input and no output shows the kinds it has and names them --
+ * `(input ?? 0) + (output ?? 0)` counts the missing kind as a zero, which is
+ * the same defect `AgentDetail.tsx` records having already been fixed once at
+ * the tile level.
  */
 function tokensOf(u: StepUsage): Cell {
-  const tin = tokenCell(u.inputTokens, '')
-  const tout = tokenCell(u.outputTokens, '')
-  if (tin.kind === 'absent' && tout.kind === 'absent') return absentCell(TOKENS_NOT_REPORTED)
-  const parts: string[] = []
-  if (tin.kind === 'measured') parts.push(`${tin.text} in`)
-  if (tout.kind === 'measured') parts.push(`${tout.text} out`)
-  const both = tin.kind === 'measured' && tout.kind === 'measured'
-  return measuredCell(
-    parts.join(' · '),
-    both
-      ? `Summed over ${u.attemptsWithTokens} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported tokens.`
-      : tin.kind === 'measured'
-        ? 'Input only. No attempt reported an output count, which is not the same as none.'
-        : 'Output only. No attempt reported an input count, which is not the same as none.',
+  return tokenKindsCell(
+    { input: u.inputTokens, output: u.outputTokens, cacheRead: u.cacheReadTokens, cacheWrite: u.cacheCreationTokens },
+    `Summed over ${u.attemptsWithTokens} of ${u.attempts} attempt${u.attempts === 1 ? '' : 's'} that reported tokens.`,
   )
 }
 

@@ -1324,7 +1324,17 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     const done = task('t_res', 'SUCCEEDED', {
       started_at: iso(-500),
       completed_at: iso(-400),
-      result_summary: { runner: { usage: { total_cost_usd: 0.42, input_tokens: 1200, output_tokens: 300 } } },
+      result_summary: {
+        runner: {
+          usage: {
+            total_cost_usd: 0.42,
+            input_tokens: 1200,
+            output_tokens: 300,
+            cache_read_input_tokens: 40_000,
+            cache_creation_input_tokens: 2_500,
+          },
+        },
+      },
     })
     const usage: WorkflowUsage = {
       byTaskId: new Map(),
@@ -1342,7 +1352,11 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     expect(cost.querySelector('.wf-cell')?.textContent, 'the table still says the figure was not sampled').toBe('$0.42')
     expect(cost.querySelector('.wf-src')?.textContent, 'a filled figure does not say where it came from').toBe('from result')
     const tokens = cell(root, 'work', 'tokens')
-    expect(tokens.querySelector('.wf-cell')?.textContent).toBe('1.2k in · 300 out')
+    // #322: the total of all four kinds, the cache included, with each kind's
+    // count in the note. MUTATION: drop the cache kinds from `resultUsageOf`
+    // and this reads `1,500`.
+    expect(tokens.querySelector('.wf-cell')?.textContent).toBe('44k')
+    expect(tokens.querySelector('.wf-cell')?.getAttribute('title')).toContain('in 1,200 · out 300 · cache read 40k · write 2,500')
     expect(tokens.querySelector('.wf-src')?.textContent).toBe('from result')
 
     // ONE WORDING: the inspector's newest attempt reads the same figure from
@@ -1355,8 +1369,91 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     expect(costFact.textContent).toContain('$0.42')
     expect(costFact.querySelector('.wf-src')?.textContent).toBe('from result')
     const tokensFact = factLi(i, 'tokens')
-    expect(tokensFact.textContent).toContain('1.2k in · 300 out')
+    expect(tokensFact.textContent).toContain('44k')
+    expect(tokensFact.getAttribute('title')).toContain('in 1,200 · out 300 · cache read 40k · write 2,500')
     expect(tokensFact.querySelector('.wf-src')?.textContent).toBe('from result')
+  })
+
+  it('#322: counts every token kind the attempts reported, on the table and in the inspector, and leaves out a kind nobody reported', async () => {
+    // The run the issue measured: 52 in, 9,955 out, 1,337,190 cache read and
+    // 59,715 cache written -- 1,406,912 in all. The Tokens column printed
+    // `52 in · 9.9k out`, 0.7% of it, beside a cost that paid for all of it.
+    // MUTATION: put `X in · Y out` back in `tokensOf` or `attemptFacts`.
+    const done = task('t_kinds', 'SUCCEEDED', { started_at: iso(-500), completed_at: iso(-400) })
+    const stepUsage: StepUsage = {
+      attempts: 1,
+      attemptsWithCost: 1,
+      attemptsWithTokens: 1,
+      checkpoints: 0,
+      costUsd: 0.9445,
+      inputTokens: 52,
+      outputTokens: 9_955,
+      cacheReadTokens: 1_337_190,
+      cacheCreationTokens: 59_715,
+    }
+    const usage: WorkflowUsage = {
+      byTaskId: new Map([['t_kinds', stepUsage]]),
+      notSampled: new Set(),
+      failed: new Map(),
+      sampleLimit: 12,
+      tasksRequested: 1,
+    }
+    const root = viewCard([step('work', [], { task_id: 't_kinds' })], [done], 'table', usage, {
+      t_kinds: [
+        attempt(1, {
+          task_id: 't_kinds',
+          cost_usd: 0.9445,
+          input_tokens: 52,
+          output_tokens: 9_955,
+          cache_read_input_tokens: 1_337_190,
+          cache_creation_input_tokens: 59_715,
+        }),
+      ],
+    })
+    const caption = 'in 52 · out 9,955 · cache read 1.34M · write 59.7k'
+    const tokens = cell(root, 'work', 'tokens').querySelector('.wf-cell')
+    expect(tokens?.textContent).toBe('1.41M')
+    expect(tokens?.getAttribute('title')).toContain(caption)
+
+    pick(root, 'work')
+    const i = inspector(root)
+    await within(i).findByText('attempt 1 of 1')
+    const fact = factLi(i, 'tokens')
+    expect(fact.textContent).toContain('1.41M')
+    expect(fact.getAttribute('title')).toContain(caption)
+    expect(fact.querySelector('.wf-src'), 'the attempt’s own counts are marked as the result’s').toBeNull()
+  })
+
+  it('#322: a kind no attempt reported is left out of the total and the note, never counted as 0', () => {
+    const done = task('t_part', 'SUCCEEDED', { started_at: iso(-500), completed_at: iso(-400) })
+    const usage: WorkflowUsage = {
+      byTaskId: new Map([
+        [
+          't_part',
+          {
+            attempts: 1,
+            attemptsWithCost: 0,
+            attemptsWithTokens: 1,
+            checkpoints: 0,
+            costUsd: null,
+            inputTokens: 1_200,
+            outputTokens: null,
+            cacheReadTokens: 40_000,
+            cacheCreationTokens: null,
+          },
+        ],
+      ]),
+      notSampled: new Set(),
+      failed: new Map(),
+      sampleLimit: 12,
+      tasksRequested: 1,
+    }
+    const root = viewCard([step('work', [], { task_id: 't_part' })], [done], 'table', usage)
+    const tokens = cell(root, 'work', 'tokens').querySelector('.wf-cell')
+    expect(tokens?.textContent).toBe('41.2k')
+    const title = tokens?.getAttribute('title') ?? ''
+    expect(title).toContain('in 1,200 · cache read 40k.')
+    expect(title, 'an unreported kind is drawn as a count').not.toMatch(/\bout \d|write \d/)
   })
 
   it('makes a workflow’s total the sum of its steps’ own figures', () => {
