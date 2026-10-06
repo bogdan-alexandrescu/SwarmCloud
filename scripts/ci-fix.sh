@@ -35,6 +35,13 @@
 #      (apps/agent-worker/agent_worker/continuation.py), and stops.
 #   4. It comments on the pull request, so every attempt is visible where the
 #      red check is.
+#   5. When the fix step ends, swarm-api comments again with how it ended:
+#      the task, its console link, its state and one paragraph, and whether
+#      the cap is reached (apps/swarm-api/swarm_api/cifix.py, on the
+#      per-tenant merge_wake tick, with the tenant's -git token). This script
+#      sends `max_attempts` beside `attempt` for that, and the API refuses a
+#      submission past it for the same pull request, so the cap holds even
+#      if the attempt comments it counts are deleted.
 #
 # It STOPS, and says so on the pull request once, when MAX_FIX_ATTEMPTS have
 # been made or when it is not configured. A refused submission is reported on
@@ -304,11 +311,12 @@ run_fix() {
     --argjson pr "${pr}" \
     --argjson run "${run_id}" \
     --argjson attempt "${attempt}" \
+    --argjson cap "${MAX_FIX_ATTEMPTS}" \
     '{
       steps: [{step_id: $step, runner_profile: $profile, input: {prompt: $prompt}}],
       strategy: "direct-pr",
       continues_task: $task,
-      metadata: {ci_fix: {pull_request: $pr, run_id: $run, head_sha: $sha, attempt: $attempt}}
+      metadata: {ci_fix: {pull_request: $pr, run_id: $run, head_sha: $sha, attempt: $attempt, max_attempts: $cap}}
     }' >"${WORK}/request.json"
 
   # Redirected, never captured with $(...): API_STATUS is set by api_request

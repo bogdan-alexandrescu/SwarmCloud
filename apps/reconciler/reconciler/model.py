@@ -189,6 +189,10 @@ class TaskView:
     attempt_count: int = 0
     max_attempts: int = 3
     cancel_requested: bool = False
+    #: When the task's FIRST cancel was requested (`swarm_api.store`'s cancel
+    #: transaction writes it). The clock `detect_cancel_overdue` measures its
+    #: bound from; None on a task cancelled before it was written (#627).
+    cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
     #: The resume pointer `agent_worker.lifecycle._restore_checkpoint` reads
     #: first. Carried here because checkpoint retention has to know which
@@ -225,6 +229,7 @@ class TaskView:
             attempt_count=int(doc.get("attempt_count", 0)),
             max_attempts=int(doc.get("max_attempts", 3)),
             cancel_requested=bool(doc.get("cancel_requested")),
+            cancel_requested_at=as_datetime(doc.get("cancel_requested_at")),
             started_at=as_datetime(doc.get("started_at")),
             latest_checkpoint=doc.get("latest_checkpoint"),
             completed_at=as_datetime(doc.get("completed_at")),

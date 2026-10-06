@@ -243,6 +243,22 @@ class ReconcilerConfig:
     #: cannot scale down while it runs, because it may not be evicted.
     left_running_grace_seconds: int = 300
 
+    #: How long after a task's cancel was requested its current attempt's
+    #: execution may still be active before the reconciler stops it through
+    #: the backend, fences its generation, releases its lease and ends the task
+    #: CANCELLED (`detect.detect_cancel_overdue`, #627).
+    #:
+    #: 600s. It must be longer than the worker's own cancel path, or the
+    #: reconciler kills a worker that IS honouring the cancel while it prices
+    #: and writes the attempt's cost: one control poll (10s), then everything
+    #: the scheduler's WORKER_FINALISE_BUDGET_SECONDS (300s) is sized for --
+    #: stop the runner (20s), the cancellation checkpoint, the uploads that
+    #: record the spend, the terminal write. Twice that budget leaves a slow
+    #: upload its room and a pass (one a minute) its slack. And it must be far
+    #: short of what an ignored cancel cost: 7.6 h and 12.8 h in the
+    #: 2026-10-05 history, so ten minutes caps the loss at under 2% of that.
+    cancel_enforce_after_seconds: int = 600
+
     #: How long after its task reached a terminal state an attempt that never
     #: recorded its end, with no live execution, waits before the reconciler
     #: records the end for it and gives back its account holds
@@ -478,6 +494,7 @@ class ReconcilerConfig:
             stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
+            cancel_enforce_after_seconds=_int("CANCEL_ENFORCE_AFTER_SECONDS", 600),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
             lost_after_finish_grace_seconds=_int("LOST_AFTER_FINISH_GRACE_SECONDS", 300),
             lost_after_finish_lookback_seconds=_int(

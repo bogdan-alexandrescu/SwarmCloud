@@ -158,6 +158,10 @@ _PARKED_BECAUSE = {
     # Contract request 40 (docs/design/child-tasks.md): the agent awaits the
     # child tasks it submitted, holding no capacity.
     "CHILDREN_INCOMPLETE": "it is waiting for the child tasks its agent submitted",
+    # Contract request 49 (docs/merge-step.md, 2026-10-06): a merge step parks
+    # while its pull request's CI runs, holding no capacity, and is woken when
+    # the checks settle. Waiting, not stalled.
+    "CI_PENDING": "waiting for the pull request's checks",
     "PROVIDER_QUOTA_EXHAUSTED": "the provider's quota window is exhausted; it resumes on its own",
     "PROVIDER_COOLDOWN": "the provider is cooling down; it resumes on its own",
     "PROVIDER_OUTAGE": "the provider is failing; it resumes on its own",

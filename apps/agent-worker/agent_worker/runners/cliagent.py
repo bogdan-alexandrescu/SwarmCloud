@@ -192,6 +192,13 @@ class CliAgentSpec:
     #: decision 2026-10-06), so a warning every run prints is never reported as
     #: the cause of a kill. Each pattern is matched at the start of a line.
     benign_stderr: tuple[re.Pattern[str], ...] = ()
+    #: Where the session id is found when the CLI's stdout does not carry it:
+    #: called with the CLI's HOME and the epoch second the run started, it
+    #: returns the session that run wrote, or None. codex `exec` prints prose
+    #: and names its session only in the rollout under `$HOME/.codex`
+    #: (`codex.latest_session`); claude-code's stream-json names it on every
+    #: event, so it needs none.
+    session_locator: Callable[[Path, float], str | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +226,13 @@ class CliAgentSpec:
 #   RESUME_SESSION_ENV  the session to continue with `spec.resume_flag`.
 #   RESUME_REASON_ENV   why it stopped: RESUME_MOVED or RESUME_RELOADED.
 #
+# An attempt on NO account has no channel, and its credential can still be
+# refreshed out from under it (#626). For a CLI that can resume, the worker
+# names one more file there, and the reload continues what it holds:
+#
+#   SESSION_FILE_ENV    written here when the CLI exits, whatever it exited
+#                       with: `{"session_id": ...}`, mode 0600.
+#
 # THE SESSION ID IS NEVER LOGGED. It is in the channel file and the restarted
 # CLI's argv and nowhere else: the `child started` line prints the argv with
 # it masked, and the runner's logger is told it is a secret.
@@ -226,6 +240,7 @@ ACCOUNT_STREAM_ENV = "SWARM_ACCOUNT_STREAM"
 ACCOUNT_MOVE_ENV = "SWARM_ACCOUNT_MOVE"
 RESUME_SESSION_ENV = "SWARM_RESUME_SESSION"
 RESUME_REASON_ENV = "SWARM_RESUME_REASON"
+SESSION_FILE_ENV = "SWARM_SESSION_FILE"
 
 #: Why a session is being resumed.
 RESUME_MOVED = "moved"
@@ -441,6 +456,33 @@ class AccountStreamWatcher:
             # The channel is advisory: a run whose channel cannot be written
             # behaves exactly as a run on no account, and parks as today.
             pass
+
+
+def run_session(spec: CliAgentSpec, parsed: Any, home: Path, since: float) -> str | None:
+    """The session one start of the CLI ran, or None: its stream's, else its locator's."""
+    session = _session_of(parsed)
+    if session is None and spec.session_locator is not None:
+        try:
+            session = spec.session_locator(home, since)
+        except OSError:
+            session = None
+    return session if isinstance(session, str) and _SESSION_ID.match(session) else None
+
+
+def write_session_file(path: Path, session: str | None) -> None:
+    """The session file the worker named (SESSION_FILE_ENV), replaced atomically.
+
+    Advisory like the channel: a file that cannot be written is a reload that
+    restarts from the prompt, as before #626, never a failed run.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"session_id": session}))
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _account_watcher(spec: CliAgentSpec, stdout_path: Path) -> AccountStreamWatcher | None:
@@ -1271,11 +1313,26 @@ def run_cli_agent(
         env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
     )
 
+    # When the latest start began, for `spec.session_locator`: a session file
+    # an earlier run left in the restored workspace is not this run's.
+    started_at = [time.time()]
+    # THE SESSION FILE (#626), named by the worker only for a run on no
+    # account; written after every start, refused or not, because a refused
+    # start is exactly the one the worker's credential reload continues.
+    session_file = os.environ.get(SESSION_FILE_ENV, "").strip() if spec.resume_flag else ""
+
+    def note_session(parsed_run: Any) -> None:
+        if session_file:
+            write_session_file(
+                Path(session_file), run_session(spec, parsed_run, ctx.work_dir, started_at[0])
+            )
+
     def start(
         run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
         """One start of the CLI, `run_prompt` on its stdin, its captures redacted
         before anything reads them."""
+        started_at[0] = time.time()
         stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path)
@@ -1422,6 +1479,7 @@ def run_cli_agent(
     # the signal instead, and `run_runner` writes it into result.json.
     raw_stdout = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
     parsed = _parse_cli_output(raw_stdout)
+    note_session(parsed)
     spend = _scrub_json(_spend_of(parsed), secrets)
     combined = detection_text(raw_stdout, parsed)
     judge(result, watcher, spend, combined)
@@ -1473,6 +1531,7 @@ def run_cli_agent(
         # conversation is what the transcript and summary read.
         pass_raw = pass_stdout.decode("utf-8", errors="replace")
         pass_parsed = _parse_cli_output(pass_raw)
+        note_session(pass_parsed)
         raw_stdout = stdout_path.read_text(errors="replace")
         parsed = _parse_cli_output(raw_stdout)
         spend = _combined_spend(first_spend, _scrub_json(_spend_of(pass_parsed), secrets))

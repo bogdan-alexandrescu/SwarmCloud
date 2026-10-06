@@ -408,12 +408,16 @@ def test_a_spec_that_cannot_resume_refuses_a_resume(tmp_path, monkeypatch):
         run_cli_agent(ctx, spec)
 
 
-def test_claude_code_is_the_runner_that_can_resume():
+def test_both_cli_runners_can_resume():
     from agent_worker.runners.claude_code import SPEC
     from agent_worker.runners.codex import SPEC as CODEX
 
     assert SPEC.resume_flag == "--resume"
-    assert CODEX.resume_flag is None, "codex is unchanged"
+    # codex resumes too since #626 (`codex exec resume <id>`), for a
+    # credential reload; it still never holds a pool account, so it never
+    # gets the channel and never moves (`accountlease.ACCOUNT_TOKEN_ENV`).
+    assert CODEX.resume_flag == "resume"
+    assert CODEX.session_locator is not None, "codex's stdout names no session"
 
 
 def test_a_session_id_containing_429_does_not_make_a_failure_a_rate_limit(tmp_path, monkeypatch):

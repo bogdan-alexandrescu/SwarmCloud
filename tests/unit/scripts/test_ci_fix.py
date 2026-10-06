@@ -295,6 +295,9 @@ def test_a_red_swarm_pr_gets_one_fix_step_that_names_a_profile_and_nothing_else(
         "run_id": int(RUN_ID),
         "head_sha": HEAD,
         "attempt": 1,
+        # The cap travels with the attempt, so the API can hold it and the
+        # post-back can say when it is reached (#263).
+        "max_attempts": _constant("MAX_FIX_ATTEMPTS"),
     }
 
     (comment,) = _comments(state)
