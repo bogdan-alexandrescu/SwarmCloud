@@ -34,6 +34,7 @@ const UI_RATIONALE =
 const MOVED: Readonly<Record<string, string>> = {
   'absent-vs-zero': 'defining bug',
   'api-reads': 'reporting itself broken',
+  'read-failed': 'This app exists because of one bug',
   checkpoints: 'would be inventing it',
   'all-clear-basis': 'least trustworthy',
   'paused-vs-full': 'treatment of its own',
@@ -93,7 +94,9 @@ describe('Help’s long form carries no UI rationale (#131)', () => {
       expect(HELP[id as TopicId], `${id} is not a topic`).toBeDefined()
       const section = sections.find((s) => s.startsWith(`\`${id}\``))
       expect(section, `the doc has no section for ${id}`).toBeDefined()
-      expect(section!, `${id}'s section does not keep what moved`).toContain(phrase)
+      // Markdown wraps a quote across `> ` lines; read it as one line.
+      const flat = section!.replace(/\s*\n>?\s*/g, ' ')
+      expect(flat, `${id}'s section does not keep what moved`).toContain(phrase)
       // And it is gone from the Help page.
       expect(HELP[id as TopicId].long.join(' ')).not.toContain(phrase)
     }

@@ -16,6 +16,11 @@
  *   THE EXPLANATION -- why the em dash, what would have written the number,
  *   what may not be concluded -- lives HERE.
  *
+ * A long form says what the reader sees, what it means and what to do. WHY
+ * the console draws a state the way it does -- the screen that would have
+ * lied -- is design rationale, and it lives in docs/web-ui/help-rationale.md
+ * (#131), held there by `src/__tests__/help.rationale.test.tsx`.
+ *
  * So nothing in this file may be load-bearing. If a panel needs this module to
  * be read before it can be told apart from a zero, the panel is wrong, not
  * this module. `tests/help.test.ts` asserts that for the exemplar screen.
@@ -240,7 +245,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A digit is a measurement, and a measured zero is a digit too. A dash, or the hatched mark “not measured”, means nothing ever recorded the figure. The dashed mark “not read” means the read failed and the platform may still hold it. A tilde marks a real reading too old to trust.',
     long: [
-      'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and drawing them alike was this UI’s defining bug.',
+      'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and each is drawn with a mark of its own.',
       'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
       'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
@@ -265,7 +270,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A route is a path template with ids and query removed. Its status is the last attempt of any call to it, and its age is the newest successful payload of any call to it; each panel still carries its own age and its own failure, and the head beside the page title shows the screen’s own newest read.',
       'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
       'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
-      'A 403 on an admin-only route is counted apart from failures, and deliberately. Someone who is not an admin genuinely cannot read those routes; a console that reported that as a fault would be reporting itself broken every time a non-admin opened it.',
+      'A 403 on an admin-only route is counted apart from failures. Someone who is not an admin genuinely cannot read those routes, so a 403 there says who is reading, not that anything is broken.',
     ],
   },
 
@@ -362,7 +367,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Checkpointing is mandatory and periodic: it is what makes a lost attempt cost minutes instead of everything. What is inside one is recorded nowhere — only its id, its size and its uri.',
     long: [
       'A worker can lose its attempt to a quota park-and-exit, a cancellation, a reclaim of a stale generation, or an ordinary crash. A checkpoint is what makes any of those cost minutes rather than the whole attempt, which is why it is mandatory and periodic rather than a nicety.',
-      'Nothing writes a manifest of an archive’s contents, so no screen can list the files in a checkpoint. The id, the size and the uri are the whole record, and the uri is what to fetch. A screen that drew a file tree here would be inventing it.',
+      'Nothing writes a manifest of an archive’s contents, so no screen can list the files in a checkpoint. The id, the size and the uri are the whole record, and the uri is what to fetch.',
       'A checkpoint count of zero is a measured zero — it means no attempt document lists one. It is not a failed read, and it is shown as a digit for that reason.',
     ],
   },
@@ -415,7 +420,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'When a query fails, no number derived from it appears anywhere — not a zero, not a blank. A failed read says nothing about the platform, and the panel says which of the two happened.',
     long: [
-      'This app exists because of one bug: a failed probe rendered as an absence. A sweep of the platform’s operational scripts found 56 places where a read failure was printed as “nothing to report”, including a status tool that said “no services deployed” when a session had simply expired.',
+      'A failed read is not an absence, and it is never drawn as one. A sweep of the platform’s operational scripts found 56 places where a read failure was printed as “nothing to report”, including a status tool that said “no services deployed” when a session had simply expired.',
       'So every read here returns a value that forces the question. There is no path to the rows that does not decide, separately, what an empty answer means and what a missing answer means. A component cannot render an empty list for a permission error, because a permission error never produces a list.',
       'On screen the two are told apart without colour: a failed panel carries its own marker and its own heading, and no figure under that heading may be treated as a measurement.',
     ],
@@ -544,7 +549,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A short problem list over checks that all ran and a short list over checks that could not run are the same picture, and only one of them is good news. So the panel always says how many ran, and a check that could not run is counted rather than dropped.',
     long: [
-      'Silence has two causes and they are opposites: nothing is wrong, or nothing looked. A panel that draws them alike is at its least trustworthy exactly when it matters most.',
+      'Silence has two causes and they are opposites: nothing is wrong, or nothing looked. Only the count of checks that ran tells them apart.',
       'So an all-clear here is always phrased over a count of the checks that actually completed, and a check that could not run appears as its own line with its own reason.',
       'A check blocked by an administrative gate is separated from a check that failed, because a reader who is not an administrator genuinely cannot run it and nothing is broken.',
     ],
@@ -617,7 +622,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Both refuse admission, and on a board of figures they can look alike: nothing new starts. The difference is who has to act, and what they have to do.',
       'A full pool has as many units in use as its ceiling allows. Nothing is wrong with it: admission is doing its job, and the pool admits again as soon as running work finishes and releases its slots. Waiting, or raising the ceiling, are the two ways past it.',
       'A paused pool has been switched off by an operator. It refuses every task that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
-      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. That is why the screens draw a paused pool in a treatment of its own rather than as a pool at its limit.',
+      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. The Ceilings screen marks a paused pool as paused, not as a pool at its limit, so look for that mark before reaching for the ceiling.',
     ],
     see: ['what-a-pool-is', 'ceiling-change-evicts-nothing'],
   },
@@ -765,7 +770,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The catalogue describes how a name resolves: to a backend, an image, a size and a credential requirement. It is static in the sense that it does not move while work runs.',
       'Live load appears on the Runtimes screen only where a capacity read supplied it, and it is labelled as coming from there. Where that read did not complete, the columns are dashes rather than zeros.',
-      'A screen that drew machines would be inventing them, because nothing in this platform publishes them to a console.',
+      'Nothing in this platform publishes its machines to a console, so the catalogue lists none. What is running at this moment is on the Agents screen.',
     ],
   },
 
@@ -787,9 +792,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Every name, size, weight, backend and timeout on this screen came from the catalogue route in this page load. A runtime added to the catalogue appears here with nobody editing the screen, and no figure here can disagree with the platform because none is stored here.',
     long: [
-      'The catalogue is contract data that can gain entries. A console that kept its own copy would be correct until the day it mattered.',
+      'The catalogue is contract data that can gain entries, and a runtime added to it is on the Runtimes screen at the next load.',
       'So the Runtimes screen renders the response and nothing else. There is no fallback list, no hardcoded default and no enrichment from a table in the bundle.',
-      'The visible cost is that a failed read leaves the screen with nothing to show. That is the intended cost: an empty catalogue drawn from a cached copy is the failure this whole app exists to prevent.',
+      'So a failed read leaves the Runtimes screen with nothing to show rather than an older copy. An empty catalogue after a failed read is a read to retry, not a catalogue with no runtimes.',
     ],
   },
 
@@ -829,7 +834,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The catalogue distinguishes "this runtime names no provider" from "this runtime names a provider and lists no variable for it". They are different facts about the response.',
       'The first means nothing has to be registered before it will run. The second means the catalogue named a provider and published no variable name, which is what the response says and is not a failed read.',
-      'Neither is drawn as an absence, because an absence on the Runtimes screen would read as "we could not find out", and both were found out.',
+      'Neither is an absence: both were found out, so the Runtimes screen states each in words rather than with a dash.',
     ],
   },
 
@@ -1430,7 +1435,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Browsers refuse clipboard access outside a secure context and when the window is not focused. The link is on screen and selectable, so it can be copied by hand: it is the same value, and nothing is wrong with the sign-in.',
     long: [
-      'The button reports the refusal rather than claiming success, because a button that says "copied" when nothing was copied is the small version of the bug this whole app is about.',
+      'The button reports the refusal rather than claiming success, so a button that does not say copied has copied nothing.',
       'The value itself is always rendered, so there is never a state in which the only way to obtain the link is a control that failed.',
       'This is also the case where copying by hand matters most: the link is what you carry to a second browser application.',
     ],
@@ -1444,7 +1449,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Each row can be missing on its own, and a missing row is drawn as an absence rather than a zero. The sum is a different claim: it asserts that everything was counted.',
       'So the rule here is stricter than for a single figure. One row that did not arrive withholds the total entirely, and the panel says how many rows are in that state.',
-      'That is deliberately more annoying than showing a number. A total quietly computed over what happened to arrive is the failure this whole app exists to prevent.',
+      'So a withheld total is neither a zero nor a fault in the platform: at least one of its rows is unread, and the total returns once every row arrives.',
     ],
   },
 
@@ -1478,7 +1483,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A provider quota document carries one of six states. The throttled one is the common case during a squeeze and the easiest to miss. The unknown one means no worker has reported recently: an absence of information, not an assurance.',
     long: [
-      'A chip that fell through to "unknown" for a state it did not recognise would mislabel exactly the condition the Provider quota screen exists for, so every member is drawn by name.',
+      'Every state is shown by its own name on the Provider quota screen; none is folded into unknown.',
       'Unknown is drawn as an absence rather than as health. Nothing has reported, and nothing about the provider follows from that.',
       // CP-8 (#85): the column is `Quota cap` now, and the topic names it so.
       // AH-13 (#161): a long paragraph is only ever read on the Help page, so
