@@ -81,6 +81,8 @@ export type FailureClassKey =
   | 'publish_refused'
   | 'other'
   | 'no_reason'
+  /** #631: the caller asked for this failure (the mock's `fail: true`). */
+  | 'intended'
 
 export type CancelCauseKey =
   | 'requested'

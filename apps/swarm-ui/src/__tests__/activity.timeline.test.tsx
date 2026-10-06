@@ -1040,10 +1040,10 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
       'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
-      'merge failed', 'publish refused', 'other', 'no reason recorded',
+      'merge failed', 'publish refused', 'other', 'no reason recorded', 'failed on purpose',
     ])
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
-      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0',
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0', '0',
     ])
     const timeout = rows[1]!
     expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
@@ -1197,13 +1197,14 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
-    // One per class in the route's vocabulary: fifteen since "publish
+    // One per class in the route's vocabulary: sixteen since "failed on
+    // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
     // four (contract requests 33 and 35), ten since "spec signature invalid"
     // (contract request 34), nine since "inputs unavailable" (#185,
     // decision 4).
     expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
-    expect(strips).toHaveLength(15)
+    expect(strips).toHaveLength(16)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
