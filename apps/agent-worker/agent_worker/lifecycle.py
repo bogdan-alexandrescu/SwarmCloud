@@ -10132,37 +10132,64 @@ class Worker:
         return None
 
     def _cleanup(self) -> None:
-        if self._child is not None:
+        """Every step after the attempt's outcome is decided, each guarded.
+
+        NEVER SETS THE EXIT CODE (#737). This is the `finally` of `run()`, so
+        an exception out of it replaced whatever `run()` was returning: a
+        `RecursionError` from `workspace_mod.destroy` on a deep tree, raised
+        after the task had SUCCEEDED and given its lease back, exited the
+        container 1, and Cloud Run counted 93 successful tasks in a week as
+        failed executions. A step that raises is logged as one line -- the
+        step and the exception's type, never its message or a stack, which
+        could carry a path or a value from the agent's tree -- and the
+        steps after it still run: a failed spend write must not keep the
+        account or the tenant's working tree."""
+
+        def terminate_runner() -> None:
+            if self._child is not None and self._child.poll() is None:
+                self._child.terminate(self.cfg.termination_grace_seconds, reason="cleanup")
+                self._child.finish()
+
+        def destroy_workspace() -> None:
+            if self.ws is not None:
+                workspace_mod.destroy(self.ws)
+
+        for step, action in (
+            ("terminate_runner", terminate_runner),
+            # THE SPEND BACKSTOP, after the runner is gone and before the
+            # workspace holding its result.json is destroyed. Every orderly
+            # exit has already recorded in `_upload_outputs`; this catches the
+            # two that cannot have: a crash while a runner was still alive (it
+            # has only just been reaped, above) and a mid-run fence, which
+            # uploads nothing. Writing a fenced attempt's spend touches only
+            # its OWN attempt document -- never the lease, which is what
+            # invariant 5 forbids -- exactly as the resource usage write on
+            # that same path already does.
+            ("collect_spend", self._collect_spend),
+            ("record_spend", self._record_spend),
+            # And the CPU, for the same two exits: a runner killed just above
+            # was never reaped through `_stop_sampler`, so its last stretch is
+            # on no attempt document yet. The live sampler is still attached,
+            # so `_attempt_usage` includes it. Nothing on the fenced path
+            # touches the lease by writing its own attempt document.
+            ("record_cpu", self._record_cpu),
+            # AFTER the child is gone and BEFORE the workspace is destroyed.
+            # Giving the account back while an agent could still be making
+            # calls on it would let the broker hand the same subscription to
+            # another agent and count one where there are two. This is the
+            # single release point for every exit path -- see
+            # `_release_account`.
+            ("release_account", self._release_account),
+            ("destroy_workspace", destroy_workspace),
+        ):
             try:
-                if self._child.poll() is None:
-                    self._child.terminate(self.cfg.termination_grace_seconds, reason="cleanup")
-                    self._child.finish()
-            except Exception:
-                pass
-        # THE SPEND BACKSTOP, after the runner is gone and before the workspace
-        # holding its result.json is destroyed. Every orderly exit has already
-        # recorded in `_upload_outputs`; this catches the two that cannot have:
-        # a crash while a runner was still alive (it has only just been reaped,
-        # above) and a mid-run fence, which uploads nothing. Writing a fenced
-        # attempt's spend touches only its OWN attempt document -- never the
-        # lease, which is what invariant 5 forbids -- exactly as the resource
-        # usage write on that same path already does.
-        self._collect_spend()
-        self._record_spend()
-        # And the CPU, for the same two exits: a runner killed just above was
-        # never reaped through `_stop_sampler`, so its last stretch is on no
-        # attempt document yet. The live sampler is still attached, so
-        # `_attempt_usage` includes it. Never raises; nothing on the fenced
-        # path touches the lease by writing its own attempt document.
-        self._record_cpu()
-        # AFTER the child is gone and BEFORE the workspace is destroyed. Giving
-        # the account back while an agent could still be making calls on it
-        # would let the broker hand the same subscription to another agent and
-        # count one where there are two. This is the single release point for
-        # every exit path -- see `_release_account`.
-        self._release_account()
-        if self.ws is not None:
-            workspace_mod.destroy(self.ws)
+                action()
+            except Exception as exc:
+                self.log.warning(
+                    "cleanup step failed; the exit code is the task's",
+                    step=step,
+                    error=type(exc).__name__,
+                )
 
 
 # ---------------------------------------------------------------------------
