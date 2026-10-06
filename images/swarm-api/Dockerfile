@@ -176,9 +176,16 @@ WORKDIR /home/swarm
 # reach production, so the build proves it can. `create_app()` with no argument
 # builds no Firestore client -- every Google import in this package is inside
 # the function that needs it -- so this runs with no credentials.
+# CORRECTION (2026-10-06): swarm-api's create_app() DOES construct a
+# firestore.Client (deps.build_context -> build_firestore), which asks for
+# Application Default Credentials at construction. Cloud Build has them from
+# its metadata server, so this passed there; a pull request's build on the
+# GitHub runner (PRB, #688) has none and failed. FIRESTORE_EMULATOR_HOST makes
+# the client use anonymous credentials and connect nothing until first use, so
+# the check still proves the app imports and wires up, and needs no identity.
 # PROJECT_ID is supplied only so Settings.from_env() can construct; this
 # proves the module imports and wires up, and builds no Google client.
-RUN PROJECT_ID=build-time-import-check \
+RUN PROJECT_ID=build-time-import-check FIRESTORE_EMULATOR_HOST=127.0.0.1:9 \
     python -c "from swarm_api.main import create_app; create_app(); print('swarm-api ok')"
 
 # Which build this is, served by GET /v1/version (U25). scripts/build-images.sh
