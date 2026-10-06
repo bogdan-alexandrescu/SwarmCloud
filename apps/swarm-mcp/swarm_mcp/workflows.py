@@ -51,6 +51,7 @@ from . import profiles as catalogue
 from .client import SwarmClient, SwarmError
 from .follow import follow_command
 from .patches import masked_counts
+from .progress import questions_count
 
 #: What `codec.workflow_to_api` sets on a read that actually looked at the step
 #: tasks. Any other value -- including the absence of the field -- means the
@@ -661,6 +662,11 @@ def step_rows(
         # input and metadata (owner decision, 2026-09-26: masked everywhere).
         # None for a count the API did not send, never 0.
         row["masked"] = masked_counts(task)
+        # How many questions the worker validated in the step's questions.json
+        # (owner decision 2026-10-06, observer P15): its count, never a read of
+        # the file, so a workflow says which step waits on the owner without
+        # a result read per step. `swarm_result` serves the questions.
+        row["questions"] = questions_count(task)
         if task.get("cancel_requested"):
             # The step's own flag, which the state does NOT carry: a step
             # holding capacity stays DISPATCHED or RUNNING, flagged, until its
