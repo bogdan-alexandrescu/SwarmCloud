@@ -314,6 +314,8 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "child_request_id",
         "child_await_resumes",
         "child_cascade",
+        # A merge step's CI wait (lane MS2): the park record and its marker.
+        "merge_wait",
     )
 
 

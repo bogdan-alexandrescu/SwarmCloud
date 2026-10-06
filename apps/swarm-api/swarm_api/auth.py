@@ -797,6 +797,10 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/v1/admin/workflows/rollup"),
         ("POST", "/v1/admin/runs/advance"),
         ("POST", "/v1/admin/repositories/poll"),
+        # The merge step's wake tick (docs/merge-step.md "Revised 2026-10-06"
+        # §1, lane MS2): reads the named tenant's CI_PENDING parks with that
+        # tenant's token and writes only the wake marker on them.
+        ("POST", "/v1/admin/merges/wake"),
     }
 )
 

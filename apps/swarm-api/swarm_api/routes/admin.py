@@ -37,6 +37,7 @@ from ..codec import (
 from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..mergewake import wake_tenant
 from ..repoindex import RepoIndex
 from ..schemas import (
     DrainRequest,
@@ -780,6 +781,42 @@ def advance_runs(
         "report": report.to_api(),
         # Only the runs that could not be advanced, by id and error code. A
         # healthy tick returns an empty list, which is an answer.
+        "failures": report.failures,
+    }
+
+
+@router.post("/merges/wake")
+def wake_merges(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Mark one tenant's CI-waiting merge steps whose checks have settled (lane MS2).
+
+    Called every minute by the per-tenant Cloud Scheduler job `merge_wake`
+    (terraform/modules/scheduler/jobs.tf), as the rollup sweeper, admitted
+    to this route by `auth.ROLLUP_SWEEPER_ROUTES`; an admin may call it too,
+    as the other ticks, to wake a merge now. docs/merge-step.md "Revised
+    2026-10-06" §1: a merge step whose pull request's checks are still
+    running parks CI_PENDING, holding nothing. For each such park of the
+    named tenant this reads the pull request and its checks at the recorded
+    head with that tenant's `-git` token, at most once per
+    `issueci.CI_READ_SECONDS`, and writes the wake marker on the ones with
+    nothing left pending (`mergewake.wake_tenant`). It never moves a task:
+    the scheduler's `_promote_ci_waits` returns a marked park to READY, and
+    only admission takes capacity (invariant 1).
+
+    TENANT IS EXPLICIT, as on the other ticks. `limit` is the page of parks
+    read per tick; truncation is reported.
+    """
+    report = wake_tenant(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="merge_wake").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the parks that could not be read, by id and code. A healthy
+        # tick returns an empty list, which is an answer.
         "failures": report.failures,
     }
 
