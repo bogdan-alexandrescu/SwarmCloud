@@ -192,6 +192,7 @@ from .errors import (
     WorkerError,
 )
 from . import findings_epic as findings_epic_mod
+from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import post_verdict as post_verdict_mod
@@ -376,6 +377,10 @@ SWAP_UNUSABLE = "unusable"
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
+#: What an index run's phase may write to each of its captures (lane IX1).
+#: The extractor prints one summary line and the writer one JSON report; the
+#: cap only bounds a tool gone wrong, and the tail -- its last error -- is kept.
+INDEX_PHASE_CAPTURE_BYTES = 1024 * 1024
 
 #: `work/repo`. Spelled once, in `workspace`, because the checkpoint needs it
 #: too: the `./artifacts` link inside the checkout is never archived (#226).
@@ -700,6 +705,17 @@ class Worker:
         # next beat from here, not from its own start (#426).
         self._last_beat_started: float | None = None
         self._deadline = time.monotonic() + config.timeout_seconds
+        # THE RUNNER'S OWN DEADLINE. The task's, except on an index run, whose
+        # graph write runs AFTER the agent (lane IX1, `indexrun`): its budget
+        # is taken off the agent's time before the agent starts, so an agent
+        # that uses all of its time still leaves the write its own.
+        self._runner_deadline = self._deadline
+        if indexrun_mod.is_index_run(config.runner_profile):
+            self._runner_deadline -= indexrun_mod.budgets(config.timeout_seconds).graph_write
+        # An index run's phases, in order, as they end (lane IX1); None on
+        # every other task. `_finalise` puts them in the result summary.
+        self._index_phases: list[indexrun_mod.PhaseRecord] | None = None
+        self._index_agent_started: float | None = None
         # The account this attempt holds, if the pool gave it one. Set once and
         # kept: a credential reload must re-read the SAME account's secret, not
         # move the agent onto a different subscription mid-run.
@@ -978,6 +994,12 @@ class Worker:
         # run's files "existing" ones (#184, standalone tasks only).
         self._take_workdir_baseline()
 
+        # ---- STEP 6a: an index run's extractor, before its agent (IX1) --
+        if indexrun_mod.is_index_run(cfg.runner_profile):
+            stopped = self._index_extract()
+            if stopped is not None:
+                return stopped
+
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
         credential_reloads = 0
@@ -1124,8 +1146,252 @@ class Worker:
         if awaited is not None:
             return awaited
 
+        # ---- STEP 9c: an index run's graph write, after its agent (IX1) --
+        if self._index_phases is not None:
+            stopped = self._index_after_agent(result)
+            if stopped is not None:
+                return stopped
+
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
+
+    # ------------------------------------------------------------------
+    # an index run's deterministic passes (lane IX1, `indexrun`)
+    # ------------------------------------------------------------------
+    def _index_env(self) -> dict[str, str]:
+        ws = self.ws
+        assert ws is not None
+        home = ws.private / "index-home"
+        home.mkdir(parents=True, exist_ok=True)
+        return indexrun_mod.phase_env(
+            home=home, tmp=ws.tmp, tenant_id=self.cfg.tenant_id, bucket=self.cfg.artifact_bucket
+        )
+
+    def _note_index_phase(self, record: indexrun_mod.PhaseRecord) -> None:
+        """Keep, log and write down one phase: the agent reads the file (`PHASES_FILE`)."""
+        ws = self.ws
+        assert ws is not None and self._index_phases is not None
+        self._index_phases.append(record)
+        self.log.info("index phase finished", **record.as_dict())
+        try:
+            indexrun_mod.write_phases(ws.work, self._index_phases)
+        except OSError as exc:
+            self.log.warning("could not write the index phases file", error=str(exc))
+
+    def _index_extract(self) -> Outcome | None:
+        """`swarm-repo-index` on the checkout, before the agent. None to go on.
+
+        A failed, timed-out or missing extractor does not stop the run: the
+        agent computes the mechanical fields itself, and the phases file
+        tells it why. Only a stop the supervision would honour mid-agent -- a
+        fence, a cancel, a SIGTERM, an outage past the lease -- ends it here.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        self._index_phases = []
+        # A restored checkpoint may hold an earlier attempt's outputs. They
+        # are not this run's, and the agent must not start from them.
+        for name in (indexrun_mod.EXTRACT_FILE, indexrun_mod.GRAPH_FILE):
+            (ws.work / name).unlink(missing_ok=True)
+        env = self._index_env()
+        program = indexrun_mod.resolve(indexrun_mod.EXTRACTOR_COMMAND, env)
+        checkout = ws.checkout()
+        if not checkout.is_dir():
+            record = indexrun_mod.PhaseRecord(
+                "extract", "skipped", 0.0, reason="the task has no checkout"
+            )
+        elif program is None:
+            record = indexrun_mod.PhaseRecord(
+                "extract", "skipped", 0.0, reason="not installed in this image"
+            )
+        else:
+            self.phases.enter("index_extract")
+            budget = indexrun_mod.budgets(cfg.timeout_seconds)
+            ran = self._run_index_phase(
+                "extract",
+                indexrun_mod.extractor_argv(
+                    program, checkout=checkout, work=ws.work, lsp_total=budget.lsp_total
+                ),
+                cwd=checkout,
+                env=env,
+                timeout=budget.extract,
+            )
+            if isinstance(ran, Outcome):
+                return ran
+            record = ran
+        self._note_index_phase(record)
+        self._index_agent_started = time.monotonic()
+        return None
+
+    def _index_after_agent(self, result: ChildResult) -> Outcome | None:
+        """Record the agent's phase, then `swarm-repo-graph write`. None to go on.
+
+        The write runs only on what it needs: an agent that finished cleanly,
+        the extractor's graph and the agent's index, and a target derived
+        from the signed spec (`indexrun.target`). A write that fails leaves
+        the index without `graph.manifest_digest`, which promotion reads as
+        no graph; the write is resumable, so the next run completes it.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        started = self._index_agent_started or time.monotonic()
+        agent_ok = not result.timed_out and result.exit_code == 0
+        self._note_index_phase(
+            indexrun_mod.PhaseRecord(
+                "agent",
+                "ok" if agent_ok else ("timed_out" if result.timed_out else "failed"),
+                round(time.monotonic() - started, 3),
+                exit_code=result.exit_code,
+            )
+        )
+        # The signed spec's repository (the worker refuses a REPOSITORY_URL
+        # that disagrees with it); never the unsigned metadata.
+        where = indexrun_mod.target(
+            cfg.tenant_id, (self._task or {}).get("repository_url") or cfg.repository_url
+        )
+        env = self._index_env()
+        program = indexrun_mod.resolve(indexrun_mod.GRAPH_WRITER_COMMAND, env)
+        budget = min(
+            float(indexrun_mod.budgets(cfg.timeout_seconds).graph_write), self._remaining_seconds()
+        )
+        reason = None
+        if not agent_ok:
+            reason = "the agent did not finish cleanly"
+        elif not (ws.work / indexrun_mod.GRAPH_FILE).is_file():
+            reason = "the extractor wrote no graph"
+        elif not (ws.artifacts / indexrun_mod.INDEX_FILE).is_file():
+            reason = f"the agent wrote no {indexrun_mod.INDEX_FILE}"
+        elif isinstance(where, str):
+            reason = where
+        elif program is None:
+            reason = "not installed in this image"
+        elif budget < 1:
+            reason = "the task's time is spent"
+        if reason is not None:
+            self._note_index_phase(
+                indexrun_mod.PhaseRecord("graph_write", "skipped", 0.0, reason=reason)
+            )
+            return None
+        assert not isinstance(where, str) and program is not None
+        self.phases.enter("index_graph_write")
+        ran = self._run_index_phase(
+            "graph_write",
+            indexrun_mod.graph_write_argv(
+                program, work=ws.work, artifacts=ws.artifacts, where=where,
+                bucket=cfg.artifact_bucket,
+            ),
+            cwd=ws.work,
+            env=env,
+            timeout=budget,
+        )
+        if isinstance(ran, Outcome):
+            return ran
+        self._note_index_phase(ran)
+        return None
+
+    def _run_index_phase(
+        self, name: str, argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> indexrun_mod.PhaseRecord | Outcome:
+        """One deterministic phase, supervised as the runner is.
+
+        The lease is beaten, the control plane polled and the work tree
+        checkpointed on the runner's own cadences (invariants 5 and 8): an
+        extractor takes minutes, longer than `_heartbeat_meanwhile` is
+        bounded to. A fence, a cancel, a SIGTERM or an outage past the lease
+        stops the phase and ends the attempt exactly as it would end the
+        agent's. A phase over its timeout is stopped and recorded
+        `timed_out`; the run goes on.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        started = time.monotonic()
+        deadline = min(started + timeout, self._deadline)
+        child = ChildProcess(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout_path=ws.logs / f"repo-index.{name}.stdout.log",
+            stderr_path=ws.logs / f"repo-index.{name}.stderr.log",
+            max_stdout_bytes=INDEX_PHASE_CAPTURE_BYTES,
+            max_stderr_bytes=INDEX_PHASE_CAPTURE_BYTES,
+            keep_tail=True,
+            niceness=cfg.runner_niceness,
+            logger=self.log,
+        )
+        self.log.info("index phase started", phase=name, timeout_seconds=round(timeout, 3))
+        child.start()
+        next_heartbeat = started + cfg.heartbeat_interval_seconds
+        next_poll = started + cfg.control_poll_seconds
+        next_checkpoint = started + cfg.checkpoint_interval_seconds
+        while True:
+            due = min(next_heartbeat, next_poll, next_checkpoint, deadline)
+            if child.wait(max(0.05, min(due - time.monotonic(), 5.0))) is not None:
+                break
+            now = time.monotonic()
+            if self._interrupted:
+                return self._handle_interruption(child)
+            if now >= next_heartbeat:
+                next_heartbeat = now + cfg.heartbeat_interval_seconds
+                try:
+                    self._heartbeat()
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("heartbeat", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(
+                            child, outage, where=f"past the lease during the index {name}"
+                        )
+            if now >= next_poll:
+                next_poll = now + cfg.control_poll_seconds
+                try:
+                    signals = self.control.poll(cfg.provider)
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("control poll", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(
+                            child, outage, where=f"past the lease during the index {name}"
+                        )
+                    signals = None
+                if signals is not None and signals.is_fenced(cfg.generation):
+                    return self._exit_fenced_mid_run(
+                        child,
+                        observed_generation=signals.generation,
+                        reason=f"fenced during the index {name}: task at generation "
+                        f"{signals.generation} in {signals.state.value}",
+                    )
+                if signals is not None and signals.cancel_requested:
+                    self.log.warning("cancellation requested; stopping the index phase",
+                                     phase=name)
+                    child.terminate(cfg.termination_grace_seconds, reason="cancelled")
+                    child.finish()
+                    return self._finish_cancelled()
+            if now >= next_checkpoint:
+                try:
+                    self._checkpoint("periodic")
+                except FencedError as exc:
+                    return self._exit_fenced_mid_run(
+                        child, observed_generation=exc.actual, reason=str(exc)
+                    )
+                next_checkpoint = now + cfg.checkpoint_interval_seconds
+            if now >= deadline:
+                self.log.warning("index phase timed out", phase=name,
+                                 timeout_seconds=round(timeout, 3))
+                child.mark_timed_out()
+                child.terminate(cfg.termination_grace_seconds, reason=f"index {name} timeout")
+                break
+        done = child.finish()
+        seconds = round(time.monotonic() - started, 3)
+        if done.timed_out:
+            return indexrun_mod.PhaseRecord(
+                name, "timed_out", seconds, exit_code=done.exit_code,
+                reason=f"over its {round(timeout)}-second budget",
+            )
+        if done.exit_code != 0:
+            said = indexrun_mod.last_line(ws.logs / f"repo-index.{name}.stderr.log")
+            return indexrun_mod.PhaseRecord(
+                name, "failed", seconds, exit_code=done.exit_code,
+                reason=self._scrub(said) if said else f"exited {done.exit_code}",
+            )
+        return indexrun_mod.PhaseRecord(name, "ok", seconds, exit_code=0)
 
     # ------------------------------------------------------------------
     # worker actions (#295): merge and post-verdict, no runner
@@ -1259,13 +1525,19 @@ class Worker:
             return self._park_credential_missing(outcome.credential_missing)
         if outcome.ci_wait is not None:
             return self._park_ci_pending(action, outcome.ci_wait)
+        with self._metrics_after_the_record():
+            return self._record_worker_action_end(action, outcome)
+
+    def _record_worker_action_end(
+        self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
+    ) -> Outcome:
+        """`_end_worker_action`'s uploads and terminal write, before any metrics export."""
         summary = self._upload_outputs()
         summary["merge" if action is WorkerAction.MERGE else "verdict"] = self._scrub(
             dict(outcome.summary)
         )
         if outcome.spec_check is not None:
             summary["spec_check"] = dict(outcome.spec_check)
-        self._export_metrics()
         error = str(self._scrub(outcome.message[:4000])) if outcome.message else None
         refusal = outcome.summary.get("refusal") if isinstance(outcome.summary, dict) else None
         code = refusal.get("code") if isinstance(refusal, dict) else None
@@ -1307,15 +1579,16 @@ class Worker:
         nothing written and the lease untouched (invariant 5). No checkpoint:
         a worker action keeps no workspace.
         """
-        self._export_metrics()
-        refunded = self.control.park_ci_pending(
-            code=str(wait.get("code") or "checks_pending"),
-            head=str(wait.get("head") or ""),
-            pull_request=int(wait.get("pull_request") or 0),
-            pending=[str(name) for name in wait.get("pending") or []],
-            max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
-            fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
-        )
+        # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
+        with self._metrics_after_the_record():
+            refunded = self.control.park_ci_pending(
+                code=str(wait.get("code") or "checks_pending"),
+                head=str(wait.get("head") or ""),
+                pull_request=int(wait.get("pull_request") or 0),
+                pending=[str(name) for name in wait.get("pending") or []],
+                max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
+                fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
+            )
         self.log.info("worker action parked until CI settles", action=action.value,
                       code=wait.get("code"), attempt_refunded=refunded)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
@@ -1392,7 +1665,6 @@ class Worker:
         """Checkpoint, upload, park on CHILDREN_INCOMPLETE, release, exit (§3.3 step 3)."""
         self._checkpoint("child-await")
         uploaded = self._upload_outputs().get("artifacts")
-        self._export_metrics()
         detail: dict[str, Any] = {
             "park_phase": "child_await",
             "asked": requested,
@@ -1401,11 +1673,12 @@ class Worker:
         if child_path is not None:
             detail["child_path"] = child_path
         # Recorded with the park, for the attempt that finishes the parent (#166).
-        self.control.park_awaiting_children(
-            max_resumes=self.cfg.max_child_await_resumes,
-            detail=detail,
-            uploads=uploaded if isinstance(uploaded, list) else None,
-        )
+        with self._metrics_after_the_record():
+            self.control.park_awaiting_children(
+                max_resumes=self.cfg.max_child_await_resumes,
+                detail=detail,
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
@@ -1957,7 +2230,7 @@ class Worker:
                     next_checkpoint - time.monotonic(),
                     next_poll - time.monotonic(),
                     next_live_log - time.monotonic(),
-                    self._deadline - time.monotonic(),
+                    self._runner_deadline - time.monotonic(),
                     5.0,
                 ),
             )
@@ -2032,7 +2305,7 @@ class Worker:
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
 
-            if now >= self._deadline:
+            if now >= self._runner_deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
                 child.mark_timed_out()
                 child.terminate(cfg.termination_grace_seconds, reason="task timeout")
@@ -2262,12 +2535,12 @@ class Worker:
         try:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
-            self._export_metrics()
-            self.control.park(
-                reason=ParkReason.SCHEDULED_RETRY,
-                next_eligible_at=utcnow(),
-                detail={"cause": "worker_interrupted", **summary},
-            )
+            with self._metrics_after_the_record():
+                self.control.park(
+                    reason=ParkReason.SCHEDULED_RETRY,
+                    next_eligible_at=utcnow(),
+                    detail={"cause": "worker_interrupted", **summary},
+                )
         except FencedError as exc:
             return Outcome(
                 exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
@@ -2300,14 +2573,14 @@ class Worker:
         self._checkpoint("cancellation")
         summary = self._upload_outputs()
         self._add_runner_block(summary)
-        self._export_metrics()
-        self.control.finish(
-            state=TaskState.CANCELLED,
-            exit_code=None,
-            error="cancelled by request",
-            result_summary=summary,
-            end_cause=self.control.cancel_cause(),
-        )
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.CANCELLED,
+                exit_code=None,
+                error="cancelled by request",
+                result_summary=summary,
+                end_cause=self.control.cancel_cause(),
+            )
         return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
     # -- the fenced exits ---------------------------------------------------
@@ -2444,6 +2717,15 @@ class Worker:
     # finalisation
     # ------------------------------------------------------------------
     def _finalise(self, result: ChildResult) -> Outcome:
+        """The runner ended on its own: record the end, THEN export metrics.
+
+        Every branch of `_record_finalised` ends in a terminal write, and the
+        export waits for whichever one it took (`_metrics_after_the_record`).
+        """
+        with self._metrics_after_the_record():
+            return self._record_finalised(result)
+
+    def _record_finalised(self, result: ChildResult) -> Outcome:
         ws = self.ws
         assert ws is not None
 
@@ -2498,6 +2780,8 @@ class Worker:
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if self._index_phases is not None:
+            summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
         if self._verdict is not None:
             summary["verdict_gate"] = dict(self._verdict)
             if not self._verdict.get("agent_ran", True):
@@ -2510,7 +2794,6 @@ class Worker:
                 summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
         if self._pr_text_from is not None:
             summary["pull_request_text_from"] = dict(self._pr_text_from)
-        self._export_metrics()
 
         runner_result = self._add_runner_block(summary)
 
@@ -3505,16 +3788,16 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["clone_check"] = {"cause": FORGE_UNREACHABLE, "tries": tries}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
-            detail={"clone": "repository", "tries": tries},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"clone": "repository", "tries": tries},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _upstream_base_pin(
@@ -3788,8 +4071,8 @@ class Worker:
                 "upstream": list(upstream),
             },
         }
-        self._export_metrics()
-        self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        with self._metrics_after_the_record():
+            self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
         self.log.info(
             "nothing to change: a step this one needs changed nothing; no agent ran",
             upstream=list(upstream),
@@ -5237,15 +5520,34 @@ class Worker:
         Parking rather than failing, because none of this is the task's fault
         and an unusable pool must cost nothing. Failing would burn all three
         attempts on the same account in a row.
+
+        AN EARLIER REJECTION OUTRANKS A LATER WAIT. Once an account has been
+        handed back as unreadable, the next ask excludes it, and when it was
+        the only one the broker answers `no_account_available` -- true, but a
+        consequence, not the cause. Measured 2026-10-06: smoke borrowed
+        eng:team with no grant on its secret, and every attempt parked as
+        PROVIDER_QUOTA_EXHAUSTED for a quarter of an hour, telling the operator
+        to wait for a window instead of to fix an IAM binding. Only a wait is
+        replaced: `broker_refused` is already a configuration error, with a
+        more specific name.
         """
+        rejected = False
         for _ in range(MAX_ACCOUNT_TRIES):
-            account = self._lease_account(profile)
+            try:
+                account = self._lease_account(profile)
+            except NoAccountAvailable as exc:
+                if rejected and exc.decision.reason != BROKER_REFUSED:
+                    raise NoAccountAvailable(
+                        NoAccount(reason=ACCOUNT_UNREADABLE), exc.provider
+                    ) from None
+                raise
             if account is None:
                 return None
             try:
                 return self._account_credential_env(profile, account)
             except AccountUnreadable as exc:
                 self._reject_account(account, exc)
+                rejected = True
         raise NoAccountAvailable(
             NoAccount(reason=ACCOUNT_UNREADABLE),
             profile.provider or "unknown",
@@ -5925,44 +6227,48 @@ class Worker:
         )
         self._checkpoint("no-account")
         summary = self._upload_outputs()
-        self._export_metrics()
         detail = {
             "provider": exc.provider,
             "account_pool_reason": exc.decision.reason,
             **summary,
         }
-        self.control.park(
-            # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
-            # the tenant HAS credentials, they are simply all spent or all
-            # unobserved, and sending an operator to look at that wastes their
-            # time. CREDENTIAL_MISSING when it will NOT recover on its own --
-            # a broker that refused this worker, or an account whose secret
-            # nobody granted it access to, is a configuration error, and that
-            # ParkReason is the one that means "an admin must act".
-            #
-            # A ParkReason naming the pool would be more honest than either;
-            # ParkReason is in the frozen contract, so that is a request in the
-            # report, not a change.
-            reason=(
-                ParkReason.CREDENTIAL_MISSING
-                if configuration_error
-                else ParkReason.PROVIDER_QUOTA_EXHAUSTED
-            ),
-            next_eligible_at=next_eligible,
-            detail={**detail, "park_phase": "account_assign"},
-            # THE ANNOUNCEMENT IS WRITTEN IN THE PARK'S OWN TRANSACTION. It used
-            # to be emitted just above this call. A fence that landed during
-            # the checkpoint's upload or the output upload was met by the park,
-            # which refused, and QUOTA_EXHAUSTED was already in a task stream
-            # that belonged to a newer generation, announcing a park that never
-            # happened. Now it commits with the park or not at all.
-            announce=[
-                (
-                    EventType.QUOTA_EXHAUSTED,
-                    {**detail, "next_eligible_at": next_eligible, "park_phase": "account_assign"},
-                )
-            ],
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
+                # the tenant HAS credentials, they are simply all spent or all
+                # unobserved, and sending an operator to look at that wastes their
+                # time. CREDENTIAL_MISSING when it will NOT recover on its own --
+                # a broker that refused this worker, or an account whose secret
+                # nobody granted it access to, is a configuration error, and that
+                # ParkReason is the one that means "an admin must act".
+                #
+                # A ParkReason naming the pool would be more honest than either;
+                # ParkReason is in the frozen contract, so that is a request in the
+                # report, not a change.
+                reason=(
+                    ParkReason.CREDENTIAL_MISSING
+                    if configuration_error
+                    else ParkReason.PROVIDER_QUOTA_EXHAUSTED
+                ),
+                next_eligible_at=next_eligible,
+                detail={**detail, "park_phase": "account_assign"},
+                # THE ANNOUNCEMENT IS WRITTEN IN THE PARK'S OWN TRANSACTION. It used
+                # to be emitted just above this call. A fence that landed during
+                # the checkpoint's upload or the output upload was met by the park,
+                # which refused, and QUOTA_EXHAUSTED was already in a task stream
+                # that belonged to a newer generation, announcing a park that never
+                # happened. Now it commits with the park or not at all.
+                announce=[
+                    (
+                        EventType.QUOTA_EXHAUSTED,
+                        {
+                            **detail,
+                            "next_eligible_at": next_eligible,
+                            "park_phase": "account_assign",
+                        },
+                    )
+                ],
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_credential_missing(self, exc: CredentialMissing) -> Outcome:
@@ -5970,12 +6276,12 @@ class Worker:
         self.log.error("tenant credential missing; parking", provider=exc.provider)
         self._checkpoint("credential-missing")
         summary = self._upload_outputs()
-        self._export_metrics()
-        self.control.park(
-            reason=ParkReason.CREDENTIAL_MISSING,
-            next_eligible_at=utcnow() + timedelta(hours=1),
-            detail={"provider": exc.provider, **summary},
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.CREDENTIAL_MISSING,
+                next_eligible_at=utcnow() + timedelta(hours=1),
+                detail={"provider": exc.provider, **summary},
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -5988,7 +6294,8 @@ class Worker:
         )
         self._checkpoint("quota-park")
         summary = self._upload_outputs()
-        self._export_metrics()
+        # No metrics export here: it comes after the broker update and the
+        # park below (`_metrics_after_the_record`, measured 2026-10-06).
         provider = str(decision.detail.get("provider") or self.cfg.provider or "")
         if provider:
             # NOT FENCED, and not a task write. This is the tenant's document
@@ -6016,21 +6323,22 @@ class Worker:
         # that landed during the uploads above was met by the park, which
         # refused, and the announcement of a park that never happened was
         # already in a stream that belonged to a newer generation.
-        self.control.park(
-            reason=decision.reason,
-            next_eligible_at=decision.next_eligible_at,
-            detail={**decision.detail, "park_phase": source, **summary},
-            announce=[
-                (
-                    EventType.QUOTA_EXHAUSTED,
-                    {
-                        **decision.detail,
-                        "next_eligible_at": decision.next_eligible_at,
-                        "park_phase": source,
-                    },
-                )
-            ],
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=decision.reason,
+                next_eligible_at=decision.next_eligible_at,
+                detail={**decision.detail, "park_phase": source, **summary},
+                announce=[
+                    (
+                        EventType.QUOTA_EXHAUSTED,
+                        {
+                            **decision.detail,
+                            "next_eligible_at": decision.next_eligible_at,
+                            "park_phase": source,
+                        },
+                    )
+                ],
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _quota_from_child(self, result: ChildResult) -> Any:
@@ -6539,14 +6847,14 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["carrier_check"] = {"cause": FORGE_READ_ONLY, "reason": reason}
-        self._export_metrics()
-        self.control.finish(
-            state=TaskState.FAILED,
-            exit_code=None,
-            error=error,
-            result_summary=summary,
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _fail_forge_unreachable(self, url: str, reason: str) -> Outcome:
@@ -6565,16 +6873,16 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["carrier_check"] = {"cause": FORGE_UNREACHABLE, "reason": reason}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
-            detail={"carrier": "branches"},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"carrier": "branches"},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _forge_retry(self) -> forge_mod.RetryPolicy:
@@ -6625,16 +6933,18 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["issue_check"] = {"cause": FORGE_UNREACHABLE, "issue": number, "tries": tries}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=max(FORGE_UNREACHABLE_RETRY_DELAY_SECONDS, int(retry_after or 0)),
-            detail={"input": "issue", "issue": number},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=max(
+                    FORGE_UNREACHABLE_RETRY_DELAY_SECONDS, int(retry_after or 0)
+                ),
+                detail={"input": "issue", "issue": number},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _carrier_fold_onto_tip(
@@ -9327,30 +9637,65 @@ class Worker:
             parts.append(self._sampler.usage)
         return combine_usage(parts)
 
+    @contextmanager
+    def _metrics_after_the_record(self) -> Iterator[None]:
+        """Export the attempt's metrics AFTER the write that records its end.
+
+        Every park and every terminal write runs inside this, so telemetry can
+        never delay one. Measured on mock execution swarm-job-smoke-mock-sk8h9
+        (2026-10-06 06:05): `_park_for_quota` exported first, and 53 s passed
+        between the "attempt resource usage" line and the broker POST with
+        nothing logged (1.3-3.1 s across 24 other quota parks). For all of it
+        the task was LEASED and held its slot -- invariant 3 counts it -- for
+        a measurement. The exporter is bounded too
+        (`metrics.EXPORT_TIMEOUT_SECONDS`); that bound now only limits how
+        long a hung exporter holds the exit.
+
+        In a `finally`: a write the fence refused still exports, as it did
+        when the export came first, and the refusal then propagates as before.
+        """
+        try:
+            yield
+        finally:
+            self._export_metrics()
+
     def _export_metrics(self) -> None:
-        # Once per attempt. Several exits reach this, and one that failed
-        # partway -- an export that raised -- falls through to the crash
-        # handler, which calls it again; a successful export is not repeated.
+        """Export once per attempt. Never raises.
+
+        It runs after the park or terminal write (`_metrics_after_the_record`),
+        so an exception here would reach the crash handler with the task
+        already PARKED or ended, and `_safe_finish` would write FAILED over
+        it. A failure is logged once and swallowed, and not retried: the
+        measurement is also in the exporter's log line, and a retry would wait
+        on the same failing endpoint.
+        """
         if self._metrics_exported:
             return
         usage = self._attempt_usage()
         if usage is None:
             return
-        self.metrics.export(
-            usage,
-            {
-                "tenant_id": self.cfg.tenant_id,
-                "runner_profile": self.cfg.runner_profile,
-                # The sized class (#205): the sizing decisions read this label,
-                # and the profile's would file a narrowed step under a class
-                # its container was not.
-                "resource_class": self._memory_class(),
-                "backend": self.cfg.backend,
-                "attempt_id": self.cfg.attempt_id,
-                "task_id": self.cfg.task_id,
-            },
-        )
         self._metrics_exported = True
+        try:
+            self.metrics.export(
+                usage,
+                {
+                    "tenant_id": self.cfg.tenant_id,
+                    "runner_profile": self.cfg.runner_profile,
+                    # The sized class (#205): the sizing decisions read this
+                    # label, and the profile's would file a narrowed step under
+                    # a class its container was not.
+                    "resource_class": self._memory_class(),
+                    "backend": self.cfg.backend,
+                    "attempt_id": self.cfg.attempt_id,
+                    "task_id": self.cfg.task_id,
+                },
+            )
+        except Exception as exc:
+            self.log.warning(
+                "metrics export failed",
+                exporter=type(self.metrics).__name__,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     # -- misc --------------------------------------------------------------
     def _remaining_seconds(self) -> float:
@@ -9430,14 +9775,14 @@ class Worker:
             self._add_runner_block(summary)
             if extra_summary:
                 summary = {**(summary or {}), **extra_summary}
-            self._export_metrics()
-            self.control.finish(
-                state=state,
-                exit_code=exit_code,
-                error=self._scrub(error[:4000]),
-                result_summary=summary,
-                end_cause=end_cause,
-            )
+            with self._metrics_after_the_record():
+                self.control.finish(
+                    state=state,
+                    exit_code=exit_code,
+                    error=self._scrub(error[:4000]),
+                    result_summary=summary,
+                    end_cause=end_cause,
+                )
         except FencedError as exc:
             return self._stand_down(exc, where="crash")
         except Exception as exc:

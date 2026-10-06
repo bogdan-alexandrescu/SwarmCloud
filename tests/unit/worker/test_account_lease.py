@@ -603,6 +603,73 @@ def test_a_borrowed_account_the_worker_cannot_read_parks_rather_than_failing(
     assert broker.releases == [ACCOUNT_ID] * 3, "every one it was given went back"
 
 
+def test_an_unreadable_first_account_keeps_the_unreadable_park_reason(
+    db, worker_factory
+):
+    """MEASURED 2026-10-06: the owner lent eng:team to smoke, nothing granted
+    smoke's worker the secret, and every smoke claude-code attempt read
+    PermissionDenied on the first account it was handed. The retry excluded
+    it, the broker answered `no_account_available` because that was the only
+    account, and the LATER reason won -- so the task parked as
+    PROVIDER_QUOTA_EXHAUSTED for a quarter of an hour, telling the operator to
+    wait for a quota window that was never the problem. An earlier rejection
+    is the cause; an empty pool after excluding it is only the consequence.
+    """
+    from google.api_core import exceptions as gexc
+
+    class Denied(FakeSecretClient):
+        def access(self, name, version="latest"):
+            self.accessed.append(name)
+            raise gexc.PermissionDenied("Permission denied on secret")
+
+    seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "x"})
+    seed_tenant(db, credentials=[])
+    broker = FakeBroker(
+        outcomes=[FakeBroker().outcome, NoAccount(reason="no_account_available")]
+    )
+    worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=Denied({}))
+    worker._account_broker = broker
+
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert len(broker.assigns) == 2, "it asked again once, and the pool was empty"
+    assert task["park_reason"] == ParkReason.CREDENTIAL_MISSING.value, (
+        "an account this worker may not read is an administrator's job, not "
+        "a quota wait"
+    )
+    assert task["blocked_by"][0]["account_pool_reason"] == "account_unreadable"
+    assert broker.releases == [ACCOUNT_ID]
+
+
+def test_a_refusal_after_an_unreadable_account_still_says_refused(
+    db, worker_factory
+):
+    """Only a WAIT is overridden. A broker that then refuses this worker is
+    already a configuration error, with a more specific name."""
+    from google.api_core import exceptions as gexc
+
+    class Denied(FakeSecretClient):
+        def access(self, name, version="latest"):
+            raise gexc.PermissionDenied("Permission denied on secret")
+
+    class RefusesSecondAsk(FakeBroker):
+        def assign(self, provider, *, exclude=()):
+            if self.assigns:
+                self.assigns.append(provider)
+                raise BrokerRefused("the quota broker refused this worker with 403")
+            return super().assign(provider, exclude=exclude)
+
+    seed_attempt(db, runner_profile="claude-code", task_input={"prompt": "x"})
+    seed_tenant(db, credentials=[])
+    worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=Denied({}))
+    worker._account_broker = RefusesSecondAsk()
+
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert task["park_reason"] == ParkReason.CREDENTIAL_MISSING.value
+    assert task["blocked_by"][0]["account_pool_reason"] == "broker_refused"
+
+
 def test_the_worker_gives_up_after_a_bounded_number_of_accounts(
     db, worker_factory, tmp_path
 ):
