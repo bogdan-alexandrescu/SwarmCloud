@@ -67,7 +67,7 @@ from typing import Any, Mapping, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge as forge_mod
 from . import verdict as verdict_mod
@@ -145,6 +145,34 @@ MERGE_MAX_BRANCH_UPDATES = 3
 #: that never reports -- a required check no workflow produces, a stuck
 #: runner -- reaches it.
 MERGE_CI_MAX_SECONDS = 6 * 3600
+
+#: The merge task's record of its CI-fix rounds, written only by swarm-api's
+#: wake tick (`swarm_api.mergewake.MERGE_FIX_METADATA_KEY`, lane MS7):
+#: `rounds`, oldest first, each `{round, head, claimed_at}` plus the round's
+#: `workflow_id`/`task_id` once submitted, or an `error` when it was not.
+#: Restated because the worker image carries no control plane;
+#: tests/unit/worker/test_merge_fix_round.py holds the two equal. The
+#: document is tenant-writable: a round's head is accepted only from its
+#: task's SIGNED spec (`_fix_round_heads`), and a forged entry can at most
+#: make the step wait, which `MERGE_CI_MAX_SECONDS` bounds.
+MERGE_FIX_METADATA_KEY = "merge_fix"
+#: The workflow's `metadata.merge_fix_rounds`, copied onto the merge task
+#: (`swarm_api.validation.MERGE_FIX_ROUNDS_KEY`), and its ceiling
+#: (`MERGE_FIX_ROUNDS_MAX`, the API's): a forged count is read under it.
+MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
+MERGE_FIX_ROUNDS_MAX = 5
+
+#: The park codes of a red reading a CI-fix round may still fix: rounds are
+#: left and the tick has not claimed the next one yet, or one is running at
+#: this head. Never `checks_failed` while either holds.
+CI_FIX_PENDING = "ci_fix_pending"
+CI_FIX_RUNNING = "ci_fix_running"
+
+#: The park code after an update-branch whose new head GitHub had not made
+#: within the bounded re-read: the call is asynchronous. swarm-api's tick
+#: (`swarm_api.mergewake.BRANCH_UPDATE_PENDING`) then waits for the head to
+#: move rather than reading the old head's checks, which were green.
+BRANCH_UPDATE_PENDING = "branch_update_pending"
 
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
@@ -747,6 +775,10 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                           f"task {target.pull_request} recorded no pushed head to pin")
     summary["pull_request"] = number
     summary["pinned"] = pinned
+    # The step's own record of its CI-fix rounds, and the heads they pushed:
+    # task-store reads that need no credential, so before the token.
+    own = _own_doc(ctx)
+    fix_heads = _fix_round_heads(ctx, own, opener, target.pull_request)
     repository = mergeable_repository(ctx.repository_url)
     if repository is None:
         return run.refuse("forge_unsupported",
@@ -778,7 +810,8 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         del token
     try:
         return _with_forge(run, merger, number=number, pinned=pinned,
-                           branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}")
+                           branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
+                           own=own, fix_heads=fix_heads)
     except forge_mod.ForgeRedirectRefused as exc:
         cause = EndCause.MERGE_FAILED if summary.get("merge_called") else EndCause.MERGE_REFUSED
         return refusal(summary, cause, exc.code, str(exc))
@@ -802,12 +835,17 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
 
 
 def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
-                branch: str) -> ActionOutcome:
+                branch: str, own: Mapping[str, Any] | None = None,
+                fix_heads: list[tuple[str, str]] | None = None) -> ActionOutcome:
     """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors.
 
-    `pinned` is the head the opening step pushed. The head this attempt acts
-    at is GitHub's live head, accepted only through `_updates_onto`.
+    `pinned` is the head the opening step pushed; `fix_heads` the heads this
+    workflow's CI-fix rounds pushed (`_fix_round_heads`). The head this
+    attempt acts at is GitHub's live head, accepted only through `_accept`.
+    `own` is the step's own document, for its CI-fix rounds.
     """
+    own = own or {}
+    fix_heads = fix_heads or []
     ctx, summary = run.ctx, run.summary
     if ctx.recheck():
         return cancelled(summary)
@@ -827,10 +865,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"pull request #{number} targets {pr.base_ref}, not the repository's "
                           f"default branch {default or '(unreadable)'}")
     if pr.merged:
-        if pr.head_sha == pinned or (
-            pr.head_sha is not None
-            and _updates_onto(merger, head=pr.head_sha, pushed=pinned, base=default) is not None
-        ):
+        if pr.head_sha is not None and _accept(
+            merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
+        ) is not None:
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed
             # below as if this attempt had made it.
@@ -857,15 +894,19 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pr.draft:
         return run.refuse("draft", f"pull request #{number} is a draft")
     head = pr.head_sha
-    updates = 0 if head == pinned else (
-        None if head is None else _updates_onto(merger, head=head, pushed=pinned, base=default)
+    accepted = None if head is None else _accept(
+        merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default
     )
-    if head is None or updates is None:
+    if head is None or accepted is None:
         return run.refuse("head_moved",
                           f"pull request #{number}'s head is {head}, not {pinned}, "
-                          "the head this workflow pushed, nor GitHub's own update of it")
+                          "the head this workflow pushed, nor one of its CI-fix rounds' "
+                          "heads, nor GitHub's own update of either")
+    updates, pushed_by = accepted
     summary["head"] = head
     summary["updates"] = updates
+    if pushed_by is not None:
+        summary["head_pushed_by"] = pushed_by
     if title_is_placeholder(pr.title):
         return run.refuse("title_placeholder",
                           "the pull request's title is the worker's placeholder")
@@ -906,7 +947,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 label = f"{check.name} ({check.conclusion or check.status})"
                 (pending if check.status != "completed" else failed).append(label)
     if failed:
-        return run.refuse("checks_failed", f"at {head}: " + ", ".join(sorted(failed)))
+        return _red(run, own, head=head, failed=failed, wait=wait)
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
@@ -1036,15 +1077,153 @@ def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, up
     if answer.status not in (200, 202):
         return run.refuse("forge_refused",
                           f"the update-branch call answered {answer.status}{detail}")
-    # GitHub makes the merge commit asynchronously. A head that has not moved
-    # yet is parked at as it is: swarm-api's tick sees it move and wakes the
-    # step, whose walk then finds the update.
-    new_head = merger.pull_request(number).head_sha or head
+    # GitHub makes the merge commit ASYNCHRONOUSLY: the 202 only says it will.
+    # The new head is read again a bounded few times (invariant 4: seconds,
+    # not a provider wait). A head that moved is parked at, and the tick reads
+    # the checks there. One that has not is parked at as it is, with
+    # BRANCH_UPDATE_PENDING, on which the tick waits for the head to move
+    # rather than reading this head's checks -- green, since it was only
+    # behind -- and the fallback instant covers an update GitHub never makes.
+    # Either way nothing merges here: the old head is never merged after an
+    # update was asked for, and the next wake re-reads everything.
+    new_head = merger.pull_request(number).head_sha
+    rereads = 0
+    while (not new_head or new_head == head) and rereads < MERGEABLE_REREADS:
+        rereads += 1
+        ctx.sleep(MERGEABLE_REREAD_SECONDS)
+        new_head = merger.pull_request(number).head_sha
+    if not new_head or new_head == head:
+        summary["branch_updated"] = {"from": head, "to": None, "updates": updates + 1}
+        return run.wait(BRANCH_UPDATE_PENDING,
+                        f"GitHub accepted the update of #{number} at {head} and had not made "
+                        f"it after {MERGEABLE_REREADS} rereads; the step waits for the new head",
+                        head=head, pull_request=number, pending=[])
     summary["branch_updated"] = {"from": head, "to": new_head, "updates": updates + 1}
     return run.wait("branch_updated",
                     f"GitHub merged {base} into #{number} at {head}; the checks run again "
                     f"at {new_head}",
                     head=new_head, pull_request=number, pending=[])
+
+
+def _accept(merger: ForgeMerger, *, head: str, pinned: str,
+            fix_heads: list[tuple[str, str]], base: str) -> tuple[int, str | None] | None:
+    """(GitHub's base merges on top, the CI-fix round's task or None), or None.
+
+    The live head is accepted when it is the pinned head or a head one of
+    this workflow's CI-fix rounds pushed (`fix_heads`, newest first), itself
+    or under GitHub's own base merges (`_updates_onto`). Exact matches are
+    tried first, so the common case reads nothing more from GitHub.
+    """
+    candidates: list[tuple[str | None, str]] = [(None, pinned), *fix_heads]
+    for task_id, pushed in candidates:
+        if head == pushed:
+            return 0, task_id
+    for task_id, pushed in candidates:
+        updates = _updates_onto(merger, head=head, pushed=pushed, base=base)
+        if updates is not None:
+            return updates, task_id
+    return None
+
+
+def _own_doc(ctx: ActionContext) -> Mapping[str, Any]:
+    """The step's own task document, or {} when it cannot be read."""
+    try:
+        return _mapping(ctx.fetch_upstream(ctx.task_id))
+    except Exception:  # noqa: BLE001 - an unreadable record has no rounds
+        return {}
+
+
+def _fix_rounds(own: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rounds = _mapping(_mapping(own.get("metadata")).get(MERGE_FIX_METADATA_KEY)).get("rounds")
+    return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
+
+
+def _rounds_asked(own: Mapping[str, Any]) -> int:
+    value = _mapping(own.get("metadata")).get(MERGE_FIX_ROUNDS_KEY)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return 0
+    return min(value, MERGE_FIX_ROUNDS_MAX)
+
+
+def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping[str, Any],
+                     target: str) -> list[tuple[str, str]]:
+    """(task, pushed head) of each CI-fix round of this merge, newest first (lane MS7).
+
+    The rounds are named by the tenant-writable `merge_fix` record, so each
+    is held to facts the record cannot forge, the rule swarm-api's
+    `issueci._pushing_task` applies, rechecked here: the round's task is
+    read through the tenant-gated upstream read, is this tenant's, its
+    signed spec verifies, and its SIGNED dispatch block `continues` the same
+    root as the signed target -- the branch the pull request is on. Its
+    pushed head is its own `result_summary`, as the opener's is. A round
+    that fails any of these is not a candidate, and its head is `head_moved`.
+    """
+    root = _branch_task(opener, target)
+    heads: list[tuple[str, str]] = []
+    for entry in reversed(_fix_rounds(own)):
+        task_id = _task_id(entry.get("task_id"))
+        if task_id is None or task_id in (target, root, ctx.task_id):
+            continue
+        try:
+            doc = _mapping(ctx.fetch_upstream(task_id))
+            ctx.verify_upstream(task_id, doc)
+        except Exception:  # noqa: BLE001 - unreadable or unsigned: not a round's head
+            continue
+        if doc.get("tenant_id") != ctx.tenant_id:
+            continue
+        block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
+        if _task_id(block.get("continues")) != root:
+            continue
+        pushed = _pushed_head(doc)
+        if pushed is not None:
+            heads.append((task_id, pushed))
+    return heads
+
+
+def _ended(ctx: ActionContext, task_id: str) -> bool:
+    """Whether a round's task has ended; one that cannot be read has, for this step."""
+    try:
+        state = _mapping(ctx.fetch_upstream(task_id)).get("state")
+        return TaskState(state) in TERMINAL_STATES
+    except Exception:  # noqa: BLE001 - nothing left to wait on
+        return True
+
+
+def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
+         wait: Any) -> ActionOutcome:
+    """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
+
+    docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
+    hands the red reading to a round first, so the refusal only runs once
+    the rounds are spent or there were none. A round running at this head,
+    or one due that the tick has not claimed yet, parks (`wait`, which
+    `MERGE_CI_MAX_SECONDS` bounds). A round that ended at this head without
+    moving it, or was never submitted, is spent.
+    """
+    message = f"at {head}: " + ", ".join(sorted(failed))
+    rounds = _fix_rounds(own)
+    last = rounds[-1] if rounds else {}
+    if rounds and last.get("head") == head:
+        number = last.get("round")
+        error = last.get("error")
+        if error:
+            return run.refuse("checks_failed",
+                              f"{message}; CI fix round {number} was not run: {str(error)[:300]}")
+        task_id = _task_id(last.get("task_id"))
+        if task_id is None:
+            return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} is being submitted", [])
+        if not _ended(run.ctx, task_id):
+            return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} ({task_id}) is running",
+                        [])
+        return run.refuse("checks_failed",
+                          f"{message}, after CI fix round {number} ({task_id}) ended at this head")
+    asked = _rounds_asked(own)
+    if len(rounds) < asked:
+        return wait(CI_FIX_PENDING,
+                    f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
+    if asked:
+        message += f", after {len(rounds)} CI fix round(s)"
+    return run.refuse("checks_failed", message)
 
 
 def _ci_wait_age(ctx: ActionContext) -> float | None:

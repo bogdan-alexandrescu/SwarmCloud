@@ -159,7 +159,7 @@ from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
-from .validation import MERGE_METADATA_KEY, MERGE_STEP_ID
+from .validation import MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
 
 log = logging.getLogger(__name__)
 
@@ -522,7 +522,8 @@ def _annotation_lines(entries: list[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
-def _check_section(writer: GitHubWriter, run: IssueRun, check: Mapping[str, Any], token: str) -> str:
+def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mapping[str, Any],
+                   token: str) -> str:
     name = _clip(check.get("name"), MAX_TITLE_CHARS) or "check"
     conclusion = check.get("conclusion") or check.get("status") or "failed"
     out = [f"## {name} ({conclusion})"]
@@ -537,16 +538,16 @@ def _check_section(writer: GitHubWriter, run: IssueRun, check: Mapping[str, Any]
     check_id = check.get("id")
     if isinstance(check_id, int) and not isinstance(check_id, bool):
         try:
-            lines = _annotation_lines(writer.check_annotations(run.issue, check_id, token))
+            lines = _annotation_lines(writer.check_annotations(ref, check_id, token))
         except Exception as exc:
-            log.info("issue run %s: annotations of %s not read (%s)", run.id, check_id, type(exc).__name__)
+            log.info("%s: annotations of %s not read (%s)", label, check_id, type(exc).__name__)
             lines = []
         if lines:
             out += ["annotations:", *lines]
         app = check.get("app") if isinstance(check.get("app"), Mapping) else {}
         if app.get("slug") == "github-actions":
             # An Actions check run's id is its job's id.
-            tail = writer.job_log_tail(run.issue, check_id, token, limit=MAX_LOG_TAIL_BYTES)
+            tail = writer.job_log_tail(ref, check_id, token, limit=MAX_LOG_TAIL_BYTES)
             if tail and tail.strip():
                 out += ["log tail:", tail.rstrip()]
     return "\n".join(out)
@@ -565,10 +566,23 @@ def build_excerpt(
     writer: GitHubWriter, run: IssueRun, sha: str, reading: CiReading, token: str
 ) -> str:
     """The red checks' output at `sha`: redacted, then bounded. Never raises for a read."""
+    return excerpt_at(writer, run.issue, sha, reading, token, label=f"issue run {run.id}")
+
+
+def excerpt_at(
+    writer: GitHubWriter, ref: IssueRef, sha: str, reading: CiReading, token: str, *, label: str
+) -> str:
+    """`build_excerpt` for any pull request of `ref`'s repository, not only an issue run's.
+
+    The merge step's wake tick (`mergewake`, lane MS7) hands a red reading
+    to a fix round with exactly the excerpt an issue run's round gets.
+    `label` names the caller in the one log line a failed annotation read
+    writes; it never reaches the excerpt.
+    """
     names = reading.failing_names()
     parts = [f"CI is red at {sha[:12]}: {', '.join(names) or 'a required check'}"]
     for check in reading.failing_runs[:MAX_EXCERPT_CHECKS]:
-        parts.append(_check_section(writer, run, check, token))
+        parts.append(_check_section(writer, ref, label, check, token))
     if len(reading.failing_runs) > MAX_EXCERPT_CHECKS:
         parts.append(f"[{len(reading.failing_runs) - MAX_EXCERPT_CHECKS} more failing checks not shown]")
     for status in reading.failing_statuses[:MAX_EXCERPT_CHECKS]:
@@ -588,12 +602,51 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str) -
         raise ValueError("a fix round needs the task whose branch the pull request is on")
     ref = run.issue
     pull = run.pull_request or {}
-    marker = f"=== FAILING CHECKS {secrets.token_hex(8)} ==="
     where = f" ({pull['url']})" if isinstance(pull.get("url"), str) and pull.get("url") else ""
+    return ci_fix_continuation(
+        continues_task=run.pr_task_id,
+        repository_url=ref.repository_url,
+        lead=(
+            f"CI is red on the pull request{where} for GitHub issue {ref.short} ({ref.url}); "
+            "the issue file named below holds the issue."
+        ),
+        round_no=round_no,
+        rounds=run.fix_rounds,
+        excerpt=excerpt,
+        step_input={"issue": ref.number},
+        metadata={"issue_run": {
+            "run_id": run.id,
+            "issue": ref.short,
+            "ci_fix_round": round_no,
+            "head_sha": head_sha,
+        }},
+    )
+
+
+def ci_fix_continuation(
+    *,
+    continues_task: str,
+    repository_url: str,
+    lead: str,
+    round_no: int,
+    rounds: int,
+    excerpt: str,
+    step_input: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> WorkflowCreate:
+    """One CI fix round: a one-step `direct-pr` workflow continuing `continues_task`.
+
+    The issue run's round (`ci_fix_workflow`) and the merge step's
+    (`mergewake`, docs/merge-step.md "Revised 2026-10-06" §6 MS7) are this
+    one spec. `lead` is the prompt's first sentence -- which pull request is
+    red, and for what -- and `metadata` says whose round it is; every word
+    after the lead, the nonce-fenced excerpt and `merge: "off"` are the
+    same for both. The excerpt is DATA between two nonce lines no line
+    inside it can forge.
+    """
+    marker = f"=== FAILING CHECKS {secrets.token_hex(8)} ==="
     prompt = (
-        f"CI is red on the pull request{where} for GitHub issue {ref.short} ({ref.url}); "
-        "the issue file named below holds the issue. This is CI fix round "
-        f"{round_no} of at most {run.fix_rounds}.\n\n"
+        f"{lead} This is CI fix round {round_no} of at most {rounds}.\n\n"
         "You are on the pull request's own branch. Make the failing checks pass, and "
         "change nothing else. Do not write pr-title.txt or pr-body.md: the pull request "
         f"already exists and keeps its text. {NO_CLOSING_KEYWORD}\n\n"
@@ -604,23 +657,19 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str) -
     )
     return WorkflowCreate.model_validate({
         "strategy": "direct-pr",
-        "continues_task": run.pr_task_id,
-        "repository_url": ref.repository_url,
+        "continues_task": continues_task,
+        "repository_url": repository_url,
         "steps": [{
             "step_id": CI_FIX_STEP,
             "runner_profile": STEP_PROFILE,
-            "input": {"prompt": prompt, "issue": ref.number},
+            "input": {"prompt": prompt, **step_input},
         }],
         "metadata": {
             # Never a merge inside a round: it would merge with no CI read and
-            # before the keyword block is written back (`_merge` does it).
+            # before the keyword block is written back (`_merge` does it). A
+            # merge step's round is merged by that step, once CI is green.
             MERGE_METADATA_KEY: "off",
-            "issue_run": {
-                "run_id": run.id,
-                "issue": ref.short,
-                "ci_fix_round": round_no,
-                "head_sha": head_sha,
-            }
+            **metadata,
         },
     })
 
@@ -864,8 +913,23 @@ def _pushed_head(task: Any) -> str | None:
 
 def _pushing_task(ctx: Any, tenant_id: str, run: IssueRun, head: str) -> str | None:
     """The run's own task that pushed `head`: the newest fix round's, else the integrator."""
+    return pushing_task(
+        ctx, tenant_id, head, fix_workflows=run.ci_fix_workflows, root_task_id=run.pr_task_id
+    )
+
+
+def pushing_task(
+    ctx: Any, tenant_id: str, head: str, *, fix_workflows: list[str], root_task_id: str | None
+) -> str | None:
+    """Which task pushed `head`: the newest fix round's `ci-fix` task, else the root's.
+
+    `fix_workflows` are the fix rounds' workflow ids, oldest first; the root
+    is the task whose branch they continue. The issue run's loop
+    (`_pushing_task`) and the merge step's wake tick (`mergewake`, MS7) ask
+    the same question of the same records. Read under `tenant_id` only.
+    """
     candidates: list[str] = []
-    for workflow_id in reversed(run.ci_fix_workflows):
+    for workflow_id in reversed(fix_workflows):
         try:
             workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
         except NotFound:
@@ -873,8 +937,8 @@ def _pushing_task(ctx: Any, tenant_id: str, run: IssueRun, head: str) -> str | N
         for step in getattr(workflow, "steps", None) or []:
             if getattr(step, "step_id", None) == CI_FIX_STEP and getattr(step, "task_id", None):
                 candidates.append(step.task_id)
-    if run.pr_task_id:
-        candidates.append(run.pr_task_id)
+    if root_task_id:
+        candidates.append(root_task_id)
     for task_id in candidates:
         try:
             task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
