@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -113,6 +114,48 @@ def test_an_unknown_base_is_refused_not_read_as_an_empty_diff():
 def test_an_unknown_option_is_refused():
     result = _run("--no-such-option")
     assert result.returncode == 2
+
+
+def test_the_tests_run_in_the_callers_environment_not_common_sh_s(tmp_path: Path):
+    # Measured 2026-10-06: sourcing common.sh exports PROJECT_ID, IMAGE_REPO,
+    # ENVIRONMENT and more, and 20 worker and push-images tests inherited them
+    # and failed under the script while passing in a plain pytest. A copy of the
+    # script runs here against a fake project python that records its env.
+    (tmp_path / "scripts" / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
+    shutil.copy(REPO / "scripts" / "lib" / "common.sh", tmp_path / "scripts" / "lib" / "common.sh")
+    parity = tmp_path / "scripts" / "lib" / "check-contract-parity.sh"
+    parity.write_text("#!/usr/bin/env bash\nenv > \"$ENV_DUMP.parity\"\n")
+    for guard in GUARDS:
+        (tmp_path / guard).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / guard).write_text("")
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > \"$ENV_DUMP.args\"\nenv > \"$ENV_DUMP\"\n")
+    python.chmod(0o755)
+    dump = tmp_path / "env"
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"PROJECT_ID", "IMAGE_REPO", "ENVIRONMENT", "REPO_ROOT", "SWARM_CLONE_BASE"}}
+    env.update(NO_COLOR="1", ENV_DUMP=str(dump), SWARM_ENV_FILE=str(tmp_path / "no.env"))
+    result = subprocess.run(
+        ["bash", str(tmp_path / "scripts" / "changed-guards.sh"), "--files", "-"],
+        cwd=tmp_path, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    args = (tmp_path / "env.args").read_text()
+    assert args.startswith("-m pytest -q -n auto -p no:warnings ")
+    for guard in GUARDS:
+        assert guard in args
+    for recorded in (dump, tmp_path / "env.parity"):
+        names = {line.split("=", 1)[0] for line in recorded.read_text().splitlines() if "=" in line}
+        assert "ENV_DUMP" in names
+        for leaked in ("PROJECT_ID", "IMAGE_REPO", "ENVIRONMENT", "REPO_ROOT"):
+            assert leaked not in names, leaked
+    # The venv interpreter runs as an activated venv, as `uv run` runs it:
+    # worker tests start the venv's own commands from PATH.
+    recorded = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+    assert recorded["PATH"].split(":")[0] == str(python.parent)
+    assert recorded["VIRTUAL_ENV"] == str(python.parent.parent)
 
 
 def test_ci_doc_and_claude_md_name_it_as_the_pre_finish_command():
