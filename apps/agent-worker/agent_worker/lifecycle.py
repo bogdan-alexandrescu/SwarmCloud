@@ -252,6 +252,7 @@ from .runners.cliagent import (
     RESUME_REASON_ENV,
     RESUME_RELOADED,
     RESUME_SESSION_ENV,
+    SESSION_FILE_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
     carries_session_totals,
@@ -1038,12 +1039,17 @@ class Worker:
                     # prompt threw away everything the agent had done -- 26
                     # restarts and ~169 agent-minutes in the 2026-10-05
                     # history. On a held account the runner's channel named
-                    # the session (`_move_account_after` read it above), and
-                    # the restart continues it with `--resume`, exactly as an
-                    # account move does. A run that named no session, or a
-                    # runner that cannot resume (the channel exists only for
-                    # one that can), restarts from the prompt as before.
-                    resumed = self._account is not None and self._session_id is not None
+                    # the session (`_move_account_after` read it above); on
+                    # the tenant's own credential -- and codex, which never
+                    # holds an account, is always there -- the runner's
+                    # session file did (`_session_channel_env`). Either way
+                    # the restart continues it with the CLI's resume flag,
+                    # exactly as an account move does. A run that named no
+                    # session, or a runner that cannot resume (neither file
+                    # exists for one), restarts from the prompt as before.
+                    if self._account is None:
+                        self._note_session(self._read_session_file())
+                    resumed = self._session_id is not None
                     if resumed:
                         self._resume_session = self._session_id
                         self._resume_reason = RESUME_RELOADED
@@ -2241,6 +2247,9 @@ class Worker:
         # place that covers all three for every start.
         for stale in (ws.result_path, ws.quota_path, ws.credential_path):
             stale.unlink(missing_ok=True)
+        # The session file is in `private/`, not `work/`, but the rule is the
+        # same: what it holds before this start was the last start's.
+        self._session_file_path().unlink(missing_ok=True)
         self._spend_pending = True
         # The session this runner reports for: its own, or an earlier
         # runner's it continues with `--resume` (`_account_channel_env`).
@@ -5577,6 +5586,9 @@ class Worker:
                     logger=self.log,
                 )
                 base.update(resolved.env)
+                # Off the pool, a CLI that can resume still names its session
+                # for the credential reload (#626).
+                base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). A path, never a credential: the attempt key stays here.
@@ -5766,6 +5778,40 @@ class Worker:
             env[RESUME_SESSION_ENV] = self._resume_session
             env[RESUME_REASON_ENV] = self._resume_reason or RESUME_MOVED
         return env
+
+    def _session_file_path(self) -> Path:
+        """Where a runner on no account writes its session (#626), in `private/`."""
+        assert self.ws is not None
+        return self.ws.private / "session.json"
+
+    def _session_channel_env(self) -> dict[str, str]:
+        """What a runner on the tenant's own credential is told about its session.
+
+        Only for a CLI that can resume (`CliAgentSpec.resume_flag`): where to
+        write the session it ran, and -- once a credential reload set one --
+        the session to continue. An attempt on an account has the channel
+        (`_account_channel_env`) instead, and every other profile nothing.
+        """
+        spec = cli_agent_spec(self.cfg.runner_profile)
+        if self._account is not None or spec is None or not spec.resume_flag:
+            return {}
+        env = {SESSION_FILE_ENV: str(self._session_file_path())}
+        if self._resume_session:
+            env[RESUME_SESSION_ENV] = self._resume_session
+            env[RESUME_REASON_ENV] = self._resume_reason or RESUME_RELOADED
+        return env
+
+    def _read_session_file(self) -> str | None:
+        """The session the last runner on no account named, or None. Consumed."""
+        path = self._session_file_path()
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        session = data.get("session_id") if isinstance(data, dict) else None
+        return session if isinstance(session, str) and session else None
 
     def _read_account_channel(self) -> dict[str, Any]:
         stream, _move = self._account_channel_paths()
