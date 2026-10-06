@@ -40,7 +40,7 @@ from agent_worker import forge as forge_mod, lifecycle
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     forge,
     local_urls,

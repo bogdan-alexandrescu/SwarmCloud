@@ -29,7 +29,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.runners.cliagent import RELOAD_RESUME_PROMPT
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 #: Records each start in PLAN_DIR/runs.jsonl and behaves per `plan.json`:
 #: `modes[i]` is "refused" (a revoked token) or "finish"; `sessions[i]` the

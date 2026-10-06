@@ -31,7 +31,7 @@ from agent_worker.errors import ExitCode
 from swarm_common.models import EndCause, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 import merge_world
 from merge_world import (

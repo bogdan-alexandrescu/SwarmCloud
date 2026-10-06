@@ -43,6 +43,7 @@ from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
 from ..waiting import waiting_for_page
+from ..waker import TASK_FINISHED, ring
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -311,6 +312,18 @@ def cancel_task(
     # A child cancelled with its parent is stopped the same way (#627).
     for child_target in children:
         background.add_task(ctx.executions.cancel, child_target)
+    # THE FINISH WAKE (#636). A task this call ENDED -- it held no capacity,
+    # or no live worker was behind it -- has no worker to ring for it, so its
+    # dependants, and any capacity the cancel released, waited for the
+    # scheduler's safety tick. Ring the same `task_finished` the worker rings,
+    # after the response: the cancel is already durable, and a lost wake costs
+    # one tick. A cancel that only FLAGGED a live worker rings nothing here;
+    # that worker ends the task and rings itself.
+    if task.state is TaskState.CANCELLED:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, TASK_FINISHED,
+            task_id=task.id, tenant_id=task.tenant_id, state=task.state.value,
+        )
     accounts = accounts_for(ctx.db, tenant_id, [task])
     # A task cancelled between attempts has already spent: the response
     # carries every attempt's totals, as `get_task` does (P1 follow-up).

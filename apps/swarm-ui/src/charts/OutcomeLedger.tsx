@@ -111,16 +111,11 @@ import {
   type OutcomeBucket,
   type Outcomes,
 } from '../outcomes'
-import { PHONE_PAGE_LIMIT, agentListPath, type RecentState } from '../agentlist'
-import { TASK_PAGE_LIMIT } from '../api'
-import { phoneWidth } from '../HelpCard'
+import type { RowLink } from '../Ledger'
+import { type RowOutcome } from '../outcomes'
 import { Mark } from '../primitives'
+import { OpenLink } from '../TimelineRows'
 import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
-
-/** The Agents list's Recent tab, filtered to one terminal state: where a bucket's figure drills to. */
-function drillHref(state: RecentState): string {
-  return `#work/running/${agentListPath({ tab: 'recent', state })}`
-}
 
 /**
  * The three drawings. `w` is the nominal width; `floor` the narrowest a
@@ -806,6 +801,11 @@ export interface OutcomeLedgerProps {
   onPick: (start: string | null) => void
   /** Zoom the whole page to one bucket. Absent on an hourly axis, where there is nothing smaller to show. */
   onZoom?: ((b: OutcomeBucket) => void) | undefined
+  /**
+   * The tasks behind one figure (#116): an outcome, in one bucket (its start)
+   * or the span (null). Absent, the figures are not links.
+   */
+  figureLink?: ((outcome: RowOutcome, at: string | null) => RowLink) | undefined
 }
 
 /**
@@ -815,7 +815,7 @@ export interface OutcomeLedgerProps {
  * chart and its readout put the span back. It is not a live region: the
  * focused column's name already says the same counts.
  */
-export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerProps) {
+export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: OutcomeLedgerProps) {
   const { buckets, bucket, tz } = data
   const starts = useMemo(() => buckets.map((b) => b.start), [buckets])
   const scales = useMemo(() => scalesOf(buckets), [buckets])
@@ -947,8 +947,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   const settleMin = Math.round(data.coverage.seal_grace_s / 60)
   const failedThere = pickedBucket === null ? 0 : (pickedBucket.failed ?? 0) + (pickedBucket.dead_lettered ?? 0)
   const cancelledThere = pickedBucket === null ? 0 : (pickedBucket.cancelled?.total ?? 0)
-  // The page the Agents list reads at this width, which is the window its rows come from.
-  const listWindow = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
+  const succeededThere = pickedBucket === null ? 0 : (pickedBucket.succeeded ?? 0)
   const units = unitWord(bucket)
   // THE SPAN'S TOTALS ARE SUMS OVER THE READ BUCKETS ONLY (TS-9): partial
   // when one was not read, and no figure at all when none was.
@@ -1093,6 +1092,26 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
           </span>
         </p>
 
+        {pickedBucket === null && figureLink !== undefined && !cov.none && (
+          // THE SPAN'S FIGURES OPEN THEIR ROWS TOO: "Failed 21" in the readout
+          // is one click from those 21 tasks (#116).
+          <p className="ol-span-drill">
+            {(
+              [
+                ['failed', shown.failed + shown.dead_lettered],
+                ['cancelled', shown.cancelled],
+              ] as const
+            )
+              .filter(([, n]) => n > 0)
+              .map(([outcome, n]) => (
+                <OpenLink key={outcome} className="ctl-link ol-drill" link={figureLink(outcome, null)}>
+                  {n} {outcome} in the span →{' '}
+                  <span className="ol-q">list them</span>
+                </OpenLink>
+              ))}
+          </p>
+        )}
+
         {pickedBucket !== null && (
           <p className="ol-actions">
             <button type="button" className="c-link is-sm ol-all" ref={allButton} onClick={restore}>
@@ -1103,28 +1122,28 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
                 zoom to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
               </button>
             )}
-            {/* THE FIGURES OPEN THE ROWS BEHIND THEM (#116), as far as the
-                Agents list can. It filters by state but not by completed_at
-                (no route lists tasks by end time), and it reads its own
-                newest page, not this span -- so each link names that window
-                rather than pretending to be the bucket's list. Failed is
-                FAILED + DEAD_LETTERED, the one definition the drawing uses. */}
-            {failedThere > 0 && (
-              <a className="ctl-link ol-drill" href={drillHref('failed')}>
-                {failedThere} failed that {bucket === 'hour' ? 'hour' : bucket} →{' '}
-                <span className="ol-q">
-                  in the newest {listWindow} agents, not limited to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
-                </span>
-              </a>
-            )}
-            {cancelledThere > 0 && (
-              <a className="ctl-link ol-drill" href={drillHref('cancelled')}>
-                {cancelledThere} cancelled that {bucket === 'hour' ? 'hour' : bucket} →{' '}
-                <span className="ol-q">
-                  in the newest {listWindow} agents, not limited to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
-                </span>
-              </a>
-            )}
+            {/* THE FIGURES OPEN THE ROWS BEHIND THEM (#116): exactly the
+                tasks this bucket counted, from the same fold, placed by the
+                same completed_at under the same filters -- not a page of the
+                Agents list, which reads its newest rows whatever the span.
+                Failed is FAILED + DEAD_LETTERED, the one definition the
+                drawing uses. */}
+            {figureLink !== undefined &&
+              pickedBucket.state !== 'unread' &&
+              (
+                [
+                  ['failed', failedThere],
+                  ['cancelled', cancelledThere],
+                  ['succeeded', succeededThere],
+                ] as const
+              )
+                .filter(([, n]) => n > 0)
+                .map(([outcome, n]) => (
+                  <OpenLink key={outcome} className="ctl-link ol-drill" link={figureLink(outcome, pickedBucket.start)}>
+                    {n} {outcome} that {bucket === 'hour' ? 'hour' : bucket} →{' '}
+                    <span className="ol-q">list them</span>
+                  </OpenLink>
+                ))}
           </p>
         )}
       </div>

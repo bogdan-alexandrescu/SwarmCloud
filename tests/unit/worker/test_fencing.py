@@ -18,7 +18,7 @@ from agent_worker import lifecycle
 from agent_worker.errors import ExitCode, FencedError
 from swarm_common.states import EventType, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 def test_stale_generation_exits_without_running_the_agent(

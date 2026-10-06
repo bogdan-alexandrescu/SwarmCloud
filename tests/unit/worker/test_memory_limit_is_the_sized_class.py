@@ -24,7 +24,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.metrics import ResourceUsage
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 GIB = 1024 * 1024 * 1024
 

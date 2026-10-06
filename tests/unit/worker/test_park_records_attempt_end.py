@@ -24,7 +24,7 @@ from agent_worker.logs import build_logger
 from swarm_common.models import utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from fakes import FakeFirestore, FakeTransactionRunner
 
 

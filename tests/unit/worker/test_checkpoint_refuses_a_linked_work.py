@@ -37,7 +37,7 @@ from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import CheckpointError
 from agent_worker.logs import build_logger
 
-from conftest import TENANT
+from worker_seeds import TENANT
 
 OUTSIDE_SECRET = "outside-the-work-tree-8812"
 

@@ -58,7 +58,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 #: 128 + SIGTERM. Restated rather than imported: the number is the contract
 #: with whoever reads the pod's exit status.

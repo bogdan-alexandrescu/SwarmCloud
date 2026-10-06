@@ -59,7 +59,7 @@ from swarm_common.models import Lease, Task, Tenant, utcnow
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import ParkReason, TaskState
 
-from conftest import PROJECT, TENANT, seed_attempt, seed_tenant
+from worker_seeds import PROJECT, TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 ACCOUNT_ID = f"{TENANT}:personal"

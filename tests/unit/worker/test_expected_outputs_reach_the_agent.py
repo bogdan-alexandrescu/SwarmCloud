@@ -56,7 +56,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 #: `task.metadata` key the API writes and the worker reads.
 METADATA_KEY = "expected_outputs"

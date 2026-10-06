@@ -164,7 +164,7 @@ def test_the_supervision_loop_actually_calls_the_publisher(db, store, worker_fac
     This drives the production supervision loop and asserts the call happens
     while the child is still running.
     """
-    from conftest import seed_attempt
+    from worker_seeds import seed_attempt
 
     seed_attempt(
         db,
@@ -206,7 +206,7 @@ def test_a_runner_that_writes_nothing_until_it_exits_yields_no_tail(db, store, w
     `test_the_agent_cli_streams_get_their_own_live_objects`. What stays true,
     and is asserted here, is the mock's silence.
     """
-    from conftest import seed_attempt
+    from worker_seeds import seed_attempt
 
     seed_attempt(
         db,

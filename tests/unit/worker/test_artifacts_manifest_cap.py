@@ -48,7 +48,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.config import Settings
 
-from conftest import BUCKET, TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import BUCKET, TENANT, build_worker, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 from test_standalone_outputs import (
     PROFILE,

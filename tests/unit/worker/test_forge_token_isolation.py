@@ -50,7 +50,7 @@ from agent_worker import lifecycle, workspace as workspace_mod
 from agent_worker import gitops
 from agent_worker.errors import WorkerError
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
-from conftest import seed_tenant
+from worker_seeds import seed_tenant
 from fakes import FakeSecretClient
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")

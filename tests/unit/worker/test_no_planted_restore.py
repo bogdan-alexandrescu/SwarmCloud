@@ -38,7 +38,7 @@ from agent_worker.checkpoint import CheckpointManager, CheckpointRecord
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 RUN = {"prompt": "x", "steps": 1, "sleep_seconds": 0.05}
 

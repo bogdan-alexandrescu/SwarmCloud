@@ -26,7 +26,7 @@ import spec_keys
 from agent_worker import lifecycle
 from agent_worker.control import ControlPlane
 from agent_worker.errors import ExitCode, TenantMismatchError
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from fakes import FakeSecretClient, FakeTransactionRunner, RecordingQuotaReporter
 from swarm_common.states import EventType, ParkReason, TaskState
 

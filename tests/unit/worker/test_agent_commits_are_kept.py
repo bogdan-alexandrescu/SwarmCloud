@@ -34,7 +34,7 @@ from agent_worker import lifecycle, workspace as workspace_mod
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     _commit_as_claude,
     assert_only_the_worker_wrote,

@@ -25,7 +25,7 @@ import spec_keys
 from agent_worker import lifecycle
 from agent_worker.errors import ExitCode
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 TASK = "task_1"
 

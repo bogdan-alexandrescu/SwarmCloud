@@ -29,7 +29,7 @@ import pytest
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from test_input_from import run_upstream
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     forge,
