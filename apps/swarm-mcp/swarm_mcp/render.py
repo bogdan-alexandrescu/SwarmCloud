@@ -1575,6 +1575,62 @@ def produced_lines(
     return lines
 
 
+#: How much of the merge commit's sha a merge row shows.
+_MERGE_SHA_CHARS = 12
+
+
+def _issue_numbers(values: Any) -> list[str]:
+    """`#N` for each issue number (or `{number: N}` record) in a summary list."""
+    out: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        number = value.get("number") if isinstance(value, dict) else value
+        if isinstance(number, int) and not isinstance(number, bool):
+            out.append(f"#{number}")
+    return out
+
+
+def merge_row(task: dict[str, Any]) -> str | None:
+    """A finished merge step's outcome in one line, from `result_summary.merge`.
+
+    `merged #N at <sha> · issues closed #a, #b` (or `already merged`, when an
+    earlier attempt's merge stood), or `refused <code>` with the worker's
+    refusal code (`agent_worker.merge`). The refusal's message is NOT here: it
+    is the task's `last_error`, which every view already prints, and a row is
+    one line. None for a task with no merge record, and for one that is not
+    finished: a parked merge says why in its waiting row (CI_PENDING).
+
+    Issues are said as recorded and never inferred: `issues_unread` (the
+    closing references could not be read) is `issues unread`, not "none".
+    """
+    if task.get("state") not in FINISHED_STATES:
+        return None
+    merge = (task.get("result_summary") or {}).get("merge")
+    if not isinstance(merge, dict):
+        return None
+    refused = merge.get("refusal")
+    if isinstance(refused, dict) and refused.get("code"):
+        return f"refused {refused['code']}"
+    if not (merge.get("merged_by_this_task") or merge.get("already_merged")):
+        return None
+    head = "merged" if merge.get("merged_by_this_task") else "already merged"
+    number = merge.get("pull_request")
+    if isinstance(number, int) and not isinstance(number, bool):
+        head += f" #{number}"
+    commit = str(merge.get("merge_commit") or "")[:_MERGE_SHA_CHARS]
+    if commit:
+        head += f" at {commit}"
+    parts = [head]
+    if merge.get("issues_unread"):
+        parts.append("issues unread")
+    else:
+        closed = _issue_numbers(merge.get("issues_closed"))
+        parts.append("issues closed " + (", ".join(closed) if closed else "none"))
+    left = _issue_numbers(merge.get("issues_not_closed"))
+    if left:
+        parts.append("not closed " + ", ".join(left))
+    return " · ".join(parts)
+
+
 def render_task(
     task: dict[str, Any] | None,
     style: Style,
@@ -1630,6 +1686,10 @@ def render_task(
     # repository printed only that, over an output.txt it had written.
     if produced is not None:
         lines += produced_lines(produced, style, fetch_with=fetch_with)
+
+    merged = merge_row(task)
+    if merged is not None:
+        lines.append(f"  {style.paint('merge', 'dim')}     {merged}")
 
     git = ((task.get("result_summary") or {}).get("git")) or {}
     if not git:
@@ -1727,6 +1787,14 @@ class Snapshot:
 #: The park reason `find_trouble` leaves out: waiting for a parent step. From
 #: the frozen enum; `compact` imports it from here.
 _DEPENDENCY_WAIT = _states.ParkReason.DEPENDENCY_INCOMPLETE.value
+
+#: Every park reason `find_trouble` leaves out, each an ordinary wait that
+#: holds no capacity (invariant 1). A merge step parked on CI_PENDING is
+#: waiting for its pull request's checks and is woken when they settle
+#: (docs/merge-step.md, "Revised 2026-10-06" §1); it is the ordinary shape of a
+#: workflow whose last step has not merged yet. A check that ends red ends the
+#: step `checks_failed`, which is its own finding as a failed task.
+_NOT_TROUBLE_PARKS = frozenset({_DEPENDENCY_WAIT, _states.ParkReason.CI_PENDING.value})
 
 
 def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
@@ -1853,12 +1921,13 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             state = task.get("state")
             if state == "PARKED":
                 reason = str(task.get("park_reason") or "no reason recorded")
-                if reason == _DEPENDENCY_WAIT:
+                if reason in _NOT_TROUBLE_PARKS:
                     # Not trouble (owner decision 2026-10-06, P5): a step
                     # waiting for its parents holds no capacity (invariant 1)
                     # and is the ordinary shape of a workflow whose earlier
                     # steps still run. A parent that dead-lettered shows as its
-                    # own finding; this one would only bury it.
+                    # own finding; this one would only bury it. A merge step
+                    # waiting for CI is the same (MS5).
                     continue
                 parked[reason] = parked.get(reason, 0) + 1
             elif state in ("DEAD_LETTERED", "DEAD_LETTER"):
