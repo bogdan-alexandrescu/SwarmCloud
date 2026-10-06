@@ -75,7 +75,10 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@/-]*$")
 
 
 class GitError(RuntimeError):
-    pass
+    #: The failed try's `clone_phase_timings`, set by the clone functions on
+    #: the way out, so `retry_clone` can record a try that failed (#742).
+    #: Empty when the failure was not a clone's, or git wrote no trace.
+    phases: dict[str, Any] = {}
 
 
 class GitTransient(GitError):
@@ -192,6 +195,8 @@ def retry_clone(
     sleep: Callable[[float], Any] = time.sleep,
     on_retry: Callable[[], Any] | None = None,
     waits: Sequence[float] = CLONE_RETRY_WAITS_SECONDS,
+    record: list[dict[str, Any]] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> Any:
     """`call()`, tried again after each of `waits` while it raises `GitTransient`.
 
@@ -206,14 +211,22 @@ def retry_clone(
     empty -- a permanent-looking failure the retry itself would have caused.
     `on_retry` runs after each wait, before the next try (the worker's
     heartbeat).
+
+    EVERY TRY IS APPENDED TO `record`, the failed ones included (#742), in
+    order, as `try_record` builds it. Measured 2026-10-06: a clone hung about
+    134 s before a retry succeeded, and with only the successful try's
+    timings on record the worst case was missing from every clone figure.
     """
     tries = 0
     waited = 0.0
     while True:
         tries += 1
+        started = clock()
         try:
-            return call()
+            result = call()
         except GitTransient as exc:
+            if record is not None:
+                record.append(try_record(clock() - started, error=exc))
             exc.tries = tries
             if tries > len(waits):
                 raise
@@ -232,6 +245,37 @@ def retry_clone(
             _empty_directory(Path(destination))
             if on_retry is not None:
                 on_retry()
+        except Exception as exc:
+            if record is not None:
+                record.append(try_record(clock() - started, error=exc))
+            raise
+        else:
+            if record is not None:
+                record.append(try_record(clock() - started, result=result))
+            return result
+
+
+def try_record(
+    seconds: float, *, result: Any = None, error: BaseException | None = None
+) -> dict[str, Any]:
+    """One clone try, as `clone_timed` lists it (#742). Numbers and a class name only.
+
+    `connect_seconds` is git's own connect time for the try
+    (`clone_phase_timings`), None when curl never connected -- the stalled
+    connect #742 is about lands there, and `seconds` (the try's wall time,
+    as this process measured it) then says how long it stalled. `ok` is the
+    outcome; `error_class` the exception's class (`GitTransient`, `GitError`)
+    on a failed try, None on one that cloned. Never the message: git's words
+    can carry a URL.
+    """
+    phases = getattr(error if error is not None else result, "phases", None)
+    connect = phases.get("connect_seconds") if isinstance(phases, dict) else None
+    return {
+        "connect_seconds": connect,
+        "ok": error is None,
+        "error_class": type(error).__name__ if error is not None else None,
+        "seconds": round(max(0.0, float(seconds)), 3),
+    }
 
 
 @dataclass(frozen=True)
@@ -839,14 +883,21 @@ def shallow_clone(
     # fetch and checkout land on one timeline (`clone_phase_timings`).
     trace = _CloneTrace.create(private_dir)
     phases: dict[str, Any] = {}
+    failed: GitError | None = None
     try:
         total = _run_git_steps(
             steps, url=url, token=token, private_dir=private_dir, env=trace.env(env),
             logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
         )
+    except GitError as exc:
+        failed = exc
+        raise
     finally:
         _remove_credentials(cred_file, logger)
         phases = trace.collect()
+        if failed is not None:
+            # A failed try is timed too (#742): `retry_clone` records it.
+            failed.phases = phases
 
     commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     empty = commit is None and _holds_no_objects(
@@ -915,6 +966,7 @@ def clone_at_commit(
     trace = _CloneTrace.create(private_dir)
     env = trace.env(env)
     phases: dict[str, Any] = {}
+    failed: GitError | None = None
     try:
         total += _run_git_steps(
             setup, url=url, token=token, private_dir=private_dir, env=env,
@@ -948,12 +1000,16 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-branch",
             )
-    except GitError:
+    except GitError as exc:
+        failed = exc
         _empty_directory(destination)
         raise
     finally:
         _remove_credentials(cred_file, logger)
         phases = trace.collect()
+        if failed is not None:
+            # A failed try is timed too (#742): `retry_clone` records it.
+            failed.phases = phases
 
     head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     if head != commit:

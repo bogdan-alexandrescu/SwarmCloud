@@ -874,11 +874,17 @@ class Worker:
             targets = egress_mod.probe_targets(self.cfg.repository_url)
             if not targets:
                 return
+            # Ready time counted from PROCESS START (observer P28): the same
+            # origin as `agent_started`'s `seconds_since_process_start`, the
+            # `Phases` clock the entrypoint started first. From the probe's
+            # own start it read 1.6-4.0 s low.
+            origin = time.monotonic() - float(self.phases.seconds_since_start())
             probe = egress_mod.EgressProbe(
                 targets,
                 cap_seconds=self.egress_cap_seconds,
                 interval_seconds=self.egress_interval_seconds,
                 connect=self.egress_connect,
+                origin=origin,
             )
             probe.start()
             self._egress = probe
@@ -2209,7 +2215,7 @@ class Worker:
         # ---- STEP 5: optional shallow clone -----------------------------
         self.phases.enter("clone")
         try:
-            repo_info = self._maybe_clone(task)
+            repo_info = self._clone_keeping_lease(task)
         except _CloneUnreachable as exc:
             # The forge did not answer through every in-process try (#623):
             # the ATTEMPT ends retryably, after the startup window closes.
@@ -3843,6 +3849,27 @@ class Worker:
             return None
         return record
 
+    def _clone_keeping_lease(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        """`_maybe_clone`, with the lease heartbeated from a thread meanwhile (#742).
+
+        MEASURED 2026-10-06: the worker beat before the clone and after it,
+        never during. A clone that hung about 134 s before its retry landed
+        got a healthy attempt reclaimed as `dead_worker` 2.2 s after its agent
+        started, and six chunk-3 steps went 82-92 s between beats around the
+        clone against the reconciler's 90 s grace. The block covers the egress
+        probe's wait (`gitops.await_egress`, up to its 80 s cap, #734) and
+        every clone try and the waits between them (`gitops.retry_clone`).
+
+        `_heartbeat_meanwhile`, the one the checkpoint uses, so FENCING IS
+        UNCHANGED (invariant 5): it asks the control plane before every beat
+        and stops at once when another generation owns the task or the lease
+        is released, so it only ever extends a lease this generation holds. A
+        stale generation never gets here: `_prepare` runs after step 1's
+        generation check, which exits without touching the lease.
+        """
+        with self._heartbeat_meanwhile("clone"):
+            return self._maybe_clone(task)
+
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
         assert ws is not None
@@ -3937,23 +3964,20 @@ class Worker:
         # task's attempt budget applies. A missing repository, refused
         # authentication or a bad ref is a plain `GitError` and stays
         # terminal, at once (#623).
-        # Every try counted, the pinned fetch's included: the clone's mark
-        # (`_mark_clone_timed`) says how many it took.
-        tries = [0]
+        # Every try recorded, the pinned fetch's and the failed ones included
+        # (#742): the clone's mark (`_mark_clone_timed`) lists them in order.
+        tries: list[dict[str, Any]] = []
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
-            def counted() -> CloneResult:
-                tries[0] += 1
-                return call()
-
             return retry_clone(
-                counted,
+                call,
                 destination=destination,
                 max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
                 remaining_seconds=self._remaining_seconds,
                 logger=self.log,
                 sleep=self.forge_sleep,
                 on_retry=self._heartbeat,
+                record=tries,
             )
 
         if pinned_sha is not None:
@@ -3973,6 +3997,7 @@ class Worker:
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
+                self._mark_clone_timed(None, tries=tries, pinned=False)
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
@@ -4004,9 +4029,11 @@ class Worker:
                 egress=self._egress,
             ))
         except GitTransient as exc:
+            self._mark_clone_timed(None, tries=tries, pinned=False)
             self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
+            self._mark_clone_timed(None, tries=tries, pinned=False)
             self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -4025,7 +4052,7 @@ class Worker:
                     f"tenant git token because {refusal}"
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
-        self._mark_clone_timed(clone, tries=tries[0], pinned=pinned_clone)
+        self._mark_clone_timed(clone, tries=tries, pinned=pinned_clone)
         self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -6439,7 +6466,9 @@ class Worker:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
-    def _mark_clone_timed(self, clone: CloneResult, *, tries: int, pinned: bool) -> None:
+    def _mark_clone_timed(
+        self, clone: CloneResult | None, *, tries: list[dict[str, Any]], pinned: bool
+    ) -> None:
         """`clone_timed`: where the clone's time went (#667, lane OB1). Once per attempt.
 
         MEASURED 2026-10-06 (chunk-1 observer): clones took a median 37.8 s
@@ -6452,14 +6481,31 @@ class Worker:
         negotiation, the pack's wait and transfer, the checkout -- read from
         git's traces in-process. Nothing from the trace's text is in it: the
         wire trace carries request headers.
+
+        EVERY TRY, THE FAILED ONES INCLUDED (#742): `try_log` lists them in
+        order, each `{connect_seconds, ok, error_class, seconds}`
+        (`gitops.try_record`). On 2026-10-06 a try that hung about 134 s
+        before a retry landed was in no `clone_timed` event, so the clone
+        figures missed exactly the worst case. `tries` stays the count, and
+        `seconds` and the phase numbers the clone that landed, for every
+        reader of the fields before this one. A clone that never landed --
+        the forge never answered, or refused -- is marked too, `ok: False`,
+        with `seconds` the tries' wall time summed and no phase numbers.
         """
         if self._clone_marked:
             return
+        log = [dict(entry) for entry in tries]
         timings: dict[str, Any] = {
-            "seconds": round(float(clone.duration_seconds), 3),
-            "tries": int(tries),
+            "seconds": round(
+                float(clone.duration_seconds) if clone is not None
+                else sum(float(entry.get("seconds") or 0.0) for entry in log),
+                3,
+            ),
+            "tries": len(log),
             "pinned": bool(pinned),
-            **clone.phases,
+            "ok": clone is not None,
+            "try_log": log,
+            **(clone.phases if clone is not None else {}),
         }
         # Set before the write, so a failed write is not tried again later.
         self._clone_marked = True
