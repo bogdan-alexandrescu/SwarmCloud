@@ -50,10 +50,12 @@ import {
   type LatencyOutcome,
   type LedgerView,
   type Outcomes,
+  type RowOutcome,
   type SpanCoverage,
   type Stat,
 } from './outcomes'
 import { Absent, Mark } from './primitives'
+import { OpenLink } from './TimelineRows'
 import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
@@ -811,6 +813,16 @@ function Spark({ series }: { series: GroupRow['series'] }) {
 }
 
 /** Where a Reliability row leads: the page narrowed to that row's profile, tenant or person. */
+/** A Reliability figure: a link to its tasks when it counts any and one is offered, else the bare number. */
+function Cell({ n, link }: { n: number; link: RowLink | null }) {
+  if (n === 0 || link === null) return <>{n}</>
+  return (
+    <OpenLink className="ctl-link ol-cell-link" link={link}>
+      {n}
+    </OpenLink>
+  )
+}
+
 export interface RowLink {
   href: string
   open: () => void
@@ -822,6 +834,7 @@ export function ReliabilityCard({
   platform,
   onGroup,
   rowLink,
+  cellLink,
 }: {
   data: Outcomes
   group: GroupBy
@@ -832,6 +845,12 @@ export function ReliabilityCard({
    * the work with no submitter recorded. Absent, the rows are static.
    */
   rowLink?: (by: GroupBy, key: string) => RowLink | null
+  /**
+   * One cell's tasks (#116): the row's succeeded, failed or cancelled, as a
+   * list -- a person's failures, a profile's cancels. Absent, or null for a
+   * row nothing can filter on, the cells are plain figures.
+   */
+  cellLink?: (outcome: RowOutcome, key: string) => RowLink | null
 }) {
   const g = data.groups
   const choices: GroupBy[] = platform ? ['runner_profile', 'tenant_id', 'submitted_by'] : ['runner_profile', 'submitted_by']
@@ -910,10 +929,15 @@ export function ReliabilityCard({
                   <td>
                     <RateCell row={r} />
                   </td>
-                  <td className="is-num">{r.succeeded}</td>
-                  <td className="is-num">{r.failed + r.dead_lettered}</td>
                   <td className="is-num">
-                    {r.cancelled.total} · {r.cancelled.after_failure + r.cancelled.workflow_sweep}
+                    <Cell n={r.succeeded} link={r.key === '' ? null : (cellLink?.('succeeded', r.key) ?? null)} />
+                  </td>
+                  <td className="is-num">
+                    <Cell n={r.failed + r.dead_lettered} link={r.key === '' ? null : (cellLink?.('failed', r.key) ?? null)} />
+                  </td>
+                  <td className="is-num">
+                    <Cell n={r.cancelled.total} link={r.key === '' ? null : (cellLink?.('cancelled', r.key) ?? null)} /> ·{' '}
+                    {r.cancelled.after_failure + r.cancelled.workflow_sweep}
                   </td>
                   <td>
                     <CostFigure c={r.cost} what={r.key === '' ? 'The reported cost of work with no submitter recorded' : `${r.key}'s reported cost`} />
