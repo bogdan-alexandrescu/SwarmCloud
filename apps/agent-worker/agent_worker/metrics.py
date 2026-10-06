@@ -664,6 +664,43 @@ def _rounded(value: float | None, places: int = 3) -> float | None:
     return None if value is None else round(float(value), places)
 
 
+#: Upper bound on one `create_time_series` call. The export runs on the
+#: attempt's exit path, and the library's default retry policy would otherwise
+#: let a hung or throttled endpoint hold the exit for minutes; a measurement
+#: that misses its write is still in the log line.
+EXPORT_TIMEOUT_SECONDS = 10.0
+
+
+def _monitored_resource(project_id: str, region: str, labels: dict[str, str]) -> Any:
+    """The `generic_task` resource every series is written against.
+
+    Built from `google.api.monitored_resource_pb2`, the type `TimeSeries.resource`
+    is declared with: google-cloud-monitoring does not re-export it as
+    `monitoring_v3.MonitoredResource`, and asking for that raised on every
+    attempt before a request existed (observer P12, 518 warnings on 2026-10-06).
+
+    Why `generic_task`: it is one of the few resource types Cloud Monitoring
+    accepts custom metrics against, and it fits both backends the same way.
+    `cloud_run_job` is not writable for custom metrics at all, and `k8s_pod`
+    would give the GKE backend a second schema whose labels (cluster, pod)
+    the sizing report does not group by. Its five labels are all required:
+    the tenant is the namespace, the runner profile the job, and the attempt
+    the task, so one series is one attempt.
+    """
+    from google.api import monitored_resource_pb2
+
+    return monitored_resource_pb2.MonitoredResource(
+        type="generic_task",
+        labels={
+            "project_id": project_id,
+            "location": region,
+            "namespace": labels.get("tenant_id") or "unknown",
+            "job": labels.get("runner_profile") or "unknown",
+            "task_id": labels.get("attempt_id") or "unknown",
+        },
+    )
+
+
 class CloudMonitoringExporter:
     """Writes GAUGE time series per attempt to Cloud Monitoring.
 
@@ -671,6 +708,10 @@ class CloudMonitoringExporter:
     and in a SEPARATE write. Those are new metric types, created on their first
     write, and one call that failed on them would take the three series the
     sizing report already depends on down with it.
+
+    Never raises and never logs more than one warning per exporter: a failed
+    write costs the attempt nothing, and one line says why rather than one per
+    write or per retry of the export.
     """
 
     def __init__(self, project_id: str, region: str, logger: Any, client: Any | None = None) -> None:
@@ -678,6 +719,7 @@ class CloudMonitoringExporter:
         self._region = region
         self._log = logger
         self._client = client
+        self._warned = False
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -686,25 +728,31 @@ class CloudMonitoringExporter:
             self._client = monitoring_v3.MetricServiceClient()
         return self._client
 
+    def _warn_once(self, exc: Exception, write: str) -> None:
+        if self._warned:
+            return
+        self._warned = True
+        self._log.warning(
+            "metrics export failed",
+            exporter=type(self).__name__,
+            write=write,
+            error=str(exc),
+        )
+
     def export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
+        try:
+            self._export(usage, labels)
+        except Exception as exc:
+            self._warn_once(exc, "build")
+
+    def _export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
         from google.cloud import monitoring_v3
 
         now = time.time()
         interval = monitoring_v3.TimeInterval(
             {"end_time": {"seconds": int(now), "nanos": int((now % 1) * 1e9)}}
         )
-        resource = monitoring_v3.MonitoredResource(
-            {
-                "type": "generic_task",
-                "labels": {
-                    "project_id": self._project_id,
-                    "location": self._region,
-                    "namespace": labels.get("tenant_id", "unknown"),
-                    "job": labels.get("runner_profile", "unknown"),
-                    "task_id": labels.get("attempt_id", "unknown"),
-                },
-            }
-        )
+        resource = _monitored_resource(self._project_id, self._region, labels)
         metric_labels = {
             k: str(v)
             for k, v in labels.items()
@@ -730,11 +778,6 @@ class CloudMonitoringExporter:
                 out.append(s)
             return out
 
-        client = self._get_client()
-        client.create_time_series(
-            name=f"projects/{self._project_id}", time_series=_series(values)
-        )
-
         # Integers in milli-units, like every other series here: the metric
         # kind is fixed on first write, and one INT64 convention is one fewer
         # way for a dashboard to be off by a factor of a thousand.
@@ -745,13 +788,27 @@ class CloudMonitoringExporter:
             cpu["peak_cpu_millicores"] = int(round(usage.peak_cpu_cores * 1000))
         if usage.mean_cpu_cores is not None:
             cpu["mean_cpu_millicores"] = int(round(usage.mean_cpu_cores * 1000))
+
+        writes = [("memory", _series(values))]
         if cpu:
+            writes.append(("cpu", _series(cpu)))
+
+        try:
+            client = self._get_client()
+        except Exception as exc:
+            self._warn_once(exc, "client")
+            return
+        for write, series in writes:
+            # Each write on its own: a CPU write that fails (new metric types)
+            # must not take the memory series down with it, and vice versa.
             try:
                 client.create_time_series(
-                    name=f"projects/{self._project_id}", time_series=_series(cpu)
+                    name=f"projects/{self._project_id}",
+                    time_series=series,
+                    timeout=EXPORT_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
-                self._log.warning("CPU metrics export failed", error=str(exc))
+                self._warn_once(exc, write)
 
 
 class CompositeExporter:
