@@ -1364,7 +1364,7 @@ class Worker:
     ) -> Outcome:
         """Checkpoint, upload, park on CHILDREN_INCOMPLETE, release, exit (§3.3 step 3)."""
         self._checkpoint("child-await")
-        self._upload_outputs()
+        uploaded = self._upload_outputs().get("artifacts")
         self._export_metrics()
         detail: dict[str, Any] = {
             "park_phase": "child_await",
@@ -1373,8 +1373,11 @@ class Worker:
         }
         if child_path is not None:
             detail["child_path"] = child_path
+        # Recorded with the park, for the attempt that finishes the parent (#166).
         self.control.park_awaiting_children(
-            max_resumes=self.cfg.max_child_await_resumes, detail=detail
+            max_resumes=self.cfg.max_child_await_resumes,
+            detail=detail,
+            uploads=uploaded if isinstance(uploaded, list) else None,
         )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
@@ -2646,8 +2649,9 @@ class Worker:
         BY REFERENCE: `{name, bytes, uri, carried_from}`, the parked attempt's
         own object. Nothing is downloaded into the workspace or uploaded again.
         A name this attempt uploaded itself wins, and among parked attempts the
-        later park wins. The parks are read off their PARKED events
-        (`ControlPlane.parked_uploads`).
+        later park wins. Each park recorded its uploads in its own fenced
+        transaction, and they are read by id, never by query: the tenant
+        worker role cannot list (`ControlPlane.parked_uploads`).
 
         AN ENTRY IS DATA, CHECKED BEFORE IT IS LISTED: its `uri` must name the
         object `artifacts/<name>` of the very attempt that parked, under this

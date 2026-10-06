@@ -127,6 +127,24 @@ CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: Where a park records its uploads for the attempt that finishes the task
+#: (#166): `tasks/{task}/carry/{attempt}` per park, and the index of the parks
+#: at `tasks/{task}/carry/parks`. Known ids, because the tenant worker role can
+#: get a document by id and cannot list or query (`ControlPlane.parked_uploads`
+#: says why). `parks` cannot collide with an attempt id, which is `att_...`.
+CARRY_COLLECTION = "carry"
+CARRY_INDEX_ID = "parks"
+
+
+def _is_carry_attempt_id(value: str) -> bool:
+    """An index entry usable as a record's document id under this task's `carry`."""
+    return (
+        bool(value)
+        and "/" not in value
+        and value != CARRY_INDEX_ID
+        and not value.startswith("__")
+    )
+
 
 def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
     """Why a cancelled task ended: CHILD_CASCADE when its parent's cancel, end
@@ -854,34 +872,118 @@ class ControlPlane:
     def parked_uploads(self) -> list[tuple[str, list[Any]]]:
         """What each earlier PARKED attempt of this task uploaded, oldest first (#166).
 
-        Read off the task's PARKED events: a park writes the attempt's upload
-        manifest into the event's detail (`detail.artifacts`, the summary
-        `_upload_outputs` returned). `(attempt_id, artifacts)` per event, in
-        the order the parks happened, this attempt's own excluded. Every event
-        is checked against this worker's tenant, as every read here is.
+        READ BY ID, NEVER BY QUERY (#166, reopened 2026-10-06). The first
+        version read the parks off a query on the task's PARKED events, which
+        needs `datastore.entities.list`. The tenant worker role
+        (`swarmTenantWorkerFirestore`, terraform/bootstrap/platform_roles.tf)
+        drops that permission on purpose, so a worker cannot enumerate another
+        tenant's documents: the query 403'd on every attempt in dev and nothing
+        was ever carried. A park now writes its uploads to
+        `tasks/{task}/carry/{attempt}` and lists itself on
+        `tasks/{task}/carry/parks`, in its own fenced transaction
+        (`_record_parked_uploads`); this reads the index and then each record,
+        each with a plain get.
 
-        One query on the task's own `events` subcollection, by type, which the
-        single-field index Firestore keeps on `type` serves. Called once, as
-        the finishing attempt describes its result; outside the startup window,
-        so it keeps the library's defaults like the rest of that epilogue.
+        `(attempt_id, artifacts)` per park, in the order the parks happened,
+        this attempt's own excluded. Every document is checked against this
+        worker's tenant, as every read here is, and a record that names
+        another task or another attempt than its id is refused the same way:
+        it is not this task's park. Called once, as the finishing attempt
+        describes its result; outside the startup window, so it keeps the
+        library's defaults like the rest of that epilogue.
         """
-        query = (
-            self._task_ref()
-            .collection("events")
-            .where("type", "==", EventType.PARKED.value)
+        carry = self._task_ref().collection(CARRY_COLLECTION)
+        index_snap = carry.document(CARRY_INDEX_ID).get()
+        if not index_snap.exists:
+            return []
+        index = self._assert_tenant(
+            index_snap.to_dict() or {}, kind="carry index", document_id=CARRY_INDEX_ID
         )
+        listed = index.get("attempts")
+        attempt_ids: list[str] = []
+        for item in listed if isinstance(listed, list) else []:
+            attempt_id = item.get("attempt_id") if isinstance(item, dict) else None
+            if (
+                isinstance(attempt_id, str)
+                and _is_carry_attempt_id(attempt_id)
+                and attempt_id != self.attempt_id
+                and attempt_id not in attempt_ids
+            ):
+                attempt_ids.append(attempt_id)
         found: list[tuple[Any, str, list[Any]]] = []
-        for snap in query.stream():
-            event = self._assert_tenant(snap.to_dict() or {}, kind="event", document_id=snap.id)
-            attempt_id = event.get("attempt_id")
-            detail = event.get("detail")
-            if not isinstance(attempt_id, str) or attempt_id == self.attempt_id:
+        for attempt_id in attempt_ids:
+            snap = carry.document(attempt_id).get()
+            if not snap.exists:
                 continue
-            if not isinstance(detail, dict) or not isinstance(detail.get("artifacts"), list):
+            record = self._assert_tenant(
+                snap.to_dict() or {}, kind="carry record", document_id=attempt_id
+            )
+            if record.get("task_id") != self.task_id or record.get("attempt_id") != attempt_id:
+                raise TenantMismatchError(
+                    kind="carry record",
+                    document_id=attempt_id,
+                    expected=f"{self.task_id}/{attempt_id}",
+                    actual=f"{record.get('task_id')}/{record.get('attempt_id')}",
+                )
+            artifacts = record.get("artifacts")
+            if not isinstance(artifacts, list):
                 continue
-            found.append((_as_datetime(event.get("at")), attempt_id, detail["artifacts"]))
+            found.append((_as_datetime(record.get("at")), attempt_id, artifacts))
         found.sort(key=lambda item: (item[0] is None, item[0] or datetime.min))
         return [(attempt_id, artifacts) for _, attempt_id, artifacts in found]
+
+    def _read_carry_index(self, txn: Any) -> dict[str, Any] | None:
+        """The task's carry index as `txn` reads it, for `_record_parked_uploads`.
+
+        A READ, so it is made before the transaction's first write, which
+        Firestore requires. None when there is none yet.
+        """
+        ref = self._task_ref().collection(CARRY_COLLECTION).document(CARRY_INDEX_ID)
+        snap = _snapshot(txn.get(ref, **self.call_options()))
+        if not snap.exists:
+            return None
+        return self._assert_tenant(
+            snap.to_dict() or {}, kind="carry index", document_id=CARRY_INDEX_ID
+        )
+
+    def _record_parked_uploads(
+        self, txn: Any, index: dict[str, Any] | None, artifacts: list[Any], *, at: datetime
+    ) -> None:
+        """Write this park's uploads where the next attempt gets them by id (#166).
+
+        Two documents under the task's own: `carry/{attempt}`, the upload
+        manifest, and `carry/parks`, the index of the attempts that parked.
+        One record per attempt keeps each document the size of one manifest,
+        well under Firestore's 1 MiB, however many times a task parks. Written
+        in the park's own transaction, after its fence read: a superseded
+        attempt is refused before this, so it records nothing (invariant 5).
+        """
+        carry = self._task_ref().collection(CARRY_COLLECTION)
+        txn.set(
+            carry.document(self.attempt_id),
+            {
+                "tenant_id": self.tenant_id,
+                "task_id": self.task_id,
+                "attempt_id": self.attempt_id,
+                "at": at,
+                "artifacts": list(artifacts),
+            },
+        )
+        listed = (index or {}).get("attempts")
+        attempts = [
+            item for item in (listed if isinstance(listed, list) else [])
+            if isinstance(item, dict) and item.get("attempt_id") != self.attempt_id
+        ]
+        attempts.append({"attempt_id": self.attempt_id, "at": at})
+        txn.set(
+            carry.document(CARRY_INDEX_ID),
+            {
+                "tenant_id": self.tenant_id,
+                "task_id": self.task_id,
+                "attempts": attempts,
+                "updated_at": at,
+            },
+        )
 
     # -- fencing -----------------------------------------------------------
     def validate_generation(self) -> ControlSignals:
@@ -1125,6 +1227,7 @@ class ControlPlane:
         *,
         fields: dict[str, Any] | None = None,
         events: Sequence[tuple[EventType, dict[str, Any]]] = (),
+        parked_uploads: list[Any] | None = None,
     ) -> None:
         """Move the task to `to_state`, ONLY while this attempt still owns it.
 
@@ -1140,6 +1243,10 @@ class ControlPlane:
         announcement lands even when the write it announces is refused, in a
         stream that by then belongs to a newer generation.
 
+        `parked_uploads`, from `park` only, is the parking attempt's upload
+        manifest, recorded in the same transaction for the attempt that
+        finishes the task (`_record_parked_uploads`, #166).
+
         Raises `FencedWriteRefused` with nothing written, events included.
         """
         write = f"transition to {to_state.value}"
@@ -1153,8 +1260,11 @@ class ControlPlane:
             current = _as_state(task.get("state"))
             if current is not to_state:
                 assert_transition(current, to_state)
+            index = self._read_carry_index(txn) if parked_uploads else None
             for ref, document in announced:
                 txn.set(ref, document)
+            if parked_uploads:
+                self._record_parked_uploads(txn, index, parked_uploads, at=utcnow())
             if current is to_state:
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
@@ -1633,7 +1743,13 @@ class ControlPlane:
         document kept `completed_at: None` and read as still running, in the
         timeline and to the checkpoint collector. A fenced park raises in the
         transition, so it closes no document.
+
+        THE UPLOADS ARE RECORDED IN THE SAME TRANSACTION (#166): a park that
+        uploaded passes its manifest as `detail["artifacts"]`, and it is
+        written where the finishing attempt reads it by id
+        (`parked_uploads`). A fenced park records nothing.
         """
+        uploads = (detail or {}).get("artifacts")
         self.transition(
             TaskState.PARKED,
             fields={
@@ -1643,6 +1759,7 @@ class ControlPlane:
                 "blocked_by": [{"reason": reason.value, **(detail or {})}],
             },
             events=announce,
+            parked_uploads=uploads if isinstance(uploads, list) else None,
         )
         # Best effort: the park has landed, and a failure here must not stop
         # the event and the lease release below, which give the slot back.
@@ -1664,6 +1781,7 @@ class ControlPlane:
         *,
         max_resumes: int,
         detail: dict[str, Any] | None = None,
+        uploads: list[Any] | None = None,
     ) -> bool:
         """The await park (docs/design/child-tasks.md §3.3): checkpointed and
         uploaded already; now PARKED on CHILDREN_INCOMPLETE, slot given back.
@@ -1687,6 +1805,10 @@ class ControlPlane:
         attempt document, so this one has ended. Without it a parent cancelled
         while it waited read as one attempt still running. A fenced await park
         raises in the transaction and closes no document.
+
+        `uploads`, the manifest of what this attempt uploaded before the park,
+        is recorded in the same transaction, as `park` records it (#166), for
+        the attempt that resumes the parent and finishes it.
         """
         write = "await park"
         reason = ParkReason.CHILDREN_INCOMPLETE
@@ -1696,6 +1818,7 @@ class ControlPlane:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             assert_transition(current, TaskState.PARKED)
+            index = self._read_carry_index(txn) if uploads else None
             metadata = dict(task.get("metadata") or {})
             used = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
             used = used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else 0
@@ -1714,6 +1837,8 @@ class ControlPlane:
                 payload["metadata"] = metadata
                 payload["attempt_count"] = attempt_count - 1
             txn.update(self._task_ref(), payload)
+            if uploads:
+                self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, used + (1 if refund else 0)
 
         refunded, resumes = self._run_transaction(_apply)
