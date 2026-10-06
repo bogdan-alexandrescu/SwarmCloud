@@ -473,7 +473,9 @@ class Scheduler:
         whichever of the event and the tick gets there second finds the task
         READY, not PARKED, and writes nothing: a duplicate event, a redelivery
         and the tick after an event are all no-ops (the dependants query no
-        longer returns the task at all).
+        longer returns the task at all). A dependant this cancels has ended
+        too, so its own dependants are resolved in the same event
+        (`_release_chain`), rather than one tick per link.
 
         THEN ONE ADMISSION PASS, `_admission_pass`, with the released tasks
         added to the slice: the same `_admit_one`, the same all-or-nothing
@@ -506,12 +508,7 @@ class Scheduler:
             report.stop_reason = "not_terminal"
             return self._end_finish_event(report, started)
 
-        released: list[str] = []
-        for task in self._store.dependants_waiting_on(
-            parent, self._settings.dependency_sweep_size
-        ):
-            if self._resolve_dependency(task, report):
-                released.append(task.id)
+        released = self._release_chain(parent, report)
         report.promoted_dependencies = len(released)
 
         # Re-read: each `_admit_one` write is guarded on the state it was
@@ -524,6 +521,43 @@ class Scheduler:
         self._admission_pass(report, started, include=fresh)
         report.stop_reason = "task_finished"
         return self._end_finish_event(report, started)
+
+    def _release_chain(self, parent: Task, report: DrainReport) -> list[str]:
+        """Resolve `parent`'s dependants, and the dependants of any this cancels.
+
+        A dependant the rule CANCELS -- its parent did not succeed -- has
+        itself reached a terminal state, and no worker will ring a wake for
+        it. Stopping at the first level left its own dependants PARKED until
+        the next drain's sweep, one tick per link of the chain (#636). So a
+        task cancelled here is resolved in turn, breadth first, through the
+        same `_resolve_dependency`, with the same tenant filter in
+        `dependants_waiting_on` (invariant 9).
+
+        Only a cancel extends the chain. A promoted dependant is READY, not
+        ended; its dependants wait for its own finish. Bounded by
+        `dependency_sweep_size` tasks in all, and by a visited set; whatever
+        the bound leaves is the next drain's, as before. Returns the ids
+        promoted, for the admission pass.
+        """
+        budget = self._settings.dependency_sweep_size
+        released: list[str] = []
+        visited: set[str] = {parent.id}
+        ended: list[Task] = [parent]
+        while ended and budget > 0:
+            current = ended.pop(0)
+            for task in self._store.dependants_waiting_on(current, budget):
+                if task.id in visited or budget <= 0:
+                    continue
+                visited.add(task.id)
+                budget -= 1
+                cancels_before = report.cancelled
+                if self._resolve_dependency(task, report):
+                    released.append(task.id)
+                elif report.cancelled > cancels_before:
+                    fresh = self._store.get_task(task.id)
+                    if fresh is not None and fresh.state in TERMINAL_STATES:
+                        ended.append(fresh)
+        return released
 
     def _end_finish_event(self, report: DrainReport, started: float) -> DrainReport:
         report.duration_seconds = self._monotonic() - started

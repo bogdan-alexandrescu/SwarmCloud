@@ -85,6 +85,31 @@ class NullWaker:
         return False
 
 
+#: The wake reason the scheduler's `/pubsub/push` routes to
+#: `Scheduler.release_dependants` (#636). The worker publishes it after its
+#: own terminal write (`agent_worker.finishwake`); swarm-api publishes it for
+#: a task it ends itself, which no worker will ever ring for.
+TASK_FINISHED = "task_finished"
+
+
+def ring(waker: SchedulerWaker, metrics: Any, reason: str, **attributes: str) -> bool:
+    """`waker.wake`, never raising, counting a configured waker's failure.
+
+    For a write that is already durable when this runs: a lost wake costs one
+    safety tick, so it must never fail the request that wrote it.
+    """
+    try:
+        woke = bool(waker.wake(reason, **attributes))
+    except Exception as exc:  # the transport's type only; its text can name the request
+        log.warning("scheduler wake raised reason=%s: %s", reason, type(exc).__name__)
+        woke = False
+    if not woke and getattr(waker, "enabled", True):
+        failures = getattr(metrics, "wake_failures", None)
+        if failures is not None:
+            failures.inc()
+    return woke
+
+
 def waker_for(settings: Any) -> SchedulerWaker:
     """The deployment's waker: Pub/Sub on DISPATCH_TOPIC, or none without one."""
     topic = str(getattr(settings, "dispatch_topic", "") or "").strip()

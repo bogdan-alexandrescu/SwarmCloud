@@ -42,6 +42,7 @@ from ..deps import (
 )
 from ..schemas import WorkflowCreate
 from ..stalls import stalled_workflows
+from ..waker import ring
 
 log = logging.getLogger(__name__)
 
@@ -264,4 +265,15 @@ def cancel_workflow(
             log.exception("child cascade of step %s failed; the scheduler sweep retries it", task_id)
     for child_target in children:
         background.add_task(ctx.executions.cancel, child_target)
+    # ONE DRAIN, NOT ONE FINISH WAKE PER STEP (#636). Every step of this
+    # workflow is cancelled here, so no dependant inside it waits to be
+    # released; what a cancel can free is capacity -- a step with no live
+    # worker gives its lease back in its cancel -- and READY work elsewhere
+    # waited a safety tick for it. A drain admits that work and runs the
+    # dependency sweep too. After the response, as the task route does.
+    if result.get("tasks_cancelled"):
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, "workflow_cancelled",
+            tenant_id=tenant_id, workflow_id=workflow_id,
+        )
     return result

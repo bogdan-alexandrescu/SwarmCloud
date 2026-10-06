@@ -103,7 +103,7 @@ from .validation import (
     validate_timeout,
     workflow_label,
 )
-from .waker import SchedulerWaker
+from .waker import SchedulerWaker, ring
 
 log = logging.getLogger(__name__)
 
@@ -1032,14 +1032,9 @@ class SubmissionService:
     # -- plumbing ---------------------------------------------------------
 
     def _wake(self, reason: str, **attributes: str) -> bool:
-        """Best effort. The submission is already durable when this runs."""
-        try:
-            woke = self._waker.wake(reason, **attributes)
-        except Exception as exc:  # pragma: no cover - transport level
-            log.warning("scheduler wake raised: %r", exc)
-            woke = False
-        # Only a configured waker that failed is worth alerting on; a deployment
-        # with no topic drains on the Cloud Scheduler safety tick by design.
-        if not woke and getattr(self._waker, "enabled", True):
-            self._metrics.wake_failures.inc()
-        return woke
+        """Best effort. The submission is already durable when this runs.
+
+        Only a configured waker that failed is counted; a deployment with no
+        topic drains on the Cloud Scheduler safety tick by design (`ring`).
+        """
+        return ring(self._waker, self._metrics, reason, **attributes)
