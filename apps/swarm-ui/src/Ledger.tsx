@@ -265,8 +265,10 @@ export function LedgerTable({ data }: { data: Outcomes }) {
           <tr>
             <th scope="col">{bucket === 'hour' ? 'Hour' : bucket === 'day' ? 'Day' : bucket === 'week' ? 'Week' : 'Month'}</th>
             <th scope="col" className="is-num">Succeeded</th>
-            <th scope="col" className="is-num">Failed</th>
-            <th scope="col" className="is-num">Dead-lettered</th>
+            {/* ONE FAILED COLUMN, FAILED + DEAD_LETTERED (#123): the count the
+                drawing and the readout use, so Succeeded + Failed + Cancelled
+                is Finished on every row. */}
+            <th scope="col" className="is-num">Failed · incl. dead-lettered</th>
             <th scope="col" className="is-num">Rate · k of n · 95 %</th>
             <th scope="col" className="is-num">Cancelled · requested or other / after a failure / after a cancel</th>
             {/* The one column on the submission-time basis says so, in the
@@ -283,7 +285,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                 {b.in_progress && <span className="ctl-sub"> so far</span>}
               </th>
               {b.state === 'unread' ? (
-                <td colSpan={7}>
+                <td colSpan={6}>
                   <Mark
                     kind="unread"
                     say={`${bucketName(b.start, bucket, tz)} was not read: ${unreadWords(b.unread_reason)}. No count is shown for it.`}
@@ -293,8 +295,10 @@ export function LedgerTable({ data }: { data: Outcomes }) {
               ) : (
                 <>
                   <td className="is-num">{b.succeeded}</td>
-                  <td className="is-num">{b.failed}</td>
-                  <td className="is-num">{b.dead_lettered}</td>
+                  <td className="is-num">
+                    {(b.failed ?? 0) + (b.dead_lettered ?? 0)}
+                    {(b.dead_lettered ?? 0) > 0 && <span className="ctl-sub"> · {b.dead_lettered} dead-lettered</span>}
+                  </td>
                   <td className="is-num">
                     {b.rate === null ? (
                       <span className="ol-phrase">nothing decided</span>
