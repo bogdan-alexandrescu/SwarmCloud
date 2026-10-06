@@ -1127,6 +1127,21 @@ tenant's existing `-git` token, in the workflow's own repository, and then
 closes the issues the pull request closes. The design and every refusal are
 in [merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
 
+**Revised 2026-10-06 (owner), design only -- lane MS0, part of #352.** The
+step becomes the last of implement → review → fix → merge on any repository
+a workflow runs on, and replaces `auto-merge.yml` for SwarmCloud's own pull
+requests once it has merged about ten cleanly. While the pull request's
+checks run it will park as `CI_PENDING`, holding nothing, instead of failing
+attempts. A per-tenant tick in swarm-api re-reads the checks with the
+tenant's `-git` token and marks it for wake. If the base requires an
+up-to-date branch and the branch is behind, the step updates it and parks
+again. Every refusal ends `MERGE_REFUSED` with its code. The lifecycle, the
+token's permissions, the invariants, the retirement and the lanes MS1-MS7
+that build it are in
+[merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs).
+Until MS2 lands, the step waits as described below
+(`MERGE_STEP_MAX_ATTEMPTS`, READY between attempts).
+
 The review shape above, ending in a merge:
 
 ```bash
