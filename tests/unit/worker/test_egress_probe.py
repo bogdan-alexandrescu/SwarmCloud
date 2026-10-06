@@ -12,8 +12,9 @@ Pinned here, with no network: every connect is a stand-in.
 * the clone waits for the clone host's answer, and only for that;
 * a worker run writes ONE `egress_ready` mark with the numbers, and leaves no
   probe thread running once startup is over;
-* the targets: github.com always, the clone host when it is elsewhere, none
-  for a repository with no network host.
+* the targets: github.com always, from process start; the clone host when it
+  is elsewhere, added once the signed task document names it -- which is the
+  only place production carries the repository.
 """
 
 from __future__ import annotations
@@ -171,8 +172,10 @@ def test_the_targets_are_github_and_the_clone_host_when_elsewhere():
     assert egress.probe_targets("git@git.example.com:a/b.git") == [
         GITHUB, ("git.example.com", 22),
     ]
-    assert egress.probe_targets("file:///srv/origin.git") == []
-    assert egress.probe_targets(None) == []
+    # github.com whatever the repository: the probe starts before the task
+    # document that names it is read.
+    assert egress.probe_targets("file:///srv/origin.git") == [GITHUB]
+    assert egress.probe_targets(None) == [GITHUB]
 
 
 def test_each_target_is_probed_until_it_answers():
@@ -192,6 +195,86 @@ def test_each_target_is_probed_until_it_answers():
     by_host = {t["host"]: t for t in probe.result()["targets"]}
     assert by_host["github.com"]["probe_attempts"] == 1
     assert by_host["git.example.com"]["probe_attempts"] == 3
+
+
+def test_a_target_added_to_a_running_probe_is_probed():
+    tries: dict[tuple, int] = {}
+    release = threading.Event()
+
+    def connect(target, timeout=None):
+        tries[target] = tries.get(target, 0) + 1
+        if target == GITHUB:
+            # github.com holds out until the clone host has been added, so
+            # the thread is still running when it is.
+            if not release.is_set():
+                raise OSError("dropped")
+            return _Conn()
+        if tries[target] >= 2:
+            return _Conn()
+        raise OSError("dropped")
+
+    other = ("git.example.com", 443)
+    probe = egress.EgressProbe([GITHUB], connect=connect, interval_seconds=0.01)
+    probe.start()
+    assert probe.running
+    probe.add_target(other)
+    release.set()
+    assert probe.covers(other)
+    assert probe.wait(other, timeout=5) is True
+    assert probe.wait(GITHUB, timeout=5) is True
+    probe.stop()
+    by_host = {t["host"]: t for t in probe.result()["targets"]}
+    assert by_host["git.example.com"]["probe_attempts"] == 2
+    assert by_host["git.example.com"]["ready"] is True
+    assert _probe_threads() == []
+
+
+def test_a_target_added_after_every_other_answered_restarts_the_probe():
+    tries: dict[tuple, int] = {}
+
+    def connect(target, timeout=None):
+        tries[target] = tries.get(target, 0) + 1
+        if target == GITHUB or tries[target] >= 3:
+            return _Conn()
+        raise OSError("dropped")
+
+    other = ("git.example.com", 443)
+    probe = egress.EgressProbe([GITHUB], connect=connect, interval_seconds=0.0)
+    probe.start()
+    assert probe.wait(GITHUB, timeout=5) is True
+    probe._thread.join(5)
+    assert probe.result()["ended"] == "ready"
+    assert not probe.running
+
+    probe.add_target(other)
+    assert probe.wait(other, timeout=5) is True
+    probe.stop()
+    result = probe.result()
+    assert result["ended"] == "ready"
+    by_host = {t["host"]: t for t in result["targets"]}
+    assert by_host["github.com"]["probe_attempts"] == 1
+    assert by_host["git.example.com"]["probe_attempts"] == 3
+    assert _probe_threads() == []
+
+
+def test_a_target_added_after_the_cap_is_not_probed_and_never_waited_for():
+    clock = _Clock()
+    connect, calls = _never_answers(clock)
+    probe = egress.EgressProbe(
+        [GITHUB], connect=connect, clock=clock, cap_seconds=2.0, interval_seconds=0.0,
+    )
+    probe.start()
+    assert probe.wait(GITHUB, timeout=5) is False
+    seen = len(calls)
+    other = ("git.example.com", 443)
+    probe.add_target(other)
+    started = time.monotonic()
+    assert probe.wait(other, timeout=5) is False
+    assert time.monotonic() - started < 1
+    assert len(calls) == seen
+    assert probe.result()["ended"] == "cap"
+    probe.stop()
+    assert _probe_threads() == []
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +422,103 @@ def test_a_worker_whose_probe_never_answers_still_clones_and_leaves_no_thread(
     assert _probe_threads() == []
 
 
-def test_a_task_without_a_network_repository_starts_no_probe(db, worker_factory):
+def _repository_on_the_document_only(db, url: str) -> None:
+    """As production dispatches: no REPOSITORY_URL in the worker's
+    environment (`scheduler.dispatch.worker_env` sets none), the repository
+    only on the task document, which the factory then signs."""
+    db.documents["tasks/task_1"]["repository_url"] = url
+
+
+def test_the_probe_runs_when_the_repository_is_only_on_the_task_document(
+    db, worker_factory, monkeypatch
+):
+    seed_attempt(db)
+    _repository_on_the_document_only(db, "https://github.com/acme/widgets.git")
+    seen: dict = {}
+    monkeypatch.setattr(lifecycle, "shallow_clone", _fake_clone(seen))
+    worker, config, _ = worker_factory()
+    assert config.repository_url is None
+    connect, calls, _ = _answers_on(3)
+    worker.egress_connect = connect
+    worker.egress_interval_seconds = 0.0
+
+    assert worker.run() == ExitCode.OK
+
+    assert isinstance(seen["egress"], egress.EgressProbe)
+    assert seen["answered_before_clone"] is True
+    (event,) = _marks(db)
+    detail = event["detail"]["egress"]
+    assert detail["probe_attempts"] == 3
+    assert detail["ended"] == "ready"
+    assert [c[0] for c in calls] == [GITHUB] * 3
+    assert _probe_threads() == []
+
+
+def test_a_clone_host_named_only_on_the_task_document_is_probed_too(
+    db, worker_factory, monkeypatch
+):
+    seed_attempt(db)
+    _repository_on_the_document_only(db, "https://git.example.com/acme/widgets.git")
+    seen: dict = {}
+    monkeypatch.setattr(lifecycle, "shallow_clone", _fake_clone(seen))
+    worker, config, _ = worker_factory()
+    assert config.repository_url is None
+    other = ("git.example.com", 443)
+    tries: dict[tuple, int] = {}
+
+    def connect(target, timeout=None):
+        tries[target] = tries.get(target, 0) + 1
+        if target == GITHUB or tries[target] >= 2:
+            return _Conn()
+        raise OSError("dropped")
+
+    worker.egress_connect = connect
+    worker.egress_interval_seconds = 0.0
+
+    assert worker.run() == ExitCode.OK
+
+    assert seen["answered_before_clone"] is True
+    (event,) = _marks(db)
+    by_host = {t["host"]: t for t in event["detail"]["egress"]["targets"]}
+    assert by_host["github.com"]["ready"] is True
+    assert by_host["git.example.com"]["ready"] is True
+    assert by_host["git.example.com"]["probe_attempts"] == 2
+    assert tries[other] == 2
+    assert _probe_threads() == []
+
+
+def test_a_startup_that_fails_still_records_egress_ready(
+    db, worker_factory, monkeypatch
+):
+    seed_attempt(db)
+    _repository_on_the_document_only(db, "https://github.com/acme/widgets.git")
+
+    def broken_clone(**_kwargs):
+        raise gitops.GitError("remote: Repository not found.")
+
+    monkeypatch.setattr(lifecycle, "shallow_clone", broken_clone)
+    worker, _, _ = worker_factory()
+    connect, _, _ = _answers_on(2)
+    worker.egress_connect = connect
+    worker.egress_interval_seconds = 0.0
+
+    assert worker.run() != ExitCode.OK
+
+    (event,) = _marks(db)
+    assert event["detail"]["egress"]["probe_attempts"] == 2
+    assert _probe_threads() == []
+
+
+def test_a_task_without_a_repository_probes_github_and_leaves_no_thread(
+    db, worker_factory
+):
     seed_attempt(db)
     worker, _, _ = worker_factory()
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a task with nothing to clone probed the network")
-
-    worker.egress_connect = refuse
+    connect, calls, _ = _answers_on(1)
+    worker.egress_connect = connect
     assert worker.run() == ExitCode.OK
+    # Started before the document was read, so on github.com alone; stopped
+    # with the startup window. No clone, so no mark: nothing waited for it.
+    assert {c[0] for c in calls} <= {GITHUB}
     assert _marks(db) == []
     assert _probe_threads() == []

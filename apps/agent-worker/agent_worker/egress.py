@@ -85,21 +85,26 @@ def target_of(url: str | None) -> tuple[str, int] | None:
 def probe_targets(repository_url: str | None) -> list[tuple[str, int]]:
     """github.com:443, and the clone host when the repository is elsewhere.
 
-    Empty when there is no network repository to clone: then nothing waits for
-    the probe, and a probe nobody waits for is a thread for nothing.
+    github.com always, repository or not: the worker starts the probe at the
+    top of `run`, before it has read the task document, and the dispatcher
+    sets no REPOSITORY_URL -- the repository is on the signed task document
+    (`Worker._maybe_clone`). The clone host joins later through
+    `EgressProbe.add_target` once that document is verified.
     """
     clone = target_of(repository_url)
-    if clone is None:
-        return []
-    return [DEFAULT_TARGET] if clone == DEFAULT_TARGET else [DEFAULT_TARGET, clone]
+    if clone is None or clone == DEFAULT_TARGET:
+        return [DEFAULT_TARGET]
+    return [DEFAULT_TARGET, clone]
 
 
 class EgressProbe:
     """A background thread that connects to each target until it answers.
 
-    `start` returns at once. `wait(target, timeout)` blocks until that target
-    answered, the probe ended, or `timeout`; it never raises. `stop` ends the
-    thread and joins it. `result()` is what the `egress_ready` mark carries.
+    `start` returns at once. `add_target` probes one more host from then on
+    (the clone host, known only once the task document is read). `wait(target,
+    timeout)` blocks until that target answered, the probe ended, or
+    `timeout`; it never raises. `stop` ends the thread and joins it.
+    `result()` is what the `egress_ready` mark carries.
     """
 
     def __init__(
@@ -136,11 +141,54 @@ class EgressProbe:
             return
         self._started_at = self._clock()
         if not self.targets:
-            self._ended = "no_targets"
+            with self._lock:
+                self._ended = "no_targets"
             self._finished.set()
             return
         self._thread = threading.Thread(target=self._run, name="egress-probe", daemon=True)
         self._thread.start()
+
+    def add_target(self, target: tuple[str, int] | None) -> None:
+        """Probe `target` too, from now on. Thread-safe; never raises.
+
+        The running loop picks it up on its next round. A probe whose thread
+        already ended because every target had answered is started again for
+        it, within the same cap counted from the same start; one that ended
+        on its cap or was stopped is not -- `wait` then returns False at once
+        and the clone runs as before.
+        """
+        if target is None:
+            return
+        with self._lock:
+            if target in self._answered:
+                return
+            self.targets.append(target)
+            self._answered[target] = threading.Event()
+            self._attempts[target] = 0
+            thread = self._thread
+            # "ready" is written under this lock as the thread's last act
+            # before it returns, so the thread is done with every target.
+            restart = (
+                thread is not None
+                and self._ended == "ready"
+                and not self._stop.is_set()
+            )
+        if restart:
+            # Joined first, so its last `_finished.set()` cannot land after
+            # the clear below.
+            self._join_quietly(thread)
+            with self._lock:
+                self._ended = None
+            self._finished.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="egress-probe", daemon=True
+            )
+            self._thread.start()
+
+    @staticmethod
+    def _join_quietly(thread: threading.Thread | None) -> None:
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(EGRESS_STOP_JOIN_SECONDS)
 
     def stop(self) -> None:
         """End the probe and join its thread. Idempotent; never raises."""
@@ -174,7 +222,7 @@ class EgressProbe:
         """Numbers only: per target, when it answered and after how many tries."""
         with self._lock:
             targets = []
-            for host, port in self.targets:
+            for host, port in list(self.targets):
                 entry: dict[str, Any] = {
                     "host": host,
                     "port": port,
@@ -204,27 +252,39 @@ class EgressProbe:
         connect = self._connect or socket.create_connection
         try:
             while not self._stop.is_set():
-                pending = [t for t in self.targets if not self._answered[t].is_set()]
-                if not pending:
-                    self._ended = "ready"
-                    return
+                with self._lock:
+                    pending = [t for t in self.targets if not self._answered[t].is_set()]
+                    if not pending:
+                        # Under the lock, so an `add_target` racing this sees
+                        # either the target picked up or the probe "ready".
+                        self._ended = "ready"
+                        return
                 round_start = self._clock()
                 if round_start - start >= self.cap_seconds:
-                    self._ended = "cap"
+                    self._set_ended("cap")
                     return
                 for target in pending:
                     if self._stop.is_set():
                         break
                     self._try(connect, target, start)
                 left = self.interval_seconds - (self._clock() - round_start)
-                if left > 0 and any(not self._answered[t].is_set() for t in self.targets):
+                with self._lock:
+                    waiting = any(not self._answered[t].is_set() for t in self.targets)
+                if left > 0 and waiting:
                     self._stop.wait(left)
-            if self._ended is None:
-                self._ended = "stopped"
+            # Stopped after every target had answered is still "ready".
+            with self._lock:
+                if self._ended is None:
+                    done = all(self._answered[t].is_set() for t in self.targets)
+                    self._ended = "ready" if done else "stopped"
         except Exception as exc:  # a measurement never takes the worker down
-            self._ended = f"error: {type(exc).__name__}"
+            self._set_ended(f"error: {type(exc).__name__}")
         finally:
             self._finished.set()
+
+    def _set_ended(self, reason: str) -> None:
+        with self._lock:
+            self._ended = reason
 
     def _try(self, connect: Connect, target: tuple[str, int], start: float) -> None:
         with self._lock:
