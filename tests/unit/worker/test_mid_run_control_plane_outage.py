@@ -209,3 +209,127 @@ def test_each_mid_run_call_carries_its_budget_and_the_heartbeat_stays_under_the_
     assert MID_RUN_BUDGETS["heartbeat"][0] == 90
     assert control.call_options("heartbeat")["retry"].timeout < control.heartbeat_extension_seconds
     assert control.call_options() == {}, "a call naming no budget keeps the library's defaults"
+
+
+# -- the mid-run credential reload's tenant read ----------------------------
+#
+# The sixth call #70 names. A runner whose credential was refused is restarted
+# in place after the worker re-reads its tenant and the secret (see
+# test_credential_reload.py). That re-read is a Firestore read made mid-run,
+# outside the startup window, and it kept the library's defaults -- up to
+# 300 s of retries with nothing beating -- and an error that outlasted them
+# reached the crash handler, which FAILED the task.
+
+
+@pytest.fixture
+def keyed_mock(db, monkeypatch):
+    """The mock runner, made to need a provider credential the tenant holds."""
+    from dataclasses import replace
+
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    monkeypatch.setitem(
+        RUNNER_PROFILES,
+        "mock",
+        replace(RUNNER_PROFILES["mock"], provider="anthropic", secrets=("ANTHROPIC_API_KEY",)),
+    )
+    seed_attempt(
+        db,
+        task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.01},
+        simulated={"credential_revoked_times": 1},
+    )
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["anthropic"]
+
+
+class TenantReads:
+    """Every read of the tenant document; unreachable while `down` is set."""
+
+    def __init__(self) -> None:
+        self.on = False
+        self.down = False
+        self.mid_run: list[dict[str, Any]] = []
+
+    def install(self, monkeypatch) -> None:
+        real = fakes.FakeDocumentRef.get
+
+        def get(ref, *args: Any, **kwargs: Any) -> Any:
+            if self.on and ref.path.startswith("tenants/"):
+                self.mid_run.append(kwargs)
+                if self.down:
+                    raise core.ServiceUnavailable(f"firestore unreachable for {ref.path}")
+            return real(ref, *args, **kwargs)
+
+        monkeypatch.setattr(fakes.FakeDocumentRef, "get", get)
+
+
+def _tenant_reads_once_the_runner_starts(worker, monkeypatch, *, down: bool) -> TenantReads:
+    reads = TenantReads()
+    reads.down = down
+    reads.install(monkeypatch)
+    supervised = worker._run_child_supervised
+
+    def run(child_env):
+        reads.on = True
+        return supervised(child_env)
+
+    worker._run_child_supervised = run  # type: ignore[method-assign]
+    return reads
+
+
+def test_the_credential_reloads_tenant_read_carries_its_mid_run_budget(
+    db, keyed_mock, worker_factory, monkeypatch
+):
+    worker, _, _ = worker_factory()
+    reads = _tenant_reads_once_the_runner_starts(worker, monkeypatch, down=False)
+
+    assert worker.run() == ExitCode.OK
+    assert reads.mid_run, "the reload never read the tenant, so nothing was measured"
+    deadline, timeout = MID_RUN_BUDGETS["tenant"]
+    for options in reads.mid_run:
+        assert options.get("timeout") == timeout, options
+        assert options["retry"].timeout == deadline, options
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+
+
+def test_a_credential_reload_that_cannot_reach_firestore_exits_69_never_failed(
+    db, store, keyed_mock, worker_factory, monkeypatch, log_stream
+):
+    worker, _, _ = worker_factory()
+    reads = _tenant_reads_once_the_runner_starts(worker, monkeypatch, down=True)
+
+    assert worker.run() == ExitCode.UNAVAILABLE
+    assert reads.mid_run, "the reload never read the tenant, so nothing was measured"
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.RUNNING.value, "an outage was written as the task's end"
+    assert EventType.FAILED.value not in db.event_types("task_1")
+    attempt = db.doc("attempts/att_1")
+    assert attempt["exit_code"] == ExitCode.UNAVAILABLE == 69
+    assert "control_plane_outage" in attempt["error"]
+    labels = [
+        json.loads(store.download_bytes(key)).get("label")
+        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/")
+        if key.endswith("/manifest.json")
+    ]
+    assert "control_plane_outage" in labels, labels
+    records = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    assert not any("worker crashed" in r.get("message", "") for r in records)
+
+
+def test_a_reload_event_that_cannot_be_written_does_not_fail_the_attempt(
+    db, keyed_mock, worker_factory
+):
+    worker, _, _ = worker_factory()
+    real = worker.control.emit
+    refused: list[Any] = []
+
+    def emit(event_type, detail=None, *args: Any, **kwargs: Any):
+        if event_type == EventType.RETRYING and (detail or {}).get("cause") == "credential_reloaded":
+            refused.append(detail)
+            raise core.ServiceUnavailable("the event could not be written")
+        return real(event_type, detail, *args, **kwargs)
+
+    worker.control.emit = emit  # type: ignore[method-assign]
+
+    assert worker.run() == ExitCode.OK
+    assert refused, "the reload's event was never written, so nothing was measured"
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
