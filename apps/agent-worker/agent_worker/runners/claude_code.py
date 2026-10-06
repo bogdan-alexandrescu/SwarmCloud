@@ -137,7 +137,25 @@ def write_headless_settings(directory: Path) -> Path:
     hook = directory / "refuse-background.py"
     _write_private(hook, _HOOK)
     settings = {
-        "env": {NO_BACKGROUND_ENV: "1"},
+        "env": {
+            NO_BACKGROUND_ENV: "1",
+            # Observer P21, owner decision 2026-10-06: the CLI's 2-minute
+            # default Bash timeout killed a foreground command in 3 of 19
+            # chunk-2 steps, while the lane briefs allow any command up to 10
+            # minutes. Both at 10 minutes, so the default and the most a call
+            # may ask for match the briefs. Strings: the settings' env is.
+            "BASH_DEFAULT_TIMEOUT_MS": "600000",
+            "BASH_MAX_TIMEOUT_MS": "600000",
+        },
+        # #735, owner decision 2026-10-06: no attribution written at all, so
+        # no "Generated with" footer reaches a pr-body.md and no
+        # Co-Authored-By trailer a commit. The object form is the pinned
+        # CLI's (2.1.283) documented spelling of "hide all attribution";
+        # `includeCoAuthoredBy` is its deprecated predecessor, for a CLI that
+        # predates `attribution`. The worker still strips what gets through
+        # (`lifecycle.strip_attribution`).
+        "attribution": {"commit": "", "pr": "", "sessionUrl": False},
+        "includeCoAuthoredBy": False,
         "hooks": {
             "PreToolUse": [
                 {

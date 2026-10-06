@@ -424,7 +424,8 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
 #: request's title and body (#214), so a platform pull request can say what it
 #: closes. Read without following a link, scrubbed, bounded, and refused -- in
-#: favour of the generated text -- on attribution; see
+#: favour of the generated text -- on attribution (the body only when it is
+#: nothing but attribution: its attribution lines are removed, #735); see
 #: `Worker._agent_pull_request_text`.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
@@ -4585,8 +4586,9 @@ class Worker:
 
         Each is written into this attempt's artifacts folder, where the
         publish reads an agent's (`_agent_pull_request_text`), so it is
-        scrubbed, refused on attribution or a task id, and its mentions
-        neutralised exactly as an agent's own text is. With neither, nothing
+        scrubbed, refused on attribution (a body has its attribution lines
+        removed instead) or a task id, and its mentions neutralised exactly
+        as an agent's own text is. With neither, nothing
         is written, and the missing title fails the attempt as before. Where
         each came from is `result_summary.pull_request_text_from`.
         """
@@ -9179,7 +9181,10 @@ class Worker:
         * the title is ONE line -- a second line is refused, not joined -- and
           neither may carry attribution (`gitops.ATTRIBUTION_MARKERS`, the
           list the push check reads): the owner's rule is none on GitHub, and
-          the forge would carry it where the push check cannot see;
+          the forge would carry it where the push check cannot see. A title
+          carrying it is refused; the body has its attribution lines removed
+          (`strip_attribution`, #735) and is refused only when nothing
+          meaningful is left;
         * scrubbed of every registered secret, then every `@` that could
           mention given a zero-width joiner (`_neutralise_mentions`; a mention
           never refuses either file), THEN cut (the #232 rule): the title to
@@ -9200,9 +9205,13 @@ class Worker:
             text = raw.strip()
             if not text:
                 refused.append(f"{PR_BODY_FILE}: blank")
-            elif _carries_attribution(text):
-                refused.append(f"{PR_BODY_FILE}: carries attribution")
+            elif not (stripped := strip_attribution(text)):
+                # Only attribution, and nothing meaningful besides (#735).
+                refused.append(f"{PR_BODY_FILE}: only attribution")
             else:
+                if stripped is not text:
+                    self.log.info("removed the attribution lines from the agent's pull request body")
+                text = stripped
                 # Scrubbed FIRST, then every mention neutralised: a joiner
                 # inserted inside a registered value would stop the scrub
                 # matching it (owner decision, 2026-09-29: neutralised, never
@@ -10165,6 +10174,48 @@ class Worker:
 def _carries_attribution(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
+
+
+#: U+1F916 ROBOT FACE, which Claude Code's "Generated with" footer opens with.
+#: A line that starts with it is the footer, or what is left of one.
+_ROBOT_FACE = "\U0001f916"
+
+
+def _is_attribution_line(line: str) -> bool:
+    return _carries_attribution(line) or line.lstrip().startswith(_ROBOT_FACE)
+
+
+def strip_attribution(text: str) -> str:
+    """`text` without its attribution lines, or `text` itself when it has none (#735).
+
+    A line is attribution when it carries one of `gitops.ATTRIBUTION_MARKERS`
+    -- the "Generated with" footer, a `Co-Authored-By:` trailer, a link to
+    the tool -- or starts with the robot face the footer opens with. Those
+    lines are removed and nothing else is: a body with none is returned as
+    the same object, byte for byte. Where lines were removed, runs of blank
+    lines are collapsed to one and the ends trimmed, so the footer's
+    paragraph does not leave a gap.
+
+    The empty string means nothing meaningful was left -- no letter or digit
+    outside the removed lines, as when the body was only a footer, maybe
+    under a `---` rule -- and the caller falls back to the generated body.
+
+    OWNER DECISION, 2026-10-06: strip, don't drop. The worker used to refuse a
+    whole `pr-body.md` for its footer, so a body that said `Closes #N`
+    published without it (16 of 248 pull requests in 7 days).
+    """
+    lines = text.split("\n")
+    kept = [line for line in lines if not _is_attribution_line(line)]
+    if len(kept) == len(lines):
+        return text
+    collapsed: list[str] = []
+    for line in kept:
+        if line.strip() or (collapsed and collapsed[-1].strip()):
+            collapsed.append(line)
+    cleaned = "\n".join(collapsed).strip()
+    if not any(char.isalnum() for char in cleaned):
+        return ""
+    return cleaned
 
 
 #: Every `@` that could start a GitHub mention, written literally, as a
