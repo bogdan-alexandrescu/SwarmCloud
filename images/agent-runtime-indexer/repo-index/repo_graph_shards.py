@@ -41,9 +41,28 @@ dropped first (`call_edges:below_0.4` in `truncated`); still over, every
 symbol edge goes and the module-level `import` edges stay
 (`call_edges:symbol`); still over, nothing is written and the run says why.
 
-ORDER OF WRITES. Blobs first, never overwriting one that exists (`--no-clobber`
-on GCS: a blob's name is its content, so an existing one is already right);
-the manifest last, so a manifest never names a blob that is not there yet.
+ORDER OF WRITES, AND A RE-RUN (lane IX1, 2026-10-06). Blobs first, the
+manifest last, so a manifest never names a blob that is not there yet. A
+blob's name is the sha256 of its bytes, so a blob already at its path is
+WRITTEN when its content is ours -- checked against the listing's MD5, or by
+reading it back when the listing has none -- and a run interrupted after any
+number of blobs completes when it is run again. A path holding DIFFERENT
+bytes is a hard error (`ConflictError`): nothing overwrites it, and no
+manifest is written over it. Measured on task_209ba9e0c9c948e284e9: a
+write killed after 150 blobs, and the retry failed with a 412 on its first
+blob, because `GcsStore.list` kept the `#<generation>` a versioned bucket
+appends to every listed url, so no listed key ever matched a blob key, every
+blob read as absent and was put again with `--no-clobber`. The listing now
+names each object by its name, without the generation.
+
+IN BATCHES. One `gcloud storage cp --no-clobber` of many files per batch
+(`GcsStore.put_many`), which gcloud uploads in parallel, and only the blobs
+not already there. The serial writer it replaced started one process per
+blob at ~3.9 s each: a full graph of ~370 blobs took ~24 minutes, more than
+the 30-minute index run has once the extractor's ~6 minutes are spent.
+After the upload every blob is checked again, so a blob that appeared
+between the listing and the upload (a 412 in the batch) is accepted when it
+holds our bytes and refused when it does not.
 
 THE SWEEP. `sweep` lists every manifest of one registration and every blob,
 and deletes a blob only when (a) no manifest names it -- a promoted manifest
@@ -56,13 +75,15 @@ references it cannot see. Run as the tenant's own worker account, which may
 delete under `tenants/<tenant>/` and nowhere else (invariant 9); swarm-api
 reads the bucket and cannot delete, by design (`objects.py`).
 
-WHERE IT WRITES (lane RI9b). The indexer prompt (swarm_api.repoindex) runs
-`swarm-repo-graph write --graph <file> --repo-id <r> --destination
-tenants/<t>/repos/<r>/graph --index <repo-index.json>` and names no bucket and
-no tenant: both are the step's own configuration (`TENANT_ID`,
-`ARTIFACT_BUCKET`, set by dispatch), read by `resolve_target`. A destination,
-`--tenant` or `gs://` store that configuration contradicts is refused before
-anything is read or written (invariant 9).
+WHERE IT WRITES (lane RI9b; run by the worker since lane IX1). The worker
+runs `swarm-repo-graph write --graph <file> --repo-id <r> --destination
+tenants/<t>/repos/<r>/graph --tenant <t> --store gs://<bucket> --index
+<repo-index.json>` after the agent (agent_worker/indexrun.py), no longer the
+agent through its shell. The tenant and the bucket are the step's own
+configuration (`TENANT_ID`, `ARTIFACT_BUCKET`, set by dispatch), read by
+`resolve_target`. A destination, `--tenant` or `gs://` store that
+configuration contradicts is refused before anything is read or written
+(invariant 9).
 
 Standard library only: it runs with the image's python3.11, outside the
 extractor's tree-sitter environment, and on GCS through the image's `gcloud`
@@ -72,6 +93,7 @@ with the account the step already has. No credential passes through it.
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -108,6 +130,14 @@ LAYERS = ("symbols", "callers", "callees", "tests", "files")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _BLOB_NAME = re.compile(r"^([0-9a-f]{64})" + re.escape(BLOB_SUFFIX) + r"$")
+#: The `#<generation>` a versioned bucket's listing appends to an object's url.
+_GENERATION = re.compile(r"#\d+$")
+#: Files per `gcloud storage cp`: far below any argv limit (a blob path is
+#: about 120 bytes), and a full graph's ~370 blobs go up in one call.
+BATCH_FILES = 500
+#: Upload rounds: a round whose batch stopped on a blob that appeared
+#: meanwhile (a 412) is followed by one for what is still absent.
+UPLOAD_ROUNDS = 3
 
 
 # --- naming -------------------------------------------------------------------
@@ -156,6 +186,10 @@ class StoreError(Exception):
     """The store could not do what was asked. Never read as "absent"."""
 
 
+class ConflictError(StoreError):
+    """A write-once path already holds different bytes. Never overwritten."""
+
+
 class Store(Protocol):
     def list(self, prefix: str) -> list[tuple[str, datetime | None]]: ...
 
@@ -164,6 +198,18 @@ class Store(Protocol):
     def put(self, key: str, data: bytes, *, no_clobber: bool) -> None: ...
 
     def delete(self, key: str) -> None: ...
+
+
+#: Optional on a store, with a fallback for one that lacks it (`_md5s`,
+#: `_get_many`, `_put_many`):
+#:   md5s(prefix) -> {key: base64 MD5 or None}   what a listing says of each object
+#:   get_many(keys) -> {key: bytes}              several reads in one call
+#:   put_many({key: bytes}, no_clobber=...)      several writes in one call
+
+
+def md5_of(data: bytes) -> str:
+    """The base64 MD5 GCS reports for an object's bytes (`md5Hash`)."""
+    return base64.b64encode(hashlib.md5(data).digest()).decode("ascii")
 
 
 class LocalStore:
@@ -211,6 +257,16 @@ class LocalStore:
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
+    def md5s(self, prefix: str) -> dict[str, str | None]:
+        return {key: md5_of(self._path(key).read_bytes()) for key, _ in self.list(prefix)}
+
+    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
+        return {key: self.get(key) for key in keys}
+
+    def put_many(self, items: dict[str, bytes], *, no_clobber: bool) -> None:
+        for key in sorted(items):
+            self.put(key, items[key], no_clobber=no_clobber)
+
 
 def _gcloud(argv: list[str], data: bytes | None = None) -> bytes:
     """Run `gcloud storage ...`. stderr is kept short and carries no object data."""
@@ -247,7 +303,8 @@ class GcsStore:
     def _url(self, key: str) -> str:
         return f"gs://{self.bucket}/{key}"
 
-    def list(self, prefix: str) -> list[tuple[str, datetime | None]]:
+    def _rows(self, prefix: str) -> list[tuple[str, datetime | None, str | None]]:
+        """(key, created, base64 MD5) for every live object under `prefix`."""
         try:
             raw = self._run(["gcloud", "storage", "ls", "--json", self._url(prefix) + "**"])
         except StoreError as exc:
@@ -259,18 +316,46 @@ class GcsStore:
         except ValueError:
             raise StoreError(f"gcloud storage ls answered something that is not JSON for "
                              f"{prefix}") from None
-        out: list[tuple[str, datetime | None]] = []
-        head = f"gs://{self.bucket}/"
+        out: list[tuple[str, datetime | None, str | None]] = []
         for row in rows if isinstance(rows, list) else []:
-            url = row.get("url") if isinstance(row, dict) else None
-            if not isinstance(url, str) or not url.startswith(head):
+            key = self._key_of(row)
+            if key is None or not key.startswith(prefix):
                 continue
             meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             # A time that cannot be read is None, which the sweep treats as young.
             created = _parse_time(row.get("creation_time") or meta.get("timeCreated")
                                   or meta.get("creation_time"))
-            out.append((url[len(head):], created))
-        return sorted(out)
+            md5 = meta.get("md5Hash") or meta.get("md5_hash") or row.get("md5_hash")
+            out.append((key, created, md5 if isinstance(md5, str) and md5 else None))
+        return sorted(out, key=lambda r: r[0])
+
+    def _key_of(self, row: Any) -> str | None:
+        """The object's name, WITHOUT the generation.
+
+        On a versioned bucket `ls --json` gives every url as
+        `gs://<bucket>/<name>#<generation>`. Kept, that suffix made every
+        listed key differ from the key it was compared with (lane IX1): the
+        writer re-put blobs that existed, and the sweep never saw a manifest.
+        The name in `metadata` is the object's own; the url, less its
+        `#<digits>`, is the fallback.
+        """
+        if not isinstance(row, dict):
+            return None
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        name = meta.get("name")
+        if isinstance(name, str) and name and meta.get("bucket") in (None, self.bucket):
+            return name
+        url = row.get("url")
+        head = f"gs://{self.bucket}/"
+        if not isinstance(url, str) or not url.startswith(head):
+            return None
+        return _GENERATION.sub("", url[len(head):]) or None
+
+    def list(self, prefix: str) -> list[tuple[str, datetime | None]]:
+        return [(key, created) for key, created, _md5 in self._rows(prefix)]
+
+    def md5s(self, prefix: str) -> dict[str, str | None]:
+        return {key: md5 for key, _created, md5 in self._rows(prefix)}
 
     def get(self, key: str) -> bytes:
         try:
@@ -284,8 +369,67 @@ class GcsStore:
             argv.append("--no-clobber")
         self._run(argv + ["-", self._url(key)], data)
 
+    def put_many(self, items: dict[str, bytes], *, no_clobber: bool) -> None:
+        """One `gcloud storage cp` of up to BATCH_FILES files per directory.
+
+        Each object goes to `<its directory>/<its name>`, so the files are
+        staged under their own names and copied into their directory. gcloud
+        uploads a multi-file copy in parallel. A batch that fails is raised
+        after every batch has been tried: the caller checks each object
+        afterwards (`write_graph`), so one 412 costs no other blob.
+        """
+        failed: StoreError | None = None
+        with tempfile.TemporaryDirectory(prefix="repo-graph-put-") as scratch:
+            for n, (directory, names) in enumerate(sorted(_by_directory(items).items())):
+                staged = Path(scratch) / str(n)
+                staged.mkdir()
+                for name in names:
+                    (staged / name).write_bytes(items[f"{directory}/{name}"])
+                for start in range(0, len(names), BATCH_FILES):
+                    argv = ["gcloud", "storage", "cp"]
+                    if no_clobber:
+                        argv.append("--no-clobber")
+                    argv += [str(staged / name) for name in names[start:start + BATCH_FILES]]
+                    try:
+                        self._run(argv + [self._url(directory) + "/"])
+                    except StoreError as exc:
+                        failed = exc
+        if failed is not None:
+            raise failed
+
+    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
+        """One `gcloud storage cp` of up to BATCH_FILES objects per directory, into scratch."""
+        wanted = {key: b"" for key in keys}
+        out: dict[str, bytes] = {}
+        with tempfile.TemporaryDirectory(prefix="repo-graph-get-") as scratch:
+            for n, (directory, names) in enumerate(sorted(_by_directory(wanted).items())):
+                staged = Path(scratch) / str(n)
+                staged.mkdir()
+                for start in range(0, len(names), BATCH_FILES):
+                    batch = names[start:start + BATCH_FILES]
+                    try:
+                        self._run(["gcloud", "storage", "cp"]
+                                  + [self._url(f"{directory}/{name}") for name in batch]
+                                  + [str(staged) + "/"])
+                    except FileNotFoundError:
+                        raise StoreError(f"{directory}: not found") from None
+                for name in names:
+                    try:
+                        out[f"{directory}/{name}"] = (staged / name).read_bytes()
+                    except OSError:
+                        raise StoreError(f"{directory}/{name}: not read") from None
+        return out
+
     def delete(self, key: str) -> None:
         self._run(["gcloud", "storage", "rm", self._url(key)])
+
+
+def _by_directory(items: Iterable[str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for key in items:
+        directory, _, name = key.rpartition("/")
+        grouped.setdefault(directory, []).append(name)
+    return {directory: sorted(names) for directory, names in grouped.items()}
 
 
 def open_store(spec: str) -> Store:
@@ -412,26 +556,95 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
     return key, canonical(manifest) + b"\n", blobs
 
 
+def _md5s(store: Store, prefix: str) -> dict[str, str | None]:
+    md5s = getattr(store, "md5s", None)
+    if callable(md5s):
+        return md5s(prefix)
+    return {key: None for key, _ in store.list(prefix)}
+
+
+def _get_many(store: Store, keys: list[str]) -> dict[str, bytes]:
+    get_many = getattr(store, "get_many", None)
+    if callable(get_many):
+        return get_many(keys)
+    return {key: store.get(key) for key in keys}
+
+
+def _put_many(store: Store, items: dict[str, bytes]) -> None:
+    put_many = getattr(store, "put_many", None)
+    if callable(put_many):
+        put_many(items, no_clobber=True)
+        return
+    for key in sorted(items):
+        store.put(key, items[key], no_clobber=True)
+
+
+def _check_present(store: Store, expected: dict[str, bytes], listed: dict[str, str | None]
+                   ) -> list[str]:
+    """The keys of `expected` that are NOT in the store; raises on any holding other bytes.
+
+    By the listing's MD5 where it gives one, else by reading the object back:
+    a blob's name is the sha256 of its bytes, so one that reads back as ours
+    is ours, whoever put it.
+    """
+    absent = sorted(key for key in expected if key not in listed)
+    unknown = sorted(key for key in expected if key in listed and listed[key] is None)
+    conflicts = sorted(key for key in expected if listed.get(key) is not None
+                       and listed[key] != md5_of(expected[key]))
+    if unknown:
+        fetched = _get_many(store, unknown)
+        conflicts += [key for key in unknown if fetched.get(key) != expected[key]]
+    if conflicts:
+        raise ConflictError(
+            f"{len(conflicts)} write-once path(s) already hold different content, first "
+            f"{sorted(conflicts)[0]}; nothing was overwritten and no manifest was written"
+        )
+    return absent
+
+
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
                 max_commit_bytes: int = MAX_COMMIT_BYTES,
                 graph_digest: str | None = None) -> dict:
-    """Shard `document` into `store`: blobs first (never clobbered), manifest last."""
+    """Shard `document` into `store`: blobs first (never clobbered), manifest last.
+
+    RESUMABLE: a blob already at its path with our bytes counts as written
+    (`blobs_reused`), so a run interrupted after any number of blobs
+    completes when it is run again; one with other bytes raises
+    `ConflictError` and the manifest is not written.
+    """
     key, manifest, blobs = build(document, tenant_id=tenant_id, repo_id=repo_id,
                                  max_commit_bytes=max_commit_bytes, graph_digest=graph_digest)
-    present = {k for k, _ in store.list(f"{graph_root(tenant_id, repo_id)}/blobs/")}
-    written = reused = 0
-    for hexdigest in sorted(blobs):
-        target = blob_key(tenant_id, repo_id, hexdigest)
-        if target in present:
-            reused += 1
-            continue
-        store.put(target, blobs[hexdigest], no_clobber=True)
-        written += 1
-    store.put(key, manifest, no_clobber=False)
+    blob_prefix = f"{graph_root(tenant_id, repo_id)}/blobs/"
+    expected = {blob_key(tenant_id, repo_id, hexdigest): data
+                for hexdigest, data in blobs.items()}
+    missing = _check_present(store, expected, _md5s(store, blob_prefix))
+    reused = len(expected) - len(missing)
+    todo = missing
+    upload_error: StoreError | None = None
+    for _round in range(UPLOAD_ROUNDS):
+        if not todo:
+            break
+        upload_error = None
+        try:
+            _put_many(store, {k: expected[k] for k in todo})
+        except StoreError as exc:
+            # A 412 here is a blob that appeared since the listing, and it may
+            # have stopped the rest of its batch: the check accepts it if it
+            # is ours, and the next round puts what is still absent.
+            upload_error = exc
+        todo = _check_present(store, {k: expected[k] for k in todo}, _md5s(store, blob_prefix))
+    if todo:
+        raise StoreError(f"{len(todo)} blob(s) were not written, first {todo[0]}"
+                         + (f": {upload_error}" if upload_error else ""))
+    # The manifest is per commit and not write-once: a re-index of the same
+    # commit may describe it differently. The same bytes are not put twice.
+    current = _md5s(store, key)
+    if current.get(key) is None or current[key] != md5_of(manifest):
+        store.put(key, manifest, no_clobber=False)
     return {
         "manifest": key,
         "manifest_digest": digest_of(manifest),
-        "blobs_written": written,
+        "blobs_written": len(missing),
         "blobs_reused": reused,
         "stored_bytes": sum(len(b) for b in blobs.values()),
         "manifest_bytes": len(manifest),

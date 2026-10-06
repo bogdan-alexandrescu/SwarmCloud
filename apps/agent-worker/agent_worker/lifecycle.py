@@ -192,6 +192,7 @@ from .errors import (
     WorkerError,
 )
 from . import findings_epic as findings_epic_mod
+from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
 from . import post_verdict as post_verdict_mod
@@ -376,6 +377,10 @@ SWAP_UNUSABLE = "unusable"
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
 HEARTBEAT_EVENT_EVERY = 5
+#: What an index run's phase may write to each of its captures (lane IX1).
+#: The extractor prints one summary line and the writer one JSON report; the
+#: cap only bounds a tool gone wrong, and the tail -- its last error -- is kept.
+INDEX_PHASE_CAPTURE_BYTES = 1024 * 1024
 
 #: `work/repo`. Spelled once, in `workspace`, because the checkpoint needs it
 #: too: the `./artifacts` link inside the checkout is never archived (#226).
@@ -700,6 +705,17 @@ class Worker:
         # next beat from here, not from its own start (#426).
         self._last_beat_started: float | None = None
         self._deadline = time.monotonic() + config.timeout_seconds
+        # THE RUNNER'S OWN DEADLINE. The task's, except on an index run, whose
+        # graph write runs AFTER the agent (lane IX1, `indexrun`): its budget
+        # is taken off the agent's time before the agent starts, so an agent
+        # that uses all of its time still leaves the write its own.
+        self._runner_deadline = self._deadline
+        if indexrun_mod.is_index_run(config.runner_profile):
+            self._runner_deadline -= indexrun_mod.budgets(config.timeout_seconds).graph_write
+        # An index run's phases, in order, as they end (lane IX1); None on
+        # every other task. `_finalise` puts them in the result summary.
+        self._index_phases: list[indexrun_mod.PhaseRecord] | None = None
+        self._index_agent_started: float | None = None
         # The account this attempt holds, if the pool gave it one. Set once and
         # kept: a credential reload must re-read the SAME account's secret, not
         # move the agent onto a different subscription mid-run.
@@ -978,6 +994,12 @@ class Worker:
         # run's files "existing" ones (#184, standalone tasks only).
         self._take_workdir_baseline()
 
+        # ---- STEP 6a: an index run's extractor, before its agent (IX1) --
+        if indexrun_mod.is_index_run(cfg.runner_profile):
+            stopped = self._index_extract()
+            if stopped is not None:
+                return stopped
+
         # ---- STEPS 7-9: run the child, supervised -----------------------
         attempt_number = 0
         credential_reloads = 0
@@ -1124,8 +1146,252 @@ class Worker:
         if awaited is not None:
             return awaited
 
+        # ---- STEP 9c: an index run's graph write, after its agent (IX1) --
+        if self._index_phases is not None:
+            stopped = self._index_after_agent(result)
+            if stopped is not None:
+                return stopped
+
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
+
+    # ------------------------------------------------------------------
+    # an index run's deterministic passes (lane IX1, `indexrun`)
+    # ------------------------------------------------------------------
+    def _index_env(self) -> dict[str, str]:
+        ws = self.ws
+        assert ws is not None
+        home = ws.private / "index-home"
+        home.mkdir(parents=True, exist_ok=True)
+        return indexrun_mod.phase_env(
+            home=home, tmp=ws.tmp, tenant_id=self.cfg.tenant_id, bucket=self.cfg.artifact_bucket
+        )
+
+    def _note_index_phase(self, record: indexrun_mod.PhaseRecord) -> None:
+        """Keep, log and write down one phase: the agent reads the file (`PHASES_FILE`)."""
+        ws = self.ws
+        assert ws is not None and self._index_phases is not None
+        self._index_phases.append(record)
+        self.log.info("index phase finished", **record.as_dict())
+        try:
+            indexrun_mod.write_phases(ws.work, self._index_phases)
+        except OSError as exc:
+            self.log.warning("could not write the index phases file", error=str(exc))
+
+    def _index_extract(self) -> Outcome | None:
+        """`swarm-repo-index` on the checkout, before the agent. None to go on.
+
+        A failed, timed-out or missing extractor does not stop the run: the
+        agent computes the mechanical fields itself, and the phases file
+        tells it why. Only a stop the supervision would honour mid-agent -- a
+        fence, a cancel, a SIGTERM, an outage past the lease -- ends it here.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        self._index_phases = []
+        # A restored checkpoint may hold an earlier attempt's outputs. They
+        # are not this run's, and the agent must not start from them.
+        for name in (indexrun_mod.EXTRACT_FILE, indexrun_mod.GRAPH_FILE):
+            (ws.work / name).unlink(missing_ok=True)
+        env = self._index_env()
+        program = indexrun_mod.resolve(indexrun_mod.EXTRACTOR_COMMAND, env)
+        checkout = ws.checkout()
+        if not checkout.is_dir():
+            record = indexrun_mod.PhaseRecord(
+                "extract", "skipped", 0.0, reason="the task has no checkout"
+            )
+        elif program is None:
+            record = indexrun_mod.PhaseRecord(
+                "extract", "skipped", 0.0, reason="not installed in this image"
+            )
+        else:
+            self.phases.enter("index_extract")
+            budget = indexrun_mod.budgets(cfg.timeout_seconds)
+            ran = self._run_index_phase(
+                "extract",
+                indexrun_mod.extractor_argv(
+                    program, checkout=checkout, work=ws.work, lsp_total=budget.lsp_total
+                ),
+                cwd=checkout,
+                env=env,
+                timeout=budget.extract,
+            )
+            if isinstance(ran, Outcome):
+                return ran
+            record = ran
+        self._note_index_phase(record)
+        self._index_agent_started = time.monotonic()
+        return None
+
+    def _index_after_agent(self, result: ChildResult) -> Outcome | None:
+        """Record the agent's phase, then `swarm-repo-graph write`. None to go on.
+
+        The write runs only on what it needs: an agent that finished cleanly,
+        the extractor's graph and the agent's index, and a target derived
+        from the signed spec (`indexrun.target`). A write that fails leaves
+        the index without `graph.manifest_digest`, which promotion reads as
+        no graph; the write is resumable, so the next run completes it.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        started = self._index_agent_started or time.monotonic()
+        agent_ok = not result.timed_out and result.exit_code == 0
+        self._note_index_phase(
+            indexrun_mod.PhaseRecord(
+                "agent",
+                "ok" if agent_ok else ("timed_out" if result.timed_out else "failed"),
+                round(time.monotonic() - started, 3),
+                exit_code=result.exit_code,
+            )
+        )
+        # The signed spec's repository (the worker refuses a REPOSITORY_URL
+        # that disagrees with it); never the unsigned metadata.
+        where = indexrun_mod.target(
+            cfg.tenant_id, (self._task or {}).get("repository_url") or cfg.repository_url
+        )
+        env = self._index_env()
+        program = indexrun_mod.resolve(indexrun_mod.GRAPH_WRITER_COMMAND, env)
+        budget = min(
+            float(indexrun_mod.budgets(cfg.timeout_seconds).graph_write), self._remaining_seconds()
+        )
+        reason = None
+        if not agent_ok:
+            reason = "the agent did not finish cleanly"
+        elif not (ws.work / indexrun_mod.GRAPH_FILE).is_file():
+            reason = "the extractor wrote no graph"
+        elif not (ws.artifacts / indexrun_mod.INDEX_FILE).is_file():
+            reason = f"the agent wrote no {indexrun_mod.INDEX_FILE}"
+        elif isinstance(where, str):
+            reason = where
+        elif program is None:
+            reason = "not installed in this image"
+        elif budget < 1:
+            reason = "the task's time is spent"
+        if reason is not None:
+            self._note_index_phase(
+                indexrun_mod.PhaseRecord("graph_write", "skipped", 0.0, reason=reason)
+            )
+            return None
+        assert not isinstance(where, str) and program is not None
+        self.phases.enter("index_graph_write")
+        ran = self._run_index_phase(
+            "graph_write",
+            indexrun_mod.graph_write_argv(
+                program, work=ws.work, artifacts=ws.artifacts, where=where,
+                bucket=cfg.artifact_bucket,
+            ),
+            cwd=ws.work,
+            env=env,
+            timeout=budget,
+        )
+        if isinstance(ran, Outcome):
+            return ran
+        self._note_index_phase(ran)
+        return None
+
+    def _run_index_phase(
+        self, name: str, argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> indexrun_mod.PhaseRecord | Outcome:
+        """One deterministic phase, supervised as the runner is.
+
+        The lease is beaten, the control plane polled and the work tree
+        checkpointed on the runner's own cadences (invariants 5 and 8): an
+        extractor takes minutes, longer than `_heartbeat_meanwhile` is
+        bounded to. A fence, a cancel, a SIGTERM or an outage past the lease
+        stops the phase and ends the attempt exactly as it would end the
+        agent's. A phase over its timeout is stopped and recorded
+        `timed_out`; the run goes on.
+        """
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
+        started = time.monotonic()
+        deadline = min(started + timeout, self._deadline)
+        child = ChildProcess(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout_path=ws.logs / f"repo-index.{name}.stdout.log",
+            stderr_path=ws.logs / f"repo-index.{name}.stderr.log",
+            max_stdout_bytes=INDEX_PHASE_CAPTURE_BYTES,
+            max_stderr_bytes=INDEX_PHASE_CAPTURE_BYTES,
+            keep_tail=True,
+            niceness=cfg.runner_niceness,
+            logger=self.log,
+        )
+        self.log.info("index phase started", phase=name, timeout_seconds=round(timeout, 3))
+        child.start()
+        next_heartbeat = started + cfg.heartbeat_interval_seconds
+        next_poll = started + cfg.control_poll_seconds
+        next_checkpoint = started + cfg.checkpoint_interval_seconds
+        while True:
+            due = min(next_heartbeat, next_poll, next_checkpoint, deadline)
+            if child.wait(max(0.05, min(due - time.monotonic(), 5.0))) is not None:
+                break
+            now = time.monotonic()
+            if self._interrupted:
+                return self._handle_interruption(child)
+            if now >= next_heartbeat:
+                next_heartbeat = now + cfg.heartbeat_interval_seconds
+                try:
+                    self._heartbeat()
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("heartbeat", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(
+                            child, outage, where=f"past the lease during the index {name}"
+                        )
+            if now >= next_poll:
+                next_poll = now + cfg.control_poll_seconds
+                try:
+                    signals = self.control.poll(cfg.provider)
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("control poll", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(
+                            child, outage, where=f"past the lease during the index {name}"
+                        )
+                    signals = None
+                if signals is not None and signals.is_fenced(cfg.generation):
+                    return self._exit_fenced_mid_run(
+                        child,
+                        observed_generation=signals.generation,
+                        reason=f"fenced during the index {name}: task at generation "
+                        f"{signals.generation} in {signals.state.value}",
+                    )
+                if signals is not None and signals.cancel_requested:
+                    self.log.warning("cancellation requested; stopping the index phase",
+                                     phase=name)
+                    child.terminate(cfg.termination_grace_seconds, reason="cancelled")
+                    child.finish()
+                    return self._finish_cancelled()
+            if now >= next_checkpoint:
+                try:
+                    self._checkpoint("periodic")
+                except FencedError as exc:
+                    return self._exit_fenced_mid_run(
+                        child, observed_generation=exc.actual, reason=str(exc)
+                    )
+                next_checkpoint = now + cfg.checkpoint_interval_seconds
+            if now >= deadline:
+                self.log.warning("index phase timed out", phase=name,
+                                 timeout_seconds=round(timeout, 3))
+                child.mark_timed_out()
+                child.terminate(cfg.termination_grace_seconds, reason=f"index {name} timeout")
+                break
+        done = child.finish()
+        seconds = round(time.monotonic() - started, 3)
+        if done.timed_out:
+            return indexrun_mod.PhaseRecord(
+                name, "timed_out", seconds, exit_code=done.exit_code,
+                reason=f"over its {round(timeout)}-second budget",
+            )
+        if done.exit_code != 0:
+            said = indexrun_mod.last_line(ws.logs / f"repo-index.{name}.stderr.log")
+            return indexrun_mod.PhaseRecord(
+                name, "failed", seconds, exit_code=done.exit_code,
+                reason=self._scrub(said) if said else f"exited {done.exit_code}",
+            )
+        return indexrun_mod.PhaseRecord(name, "ok", seconds, exit_code=0)
 
     # ------------------------------------------------------------------
     # worker actions (#295): merge and post-verdict, no runner
@@ -1927,7 +2193,7 @@ class Worker:
                     next_checkpoint - time.monotonic(),
                     next_poll - time.monotonic(),
                     next_live_log - time.monotonic(),
-                    self._deadline - time.monotonic(),
+                    self._runner_deadline - time.monotonic(),
                     5.0,
                 ),
             )
@@ -2002,7 +2268,7 @@ class Worker:
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
 
-            if now >= self._deadline:
+            if now >= self._runner_deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
                 child.mark_timed_out()
                 child.terminate(cfg.termination_grace_seconds, reason="task timeout")
@@ -2468,6 +2734,8 @@ class Worker:
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if self._index_phases is not None:
+            summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
         if self._verdict is not None:
             summary["verdict_gate"] = dict(self._verdict)
             if not self._verdict.get("agent_ran", True):
