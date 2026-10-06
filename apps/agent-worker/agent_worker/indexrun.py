@@ -40,6 +40,20 @@ the repo_id too, but the spec signature does not cover it
 (`swarm_common.specsign.SIGNED_METADATA_KEYS`), so the worker never reads
 it: a rewritten metadata cannot point the write at another registration.
 
+WHERE THE INDEX GOES, AND WHAT IS KEPT (§2, lane IX3, owner decision
+2026-10-06). The agent's repo-index.json is uploaded as the task's artifact,
+under `tasks/`, which the bucket's lifecycle cold-stores and expires. The
+worker then copies the uploaded object, byte for byte, to
+`tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json`
+(`Target.index_key`; the commit is the signed `repository_ref`), which no
+lifecycle rule matches; promotion records that key in the version once its
+bytes equal the artifact's. Before the graph write it reads the commits
+whose versions swarm-api still holds (`kept_commits`: the last 20, plus
+the promoted one and its own) and passes them as `--keep-commit`, so the
+writer's sweep deletes every other commit's manifest and index copy and
+then the blobs no kept manifest names. swarm-api cannot do either: it
+reads the bucket and may not write or delete.
+
 AN INCREMENTAL RUN'S BASE, BY REFERENCE (§3.4, lane IX2). swarm-api decides
 incremental or full (`swarm_api.repoindex.choose_kind`) and names the base
 in the task's PROMPT, as one line of its own (`BASE_LINE`). The prompt is
@@ -51,7 +65,9 @@ phase, `stage_base`:
 
     the version     repositories/<repo_id>/index_versions/<base_sha>, under the
                     repo_id derived above from signed fields only
-    the index       that version's task's repo-index.json, resolved and fetched
+    the index       its copy under repos/ (above), or, for a version
+                    promoted before the copy existed, that version's task's
+                    repo-index.json, resolved and fetched
                     by the staged-input path every workflow input takes
                     (`inputs.fetch_upstream_task`, `inputs.artifact_reference`):
                     the successful attempt's manifest, a key inside this
@@ -82,7 +98,7 @@ import re
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 #: The profile swarm-api submits index runs as (`swarm_api.repoindex.INDEXER_PROFILE`).
 INDEXER_PROFILE = "indexer"
@@ -201,6 +217,15 @@ class Target:
     def destination(self) -> str:
         return f"tenants/{self.tenant_id}/repos/{self.repo_id}/graph"
 
+    def index_key(self, commit_sha: str) -> str:
+        """The index's own home, beside the graph and outside every artifact
+        lifecycle rule (§2): `tenants/<t>/repos/<repo_id>/index/<sha>/repo-index.json`.
+        The same key as `swarm_api.repoindex.index_key` and the sweep's
+        `repo_graph_shards.index_key`."""
+        if not _SHA.match(commit_sha or ""):
+            raise ValueError("the commit is not a 40-hex sha")
+        return f"tenants/{self.tenant_id}/repos/{self.repo_id}/index/{commit_sha}/{INDEX_FILE}"
+
 
 def target(tenant_id: str, repository_url: str | None) -> Target | str:
     """The graph's target, or why there is none (a reason, never an exception)."""
@@ -247,7 +272,7 @@ def extractor_argv(
 
 def graph_write_argv(
     program: str, *, work: Path, artifacts: Path, where: Target, bucket: str,
-    base_sha: str | None = None,
+    base_sha: str | None = None, keep: Sequence[str] | None = None,
 ) -> list[str]:
     argv = [
         program, "write", "--graph", str(work / GRAPH_FILE),
@@ -257,6 +282,8 @@ def graph_write_argv(
     ]
     if base_sha is not None:
         argv += ["--base-commit", base_sha]
+    for commit in keep or ():
+        argv += ["--keep-commit", commit]
     return argv
 
 
@@ -280,6 +307,10 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 _BASE_LINE = re.compile(r"^" + re.escape(BASE_LINE) + r"([0-9a-f]{40})$", re.MULTILINE)
+
+
+def is_commit_sha(value: str) -> bool:
+    return bool(_SHA.match(value))
 
 
 def requested_base(task_input: Any) -> str | None:
@@ -333,6 +364,53 @@ def resolve_base(
     if not isinstance(graph_digest, str) or not _DIGEST.match(graph_digest):
         return f"the index version of {base_sha[:12]} has no graph to build on"
     return BaseVersion(sha=base_sha, task_id=task_id, digest=digest, graph_digest=graph_digest)
+
+
+# --------------------------------------------------------------------------
+# retention of tenants/<t>/repos/ (§2.3, lane IX3)
+# --------------------------------------------------------------------------
+
+#: The most versions read for the keep set. swarm-api keeps 20
+#: (`swarm_api.repoindex.KEPT_VERSIONS`); more than this means its pruning is
+#: behind, and the run then retires nothing rather than guess which to keep.
+MAX_KEPT_READ = 200
+
+
+def kept_commits(
+    db: Any, *, tenant_id: str, where: Target, own: str | None,
+    call_options: Mapping[str, Any] | None = None,
+) -> list[str] | str:
+    """The commits whose objects under repos/ the sweep must keep, or why there are none.
+
+    Every `index_versions` entry of the registration the SIGNED spec names
+    (swarm-api prunes them to the last 20 at promotion, `_prune_versions`),
+    the promoted `current_sha`, and this run's own commit. A reason (and so
+    no `--keep-commit`, and nothing retired) when the registration is not
+    this tenant's, a version names no sha, or there are more than
+    `MAX_KEPT_READ`: the sweep then works as it did before lane IX3.
+    """
+    options = dict(call_options or {})
+    registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
+    snapshot = registration.get(**options)
+    if not snapshot.exists:
+        return f"the registration {where.repo_id} has no document"
+    data = snapshot.to_dict() or {}
+    if data.get("tenant_id") != tenant_id:
+        return f"the registration {where.repo_id} is not this tenant's"
+    kept: set[str] = set()
+    rows = registration.collection(VERSIONS_COLLECTION).limit(MAX_KEPT_READ + 1).stream(**options)
+    for count, row in enumerate(rows, start=1):
+        if count > MAX_KEPT_READ:
+            return f"more than {MAX_KEPT_READ} index versions are kept; none is retired"
+        commit = (row.to_dict() or {}).get("commit_sha")
+        if not isinstance(commit, str) or not _SHA.match(commit):
+            return "an index version names no commit; none is retired"
+        kept.add(commit)
+    current = (data.get("index") or {}).get("current_sha")
+    for commit in (current, own):
+        if isinstance(commit, str) and _SHA.match(commit):
+            kept.add(commit)
+    return sorted(kept)
 
 
 def content_digest(data: bytes) -> str:

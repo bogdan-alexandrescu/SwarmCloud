@@ -84,6 +84,17 @@ references it cannot see. Run as the tenant's own worker account, which may
 delete under `tenants/<tenant>/` and nowhere else (invariant 9); swarm-api
 reads the bucket and cannot delete, by design (`objects.py`).
 
+RETENTION (lane IX3, owner decision 2026-10-06). The bucket's lifecycle no
+longer touches `tenants/<t>/repos/` (terraform/modules/storage), so this
+sweep is the only thing that deletes there. Given `--keep-commit` for every
+commit whose index version swarm-api still holds (the last 20, §2.3; the
+worker reads them and adds them to its `write`), it first deletes the
+manifest `graph/<sha>/manifest.json` and the index copy
+`index/<sha>/repo-index.json` of every other commit older than a day, then
+sweeps the blobs no remaining manifest names. At most `MAX_SWEEP_DELETES`
+objects go per sweep, in batched `gcloud storage rm` calls; whatever is past
+the bound waits for the next run. Without `--keep-commit` it retires nothing.
+
 WHERE IT WRITES (lane RI9b; run by the worker since lane IX1). The worker
 runs `swarm-repo-graph write --graph <file> --repo-id <r> --destination
 tenants/<t>/repos/<r>/graph --tenant <t> --store gs://<bucket> --index
@@ -132,6 +143,14 @@ CEILING_MIN_CONFIDENCE = 0.4
 #: The sweep keeps an unreferenced blob younger than this: a writer may be
 #: between its blobs and its manifest. Far above §3.5's longest timeout (2 h).
 SWEEP_GRACE = timedelta(days=1)
+#: Objects one sweep may delete, manifests, index copies and blobs together.
+#: A version retired by the 20-version rule (§2.3) is one manifest, one index
+#: copy and the few blobs no other manifest shares, so one run's sweep keeps
+#: up with one promotion many times over; a backlog is worked off over the
+#: next runs instead of by one sweep that outlives the graph write's budget.
+MAX_SWEEP_DELETES = 2000
+#: The name of the index copy under `index/<commit_sha>/` (§2).
+INDEX_NAME = "repo-index.json"
 
 #: The layers a manifest names, in the order they are written.
 LAYERS = ("symbols", "callers", "callees", "tests", "files")
@@ -158,9 +177,21 @@ def _segment(value: str, what: str) -> str:
     return value
 
 
+def repo_root(tenant_id: str, repo_id: str) -> str:
+    """`tenants/<tenant>/repos/<repo_id>`: the registration's own prefix (§2)."""
+    return f"tenants/{_segment(tenant_id, 'tenant_id')}/repos/{_segment(repo_id, 'repo_id')}"
+
+
 def graph_root(tenant_id: str, repo_id: str) -> str:
-    return (f"tenants/{_segment(tenant_id, 'tenant_id')}/repos/"
-            f"{_segment(repo_id, 'repo_id')}/graph")
+    return f"{repo_root(tenant_id, repo_id)}/graph"
+
+
+def index_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
+    """Where the worker keeps a commit's repo-index.json beside its graph (§2,
+    `agent_worker.indexrun.index_key`, `swarm_api.repoindex.index_key`)."""
+    if not _SHA.match(commit_sha or ""):
+        raise ValueError(f"commit_sha {commit_sha!r} is not a 40-hex commit sha")
+    return f"{repo_root(tenant_id, repo_id)}/index/{commit_sha}/{INDEX_NAME}"
 
 
 def manifest_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
@@ -265,6 +296,10 @@ class LocalStore:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+
+    def delete_many(self, keys: Iterable[str]) -> None:
+        for key in sorted(keys):
+            self.delete(key)
 
     def md5s(self, prefix: str) -> dict[str, str | None]:
         return {key: md5_of(self._path(key).read_bytes()) for key, _ in self.list(prefix)}
@@ -431,6 +466,15 @@ class GcsStore:
 
     def delete(self, key: str) -> None:
         self._run(["gcloud", "storage", "rm", self._url(key)])
+
+    def delete_many(self, keys: Iterable[str]) -> None:
+        """One `gcloud storage rm` of up to BATCH_FILES objects: one process per
+        object took ~3.9 s each, which no sweep inside the graph write's budget
+        could afford. A batch that fails is raised; the sweep stops there."""
+        ordered = sorted(keys)
+        for start in range(0, len(ordered), BATCH_FILES):
+            self._run(["gcloud", "storage", "rm"]
+                      + [self._url(key) for key in ordered[start:start + BATCH_FILES]])
 
 
 def _by_directory(items: Iterable[str]) -> dict[str, list[str]]:
@@ -806,42 +850,132 @@ def referenced_blobs(manifest: dict) -> set[str]:
     return found
 
 
-def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = None,
-          grace: timedelta = SWEEP_GRACE) -> dict:
-    """Delete the registration's blobs no manifest names and older than `grace`.
+def _delete_many(store: Store, keys: list[str]) -> None:
+    """One batched delete when the store has one (`GcsStore.delete_many`), else one by one."""
+    if not keys:
+        return
+    many = getattr(store, "delete_many", None)
+    if many is not None:
+        many(keys)
+        return
+    for key in sorted(keys):
+        store.delete(key)
 
-    Deletes nothing, and says why in `refused`, if any manifest is unreadable.
+
+def _commit_in(key: str, prefix: str, name: str) -> str | None:
+    """The commit of `<prefix><commit_sha>/<name>`, or None for any other key."""
+    if not key.startswith(prefix):
+        return None
+    commit, _, rest = key[len(prefix):].partition("/")
+    return commit if rest == name and _SHA.match(commit) else None
+
+
+def check_keep(commits: Iterable[str]) -> frozenset[str]:
+    """`--keep-commit` values, each a 40-hex sha. Raises ValueError on any other."""
+    kept = frozenset(commits)
+    for commit in kept:
+        if not _SHA.match(commit or ""):
+            raise ValueError(f"--keep-commit {commit!r} is not a 40-hex commit sha")
+    return kept
+
+
+def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = None,
+          grace: timedelta = SWEEP_GRACE, keep: Iterable[str] | None = None,
+          max_deletes: int = MAX_SWEEP_DELETES) -> dict:
+    """Retire what no kept version names, then delete the blobs no manifest names.
+
+    `keep` is the set of commits whose index versions swarm-api still holds
+    (the last 20, §2.3), which the worker reads and passes as `--keep-commit`.
+    With it, every manifest and every index copy of a commit NOT in `keep` and
+    older than `grace` is deleted first, and its references stop counting.
+    Without it (None) no manifest or index copy is deleted: what the sweep did
+    before lane IX3, and what a run that could not read the versions gets.
+
+    Blobs: deleted only when no remaining manifest names them and older than
+    `grace`. Deletes nothing at all, and says why in `refused`, if any
+    manifest it keeps cannot be read. At most `max_deletes` objects go per
+    sweep; a retired manifest past the bound is kept for the next sweep and
+    its references still count, so the bound can only delay a deletion.
     """
     now = now or datetime.now(timezone.utc)
+    kept = None if keep is None else check_keep(keep)
     root = graph_root(tenant_id, repo_id)
     blob_prefix = f"{root}/blobs/"
-    referenced: set[str] = set()
-    manifests = 0
-    for key, _created in store.list(f"{root}/"):
+    index_prefix = f"{repo_root(tenant_id, repo_id)}/index/"
+
+    def old(created: datetime | None) -> bool:
+        return created is not None and now - created >= grace
+
+    retire: list[str] = []
+    readable: list[str] = []
+    for key, created in store.list(f"{root}/"):
         if key.startswith(blob_prefix) or not key.endswith("/manifest.json"):
             continue
-        manifests += 1
+        commit = _commit_in(key, f"{root}/", "manifest.json")
+        if kept is not None and commit is not None and commit not in kept and old(created):
+            retire.append(key)
+        else:
+            readable.append(key)
+    retire_index: list[str] = []
+    kept_indexes = 0
+    if kept is not None:
+        for key, created in store.list(index_prefix):
+            commit = _commit_in(key, index_prefix, INDEX_NAME)
+            if commit is None:
+                continue
+            if commit in kept or not old(created):
+                kept_indexes += 1
+            else:
+                retire_index.append(key)
+    budget = max(0, max_deletes)
+    retiring = retire[:budget]
+    readable += retire[budget:]
+    budget -= len(retiring)
+    retiring_index = retire_index[:budget]
+    budget -= len(retiring_index)
+    truncated = len(retiring) < len(retire) or len(retiring_index) < len(retire_index)
+    report = {"manifests": len(readable), "retired_manifests": 0, "retired_indexes": 0,
+              "kept_indexes": kept_indexes, "deleted": 0, "kept_referenced": 0,
+              "kept_young": 0, "truncated": truncated, "refused": None}
+    # Every manifest that stays is read BEFORE anything is deleted.
+    referenced: set[str] = set()
+    for key in readable:
         try:
             referenced |= referenced_blobs(json.loads(store.get(key).decode("utf-8")))
         except (StoreError, ValueError, UnicodeDecodeError) as exc:
-            return {"manifests": manifests, "deleted": 0, "kept_referenced": 0,
-                    "kept_young": 0, "refused": f"{key} could not be read ({exc}); "
-                    "a manifest the sweep cannot read is references it cannot see"}
-    deleted = kept_referenced = kept_young = 0
+            report["refused"] = (f"{key} could not be read ({exc}); a manifest the sweep "
+                                 "cannot read is references it cannot see")
+            return report
+    try:
+        _delete_many(store, retiring + retiring_index)
+    except StoreError as exc:
+        report["refused"] = (f"retiring {len(retiring)} manifests and {len(retiring_index)} "
+                             f"index copies failed ({exc}); no blob was swept")
+        return report
+    report["retired_manifests"] = len(retiring)
+    report["retired_indexes"] = len(retiring_index)
+    doomed: list[str] = []
     for key, created in store.list(blob_prefix):
         match = _BLOB_NAME.match(key[len(blob_prefix):])
         if match is None:
             continue
         if match.group(1) in referenced:
-            kept_referenced += 1
+            report["kept_referenced"] += 1
             continue
-        if created is None or now - created < grace:
-            kept_young += 1
+        if not old(created):
+            report["kept_young"] += 1
             continue
-        store.delete(key)
-        deleted += 1
-    return {"manifests": manifests, "deleted": deleted, "kept_referenced": kept_referenced,
-            "kept_young": kept_young, "refused": None}
+        if len(doomed) >= budget:
+            report["truncated"] = True
+            continue
+        doomed.append(key)
+    try:
+        _delete_many(store, doomed)
+    except StoreError as exc:
+        report["refused"] = f"deleting {len(doomed)} unreferenced blobs failed ({exc})"
+        return report
+    report["deleted"] = len(doomed)
+    return report
 
 
 # --- the CLI ------------------------------------------------------------------
@@ -965,6 +1099,11 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--no-sweep", action="store_true", help="skip the sweep after writing")
     write.add_argument("--base-commit",
                        help="incremental: the base's commit, to count the shards carried")
+    for command in (write, sweeper):
+        command.add_argument("--keep-commit", action="append", metavar="SHA",
+                             help="a commit whose index version is kept (repeat it); with any, "
+                                  "the sweep retires every other commit's manifest and index "
+                                  "copy older than a day (§2.3). The written commit is kept too")
     reader.add_argument("--commit", required=True, help="the commit whose graph to read")
     reader.add_argument("--manifest-digest",
                         help="sha256:<hex> promotion recorded; a manifest that differs is refused")
@@ -979,8 +1118,11 @@ def main(argv: list[str] | None = None) -> int:
         tenant, spec = resolve_target(tenant=args.tenant, store=args.store,
                                       repo_id=args.repo_id, destination=args.destination)
         store = open_store(spec)
+        keep = None if args.command == "read" or args.keep_commit is None \
+            else check_keep(args.keep_commit)
         if args.command == "sweep":
-            report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id)}
+            report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id,
+                                           keep=keep)}
         elif args.command == "read":
             graph = read_graph(store, tenant_id=tenant, repo_id=args.repo_id,
                                commit_sha=args.commit, manifest_digest=args.manifest_digest)
@@ -991,7 +1133,8 @@ def main(argv: list[str] | None = None) -> int:
                       "call_edges": len(graph["call_edges"]), "files": len(graph["files"])}
         else:
             raw = Path(args.graph).read_bytes()
-            report = write_graph(json.loads(raw), store, tenant_id=tenant,
+            document = json.loads(raw)
+            report = write_graph(document, store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
                                  graph_digest=digest_of(raw), base_commit=args.base_commit)
             if args.index:
@@ -1002,7 +1145,11 @@ def main(argv: list[str] | None = None) -> int:
                 index["graph"] = graph
                 index_path.write_bytes(canonical(index) + b"\n")
             if not args.no_sweep:
-                report["sweep"] = sweep(store, tenant_id=tenant, repo_id=args.repo_id)
+                if keep is not None:
+                    # The commit just written is never retired by its own run.
+                    keep = keep | {document["commit_sha"]}
+                report["sweep"] = sweep(store, tenant_id=tenant, repo_id=args.repo_id,
+                                        keep=keep)
     except (ValueError, StoreError, OSError) as exc:
         print(f"{TOOL_NAME}: {exc}", file=sys.stderr)
         return 1
