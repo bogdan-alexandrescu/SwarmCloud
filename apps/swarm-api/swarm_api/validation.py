@@ -596,6 +596,101 @@ MERGE_STEP_MAX_ATTEMPTS = 10
 #: The step id an appended merge step takes, suffixed when a step already has it.
 MERGE_STEP_ID = "merge"
 
+# --- the merge step's knobs (lane MS1, docs/merge-step.md "Revised 2026-10-06") ---
+
+#: The key inside a workflow's `metadata` that asks for CI-fix rounds: how
+#: many times a red required check hands the pull request to a fix
+#: continuation before the merge step refuses `checks_failed` (MS7 spends
+#: them). NOT reserved: the caller writes it, and it is stored as written.
+MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
+#: Absent means 0: a red check refuses at once, which is what the built step
+#: does. 5 bounds what one pull request can spend on fix agents before a
+#: person looks at it; each round is a full agent attempt.
+MERGE_FIX_ROUNDS_DEFAULT = 0
+MERGE_FIX_ROUNDS_MAX = 5
+
+#: The label `.github/workflows/auto-merge.yml` merges on. Beside a merge step
+#: it is dropped from the dispatch block, so the two mergers never race for
+#: one pull request and the step's merges are the ones its retirement gate
+#: counts (docs/merge-step.md "Revised 2026-10-06" §5).
+READY_LABEL = "ready"
+#: Where the drop is recorded, on every task of the workflow, as the label
+#: that was dropped. Written by swarm-api only: a caller's is refused, so the
+#: record never says a label was dropped when none was.
+MERGE_LABEL_DROPPED_KEY = "merge_label_dropped"
+
+
+def resolve_merge_fix_rounds(
+    metadata: Mapping[str, Any], *, merge_step: bool
+) -> int:
+    """A workflow's `metadata.merge_fix_rounds`, or the default when it is absent.
+
+    Refused when it is not an integer in 0-`MERGE_FIX_ROUNDS_MAX` (a bool is
+    not one), and refused whenever it is present on a workflow with no merge
+    step: rounds that nothing would spend are a request that would silently
+    not happen, as `metadata.merge` "on" on such a workflow is refused.
+    """
+    if MERGE_FIX_ROUNDS_KEY not in metadata:
+        return MERGE_FIX_ROUNDS_DEFAULT
+    value = metadata[MERGE_FIX_ROUNDS_KEY]
+    field = f"metadata.{MERGE_FIX_ROUNDS_KEY}"
+    bounds = {"min": 0, "max": MERGE_FIX_ROUNDS_MAX}
+    if isinstance(value, bool) or not isinstance(value, int) or not (
+        0 <= value <= MERGE_FIX_ROUNDS_MAX
+    ):
+        raise DispatchOptionError(
+            f"{field} is {str(value)[:40]!r}; it is a whole number of CI-fix rounds "
+            f"from 0 to {MERGE_FIX_ROUNDS_MAX}, or absent for "
+            f"{MERGE_FIX_ROUNDS_DEFAULT}.",
+            detail={"field": field, "accepted": bounds},
+        )
+    if not merge_step:
+        raise DispatchOptionError(
+            f"{field} asks for CI-fix rounds before a merge, but this workflow has no "
+            f"merge step to spend them. Set metadata.{MERGE_METADATA_KEY} to 'on', "
+            f"or remove {field}.",
+            detail={"field": field, "accepted": bounds, "merge_step": False},
+        )
+    return value
+
+
+def refuse_merge_label_record(metadata: Mapping[str, Any]) -> None:
+    """A caller's `metadata.merge_label_dropped` is refused: only swarm-api writes it."""
+    if MERGE_LABEL_DROPPED_KEY in metadata:
+        field = f"metadata.{MERGE_LABEL_DROPPED_KEY}"
+        raise DispatchOptionError(
+            f"{field} is written by this service when it drops a "
+            f"{READY_LABEL!r} label beside a merge step. Drop the key from metadata.",
+            detail={"field": field},
+        )
+
+
+def merge_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a repository a merge step can act on, else None.
+
+    Only for a host `is_mergeable_forge` admits, so the pair is a GitHub
+    name. Used to find the tenant's registration of the repository
+    (`swarm_api.repositories.repo_id_for`), never to reach the forge.
+    """
+    if not is_mergeable_forge(repository_url):
+        return None
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if text.startswith("git@"):
+        text = "ssh://" + text.replace(":", "/", 1)
+    try:
+        path = urlsplit(text).path
+    except ValueError:
+        return None
+    parts = [part for part in path.strip("/").split("/") if part]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
+
 
 def dispatchable_strategies() -> tuple[str, ...]:
     """`DISPATCH_STRATEGIES` less any strategy no workflow could complete today.
@@ -1197,12 +1292,20 @@ class DispatchOptions:
         pull_request: str,
         review: str | None = None,
         verdict_file: str | None = None,
+        base: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
-        it runs no agent, clones nothing and is integrated by nobody."""
+        it runs no agent, clones nothing and is integrated by nobody.
+
+        `base` is the default branch the tenant registered the repository
+        with, absent when it registered none (lane MS1): the worker refuses a
+        pull request on any other base `base_not_default` from this, inside
+        the signed block, without reading the registry itself."""
         target = [("pull_request", pull_request)]
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
+        if base:
+            target.append(("base", base))
         return replace(self, role=None, integrates=(), merge_target=tuple(target))
 
     def to_metadata(self) -> dict[str, Any]:
@@ -1265,7 +1368,9 @@ WORKFLOW_LABEL_KEYS = ("unit", "title")
 WORKFLOW_LABEL_MAX_CHARS = 256
 
 
-def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
+def workflow_label(
+    metadata: Mapping[str, Any] | None, *, merge_step: bool = False
+) -> str | None:
     """The workflow's label as one line of text, or None when it has none.
 
     The first of `WORKFLOW_LABEL_KEYS` that holds a non-blank string, with its
@@ -1273,14 +1378,27 @@ def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
     `WORKFLOW_LABEL_MAX_CHARS`. A caller's text: the worker scrubs it, refuses
     it if it carries a task id or attribution, and neutralises every mention
     before it titles anything, as it does for an agent's `pr-title.txt`.
+
+    With `merge_step`, a label that is `READY_LABEL` (in any case) is None:
+    beside a merge step `auto-merge.yml`'s label is dropped
+    (`ready_label_dropped` says when, for the record).
     """
     for key in WORKFLOW_LABEL_KEYS:
         value = (metadata or {}).get(key)
         if isinstance(value, str):
             text = " ".join(value.split())
             if text:
+                if merge_step and text.lower() == READY_LABEL:
+                    return None
                 return text[:WORKFLOW_LABEL_MAX_CHARS]
     return None
+
+
+def ready_label_dropped(metadata: Mapping[str, Any] | None, *, merge_step: bool) -> bool:
+    """Whether `workflow_label` drops the workflow's label as `READY_LABEL`."""
+    return merge_step and workflow_label(metadata) is not None and (
+        workflow_label(metadata, merge_step=True) is None
+    )
 
 
 def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key: str) -> str:

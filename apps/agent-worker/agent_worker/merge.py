@@ -461,6 +461,10 @@ class MergeTarget:
     #: The review whose verdict file this step staged, when there is one.
     review: str | None = None
     verdict_file: str | None = None
+    #: The default branch the tenant registered the repository with, written
+    #: by swarm-api at submission (lane MS1); None when it registered none.
+    #: Carried for the `base_not_default` refusal (MS3); nothing reads it yet.
+    base: str | None = None
 
 
 class TargetInvalid(ValueError):
@@ -474,21 +478,26 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
             f"this step's signed dispatch block has no {MERGE_TARGET_FIELD} block naming the "
             "task that opened the pull request"
         )
-    unknown = sorted(str(k) for k in raw if k not in ("pull_request", "review", "verdict_file"))
+    unknown = sorted(
+        str(k) for k in raw if k not in ("pull_request", "review", "verdict_file", "base")
+    )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
     pull_request = _task_id(raw.get("pull_request"))
     if pull_request is None:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request is not a task id")
+    base = raw.get("base")
+    if "base" in raw and (not isinstance(base, str) or not base):
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.base is not a branch name")
     review = raw.get("review")
     verdict_file = raw.get("verdict_file")
     if review is None and verdict_file is None:
-        return MergeTarget(pull_request)
+        return MergeTarget(pull_request, base=base)
     if _task_id(review) is None or not isinstance(verdict_file, str) or not verdict_file:
         raise TargetInvalid(
             f"{MERGE_TARGET_FIELD} names a review without its verdict file, or one without a review"
         )
-    return MergeTarget(pull_request, review, verdict_file)
+    return MergeTarget(pull_request, review, verdict_file, base=base)
 
 
 def _pushed_head(doc: Mapping[str, Any]) -> str | None:

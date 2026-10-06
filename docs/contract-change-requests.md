@@ -57,6 +57,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 | 46 | `models.py`: a pull-request step that published nothing has no end cause (functionality wave 3, lane B46) | open |
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
+| 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
+| 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 
 ---
 
@@ -8757,3 +8759,126 @@ There are two choices, both measured in docs/worker-images.md:
   the graph under the tenant's own prefix, as index runs do today.
 - **Invariants 1-3.** It is an ordinary profile: QUEUED until admitted,
   counted from LEASED.
+
+---
+
+## 49. `states.py`: a merge step waiting for its pull request's checks has no park reason
+
+**Status:** accepted by the owner 2026-10-06 (#352), NOT APPLIED. Filed
+2026-10-06 by functionality wave 11, lane MS1, as request (A) of
+[docs/merge-step.md's 2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
+("Owner decisions on this plan", decision 1). Lane MS2 applies it, with its
+mirrors, and adds the line the frozen-contract guard reads to its own pull
+request.
+
+### What is true today
+
+The built merge step waits for CI by failing its attempt retryably: a
+required check still queued or in progress ends the attempt, and the step
+waits READY for `CHECKS_PENDING_RETRY_SECONDS` before it is admitted again,
+at most `MERGE_STEP_MAX_ATTEMPTS` times
+(`apps/agent-worker/agent_worker/merge.py`,
+`apps/swarm-api/swarm_api/validation.py`). Every wait spends an attempt and a
+Job execution, so a slow CI exhausts the step, and a fast one is read only
+every five minutes.
+
+None of the existing `ParkReason` members fits a park that waits for a
+forge's checks:
+
+* `SCHEDULED_RETRY` is promoted by time alone and counts every wake as an
+  attempt, which is today's behaviour;
+* `DEPENDENCY_INCOMPLETE` is promoted when the workflow's upstream steps
+  end, and a merge step's have already ended;
+* `CHILDREN_INCOMPLETE` names child tasks, and the observer tools say so
+  (`apps/swarm-mcp/swarm_mcp/progress.py`, `_PARKED_BECAUSE`).
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, after `CHILDREN_INCOMPLETE`:
+
+```python
+    #: A merge step waits for its pull request's checks; promoted by the
+    #: scheduler's CI-wait sweep on the wake marker or the fallback instant.
+    #: Contract request 49 (docs/merge-step.md, 2026-10-06, request (A)).
+    CI_PENDING = "CI_PENDING"
+```
+
+### What it would break if accepted
+
+Nothing that exists: no writer emits it until MS2's worker park does. MS2
+adds its mirrors with it -- the UI's park list, the MCP plugin's
+`_PARKED_BECAUSE` row (MS5), and `scripts/lib/check-contract-parity.sh` --
+and the scheduler's `_promote_ci_waits` sweep, which returns the park to
+READY on `metadata.merge_wait.wake_requested_at` or on `next_eligible_at`.
+A reader that enumerates `ParkReason` and has no row for the new member
+shows the raw value until its mirror lands.
+
+### If it is declined
+
+MS2 parks on `SCHEDULED_RETRY` with a `blocked_by` reason of `CI_PENDING`
+and no refund, and nothing frozen changes. A slow CI then still spends the
+step's attempts, one per wake.
+
+### Invariants
+
+- **Invariants 1 and 3.** A `CI_PENDING` task is PARKED: no lease, no pool
+  count, no Job execution. Only admission takes capacity when it is woken.
+- **Invariant 4.** This is the point of the request: the step parks,
+  releases and exits instead of waiting.
+- **Invariant 5.** The park is written in the fenced transaction every park
+  uses.
+
+---
+
+## 50. `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries
+
+**Status:** open. Filed 2026-10-06 by functionality wave 11, lane MS1, as
+request (B) of
+[docs/merge-step.md's 2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs).
+The owner decided on 2026-10-06 ("Owner decisions on this plan", decision 4)
+that the unused #295 pieces are removed by a separate cleanup lane; this
+request is that lane's frozen half, and records the change it makes so that
+lane carries its own acceptance line.
+
+### What is true today
+
+Requests 35 and 36 added, for the `single-pr` chain:
+
+* the `post-verdict` and `claude-code-review` runner profiles, both
+  `available=False` since 2026-10-04;
+* `WorkerAction.POST_VERDICT`;
+* `EndCause.VERDICT_REFUSED` and `EndCause.VERDICT_FAILED`.
+
+The 2026-10-04 revision moved the merge onto the tenant's `-git` token and
+appended the `merge` step to `integrate` and one-step `direct-pr` workflows
+(request 47), and the 2026-10-06 revision superseded the review App and the
+GitHub-review verdict anchor these served (merge-step.md, 2026-10-06 §3).
+Nothing submits either profile, and nothing writes either end cause.
+
+### The requested change
+
+Remove the two profiles from `RUNNER_PROFILES`, `WorkerAction.POST_VERDICT`
+from `profiles.py`, and `VERDICT_REFUSED`/`VERDICT_FAILED` from `EndCause`,
+with every mirror: the Terraform catalogue in `terraform/infra/locals.tf` and
+its test, the worker's `post-verdict` action, swarm-api's `single-pr`
+planning, the outcome ledger's classes and the UI's and plugin's rows.
+
+### What it would break if accepted
+
+A stored task or outcome that names either end cause would no longer parse
+as an `EndCause`. None should exist, since neither profile has been
+submittable; the cleanup lane reads the store to confirm before it removes
+them.
+
+### If it is declined
+
+The entries stay disabled, as they are today, and every reader keeps the
+rows for values nothing writes.
+
+### Invariants
+
+- **Invariant 10.** Two fewer profiles a caller can name; neither was
+  available.
+- **Invariant 9.** The per-tenant review, post-verdict and merge service
+  accounts are the Terraform half of the same cleanup (decision 4), decided
+  at dev-iam, not here.

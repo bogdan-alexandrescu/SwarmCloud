@@ -100,20 +100,38 @@ acc_require_tenant() {
 # Anonymous on purpose: a token reads a private repository too. A 404 is
 # private or absent, and the clone tells those apart. A 200 is public, which
 # the sandbox is not -- and every public repository is one whose readers a
-# fixture pull request reaches. Anything else is asked once more, then is a
+# fixture pull request reaches. Any other answer is asked once more, then is a
 # refusal: "could not tell" is not "private".
+#
+# HTTP 000 IS NOT AN ANSWER. It is curl's own failure -- DNS, connect, TLS or
+# its 30 s timeout, on the way out through the VPC NAT -- and twice failed the
+# generic group of release 37413200995 (owner decision 2026-10-06). It is
+# tried 4 times, 5, 15 and 30 s apart, and a refusal on it names egress and
+# carries curl's own stderr, which is what tells DNS from a timeout. The
+# request is anonymous, so that stderr holds no credential.
 acc_require_private_repository() {
-  local code attempt
-  for attempt in 1 2; do
+  local code attempt=0 answers=0 err why=""
+  local backoff=(5 15 30)
+  err="$(mktemp "${TMPDIR:-/tmp}/swarm-acc-probe.XXXXXX")"
+  while :; do
+    attempt=$(( attempt + 1 ))
     code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' \
       -H "Accept: application/vnd.github+json" \
-      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}" 2>/dev/null)" || code="000"
+      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}" 2>"${err}")" || code="000"
+    [[ -n "${code}" ]] || code="000"
     case "${code}" in
-      404) info "repository ${ACC_GITHUB_REPO} is not publicly readable"; return 0 ;;
-      200) die "${ACC_GITHUB_REPO} is publicly readable: acceptance opens real pull requests and runs only against a private sandbox (#628)" ;;
+      404) rm -f "${err}"; info "repository ${ACC_GITHUB_REPO} is not publicly readable"; return 0 ;;
+      200) rm -f "${err}"; die "${ACC_GITHUB_REPO} is publicly readable: acceptance opens real pull requests and runs only against a private sandbox (#628)" ;;
+      000) why="$(tr '\n' ' ' <"${err}" | cut -c1-300)" ;;
+      *) answers=$(( answers + 1 )) ;;
     esac
-    [[ "${attempt}" -eq 2 ]] || sleep 5
+    [[ "${answers}" -lt 2 && "${attempt}" -lt 4 ]] || break
+    sleep "${backoff[$(( attempt - 1 ))]}"
   done
+  rm -f "${err}"
+  if [[ "${code}" == "000" ]]; then
+    die "could not confirm ${ACC_GITHUB_REPO} is private: no answer from ${ACC_GITHUB_API} in ${attempt} tries, 5, 15 and 30 s apart -- an egress failure (DNS, connect, TLS or timeout through the NAT), not an answer about the repository; curl said: ${why:-nothing}"
+  fi
   # 403 and 429 are what GitHub answers an anonymous caller over its 60
   # requests an hour, counted per source IP -- the swarm-verify job's NAT
   # address. Not a platform failure, and not a public repository: say so.
