@@ -423,27 +423,91 @@ def _submit_integrate_workflow(fixer_client, headers: dict[str, str]) -> dict[st
     return {s["step_id"]: s["task_id"] for s in response.json()["workflow"]["steps"]}
 
 
-def test_the_listed_account_cannot_continue_an_integrator_directly_or_through_a_member(
-    fixer_client,
-):
-    """A member may continue an integrate workflow's integrator (#454's CI
-    loop); the listed account's reach was decided as `direct-pr` tasks only,
-    and stays that, including through a member's continuation of one."""
+def test_the_listed_account_can_continue_an_integrate_workflows_integrator(fixer_client, db):
+    """Owner decision 2026-10-06: every SwarmCloud lane pull request is opened
+    by an `integrate` workflow's integrator, so a fixer that reached
+    `direct-pr` tasks only fixed none of them (PR #740's refusal). The fix
+    pushes to the integrator's own `swarm/<task>` branch -- the pull
+    request's -- because the continuation's root IS the integrator."""
     integrator = _submit_integrate_workflow(fixer_client, ALICE)["publish"]
-    direct = fixer_client.post(
+    response = fixer_client.post(
         "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(integrator)
     )
-    assert direct.status_code == 422, direct.text
-    assert direct.json()["code"] == "invalid_dispatch"
+    assert response.status_code == 201, response.text
+    assert response.json()["dispatch"]["continues_task"] == integrator
+    fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
+    assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["dispatch"]["continues"] == integrator
+    assert db.docs[f"tasks/{fix_task_id}"]["submitted_by"] == FIXER
 
+
+def test_a_continuation_of_an_integrator_continues_the_integrators_branch(fixer_client, db):
+    """A member's fix round on the integrator, continued by the fixer, still
+    pushes to the integrator's branch: a continuation of a continuation
+    resolves to its root, exactly as it does for a `direct-pr` task."""
+    integrator = _submit_integrate_workflow(fixer_client, ALICE)["publish"]
     members = fixer_client.post("/v1/workflows", headers=ALICE, json=_fix_workflow(integrator))
     assert members.status_code == 201, members.text
     members_fix = members.json()["workflow"]["steps"][0]["task_id"]
     through = fixer_client.post(
         "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(members_fix)
     )
-    assert through.status_code == 422, through.text
-    assert through.json()["code"] == "invalid_dispatch"
+    assert through.status_code == 201, through.text
+    fix_task_id = through.json()["workflow"]["steps"][0]["task_id"]
+    assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["dispatch"]["continues"] == integrator
+
+
+def test_the_listed_account_cannot_continue_an_integrate_workflows_other_step(fixer_client):
+    """A contributor's branch is merged by the integrator and has no pull
+    request of its own: a fix pushed there reaches nobody. Refused with the
+    code a member's attempt gets, by the integrator's recorded role -- never
+    by anything the caller sends."""
+    contributor = _submit_integrate_workflow(fixer_client, ALICE)["build"]
+    for headers in (FIXER_HEADERS, ALICE):
+        refused = fixer_client.post(
+            "/v1/workflows", headers=headers, json=_fix_workflow(contributor)
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["code"] == "invalid_dispatch"
+        assert "opens no pull request of its own" in refused.json()["message"]
+
+
+def test_the_listed_account_cannot_continue_another_tenants_integrator(fixer_client):
+    """The integrator reach is the caller's tenant only: `bob` is `research`,
+    and his integrator reads exactly like a task that does not exist."""
+    theirs = _submit_integrate_workflow(fixer_client, auth_header("bob"))["publish"]
+    response = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(theirs)
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_dispatch"
+    assert response.json()["message"] == f"continues_task {theirs!r} is not a task in your tenant."
+
+
+def test_the_listed_accounts_integrator_fix_is_capped_and_stamped_for_the_post_back(
+    fixer_client, db
+):
+    """#728's per-pull-request cap and pending post-back stamp hold for an
+    integrator continuation as for a `direct-pr` one: both key on the root."""
+    integrator = _submit_integrate_workflow(fixer_client, ALICE)["publish"]
+
+    def red_run(attempt: int) -> dict:
+        return {
+            **_fix_workflow(integrator),
+            "metadata": {"ci_fix": {
+                "pull_request": 740, "run_id": 1, "head_sha": "a" * 40,
+                "attempt": attempt, "max_attempts": 2,
+            }},
+        }
+
+    for attempt in (1, 2):
+        response = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(attempt))
+        assert response.status_code == 201, response.text
+        fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
+        assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["ci_fix"]["postback"] == "pending"
+    third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(3))
+    assert third.status_code == 422, third.text
+    assert third.json()["code"] == "invalid_dispatch"
+    assert "the cap is 2" in third.json()["message"]
 
 
 def test_the_continued_tasks_submitted_by_is_the_listed_account_not_the_original(
@@ -480,6 +544,7 @@ def test_a_task_from_another_tenant_still_cannot_be_continued_by_the_listed_acco
     )
     assert response.status_code == 422, response.text
     assert response.json()["code"] == "invalid_dispatch"
+    assert response.json()["message"] == f"continues_task {theirs!r} is not a task in your tenant."
 
 
 # ---------------------------------------------------------------------------
