@@ -158,6 +158,10 @@ left, a pull request sets `spec_signature_mode = "enforce"` and removes
 `spec_legacy_cutover`. After 2026-10-20 the worker enforces regardless, and any
 unsigned task left fails `spec_signature_invalid` with reason `unsigned`.
 
+### Prod
+
+Prod enforces from its first release and never had a legacy window (owner decision 2026-10-06 on #355): no unsigned task was ever parked there, which is the only thing a window protects. `prod.tfvars` states `spec_signature_mode = "enforce"` explicitly rather than inheriting the default, and sets no `spec_legacy_cutover`. The worker's code cap (#739) refuses an unsigned task created after 2026-09-30T21:24:36Z on every platform, so even a prod `legacy` setting could not re-open the window.
+
 ## GKE
 
 The browser profile's pods read the keys from the `swarm-spec-verify-keys`

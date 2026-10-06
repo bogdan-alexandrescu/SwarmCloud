@@ -151,3 +151,11 @@ create_alerts = true
 alert_emails = [
   "swarm-alerts@saga.xyz",
 ]
+
+# --- step-spec signing (#342, #355) ------------------------------------------
+# ENFORCE, stated rather than inherited (owner decision 2026-10-06 on #355): prod
+# never ran a legacy window -- it has no unsigned parked tasks to protect, which
+# was dev's only reason for one (docs/runbooks/spec-signing-rollout.md, steps
+# 1-4). This is also the variable's default; writing it here keeps a later edit
+# of the default from silently relaxing prod.
+spec_signature_mode = "enforce"
