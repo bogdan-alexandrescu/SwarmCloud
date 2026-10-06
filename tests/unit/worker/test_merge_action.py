@@ -19,14 +19,19 @@ was made -- delete the check it names and its case merges instead.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any, Callable
 
 import pytest
 
+from agent_worker import control as control_mod
 from agent_worker import forge as forge_mod
 from agent_worker import merge
-from swarm_common.models import EndCause
-from swarm_common.states import TaskState
+from agent_worker.errors import ExitCode
+from swarm_common.models import EndCause, utcnow
+from swarm_common.states import EventType, ParkReason, TaskState
+
+from conftest import seed_attempt
 
 from merge_world import (
     API, CHECK, MERGED, NAME, NUMBER, OPENER, OTHER, OWNER, PINNED, PR, TASK, TITLE,
@@ -152,27 +157,19 @@ def _unprotected_and_red(world: MergeWorld) -> None:
 
 
 #: (case, the one thing broken, refusal code, words the reason says, retryable)
+#: A fact that may change by itself is not here: it is a wait (`WAITS`).
 REFUSALS: list[tuple[str, Callable[[MergeWorld], None], str, str, bool]] = [
     ("red_required_check", lambda w: w.runs[0].update(conclusion="failure"),
      "checks_failed", CHECK, False),
     ("neutral_required_check", lambda w: w.runs[0].update(conclusion="neutral"),
      "checks_failed", CHECK, False),
-    ("pending_required_check", lambda w: w.runs[0].update(status="in_progress", conclusion=None),
-     "checks_pending", CHECK, True),
-    ("required_check_not_reported", _set("runs", []), "checks_pending", CHECK, True),
-    ("required_check_by_another_app", lambda w: w.runs[0].update(app={"id": 1}),
-     "checks_pending", CHECK, True),
     ("moved_head", lambda w: w.pr["head"].update(sha=OTHER), "head_moved", OTHER, False),
     ("verdict_not_yet", lambda w: w.verdict.update(verdict="NOT_YET"),
      "verdict_not_merge", "NOT_YET", False),
     ("verdict_not_staged", _set("verdict", None), "verdict_unreadable", "verdict.json", False),
-    ("unprotected_branch_with_no_checks", _unprotected_and_silent, "no_checks",
-     "at least one", True),
     ("unprotected_branch_with_a_red_check", _unprotected_and_red, "checks_failed", "unit", False),
     ("not_mergeable", lambda w: w.pr.update(mergeable=False), "not_mergeable",
      "does not merge cleanly", False),
-    ("mergeability_never_computed", lambda w: w.pr.update(mergeable=None),
-     "mergeability_unknown", "rereads", True),
     ("token_lacks_rights", lambda w: w.repository.update(permissions={"push": False}),
      "token_lacks_rights", "cannot write", False),
     ("token_cannot_read", lambda w: w.github.route("GET", API, (404, {}, {"message": "Not Found"})),
@@ -372,3 +369,183 @@ def test_only_github_has_a_merger(tmp_path):
     assert isinstance(found, merge.GitHubMerger)
     assert found.full_name == "octo-org/widget-shop"
     assert token not in repr(found)
+
+
+# ---------------------------------------------------------------------------
+# A wait is a park, not a retry (lane MS2, docs/merge-step.md "Revised
+# 2026-10-06" §1): checks still running, none reported on a branch that
+# requires none, or GitHub's mergeability not computed. The step parks
+# CI_PENDING, refunds the attempt up to MERGE_CI_MAX_WAKES, and exits 75.
+# ---------------------------------------------------------------------------
+
+#: (case, the one thing that has not settled, wait code, words the reason says,
+#: the pending names the park records)
+WAITS: list[tuple[str, Callable[[MergeWorld], None], str, str, list[str]]] = [
+    ("pending_required_check", lambda w: w.runs[0].update(status="in_progress", conclusion=None),
+     "checks_pending", CHECK, [CHECK]),
+    ("required_check_not_reported", _set("runs", []), "checks_pending", CHECK, [CHECK]),
+    ("required_check_by_another_app", lambda w: w.runs[0].update(app={"id": 1}),
+     "checks_pending", CHECK, [CHECK]),
+    ("unprotected_branch_with_no_checks", _unprotected_and_silent, "no_checks",
+     "at least one", []),
+    ("mergeability_never_computed", lambda w: w.pr.update(mergeable=None),
+     "mergeability_unknown", "rereads", []),
+]
+
+
+@pytest.mark.parametrize(("case", "mutate", "code", "says", "pending"), WAITS,
+                         ids=[w[0] for w in WAITS])
+def test_each_wait_parks_ci_pending_at_the_pinned_head_and_makes_no_merge_call(
+    tmp_path, case, mutate, code, says, pending
+):
+    world = MergeWorld(tmp_path)
+    mutate(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, (case, outcome.message)
+    assert outcome.retryable is False, f"{case}: a wait failed its attempt instead of parking"
+    assert outcome.end_cause is None, case
+    assert outcome.exit_code == ExitCode.PARKED
+    assert outcome.ci_wait == {"code": code, "head": PINNED, "pull_request": NUMBER,
+                               "pending": pending}, case
+    assert outcome.summary["wait"]["code"] == code
+    assert says in outcome.summary["wait"]["message"], (case, outcome.summary)
+    assert "refusal" not in outcome.summary, "a wait is not a refusal"
+    assert world.merge_calls() == [], f"{case}: a wait made the merge call"
+    assert world.closed_issues() == []
+
+
+def test_a_wait_and_a_settled_reading_differ_by_one_check(tmp_path):
+    """The control for WAITS: the same world with the check completed merges."""
+    world = MergeWorld(tmp_path)
+    world.runs[0].update(status="in_progress", conclusion=None)
+    assert merge.run_merge(world.context()).state is TaskState.PARKED
+    settled = MergeWorld(tmp_path / "settled")
+    assert merge.run_merge(settled.context()).state is TaskState.SUCCEEDED
+
+
+def test_the_merge_wait_key_is_the_one_the_scheduler_and_swarm_api_read():
+    from scheduler import loop as scheduler_loop
+    from swarm_api import mergewake
+
+    from agent_worker import control as control_mod
+
+    assert control_mod.MERGE_WAIT_METADATA_KEY == mergewake.MERGE_WAIT_METADATA_KEY
+    assert control_mod.MERGE_WAIT_METADATA_KEY == scheduler_loop.MERGE_WAIT_METADATA_KEY
+    assert mergewake.WAKE_MARKER == scheduler_loop.MERGE_WAKE_MARKER == "wake_requested_at"
+
+
+# -- the park itself, through the production worker over in-memory Firestore --
+
+
+def _seed_merge(db, **metadata: Any) -> None:
+    seed_attempt(db, runner_profile="merge", task_input={"prompt": "merge"})
+    doc = db.doc("tasks/task_1")
+    doc["workflow_id"] = "wf_1"
+    doc["metadata"] = {"dispatch": {"strategy": "integrate", "carrier": "checkpoints",
+                                    "merge_target": {"pull_request": OPENER}}, **metadata}
+
+
+def _waiting(monkeypatch, *, before=None):
+    """`run_merge` replaced by one that reads checks still running at PINNED."""
+
+    def run(ctx):
+        if before is not None:
+            before()
+        wait = merge._Run(ctx, {"action": "merge", "merged_by_this_task": False})
+        return wait.wait("checks_pending", f"at {PINNED}: {CHECK}", head=PINNED,
+                         pull_request=NUMBER, pending=[CHECK])
+
+    monkeypatch.setattr(merge, "run_merge", run)
+
+
+@pytest.fixture
+def no_runner(monkeypatch):
+    from agent_worker import lifecycle
+    from fakes import ExplodingChildProcess
+
+    monkeypatch.setattr(lifecycle, "ChildProcess", ExplodingChildProcess)
+
+
+def test_pending_checks_park_ci_pending_refund_the_attempt_and_release_the_lease(
+    db, worker_factory, monkeypatch, no_runner
+):
+    _seed_merge(db)
+    _waiting(monkeypatch)
+    worker, _, _ = worker_factory(runner_profile="merge")
+    before = utcnow()
+
+    assert worker.run() == ExitCode.PARKED
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.PARKED.value
+    assert task["park_reason"] == ParkReason.CI_PENDING.value
+    assert task["current_lease_id"] is None
+    assert task.get("end_cause") is None
+    # Invariant 4: waiting is not failing -- the attempt admission counted is
+    # given back, and the wake is counted instead.
+    assert task["attempt_count"] == 0
+    wait = task["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
+    assert wait["wakes"] == 1
+    assert wait["head"] == PINNED and wait["pull_request"] == NUMBER
+    assert wait["pending"] == [CHECK] and wait["code"] == "checks_pending"
+    assert wait["updates"] == 0
+    assert wait["first_parked_at"] >= before
+    assert "wake_requested_at" not in wait
+    # The fallback: a dead tick or a broken token never strands the merge.
+    fallback = task["next_eligible_at"] - wait["parked_at"]
+    assert fallback == timedelta(seconds=merge.MERGE_CI_FALLBACK_SECONDS)
+    assert task["blocked_by"] == [{"reason": ParkReason.CI_PENDING.value,
+                                   "code": "checks_pending", "head": PINNED,
+                                   "pending": [CHECK]}]
+    # Invariants 1 and 3: the slot is back, nothing is counted against a pool.
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
+    assert parked and parked[-1]["detail"]["reason"] == ParkReason.CI_PENDING.value
+    assert parked[-1]["detail"]["attempt_refunded"] is True
+    assert EventType.RETRYING.value not in db.event_types("task_1")
+
+
+def test_past_merge_ci_max_wakes_a_ci_wait_counts_as_an_attempt(
+    db, worker_factory, monkeypatch, no_runner
+):
+    first = utcnow() - timedelta(hours=2)
+    _seed_merge(db, merge_wait={"wakes": merge.MERGE_CI_MAX_WAKES, "first_parked_at": first,
+                                "updates": 1, "wake_requested_at": utcnow()})
+    _waiting(monkeypatch)
+    worker, _, _ = worker_factory(runner_profile="merge")
+
+    assert worker.run() == ExitCode.PARKED
+
+    task = db.doc("tasks/task_1")
+    assert task["park_reason"] == ParkReason.CI_PENDING.value
+    assert task["attempt_count"] == 1, "a wake past the bound was refunded"
+    wait = task["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
+    assert wait["wakes"] == merge.MERGE_CI_MAX_WAKES
+    # What the park carries over: when CI started being waited for, and how
+    # many times the branch was updated. The old marker is not carried over:
+    # this park waits for a fresh one.
+    assert wait["first_parked_at"] == first and wait["updates"] == 1
+    assert "wake_requested_at" not in wait
+    parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
+    assert parked[-1]["detail"]["attempt_refunded"] is False
+
+
+def test_a_stale_worker_neither_parks_nor_refunds(db, worker_factory, monkeypatch, no_runner):
+    """Invariant 5: superseded while it read, the park is refused whole."""
+    _seed_merge(db)
+
+    def superseded():
+        db.doc("tasks/task_1")["current_generation"] = 2
+
+    _waiting(monkeypatch, before=superseded)
+    worker, _, _ = worker_factory(runner_profile="merge")
+
+    worker.run()
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] != TaskState.PARKED.value
+    assert task.get("park_reason") != ParkReason.CI_PENDING.value
+    assert task["attempt_count"] == 1
+    assert control_mod.MERGE_WAIT_METADATA_KEY not in task["metadata"]
+    assert db.doc("leases/lease_1")["released_at"] is None, "a stale worker touched the lease"

@@ -394,6 +394,94 @@ run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
   }
 }
 
+# docs/merge-step.md "Revised 2026-10-06" §1 (lane MS2): every minute, per
+# registered tenant, POST /v1/admin/merges/wake reads that tenant's CI_PENDING
+# merge parks' checks with that tenant's -git token and marks the settled ones
+# for the scheduler to wake. As the rollup sweeper, which swarm-api admits to
+# that route by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES); its one grant,
+# run.invoker on swarm-api, is already the rollup's, so the job adds no IAM
+# member.
+run "the_merge_wake_runs_per_tenant_every_minute_as_the_sweeper" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.merge_wake)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one merge_wake job, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["eng"].name == "swarm-merge-wake-eng"
+    error_message = "the merge wake job is named for its tenant"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/merges/wake?tenant_id=eng"
+    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["research"].http_target[0].http_method == "POST"
+    error_message = "the merge wake route is a POST"
+  }
+
+  # The OIDC grant: the rollup-sweeper identity, minted for the API's own URL.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake :
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+      && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    ])
+    error_message = "the merge wake presents the rollup-sweeper identity, for the API's own URL, never the platform tick"
+  }
+
+  # Every minute: a parked merge waits on this read between its CI settling
+  # and its wake. A read costs one GET per check list and holds nothing.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake : job.schedule == "* * * * *"
+    ])
+    error_message = "the merge wake runs every minute"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake : job.retry_config[0].retry_count == 0
+    ])
+    error_message = "the next tick is the merge wake's retry"
+  }
+
+  # A Cloud Scheduler job has no labels; the destroy guard reads the marker
+  # from its description.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake :
+      startswith(job.description, "managed-by=swarm-terraform;")
+    ])
+    error_message = "every merge_wake job carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "merge-wake")
+    error_message = "the sweeper account's description names every job that presents it"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-merge-wake-eng") && contains(output.scheduler_job_names, "swarm-merge-wake-research")
+    error_message = "scheduler_job_names must list every merge_wake job"
+  }
+}
+
 run "no_registered_tenant_means_no_rollup_job" {
   command = plan
 
@@ -414,6 +502,11 @@ run "no_registered_tenant_means_no_rollup_job" {
   assert {
     condition     = length(google_cloud_scheduler_job.repo_index_poll) == 0
     error_message = "a repo_index_poll job for a tenant nobody registered polls nothing"
+  }
+
+  assert {
+    condition     = length(google_cloud_scheduler_job.merge_wake) == 0
+    error_message = "a merge_wake job for a tenant nobody registered wakes nothing"
   }
 }
 
