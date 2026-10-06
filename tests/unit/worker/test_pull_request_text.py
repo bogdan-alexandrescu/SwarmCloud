@@ -13,8 +13,10 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
 * scrubbed of every registered secret BEFORE it is cut, as every other text
   the worker shows;
 * refused, falling back to the generated text, when it is not UTF-8, is empty,
-  is a title of more than one line, or carries attribution (the owner's rule:
-  none on GitHub);
+  is a title of more than one line, or is a title carrying attribution (the
+  owner's rule: none on GitHub);
+* a body carrying attribution has those lines removed and the rest published
+  (#735); only a body with nothing left falls back to the generated text;
 * read without following a link, like every other file the worker takes out
   of the artifacts folder;
 * with the platform's metadata block still in the body, after the agent's.
@@ -246,11 +248,11 @@ def test_a_title_that_cannot_be_used_opens_no_pull_request(
 @pytest.mark.parametrize(
     "body",
     [
-        b"Closes #4\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
-        b"Closes #4\n\n\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"\n---\n\n\xf0\x9f\xa4\x96\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
         b"\xff\xfe not utf-8",
     ],
-    ids=["co-author-trailer", "generated-footer", "not-utf8"],
+    ids=["only-a-footer", "only-attribution-and-a-rule", "not-utf8"],
 )
 def test_a_body_that_cannot_be_used_falls_back_to_the_generated_one(
     worker_factory, monkeypatch, origin, local_urls, forge, body
@@ -264,6 +266,82 @@ def test_a_body_that_cannot_be_used_falls_back_to_the_generated_one(
     assert_no_attribution_in(pull["body"], "pull request body")
     assert out["pull_request_text"]["body"] == "platform", out
     assert out.get("pull_request_text_refused"), out
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"Closes #322\n\nThe last item, 9c.\n\n"
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"Closes #322\n\nThe last item, 9c.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
+        b"Closes #322\n\nThe last item, 9c.\n\n"
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+        b"Co-Authored-By: Claude Opus <noreply@anthropic.com>\n",
+    ],
+    ids=["generated-footer", "co-author-trailer", "both"],
+)
+def test_an_attributed_body_loses_the_attribution_and_keeps_the_rest(
+    worker_factory, monkeypatch, origin, local_urls, forge, body
+):
+    """#735: the attribution lines are removed and the agent's body, its
+    `Closes #N` included, is published -- not swapped for the fallback."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-attributed",
+        files={"pr-body.md": body},
+    )
+    pull = _only_pull(forge)
+    assert pull["body"].startswith("Closes #322\n\nThe last item, 9c.\n\n"), pull["body"]
+    assert_no_attribution_in(pull["body"], "pull request body")
+    assert "\U0001f916" not in pull["body"], pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
+    assert not out.get("pull_request_text_refused"), out
+
+
+def test_strip_attribution_keeps_every_other_line():
+    text = (
+        "Closes #322\n\nWhat changed.\n\n"
+        "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+        "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+    assert lifecycle.strip_attribution(text) == "Closes #322\n\nWhat changed."
+
+
+def test_strip_attribution_removes_a_bare_robot_line():
+    assert lifecycle.strip_attribution("Closes #9\n\n\U0001f916\n") == "Closes #9"
+
+
+def test_strip_attribution_leaves_nothing_of_a_body_that_is_only_a_footer():
+    footer = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    assert lifecycle.strip_attribution(footer) == ""
+    assert lifecycle.strip_attribution("---\n\n" + footer) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Closes #12\n\nThe widget accepted -1.\n",
+        "  leading space\n\n\n\ntrailing blank lines\n\n\n",
+        "a claude-code runner profile, `@decorator`, \u00e9\r\nCRLF\n---\n",
+        "",
+    ],
+    ids=["plain", "whitespace", "mixed", "empty"],
+)
+def test_strip_attribution_returns_a_body_without_attribution_byte_for_byte(text):
+    assert lifecycle.strip_attribution(text) is text
+
+
+def test_a_body_without_attribution_is_published_byte_for_byte(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    agent_body = "Closes #12\n\n\n\nTwo blank lines above, `x  ` and a rule:\n\n---\n\ndone."
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-plain",
+        files={"pr-body.md": (agent_body + "\n").encode()},
+    )
+    pull = _only_pull(forge)
+    # The agent's text, exactly, then the platform's separator.
+    assert pull["body"].startswith(agent_body + "\n\n---\n\n"), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
 
 
 def test_a_body_that_is_a_link_is_not_followed(
