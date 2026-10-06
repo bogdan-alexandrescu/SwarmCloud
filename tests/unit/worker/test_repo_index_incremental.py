@@ -335,6 +335,28 @@ def test_a_full_run_records_each_files_blob_id(tool, tmp_path):
     row = next(f for f in facts["files"] if f["path"] == "lib/c.py")
     assert row["blob"] == blob
     assert "incremental" not in facts["extractor"]
+    # The marker promotion records, so the API can tell a carriable graph.
+    assert facts["extractor"]["blob_ids"] is True
+
+
+def test_a_checkout_that_is_not_git_says_its_graph_cannot_be_carried(tool, tmp_path):
+    plain = tmp_path / "plain"
+    (plain / "lib").mkdir(parents=True)
+    (plain / "lib" / "c.py").write_text("def only_here():\n    return 1\n")
+    facts = tool.extract(plain, tool.Budget())
+    assert facts["extractor"]["blob_ids"] is False
+
+
+def test_the_api_reads_a_full_runs_manifest_as_carriable(tool, shards, tmp_path):
+    """The extractor's marker survives the writer into the manifest promotion reads."""
+    from swarm_api import repoindex
+
+    repo = fx.build_repo(tmp_path / "repo", FILES)
+    store = shards.LocalStore(tmp_path / "bucket")
+    _base_found, facts = _base(tool, shards, store, repo)
+    record = repoindex.graph_extractor_record(_manifest(store, facts["commit_sha"]))
+    assert record["blob_ids"] is True and record["version"] == tool.EXTRACTOR_VERSION
+    assert repoindex.graph_carry_refusal(record) is None
 
 
 # --------------------------------------------------------------------------
@@ -436,6 +458,7 @@ def test_swarm_api_applies_the_extractors_full_run_rules(tool):
     from swarm_api import repoindex
 
     assert repoindex.MAX_INCREMENTAL_CHANGES == tool.MAX_INCREMENTAL_CHANGES
+    assert repoindex.INDEXER_EXTRACTOR_VERSION == tool.EXTRACTOR_VERSION
     assert repoindex.CONFIG_FILENAMES == tool.CONFIG_FILENAMES
     assert repoindex.CONFIG_GLOBS == tool.CONFIG_GLOBS
     assert repoindex.CONFIG_DIRECTORIES == tool.CONFIG_DIRECTORIES

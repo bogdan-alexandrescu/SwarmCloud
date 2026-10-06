@@ -310,6 +310,11 @@ class RepoGraph:
         key, _manifest = self._manifest(tenant_id, repo_id, commit_sha, expected)
         return key
 
+    def verified_manifest(self, tenant_id: str, repo_id: str, commit_sha: str, expected: str
+                          ) -> tuple[str, dict[str, Any]]:
+        """For promotion: the manifest's key and parsed body, once its bytes match `expected`."""
+        return self._manifest(tenant_id, repo_id, commit_sha, expected)
+
     def open(self, tenant_id: str, repo_id: str, version: Mapping[str, Any]) -> Graph:
         """A promoted version's graph, for `tenant_id`'s own registration only."""
         digest = version.get("graph_digest")

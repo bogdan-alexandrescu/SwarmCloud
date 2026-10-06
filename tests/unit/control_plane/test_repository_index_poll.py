@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forge
+from swarm_api import forge, repoindex
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -476,6 +476,8 @@ def _with_a_graph(db, repo_id, commit) -> None:
     db.docs[f"repositories/{repo_id}/index_versions/{commit}"] = {
         "commit_sha": commit, "task_id": "task_base", "kind": "full",
         "digest": "sha256:" + "cd" * 32, "graph_digest": "sha256:" + "ab" * 32,
+        "graph_extractor": {"version": repoindex.INDEXER_EXTRACTOR_VERSION, "blob_ids": True,
+                            "files_not_listed": 0, "truncated": []},
     }
 
 

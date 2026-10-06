@@ -196,6 +196,14 @@ BASE_LINE = "swarm-index-base: "
 #: bound to the diff it measures (`repo_index_extract.MAX_INCREMENTAL_CHANGES`,
 #: held equal by tests/unit/worker/test_repo_index_incremental.py).
 MAX_INCREMENTAL_CHANGES = 300
+#: The extractor version the indexer image runs
+#: (`repo_index_extract.EXTRACTOR_VERSION`, held equal by
+#: tests/unit/worker/test_repo_index_incremental.py). The extractor carries a
+#: base graph only when it extracted it itself, so a promoted graph of another
+#: version is a full run -- and `choose_kind` says so before the run is
+#: submitted, so it gets the full timeout instead of reading the whole
+#: repository inside the incremental one (lane IX2 review).
+INDEXER_EXTRACTOR_VERSION = "1"
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,
 #: `test_map` and the graph mean everywhere, so it forces a full run. The
@@ -1051,6 +1059,9 @@ def choose_kind(
         return KindChoice("full", reason="the promoted index's version is not kept")
     if not version.get("graph_digest"):
         return KindChoice("full", reason="the promoted index has no graph to build on")
+    carried = graph_carry_refusal(version.get("graph_extractor"))
+    if carried is not None:
+        return KindChoice("full", reason=carried)
     days = _int_or(index.get("full_every_days"), FULL_EVERY_DAYS_DEFAULT)
     full_at = last_full_at(index)
     if full_at is None:
@@ -1075,6 +1086,49 @@ def choose_kind(
         return KindChoice("full", reason=(
             f"a build, test or language-server configuration changed ({config[0]}{more})"))
     return KindChoice("incremental", base_sha=current)
+
+
+def graph_extractor_record(manifest: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """What a promoted graph's manifest says about carrying it, for `choose_kind`.
+
+    The extractor refuses to build on a base graph of another extractor
+    version, one that was truncated (`files_not_listed`, or any `truncated`
+    entry: the writer's ceiling cuts included) or one whose files carry no git
+    blob id (every graph promoted before lane IX2). Promotion records those
+    facts on the version so the API can refuse the same bases up front.
+    """
+    if not isinstance(manifest, Mapping):
+        return None
+    extractor = manifest.get("extractor")
+    extractor = extractor if isinstance(extractor, Mapping) else {}
+    return {
+        "version": extractor.get("version"),
+        "blob_ids": extractor.get("blob_ids") is True,
+        "files_not_listed": _int_or(extractor.get("files_not_listed"), 0),
+        "truncated": sorted(str(t) for t in manifest.get("truncated") or []),
+    }
+
+
+def graph_carry_refusal(record: Any) -> str | None:
+    """Why the extractor would not carry a promoted graph, or None when it would.
+
+    The extractor-side §3.4 fallbacks, read from `graph_extractor_record`.
+    A version without the record -- promoted before lane IX2 -- is refused:
+    its graph has no blob ids either.
+    """
+    if not isinstance(record, Mapping):
+        return ("the promoted graph does not record how it was extracted (it predates "
+                "incremental runs)")
+    if record.get("version") != INDEXER_EXTRACTOR_VERSION:
+        return (f"the promoted graph was extracted by version {record.get('version')!r} of "
+                f"{EXTRACTOR_COMMAND}, the indexer runs {INDEXER_EXTRACTOR_VERSION!r}")
+    if record.get("blob_ids") is not True:
+        return ("the promoted graph records no per-file blob id (it was extracted before "
+                "incremental runs existed)")
+    if _int_or(record.get("files_not_listed"), 0) or record.get("truncated"):
+        cut = ", ".join(record.get("truncated") or []) or "files"
+        return f"the promoted graph was truncated ({cut}), so it cannot be carried"
+    return None
 
 
 def promotion_decision(
@@ -1712,7 +1766,10 @@ class RepoIndex:
             if current and current != sha:
                 snap = self._version_ref(repo_id, current).get()
                 version = snap.to_dict() if snap.exists else None
-                if version is not None and version.get("graph_digest"):
+                # No compare for a graph the extractor would not carry:
+                # `choose_kind` refuses it before it reads the diff.
+                if (version is not None and version.get("graph_digest")
+                        and graph_carry_refusal(version.get("graph_extractor")) is None):
                     try:
                         changes = read_changes(record, self.tenant(tenant_id), current, sha,
                                                tokens=self._tokens, forge=self._forge)
@@ -1990,12 +2047,11 @@ class RepoIndex:
         # §2.5: the graph the index names is checked here, against the digest
         # the index carries, and recorded with it -- or the run is refused.
         graph_digest = (document.get("graph") or {}).get("manifest_digest")
-        graph_manifest = None
+        graph_manifest = manifest = None
         if graph_digest:
             try:
-                graph_manifest = RepoGraph.from_inspection(self._inspection).verify(
-                    tenant_id, repo_id, new, graph_digest
-                )
+                graph_manifest, manifest = RepoGraph.from_inspection(
+                    self._inspection).verified_manifest(tenant_id, repo_id, new, graph_digest)
             except UpstreamUnavailable:
                 log.warning("repo index run %s: the graph manifest could not be read yet",
                             task.id)
@@ -2036,6 +2092,9 @@ class RepoIndex:
             "extractor": dict(document.get("extractor") or {}),
             "graph_manifest": graph_manifest,
             "graph_digest": graph_digest if graph_manifest else None,
+            # What `choose_kind` reads to submit the next run full when the
+            # extractor could not carry this graph anyway.
+            "graph_extractor": graph_extractor_record(manifest) if graph_manifest else None,
             "languages": [row["language"] for row in document.get("languages") or []],
             "recorded_at": now,
         }
@@ -2370,8 +2429,9 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 __all__ = [
     "BASE_INDEX_FILE", "BASE_LINE", "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",
     "EXTRACTOR_COMMAND", "GRAPH_WRITER_COMMAND", "HeadRead", "INDEXER_PROFILE", "INDEX_FILE",
-    "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
-    "VERSIONS_COLLECTION", "choose_kind", "is_config_path", "last_full_at", "read_changes",
+    "INDEXER_EXTRACTOR_VERSION", "KindChoice", "MAX_INCREMENTAL_CHANGES", "PHASES_FILE", "RUN_KINDS",
+    "VERSIONS_COLLECTION", "choose_kind", "graph_carry_refusal", "graph_extractor_record",
+    "is_config_path", "last_full_at", "read_changes",
     "IndexDigestMismatch",
     "IndexPaused", "IndexRunRequest", "IndexUnavailable", "InvalidIndex", "MAX_INDEX_BYTES",
     "MAX_SELECT_PATHS", "MAX_SUMMARY_BYTES", "POLL_BUDGET_SECONDS", "POLL_MAX_REGISTRATIONS",

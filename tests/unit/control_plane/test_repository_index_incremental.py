@@ -32,6 +32,9 @@ from .repo_index_fakes import REPOSITORY, IndexGitHub, finish_index_task, fixtur
 ONE, TWO, THREE = sha("one"), sha("two"), sha("three")
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 GRAPH = "sha256:" + "ab" * 32
+#: A promoted graph the extractor can carry, as `graph_extractor_record` records it.
+CARRIED = {"version": repoindex.INDEXER_EXTRACTOR_VERSION, "blob_ids": True,
+           "files_not_listed": 0, "truncated": []}
 
 
 @pytest.fixture
@@ -75,6 +78,7 @@ def _promote_one_with_a_graph(client, db, objects, repo_id) -> None:
     # The version as promotion records it when the index named a graph
     # (`graph_digest`); the graph's own checks are test_repository_index_graph_wiring.py's.
     db.docs[f"repositories/{repo_id}/index_versions/{ONE}"]["graph_digest"] = GRAPH
+    db.docs[f"repositories/{repo_id}/index_versions/{ONE}"]["graph_extractor"] = dict(CARRIED)
 
 
 # --------------------------------------------------------------------------
@@ -91,7 +95,8 @@ def _state(**overrides):
 def _choose(index=None, *, requested="incremental", version=None, changes=None):
     return repoindex.choose_kind(
         _state() if index is None else index, TWO, requested=requested,
-        version={"commit_sha": ONE, "graph_digest": GRAPH} if version is None else version,
+        version=({"commit_sha": ONE, "graph_digest": GRAPH, "graph_extractor": dict(CARRIED)}
+                 if version is None else version),
         changes=({"status": "ahead", "files": ["src/a.py", "src/b.py"]}
                  if changes is None else changes),
         now=NOW,
@@ -157,9 +162,43 @@ def test_without_a_base_to_build_on_the_run_is_full(index, version, changes, why
     assert choice.kind == "full" and why in choice.reason
 
 
+@pytest.mark.parametrize("record,why", [
+    (None, "predates incremental runs"),
+    (dict(CARRIED, version="0"), "version '0'"),
+    (dict(CARRIED, blob_ids=False), "blob id"),
+    (dict(CARRIED, files_not_listed=3), "truncated (files)"),
+    (dict(CARRIED, truncated=["call_edges:symbol"]), "truncated (call_edges:symbol)"),
+])
+def test_a_graph_the_extractor_would_not_carry_forces_full(record, why):
+    """Lane IX2 review: the extractor-side fallbacks are decided before submission.
+
+    Otherwise the run is submitted incremental, with the 900 s timeout, and
+    the extractor then reads the whole repository inside it.
+    """
+    version = {"commit_sha": ONE, "graph_digest": GRAPH, "graph_extractor": record}
+    choice = _choose(version=version)
+    assert choice.kind == "full" and choice.base_sha is None
+    assert why in choice.reason
+
+
+def test_the_graph_extractor_record_is_read_from_the_manifest():
+    manifest = {"extractor": {"version": "1", "blob_ids": True, "files_not_listed": 0},
+                "truncated": ["call_edges:below_0.4"]}
+    record = repoindex.graph_extractor_record(manifest)
+    assert record == {"version": "1", "blob_ids": True, "files_not_listed": 0,
+                      "truncated": ["call_edges:below_0.4"]}
+    assert "truncated" in repoindex.graph_carry_refusal(record)
+    assert repoindex.graph_carry_refusal(dict(record, truncated=[])) is None
+    # A manifest with no extractor block is a graph nobody can carry.
+    assert repoindex.graph_extractor_record({})["blob_ids"] is False
+    assert repoindex.graph_extractor_record(None) is None
+
+
 def test_an_unknown_relation_or_a_full_request_is_full():
     unread = repoindex.choose_kind(_state(), TWO, requested="incremental",
-                                   version={"graph_digest": GRAPH}, changes=None, now=NOW)
+                                   version={"graph_digest": GRAPH,
+                                            "graph_extractor": dict(CARRIED)},
+                                   changes=None, now=NOW)
     assert unread.kind == "full" and "GitHub could not say" in unread.reason
     assert _choose(requested="full").reason == "a full run was asked for"
 
@@ -224,6 +263,25 @@ def test_a_non_ancestor_base_submits_a_full_run(client, db, objects, repo_id, gi
     run = _index_now(client, repo_id, kind="incremental").json()["run"]
 
     assert run["kind"] == "full" and "not an ancestor" in run["kind_reason"]
+
+
+@pytest.mark.parametrize("record", [None, dict(CARRIED, truncated=["files"])])
+def test_a_graph_promoted_before_ix2_or_truncated_submits_a_full_run_with_the_full_timeout(
+    client, db, objects, repo_id, github, record
+):
+    _promote_one_with_a_graph(client, db, objects, repo_id)
+    db.docs[f"repositories/{repo_id}/index_versions/{ONE}"]["graph_extractor"] = record
+    github.heads["main"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 1,
+                                   "files": ["src/api/users.py"]}
+
+    run = _index_now(client, repo_id, kind="incremental").json()["run"]
+
+    assert run["kind"] == "full" and run["base_sha"] is None
+    assert "promoted graph" in run["kind_reason"]
+    task = db.docs[f"tasks/{run['task_id']}"]
+    assert task["timeout_seconds"] == repoindex.FULL_TIMEOUT_SECONDS == 1800
+    assert repoindex.BASE_LINE not in task["input"]["prompt"]
 
 
 def test_index_now_without_a_kind_is_still_full(client, db, objects, repo_id, github):

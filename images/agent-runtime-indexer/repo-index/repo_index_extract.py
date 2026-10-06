@@ -2104,6 +2104,12 @@ def extract(root: Path, budget: Budget | None = None,
             "grammars": {lang: f"{pkg} {_grammar_version(pkg)}" for lang, pkg in sorted(GRAMMAR_PACKAGES.items())},
             "budget": _budget_record(budget),
             "files_not_listed": not_listed,
+            # Every listed file carries its git blob id, so a later run can
+            # carry this graph (§3.4). Promotion records it on the version and
+            # the API's `choose_kind` submits a run full, with the full
+            # timeout, when the promoted graph lacks it.
+            "blob_ids": head_blobs is not None and all(
+                isinstance(row.get("blob"), str) and bool(row["blob"]) for row in files),
             "history": history,
             "lsp": None if lsp_result is None else {
                 "servers": dict(sorted(lsp_result.servers.items())),

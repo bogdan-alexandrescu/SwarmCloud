@@ -518,6 +518,21 @@ shaped the way it is:
   `files` rows and compares the head's (`git ls-files -s`) with the base's.
   A base graph from before this lane has no blob ids, so the first run after
   it is full.
+* **A base the extractor would refuse is a full run before it is submitted.**
+  The extractor also refuses a base graph of another extractor version, a
+  truncated one (`files_not_listed`, or any `truncated` entry, the shard
+  writer's ceiling cuts included) and one without blob ids. swarm-api cannot
+  see those in GitHub's compare, so promotion records them on the version
+  (`graph_extractor`: the manifest's extractor `version`, its `blob_ids`
+  marker, `files_not_listed` and `truncated`), and `choose_kind` refuses the
+  same bases with the reason. Without that the run would be submitted
+  incremental, with the 900-second timeout, and the extractor would then
+  read the whole repository inside it -- about 20 minutes measured on this
+  repository, so a pre-IX2 base, or a repository whose graph is always
+  truncated, would get a half-timeout full run on every trigger. Such a run
+  is submitted full, with the full timeout; the first run after deploy
+  against a pre-IX2 base is one of them, and the version it promotes
+  carries the record.
 * **What is re-resolved.** The tree-sitter pass still parses every file
   (seconds; a changed file's calls resolve against every other file's
   definitions). The LSP pass -- the minutes -- is asked only about the
