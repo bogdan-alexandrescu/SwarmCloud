@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -186,6 +187,11 @@ class CliAgentSpec:
     #: claude-code in print mode reads stdin when no prompt argument is given,
     #: so it needs nothing; codex reads stdin when its prompt argument is `-`.
     stdin_arg: tuple[str, ...] = ()
+    #: Stderr lines the CLI prints on every run, which say nothing about why a
+    #: run failed. Dropped before `exit_error` chooses what to record (owner
+    #: decision 2026-10-06), so a warning every run prints is never reported as
+    #: the cause of a kill. Each pattern is matched at the start of a line.
+    benign_stderr: tuple[re.Pattern[str], ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +658,64 @@ def _tail(path: Path, limit: int = 8000) -> str:
     if not path.exists():
         return ""
     return path.read_text(errors="replace")[-limit:]
+
+
+# ---------------------------------------------------------------------------
+# The error a non-zero exit records
+# ---------------------------------------------------------------------------
+#
+# Owner decision 2026-10-06 (lane ERR). C1A's review (task_cb50036f4e264168b39e)
+# was killed by SIGTERM and recorded "claude-code exited 143: Ignoring 23
+# permissions.allow entries ... this workspace has not been trusted" -- a
+# warning every headless run prints, which made a kill read as a permissions
+# problem. So the spec's benign lines are dropped first, and an exit that is a
+# signal says so in words, followed by the one stderr line most likely to say
+# why. An ordinary non-zero exit records its stderr tail as before, less the
+# benign lines.
+
+#: A line that reads as the failure rather than as progress.
+_ERROR_WORD = re.compile(r"\b(?:error|fatal|exception|panic|traceback|failed)\b", re.IGNORECASE)
+
+#: Longest single stderr line kept after a signal sentence.
+_SIGNAL_DETAIL_CHARS = 500
+
+
+def _signal_of(exit_code: int) -> signal.Signals | None:
+    """The signal `exit_code` reports, or None for an ordinary exit.
+
+    Two shapes: a negative code is Popen's report of a child the signal killed
+    outright; 128+N is a shell's (or a CLI that re-raises as an exit) report of
+    one. A code above 128 that names no signal is an ordinary exit.
+    """
+    number = -exit_code if exit_code < 0 else exit_code - 128 if exit_code > 128 else 0
+    if number <= 0:
+        return None
+    try:
+        return signal.Signals(number)
+    except ValueError:
+        return None
+
+
+def _without_benign(text: str, benign: Sequence[re.Pattern[str]]) -> list[str]:
+    return [line for line in text.splitlines() if not any(p.match(line) for p in benign)]
+
+
+def exit_error(
+    name: str, exit_code: int | None, stderr: str, benign: Sequence[re.Pattern[str]]
+) -> str:
+    """The error recorded for a CLI that exited `exit_code` with `stderr`."""
+    lines = _without_benign(stderr, benign)
+    sig = _signal_of(exit_code) if exit_code is not None else None
+    if sig is None:
+        return f"{name} exited {exit_code}: " + "\n".join(lines).strip()
+    verb = "killed" if sig == signal.SIGKILL else "terminated"
+    sentence = f"{name} {verb} by {sig.name} (exit {exit_code})"
+    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
+    if not candidates:
+        return sentence
+    errors = [line for line in candidates if _ERROR_WORD.search(line)]
+    detail = (errors or candidates)[-1]
+    return f"{sentence}: {detail[:_SIGNAL_DETAIL_CHARS]}"
 
 
 # ---------------------------------------------------------------------------
@@ -1318,7 +1382,9 @@ def run_cli_agent(
             )
         if run_result.exit_code != 0:
             raise RunnerFailure(
-                f"{spec.name} exited {run_result.exit_code}: {_tail(stderr_path, 2000).strip()}",
+                exit_error(
+                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr
+                ),
                 spend=spend,
             )
 
