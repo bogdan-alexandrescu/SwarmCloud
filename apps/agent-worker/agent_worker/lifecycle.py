@@ -5210,15 +5210,34 @@ class Worker:
         Parking rather than failing, because none of this is the task's fault
         and an unusable pool must cost nothing. Failing would burn all three
         attempts on the same account in a row.
+
+        AN EARLIER REJECTION OUTRANKS A LATER WAIT. Once an account has been
+        handed back as unreadable, the next ask excludes it, and when it was
+        the only one the broker answers `no_account_available` -- true, but a
+        consequence, not the cause. Measured 2026-10-06: smoke borrowed
+        eng:team with no grant on its secret, and every attempt parked as
+        PROVIDER_QUOTA_EXHAUSTED for a quarter of an hour, telling the operator
+        to wait for a window instead of to fix an IAM binding. Only a wait is
+        replaced: `broker_refused` is already a configuration error, with a
+        more specific name.
         """
+        rejected = False
         for _ in range(MAX_ACCOUNT_TRIES):
-            account = self._lease_account(profile)
+            try:
+                account = self._lease_account(profile)
+            except NoAccountAvailable as exc:
+                if rejected and exc.decision.reason != BROKER_REFUSED:
+                    raise NoAccountAvailable(
+                        NoAccount(reason=ACCOUNT_UNREADABLE), exc.provider
+                    ) from None
+                raise
             if account is None:
                 return None
             try:
                 return self._account_credential_env(profile, account)
             except AccountUnreadable as exc:
                 self._reject_account(account, exc)
+                rejected = True
         raise NoAccountAvailable(
             NoAccount(reason=ACCOUNT_UNREADABLE),
             profile.provider or "unknown",
