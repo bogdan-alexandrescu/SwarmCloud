@@ -28,14 +28,14 @@
 //     that is waiting AFTER an earlier attempt ran still carries a start time.
 //     It is drawn as waiting, never as running.
 
-import { NEVER_STARTED_WORD, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { NEVER_STARTED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
 import {
   absentCell,
   costCell,
   countCell,
   durationText,
   measuredCell,
-  tokenCell,
+  tokenCount,
   TOKENS_NOT_REPORTED,
   type Absence,
   type Cell,
@@ -1123,17 +1123,70 @@ export function boardResultNote(gap: BoardTelemetryGap): string {
   }
 }
 
-/** Input and output tokens as one cell: each half its own, a missing half not a zero. */
-export function tokenPairCell(input: number | null | undefined, output: number | null | undefined, note: string): Cell {
-  const tin = tokenCell(input, '')
-  const tout = tokenCell(output, '')
-  if (tin.kind === 'absent' && tout.kind === 'absent') return absentCell(TOKENS_NOT_REPORTED)
+/**
+ * The four kinds of token a step can report, each its own sum: null is "no
+ * attempt reported this kind", never zero.
+ */
+export interface TokenKindCounts {
+  readonly input: number | null | undefined
+  readonly output: number | null | undefined
+  readonly cacheRead: number | null | undefined
+  readonly cacheWrite: number | null | undefined
+}
+
+/** A count is a finite number; anything else is a kind nobody reported. */
+function reportedCount(v: number | null | undefined): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * `in 52 · out 9,955 · cache read 1.34M · write 59.7k`, leaving out what
+ * nobody reported -- Agent › Details' caption, word for word (#322).
+ */
+export function tokenKindsCaption(k: TokenKindCounts): string {
+  const parts: string[] = []
+  const add = (label: string, v: number | null | undefined) => {
+    const n = reportedCount(v)
+    if (n !== null) parts.push(`${label} ${tokenCount(n)}`)
+  }
+  add('in', k.input)
+  add('out', k.output)
+  add('cache read', k.cacheRead)
+  add('write', k.cacheWrite)
+  return parts.join(' · ')
+}
+
+/**
+ * A step's or an attempt's tokens as one cell (#322): THE TOTAL OF EVERY KIND
+ * THAT WAS REPORTED, and each kind's count in the note.
+ *
+ * `X in · Y out` was the shape before, and it left the cache out: a step that
+ * read 1.34M cached tokens printed `52 in · 9,955 out` beside a cost that paid
+ * for all of them, so the cost read as wrong when it was right. The owner's
+ * decided shape for Agent › Details is the total as the headline with each
+ * kind's count underneath; a node is budgeted for a 20-character figure, so
+ * here the headline is the cell and the kinds are its note (the `title` and
+ * the node's `?`).
+ *
+ * A KIND NO ATTEMPT REPORTED IS LEFT OUT, of the total and of the caption --
+ * never added as a zero. The 5m/1h write split is Agent › Details' alone: it
+ * comes from the CLI's own `usage.cache_creation`, which neither the attempt
+ * documents nor `runner.usage` carry.
+ */
+export function tokenKindsCell(k: TokenKindCounts, note: string): Cell {
+  const total = [k.input, k.output, k.cacheRead, k.cacheWrite]
+    .map(reportedCount)
+    .reduce<number | null>((t, v) => (v === null ? t : t === null ? v : t + v), null)
+  if (total === null) return absentCell(TOKENS_NOT_REPORTED)
   return measuredCell(
-    [tin.kind === 'measured' ? `${tin.text} in` : null, tout.kind === 'measured' ? `${tout.text} out` : null]
-      .filter((x): x is string => x !== null)
-      .join(' · '),
-    note,
+    tokenCount(total),
+    `${tokenKindsCaption(k)}. ${note} A kind left out was not reported, which is not the same as none.`,
   )
+}
+
+/** A step result's four kinds, in the shape `tokenKindsCell` reads. */
+export function resultTokenKinds(r: ResultUsage): TokenKindCounts {
+  return { input: r.inputTokens, output: r.outputTokens, cacheRead: r.cacheReadTokens, cacheWrite: r.cacheCreationTokens }
 }
 
 /**
@@ -1169,14 +1222,18 @@ export function attemptFacts(
     typeof a.exit_code === 'number' && Number.isFinite(a.exit_code)
       ? measuredCell(`${a.exit_code}`, 'The agent process’s exit code.')
       : absentCell(exitAbsence(started, completed, phase))
-  const own = tokenPairCell(
-    a.input_tokens,
-    a.output_tokens,
-    'This attempt’s own token counts. A half that is missing was not reported, which is not the same as none.',
+  const own = tokenKindsCell(
+    {
+      input: a.input_tokens,
+      output: a.output_tokens,
+      cacheRead: a.cache_read_input_tokens,
+      cacheWrite: a.cache_creation_input_tokens,
+    },
+    'This attempt’s own token counts.',
   )
   const borrowed =
-    own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
-      ? tokenPairCell(result.inputTokens, result.outputTokens, FROM_RESULT_NOTE)
+    own.kind === 'absent' && result !== null && hasTokenKind(result)
+      ? tokenKindsCell(resultTokenKinds(result), FROM_RESULT_NOTE)
       : null
   const ownCost = costCell(a.cost_usd, 'This attempt’s own cost. Token cost only; no infrastructure cost is recorded anywhere.')
   const borrowedCost =
