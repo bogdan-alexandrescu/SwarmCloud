@@ -35,7 +35,8 @@ So these tests are written to fail on that shape specifically:
     end to end and pins what it looked like: green upstream, empty handoff.
 
 THE PROMPT IS THE INSTRUCTION CHANNEL, and deliberately so. `input.prompt` is
-the only caller-controlled value that reaches the agent's argv (invariant 10),
+the only caller-controlled value that reaches the agent (invariant 10), on its
+stdin,
 and the child's environment is built by the platform, not by the test. Handing
 the stand-in agent a JSON prompt is therefore the one way to vary its behaviour
 that a real caller also has -- so nothing here reaches around the boundary the
@@ -83,7 +84,7 @@ RUNNER_OWN_ARTIFACTS = {
 # ---------------------------------------------------------------------------
 
 #: A real executable that behaves like `claude --print --output-format json`:
-#: it reads its instructions from the last argv element (the prompt), does what
+#: it reads its instructions from its stdin (the prompt), does what
 #: they say, and prints one JSON object on stdout.
 #:
 #: `artifacts_env` is the variable it looks its output directory up in. The
@@ -98,7 +99,7 @@ import json, os, pathlib, sys
 # leading value is decoded; `json.loads` of the whole prompt would fail, and
 # the empty plan it fell back to would make every assertion below vacuous.
 try:
-    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(sys.stdin.read())
 except (ValueError, IndexError):
     plan = {}
 

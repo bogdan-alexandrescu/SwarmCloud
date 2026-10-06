@@ -6,12 +6,14 @@ serves as the runner's `stderr` stream -- carried every prompt in the clear.
 The task routes serve the prompt masked, and a value the task's metadata named
 as a secret was masked there and printed here.
 
-The prompt still reaches the agent: the fake CLI below records the argv it was
-really given, and the prompt is its last element.
+Since 2026-10-06 (observer P9) the prompt is not in the argv at all: it is
+written to the CLI's stdin, and the line says how many bytes went there. The
+prompt still reaches the agent: the fake CLI below records the argv it was
+really given and what it read on stdin.
 
-MUTATIONS: log `self.argv` again in `ChildProcess.start`; stop passing
-`log_argv` from `run_cli_agent`; replace the prompt in the argv the child is
-started with rather than in the logged copy (the control goes red).
+MUTATIONS: log the stdin data instead of its size in `ChildProcess.start`;
+put the prompt back in the argv in `run_cli_agent` (the start line prints it);
+start the child with `stdin=DEVNULL` (the control goes red).
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ def test_the_start_line_logs_the_prompts_length_and_the_agent_still_gets_the_pro
     cli.write_text(
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
-        f"open({str(seen)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        f"open({str(seen)!r}, 'w').write(json.dumps([sys.argv[1:], sys.stdin.read()]))\n"
         "print(json.dumps({'result': 'ok'}))\n"
     )
     cli.chmod(0o755)
@@ -70,11 +72,11 @@ def test_the_start_line_logs_the_prompts_length_and_the_agent_still_gets_the_pro
     assert len(started) == 1, err
     logged = started[0]["argv"]
     assert "zork-grue-lantern-brass-4471" not in err, "the runner's stderr printed the prompt"
-    # The control: the agent was started with the prompt, kept whole at the
-    # front of its last argument (`with_instructions` appends the platform's
-    # instructions after it since #225).
-    received = json.loads(seen.read_text())
-    assert received[-1].startswith(PROMPT), received
-    assert logged[-1] == f"<prompt: {len(received[-1])} characters>", logged
-    # Everything else is logged as it was passed: the binary, then its flags.
-    assert logged[1:-1] == received[:-1], (logged, received)
+    # The control: the agent was given the prompt on stdin, kept whole at the
+    # front (`with_instructions` appends the platform's instructions after it
+    # since #225), and its size is what the line says.
+    received_argv, received_stdin = json.loads(seen.read_text())
+    assert received_stdin.startswith(PROMPT), received_stdin
+    assert started[0]["stdin_bytes"] == len(received_stdin.encode()), started[0]
+    # The argv is logged as it was passed: the binary, then its flags.
+    assert logged[1:] == received_argv, (logged, received_argv)

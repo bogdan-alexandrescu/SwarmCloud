@@ -126,7 +126,7 @@ plan = json.loads((plan_dir / "plan.json").read_text())
 token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
 with (plan_dir / "runs.jsonl").open("a") as f:
     f.write(json.dumps({"resume": resume, "token": token,
-                        "message": argv[-1] if resume else None}) + "\n")
+                        "message": sys.stdin.read() if resume else None}) + "\n")
 runs = sum(1 for _ in (plan_dir / "runs.jsonl").open())
 
 def say(event):

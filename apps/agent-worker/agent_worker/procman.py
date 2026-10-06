@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -281,16 +282,25 @@ class ChildProcess:
         log_argv: Sequence[str] | None = None,
         stdout_tap: Callable[[bytes], None] | None = None,
         niceness: int = 0,
+        stdin_data: bytes | None = None,
     ) -> None:
         self.argv = validate_argv(argv)
+        # WHAT THE CHILD READS ON STDIN, or nothing (/dev/null). A CLI runner
+        # passes the task's prompt here rather than in the argv (owner
+        # decision 2026-10-06, observer P9): every process listing shows the
+        # argv, and an agent's `ps aux | grep <pattern from its brief> | xargs
+        # kill` matched its own CLI's command line and killed it. One argv
+        # string is also capped at 128 KiB; stdin is not.
+        self._stdin_data = stdin_data
         # How far below this process's priority the child runs: 0 is the same.
         self._niceness = niceness
         # WHAT THE `child started` LINE SAYS THE ARGV WAS (the PR #229 review).
-        # A CLI runner passes the task's prompt as its last argument, and this
+        # A CLI runner passed the task's prompt as its last argument, and this
         # line logged it whole into the runner's stderr, which `/logs` serves:
         # the prompt the task routes mask was printed in the clear, and a
-        # value the task's metadata named as a secret with it. The runner
-        # passes the argv with the prompt replaced by its length; everyone
+        # value the task's metadata named as a secret with it. The prompt now
+        # goes on stdin (`stdin_data`), and only its size is logged; a runner
+        # still passes `log_argv` to mask a resumed session's id. Everyone
         # else logs the argv itself, which holds nothing a caller wrote.
         self._log_argv = list(log_argv) if log_argv is not None else self.argv
         self._cwd = Path(cwd)
@@ -311,24 +321,42 @@ class ChildProcess:
         if self._proc is not None:
             raise ProcessError("child already started")
         self._started_at = time.monotonic()
-        self._proc = subprocess.Popen(  # noqa: S603 - argv list, shell=False by construction
-            self.argv,
-            cwd=str(self._cwd),
-            env=self._env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            start_new_session=True,
-            close_fds=True,
-        )
+        # The input is written to an ANONYMOUS temporary file, rewound, and
+        # that is the child's stdin: no writer thread to deadlock against a
+        # child that never reads, no size limit, and no name on disk for the
+        # prompt to be found under. The child holds its own descriptor; ours
+        # is closed once it has started.
+        stdin: Any = subprocess.DEVNULL
+        if self._stdin_data is not None:
+            stdin = tempfile.TemporaryFile()
+            stdin.write(self._stdin_data)
+            stdin.seek(0)
+        try:
+            self._proc = subprocess.Popen(  # noqa: S603 - argv list, shell=False by construction
+                self.argv,
+                cwd=str(self._cwd),
+                env=self._env,
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+                start_new_session=True,
+                close_fds=True,
+            )
+        finally:
+            if stdin is not subprocess.DEVNULL:
+                stdin.close()
         if self._niceness:
             self._lower_priority()
         for capture, stream in ((self._stdout, self._proc.stdout), (self._stderr, self._proc.stderr)):
             thread = threading.Thread(target=capture.pump, args=(stream,), daemon=True)
             thread.start()
             self._threads.append(thread)
-        self._log.info("child started", pid=self._proc.pid, argv=self._log_argv, cwd=str(self._cwd))
+        started: dict[str, Any] = {"pid": self._proc.pid, "argv": self._log_argv, "cwd": str(self._cwd)}
+        if self._stdin_data is not None:
+            # Its size, never its content: the prompt is served masked.
+            started["stdin_bytes"] = len(self._stdin_data)
+        self._log.info("child started", **started)
 
     def _lower_priority(self) -> None:
         """Run the child's process group `niceness` below this process (#426).
@@ -457,6 +485,7 @@ def run_child(
     logger: Any,
     keep_tail: bool = False,
     log_argv: Sequence[str] | None = None,
+    stdin_data: bytes | None = None,
 ) -> ChildResult:
     """Start, wait with a hard deadline, escalate, reap. One call, no leaks.
 
@@ -477,6 +506,7 @@ def run_child(
         logger=logger,
         keep_tail=keep_tail,
         log_argv=log_argv,
+        stdin_data=stdin_data,
     )
     child.start()
     if child.wait(timeout_seconds) is None:

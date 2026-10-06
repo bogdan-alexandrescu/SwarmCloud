@@ -96,7 +96,7 @@ home = pathlib.Path(os.environ["HOME"])
 plan = json.loads((home / "plan.json").read_text())
 resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
 with (home / "runs.jsonl").open("a") as f:
-    f.write(json.dumps({"resume": resume, "prompt": argv[-1]}) + "\n")
+    f.write(json.dumps({"resume": resume, "prompt": sys.stdin.read()}) + "\n")
 runs = sum(1 for _ in (home / "runs.jsonl").open())
 step = plan["runs"][min(runs - 1, len(plan["runs"]) - 1)]
 for name, text in step.get("write", {}).items():

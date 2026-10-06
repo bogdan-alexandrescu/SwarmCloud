@@ -129,8 +129,8 @@ def _deliverables_line(artifacts: Path) -> str:
 RECORDING_CLI = r"""#!/usr/bin/env python3
 import json, os, sys
 record = {
-    "argv": sys.argv[1:-1],
-    "prompt": sys.argv[-1],
+    "argv": sys.argv[1:],
+    "prompt": sys.stdin.read(),
     "cwd": os.getcwd(),
     "home": os.environ.get("HOME"),
     "claude_md": open("CLAUDE.md").read() if os.path.exists("CLAUDE.md") else None,
@@ -480,8 +480,9 @@ def test_a_repository_that_unignores_the_name_is_reported_not_hidden(tmp_path):
 LANE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
+prompt = sys.stdin.read()
 try:
-    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(prompt)
 except (ValueError, IndexError):
     plan = {}
 
@@ -493,9 +494,9 @@ out = {
     "cwd": os.getcwd(),
     "home": os.environ.get("HOME"),
     "work_dir": os.environ.get("SWARM_WORK_DIR"),
-    "flags": sys.argv[1:-1],
+    "flags": sys.argv[1:],
     "claude_md": open("CLAUDE.md").read() if os.path.exists("CLAUDE.md") else None,
-    "prompt_tail": sys.argv[-1][-600:],
+    "prompt_tail": prompt[-600:],
 }
 for name, text in sorted((plan.get("write_relative") or {}).items()):
     path = pathlib.Path(name)

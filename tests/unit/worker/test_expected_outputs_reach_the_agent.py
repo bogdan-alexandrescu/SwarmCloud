@@ -145,7 +145,8 @@ def _ctx(tmp_path: Path, payload: dict[str, Any]) -> RunnerContext:
 
 
 def _argv_recording_cli(tmp_path: Path) -> Path:
-    """A stand-in for `claude`: records the argv it was started with, for real.
+    """A stand-in for `claude`: records the argv it was started with and the
+    prompt it read on stdin, for real.
 
     The child's environment is built, not inherited, so the recording goes into
     its working directory, which `SWARM_WORK_DIR` names.
@@ -156,6 +157,8 @@ def _argv_recording_cli(tmp_path: Path) -> Path:
         "import json, os, sys\n"
         "with open(os.path.join(os.environ['SWARM_WORK_DIR'], 'argv.json'), 'w') as fh:\n"
         "    json.dump(sys.argv, fh)\n"
+        "with open(os.path.join(os.environ['SWARM_WORK_DIR'], 'prompt.txt'), 'w') as fh:\n"
+        "    fh.write(sys.stdin.read())\n"
         "print(json.dumps({'result': 'ok'}))\n"
     )
     binary.chmod(0o755)
@@ -180,9 +183,10 @@ def _prompt_the_agent_received(tmp_path: Path, monkeypatch, payload: dict[str, A
     ctx = _ctx(tmp_path, payload)
     run_cli_agent(ctx, spec)
     argv = json.loads((ctx.work_dir / "argv.json").read_text())
-    # The prompt is the single trailing argument; nothing else a caller supplies
-    # reaches argv.
-    return argv[-1], ctx.artifacts_dir
+    # The prompt arrives on stdin; nothing a caller supplies reaches argv.
+    prompt = (ctx.work_dir / "prompt.txt").read_text()
+    assert argv[1:] == ["--print"], argv
+    return prompt, ctx.artifacts_dir
 
 
 # ---------------------------------------------------------------------------

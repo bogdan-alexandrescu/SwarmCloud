@@ -24,7 +24,8 @@ Every test here runs the production worker and the production claude-code
 runner, with a stand-in agent started through `CLAUDE_CODE_BIN` the way
 `test_standalone_outputs.py` does. This one writes numbered SERIES of files
 into `$SWARM_ARTIFACTS_DIR`: a plan naming 1,200 files of up to 700 bytes each
-would be one argument past Linux's 128 KiB limit on a single argv string.
+is far past Linux's 128 KiB limit on a single argv string, which no longer
+matters since the prompt goes on the CLI's stdin.
 
 The keys and the wording are spelled out rather than imported: each is a field
 of a document that outlives the process that wrote it, or a line an operator
@@ -90,7 +91,7 @@ FIRESTORE_DOCUMENT_BYTES = 1024 * 1024
 SERIES_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
-prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+prompt = sys.stdin.read()
 try:
     plan, _end = json.JSONDecoder().raw_decode(prompt)
 except ValueError:

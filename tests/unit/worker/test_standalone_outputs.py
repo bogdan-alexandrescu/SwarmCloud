@@ -122,7 +122,7 @@ LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifact
 FAKE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
-prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+prompt = sys.stdin.read()
 try:
     plan, _end = json.JSONDecoder().raw_decode(prompt)
 except ValueError:
@@ -335,6 +335,8 @@ def _recording_cli(tmp_path: Path) -> Path:
         "import json, os, sys\n"
         "with open(os.path.join(os.environ['SWARM_WORK_DIR'], '.argv.json'), 'w') as fh:\n"
         "    json.dump(sys.argv, fh)\n"
+        "with open(os.path.join(os.environ['SWARM_WORK_DIR'], '.prompt.txt'), 'w') as fh:\n"
+        "    fh.write(sys.stdin.read())\n"
         "print(json.dumps({'type': 'result', 'result': 'ok'}))\n"
     )
     binary.chmod(0o755)
@@ -379,7 +381,9 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
 
     ctx = _ctx(tmp_path, dict(payload))
     run_cli_agent(ctx, spec)
-    prompt = json.loads((ctx.work_dir / ".argv.json").read_text())[-1]
+    prompt = (ctx.work_dir / ".prompt.txt").read_text()
+    argv = json.loads((ctx.work_dir / ".argv.json").read_text())
+    assert "compute primes" not in json.dumps(argv), argv
 
     assert prompt.startswith("compute primes\n\n"), prompt
     assert prompt.count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
