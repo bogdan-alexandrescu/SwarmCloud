@@ -320,6 +320,22 @@ index versions (§2.3) and for every commit an open pull request's impact plan
 names, for 30 days; unreferenced blobs are deleted by a sweep in the RI9
 lane.
 
+**The write is resumable (revised 2026-10-06, lane IX1).** Blobs go up
+first, the manifest last. A blob already at its content-addressed path is
+*written* when its bytes are ours -- checked against the listing's MD5, or
+by reading it back -- so a write interrupted after any number of blobs
+completes when it is run again, and a path holding different bytes is a hard
+error: nothing overwrites it and no manifest is written over it. Blobs go up
+in batches (one `gcloud storage cp` of many files, which gcloud uploads in
+parallel), never one process per blob. Measured on
+`task_209ba9e0c9c948e284e9` (2026-10-06): the serial writer took ~3.9 s a
+blob, ~24 minutes for a full graph's ~370, more than an index run has; and
+its retry failed with `HTTPError 412` on its first blob because the store
+listed each object by its url, which on the versioned artifact bucket ends
+in `#<generation>`, so no blob ever read as present (and the sweep, on the
+same listing, never saw a manifest). The listing now names each object by
+its name.
+
 **Invariant 9 holds without a new grant.** The prefix is under
 `tenants/<tenant>/`, which the tenant's own worker service account may
 already write — everything there except `verdicts/`
@@ -454,8 +470,9 @@ the language of each module, the import graph that grounds `test_map`
 `import` edges, the naming-convention edges (`src/x/y.py` ↔
 `tests/**/test_y.py`), the co-change pairs and the hot-spot counts from `git
 log --numstat --since=90.days` are deterministic and cheap. Lane RI3 ships
-them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the indexer
-prompt tells the agent to run first; the agent then spends its tokens on what
+them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the worker
+runs before the agent (§3.6; until 2026-10-06 the prompt told the agent to
+run it); the agent then spends its tokens on what
 needs reading: purposes, territory, notes, and checking the edges the tool
 was unsure of. That is what keeps a full run on a 2,000-file repository under
 the 30-minute timeout.
@@ -558,6 +575,57 @@ to every agent start and only an index run used it. Contract request 48 (the
 image half of request B, §6.3), accepted by the owner the same day, added
 the `indexer` profile: claude-code on that image, and what index runs are
 submitted as. [worker-images.md](worker-images.md) has the measurement.
+
+### 3.6 The deterministic passes are the worker's steps (revised 2026-10-06, owner)
+
+Until 2026-10-06 the indexer prompt told the agent to run the extractor
+first and `swarm-repo-graph write` last, through its shell. Measured on
+`task_209ba9e0c9c948e284e9` (`repo_4c5105947752b3f3`, 15:08-15:32): the
+extractor wrote `repo-index.json` (1,685 files, 25,541 symbols, 48,717 call
+edges), the agent's graph write was killed by Claude Code's 10-minute
+command limit after 150 blobs, and its retry met the 412 of §2.5. Neither
+pass reads anything a model has to read, so the worker runs them, around the
+agent, as its own supervised steps (`apps/agent-worker/agent_worker/
+indexrun.py`):
+
+| phase | what | timeout, of a 1,800 s full run |
+|---|---|---|
+| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>` | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
+| `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
+| `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
+
+Why each rule:
+
+* **Supervised like the runner.** A phase beats the lease, polls the
+  control plane and checkpoints on the runner's cadences (invariants 5 and
+  8): the extractor takes longer than `_heartbeat_meanwhile`'s bound. A
+  fence, a cancel or a SIGTERM ends the attempt exactly as it would mid-agent.
+* **A phase never fails the run.** An extractor that is missing, fails or
+  times out leaves the agent to compute the mechanical fields itself, as the
+  prompt has always allowed; `$SWARM_WORK_DIR/repo-index.phases.json` tells
+  it why. A graph write that fails leaves the index without
+  `graph.manifest_digest`, which promotion reads as "no graph"; the write is
+  resumable, so the next run completes it. A timeout is a less certain
+  index, never a lost one (§3.5).
+* **Each phase's duration is recorded**, in the step's
+  `result_summary.repo_index_phases` and in the phases file, so "where did
+  the 30 minutes go" is answered from the run, not from a log search.
+* **The target comes from the signed spec** (invariant 9). The tenant and
+  the bucket are the worker's own configuration; the `repo_id` is derived
+  from the spec's tenant and `repository_url` by the registration's recipe
+  (`repositories.repo_id_for`). `metadata.repo_index`, which the spec
+  signature does not cover, is never read by the worker, so a rewritten
+  metadata cannot point the write at another registration.
+* **The prompt starts from the extractor's output** and no longer names
+  either command line. It still names the graph prefix, as the one place the
+  agent must never write.
+
+Promotion is unchanged: it still checks the index's `graph.manifest_digest`
+against the manifest the writer stored (§2.3, `repograph`).
+
+Not in this change: the extractor's own time (~6 minutes, most of it
+Pyright reaching its 300 s server budget), and `full_every_days`, which the
+registration stores and `repoindex.py` does not read yet (lane IX2).
 
 ---
 
