@@ -5,7 +5,8 @@ The worker counts a valid `questions.json` as `result_summary.questions`
 artifacts route -- redacted there, like any artifact -- and hands the
 questions to whoever reads the result:
 
-* `swarm_result` and the follow outcome carry `questions`, a list;
+* the follow outcome carries `questions`, a list, and `swarm_result` carries
+  them as `owner_questions` (owner decision 2026-10-06, observer P15);
 * a row says `? N question(s) for the owner` beside the task's final line;
 * the `sc:step` result (`compact.step_result`) carries them, with no null.
 
@@ -73,7 +74,7 @@ def test_swarm_result_carries_the_questions(swarm, world):
 
     reply = json.loads(server._call(swarm, "swarm_result", {"task_id": "task_a"}))
 
-    assert reply["questions"] == QUESTIONS
+    assert reply["owner_questions"] == QUESTIONS
     assert "questions_unavailable_because" not in reply
 
 
@@ -95,7 +96,7 @@ def test_a_task_with_no_questions_carries_an_empty_list_and_reads_nothing_more(s
     got = progress.outcome(swarm, swarm.task("task_a"))
     assert got["questions"] == []
     reply = json.loads(server._call(swarm, "swarm_result", {"task_id": "task_a"}))
-    assert reply["questions"] == []
+    assert "owner_questions" not in reply
 
 
 def test_a_counted_file_that_cannot_be_read_says_so(swarm, world):

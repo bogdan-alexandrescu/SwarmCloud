@@ -585,7 +585,16 @@ TOOLS: list[dict[str, Any]] = [
             "`artifacts_complete: false` means the task has not finished and its "
             "artifacts are uploaded when the attempt ends -- not that it produced "
             "none; `artifacts: null` means they could not be listed, and "
-            "`artifacts_unavailable_because` says why."
+            "`artifacts_unavailable_because` says why.\n"
+            "\n"
+            "`owner_questions` is what the task's agent asks the owner instead of "
+            "guessing: the items of its questions.json the worker validated, each "
+            "{question, options: [{label, description}], recommended, context}, "
+            "read through the same redacted artifact read as swarm_artifact. It "
+            "is absent when the agent asked none, and a file the worker rejected "
+            "is never served. `questions_unavailable_because` means the worker "
+            "counted questions this read could not get. They are for a person "
+            "to answer: show them; never pick an option yourself."
         ),
         "inputSchema": {
             "type": "object",
@@ -1038,7 +1047,12 @@ TOOLS: list[dict[str, Any]] = [
             "`state_incomplete_because` names which ones. A STEP whose `state` "
             "is null was likewise not read -- it is neither queued nor gone. "
             "`park_reason: DEPENDENCY_INCOMPLETE` means the step is waiting for "
-            "a parent and is holding no capacity, which costs nothing."
+            "a parent and is holding no capacity, which costs nothing.\n"
+            "\n"
+            "Each step whose task was read carries `questions`: how many "
+            "questions the worker validated in that step's questions.json, 0 "
+            "when it asked none. Read a step with questions with swarm_result, "
+            "whose `owner_questions` holds them; they are for the owner to answer."
         ),
         "inputSchema": {
             "type": "object",
@@ -1700,10 +1714,19 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
-    # WHAT THE AGENT ASKS THE OWNER (owner decision, 2026-10-05): its
-    # questions.json, read back through the artifacts route. `[]`, and no
-    # extra read, when it asked none. Data for the reader, never acted on.
-    described.update(progress.owner_questions(client, task))
+    # WHAT THE AGENT ASKS THE OWNER (owner decisions, 2026-10-05 and
+    # 2026-10-06, observer P15): its questions.json, read back through the
+    # redacted artifacts route by `progress.owner_questions` -- the one parse
+    # the progress row and the follow outcome use too. `owner_questions` only
+    # when it asked any: no key, and no extra read, when the worker counted
+    # none -- which is also every file the worker rejected. A counted file
+    # that could not be read says so in `questions_unavailable_because`.
+    # Data for the reader, never acted on.
+    asked = progress.owner_questions(client, task)
+    if asked["questions"]:
+        described["owner_questions"] = asked["questions"]
+    if asked.get("questions_unavailable_because"):
+        described["questions_unavailable_because"] = asked["questions_unavailable_because"]
     # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
     # as the API served them, the last attempt's beside them, and `cost` --
     # the total in words, `at least` when an attempt recorded none.
