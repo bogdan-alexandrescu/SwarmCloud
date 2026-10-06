@@ -1535,7 +1535,13 @@ def _unbeaten(site: _Site, variant: frozenset[str], paints: list[_Paint],
               allowed: frozenset[str]) -> list[tuple[_Paint, int]]:
     fill = _El(tag=site.tag, classes=variant, attrs=site.attrs,
                open_classes=site.open_classes, known=True)
-    chain = (fill, site.parent)
+    return _unbeaten_in((fill, site.parent), paints, allowed)
+
+
+def _unbeaten_in(chain: tuple[_El, ...], paints: list[_Paint],
+                 allowed: frozenset[str]) -> list[tuple[_Paint, int]]:
+    """The non-grey paints that may reach `chain[0]` and that no grey rule
+    certainly applying to it outranks."""
     reach = [(p, m) for p in paints if (m := _match_complex(p.selector, chain)) != NO]
     out = []
     for p, m in reach:
@@ -1562,6 +1568,168 @@ def fill_scan() -> _FillScan:
     return _scan_fills()
 
 
+# -- `.sr-bar > i` and `.coverage > i`: the two fills #18 stopped short of ---
+#
+# OWNER DECISION, #122 (option 1 of #74): the rule above is not a
+# `.ctl-util-fill` rule, it is the rule for every proportion fill. The two bar
+# fills outside that class family -- `.sr-bar > i` (Admin > Platform counts'
+# per-state split) and `.coverage > i` (the Timeline's usage-coverage strip,
+# retired with its only caller in TS-12) -- are grey too. `.sr-bar > i.bad`
+# keeps `--bad`, and it is the only verdict either bar has: `.coverage` has
+# none, so no shipped sheet may hue `.coverage > i` at all.
+#
+# The scan above cannot see these, because their fill is a bare `<i>` and its
+# className names no fill class. So they are found from the other end: every
+# rule in every sheet whose subject is a child or descendant of a compound
+# naming the bar. Each bar is tried as the `.tsx` renders it (tag, classes,
+# both arms of a conditional) and, because a retired or not-yet-rendered bar
+# still has rules, as a bare `<div>` and `<span>` carrying the bar class and
+# every class a sheet names beside it. Its `<i>` is tried bare, with the
+# classes a rendered `<i>` in it carries, and with every class a sheet names
+# on the `<i>` -- minus the bar's verdicts. A rendered element carries the
+# attributes its JSX writes; a tried one carries none, and its `<i>` only the
+# `style` that sets its width, so an id or attribute selector reaches a bar
+# only through a `.tsx` that renders one with that attribute. The cascade is the same as above:
+# a rule that may paint the fill anything but `--text-dim` fails unless a grey
+# rule that certainly applies outranks it.
+
+#: Each bar whose `<i>` children are proportion fills, and the classes on that
+#: `<i>` that are a verdict, and so the only ones allowed a hue.
+BAR_CHILD_VERDICTS = {"sr-bar": frozenset({"bad"}), "coverage": frozenset()}
+
+#: The tags a bar is tried as whether or not a `.tsx` renders it.
+BAR_TAGS = ("div", "span")
+
+
+@dataclass(frozen=True)
+class _BarFill:
+    bar: str
+    #: `selector { prop: value }` for every background a sheet declares on
+    #: the bar's `<i>`, so the scan test can show what was read.
+    declared: tuple[str, ...]
+    #: The `<i>` as it may be drawn, verdicts removed.
+    fills: tuple[_El, ...]
+    #: The bar it sits in, as it may be drawn.
+    parents: tuple[_El, ...]
+    #: Where a `.tsx` renders the bar.
+    rendered: tuple[str, ...]
+
+
+def _bar_rule(selector: str, bar: str) -> tuple[frozenset[str], frozenset[str]] | None:
+    """For a selector whose subject is an `i` (or untyped) child or descendant
+    of a compound naming `.bar`: the classes on that subject and the other
+    classes on that bar compound. None for any other selector."""
+    try:
+        compounds, combinators = _compounds(selector)
+        parsed = [_simples(c) for c in compounds]
+    except ValueError:
+        return None
+    if len(parsed) < 2 or combinators[-1] not in (">", " "):
+        return None
+    subject, above = parsed[-1], parsed[-2]
+    if any(kind == "type" and name not in ("i", "*") for kind, name, _ in subject):
+        return None
+    above_classes = {name for kind, name, _ in above if kind == "class"}
+    if bar not in above_classes:
+        return None
+    return (frozenset(name for kind, name, _ in subject if kind == "class"),
+            frozenset(above_classes - {bar}))
+
+
+def _bar_fills(sheets) -> list[_BarFill]:
+    paints = _paints(sheets)
+    sources = []
+    for path in _ui_sources():
+        code = _blank_comments(path.read_text(encoding="utf-8"))
+        sources.append((path, code, _jsx_tags(code)))
+    out = []
+    for bar, verdicts in BAR_CHILD_VERDICTS.items():
+        fill_sets: set[frozenset[str]] = {frozenset()}
+        bar_sets: set[frozenset[str]] = {frozenset({bar})}
+        declared = []
+        for p in paints:
+            hit = _bar_rule(p.selector, bar)
+            if hit is None:
+                continue
+            fill_sets.add(hit[0])
+            bar_sets.add(hit[1] | {bar})
+            inside = f" inside {p.at_rules}" if p.at_rules else ""
+            declared.append(f"`{p.selector} {{ {p.source}: {p.value} }}` in {p.sheet}{inside}")
+        parents = {_El(tag=t, classes=c, attrs=frozenset(), known=True)
+                   for t in BAR_TAGS for c in bar_sets}
+        fill_els: set[_El] = set()
+        rendered = []
+        for path, code, toks in sources:
+            for n, tok in enumerate(toks):
+                if tok.kind != "open" or not _is_intrinsic(tok.name):
+                    continue
+                try:
+                    end, _ = _tag_end(code, tok.start)
+                except ValueError:
+                    continue
+                tag = code[tok.start:end]
+                if bar in tag:
+                    try:
+                        el, _ = _element(code, tok, tag)
+                    except ValueError:
+                        el = _UNKNOWN
+                    if bar in el.classes | el.maybe:
+                        rendered.append(f"{_rel(path)}:{_line(code, tok.start)}")
+                        for extra in {frozenset()} | {frozenset({c}) for c in el.maybe}:
+                            parents.add(_El(tag=el.tag, classes=el.classes | extra | {bar},
+                                            attrs=el.attrs, open_classes=el.open_classes,
+                                            known=True))
+                if tok.name == "i":
+                    up = _parent(code, toks[:n])
+                    if bar in up.classes | up.maybe:
+                        try:
+                            el, _ = _element(code, tok, tag)
+                        except ValueError:
+                            continue
+                        fill_els |= {_El(tag="i", classes=el.classes | extra, attrs=el.attrs,
+                                         open_classes=el.open_classes, known=True)
+                                     for extra in {frozenset()} | {frozenset({c}) for c in el.maybe}}
+        fill_els |= {_El(tag="i", classes=c, attrs=frozenset({"style"}), known=True)
+                     for c in fill_sets}
+        fills = tuple(sorted((f for f in fill_els if not f.classes & verdicts),
+                             key=lambda e: (sorted(e.classes), sorted(e.attrs or ()))))
+        out.append(_BarFill(bar, tuple(sorted(set(declared))), fills,
+                            tuple(sorted(parents, key=lambda e: (e.tag, sorted(e.classes)))),
+                            tuple(rendered)))
+    return out
+
+
+def _bar_fill_problems(sheets) -> tuple[set[str], int]:
+    """What may paint an un-verdicted `.sr-bar > i` / `.coverage > i` a hue,
+    and how many (fill, bar) pairs were tried."""
+    paints = _paints(sheets)
+    allowed = frozenset({MONOCHROME_FILL})
+    problems: set[str] = set()
+    tried = 0
+    for found in _bar_fills(sheets):
+        for parent in found.parents:
+            for fill in found.fills:
+                tried += 1
+                for paint, reach in _unbeaten_in((fill, parent), paints, allowed):
+                    how = "reaches" if reach == YES else "may reach"
+                    inside = f" inside {paint.at_rules}" if paint.at_rules else ""
+                    problems.add(
+                        f"<{parent.tag} class=\"{' '.join(sorted(parent.classes))}\"> > "
+                        f"<i class=\"{' '.join(sorted(fill.classes))}\">: "
+                        f"`{paint.selector} {{ {paint.source}: {paint.value} }}` in "
+                        f"{paint.sheet}{inside} {how} it, and no grey rule that "
+                        f"certainly applies outranks it (the only verdict "
+                        f"`.{found.bar} > i` has: "
+                        f"{', '.join(sorted(BAR_CHILD_VERDICTS[found.bar])) or 'none'})"
+                    )
+    return problems, tried
+
+
+@pytest.fixture(scope="module")
+def bar_fills(sheet_scan) -> list[_BarFill]:
+    return _bar_fills(sheet_scan.sheets)
+
+
 def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules, sheet_scan, fill_scan):
     """Every fill the product renders is grey unless it carries a verdict.
 
@@ -1569,7 +1737,9 @@ def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules, sheet_scan, fi
     what is not. In one line: for each `.ctl-util-fill` in the `.tsx`, bare
     and with each class it can carry, every rule in every sheet that can
     reach it is matched, and a rule that could paint it anything but its grey
-    must be outranked by a grey rule that certainly applies.
+    must be outranked by a grey rule that certainly applies. The same holds
+    for every `<i>` in a `.sr-bar` or a `.coverage` (#74): see the block
+    above `BAR_CHILD_VERDICTS`.
     """
     default = None
     for at_rules, selector, decls in rules:
@@ -1604,9 +1774,13 @@ def test_a_proportion_fill_takes_a_hue_only_from_a_verdict(rules, sheet_scan, fi
                     f"{paint.sheet}{inside} {how} it, and no grey rule that "
                     f"certainly applies outranks it"
                 )
+    bar_problems, bar_tried = _bar_fill_problems(sheet_scan.sheets)
+    problems |= bar_problems
+    tried += bar_tried
     assert not problems, (
         "a proportion fill that carries no verdict is painted something other "
-        f"than grey (design-system.md §6.4, decided 2026-09-24). Tried "
+        f"than grey (design-system.md §6.4, decided 2026-09-24 for "
+        f"`.ctl-util-fill` and in #122 for `.sr-bar > i` / `.coverage > i`). Tried "
         f"{tried} class sets on {len(fill_scan.sites)} fills against "
         f"{len(paints)} background declarations in {len(sheet_scan.sheets)} "
         "sheets:\n  " + "\n  ".join(sorted(problems))
@@ -1662,6 +1836,72 @@ def test_the_fill_scan_reads_what_it_claims_to(sheet_scan, fill_scan):
         "`.ctl-util-track`, so a rule reaching it through the parent would "
         "be missed. Fills found:\n  " + found
     )
+
+
+def test_the_bar_fill_scan_reads_what_it_claims_to(bar_fills):
+    """EMPTY OUTPUT IS NOT SUCCESS, for the `.sr-bar > i` / `.coverage > i` half.
+
+    The bar-fill check is only as wide as the declarations it found. The
+    shipped `.sr-bar > i` grey and its `.bad` verdict have to be among them,
+    and Platform counts has to be read as rendering a `.sr-bar`, or the check
+    passed over nothing.
+    """
+    by_bar = {b.bar: b for b in bar_fills}
+    assert set(by_bar) == set(BAR_CHILD_VERDICTS), sorted(by_bar)
+    sr = by_bar["sr-bar"]
+    read = "\n  ".join(sr.declared) or "(nothing)"
+    assert any(d.startswith("`.sr-bar > i {") and MONOCHROME_FILL in d for d in sr.declared), (
+        f"the shipped `.sr-bar > i {{ background: {MONOCHROME_FILL} }}` was not "
+        "found, so the scan read no rule for the fill. Declarations read:\n  " + read
+    )
+    assert any(d.startswith("`.sr-bar > i.bad {") for d in sr.declared), (
+        "the `.sr-bar > i.bad` verdict was not found. Declarations read:\n  " + read
+    )
+    assert any(r.startswith("apps/swarm-ui/src/PlatformCounts.tsx:") for r in sr.rendered), (
+        "Admin > Platform counts was not read as rendering a `.sr-bar`, so the "
+        f"bar was only tried as {BAR_TAGS}. Rendered at: {list(sr.rendered)}"
+    )
+    for b in bar_fills:
+        assert b.fills and b.parents, f"`.{b.bar} > i` was tried on nothing"
+        assert all(not f.classes & BAR_CHILD_VERDICTS[b.bar] for f in b.fills), b.fills
+
+
+#: Mutations the bar-fill check has to fail on. Each is appended to the
+#: shipped sheets as one more injected sheet, the way a screen's `<style>`
+#: would arrive. The last one is a verdict, and has to pass.
+BAR_MUTATIONS = (
+    (".sr-bar > i { background: var(--info); }", True),
+    (".coverage > i { background: var(--info); }", True),
+    (".coverage i { background-color: var(--ok); }", True),
+    ("span.sr-bar > i { background: var(--info); }", True),
+    (".sr-bar.is-running > i { background: var(--warn); }", True),
+    (".sr-bar > i.info { background: var(--info); }", True),
+    (".sr-bar > i:not(.bad) { background: var(--info); }", True),
+    (".sr-bar > i.bad { background: var(--bad); }", False),
+)
+
+
+@pytest.mark.parametrize("css,fails", BAR_MUTATIONS, ids=[m for m, _ in BAR_MUTATIONS])
+def test_the_bar_fill_check_fails_on_a_hued_bar(sheet_scan, css, fails):
+    """The bar-fill half of the guard, proven against the defect it exists for.
+
+    `background: var(--info)` on `.sr-bar > i` and `.coverage > i` was the
+    shipped rule #74 was filed against. Put back -- or brought in through the
+    bar's own class, a class on the `<i>`, a type selector or `:not()` -- it
+    has to fail. A verdict the bar has must not.
+    """
+    clean, _ = _bar_fill_problems(sheet_scan.sheets)
+    assert not clean, "\n".join(sorted(clean))
+    mutated = sheet_scan.sheets + (("mutation", tuple(parse_rules(css))),)
+    problems, tried = _bar_fill_problems(mutated)
+    assert tried
+    if fails:
+        assert any("mutation" in p for p in problems), (
+            f"`{css}` in an injected sheet hues an un-verdicted bar fill, and "
+            f"the check tried {tried} (bar, fill) pairs without failing"
+        )
+    else:
+        assert not problems, "\n".join(sorted(problems))
 
 
 def _token_ends(value: str, custom: dict[str, set[str]], depth: int = 0) -> set[str]:

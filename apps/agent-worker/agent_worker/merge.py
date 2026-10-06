@@ -25,11 +25,26 @@ THE ORDER IS #219's (docs/merge-step.md §2.2): the reap and every check that
 needs no credential first; then the token; then the forge's facts; then the
 merge, pinned to the head; then the record and the issues. A refusal ends the
 step FAILED with MERGE_REFUSED and its code in `result_summary.merge.refusal`.
-Two refusals are waits rather than verdicts -- a required check still pending,
-and GitHub not having computed mergeability -- and fail the ATTEMPT
-retryably, so the step waits READY at no cost (invariants 1 and 4) and every
-retry reads every fact again. The merge call itself is never resent: a
-merge whose answer was lost ends MERGE_FAILED, never retried blindly.
+Three facts are waits rather than verdicts -- a required check still pending,
+no check reported at all on a branch that requires none, and GitHub not having
+computed mergeability -- and PARK the step on CI_PENDING (lane MS2,
+docs/merge-step.md "Revised 2026-10-06" §1): no lease, no pool count, the
+attempt refunded up to MERGE_CI_MAX_WAKES (invariants 1, 3 and 4). swarm-api's
+wake tick marks it once the checks settle, the scheduler promotes it on that
+mark or at the fallback instant, and the next attempt reads every fact again.
+The merge call itself is never resent: a merge whose answer was lost ends
+MERGE_FAILED, never retried blindly.
+
+A BRANCH THAT IS BEHIND a base requiring an up-to-date branch is updated by
+GitHub, not merged (lane MS3, the owner's 2026-10-06 decision): behind the
+same fencing recheck as the merge, `update-branch` with `expected_head_sha`,
+then a CI_PENDING park at the new head, at most MERGE_MAX_BRANCH_UPDATES
+times. The head is never read from the task document: every attempt walks
+first parents from GitHub's live head back to the head the workflow pushed,
+and accepts only GitHub's own merges of commits already on the base. MS3 also
+splits `from_fork`, `base_not_default`, `protection_refused`,
+`merge_conflict`, `checks_timeout` and `behind_too_often` out of the codes
+they were folded into, and gives `_close_issues` the close script's page rule.
 
 THE GITHUB SPECIFICS ARE BEHIND `ForgeMerger`, with `GitHubMerger` its only
 implementation. swarm-api refuses a repository whose host has no merger at
@@ -47,15 +62,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Mapping, Protocol
 from urllib.parse import quote
 
-from swarm_common.models import EndCause
+from swarm_common.models import EndCause, utcnow
 from swarm_common.states import TaskState
 
 from . import forge as forge_mod
 from . import verdict as verdict_mod
-from .errors import InputUnavailable
+from .errors import ExitCode, InputUnavailable
 from .post_verdict import (
     ActionContext,
     ActionOutcome,
@@ -68,6 +84,7 @@ from .post_verdict import (
     refusal,
     unavailable,
 )
+from .control import MERGE_WAIT_METADATA_KEY
 from .specverify import UpstreamSpecUnverified
 
 #: The signed dispatch block naming what this step merges. swarm-api's
@@ -97,18 +114,58 @@ OTHER_TOLERATED = frozenset({"success", "skipped", "neutral"})
 MERGEABLE_REREADS = 2
 MERGEABLE_REREAD_SECONDS = 2.0
 
-#: How long a step whose checks are still running waits, READY and holding
-#: nothing, before its next attempt reads them again. CI on this repository
-#: takes about eight minutes; five minutes between reads is a handful of
-#: attempts, each a few seconds of a container (invariants 1 and 4).
-CHECKS_PENDING_RETRY_SECONDS = 300
+#: How many CI_PENDING parks give their attempt back (the await park's rule,
+#: `control.ControlPlane.park_ci_pending`): waiting is not failing, so a slow
+#: CI does not use up the step's attempts. Past the bound a wake counts like
+#: any attempt, so a pull request whose CI never settles still ends at
+#: `max_attempts`. 60, the design's figure: with swarm-api's wake tick marking
+#: a park as soon as its checks settle, a park lasts about one CI run, and the
+#: fallback below alone gives 60 x 15 min = 15 h of waiting, past the design's
+#: 6 h `MERGE_CI_MAX_SECONDS`.
+MERGE_CI_MAX_WAKES = 60
+
+#: When the scheduler wakes a CI_PENDING park nobody marked: the park instant
+#: plus this, as `next_eligible_at`. A dead wake tick, or a token swarm-api
+#: cannot use, then costs a wake every 15 minutes -- one lease of a few
+#: seconds -- instead of stranding the merge. Not shorter, the design's 900:
+#: each fallback wake is a Job execution and a cold start, which the tick
+#: exists to avoid.
+MERGE_CI_FALLBACK_SECONDS = 900
+
+#: How many times the step updates a branch that is behind before it refuses
+#: `behind_too_often`. 3, the design's figure: each update costs a full CI run
+#: (10-20 min here), and a base that moves faster than CI three times running
+#: is a question for a person, not a loop. The first-parent walk accepts at
+#: most this many of GitHub's base merges on top of the pushed head.
+MERGE_MAX_BRANCH_UPDATES = 3
+
+#: How long, from `merge_wait.first_parked_at`, the step waits for CI before
+#: it refuses `checks_timeout`, naming what is still pending. 6 h, the
+#: design's figure: about twenty of this repository's CI runs, so only a check
+#: that never reports -- a required check no workflow produces, a stuck
+#: runner -- reaches it.
+MERGE_CI_MAX_SECONDS = 6 * 3600
+
+#: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
+#: and signs them, so `verification.verified` is true. A two-parent commit
+#: anyone else made can carry any tree, so the walk accepts only these.
+GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+
+#: A 405/422 from the merge call that means the branch is behind: the
+#: update row, not a refusal.
+_OUT_OF_DATE = re.compile(r"out of date|not up to date|is behind", re.IGNORECASE)
+#: A 405/422 (merge) or 422 (update-branch) that names a merge conflict.
+_CONFLICT = re.compile(r"conflict", re.IGNORECASE)
 
 #: The hosts `GitHubMerger` can merge on: github.com, where the tenant's
 #: token may be sent at all (`forge.may_receive_forge_token`, #307).
 MERGEABLE_HOSTS = forge_mod.GITHUB_HOSTS
 
-#: The most closing references one merge reads. GitHub links far fewer.
-MAX_CLOSING_ISSUES = 50
+#: The closing references one merge reads: one page, the close script's own
+#: (`scripts/close-merged-issues.sh` `PAGE=100`). GitHub links far fewer; past
+#: a page the page is closed and `issues_beyond_page` recorded, never a
+#: silent partial close.
+CLOSING_PAGE = 100
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -116,8 +173,8 @@ _CLOSING_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!) {"
     " repository(owner: $owner, name: $name) {"
     " pullRequest(number: $number) {"
-    f" closingIssuesReferences(first: {MAX_CLOSING_ISSUES}) {{"
-    " nodes { number state repository { nameWithOwner } } } } } }"
+    f" closingIssuesReferences(first: {CLOSING_PAGE}) {{"
+    " totalCount nodes { number state repository { nameWithOwner } } } } } }"
 )
 
 
@@ -182,6 +239,9 @@ class PullRequestFacts:
     #: True, False, or None while GitHub has not computed it.
     mergeable: bool | None
     merge_commit_sha: str | None = None
+    #: GitHub's `mergeable_state`: `behind` when the base requires an
+    #: up-to-date branch and this one is not; `dirty` on a conflict.
+    mergeable_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +275,33 @@ class ClosingIssue:
 
 
 @dataclass(frozen=True)
+class ClosingReferences:
+    """One page of a pull request's closing references, and how many it has."""
+
+    issues: tuple[ClosingIssue, ...] = ()
+    total: int = 0
+
+
+@dataclass(frozen=True)
+class CommitFacts:
+    sha: str
+    parents: tuple[str, ...]
+    committer_email: str | None
+    verified: bool
+
+    @property
+    def by_github(self) -> bool:
+        """Committed and signed by GitHub itself, as `update-branch` commits are."""
+        return self.verified and (self.committer_email or "").lower() == GITHUB_COMMITTER_EMAIL
+
+
+@dataclass(frozen=True)
+class UpdateAnswer:
+    status: int
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class RequiredChecks:
     """What the base branch requires. `checks` empty means it requires none."""
 
@@ -229,17 +316,25 @@ class ForgeMerger(Protocol):
 
     def can_push(self) -> bool: ...
 
+    def default_branch(self) -> str | None: ...
+
     def pull_request(self, number: int) -> PullRequestFacts: ...
 
     def required_checks(self, branch: str) -> RequiredChecks: ...
 
     def checks_at(self, sha: str) -> list[CheckFacts]: ...
 
+    def commit(self, sha: str) -> CommitFacts: ...
+
+    def on_base(self, base: str, sha: str) -> bool: ...
+
+    def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer: ...
+
     def merge(self, number: int, *, sha: str, title: str, message: str) -> MergeAnswer: ...
 
     def comment(self, number: int, body: str) -> bool: ...
 
-    def closing_issues(self, number: int) -> list[ClosingIssue]: ...
+    def closing_issues(self, number: int) -> ClosingReferences: ...
 
     def close_issue(self, number: int, *, comment: str) -> bool: ...
 
@@ -283,13 +378,21 @@ class GitHubMerger:
         self.repo = repo
         self.full_name = f"{owner}/{repo}"
         self._base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+        self._repository: Mapping[str, Any] | None = None
 
     def __repr__(self) -> str:
         return f"GitHubMerger({self.full_name!r})"
 
+    def _repository_doc(self) -> Mapping[str, Any]:
+        if self._repository is None:
+            self._repository = _mapping(self._client.get_ok(self._base))
+        return self._repository
+
     def can_push(self) -> bool:
-        repository = _mapping(self._client.get_ok(self._base))
-        return _mapping(repository.get("permissions")).get("push") is True
+        return _mapping(self._repository_doc().get("permissions")).get("push") is True
+
+    def default_branch(self) -> str | None:
+        return _str(self._repository_doc().get("default_branch"))
 
     def pull_request(self, number: int) -> PullRequestFacts:
         data = _mapping(self._client.get_ok(f"{self._base}/pulls/{number}"))
@@ -309,6 +412,7 @@ class GitHubMerger:
             base_repo=_str(_mapping(base.get("repo")).get("full_name")),
             mergeable=mergeable if isinstance(mergeable, bool) else None,
             merge_commit_sha=_str(data.get("merge_commit_sha")),
+            mergeable_state=_str(data.get("mergeable_state")),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -371,6 +475,36 @@ class GitHubMerger:
             out.append(CheckFacts(name=name, status=state, conclusion=conclusion))
         return out
 
+    def commit(self, sha: str) -> CommitFacts:
+        data = _mapping(self._client.get_ok(f"{self._base}/commits/{quote(sha, safe='')}"))
+        detail = _mapping(data.get("commit"))
+        parents = tuple(
+            p for p in (_str(_mapping(parent).get("sha")) for parent in data.get("parents") or [])
+            if p is not None
+        )
+        return CommitFacts(
+            sha=_str(data.get("sha")) or sha,
+            parents=parents,
+            committer_email=_str(_mapping(detail.get("committer")).get("email")),
+            verified=_mapping(detail.get("verification")).get("verified") is True,
+        )
+
+    def on_base(self, base: str, sha: str) -> bool:
+        """Whether `sha` is already on `base`: `compare` says the commit is
+        behind the base, or is its tip."""
+        data = _mapping(self._client.get_ok(
+            f"{self._base}/compare/{quote(base, safe='')}...{quote(sha, safe='')}"
+        ))
+        return data.get("status") in ("behind", "identical")
+
+    def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer:
+        """GitHub merges the base into the branch, if the head is still `expected_head_sha`."""
+        answer = self._client.request(
+            "PUT", f"{self._base}/pulls/{number}/update-branch",
+            payload={"expected_head_sha": expected_head_sha},
+        )
+        return UpdateAnswer(status=answer.status, message=forge_mod._message_of(answer.data))
+
     def merge(self, number: int, *, sha: str, title: str, message: str) -> MergeAnswer:
         answer = self._client.request(
             "PUT", f"{self._base}/pulls/{number}/merge",
@@ -391,7 +525,7 @@ class GitHubMerger:
         )
         return answer.status == 201
 
-    def closing_issues(self, number: int) -> list[ClosingIssue]:
+    def closing_issues(self, number: int) -> ClosingReferences:
         answer = self._client.request(
             "POST", "/graphql",
             payload={"query": _CLOSING_QUERY,
@@ -403,7 +537,8 @@ class GitHubMerger:
                                           forge_mod._message_of(answer.data)
                                           or "the closing references could not be read")
         pull = _mapping(_mapping(_mapping(data.get("data")).get("repository")).get("pullRequest"))
-        nodes = _mapping(pull.get("closingIssuesReferences")).get("nodes") or []
+        references = _mapping(pull.get("closingIssuesReferences"))
+        nodes = references.get("nodes") or []
         out: list[ClosingIssue] = []
         for node in nodes:
             node = _mapping(node)
@@ -412,7 +547,8 @@ class GitHubMerger:
             if issue is None or issue <= 0 or repository is None:
                 continue
             out.append(ClosingIssue(issue, str(node.get("state") or ""), repository))
-        return out
+        total = _int(references.get("totalCount"))
+        return ClosingReferences(tuple(out), max(total or 0, len(nodes)))
 
     def close_issue(self, number: int, *, comment: str) -> bool:
         commented = self.comment(number, comment)
@@ -463,7 +599,7 @@ class MergeTarget:
     verdict_file: str | None = None
     #: The default branch the tenant registered the repository with, written
     #: by swarm-api at submission (lane MS1); None when it registered none.
-    #: Carried for the `base_not_default` refusal (MS3); nothing reads it yet.
+    #: The `base_not_default` refusal reads it first, GitHub's own second.
     base: str | None = None
 
 
@@ -529,11 +665,23 @@ class _Run:
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
-    def wait(self, code: str, message: str, delay: int) -> ActionOutcome:
-        """A fact that may change by itself: fail the attempt, retryably."""
-        self.summary["refusal"] = {"code": code, "message": message}
-        return _outcome(TaskState.FAILED, EndCause.MERGE_REFUSED, self.summary,
-                        f"{code}: {message}", retryable=True, retry_delay_seconds=delay)
+    def wait(self, code: str, message: str, *, head: str, pull_request: int,
+             pending: list[str]) -> ActionOutcome:
+        """A fact that may change by itself: park CI_PENDING, holding nothing.
+
+        Not a retry: the lifecycle writes the park, the refund and the
+        fallback instant in one fenced transaction
+        (`control.ControlPlane.park_ci_pending`), releases the lease and exits
+        75. `head` is the head the checks were read at, which swarm-api's wake
+        tick reads them at again.
+        """
+        self.summary["wait"] = {"code": code, "message": message}
+        return _outcome(
+            TaskState.PARKED, None, self.summary, f"{code}: {message}",
+            exit_code=ExitCode.PARKED,
+            ci_wait={"code": code, "head": head, "pull_request": pull_request,
+                     "pending": sorted(pending)},
+        )
 
 
 def run_merge(ctx: ActionContext) -> ActionOutcome:
@@ -655,7 +803,11 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
 
 def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 branch: str) -> ActionOutcome:
-    """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors."""
+    """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors.
+
+    `pinned` is the head the opening step pushed. The head this attempt acts
+    at is GitHub's live head, accepted only through `_updates_onto`.
+    """
     ctx, summary = run.ctx, run.summary
     if ctx.recheck():
         return cancelled(summary)
@@ -665,10 +817,23 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
 
     pr = merger.pull_request(number)
     summary["base"] = pr.base_ref
+    # The registered default first (swarm-api wrote it into the signed
+    # target, MS1), GitHub's own when the tenant registered none. Before the
+    # merged row: a merge into another branch closes nothing, as the close
+    # script says, so it is not this step's success either.
+    default = parse_merge_target(ctx.dispatch).base or merger.default_branch()
+    if not default or pr.base_ref != default:
+        return run.refuse("base_not_default",
+                          f"pull request #{number} targets {pr.base_ref}, not the repository's "
+                          f"default branch {default or '(unreadable)'}")
     if pr.merged:
-        if pr.head_sha == pinned:
-            # A lost attempt that merged: the merge stands, and the issues it
-            # closes are closed below as if this attempt had made it.
+        if pr.head_sha == pinned or (
+            pr.head_sha is not None
+            and _updates_onto(merger, head=pr.head_sha, pushed=pinned, base=default) is not None
+        ):
+            # A lost attempt that merged, or another merger after this step's
+            # update: the merge stands, and the issues it closes are closed
+            # below as if this attempt had made it.
             summary["already_merged"] = True
             summary["merge_commit"] = pr.merge_commit_sha
             _close_issues(run, merger, number)
@@ -677,6 +842,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
     if pr.state != "open":
         return run.refuse("pull_request_closed", f"pull request #{number} is closed, not merged")
+    if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
+        return run.refuse("from_fork",
+                          f"pull request #{number} comes from {pr.head_repo or 'an unknown fork'}, "
+                          f"not {merger.full_name}")
     belongs = pull_request_belongs(
         {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
          "base": {"repo": {"full_name": pr.base_repo}}},
@@ -687,17 +856,31 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"pull request #{number} is not {branch} from {merger.full_name}")
     if pr.draft:
         return run.refuse("draft", f"pull request #{number} is a draft")
-    if pr.head_sha != pinned:
+    head = pr.head_sha
+    updates = 0 if head == pinned else (
+        None if head is None else _updates_onto(merger, head=head, pushed=pinned, base=default)
+    )
+    if head is None or updates is None:
         return run.refuse("head_moved",
-                          f"pull request #{number}'s head is {pr.head_sha}, not {pinned}, "
-                          "the head this workflow pushed")
+                          f"pull request #{number}'s head is {head}, not {pinned}, "
+                          "the head this workflow pushed, nor GitHub's own update of it")
+    summary["head"] = head
+    summary["updates"] = updates
     if title_is_placeholder(pr.title):
         return run.refuse("title_placeholder",
                           "the pull request's title is the worker's placeholder")
 
-    # The checks, at the pinned head.
+    def wait(code: str, message: str, pending: list[str]) -> ActionOutcome:
+        waited = _ci_wait_age(ctx)
+        if waited is not None:
+            return run.refuse("checks_timeout",
+                              f"CI has not settled in {int(waited // 60)} min, past "
+                              f"{MERGE_CI_MAX_SECONDS // 3600} h: {message}")
+        return run.wait(code, message, head=head, pull_request=number, pending=pending)
+
+    # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
-    checks = merger.checks_at(pinned)
+    checks = merger.checks_at(head)
     summary["required_checks"] = sorted({c.context for c in required.checks})
     pending: list[str] = []
     failed: list[str] = []
@@ -715,48 +898,63 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         # No protection, or protection that requires no check: every check
         # reported at the head must be green, and there must be one.
         if not checks:
-            return run.wait("no_checks",
-                            f"{pr.base_ref} requires no check and none has reported at "
-                            f"{pinned}; the merge needs at least one green check",
-                            CHECKS_PENDING_RETRY_SECONDS)
+            return wait("no_checks",
+                        f"{pr.base_ref} requires no check and none has reported at "
+                        f"{head}; the merge needs at least one green check", [])
         for check in checks:
             if other_check_blocks(check.as_run()):
                 label = f"{check.name} ({check.conclusion or check.status})"
                 (pending if check.status != "completed" else failed).append(label)
     if failed:
-        return run.refuse("checks_failed", f"at {pinned}: " + ", ".join(sorted(failed)))
+        return run.refuse("checks_failed", f"at {head}: " + ", ".join(sorted(failed)))
     if pending:
-        return run.wait("checks_pending", f"at {pinned}: " + ", ".join(sorted(pending)),
-                        CHECKS_PENDING_RETRY_SECONDS)
+        return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
-    mergeable = pr.mergeable
     rereads = 0
-    while mergeable is None and rereads < MERGEABLE_REREADS:
+    while pr.mergeable is None and rereads < MERGEABLE_REREADS:
         rereads += 1
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
-        mergeable = merger.pull_request(number).mergeable
-    if mergeable is False:
-        return run.refuse("not_mergeable",
+        pr = merger.pull_request(number)
+    if pr.head_sha != head:
+        return run.refuse("head_moved",
+                          f"pull request #{number}'s head moved to {pr.head_sha} while its "
+                          f"mergeability was read at {head}")
+    if pr.mergeable is False or pr.mergeable_state == "dirty":
+        return run.refuse("merge_conflict",
                           f"pull request #{number} does not merge cleanly into {pr.base_ref}")
-    if mergeable is None:
-        return run.wait("mergeability_unknown",
-                        f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads",
-                        CHECKS_PENDING_RETRY_SECONDS)
+    if pr.mergeable is None:
+        return wait("mergeability_unknown",
+                    f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads", [])
+    if pr.mergeable_state == "behind":
+        return _update_branch(run, merger, number=number, head=head, updates=updates,
+                              base=default)
 
     # ---- §2.2 8: fencing and cancel, immediately before the call.
     if ctx.recheck():
         return cancelled(summary)
 
-    # ---- §5.3: the merge, squashed, pinned to the head this workflow pushed.
-    message = provenance(ctx, merger, number=number, pinned=pinned)
+    # ---- §5.3: the merge, squashed, pinned to the head the checks are green at.
+    message = provenance(ctx, merger, number=number, pinned=head)
     summary["merge_called"] = True
-    answer = merger.merge(number, sha=pinned, title=pr.title, message=message)
+    answer = merger.merge(number, sha=head, title=pr.title, message=message)
     if not answer.merged:
         detail = f": {answer.message}" if answer.message else ""
         if answer.status == 409:
-            return run.refuse("head_moved", f"GitHub answered 409: the head is no longer {pinned}")
+            return run.refuse("head_moved", f"GitHub answered 409: the head is no longer {head}")
         if answer.status in (405, 422):
-            return run.refuse("not_mergeable", f"GitHub refused the merge ({answer.status}){detail}")
+            if _OUT_OF_DATE.search(answer.message):
+                # Answered, so nothing was merged: the update row, which is a
+                # different call, not the merge sent again.
+                summary.pop("merge_called")
+                summary["merge_answered"] = {"status": answer.status, "message": answer.message}
+                return _update_branch(run, merger, number=number, head=head, updates=updates,
+                                      base=default)
+            if _CONFLICT.search(answer.message):
+                return run.refuse("merge_conflict",
+                                  f"GitHub refused the merge ({answer.status}){detail}")
+            return run.refuse("protection_refused",
+                              f"GitHub's branch protection refused the merge "
+                              f"({answer.status}){detail}")
         if answer.status in (401, 403, 404):
             return run.refuse("token_lacks_rights",
                               f"GitHub refused the merge ({answer.status}){detail}")
@@ -776,13 +974,113 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
 
 
+def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> int | None:
+    """How many of GitHub's base merges lead from `pushed` to `head`, or None.
+
+    The first-parent walk (docs/merge-step.md "Revised 2026-10-06" §1): from
+    the live head, each step down must be a two-parent commit GitHub itself
+    committed and signed, whose second parent is already on `base`; its first
+    parent is the next step. It must reach `pushed` within
+    MERGE_MAX_BRANCH_UPDATES steps. A fact about GitHub, never about the
+    tenant-writable task document, so a lost attempt's update is re-derived
+    here and a forged count changes nothing. Anything else is `head_moved`.
+    """
+    steps = 0
+    while head != pushed:
+        if steps >= MERGE_MAX_BRANCH_UPDATES:
+            return None
+        try:
+            commit = merger.commit(head)
+            if len(commit.parents) != 2 or not commit.by_github:
+                return None
+            if not merger.on_base(base, commit.parents[1]):
+                return None
+        except forge_mod.ForgeAnswered as exc:
+            # A commit or comparison GitHub does not have is not an update.
+            if getattr(exc, "status", None) in (404, 422):
+                return None
+            raise
+        head = commit.parents[0]
+        steps += 1
+    return steps
+
+
+def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
+                   base: str) -> ActionOutcome:
+    """GitHub merges the base into a branch that is behind; then park at the new head.
+
+    A write to the forge, so the fencing and cancel recheck runs first and a
+    stale worker raises out of it with no call made (invariant 5).
+    `expected_head_sha` is the head the checks were read at: GitHub refuses
+    the update if anyone pushed in between.
+    """
+    ctx, summary = run.ctx, run.summary
+    if updates >= MERGE_MAX_BRANCH_UPDATES:
+        return run.refuse("behind_too_often",
+                          f"pull request #{number} is behind {base} again after {updates} "
+                          f"updates (at most {MERGE_MAX_BRANCH_UPDATES}): the base moves "
+                          "faster than CI")
+    if ctx.recheck():
+        return cancelled(summary)
+    answer = merger.update_branch(number, expected_head_sha=head)
+    detail = f": {answer.message}" if answer.message else ""
+    if answer.status == 422:
+        if _CONFLICT.search(answer.message):
+            return run.refuse("merge_conflict",
+                              f"GitHub could not merge {base} into #{number}{detail}")
+        return run.refuse("head_moved",
+                          f"GitHub refused to update #{number} at {head}{detail}")
+    if answer.status in (401, 403, 404):
+        return run.refuse("token_lacks_rights",
+                          f"GitHub refused to update #{number} ({answer.status}){detail}")
+    if answer.status not in (200, 202):
+        return run.refuse("forge_refused",
+                          f"the update-branch call answered {answer.status}{detail}")
+    # GitHub makes the merge commit asynchronously. A head that has not moved
+    # yet is parked at as it is: swarm-api's tick sees it move and wakes the
+    # step, whose walk then finds the update.
+    new_head = merger.pull_request(number).head_sha or head
+    summary["branch_updated"] = {"from": head, "to": new_head, "updates": updates + 1}
+    return run.wait("branch_updated",
+                    f"GitHub merged {base} into #{number} at {head}; the checks run again "
+                    f"at {new_head}",
+                    head=new_head, pull_request=number, pending=[])
+
+
+def _ci_wait_age(ctx: ActionContext) -> float | None:
+    """Seconds since this step first parked for CI, when past MERGE_CI_MAX_SECONDS.
+
+    `merge_wait.first_parked_at` on the step's own document, written by the
+    fenced park (`control.ControlPlane.park_ci_pending`). The document is
+    tenant-writable, so a forged instant can at worst end the step early as a
+    refusal, which changes nothing on the forge; an unreadable one waits on,
+    and `max_attempts` still bounds the wakes.
+    """
+    try:
+        doc = ctx.fetch_upstream(ctx.task_id)
+    except Exception:  # noqa: BLE001 - an unreadable record is no timeout
+        return None
+    wait = _mapping(_mapping(_mapping(doc).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    first = wait.get("first_parked_at")
+    if not isinstance(first, datetime):
+        return None
+    try:
+        waited = (utcnow() - first).total_seconds()
+    except TypeError:  # a naive instant: not one the park wrote
+        return None
+    return waited if waited > MERGE_CI_MAX_SECONDS else None
+
+
 def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:
     """Close every still-open issue the pull request closes (#569).
 
     GitHub's own `closingIssuesReferences`: the issues its closing keywords
     (and manual links) name. A `part of #N` pull request names none, so it
     closes none. An issue in another repository is left alone -- the token's
-    reach there is not this step's to assume -- and recorded as such.
+    reach there is not this step's to assume -- and recorded as such. The
+    rules of `scripts/close-merged-issues.sh`, held equal to it by
+    tests/unit/worker/test_merge_action.py, page rule included: past one page
+    the page is closed and `issues_beyond_page` recorded.
     """
     summary = run.summary
     closed: list[int] = []
@@ -795,7 +1093,7 @@ def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:
         summary["issues_unread"] = str(exc)[:300]
         return
     note = f"Closed by #{number}, merged by SwarmCloud task {run.ctx.task_id}"
-    for issue in references:
+    for issue in references.issues:
         if issue.repository.lower() != merger.full_name.lower():
             elsewhere.append(f"{issue.repository}#{issue.number}")
             continue
@@ -816,6 +1114,9 @@ def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:
         summary["issues_in_other_repositories"] = elsewhere
     if failed:
         summary["issues_not_closed"] = failed
+    if references.total > len(references.issues):
+        summary["issues_beyond_page"] = {"total": references.total,
+                                         "listed": len(references.issues)}
 
 
 def provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int, pinned: str) -> str:
@@ -823,6 +1124,6 @@ def provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int, pinned: 
     return "\n".join([
         f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
         f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
-        f"squashed at {pinned}, the head the workflow pushed, with every required "
-        "check green there.",
+        f"squashed at {pinned}, the head the workflow pushed or GitHub's update of it "
+        "onto the base, with every required check green there.",
     ])

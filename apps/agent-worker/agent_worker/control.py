@@ -127,6 +127,13 @@ CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
+#: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
+#: and by the scheduler's `_promote_ci_waits`, which wakes on it.
+#: tests/unit/worker/test_merge_action.py holds the three restatements equal.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+
 #: Where a park records its uploads for the attempt that finishes the task
 #: (#166): `tasks/{task}/carry/{attempt}` per park, and the index of the parks
 #: at `tasks/{task}/carry/parks`. Known ids, because the tenant worker role can
@@ -291,6 +298,11 @@ def _as_state(value: Any) -> TaskState:
         return TaskState(value)
     except (ValueError, TypeError) as exc:
         raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
+
+
+def _count(value: Any) -> int:
+    """A non-negative count from the tenant-writable task document, else 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1859,6 +1871,114 @@ class ControlPlane:
                 "attempt_refunded": refunded,
                 CHILD_AWAIT_RESUMES_METADATA_KEY: resumes,
                 **(detail or {}),
+            },
+        )
+        self.release_lease(f"parked:{reason.value}")
+        return refunded
+
+    def park_ci_pending(
+        self,
+        *,
+        code: str,
+        head: str,
+        pull_request: int,
+        pending: Sequence[str],
+        max_wakes: int,
+        fallback_seconds: int,
+    ) -> bool:
+        """A merge step's CI wait: PARKED on CI_PENDING, slot given back.
+
+        docs/merge-step.md "Revised 2026-10-06" §1, the await park's shape
+        exactly (`park_awaiting_children`). ONE FENCED TRANSACTION: a
+        superseded attempt gets `FencedWriteRefused` with nothing written, so
+        it can neither park the task nor refund an attempt (invariant 5).
+        Inside it:
+
+          * the attempt admission counted is refunded -- `attempt_count` down
+            by one, `merge_wait.wakes` up by one -- while fewer than
+            `max_wakes` have been, so a slow CI does not use up the step's
+            attempts; past the bound the park counts like any attempt, and a
+            pull request whose CI never settles still ends at `max_attempts`;
+          * `metadata.merge_wait` records what is waited on: the head the
+            checks were read at, the pull request, the code and the pending
+            names; `first_parked_at` and `updates` are carried over from the
+            last park, and `wake_requested_at` is NOT -- this park waits for a
+            mark made after it;
+          * `next_eligible_at` is the park instant plus `fallback_seconds`:
+            the scheduler wakes the park then even if swarm-api's tick never
+            marks it, so a dead tick or a broken token never strands a merge.
+
+        There is no checkpoint and no upload: a worker action keeps no
+        workspace (invariant 8's exception, CR 36), and its durable state is
+        this record plus GitHub, which the next attempt reads again.
+
+        Returns whether the attempt was refunded. The attempt's end, the event
+        and the release follow the transaction, as in every park.
+        """
+        write = "ci park"
+        reason = ParkReason.CI_PENDING
+        now = utcnow()
+        names = [str(name) for name in pending]
+
+        def _apply(txn: Any) -> tuple[bool, int]:
+            task = self._fenced_task(txn, write=write)
+            current = _as_state(task.get("state"))
+            assert_transition(current, TaskState.PARKED)
+            metadata = dict(task.get("metadata") or {})
+            last = metadata.get(MERGE_WAIT_METADATA_KEY)
+            last = last if isinstance(last, Mapping) else {}
+            wakes = _count(last.get("wakes"))
+            attempt_count = int(task.get("attempt_count", 0))
+            refund = wakes < max_wakes and attempt_count > 0
+            if refund:
+                wakes += 1
+            first = last.get("first_parked_at")
+            metadata[MERGE_WAIT_METADATA_KEY] = {
+                "code": code,
+                "head": head,
+                "pull_request": pull_request,
+                "pending": names,
+                "wakes": wakes,
+                "updates": _count(last.get("updates")),
+                "first_parked_at": first if isinstance(first, datetime) else now,
+                "parked_at": now,
+            }
+            payload: dict[str, Any] = {
+                "state": TaskState.PARKED.value,
+                "park_reason": reason.value,
+                "next_eligible_at": now + timedelta(seconds=fallback_seconds),
+                "current_lease_id": None,
+                "blocked_by": [
+                    {"reason": reason.value, "code": code, "head": head, "pending": names}
+                ],
+                "metadata": metadata,
+                "updated_at": now,
+            }
+            if refund:
+                payload["attempt_count"] = attempt_count - 1
+            txn.update(self._task_ref(), payload)
+            return refund, wakes
+
+        refunded, wakes = self._run_transaction(_apply)
+        # Best effort, as in `park`: the park has landed, and the event and
+        # the release below are what give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the CI park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+        self.emit(
+            EventType.PARKED,
+            {
+                "reason": reason.value,
+                "next_eligible_at": now + timedelta(seconds=fallback_seconds),
+                "attempt_refunded": refunded,
+                "wakes": wakes,
+                "code": code,
+                "head": head,
+                "pending": names,
             },
         )
         self.release_lease(f"parked:{reason.value}")

@@ -47,15 +47,22 @@ submit, and a run in flight turns a newer head into the pending one. A run is
 submitted as the registration's creator in its tenant, never as the
 scheduler's identity.
 
-WHERE THE INDEX LIVES. As the indexer task's artifact, under the tenant's own
-prefix (invariant 9): `tenants/<tenant>/tasks/<task>/attempts/<attempt>/
-artifacts/repo-index.json`. §2.3 asks this lane to copy it under
-`tenants/<tenant>/repos/` only if the bucket's lifecycle is shorter than the
-longest schedule: `artifact_retention_days` is 14 in dev and 180 in prod
-(terraform/environments/*), both longer than the longest interval a
-registration may set (168 hours), so no copy and no new writer. A
-registration whose interval is `off` can outlive its artifact; that index is
-then answered `artifact_gone`, not served from memory.
+WHERE THE INDEX LIVES (§2, lane IX3, owner decision 2026-10-06). The agent
+writes repo-index.json as the indexer task's artifact, `tenants/<tenant>/
+tasks/<task>/attempts/<attempt>/artifacts/repo-index.json`, and the worker
+copies the uploaded object, byte for byte, to its own home beside the graph:
+`tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json`
+(`index_key`). The bucket's lifecycle cold-stores and expires `tasks/` and
+never matches `repos/` (terraform/modules/storage), so an index outlives its
+artifact. Promotion reads both and records the copy (`index_object`, with
+the raw bytes' `object_digest`) only when it is the artifact's bytes
+exactly; `read_version` serves the copy, masked as the artifact reader
+masks and checked against the promoted `digest`, and falls back to the
+artifact -- which is also how a version promoted before the copy existed is
+still read. Retention is the last 20 versions (`KEPT_VERSIONS`); the objects
+of a version pruned here are deleted by the next index run's sweep, run as
+the tenant's worker (`agent_worker.indexrun.kept_commits`), because this
+service reads the bucket and may not delete in it.
 
 The summary is rendered on every read from the digest-checked JSON, never
 stored and never written by the agent, so it cannot say what the JSON does
@@ -115,6 +122,8 @@ from .forge import (
     urllib_probe_send,
 )
 from .gittokens import GitTokens
+from .json_masking import redact_json_window
+from .objects import ObjectAbsent, ObjectUnreadable
 from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, RepoGraph
 from .repograph import graph_root as repograph_root
 from .repositories import COLLECTION as REPOSITORIES
@@ -126,6 +135,7 @@ from .repositories import (
     Repositories,
 )
 from .schemas import TaskCreate
+from .task_input import masking_for
 
 log = logging.getLogger(__name__)
 
@@ -236,8 +246,9 @@ RUN_KINDS = ("full", "incremental")
 RUNS_COLLECTION = "repo_index_runs"
 #: Under each registration: one entry per promoted-or-kept commit sha.
 VERSIONS_COLLECTION = "index_versions"
-#: §2.3: the last 20 versions are kept; older entries are deleted, their
-#: objects left to the artifact lifecycle.
+#: §2.3: the last 20 versions are kept; older entries are deleted here, and
+#: their manifest and index copy under repos/ by the next index run's sweep
+#: (lane IX3), which then sweeps the blobs no kept manifest names.
 KEPT_VERSIONS = 20
 #: Run documents kept per registration. The Index runs tab reads a page of
 #: them by `repo_id` alone, which Firestore's automatic single-field index
@@ -585,6 +596,18 @@ _INDEX_SHAPE = (
     '             "top_symbols": [{"id": "<symbol id>", "callers": <count>}]},\n'
     '   "truncated": ["<a list you cut to fit, e.g. modules>"]}\n'
 )
+
+
+def index_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
+    """The index's home under the registration's prefix (§2, lane IX3):
+    `tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json`, beside
+    the graph (`repograph.graph_root`). The worker writes it
+    (`agent_worker.indexrun.Target.index_key`); the sweep retires it
+    (`repo_graph_shards.index_key`)."""
+    if not isinstance(commit_sha, str) or not _SHA.match(commit_sha):
+        raise InvalidIndex("commit_sha is not a 40-hex commit sha")
+    repo_root = repograph_root(tenant_id, repo_id).rpartition("/")[0]
+    return f"{repo_root}/index/{commit_sha}/{INDEX_FILE}"
 
 
 def graph_destination(tenant_id: str, repo_id: str) -> str:
@@ -2072,15 +2095,21 @@ class RepoIndex:
                     relations[(base, other)] = None
             return relations[(base, other)]
 
+        index_object, object_digest = self._kept_copy(tenant_id, repo_id, new, window.get("key"))
         now = self._now()
         repo_ref = self._repo_ref(repo_id)
         run_ref = self._run_ref(task.id)
         version_ref = self._version_ref(repo_id, new)
         version = {
             "commit_sha": new,
+            "repo_id": repo_id,
             "task_id": task.id,
             "attempt_id": window.get("attempt_id"),
             "json_object": window.get("key"),
+            # The copy under repos/ that no lifecycle rule expires (lane IX3),
+            # or None when the worker left none that equals the artifact.
+            "index_object": index_object,
+            "object_digest": object_digest,
             # Rendered from the JSON on every read; never stored (module docstring).
             "md_object": None,
             "digest": digest,
@@ -2209,18 +2238,105 @@ class RepoIndex:
         return snap.to_dict()
 
     def read_version(self, tenant_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
-        """The version's document, digest-checked. A rewritten artifact is refused."""
-        content, _window = self._read_document(tenant_id, version["task_id"])
+        """The version's document, digest-checked. A rewritten index is refused.
+
+        The copy under repos/ first (`_read_kept`), then the task's artifact:
+        a version promoted before lane IX3 has no copy, and a copy that no
+        longer matches is not served while the artifact still does.
+        """
+        served, rewritten = self._read_kept(tenant_id, version)
+        if served is not None:
+            return parse_index(served)
+        try:
+            content, _window = self._read_document(tenant_id, version["task_id"])
+        except (InvalidIndex, IndexUnavailable):
+            if rewritten:
+                raise self._rewritten(tenant_id, version) from None
+            raise
         if content_digest(content) != version.get("digest"):
-            log.warning("repo index tenant=%s task=%s digest=mismatch",
-                        tenant_id, version["task_id"])
-            raise IndexDigestMismatch(
-                f"the index of commit {version.get('commit_sha')} no longer matches the digest "
-                "recorded when it was promoted: the artifact was rewritten, so it is not "
-                "served. Run the index again.",
-                detail={"digest": version.get("digest")},
-            )
+            raise self._rewritten(tenant_id, version)
         return parse_index(content)
+
+    @staticmethod
+    def _rewritten(tenant_id: str, version: Mapping[str, Any]) -> IndexDigestMismatch:
+        log.warning("repo index tenant=%s task=%s digest=mismatch",
+                    tenant_id, version.get("task_id"))
+        return IndexDigestMismatch(
+            f"the index of commit {version.get('commit_sha')} no longer matches the digest "
+            "recorded when it was promoted: the artifact was rewritten, so it is not "
+            "served. Run the index again.",
+            detail={"digest": version.get("digest")},
+        )
+
+    # -- the copy under repos/ (§2, lane IX3) --------------------------------
+    def _raw(self, key: str) -> bytes | None:
+        """An object's bytes, or None when absent, unreadable or over the index bound."""
+        try:
+            window = self._inspection._reader().read_range(
+                key, offset=0, length=MAX_INDEX_BYTES + 1)
+        except (ObjectAbsent, ObjectUnreadable, UpstreamUnavailable):
+            return None
+        if window.total_bytes > MAX_INDEX_BYTES:
+            return None
+        return window.data
+
+    def _kept_copy(self, tenant_id: str, repo_id: str, commit_sha: str,
+                   artifact_key: str | None) -> tuple[str | None, str | None]:
+        """(the copy's key, `sha256:` of its bytes) when the worker's copy under
+        repos/ is the artifact byte for byte; (None, None) otherwise, and the
+        version is then read from the artifact alone, as before lane IX3."""
+        key = index_key(tenant_id, repo_id, commit_sha)
+        copy = self._raw(key)
+        original = self._raw(artifact_key) if copy is not None and artifact_key else None
+        if copy is None or original != copy:
+            log.info("repo index tenant=%s repo_id=%s sha=%s copy=%s", tenant_id, repo_id,
+                     commit_sha[:12], "absent" if copy is None else "differs")
+            return None, None
+        return key, "sha256:" + hashlib.sha256(copy).hexdigest()
+
+    def _read_kept(self, tenant_id: str, version: Mapping[str, Any]) -> tuple[str | None, bool]:
+        """(the copy's document, masked; or None), and whether a copy was there
+        and did not match what was promoted.
+
+        The key is REBUILT from the caller's tenant and the version's repo_id
+        and sha and must equal the recorded one, so a version document cannot
+        point the read anywhere else (invariant 9). The bytes must match the
+        `object_digest` recorded at promotion; they are then masked exactly as
+        the artifact reader masks a whole JSON artifact (`inspect.read_artifact`:
+        one window, from offset 0, complete, so `fragment` and no context),
+        with the index task's literals, and the result must match the promoted
+        `digest` -- the proof that what is served is what promotion validated.
+        """
+        key = version.get("index_object")
+        if not key:
+            return None, False
+        try:
+            expected = index_key(tenant_id, str(version.get("repo_id") or ""),
+                                 str(version.get("commit_sha") or ""))
+        except (InvalidIndex, InvalidGraph):
+            return None, False
+        if key != expected:
+            log.warning("repo index tenant=%s task=%s copy=foreign_key",
+                        tenant_id, version.get("task_id"))
+            return None, False
+        raw = self._raw(key)
+        if raw is None:
+            return None, False
+        if "sha256:" + hashlib.sha256(raw).hexdigest() != version.get("object_digest"):
+            return None, True
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, True
+        try:
+            task = self._store.get_task(tenant_id, version["task_id"], submitted_by=None)
+            literals: Sequence[str] = masking_for(task).literals
+        except NotFound:
+            literals = ()
+        served = redact_json_window(text, literals=literals, fragment=True).text
+        if content_digest(served) != version.get("digest"):
+            return None, True
+        return served, False
 
     # -- the poll (§3.3, lane RI4) -------------------------------------------
     def _record_head(self, tenant_id: str, repo_id: str, read: HeadRead) -> None:

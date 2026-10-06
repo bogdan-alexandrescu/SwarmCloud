@@ -12,6 +12,12 @@ that head; the pull request closes one open and one already-closed issue.
 `MergeWorld.context()` is green in every respect, and each test breaks
 exactly one thing.
 
+LANE MS3 (docs/merge-step.md "Revised 2026-10-06" §1) adds what a branch that
+is behind needs: `PUT .../update-branch`, answered 202 by moving the head to a
+merge commit GitHub made (`github_merge`), the commit and compare reads the
+worker's first-parent walk makes, a closing-references list longer than a
+page, and a fencing recheck that turns stale after `stale_after` calls.
+
 THE TOKEN IS MADE AT RUNTIME (`fake_github.fresh_token`), never written as a
 literal: the worker refuses to publish a diff whose added lines look like a
 credential.
@@ -21,10 +27,12 @@ from __future__ import annotations
 
 import json
 import re
+from itertools import count
 from pathlib import Path
 from typing import Any
 
 from agent_worker import post_verdict
+from agent_worker.errors import FencedError
 from agent_worker.objectstore import LocalObjectStore
 from agent_worker.specverify import UpstreamSpecUnverified
 
@@ -48,6 +56,10 @@ TITLE = "The widget shop lists widgets by price"
 CHECK = "ci / unit"
 ACTIONS_APP = 15368
 VERDICT_FILE = "verdict.json"
+#: The base branch's tip a GitHub update merges into the head.
+BASE_TIP = "b" * 40
+#: Who GitHub's own merge commits are committed by (update-branch, the web UI).
+GITHUB_COMMITTER = {"name": "GitHub", "email": "noreply@github.com"}
 
 #: GitHub's closing keywords, as its own `closingIssuesReferences` reads a body.
 _CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b", re.IGNORECASE)
@@ -93,11 +105,16 @@ class MergeWorld:
                      "result_summary": {"git": {"pushed_head": PINNED,
                                                 "pull_request": {"number": NUMBER}}}},
             REVIEW: {"tenant_id": TENANT, "workflow_id": WORKFLOW},
+            # The merge step's own document: `metadata.merge_wait` once parked.
+            TASK: {"tenant_id": TENANT, "workflow_id": WORKFLOW, "metadata": {}},
         }
         self.verdict: dict[str, Any] | None = {"verdict": "MERGE", "findings": []}
         self.verdict_path = tmp_path / VERDICT_FILE
         self.unverified: dict[str, str] = {}
         self.cancel = False
+        #: Fencing turns stale after this many rechecks (None: never).
+        self.stale_after: int | None = None
+        self.rechecks = 0
         self.reaped: tuple[int, ...] = ()
         self.unprotected: str | None = None
         self.repository_url: str | None = REPO_URL
@@ -109,7 +126,7 @@ class MergeWorld:
                                            "permissions": {"push": True}}
         self.pr: dict[str, Any] = {
             "number": NUMBER, "state": "open", "merged": False, "draft": False,
-            "title": TITLE, "mergeable": True,
+            "title": TITLE, "mergeable": True, "mergeable_state": "clean",
             "body": "Lists widgets by price.\n\nCloses #7\nFixes #9",
             "head": {"ref": f"swarm/{OPENER}", "sha": PINNED,
                      "repo": {"full_name": f"{OWNER}/{NAME}"}},
@@ -124,7 +141,14 @@ class MergeWorld:
         ]
         self.statuses: list[dict[str, Any]] = []
         self.issues: dict[int, str] = {7: "OPEN", 9: "CLOSED"}
+        #: When set, the closing references GitHub lists, in place of the body's.
+        self.closing: list[dict[str, Any]] | None = None
         self.merge_answer: Any = (200, {}, {"merged": True, "sha": MERGED})
+        #: None: GitHub accepts the update and moves the head (`github_merge`).
+        self.update_answer: Any = None
+        #: Whether the update leaves the branch behind again (a base moving on).
+        self.behind_after_update = False
+        self._shas = count(1)
         self._routes()
 
     # -- GitHub ----------------------------------------------------------
@@ -141,26 +165,80 @@ class MergeWorld:
         gh.route("GET", PR, pull)
         gh.route("GET", f"{API}/rules/branches/main", lambda _s: (200, {}, self.rules))
         gh.route("GET", f"{API}/branches/main", lambda _s: (200, {}, self.branch))
-        gh.route("GET", f"{API}/commits/{PINNED}/check-runs",
-                 lambda _s: (200, {}, {"check_runs": self.runs}))
-        gh.route("GET", f"{API}/commits/{PINNED}/status",
-                 lambda _s: (200, {}, {"state": "success", "statuses": self.statuses}))
+        self.serve_checks(PINNED)
         gh.route("PUT", f"{PR}/merge",
                  lambda s: self.merge_answer(s) if callable(self.merge_answer) else self.merge_answer)
         gh.route("POST", f"{API}/issues/{NUMBER}/comments", (201, {}, {"id": 5}))
 
         def graphql(seen):
-            body = self.pr.get("body") or ""
-            numbers = sorted({int(n) for n in _CLOSING.findall(body)})
-            nodes = [{"number": n, "state": self.issues.get(n, "OPEN"),
-                      "repository": {"nameWithOwner": f"{OWNER}/{NAME}"}} for n in numbers]
+            if self.closing is not None:
+                every = list(self.closing)
+            else:
+                body = self.pr.get("body") or ""
+                numbers = sorted({int(n) for n in _CLOSING.findall(body)})
+                every = [{"number": n, "state": self.issues.get(n, "OPEN"),
+                          "repository": {"nameWithOwner": f"{OWNER}/{NAME}"}} for n in numbers]
+            # GitHub lists `first:` of them, and counts them all.
+            page = re.search(r"closingIssuesReferences\(first: (\d+)\)", seen.body["query"])
+            nodes = every[: int(page.group(1))] if page else every
             return 200, {}, {"data": {"repository": {"pullRequest": {
-                "closingIssuesReferences": {"nodes": nodes}}}}}
+                "closingIssuesReferences": {"totalCount": len(every), "nodes": nodes}}}}}
 
         gh.route("POST", "/graphql", graphql)
-        for number in range(1, 20):
+
+        def update(seen):
+            if self.update_answer is not None:
+                return self.update_answer
+            if seen.body.get("expected_head_sha") != self.pr["head"]["sha"]:
+                return 422, {}, {"message": "expected head sha didn't match current head ref."}
+            self.pr["head"]["sha"] = self.github_merge(self.pr["head"]["sha"])
+            if not self.behind_after_update:
+                self.pr["mergeable_state"] = "clean"
+            return 202, {}, {"message": "Updating pull request branch.", "url": PR}
+
+        gh.route("PUT", f"{PR}/update-branch", update)
+        for number in range(1, 120):
             gh.route("POST", f"{API}/issues/{number}/comments", (201, {}, {"id": 100 + number}))
             gh.route("PATCH", f"{API}/issues/{number}", (200, {}, {"state": "closed"}))
+
+    def serve_checks(self, sha: str) -> None:
+        """The check runs and statuses at `sha` are this world's `runs` and `statuses`."""
+        self.github.route("GET", f"{API}/commits/{sha}/check-runs",
+                          lambda _s: (200, {}, {"check_runs": self.runs}))
+        self.github.route("GET", f"{API}/commits/{sha}/status",
+                          lambda _s: (200, {}, {"state": "success", "statuses": self.statuses}))
+
+    def commit(self, sha: str, parents: list[str], *, committer: dict[str, str] | None = None,
+               verified: bool = True) -> None:
+        """Serve `GET .../commits/<sha>` with these parents."""
+        self.github.route("GET", f"{API}/commits/{sha}", (200, {}, {
+            "sha": sha, "parents": [{"sha": p} for p in parents],
+            "commit": {"committer": dict(committer or GITHUB_COMMITTER),
+                       "verification": {"verified": verified}}}))
+
+    def on_base(self, sha: str, status: str = "behind") -> None:
+        """Serve `GET .../compare/main...<sha>`: how `sha` stands against the base."""
+        self.github.route("GET", f"{API}/compare/main...{sha}", (200, {}, {"status": status}))
+
+    def github_merge(self, head: str, *, base_tip: str = BASE_TIP, **commit: Any) -> str:
+        """A merge commit of the base into `head`, as update-branch makes it.
+
+        Serves its commit read, its second parent's compare, and its checks.
+        """
+        sha = f"{next(self._shas):040x}"
+        self.commit(sha, [head, base_tip], **commit)
+        self.on_base(base_tip)
+        self.serve_checks(sha)
+        return sha
+
+    def update_calls(self) -> list[Any]:
+        return self.github.calls("PUT", f"{PR}/update-branch")
+
+    def recheck(self) -> bool:
+        self.rechecks += 1
+        if self.stale_after is not None and self.rechecks > self.stale_after:
+            raise FencedError(1, 2, "superseded while the merge read the forge")
+        return self.cancel
 
     def merge_calls(self) -> list[Any]:
         return self.github.calls("PUT", f"{PR}/merge")
@@ -196,7 +274,7 @@ class MergeWorld:
             dispatch={"strategy": "integrate", "carrier": "checkpoints",
                       "merge_target": dict(self.target)},
             store=self.store, fetch_upstream=fetch, verify_upstream=verify,
-            read_app_key=no_app_key, environ={}, recheck=lambda: self.cancel,
+            read_app_key=no_app_key, environ={}, recheck=self.recheck,
             reap=lambda: self.reaped, unprotected=self.unprotected,
             scrub=lambda text: text, log=self.log, staged=staged,
             transport=self.github, sleep=self.slept.append,

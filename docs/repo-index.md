@@ -242,33 +242,121 @@ never padded to look complete.
 
 ### 2.3 Where it lives, and how it is versioned
 
-The index objects are the indexer task's **artifacts**:
+**Revised 2026-10-06 (owner decision, lane IX3).** The index has its own home
+under the registration's prefix, beside its graph, and the bucket's lifecycle
+never touches it:
 
-    tenants/<tenant>/tasks/<task>/attempts/<attempt>/artifacts/repo-index.json
+    tenants/<tenant>/tasks/<task>/attempts/<attempt>/artifacts/repo-index.json   the artifact, as written
+    tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json          the kept copy
+    tenants/<tenant>/repos/<repo_id>/graph/<commit_sha>/manifest.json            the graph (§2.5)
+    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
-That path is already under the tenant's own GCS prefix, written by the
-tenant's own worker service account and readable by nobody else's
-(invariant 9: own GSA, own secrets, own GCS prefix, own namespace). Using the
-artifact path rather than a new `tenants/<tenant>/repos/` prefix means phase 1
-needs no new bucket, no new IAM binding and no new writer: the worker uploads
-it like any artifact, and swarm-api reads it back like it reads `plan.json`.
-The catch is retention: an index is an artifact and lives as long as
-artifacts do. Lane RI2 reads the bucket's lifecycle rule and, if it is shorter
-than the longest schedule a registration may set, copies the current index to
-`tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/` under the same tenant
-prefix instead.
+**Why the artifact alone was not enough.** The first cut kept the index only
+as the task's artifact, on the argument that the artifact lifecycle
+(`artifact_retention_days`: 14 in dev, 180 in prod) outlived the longest
+schedule a registration may set. Reading the lifecycle again showed two rules
+that did not care about schedules: `SetStorageClass NEARLINE` at 14 days on
+`matchesPrefix ["tenants/"]`, which put every index and every graph blob in
+Nearline -- a retrieval fee on each read, while planners read them on every
+run, and a 30-day minimum charge on each deletion -- and the customTime
+`Delete`, unprefixed, which the worker's stamp would have pointed at anything
+it wrote under `repos/`. A registration whose interval is `off`, or a base an
+incremental run builds on, outlives a 14-day artifact anyway.
+
+**Who writes what.** The worker uploads repo-index.json as the task's
+artifact, then copies the uploaded object -- read back, so byte for byte --
+to `index/<commit_sha>/` (`agent_worker.lifecycle._index_keep_copy`; the
+commit is the signed `repository_ref`, the repo_id is derived from the signed
+`repository_url`, never from metadata). swarm-api cannot write it: it holds
+`roles/storage.objectViewer` on the bucket and nothing more, by design, and
+this change adds no IAM. The path is under `tenants/<tenant>/`, which the
+tenant's own worker account may already write (invariant 9).
 
 **Versioned by commit sha.** When an index run succeeds, swarm-api validates
 the JSON, renders the markdown, and in one Firestore transaction writes an
 `index_versions/{commit_sha}` entry under the registration (task, attempt,
-object paths, the JSON's sha256 digest, `kind`, `built_at`) and moves
+`json_object` naming the artifact, the JSON's sha256 digest as the masked
+reader serves it, `kind`, `built_at`) and moves
 `repositories/{repo_id}.index.current_sha` to it — **only if** the new sha is
 the branch head or a descendant of the current one, so a slow full run
 finishing after a newer incremental one cannot move the pointer backwards.
-The last 20 versions are kept; older entries are deleted with their objects
-left to the artifact lifecycle. A consumer reads a version by sha and checks
-the digest, so an artifact rewritten after promotion is detected rather than
-served (§5.2).
+Since IX3 the entry also records `repo_id`, `index_object` -- the kept copy's
+key -- and `object_digest`, the sha256 of its raw bytes, but only when the
+copy is the artifact byte for byte; otherwise both are null and the version
+is read from the artifact, exactly as before.
+
+**Reading a version.** `RepoIndex.read_version` reads the kept copy first:
+its key is rebuilt from the caller's tenant and the entry's repo_id and sha
+and must equal the recorded one (a version document cannot point the read
+anywhere else), its bytes must match `object_digest`, it is masked as the
+artifact reader masks a whole JSON artifact, and the result must match the
+promoted digest -- which is what proves the copy served is the document
+promotion validated. When there is no copy (a version promoted before IX3),
+or it does not match, the artifact is read and digest-checked as before; a
+copy that was rewritten while the artifact is gone is refused
+(`index_digest_mismatch`), never served. An incremental run's base is staged
+the same way: the copy first, then the artifact, each checked against the
+promoted digest (§3.4).
+
+**Retention.** The last 20 versions are kept (`KEPT_VERSIONS`); swarm-api
+deletes older `index_versions` entries at promotion. Their objects under
+`repos/` are deleted by the **next index run's sweep**, run as the tenant's
+worker account -- the only identity that may delete there -- because
+promotion runs in swarm-api, which may not. Before its graph write the worker
+reads the registration's remaining `index_versions` (plus the promoted
+`current_sha` and its own commit; `agent_worker.indexrun.kept_commits`) and
+passes them as `--keep-commit`; the writer's sweep then deletes every other
+commit's manifest and index copy older than a day, and then every blob no
+remaining manifest names (`repo_graph_shards.sweep`). One sweep deletes at
+most 2,000 objects, in batched `gcloud storage rm` calls; a backlog is worked
+off over the following runs, and a retired manifest past the bound still
+protects its blobs until it goes. When the versions cannot be read, the
+registration is not this tenant's, or more than 200 are listed, no
+`--keep-commit` is passed and the sweep retires nothing (it still removes
+orphan blobs, as it always has). Deleted objects become noncurrent versions,
+which the bucket's noncurrent rules remove (3 newer versions, or 30 days).
+
+**The lifecycle, per prefix** (`terraform/modules/storage/main.tf`). The two
+rules on live objects keep `repos/` off the clock in two different ways,
+because GCS `matchesPrefix` can only include, never exclude:
+
+* **Nearline** lists `tenants/<t>/tasks/` and `tenants/<t>/verdicts/` for
+  every tenant in the Terraform tenants map (`aged_prefixes`), instead of
+  `tenants/`. With no tenant at all the rule is omitted, because an empty
+  `matchesPrefix` would match every object.
+* **The customTime Delete stays bucket-wide**, unprefixed, as it was before
+  IX3. A per-tenant prefix list there would take every tenant outside the
+  map off the clock for good -- above all the personal tenants (`u-<slug>`)
+  the API creates at runtime, which Terraform never lists. `repos/` is out of
+  its reach because nothing there carries a customTime: the worker stamps one
+  on every upload except a checkpoint's and anything under
+  `tenants/<t>/repos/` (`agent_worker.objectstore.is_repos_key`), and the
+  graph writer's `gcloud storage` uploads set none. GCS never matches
+  `daysSinceCustomTime` against an object without one.
+
+| prefix | Nearline at `nearline_after_days` | Delete at `artifact_retention_days` after customTime | noncurrent cleanup |
+|---|---|---|---|
+| `tenants/<t>/tasks/` (artifacts, logs, checkpoints), `<t>` in the map | yes | yes (checkpoints carry no customTime) | yes |
+| `tenants/<t>/verdicts/`, `<t>` in the map | yes | yes | yes |
+| `tenants/<t>/tasks/`, `tenants/<t>/verdicts/`, `<t>` **not** in the map (runtime personal tenants, a tenant registered by `scripts/register-tenant.sh` alone) | **no** | yes | yes |
+| `tenants/<t>/repos/` (index copies, graph), every tenant | **never** | **never** (no customTime) | yes |
+
+So a tenant outside the map loses only the cold-storage step: its task
+objects stay in Standard until the Delete removes them -- a storage-class
+cost difference, nothing kept forever. Adding it to the map puts it back on
+Nearline.
+
+`tests/terraform/artifact_lifecycle.tftest.hcl` evaluates the Nearline
+rule's prefixes against keys under `repos/` (must match none) and under
+`tasks/` and `verdicts/` (must match), holds every live Delete to customTime
+alone (no `age`, no `created_before`), and checks the Delete reaches a
+personal tenant's task key; `tests/unit/worker/test_repos_objects_carry_no_custom_time.py`
+holds the worker's side: nothing it writes under `repos/` is stamped, and
+task artifacts, logs and verdicts still are.
+
+**After an unregister** nothing deletes `tenants/<t>/repos/<repo_id>/`: no
+lifecycle rule reaches it and no index run sweeps a registration that no
+longer exists. Those objects stay until deleted by hand.
 
 ### 2.4 Why two tenants on one repository do not share an index
 
@@ -301,7 +389,7 @@ test reaches this" can always be answered with "through an `ast` edge at
 **Graph shards, per commit, under the tenant's own prefix.**
 
     tenants/<tenant>/repos/<repo_id>/graph/<commit_sha>/manifest.json
-    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.zst
+    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
 The manifest lists the shards and their digests, the `languages` table and
 the counts. Shards are content-addressed blobs: symbols sharded by module,
@@ -316,9 +404,12 @@ lines and 4-6 MB compressed; a 10,000-file monorepo about 30 MB compressed.
 The hard ceiling is **256 MiB per commit**; a graph over it keeps the
 module-level edges and drops symbol edges below confidence 0.4, and says so
 in the manifest's `truncated`. Graph manifests are kept for the last 20
-index versions (§2.3) and for every commit an open pull request's impact plan
-names, for 30 days; unreferenced blobs are deleted by a sweep in the RI9
-lane.
+index versions (§2.3): the index run's sweep deletes the manifest of every
+other commit older than a day, then every blob no remaining manifest names,
+and nothing else deletes under `repos/` -- the bucket's lifecycle never
+matches it (§2.3, revised 2026-10-06, lane IX3). The longer retention first
+sketched here, for every commit an open pull request's impact plan names,
+for 30 days, is not built: such a manifest goes with its version.
 
 **The write is resumable (revised 2026-10-06, lane IX1).** Blobs go up
 first, the manifest last. A blob already at its content-addressed path is
@@ -1043,7 +1134,7 @@ indistinguishable from a missing one.
 | `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage |
 | `GET /v1/repositories/{repo_id}` | one registration, with its last 20 index runs and the runs and workflows that used its index |
 | `PATCH /v1/repositories/{repo_id}` | schedule, trigger, `allowed_profiles`, `default_branch`, `paused` |
-| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console; index objects are left to the artifact lifecycle |
+| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console. The task artifacts are left to the artifact lifecycle; since IX3 nothing deletes the registration's `repos/<repo_id>/` objects (index copies, graph), because the lifecycle never matches `repos/` and no index run sweeps an unregistered repository -- they stay until deleted by hand (§2.3) |
 | `POST /v1/repositories/{repo_id}/index:run` | queue an index run now (`{"kind": "full" \| "incremental"}`); the in-flight rule of §3.1 applies |
 | `GET /v1/repositories/{repo_id}/index` | the current index's summary and freshness; `?sha=` for a kept version; `?format=json` for the structured document |
 | `POST /v1/repositories/{repo_id}/tests:select` | §4.3 |
@@ -1082,6 +1173,8 @@ contract's and must not leak into it.
       task_id, attempt_id, json_object, md_object, digest, kind, base_sha,
       built_at, bytes, truncated,
       graph_manifest, graph_digest, languages      (revised 2026-10-04)
+      repo_id, index_object, object_digest         (revised 2026-10-06, IX3: the
+                                                    kept copy under repos/, §2.3)
 
     repo_index_runs/{task_id}
       tenant_id, repo_id, commit_sha, kind, trigger (interval|change|manual),

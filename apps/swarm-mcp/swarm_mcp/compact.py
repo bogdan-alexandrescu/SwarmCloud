@@ -74,7 +74,7 @@ from .progress import (
     questions_count,
     questions_words,
 )
-from .render import _DEPENDENCY_WAIT, describe_blocker, parse_time, task_label
+from .render import _DEPENDENCY_WAIT, describe_blocker, merge_row, parse_time, task_label
 
 #: The longest one progress call may hold: thirty minutes (owner decision,
 #: 2026-10-01, #448). A held call costs a task read per poll and NOTHING in the
@@ -131,6 +131,7 @@ _EVENT_PAGE = 100
 _WAITS_FOR = {
     "DEPENDENCY_INCOMPLETE": "dependency",
     "CHILDREN_INCOMPLETE": "child tasks",
+    "CI_PENDING": "pull request checks",
     "PROVIDER_QUOTA_EXHAUSTED": "quota",
     "PROVIDER_COOLDOWN": "quota cooldown",
     "PROVIDER_OUTAGE": "provider outage",
@@ -336,6 +337,11 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
         # WHAT THE AGENT ASKS THE OWNER (owner decision, 2026-10-05): on the
         # final line, so the row that writes one line per change says it.
         parts.append(questions_words(asked))
+    merged = merge_row(task)
+    if merged is not None:
+        # A MERGE STEP'S VERDICT (lane MS5): merged and the issues closed, or
+        # the refusal code -- what a workflow acts on, on the final line.
+        parts.append(merged)
     return " · ".join(parts), f"{wake}|{stamp}"
 
 

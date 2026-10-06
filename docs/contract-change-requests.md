@@ -8764,7 +8764,7 @@ There are two choices, both measured in docs/worker-images.md:
 
 ## 49. `states.py`: a merge step waiting for its pull request's checks has no park reason
 
-**Status:** accepted by the owner 2026-10-06 (#352), NOT APPLIED. Filed
+**Status:** accepted by the owner 2026-10-06 (#352), APPLIED 2026-10-06 by lane MS2. Filed
 2026-10-06 by functionality wave 11, lane MS1, as request (A) of
 [docs/merge-step.md's 2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
 ("Owner decisions on this plan", decision 1). Lane MS2 applies it, with its

@@ -58,10 +58,15 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: The repository index poll (docs/repo-index.md §3.3, lane RI4) was added for
 #: the same reason: it reads only the named tenant's registrations and
 #: submits an index run as the registration's creator, never as the sweeper.
+#: The merge wake (docs/merge-step.md "Revised 2026-10-06" §1, lane MS2) was
+#: added on the owner's 2026-10-06 plan: it reads only the named tenant's
+#: CI_PENDING parks, with that tenant's token, and its one write is the wake
+#: marker on them -- it submits nothing and moves no task.
 DECIDED = frozenset({
     ("POST", "/v1/admin/workflows/rollup"),
     ("POST", "/v1/admin/runs/advance"),
     ("POST", "/v1/admin/repositories/poll"),
+    ("POST", "/v1/admin/merges/wake"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]

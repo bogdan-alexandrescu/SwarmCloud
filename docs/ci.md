@@ -1298,6 +1298,49 @@ fixer by hand and push the fix-up from a laptop.
    `MAX_FIX_ATTEMPTS` (two; the script says why) one more comment says it
    stopped. A submission the API refuses is a comment and a red fixer run, and
    does not count as an attempt.
+6. **How the fix step ended is a comment too.** When the fix task reaches a
+   terminal state, swarm-api posts one comment on the pull request: the fix
+   task's id, its console link, its state, and one paragraph -- the commit it
+   pushed, or why nothing was pushed, and the agent's own account cut to a
+   paragraph. It says when the per-pull-request cap is reached. No log is
+   quoted (the console has it), and everything the agent or an error wrote is
+   redacted, with the tenant's token as a known literal, and neutralised
+   (mentions and closing keywords broken) before it is posted
+   ([`swarm_api/cifix.py`](../apps/swarm-api/swarm_api/cifix.py)).
+
+### The post-back, and the cap the API holds
+
+The script comments when it SUBMITS; it ends before the step does, and
+nothing in GitHub Actions should wait an agent's hour for it. So the outcome
+is posted by swarm-api, on the per-tenant `merge_wake` Cloud Scheduler tick
+(`POST /v1/admin/merges/wake?tenant_id=<t>`, every minute, as the rollup
+sweeper), which already reads that tenant's `-git` token for the merge step's
+CI reads. The tick's answer carries `ci_fix` (posted, waiting, failed) and
+`ci_fix_failures` (task id and code) beside the merge report.
+
+* **Stamped by the API, never by the caller.** The script sends
+  `metadata.ci_fix` = `{pull_request, run_id, head_sha, attempt,
+  max_attempts}` on the workflow. The API accepts it only beside
+  `continues_task`, refuses any other key in it (the post-back's record
+  above all), and stamps `ci_fix.postback = "pending"` on the fix task.
+* **Only to the pull request of the continued branch.** The tick reads the
+  pull request with the tenant's token and posts only if its head branch is
+  `swarm/<the continued task>`; anything else is given up as
+  `pull_request_mismatch`.
+* **Once.** The comment opens with `<!-- swarm-ci-fix:outcome:<task> -->`;
+  a retry whose record was lost finds it and does not post again. It is never
+  the script's attempt marker, so it never counts against the cap. A failed
+  write is retried every 5 minutes for an hour (`RETRY_SECONDS`,
+  `MAX_POSTBACK_FAILURES`), then given up with its code.
+* **The cap holds at the API too.** The script counts its own attempt
+  comments, which anyone with write access can delete. The API counts the
+  tenant's fix workflows for that pull request of that branch and refuses
+  the one past `max_attempts` (422 `invalid_dispatch`), and refuses a
+  `max_attempts` above 3 (`MAX_ATTEMPTS_CEILING`).
+* **The token needs `Issues: Read and write`** on the repository -- the same
+  permission an issue run's comments need ([multi-tenancy.md](multi-tenancy.md)).
+  Without it the fix still runs and pushes; the tick reports
+  `writeback_forbidden` for the task and retries until it gives up.
 
 ### Why a step may push to another task's branch
 
@@ -1365,6 +1408,112 @@ it is not configured, and submits nothing.
 
 `workflow_run` only fires for a workflow file on the default branch, so the
 fixer does nothing before it has merged.
+
+### Turning it on, in this order
+
+Status, 2026-10-06: `ci_fix_wif` is applied (terraform/bootstrap, 08:40Z),
+`swarm-ci-fix` is in `frontend_iap_members` and listed on `eng`, and the
+repository variable `SWARM_CI_FIX_SA` is **unset**, so every red swarm pull
+request gets the "not configured" comment and no fix. Each step below
+depends on the one before it; doing the last one first gives a fixer that
+authenticates and is refused.
+
+1. **The account exists** (it is not created by Terraform; `ci_fix.tf` says
+   why):
+
+   ```bash
+   gcloud iam service-accounts describe \
+     swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com \
+     --project saga-agents-staging --format='value(email,uniqueId)'
+   ```
+
+2. **Bootstrap applied** with `ci_fix_service_account` set and the same
+   account in `frontend_iap_members` (`terraform/bootstrap/terraform.tfvars`;
+   the plan refuses one without the other):
+
+   ```bash
+   terraform -chdir=terraform/bootstrap plan -out=/tmp/bootstrap.plan
+   terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.plan
+   ```
+
+   This makes `google_service_account_iam_member.ci_fix_wif`
+   (`roles/iam.workloadIdentityUser` on the account, for the principalSet
+   `attribute.job_workflow_ref/<repo>/.github/workflows/ci-fix.yml@refs/heads/main`)
+   and the account's `roles/iap.httpsResourceAccessor` on the front door's
+   backend services (`wif.tf`, `frontend_accessors`). **No token-creator
+   grant exists or is needed**: the workflow federates AS the account, and
+   `access_token` in `scripts/lib/common.sh` does not impersonate the account
+   it is already signed in as.
+
+3. **A release has rendered the tenant listing** into swarm-api
+   (`tenants.eng.service_accounts` in
+   `terraform/environments/dev/dev.tfvars`, `TENANT_SERVICE_ACCOUNTS` on the
+   service). Without it the account resolves to its own `u-` tenant, which
+   owns nothing it can continue, and every submission answers 422.
+
+4. **eng's `-git` token can comment**: `Issues: Read and write` on the
+   repository, for the post-back. It already needs it for issue runs.
+
+5. **Then, and only then, the repository variable:**
+
+   ```bash
+   gh variable set SWARM_CI_FIX_SA \
+     --repo bogdan-alexandrescu/SwarmCloud \
+     --body swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+   ```
+
+   `GCP_WIF_PROVIDER` (already set for the release) names the provider;
+   `SWARM_API_HOST` is optional.
+
+### Seeing it work
+
+* On the next red `swarm/<task>` pull request, the `ci-fix` run is green and
+  the pull request has a comment `CI fixer: attempt 1 of 2.` naming the
+  workflow and the fix task. `gh run list --workflow ci-fix.yml --limit 5`
+  lists the runs; a run that is SKIPPED was not a red `application` run on a
+  `swarm/` branch of this repository (the job's `if:`).
+* The fix task is in the console under its id, in `eng`, and its branch is the
+  pull request's. Its push re-runs `application` on the pull request.
+* Within a minute or two of the task ending, a second comment,
+  `CI fixer: attempt 1 of 2 ended <STATE>.`, with the console link and the
+  outcome. If it does not come, the `merge_wake` tick's answer names the task
+  and the code in `ci_fix_failures` (`writeback_forbidden`: the token lacks
+  `Issues: write`; `pull_request_mismatch`: the pull request is not on the
+  continued branch).
+* A third red run on the same pull request gets `CI fixer: stopped after 2
+  attempts.` and no submission; a submission forced past the cap answers 422.
+
+### Admitting the fixer through `swarm-eng-bots@saga.xyz` (owner decision 2026-10-06): NOT EFFECTIVE YET
+
+The owner asked, on 2026-10-06, that `swarm-ci-fix` reach tenant `eng`
+through a SwarmCloud-only group, `swarm-eng-bots@saga.xyz`, rather than
+`eng@saga.xyz` (which holds project-wide admin roles on this shared
+project). Creating the group and its membership is an operator step in Cloud
+Identity, and is exactly:
+
+```bash
+gcloud identity groups create swarm-eng-bots@saga.xyz \
+  --organization=saga.xyz \
+  --display-name="SwarmCloud eng bots" \
+  --description="SwarmCloud only: service accounts admitted to tenant eng. Holds no IAM role on any project."
+gcloud identity groups memberships add \
+  --group-email=swarm-eng-bots@saga.xyz \
+  --member-email=swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+```
+
+**Running it changes nothing about which tenant the fixer reaches, and
+nothing in Terraform can register the group as `eng`'s.** A tenant's id is
+derived from its group's address by the frozen
+`swarm_common.identity.tenant_id_for_group`, so a registered
+`swarm-eng-bots@saga.xyz` is a NEW tenant, `swarm-eng-bots`, which owns none
+of `eng`'s pull requests -- every fix would be refused as "not a task in your
+tenant". A group member is also a full member of its tenant, able to submit
+any work, where the listing above makes the account continuation-scoped (it
+may only continue a `direct-pr` task; contract request 30). The listing
+already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
+`eng` is a frozen-contract change, and whether to make it is the owner's
+question, not this document's: until it is answered, the listing is the
+mechanism and the group, if created, is unused.
 
 ## A ready pull request is merged by GitHub, not by a session
 

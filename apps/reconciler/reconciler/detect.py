@@ -52,6 +52,15 @@ And two about how a worker ENDED, on either backend:
                        execution in `last_error`, instead of waiting for the
                        dispatch deadline (#198; `detect_ended_at_startup`)
 
+And one about a cancel nobody honoured, on either backend:
+
+    cancel overdue     the task's cancel was requested longer ago than
+                       `cancel_enforce_after_seconds` and its current
+                       attempt's execution is still active -> terminate it
+                       through the backend, then fence, release and end the
+                       task CANCELLED in one transaction (#627;
+                       `detect_cancel_overdue`)
+
 And one about a worker that ended its task and not its attempt:
 
     lost after finish  the task is terminal at the attempt's generation, the
@@ -153,6 +162,10 @@ class FindingKind(str, Enum):
     #: A terminal task whose current attempt never recorded its end and has no
     #: live execution, past a grace: see `detect_lost_after_finish` (#380).
     LOST_AFTER_FINISH = "lost_after_finish"
+    #: A task whose cancel was requested more than `cancel_enforce_after_seconds`
+    #: ago and whose current attempt's execution is still active: see
+    #: `detect_cancel_overdue` (#627).
+    CANCEL_OVERDUE = "cancel_overdue"
 
 
 @dataclass(frozen=True)
@@ -183,6 +196,7 @@ class Finding:
             FindingKind.OBSOLETE_GENERATION,
             FindingKind.STUCK_NO_PROGRESS,
             FindingKind.LEFT_RUNNING,
+            FindingKind.CANCEL_OVERDUE,
         ) or (self.execution is not None and self.execution.is_active)
 
 
@@ -1210,6 +1224,106 @@ def detect_left_running(
     return findings
 
 
+def _cancel_reference(task: TaskView) -> datetime | None:
+    """When the task's cancel was requested, or the latest moment it can have been.
+
+    `cancel_requested_at` is written by the API's first cancel. A task cancelled
+    before that field existed has only `updated_at`, which the cancel itself
+    set and later writes only move forward -- so it is never EARLIER than the
+    cancel, and measuring from it can only wait longer, never kill early.
+    """
+    return task.cancel_requested_at or task.updated_at
+
+
+def detect_cancel_overdue(
+    snapshot: ControlSnapshot,
+    executions_by_attempt: dict[str, ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Cancelled tasks whose current execution is still running past the bound (#627).
+
+    WHY A RULE IS NEEDED AT ALL. A cancelled task with a live worker keeps its
+    lease heartbeating -- the beat runs on its own thread and is deliberately
+    not stopped by the cancel, so the cancellation checkpoint has a live lease
+    under it -- and so no absence rule ever fires on it. The worker acts on the
+    flag only from its control poll, and a worker blocked anywhere else never
+    does. The API's direct stop (`/stop-execution`) is one attempt, acked
+    whatever its outcome. Before this rule, the 2026-10-04 cancels ran 12.8 h
+    and ended only when a generation mismatch was noticed.
+
+    Only the precise case, so no other rule is second-guessed: a task holding
+    capacity with `cancel_requested`, on its CURRENT generation and CURRENT
+    unreleased lease, whose attempt's execution is in the listing and active,
+    with the cancel older than `cancel_enforce_after_seconds`. An execution of
+    an older generation is the obsolete-generation rule's; a silent lease is
+    `detect_stale_leases`'; an execution nobody can see is held, as ever.
+
+    The repair is the ordinary one (`Reconciler._repair`): terminate first,
+    and only on a confirmed kill fence, release through the frozen
+    `release_lease_in_transaction` and write CANCELLED, all in one
+    transaction, so no slot is returned while the execution may still run
+    and a worker that outlives the kill exits at its next fence check
+    without touching the lease (invariants 1-3 and 5).
+    """
+    now = now or utcnow()
+    bound = config.cancel_enforce_after_seconds
+    findings: list[Finding] = []
+    for attempt_id, execution in executions_by_attempt.items():
+        if not execution.is_active or execution.claim_refused or not execution.task_id:
+            continue
+        task = snapshot.tasks.get(execution.task_id)
+        if task is None or not task.cancel_requested or not task.holds_capacity:
+            continue
+        lease = next(
+            (
+                candidate
+                for candidate in snapshot.leases.values()
+                if candidate.attempt_id == attempt_id and not candidate.is_released
+            ),
+            None,
+        )
+        if lease is None or lease.task_id != task.task_id:
+            continue
+        if lease.generation != task.generation:
+            continue
+        if execution.generation is not None and execution.generation != lease.generation:
+            continue
+        if task.lease_id not in (None, lease.lease_id):
+            continue
+        reference = _cancel_reference(task)
+        if reference is None:
+            continue  # nothing says when; the other rules still apply
+        waited = (now - _as_utc(reference)).total_seconds()
+        if waited < bound:
+            continue  # the worker's own cancel path, cost and all, is still in time
+        findings.append(
+            Finding(
+                kind=FindingKind.CANCEL_OVERDUE,
+                reason=(
+                    f"cancel requested {waited:.0f}s ago and execution {execution.name} "
+                    f"is still active (bound {bound}s)"
+                ),
+                task_id=task.task_id,
+                lease_id=lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=task.tenant_id or execution.tenant_id,
+                generation=lease.generation,
+                execution=execution,
+                detail={
+                    "task_state": task.state.value,
+                    "cancel_requested_at": reference.isoformat(),
+                    "cancel_age_seconds": round(waited, 1),
+                    "measured_from": (
+                        "cancel_requested_at" if task.cancel_requested_at else "updated_at"
+                    ),
+                    "namespace": execution.namespace,
+                },
+            )
+        )
+    return findings
+
+
 @dataclass(frozen=True)
 class CannotStartSubject:
     """A finished execution whose attempt still holds its task's current lease."""
@@ -1823,6 +1937,17 @@ def detect_all(
             and (f.lease_id in left or (f.attempt_id is not None and f.attempt_id in deferred))
         )
     ]
+    # The cancel bound only ever adds, like the stuck rule below, and comes
+    # first: a cancelled attempt is stopped and CANCELLED, never merely
+    # fenced as stuck. A lease another rule already terminates is that
+    # rule's -- its repair ends a cancelled task CANCELLED too -- and an
+    # execution the orphan rule deferred is a later judgement's.
+    covered = {f.lease_id for f in findings if f.lease_id}
+    findings.extend(
+        f
+        for f in detect_cancel_overdue(snapshot, by_attempt, config, now)
+        if f.lease_id not in covered and f.attempt_id not in deferred
+    )
     # The stuck rule only ever adds. A lease another rule already acts on --
     # a dead worker, a superseded generation -- is that rule's, and repairing
     # it twice would count one termination twice in the pass report.

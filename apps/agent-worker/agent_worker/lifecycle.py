@@ -252,6 +252,7 @@ from .runners.cliagent import (
     RESUME_REASON_ENV,
     RESUME_RELOADED,
     RESUME_SESSION_ENV,
+    SESSION_FILE_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
     carries_session_totals,
@@ -1038,12 +1039,17 @@ class Worker:
                     # prompt threw away everything the agent had done -- 26
                     # restarts and ~169 agent-minutes in the 2026-10-05
                     # history. On a held account the runner's channel named
-                    # the session (`_move_account_after` read it above), and
-                    # the restart continues it with `--resume`, exactly as an
-                    # account move does. A run that named no session, or a
-                    # runner that cannot resume (the channel exists only for
-                    # one that can), restarts from the prompt as before.
-                    resumed = self._account is not None and self._session_id is not None
+                    # the session (`_move_account_after` read it above); on
+                    # the tenant's own credential -- and codex, which never
+                    # holds an account, is always there -- the runner's
+                    # session file did (`_session_channel_env`). Either way
+                    # the restart continues it with the CLI's resume flag,
+                    # exactly as an account move does. A run that named no
+                    # session, or a runner that cannot resume (neither file
+                    # exists for one), restarts from the prompt as before.
+                    if self._account is None:
+                        self._note_session(self._read_session_file())
+                    resumed = self._session_id is not None
                     if resumed:
                         self._resume_session = self._session_id
                         self._resume_reason = RESUME_RELOADED
@@ -1283,8 +1289,21 @@ class Worker:
         if isinstance(base, str):
             skipped(base)
             return None
-        # The base index: the staged-input path a workflow input takes -- the
-        # successful attempt's manifest, a key under this tenant's prefix.
+        # The base index: its copy under repos/ first (lane IX3), which no
+        # lifecycle rule expires; then the staged-input path a workflow input
+        # takes -- the successful attempt's manifest, a key under this
+        # tenant's prefix -- for a version promoted before the copy existed.
+        # Either is checked against the digest promotion recorded.
+        destination = ws.work / indexrun_mod.BASE_INDEX_FILE
+        try:
+            kept = self.store.download_bytes(where.index_key(base_sha))
+        except Exception:
+            kept = None
+        if (kept is not None and len(kept) <= indexrun_mod.MAX_BASE_INDEX_BYTES
+                and indexrun_mod.content_digest(kept) == base.digest):
+            destination.write_bytes(kept)
+            return self._index_read_base_graph(program, env, where, base, base_sha, started,
+                                               skipped, source="its copy under repos/")
         try:
             upstream = inputs_mod.fetch_upstream_task(
                 self.db, upstream_task_id=base.task_id, tenant_id=cfg.tenant_id,
@@ -1298,7 +1317,6 @@ class Worker:
                 skipped(f"the base index is {reference.size_bytes} bytes, over the "
                         f"{indexrun_mod.MAX_BASE_INDEX_BYTES} an index may be")
                 return None
-            destination = ws.work / indexrun_mod.BASE_INDEX_FILE
             self.store.download_file(reference.key, destination)
             data = destination.read_bytes()
         except InputUnavailable as exc:
@@ -1311,6 +1329,17 @@ class Worker:
             skipped("the base index no longer matches the digest recorded when it was "
                     "promoted, so it is not built on")
             return None
+        return self._index_read_base_graph(program, env, where, base, base_sha, started, skipped,
+                                           source="the index task's artifact")
+
+    def _index_read_base_graph(
+        self, program: str, env: dict[str, str], where: indexrun_mod.Target,
+        base: indexrun_mod.BaseVersion, base_sha: str, started: float,
+        skipped: Callable[[str], None], *, source: str,
+    ) -> str | None | Outcome:
+        """`swarm-repo-graph read` of the base, once its index is staged from `source`."""
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
         ran = self._run_index_phase(
             "stage_base",
             indexrun_mod.graph_read_argv(
@@ -1326,7 +1355,7 @@ class Worker:
             skipped(f"the base graph was not read ({ran.status}: {ran.reason or 'no file'})")
             return None
         ran.seconds = round(time.monotonic() - started, 3)
-        ran.reason = f"base {base_sha[:12]} staged"
+        ran.reason = f"base {base_sha[:12]} staged, its index from {source}"
         self._note_index_phase(ran)
         return base_sha
 
@@ -1381,11 +1410,24 @@ class Worker:
             return None
         assert not isinstance(where, str) and program is not None
         self.phases.enter("index_graph_write")
+        # RETENTION OF repos/ (§2.3, lane IX3): the commits whose versions
+        # swarm-api still holds, so the writer's sweep retires every other
+        # commit's manifest and index copy. Unread, nothing is retired.
+        try:
+            keep = indexrun_mod.kept_commits(
+                self.db, tenant_id=cfg.tenant_id, where=where, own=self._index_commit(),
+                call_options=self.control.call_options("tenant"),
+            )
+        except Exception as exc:
+            keep = f"the kept versions could not be read ({type(exc).__name__})"
+        if isinstance(keep, str):
+            self.log.info("index retention skipped; the sweep retires nothing", reason=keep)
         ran = self._run_index_phase(
             "graph_write",
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
                 bucket=cfg.artifact_bucket, base_sha=self._index_base,
+                keep=None if isinstance(keep, str) else keep,
             ),
             cwd=ws.work,
             env=env,
@@ -1395,6 +1437,48 @@ class Worker:
             return ran
         self._note_index_phase(ran)
         return None
+
+    def _index_commit(self) -> str | None:
+        """The commit an index run indexed: the SIGNED spec's `repository_ref`
+        (`swarm_api.repoindex.indexer_task` sets it to the sha), never metadata."""
+        ref = (self._task or {}).get("repository_ref") or self.cfg.repository_ref
+        return ref if isinstance(ref, str) and indexrun_mod.is_commit_sha(ref) else None
+
+    def _index_keep_copy(self, artifacts: list[dict[str, Any]]) -> None:
+        """Copy the uploaded repo-index.json to its own home under repos/ (§2, lane IX3).
+
+        The artifact lives under `tasks/`, which the bucket's lifecycle cold-
+        stores and expires; the index must outlive it, so the worker -- the
+        only identity that may write under the tenant's prefix, swarm-api
+        reads only -- copies it to `indexrun.Target.index_key`. The bytes are
+        read back from the uploaded object, so the copy is the artifact byte
+        for byte, which promotion checks before it records the copy. A copy
+        that fails is logged and the run goes on: promotion then records the
+        artifact alone, as before.
+        """
+        cfg = self.cfg
+        if not indexrun_mod.is_index_run(cfg.runner_profile):
+            return
+        if not any(entry.get("name") == indexrun_mod.INDEX_FILE for entry in artifacts):
+            return
+        where = indexrun_mod.target(
+            cfg.tenant_id, (self._task or {}).get("repository_url") or cfg.repository_url
+        )
+        commit = self._index_commit()
+        if isinstance(where, str) or commit is None:
+            self.log.warning(
+                "the index was not copied under repos/",
+                reason=where if isinstance(where, str) else "the task names no commit sha",
+            )
+            return
+        key = where.index_key(commit)
+        try:
+            data = self.store.download_bytes(f"{cfg.artifact_prefix}/{indexrun_mod.INDEX_FILE}")
+            self.store.upload_bytes(key, data, content_type="application/json")
+        except Exception as exc:
+            self.log.warning("the index was not copied under repos/", error=type(exc).__name__)
+            return
+        self.log.info("index copied under repos/", key=key, bytes=len(data))
 
     def _run_index_phase(
         self, name: str, argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
@@ -1630,6 +1714,8 @@ class Worker:
         """End the task the way the action's outcome says (merge-step.md §6, §6a)."""
         if outcome.credential_missing is not None:
             return self._park_credential_missing(outcome.credential_missing)
+        if outcome.ci_wait is not None:
+            return self._park_ci_pending(action, outcome.ci_wait)
         with self._metrics_after_the_record():
             return self._record_worker_action_end(action, outcome)
 
@@ -1671,6 +1757,32 @@ class Worker:
             self.log.error("worker action ended", action=action.value, code=code,
                            end_cause=outcome.end_cause.value if outcome.end_cause else None)
         return Outcome(exit_code=outcome.exit_code, state=outcome.state)
+
+    def _park_ci_pending(
+        self, action: WorkerAction, wait: dict[str, Any]
+    ) -> Outcome:
+        """The merge's CI wait: park CI_PENDING, release, exit 75 (MS2).
+
+        docs/merge-step.md "Revised 2026-10-06" §1: a wait is a park, not a
+        retry. The fenced park, its refund and its fallback instant are one
+        transaction (`ControlPlane.park_ci_pending`); a superseded attempt
+        raises `FencedWriteRefused` there, which `run` stands down on, with
+        nothing written and the lease untouched (invariant 5). No checkpoint:
+        a worker action keeps no workspace.
+        """
+        # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
+        with self._metrics_after_the_record():
+            refunded = self.control.park_ci_pending(
+                code=str(wait.get("code") or "checks_pending"),
+                head=str(wait.get("head") or ""),
+                pull_request=int(wait.get("pull_request") or 0),
+                pending=[str(name) for name in wait.get("pending") or []],
+                max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
+                fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
+            )
+        self.log.info("worker action parked until CI settles", action=action.value,
+                      code=wait.get("code"), attempt_refunded=refunded)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _await_children(self, result: ChildResult) -> Outcome | None:
         """Park on CHILDREN_INCOMPLETE when this parent's children still run.
@@ -2241,6 +2353,9 @@ class Worker:
         # place that covers all three for every start.
         for stale in (ws.result_path, ws.quota_path, ws.credential_path):
             stale.unlink(missing_ok=True)
+        # The session file is in `private/`, not `work/`, but the rule is the
+        # same: what it holds before this start was the last start's.
+        self._session_file_path().unlink(missing_ok=True)
         self._spend_pending = True
         # The session this runner reports for: its own, or an earlier
         # runner's it continues with `--resume` (`_account_channel_env`).
@@ -5577,6 +5692,9 @@ class Worker:
                     logger=self.log,
                 )
                 base.update(resolved.env)
+                # Off the pool, a CLI that can resume still names its session
+                # for the credential reload (#626).
+                base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). A path, never a credential: the attempt key stays here.
@@ -5766,6 +5884,40 @@ class Worker:
             env[RESUME_SESSION_ENV] = self._resume_session
             env[RESUME_REASON_ENV] = self._resume_reason or RESUME_MOVED
         return env
+
+    def _session_file_path(self) -> Path:
+        """Where a runner on no account writes its session (#626), in `private/`."""
+        assert self.ws is not None
+        return self.ws.private / "session.json"
+
+    def _session_channel_env(self) -> dict[str, str]:
+        """What a runner on the tenant's own credential is told about its session.
+
+        Only for a CLI that can resume (`CliAgentSpec.resume_flag`): where to
+        write the session it ran, and -- once a credential reload set one --
+        the session to continue. An attempt on an account has the channel
+        (`_account_channel_env`) instead, and every other profile nothing.
+        """
+        spec = cli_agent_spec(self.cfg.runner_profile)
+        if self._account is not None or spec is None or not spec.resume_flag:
+            return {}
+        env = {SESSION_FILE_ENV: str(self._session_file_path())}
+        if self._resume_session:
+            env[RESUME_SESSION_ENV] = self._resume_session
+            env[RESUME_REASON_ENV] = self._resume_reason or RESUME_RELOADED
+        return env
+
+    def _read_session_file(self) -> str | None:
+        """The session the last runner on no account named, or None. Consumed."""
+        path = self._session_file_path()
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        session = data.get("session_id") if isinstance(data, dict) else None
+        return session if isinstance(session, str) and session else None
 
     def _read_account_channel(self) -> dict[str, Any]:
         stream, _move = self._account_channel_paths()
@@ -9372,6 +9524,9 @@ class Worker:
         # above decides which files are taken, not the order a reader sees
         # them in, nor which of them the listing route's first page holds.
         artifacts.sort(key=lambda entry: entry["name"].split("/"))
+        # An index run's repo-index.json also goes to its home under repos/
+        # (lane IX3), before `finish` makes the task promotable.
+        self._index_keep_copy(artifacts)
 
         # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
         # (#184, owner decision of 2026-09-26), after the artifacts folder so a
