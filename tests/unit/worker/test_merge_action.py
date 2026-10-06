@@ -33,6 +33,7 @@ from swarm_common.states import EventType, ParkReason, TaskState
 
 from conftest import seed_attempt
 
+import merge_world
 from merge_world import (
     API, CHECK, MERGED, NAME, NUMBER, OPENER, OTHER, OWNER, PINNED, PR, TASK, TITLE,
     MergeWorld,
@@ -168,8 +169,8 @@ REFUSALS: list[tuple[str, Callable[[MergeWorld], None], str, str, bool]] = [
      "verdict_not_merge", "NOT_YET", False),
     ("verdict_not_staged", _set("verdict", None), "verdict_unreadable", "verdict.json", False),
     ("unprotected_branch_with_a_red_check", _unprotected_and_red, "checks_failed", "unit", False),
-    ("not_mergeable", lambda w: w.pr.update(mergeable=False), "not_mergeable",
-     "does not merge cleanly", False),
+    ("merge_conflict", lambda w: w.pr.update(mergeable=False, mergeable_state="dirty"),
+     "merge_conflict", "does not merge cleanly", False),
     ("token_lacks_rights", lambda w: w.repository.update(permissions={"push": False}),
      "token_lacks_rights", "cannot write", False),
     ("token_cannot_read", lambda w: w.github.route("GET", API, (404, {}, {"message": "Not Found"})),
@@ -179,7 +180,11 @@ REFUSALS: list[tuple[str, Callable[[MergeWorld], None], str, str, bool]] = [
     ("pull_request_from_another_branch", lambda w: w.pr["head"].update(ref="swarm/task_other"),
      "pull_request_not_this_workflows", f"swarm/{OPENER}", False),
     ("pull_request_from_a_fork", lambda w: w.pr["head"].update(repo={"full_name": "mallory/shop"}),
-     "pull_request_not_this_workflows", f"swarm/{OPENER}", False),
+     "from_fork", "mallory/shop", False),
+    ("base_not_the_registered_default", lambda w: w.target.update(base="develop"),
+     "base_not_default", "develop", False),
+    ("base_not_githubs_default", lambda w: w.repository.update(default_branch="trunk"),
+     "base_not_default", "trunk", False),
     ("draft", lambda w: w.pr.update(draft=True), "draft", "draft", False),
     ("placeholder_title", lambda w: w.pr.update(title="[swarm] task_abc"),
      "title_placeholder", "placeholder", False),
@@ -250,12 +255,34 @@ def test_a_409_from_the_merge_call_is_head_moved_and_is_not_resent(tmp_path):
     assert world.closed_issues() == []
 
 
-def test_a_405_from_the_merge_call_is_not_mergeable_with_githubs_reason(tmp_path):
+@pytest.mark.parametrize(("status", "says"), [
+    (405, "Required status check is expected"),
+    (405, "At least 1 approving review is required by reviewers with write access."),
+    (422, "Repository rule violations found"),
+    # Mergeability was read true before the call, so GitHub's generic refusal
+    # is protection's, carried in its own words.
+    (405, "Pull Request is not mergeable"),
+])
+def test_a_protection_refusal_from_the_merge_call_is_protection_refused_with_githubs_reason(
+    tmp_path, status, says
+):
+    """MS3 splits `protection_refused` out of `not_mergeable`: branch
+    protection had the final word, and its own words are the reason."""
     world = MergeWorld(tmp_path)
-    world.merge_answer = (405, {}, {"message": "Required status check is expected"})
+    world.merge_answer = (status, {}, {"message": says})
     outcome = merge.run_merge(world.context())
-    assert outcome.summary["refusal"]["code"] == "not_mergeable"
-    assert "Required status check is expected" in outcome.summary["refusal"]["message"]
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "protection_refused"
+    assert says in outcome.summary["refusal"]["message"]
+    assert len(world.merge_calls()) == 1
+    assert world.update_calls() == []
+
+
+def test_a_405_conflict_from_the_merge_call_is_merge_conflict(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.merge_answer = (405, {}, {"message": "Merge conflict between base and head"})
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "merge_conflict"
     assert len(world.merge_calls()) == 1
 
 
@@ -549,3 +576,324 @@ def test_a_stale_worker_neither_parks_nor_refunds(db, worker_factory, monkeypatc
     assert task["attempt_count"] == 1
     assert control_mod.MERGE_WAIT_METADATA_KEY not in task["metadata"]
     assert db.doc("leases/lease_1")["released_at"] is None, "a stale worker touched the lease"
+
+
+# ---------------------------------------------------------------------------
+# Lane MS3 (docs/merge-step.md "Revised 2026-10-06" §1): a branch that is
+# behind is updated by GitHub and re-parked at the new head; the head is
+# accepted only as a first-parent chain of GitHub's own base merges onto the
+# head the workflow pushed; the refusals split out of today's codes; and the
+# close script's page rule.
+# ---------------------------------------------------------------------------
+
+
+def _chain(world: MergeWorld, updates: int) -> str:
+    """The head after `updates` GitHub base merges onto PINNED."""
+    head = PINNED
+    for _ in range(updates):
+        head = world.github_merge(head)
+    return head
+
+
+def test_a_behind_branch_is_updated_at_the_pinned_head_and_re_parked_at_the_new_head(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.pr["mergeable_state"] = "behind"
+    outcome = merge.run_merge(world.context())
+
+    (update,) = world.update_calls()
+    assert update.body == {"expected_head_sha": PINNED}
+    new_head = world.pr["head"]["sha"]
+    assert new_head != PINNED
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.exit_code == ExitCode.PARKED
+    assert outcome.end_cause is None and outcome.retryable is False
+    assert outcome.ci_wait == {"code": "branch_updated", "head": new_head,
+                               "pull_request": NUMBER, "pending": []}
+    assert outcome.summary["branch_updated"] == {"from": PINNED, "to": new_head, "updates": 1}
+    assert world.merge_calls() == [], "a behind branch was merged before its checks re-ran"
+    assert world.closed_issues() == []
+    # The fencing recheck ran between the reads and the update.
+    order = [(s.method, s.path) for s in world.github.seen]
+    assert order.index(("PUT", f"{PR}/update-branch")) == len(order) - 2, order
+
+
+def test_the_wake_after_an_update_merges_at_the_updated_head(tmp_path):
+    """The next attempt walks the live head back to the pushed head, finds
+    one GitHub base merge, and merges pinned to the live head."""
+    world = MergeWorld(tmp_path)
+    head = _chain(world, 1)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    (call,) = world.merge_calls()
+    assert call.body["sha"] == head
+    assert outcome.summary["head"] == head and outcome.summary["updates"] == 1
+    assert world.update_calls() == []
+
+
+def test_three_updates_still_merge(tmp_path):
+    """The control for `behind_too_often`: MERGE_MAX_BRANCH_UPDATES updates
+    are accepted by the walk."""
+    world = MergeWorld(tmp_path)
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES)
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["updates"] == merge.MERGE_MAX_BRANCH_UPDATES
+
+
+def test_a_fourth_update_is_behind_too_often_and_is_not_made(tmp_path):
+    world = MergeWorld(tmp_path)
+    assert merge.MERGE_MAX_BRANCH_UPDATES == 3
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES)
+    world.pr["mergeable_state"] = "behind"
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.FAILED
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "behind_too_often"
+    assert "3" in outcome.summary["refusal"]["message"]
+    assert world.update_calls() == [] and world.merge_calls() == []
+
+
+def test_an_update_422_for_a_conflict_is_merge_conflict(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.pr["mergeable_state"] = "behind"
+    world.update_answer = (422, {}, {"message": "merge conflict between base and head"})
+    outcome = merge.run_merge(world.context())
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "merge_conflict"
+    assert "merge conflict" in outcome.summary["refusal"]["message"]
+    assert len(world.update_calls()) == 1 and world.merge_calls() == []
+
+
+def test_any_other_update_422_is_head_moved(tmp_path):
+    """GitHub refused `expected_head_sha`: someone pushed in between."""
+    world = MergeWorld(tmp_path)
+    world.pr["mergeable_state"] = "behind"
+    world.update_answer = (422, {}, {"message": "expected head sha didn't match current head ref."})
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "head_moved"
+    assert world.merge_calls() == []
+
+
+def test_a_405_out_of_date_from_the_merge_call_takes_the_update_row(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.merge_answer = (405, {}, {"message": "Head branch is out of date"})
+    outcome = merge.run_merge(world.context())
+    assert len(world.merge_calls()) == 1
+    (update,) = world.update_calls()
+    assert update.body == {"expected_head_sha": PINNED}
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["head"] == world.pr["head"]["sha"] != PINNED
+
+
+def test_a_stale_generation_makes_no_update_call(tmp_path):
+    """Invariant 5: superseded while it read, the worker exits before the write."""
+    from agent_worker.errors import FencedError
+
+    world = MergeWorld(tmp_path)
+    world.pr["mergeable_state"] = "behind"
+    world.stale_after = 1
+    with pytest.raises(FencedError):
+        merge.run_merge(world.context())
+    assert world.rechecks == 2
+    assert world.update_calls() == [] and world.merge_calls() == []
+    # The control: the same world, still current, does make the update.
+    current = MergeWorld(tmp_path / "current")
+    current.pr["mergeable_state"] = "behind"
+    merge.run_merge(current.context())
+    assert current.rechecks == 2 and len(current.update_calls()) == 1
+
+
+def _not_githubs(world: MergeWorld, how: str) -> str:
+    if how == "a_plain_commit_on_the_pushed_head":
+        world.commit(OTHER, [PINNED])
+        return OTHER
+    if how == "a_merge_of_a_commit_not_on_the_base":
+        world.commit(OTHER, [PINNED, "f" * 40])
+        world.on_base("f" * 40, status="diverged")
+        return OTHER
+    if how == "a_merge_committed_by_someone_else":
+        return world.github_merge(PINNED, committer={"name": "mallory", "email": "m@example.com"})
+    if how == "an_unverified_merge":
+        return world.github_merge(PINNED, verified=False)
+    if how == "a_merge_onto_another_head":
+        return world.github_merge("a" * 40)
+    if how == "a_merge_with_the_parents_swapped":
+        world.commit(OTHER, ["b" * 40, PINNED])
+        world.on_base(PINNED, status="diverged")
+        return OTHER
+    if how == "more_merges_than_the_bound":
+        return _chain(world, merge.MERGE_MAX_BRANCH_UPDATES + 1)
+    raise AssertionError(how)
+
+
+@pytest.mark.parametrize("how", [
+    "a_plain_commit_on_the_pushed_head", "a_merge_of_a_commit_not_on_the_base",
+    "a_merge_committed_by_someone_else", "an_unverified_merge", "a_merge_onto_another_head",
+    "a_merge_with_the_parents_swapped", "more_merges_than_the_bound",
+])
+def test_a_head_that_is_not_a_github_base_merge_of_the_pushed_head_is_head_moved(tmp_path, how):
+    world = MergeWorld(tmp_path)
+    world.pr["head"]["sha"] = _not_githubs(world, how)
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.FAILED, (how, outcome.message)
+    assert outcome.summary["refusal"]["code"] == "head_moved", (how, outcome.summary)
+    assert world.merge_calls() == [] and world.update_calls() == []
+
+
+def test_a_pull_request_merged_at_an_updated_head_is_already_merged(tmp_path):
+    """Another merger won after this step's update: the merge stands."""
+    world = MergeWorld(tmp_path)
+    head = _chain(world, 1)
+    world.pr.update(merged=True, state="closed", merge_commit_sha=MERGED)
+    world.pr["head"]["sha"] = head
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["already_merged"] is True
+    assert world.merge_calls() == []
+
+
+def _waited_since(world: MergeWorld, seconds: float) -> None:
+    world.docs[merge_world.TASK]["metadata"] = {control_mod.MERGE_WAIT_METADATA_KEY: {
+        "first_parked_at": utcnow() - timedelta(seconds=seconds), "wakes": 3, "updates": 0}}
+
+
+def test_checks_still_pending_past_merge_ci_max_seconds_are_checks_timeout(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.runs[0].update(status="in_progress", conclusion=None)
+    _waited_since(world, merge.MERGE_CI_MAX_SECONDS + 60)
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.ci_wait is None
+    assert outcome.summary["refusal"]["code"] == "checks_timeout"
+    assert CHECK in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+def test_checks_pending_inside_merge_ci_max_seconds_still_park(tmp_path):
+    """The control for `checks_timeout`."""
+    assert merge.MERGE_CI_MAX_SECONDS == 6 * 3600
+    world = MergeWorld(tmp_path)
+    world.runs[0].update(status="in_progress", conclusion=None)
+    _waited_since(world, merge.MERGE_CI_MAX_SECONDS - 600)
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == "checks_pending"
+
+
+def test_each_split_refusal_code_is_a_new_code_not_the_old_one(tmp_path):
+    """`from_fork` and `merge_conflict` were folded into
+    `pull_request_not_this_workflows` and `not_mergeable`; nothing ends on
+    `not_mergeable` any more."""
+    import inspect
+
+    source = inspect.getsource(merge)
+    assert '"not_mergeable"' not in source
+    for code in ("from_fork", "base_not_default", "protection_refused", "merge_conflict",
+                 "checks_timeout", "behind_too_often"):
+        assert f'"{code}"' in source, code
+
+
+# -- the close script's page rule, and parity with it --
+
+
+def _references(numbers_and_states, repository=f"{OWNER}/{NAME}"):
+    return [{"number": n, "state": state, "repository": {"nameWithOwner": repository}}
+            for n, state in numbers_and_states]
+
+
+def test_101_closing_references_close_100_and_record_issues_beyond_page(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.closing = _references((n, "OPEN") for n in range(1, 102))
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert merge.CLOSING_PAGE == 100
+    assert world.closed_issues() == list(range(1, 101))
+    assert outcome.summary["issues_closed"] == list(range(1, 101))
+    assert outcome.summary["issues_beyond_page"] == {"total": 101, "listed": 100}
+
+
+def test_a_page_or_less_records_nothing_beyond_it(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.closing = _references((n, "OPEN") for n in range(1, 101))
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["issues_closed"] == list(range(1, 101))
+    assert "issues_beyond_page" not in outcome.summary
+
+
+def _load_script_test():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "test_close_merged_issues.py"
+    spec = importlib.util.spec_from_file_location("_close_merged_issues_cases", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+#: (case, the closing references GitHub lists, how many it counts)
+PARITY = [
+    ("open_closed_and_elsewhere",
+     [(7, "OPEN", None), (9, "CLOSED", None), (11, "OPEN", "someone-else/elsewhere"),
+      (12, "OPEN", f"{OWNER}/{NAME}".upper())], None),
+    ("none", [], None),
+    ("beyond_a_page", [(n, "OPEN", None) for n in range(1, 101)], 101),
+]
+
+
+@pytest.mark.parametrize(("case", "nodes", "total"), PARITY, ids=[p[0] for p in PARITY])
+def test_the_step_closes_what_close_merged_issues_sh_closes(tmp_path, case, nodes, total):
+    """docs/merge-step.md §1: `_close_issues` keeps the script's rules. Both
+    read the same references; both close, skip and leave alone the same
+    issues, and both refuse to close quietly past one page."""
+    import os
+    import re as re_mod
+    import shutil
+    import stat
+    import subprocess
+
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required to run the script")
+    script_cases = _load_script_test()
+    graph = [script_cases._node(n, state, where or f"{OWNER}/{NAME}") for n, state, where in nodes]
+    answer = script_cases._answer(graph, total=total)
+
+    # The script, against the fake gh its own tests use.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(script_cases.FAKE_GH)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    files = {name: tmp_path / name for name in ("graphql.json", "gh.log", "comments.txt",
+                                                "summary.md")}
+    for path in files.values():
+        path.write_text("")
+    files["graphql.json"].write_text(json.dumps(answer))
+    proc = subprocess.run(
+        ["bash", str(script_cases.SCRIPT), "--pr", str(NUMBER)],
+        env={"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
+             "GH_REPO": f"{OWNER}/{NAME}", "GITHUB_STEP_SUMMARY": str(files["summary.md"]),
+             "NO_COLOR": "1", "FAKE_GH_LOG": str(files["gh.log"]),
+             "FAKE_GH_GRAPHQL": str(files["graphql.json"]), "FAKE_GH_GRAPHQL_EXIT": "0",
+             "FAKE_GH_COMMENTS": str(files["comments.txt"]), "FAKE_GH_REFUSE": ""},
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    script_closed = [int(n) for n in re_mod.findall(r"^issue close (\d+)",
+                                                    files["gh.log"].read_text(), re_mod.MULTILINE)]
+
+    # The step, over the same references.
+    world = MergeWorld(tmp_path / "step")
+    world.closing = [dict(node) for node in graph] + (
+        _references((n, "OPEN") for n in range(len(graph) + 1, (total or 0) + 1)))
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+
+    assert world.closed_issues() == script_closed, (case, proc.stderr)
+    assert outcome.summary["issues_closed"] == script_closed
+    already = [n for n, state, where in nodes if state != "OPEN" and where is None]
+    assert outcome.summary.get("issues_already_closed", []) == already
+    # The script fails the run past a page; the step records it, never silently.
+    assert (proc.returncode != 0) is ("issues_beyond_page" in outcome.summary), (case, proc.stderr)
+    assert proc.returncode == (1 if total else 0), proc.stderr
