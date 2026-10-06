@@ -431,8 +431,21 @@ class FakeGcloud:
         assert argv[:2] == ["gcloud", "storage"], argv
         verb = argv[2]
         if verb == "cp":
-            source, target = argv[-2], argv[-1]
-            assert source == "-"
+            *sources, target = [a for a in argv[3:] if not a.startswith("--")]
+            if sources != ["-"]:
+                # A batch (lane IX1): local files into a bucket directory by
+                # their names, or bucket objects into a local directory.
+                for source in sources:
+                    if target.startswith("gs://"):
+                        url = target.rstrip("/") + "/" + Path(source).name
+                        if "--no-clobber" in argv and url in self.objects:
+                            continue
+                        self.objects[url] = Path(source).read_bytes()
+                        self.created[url] = "2026-10-05T09:00:00Z"
+                    else:
+                        (Path(target) / source.rsplit("/", 1)[-1]).write_bytes(
+                            self.objects[source])
+                return b""
             if "--no-clobber" in argv and target in self.objects:
                 return b""
             self.objects[target] = data or b""
@@ -458,9 +471,10 @@ def test_the_gcs_store_writes_blobs_without_clobbering_and_the_manifest_last(sha
     fake = FakeGcloud()
     store = shards.GcsStore("swarm-artifacts-test", run=fake)
     report = shards.write_graph(graph_doc(), store, tenant_id=TENANT, repo_id=REPO_ID)
-    uploads = [c for c in fake.calls if c[2] == "cp"]
+    uploads = [c for c in fake.calls if c[2] == "cp" and c[-1].startswith("gs://")]
     assert uploads[-1][-1] == f"gs://swarm-artifacts-test/{report['manifest']}"
-    assert all("--no-clobber" in c for c in uploads[:-1])
+    # The blobs in one batch (lane IX1), never clobbering; the manifest last.
+    assert len(uploads) == 2 and "--no-clobber" in uploads[0]
     assert f"gs://swarm-artifacts-test/{report['manifest']}" in fake.objects
     for call in fake.calls:
         assert all(part.startswith(f"gs://swarm-artifacts-test/tenants/{TENANT}/")
