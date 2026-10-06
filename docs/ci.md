@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
+| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
@@ -1394,7 +1394,9 @@ native auto-merge**, and GitHub performs the squash merge once the base
 branch's required checks pass at the pull request's head. It used to take a
 merge watcher running in an operator's session, so a green, ready pull request
 waited for somebody's laptop. [`auto-merge.yml`](../.github/workflows/auto-merge.yml)
-is the whole mechanism; it waits for nothing and polls nothing.
+is the whole mechanism; it waits for nothing and polls nothing. A label that
+lands while checks still run is looked at again when they finish
+([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)).
 
 It refuses, with a comment on the pull request saying which and why:
 
@@ -1413,16 +1415,80 @@ It refuses, with a comment on the pull request saying which and why:
   repository does not use, so it counted zero and refused every `ready` label
   (#412, #403). Classic protection still counts, so moving back to it works;
 * **no merge App configured** — see the next paragraph;
-* **a check that already ran on the head commit and is failing or still
-  running** — even one that is not required. The ruleset requires only the
-  checks that run on every pull request, plus `ci-gate`; a path-filtered workflow
-  (`application.yml`, `terraform.yml`) is not required, but when a pull
-  request's changes do trigger it, this still holds the merge on its result.
+* **a check that already ran on the head commit and is failing** — even one
+  that is not required, and even beside checks still running. The ruleset
+  requires only the checks that run on every pull request, plus `ci-gate`; a
+  path-filtered workflow (`application.yml`, `terraform.yml`) is not required,
+  but when a pull request's changes do trigger it, this still holds the merge
+  on its result.
+
+A check **still running** is not a refusal (since 2026-10-06, #697): the
+pull request is queued and waits, as the next section says.
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
 workflow merges it directly with the same token, method and subject. The
 ruleset still decides; the App has no bypass.
+
+### A ready label that lands while checks run is re-evaluated
+
+**Measured 2026-10-06 (observer P13):** #697 got `ready` while its CI was
+running. The gate refused it ("failing or still running") and, evaluating
+only on the label event, never looked again, so the pull request sat
+unmerged after it went green. Every pull request SwarmCloud opens with
+`pr_label: ready`, and every one an operator labels at creation, hit that.
+Owner decision, 2026-10-06: a pull request labelled early is merged once its
+checks are green at head.
+
+So a check still running at the head **waits** instead of refusing. The
+label run comments once ("Queued for auto-merge, waiting for checks still
+running on the head commit: …") and arms nothing: native auto-merge waits
+only for the *required* checks, and the running one may not be required.
+Then:
+
+* the **`requeue` job** (`re-evaluate ready pull requests when a run
+  finishes`) runs on `workflow_run: completed` of every workflow that runs on
+  `pull_request` — `application`, `ci-gate`, `security`, `terraform`; the test
+  reads that list out of the workflow files, so a new one cannot be left
+  out. It lists the open `ready` pull requests whose head is the finished
+  run's head sha (not `workflow_run.pull_requests`, which GitHub leaves empty
+  for a fork) and sends a `workflow_dispatch` of `auto-merge.yml` on main for
+  each, with `pr: <number>`;
+* the **dispatched run is the `enable` job again**: it reads the pull request
+  back from the API (title and head as they are now), does nothing unless it
+  is still open and labelled `ready`, and runs the same gate. Still running:
+  it waits, silently. Every check green: it merges with the App token,
+  exactly as a label on a green pull request does. The last run to finish on
+  the head is the one that merges it.
+
+Why not something simpler. `workflow_run` cannot merge by itself: a merge
+with its GITHUB_TOKEN starts no build and no release (next section), so it
+dispatches, and the dispatched run mints the App token after the gate.
+`check_suite: completed` never fires here: GitHub does not run a workflow on
+`check_suite` for a suite GitHub Actions created, which is every suite in
+this repository. And arming native auto-merge at once, on a running check,
+would merge as soon as the *required* checks pass, past a non-required one
+still running — which is what gate item 5 exists to stop. A `ready` label on
+a pull request with no check run at all yet (opened seconds ago) passes the
+gate and arms native auto-merge, as before; the re-evaluation then finds it
+armed (or already merged) and leaves it.
+
+**A refusal on a re-evaluation** — the title, the base, or a check that
+failed — turns auto-merge off, **removes `ready`** and comments once, so the
+next finishing run does not say it again; fix it and add `ready` again. It
+does not fail the run, which sits on main's head commit. The two refusals
+only the owner can fix (no required checks, no merge App) keep `ready`, which
+is what the operator's merge watcher reads, and say nothing more than the
+label run did; without `vars.MERGE_APP_ID` the `requeue` job does not run at
+all. A refusal on the label itself is unchanged: comment, red run, label left
+on.
+
+Re-evaluations queue in their own concurrency group
+(`auto-merge-requeue-<number>`): a queued run cancels the one queued before
+it in its group, so a burst of finishing runs must not cancel a queued
+`synchronize` run of the `disable` job. An operator can send the same
+dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
+look again; it is a request to look, not a `ready`.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
