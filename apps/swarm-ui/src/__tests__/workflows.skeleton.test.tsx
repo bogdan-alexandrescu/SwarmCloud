@@ -148,7 +148,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(document.querySelectorAll('.skeleton')).toHaveLength(0)
 
     const order = [...page!.children].map((c) => c.className.split(' ')[0])
-    expect(order).toEqual(['wfp-head', 'c-tabs', 'wf-board'])
+    expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
     const actions = within(head).getAllByRole('button')
     expect(actions.map((b) => b.textContent)).toEqual(['Copy link', 'Cancel workflow'])
@@ -162,9 +162,11 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(tabLabels(page!)).toEqual(['Graph', 'Table', 'Timeline'])
     expect(page!.querySelector('.c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Table')
     expect(page!.querySelector('.c-tabs em')).toBeNull()
-    const body = page!.querySelector('.wf-board > .wf-card.is-page')
+    const body = page!.querySelector('.wfp-skel-body')
     expect(body, 'no body card where the board will be').toBeTruthy()
     expect(body!.getAttribute('aria-hidden')).toBe('true')
+    // Not a `.wf-card`: everything that finds the loaded card keys on that.
+    expect(document.querySelectorAll('.wf-card')).toHaveLength(0)
     expect(body!.querySelectorAll('.wfl-skel').length).toBeGreaterThan(0)
 
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })

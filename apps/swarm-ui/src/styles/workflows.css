@@ -125,6 +125,15 @@
   background: var(--surface);
 }
 
+/* THE BODY CARD WHILE THE PAGE READS (#113): the loaded card's frame, so the
+   board lands inside the edges already drawn. Its own class, not `.wf-card`,
+   which everything that finds the loaded card keys on. */
+.wfp > .wfp-skel-body {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  background: var(--surface);
+}
+
 /* THE PICKED STEP'S CARD UNDER THE GRAPH (workflows.html B). Beside it, the
    card's same-step strip ran past its right edge and the graph lost a third
    of its width; stacked, both have the column. */

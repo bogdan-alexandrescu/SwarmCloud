@@ -408,8 +408,9 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker" onView={onView} />)
     const tabs = await waitFor(() => {
-      // The canonical underline tabs (components.html A): a link per view.
-      const t = document.querySelector<HTMLElement>('nav.c-tabs[aria-label="Views of this workflow"]')
+      // The canonical underline tabs (components.html A): a link per view --
+      // the loaded page's, since its skeleton draws them too, uncounted (#113).
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > nav.c-tabs[aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
