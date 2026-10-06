@@ -182,7 +182,13 @@ WORKDIR /home/swarm
 # the function that needs it -- so this runs with no credentials.
 # PROJECT_ID is supplied only so Settings.from_env() can construct; this
 # proves the module imports and wires up, and builds no Google client.
-RUN PROJECT_ID=build-time-import-check \
+# FIRESTORE_EMULATOR_HOST (2026-10-06): create_app() constructs a firestore.Client,
+# which looks up Application Default Credentials at construction. Cloud Build has
+# them; a pull request's image build on the GitHub runner (#688) does not, and
+# failed on #715. The emulator host makes the client anonymous and connectionless
+# until first use, so this still proves the app imports and wires up. Same fix as
+# swarm-api (#696).
+RUN PROJECT_ID=build-time-import-check FIRESTORE_EMULATOR_HOST=127.0.0.1:9 \
     python -c "from scheduler.main import create_app; create_app(); print('swarm-scheduler ok')"
 
 EXPOSE 8080
