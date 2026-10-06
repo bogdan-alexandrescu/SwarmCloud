@@ -49,6 +49,7 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
+from .cifix import stamp as stamp_ci_fix
 from .continuation import resolve_continuation
 from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
@@ -427,6 +428,10 @@ class SubmissionService:
                 self._store, tenant.tenant_id, spec,
                 allow_integrator=ctx.member_scope != "continuation",
             )
+            # The CI fixer's record (#263): checked, counted against its
+            # per-pull-request cap, and stamped for the post-back, before
+            # anything is built from the workflow's metadata (cifix.py).
+            spec = stamp_ci_fix(self._store, tenant.tenant_id, spec, continuation)
             repository_url = (
                 continuation.repository_url if continuation else spec.repository_url
             )

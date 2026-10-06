@@ -7,8 +7,10 @@
 # task's branch: the worker clones it, the agent fixes exactly that failure,
 # the worker pushes the fix onto it, and the step stops. The push re-runs CI.
 # At most MAX_FIX_ATTEMPTS per pull request (the script says why), each one a
-# comment on the pull request; past that, one comment saying it stopped. See
-# docs/ci.md, "The CI fixer".
+# comment on the pull request; past that, one comment saying it stopped. When
+# the fix step ends, swarm-api comments how it ended, with the tenant's own
+# -git token (apps/swarm-api/swarm_api/cifix.py); nothing here waits for it.
+# See docs/ci.md, "The CI fixer".
 #
 # WHY workflow_run AND NOT A JOB IN application.yml. A pull_request run cannot
 # write to its pull request, its ref (refs/pull/<n>/merge) is refused by the

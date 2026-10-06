@@ -26,6 +26,7 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
 from ..auth import AuthContext
+from ..cifix import postback_tenant as postback_ci_fixes
 from ..codec import (
     lease_to_api,
     pool_attribution,
@@ -812,12 +813,20 @@ def wake_merges(
     """
     report = wake_tenant(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="merge_wake").inc()
+    # The CI fixer's post-back (#263) rides this tick: the same tenant, the
+    # same `-git` token and writer, the same minute, and no second Scheduler
+    # job to keep in step with this one. It comments on a red pull request
+    # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
+    postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
         # Only the parks that could not be read, by id and code. A healthy
         # tick returns an empty list, which is an answer.
         "failures": report.failures,
+        "ci_fix": postback.to_api(),
+        "ci_fix_failures": postback.failures,
     }
 
 
