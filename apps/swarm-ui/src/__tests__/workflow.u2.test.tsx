@@ -384,7 +384,7 @@ describe('Recent (5) shows on the list page, by name (#503)', () => {
 
 async function page(view = 'wf=wf_broker'): Promise<void> {
   render(<Routed initial={view} />)
-  await waitFor(() => expect(document.querySelector('.wfp-head')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
 describe('the workflow page head (#503, workflows.html frame B)', () => {
