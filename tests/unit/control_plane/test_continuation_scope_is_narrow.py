@@ -504,7 +504,9 @@ def test_the_listed_accounts_integrator_fix_is_capped_and_stamped_for_the_post_b
         assert response.status_code == 201, response.text
         fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
         assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["ci_fix"]["postback"] == "pending"
-    third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(3))
+    # Numbered 2 again: only the API's own count of the pull request's fix
+    # workflows can refuse it, not the record's attempt <= max_attempts check.
+    third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(2))
     assert third.status_code == 422, third.text
     assert third.json()["code"] == "invalid_dispatch"
     assert "the cap is 2" in third.json()["message"]
