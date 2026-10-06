@@ -30,6 +30,26 @@ export interface Pool {
   updated_at: string
 }
 
+/** One field of a pool's last admin change: the value before and after (#133). */
+export interface PoolChangeEntry<T> {
+  /** null when the pool did not exist, or carried no value, before the write. */
+  from: T | null
+  to: T
+}
+
+/**
+ * A pool as `GET /v1/admin/pools` serves it: the `/v1/capacity` shape plus
+ * who last changed it through an admin route, when, and what changed (#133).
+ * ADMIN-ONLY: `/v1/capacity` serves pools to every tenant member and never
+ * carries these, because an admin's email is not tenant data. All three are
+ * null for a pool no admin route has changed.
+ */
+export interface AdminPool extends Pool {
+  admin_changed_by: string | null
+  admin_changed_at: string | null
+  admin_change: { hard_limit?: PoolChangeEntry<number>; enabled?: PoolChangeEntry<boolean> } | null
+}
+
 /** `service.capacity()`. */
 export interface Capacity {
   pools: Pool[]

@@ -16,6 +16,7 @@ import type { Capacity, Pool } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadMe: vi.fn(),
 }))
