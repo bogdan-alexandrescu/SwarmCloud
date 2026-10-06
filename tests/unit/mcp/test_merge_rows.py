@@ -53,7 +53,9 @@ REFUSAL_CODES = sorted(set(_worker_codes()) | set(MS3_CODES))
 
 def test_the_worker_source_yields_its_refusal_codes():
     # The control: a regex that matched nothing would make every case below
-    # vacuous. These are codes the worker refuses with on main.
+    # vacuous. These are codes the worker refuses with on main; MS3 split
+    # `not_mergeable` into `protection_refused` and `merge_conflict`, and
+    # test_merge_action.py holds that `not_mergeable` is gone.
     found = _worker_codes()
     for code in ("checks_failed", "head_moved", "merge_conflict", "token_lacks_rights",
                  "merge_unanswered", "credential_unreadable", "upstream_unreadable"):

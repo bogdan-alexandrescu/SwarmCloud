@@ -102,7 +102,7 @@ def wake_client(db, tokens, group_map, objects, github, tenant_tokens, clock) ->
         objects=objects,
         now=clock,
         forge_tokens=tenant_tokens,
-        forge_writer=forgewrite.GitHubWriter(send=github),
+        forge_writer=forgewrite.GitHubWriter(send=github, locate=github.locate, fetch=github.fetch),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -278,7 +278,7 @@ def test_other_states_and_park_reasons_are_not_visited(db, wake_client, github):
 def test_a_tenant_with_no_ci_wait_reads_no_token(db, wake_client, tenant_tokens):
     body = _tick(wake_client).json()
     assert body["report"] == {"visited": 0, "woken": 0, "waiting": 0, "skipped": 0,
-                              "failed": 0, "truncated": False}
+                              "failed": 0, "fixing": 0, "truncated": False}
     assert tenant_tokens.asked == []
 
 
@@ -326,3 +326,274 @@ def test_an_ordinary_member_may_not_tick(db, wake_client):
         "/v1/admin/merges/wake?tenant_id=eng", headers={"Authorization": "Bearer token-alice"}
     )
     assert response.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# 6. the CI-fix hand-off for a workflow that is not an issue run (lane MS7)
+# --------------------------------------------------------------------------
+#
+# docs/merge-step.md "Revised 2026-10-06" §6 MS7. A workflow asks for up to
+# `metadata.merge_fix_rounds` CI-fix rounds. When the tick reads a red
+# required check on a CI_PENDING merge with rounds left, it claims the round
+# in the merge task's `metadata.merge_fix` in a guarded transaction, then
+# submits the continuation the issue-run loop builds
+# (`issueci.ci_fix_continuation`) as the merge task's submitter, while they
+# are still a member. The merge stays parked: no marker. Red with no round
+# left wakes the step, which refuses `checks_failed`.
+
+ROOT = "task_" + "1" * 20
+ROUND_TASK_STATES = ("PARKED", "READY", "RUNNING")
+
+
+def fixable_merge(db, github, *, rounds: int = 1, submitter: str = "alice@saga.xyz",
+                  **wait: Any) -> dict:
+    """A CI_PENDING merge of ROOT's pull request, red at HEAD, asking for `rounds`."""
+    root = seed_task(db, task_id=ROOT, tenant_id="eng", state="SUCCEEDED",
+                     runner_profile="claude-code")
+    root["repository_url"] = REPO_URL
+    root["submitted_by"] = submitter
+    root["metadata"] = {"dispatch": {"strategy": "direct-pr"}}
+    root["result_summary"] = {"git": {"pushed_head": HEAD, "pull_request": {"number": NUMBER}}}
+    doc = parked_merge(db, **wait)
+    doc["submitted_by"] = submitter
+    doc["metadata"]["dispatch"]["merge_target"] = {"pull_request": ROOT}
+    doc["metadata"]["merge_fix_rounds"] = rounds
+    github.open_pull(NUMBER, HEAD, ref=f"swarm/{ROOT}")
+    github.check(HEAD, CHECK, "failure", output={"title": "2 failed",
+                                                 "summary": "test_price_sort failed"})
+    return doc
+
+
+def _fix_workflows(db) -> list[dict]:
+    """Every workflow holding a CI-fix step, whose task continues ROOT."""
+    found = []
+    for key, workflow in db.docs.items():
+        if not key.startswith("workflows/"):
+            continue
+        steps = [s for s in workflow.get("steps") or [] if s.get("step_id") == issueci.CI_FIX_STEP]
+        for step in steps:
+            task = db.docs[f"tasks/{step['task_id']}"]
+            assert task["metadata"]["dispatch"]["continues"] == ROOT
+        if steps:
+            found.append(workflow)
+    return found
+
+
+def _fix_record(db, task_id: str = "task_merge") -> dict:
+    return db.docs[f"tasks/{task_id}"]["metadata"].get(mergewake.MERGE_FIX_METADATA_KEY) or {}
+
+
+def test_red_with_rounds_left_claims_a_round_and_submits_one_continuation(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 1 and body["report"]["woken"] == 0, body
+    assert body["failures"] == []
+    # The merge stays parked, and is not woken: the round is what runs now.
+    task = db.docs["tasks/task_merge"]
+    assert task["state"] == "PARKED" and task["park_reason"] == ParkReason.CI_PENDING.value
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+    (workflow,) = _fix_workflows(db)
+    (step,) = workflow["steps"]
+    assert step["step_id"] == issueci.CI_FIX_STEP
+    fix_task = db.docs[f"tasks/{step['task_id']}"]
+    assert fix_task["submitted_by"] == "alice@saga.xyz"
+    assert fix_task["runner_profile"] == "claude-code"
+    assert fix_task["metadata"]["merge"] == "off", "a fix round never carries its own merge"
+    assert fix_task["metadata"]["dispatch"]["continues"] == ROOT
+    assert fix_task["metadata"]["dispatch"]["strategy"] == "direct-pr"
+    assert fix_task["metadata"]["merge_fix_round"] == {
+        "merge_task": "task_merge", "round": 1, "head_sha": HEAD, "pull_request": NUMBER}
+    prompt = fix_task["input"]["prompt"]
+    assert f"pull request #{NUMBER}" in prompt and "round 1 of at most 2" in prompt
+    assert "test_price_sort failed" in prompt and CHECK in prompt
+
+    (claimed,) = _fix_record(db)["rounds"]
+    assert claimed == {"round": 1, "head": HEAD, "claimed_at": NOW,
+                       "workflow_id": workflow["workflow_id"], "task_id": step["task_id"]}
+
+
+def test_a_round_still_running_is_neither_claimed_again_nor_woken(db, wake_client, github, clock):
+    fixable_merge(db, github, rounds=3)
+    _tick(wake_client)
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["fixing"] == 0 and body["report"]["woken"] == 0, body
+    assert body["report"]["waiting"] == 1
+    assert len(_fix_workflows(db)) == 1
+    assert len(_fix_record(db)["rounds"]) == 1
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+
+def test_two_racing_ticks_claim_once_and_submit_once(db, wake_client, github, monkeypatch):
+    """Both ticks read red with a round left; the inner one claims first, and
+    the outer one's guarded claim is refused, so it submits nothing."""
+    fixable_merge(db, github, rounds=2)
+    claim = mergewake._claim_round
+    raced = {"done": False}
+
+    def racing(*args, **kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            inner = _tick(wake_client).json()
+            assert inner["report"]["fixing"] == 1, inner
+        return claim(*args, **kwargs)
+
+    monkeypatch.setattr(mergewake, "_claim_round", racing)
+
+    outer = _tick(wake_client).json()
+
+    assert raced["done"]
+    assert outer["report"]["fixing"] == 0, outer
+    assert len(_fix_workflows(db)) == 1
+    assert len(_fix_record(db)["rounds"]) == 1
+
+
+def test_the_claim_guard_refuses_a_stale_reading(db, github):
+    """The claim itself, directly: a reading made before another tick's
+    claim (one round seen where there are now two) writes nothing."""
+    fixable_merge(db, github, rounds=3)
+    assert mergewake._claim_round(db, "eng", "task_merge", HEAD, seen=0, now=NOW) == 1
+    assert mergewake._claim_round(db, "eng", "task_merge", HEAD, seen=0, now=NOW) is None
+    assert len(_fix_record(db)["rounds"]) == 1
+
+
+def test_red_with_no_round_left_wakes_the_step_to_checks_failed(db, wake_client, github):
+    fixable_merge(db, github, rounds=1)
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": MOVED, "task_id": "task_" + "2" * 20}]}
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1 and body["report"]["fixing"] == 0
+    assert _wait(db)["wake_reason"] == "red"
+    assert _fix_workflows(db) == []
+
+
+@pytest.mark.parametrize("rounds", [0, None])
+def test_red_on_a_workflow_that_asked_for_no_rounds_wakes_the_step(db, wake_client, github, rounds):
+    doc = fixable_merge(db, github)
+    if rounds is None:
+        doc["metadata"].pop("merge_fix_rounds")
+    else:
+        doc["metadata"]["merge_fix_rounds"] = rounds
+    _tick(wake_client)
+    assert _wait(db)["wake_reason"] == "red"
+    assert _fix_workflows(db) == []
+
+
+def test_a_round_that_ended_at_the_red_head_wakes_the_step(db, wake_client, github, clock):
+    fixable_merge(db, github, rounds=2)
+    _tick(wake_client)
+    (claimed,) = _fix_record(db)["rounds"]
+    db.docs[f"tasks/{claimed['task_id']}"]["state"] = "SUCCEEDED"
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "fix_round_ended"
+    assert len(_fix_workflows(db)) == 1, "a second round at the head the first could not fix"
+
+
+def test_a_round_claimed_and_never_recorded_wakes_the_step_once_lost(db, wake_client, github, clock):
+    fixable_merge(db, github, rounds=2)
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {
+        "rounds": [{"round": 1, "head": HEAD, "claimed_at": NOW}]}
+    assert _tick(wake_client).json()["report"]["waiting"] == 1
+    clock.now = NOW + timedelta(seconds=issueci.LOST_ROUND_SECONDS)
+    _tick(wake_client)
+    assert _wait(db)["wake_reason"] == "fix_round_lost"
+    assert _fix_workflows(db) == []
+
+
+def test_a_submitter_who_left_the_tenant_gets_no_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2, submitter="carol@saga.xyz")
+
+    body = _tick(wake_client).json()
+
+    assert _fix_workflows(db) == []
+    assert body["report"]["woken"] == 1
+    assert _wait(db)["wake_reason"] == "fix_round_refused"
+    (claimed,) = _fix_record(db)["rounds"]
+    assert claimed["head"] == HEAD and "no longer a member" in claimed["error"]
+    assert "task_id" not in claimed
+
+
+def test_a_pull_request_not_on_the_roots_branch_gets_no_round(db, wake_client, github):
+    fixable_merge(db, github, rounds=2)
+    github.pulls[NUMBER]["head"]["ref"] = "swarm/task_" + "9" * 20
+
+    _tick(wake_client)
+
+    assert _wait(db)["wake_reason"] == "red"
+    assert _fix_workflows(db) == []
+
+
+def test_the_head_a_round_pushed_wakes_the_step_naming_the_round(db, wake_client, github, clock):
+    fixable_merge(db, github, rounds=2)
+    _tick(wake_client)
+    (claimed,) = _fix_record(db)["rounds"]
+    fix_task = db.docs[f"tasks/{claimed['task_id']}"]
+    fix_task["state"] = "SUCCEEDED"
+    fix_task["result_summary"] = {"git": {"pushed_head": MOVED}}
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1
+    assert _wait(db)["wake_reason"] == "head_moved"
+    assert _wait(db)["head_pushed_by"] == claimed["task_id"]
+
+
+def test_a_forged_round_budget_is_capped(db, wake_client, github):
+    fixable_merge(db, github, rounds=99)
+    db.docs["tasks/task_merge"]["metadata"][mergewake.MERGE_FIX_METADATA_KEY] = {"rounds": [
+        {"round": n, "head": f"{n:040x}"} for n in range(1, mergewake.MERGE_FIX_ROUNDS_MAX + 1)]}
+    _tick(wake_client)
+    assert _wait(db)["wake_reason"] == "red"
+    assert _fix_workflows(db) == []
+
+
+# --------------------------------------------------------------------------
+# 7. update-branch is asynchronous (MS3 review finding, 2026-10-06)
+# --------------------------------------------------------------------------
+
+def test_a_park_on_a_pending_update_waits_for_the_head_to_move(db, wake_client, github, clock):
+    """The worker asked GitHub to update the branch and GitHub has not moved
+    the head yet. The old head's checks are green -- that is why it was only
+    behind -- so reading them would wake the step for nothing. The tick
+    waits for the head to move, and wakes the step then."""
+    parked_merge(db, code=mergewake.BRANCH_UPDATE_PENDING, pending=[])
+    github.check(HEAD, CHECK, "success")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert not [u for u in _reads(github) if "/check-runs" in u or "/status" in u]
+
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+    clock.now = NOW + timedelta(seconds=issueci.CI_READ_SECONDS)
+    _tick(wake_client)
+    assert _wait(db)["wake_reason"] == "head_moved"
+
+
+def test_a_park_at_the_updated_head_reads_its_checks_there(db, wake_client, github):
+    """The worker saw the update land and parked at the new head: the tick
+    reads the checks at that head, and they are still running there."""
+    parked_merge(db, head=MOVED, code="branch_updated", pending=[])
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+    github.check(HEAD, CHECK, "success")
+    github.check(MOVED, CHECK, None, status="queued")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1, body
+    assert any(f"/commits/{MOVED}/check-runs" in u for u in _reads(github))
+    assert not any(f"/commits/{HEAD}/" in u for u in _reads(github))
