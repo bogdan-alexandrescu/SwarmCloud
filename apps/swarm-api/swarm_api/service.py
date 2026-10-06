@@ -53,6 +53,7 @@ from .continuation import resolve_continuation
 from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
+from .repositories import Repositories, repo_id_for
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -63,8 +64,10 @@ from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
+    MERGE_LABEL_DROPPED_KEY,
     MERGE_METADATA_KEY,
     MERGE_STEP_MAX_ATTEMPTS,
+    READY_LABEL,
     SINGLE_PR,
     DispatchOptionError,
     DispatchOptions,
@@ -74,8 +77,11 @@ from .validation import (
     check_repository_ref,
     is_merge_step,
     is_mergeable_forge,
+    merge_repository,
     merge_step_for,
     plan_merge,
+    ready_label_dropped,
+    refuse_merge_label_record,
     refuse_unmergeable_forge,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
@@ -84,6 +90,7 @@ from .validation import (
     resolve_input_layout,
     resolve_integrator_step,
     resolve_merge_choice,
+    resolve_merge_fix_rounds,
     validate_batch_size,
     validate_dag,
     validate_input_size,
@@ -488,6 +495,11 @@ class SubmissionService:
                 # it, under the same rules as any task's metadata.
                 reject_reserved_metadata(step.metadata)
                 step_metadata = {**spec.metadata, **step.metadata}
+                # Lane MS1: the CI-fix rounds a merge step may spend, as each
+                # step's task will store them, and the drop record only this
+                # service writes.
+                refuse_merge_label_record(step_metadata)
+                resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
                 validate_storable(step_metadata, label="metadata", step_id=step.step_id)
@@ -517,6 +529,16 @@ class SubmissionService:
         # Read once, at submission (#638): the gated step files its review's
         # minors on this issue, and a later change reaches later workflows.
         findings_epic = self._store.get_findings_epic(tenant.tenant_id)
+        # Lane MS1, read once at submission like the epic: the default branch
+        # the tenant registered this repository with, which the merge step
+        # refuses any other base against (`base_not_default`, MS3).
+        merge_base = (
+            self._registered_base(tenant.tenant_id, repository_url)
+            if merge_plan is not None else None
+        )
+        # Beside a merge step, a `ready` label is dropped (`workflow_label`)
+        # so `auto-merge.yml` never races the step; recorded on every task.
+        label_dropped = ready_label_dropped(spec.metadata, merge_step=merge_plan is not None)
         for step_id in order:
             source = by_id[step_id]
             parent_task_ids = [step_task_id[dep] for dep in source.depends_on]
@@ -529,6 +551,7 @@ class SubmissionService:
                 not_integrated=not_integrated,
                 single_pr=single_pr,
                 merge_plan=merge_plan,
+                merge_base=merge_base,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -538,7 +561,7 @@ class SubmissionService:
                 allow_empty_diff=source.allow_empty_diff,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
-                pr_label=workflow_label(spec.metadata),
+                pr_label=workflow_label(spec.metadata, merge_step=merge_plan is not None),
                 # Kept on a gated step only too: the step that reads the
                 # verdict files its minors on the tenant's epic.
                 findings_epic=findings_epic,
@@ -554,7 +577,10 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
+                    metadata={
+                        **spec.metadata, **source.metadata, "workflow_step": step_id,
+                        **({MERGE_LABEL_DROPPED_KEY: READY_LABEL} if label_dropped else {}),
+                    },
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
@@ -734,6 +760,24 @@ class SubmissionService:
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
         )
 
+    def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
+        """The default branch `tenant_id` registered this repository with, or None.
+
+        Read from the tenant's own registration only (`Repositories.find`
+        checks the tenant), by the id `repositories.register` stored it
+        under, so another tenant's registration of the same repository never
+        names this workflow's base. None when unregistered: the worker then
+        asks GitHub for the default branch itself (MS3).
+        """
+        named = merge_repository(repository_url)
+        if named is None:
+            return None
+        record = Repositories(self._store.db, now=self._now).find(
+            tenant_id, repo_id_for(tenant_id, *named)
+        )
+        branch = (record or {}).get("default_branch")
+        return branch if isinstance(branch, str) and branch else None
+
     @staticmethod
     def _step_dispatch(
         dispatch: DispatchOptions,
@@ -745,6 +789,7 @@ class SubmissionService:
         not_integrated: frozenset[str] = frozenset(),
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
+        merge_base: str | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -796,6 +841,7 @@ class SubmissionService:
                 ),
                 review=step_task_id[sources.review] if sources.review else None,
                 verdict_file=sources.verdict_file,
+                base=merge_base,
             )
         if integrator_step_id is None:
             return dispatch

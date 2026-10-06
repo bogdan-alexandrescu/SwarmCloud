@@ -1216,6 +1216,39 @@ What swarm-api appends, before it signs anything:
 * **Its signed dispatch block names its target by task id**
   (`merge_target: {pull_request, review, verdict_file}`), so the worker never
   follows a pointer the signed spec does not name.
+* **`merge_target.base`, the default branch the tenant registered the
+  repository with** (`/v1/repositories`, [repo-index.md](repo-index.md) §1),
+  read once at submission from the tenant's OWN registration, and absent when
+  it registered none. It is there so the worker can refuse a pull request on
+  any other base (`base_not_default`, lane MS3) without reading the registry,
+  inside the block the spec signature covers. Another tenant's registration
+  of the same repository never names it. Built 2026-10-06 (lane MS1); until
+  MS3 the worker carries it and does not act on it.
+
+**Lane MS1 (2026-10-06): the step's knobs.** Two more things are settled at
+submission, from the workflow's own `metadata`:
+
+* **`metadata.merge_fix_rounds`**, a whole number from 0 to 5, absent
+  meaning 0: how many CI-fix rounds a red required check may hand the pull
+  request to before the step refuses `checks_failed`
+  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
+  §1, "The CI-fix loop"). Anything else -- a negative, more than 5, a string,
+  a bool, a float -- is a 422 naming the bounds. So is the key on a workflow
+  that ends with no merge step, whatever its value: rounds nothing would
+  spend are a request that would silently not happen, as `metadata.merge`
+  `"on"` there is refused. It is stored as written; lane MS7 spends it, and
+  until then it is accepted and changes nothing.
+* **A `ready` label is dropped beside a merge step.** `ready` is the label
+  `.github/workflows/auto-merge.yml` merges on. When the workflow's label
+  (`metadata.unit`, else `metadata.title`) is `ready`, in any case, and the
+  workflow has a merge step, swarm-api leaves it out of the dispatch block's
+  `pr_label` and records `metadata.merge_label_dropped: "ready"` on every
+  task, so the two mergers never race for one pull request and the step's
+  merges are the ones `auto-merge.yml`'s retirement gate counts
+  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
+  §5). Any other label, and a `ready` label on a workflow with no merge step,
+  is kept as before. `metadata.merge_label_dropped` is written by swarm-api
+  only: a caller's is a 422.
 
 What the merge step checks, in order, and refuses with a plain reason
 (`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is
