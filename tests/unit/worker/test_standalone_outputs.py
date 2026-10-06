@@ -54,7 +54,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
-from conftest import TENANT, record_as_earlier_attempt, seed_attempt
+from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
 

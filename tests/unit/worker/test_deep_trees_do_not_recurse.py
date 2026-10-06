@@ -35,7 +35,7 @@ from agent_worker import standalone_outputs, workspace as workspace_mod
 from agent_worker.checkpoint import CHECKPOINT_MAX_DEPTH, CheckpointManager, CheckpointRecord
 from agent_worker.logs import build_logger
 
-from conftest import TENANT
+from worker_seeds import TENANT
 
 DEPTH = 1100
 LINK_AT = 600

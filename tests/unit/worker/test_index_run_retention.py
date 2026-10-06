@@ -26,7 +26,7 @@ from typing import Any
 from agent_worker import indexrun
 from swarm_api import repoindex
 
-from conftest import TENANT
+from worker_seeds import TENANT
 from test_index_run_incremental import (  # noqa: F401 - fixtures
     BASE,
     BASE_INDEX,

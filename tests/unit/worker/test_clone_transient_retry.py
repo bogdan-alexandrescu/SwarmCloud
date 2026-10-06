@@ -41,7 +41,7 @@ from agent_worker.logs import build_logger
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 

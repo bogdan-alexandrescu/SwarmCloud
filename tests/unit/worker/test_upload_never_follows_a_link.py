@@ -33,7 +33,7 @@ from agent_worker import artifact_manifest as manifest_mod
 from agent_worker import workspace as workspace_mod
 from agent_worker.standalone_outputs import SHOWN_NAME_CHARS
 
-from conftest import TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import TENANT, build_worker, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 KEY = "sk-ant-supersecret-value-0123456789"

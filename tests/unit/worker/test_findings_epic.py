@@ -29,7 +29,7 @@ from agent_worker import verdict as verdict_mod
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from test_input_from import run_upstream
 
 REPO = "https://github.com/acme/widgets.git"

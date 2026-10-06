@@ -33,7 +33,7 @@ from swarm_common.models import EndCause
 from swarm_common.profiles import RUNNER_PROFILES, WorkerAction
 from swarm_common.states import EventType, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from fakes import ExplodingChildProcess
 
 def _seed(db, profile: str) -> None:

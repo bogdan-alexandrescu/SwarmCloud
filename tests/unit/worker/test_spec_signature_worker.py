@@ -41,7 +41,7 @@ from agent_worker.specverify import (
     gke_job_name,
     verify_step_spec,
 )
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from fakes import FakeSecretClient
 from swarm_common import specsign
 from swarm_common.profiles import RUNNER_PROFILES

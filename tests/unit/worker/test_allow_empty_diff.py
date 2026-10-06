@@ -33,7 +33,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.lifecycle import PATCH_NAME
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from test_input_from import run_upstream
 
 MISSING_CAUSES_KEY = "expected_outputs_missing_causes"

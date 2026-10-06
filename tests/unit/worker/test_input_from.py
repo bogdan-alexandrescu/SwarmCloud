@@ -31,7 +31,7 @@ from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 UPSTREAM_TEXT = "the upstream step's finding\n"
 

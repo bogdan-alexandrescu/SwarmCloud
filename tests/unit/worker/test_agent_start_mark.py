@@ -18,7 +18,7 @@ from datetime import datetime
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 AGENT_STARTED = "agent_started"
 

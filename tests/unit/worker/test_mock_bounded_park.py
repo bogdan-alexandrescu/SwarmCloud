@@ -41,7 +41,7 @@ from agent_worker.errors import CheckpointError, ExitCode
 from agent_worker.runners.base import QuotaExhaustedSignal, RunnerContext, RunnerFailure
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 #: Thirty minutes is far past `max_in_worker_retry_delay_seconds`, so the worker
 #: parks at once rather than retrying in place. No `provider` key: the mock's

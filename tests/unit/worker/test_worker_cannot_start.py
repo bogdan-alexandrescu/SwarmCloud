@@ -62,7 +62,7 @@ from reconciler.store import ControlStore
 from swarm_common.models import pool_names_for, utcnow
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_tenant
+from worker_seeds import TENANT, seed_tenant
 
 #: The worker's "cannot start" exit, restated: the number is the contract
 #: between the worker's process and whoever reads its exit status.

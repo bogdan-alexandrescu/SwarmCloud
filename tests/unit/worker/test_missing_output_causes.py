@@ -26,7 +26,7 @@ from agent_worker.errors import ExitCode, InputUnavailable
 from agent_worker.lifecycle import PATCH_NAME
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 MISSING_KEY = "expected_outputs_missing"
 MISSING_CAUSES_KEY = "expected_outputs_missing_causes"

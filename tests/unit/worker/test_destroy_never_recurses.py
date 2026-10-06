@@ -37,7 +37,7 @@ from agent_worker import workspace as workspace_mod
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 DEPTH = 2000
 

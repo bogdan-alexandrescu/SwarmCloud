@@ -51,7 +51,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.forge import RepoAccess, RepoRef
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     assert_no_attribution_in,

@@ -23,7 +23,7 @@ import os
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from fake_github import fresh_token
 from fakes import ExplodingChildProcess, FakeSecretClient
 from merge_world import NUMBER, OPENER, PINNED, PR, REPO_URL, MergeWorld

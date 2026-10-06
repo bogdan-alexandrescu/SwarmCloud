@@ -37,7 +37,7 @@ from agent_worker.runners.mock import PROGRESS_DIR
 from swarm_common.models import ProviderState
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 PROFILE = "claude-code"
 

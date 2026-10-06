@@ -32,7 +32,7 @@ from agent_worker.gitops import CloneResult
 from agent_worker.logs import build_logger
 from swarm_common.states import EventType
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 GITHUB = ("github.com", 443)
 EGRESS_READY = "egress_ready"

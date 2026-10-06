@@ -31,7 +31,7 @@ from agent_worker import lifecycle as lifecycle_mod
 from agent_worker.errors import ConfigError, ExitCode, InputUnavailable, WorkerError
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 def _task(db: Any) -> dict[str, Any]:

@@ -29,7 +29,7 @@ from typing import Any
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 #: The writes that record how an attempt ended, and the broker update.
 RECORDS = ("park", "finish", "fail_retryably", "park_awaiting_children", "update_quota_state")

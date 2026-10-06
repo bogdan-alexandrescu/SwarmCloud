@@ -37,7 +37,7 @@ import pytest
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 class ScriptedMeter:

@@ -15,7 +15,7 @@ from agent_worker.errors import ExitCode
 from swarm_common.models import ProviderState
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 
 def test_quota_park_releases_the_lease(db, store, worker_factory):

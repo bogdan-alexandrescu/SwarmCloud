@@ -27,7 +27,7 @@ import pytest
 from agent_worker import lifecycle, workspace as workspace_mod
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     _the_agent_titles_its_pull_request,
     forge,

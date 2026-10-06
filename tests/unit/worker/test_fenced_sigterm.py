@@ -78,7 +78,7 @@ from swarm_common.admission import release_lease_in_transaction
 from swarm_common.models import utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import build_worker, seed_attempt
+from worker_seeds import build_worker, seed_attempt
 
 #: No heartbeat, no periodic checkpoint and no control poll while the runner
 #: works, so nothing the worker does between the fence and the SIGTERM can

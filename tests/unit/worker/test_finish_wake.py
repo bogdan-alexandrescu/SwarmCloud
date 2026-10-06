@@ -33,7 +33,7 @@ from agent_worker.finishwake import PubSubFinishAnnouncer, topic_path
 from agent_worker.logs import build_logger
 from swarm_common.states import TaskState
 
-from conftest import PROJECT, TENANT, seed_attempt
+from worker_seeds import PROJECT, TENANT, seed_attempt
 from fakes import FakeTransactionRunner
 
 

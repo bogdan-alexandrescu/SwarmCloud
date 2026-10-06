@@ -17,7 +17,7 @@ import pytest
 
 from agent_worker.config import WorkerConfig
 from agent_worker.errors import ConfigError, ExitCode
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from swarm_common.states import TaskState
 
 TASK = "task_1"
