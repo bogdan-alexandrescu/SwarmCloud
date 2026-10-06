@@ -203,6 +203,8 @@ run "a_live_object_is_deleted_by_custom_time_never_by_age" {
   variables {
     bucket_suffix           = "saga-agents-staging"
     artifact_retention_days = 14
+    # The rules age per-tenant prefixes (artifact_lifecycle.tftest.hcl).
+    tenants = ["eng"]
   }
 
   assert {

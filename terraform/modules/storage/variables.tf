@@ -24,7 +24,9 @@ variable "bucket_suffix" {
 
 variable "artifact_retention_days" {
   description = <<-EOT
-    Days after its customTime that a LIVE artifact or log object is deleted.
+    Days after its customTime that a LIVE artifact or log object under
+    tenants/<t>/tasks/ or tenants/<t>/verdicts/ is deleted; nothing under
+    tenants/<t>/repos/ is ever deleted by this clock.
     The worker stamps customTime at upload on everything except checkpoints,
     so this window never applies to a checkpoint: those are removed by
     reference (apps/reconciler/reconciler/checkpoints.py), however long a
@@ -55,7 +57,7 @@ variable "keep_noncurrent_versions" {
 }
 
 variable "nearline_after_days" {
-  description = "Checkpoints are written constantly and read almost never; cold storage after two weeks."
+  description = "Checkpoints are written constantly and read almost never; cold storage after two weeks. Applies to tenants/<t>/tasks/ and tenants/<t>/verdicts/ only, never tenants/<t>/repos/ (see aged_prefixes in main.tf)."
   type        = number
   default     = 14
 }
@@ -79,7 +81,7 @@ variable "soft_delete_retention_seconds" {
 }
 
 variable "tenants" {
-  description = "Tenant ids, used only to publish the per-tenant object prefixes."
+  description = "Tenant ids. They publish the per-tenant object prefixes and list the prefixes the lifecycle rules age (tasks/ and verdicts/, never repos/); a tenant missing here is on no lifecycle clock."
   type        = list(string)
   default     = []
 }
