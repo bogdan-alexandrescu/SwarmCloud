@@ -56,7 +56,7 @@ from agent_worker.errors import ExitCode
 from swarm_api.codec import attempt_from_dict, attempt_to_api
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 PROFILE = "claude-code"
 

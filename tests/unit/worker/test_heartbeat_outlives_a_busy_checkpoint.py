@@ -47,7 +47,7 @@ from agent_worker.logs import build_logger
 from agent_worker.procman import ChildProcess
 from swarm_common.states import EventType
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 import fakes
 from test_account_hot_swap import FakeBroker, _run, cli  # noqa: F401 - `cli` is a fixture
 

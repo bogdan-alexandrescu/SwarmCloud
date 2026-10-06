@@ -45,7 +45,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.runners.cliagent import RELOAD_RESUME_PROMPT, RESUME_PROMPT
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 FIRST = f"{TENANT}:first"

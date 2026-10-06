@@ -19,7 +19,7 @@ import time
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 def test_a_cancelled_task_keeps_the_runner_block(db, worker_factory):

@@ -37,7 +37,7 @@ from agent_worker.logs import build_logger
 from swarm_common.states import EventType, TaskState
 
 import fakes
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 QUIET = dict(
     heartbeat_interval_seconds=1,

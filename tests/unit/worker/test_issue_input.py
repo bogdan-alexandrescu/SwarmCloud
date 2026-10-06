@@ -40,7 +40,7 @@ from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 

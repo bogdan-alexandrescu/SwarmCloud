@@ -34,7 +34,7 @@ from agent_worker.runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEO
 from agent_worker.secrets import SecretError, resolve_credentials
 from swarm_common.models import Tenant, utcnow
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 OTHER = "research"

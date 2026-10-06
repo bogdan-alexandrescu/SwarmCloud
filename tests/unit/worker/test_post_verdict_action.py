@@ -133,7 +133,7 @@ def test_the_production_worker_posts_the_verdict_from_the_derived_path(
     db, store, worker_factory, tmp_path
 ):
     import spec_keys
-    from conftest import seed_attempt
+    from worker_seeds import seed_attempt
     from fake_github import FakeGitHub, app_secret_payload
     from fakes import FakeSecretClient
 

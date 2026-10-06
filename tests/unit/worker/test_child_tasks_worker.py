@@ -25,7 +25,7 @@ from swarm_api import children as api_children
 from swarm_api import validation as api_validation
 from swarm_common.states import EventType, ParkReason, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 NONCE = "a1b2c3d4-test-nonce-not-a-secret"
 

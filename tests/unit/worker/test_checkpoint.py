@@ -20,7 +20,7 @@ from agent_worker.errors import CheckpointError, ExitCode
 from agent_worker.logs import build_logger
 from swarm_common.states import EventType, TaskState
 
-from conftest import BUCKET, TENANT, seed_attempt
+from worker_seeds import BUCKET, TENANT, seed_attempt
 
 
 def _manager(store, logger, *, attempt_id="att_1", generation=1):

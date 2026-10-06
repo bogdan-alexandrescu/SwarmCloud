@@ -22,7 +22,7 @@ from agent_worker import gitops
 from agent_worker.logs import build_logger
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     _the_agent_titles_its_pull_request,
     forge,

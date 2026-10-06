@@ -37,7 +37,7 @@ from agent_worker import indexrun, lifecycle
 from agent_worker.lifecycle import Worker
 from swarm_api import repoindex, repositories
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 OWNER, REPO = "Saga-XYZ", "Widgets"
 URL = f"https://github.com/{OWNER}/{REPO}"

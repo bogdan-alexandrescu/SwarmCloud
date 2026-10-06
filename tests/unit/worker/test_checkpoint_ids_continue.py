@@ -30,7 +30,7 @@ from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 
 def _logger(log_stream):

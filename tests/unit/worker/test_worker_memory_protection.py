@@ -37,7 +37,7 @@ from typing import Any
 
 import pytest
 
-from conftest import seed_tenant
+from worker_seeds import seed_tenant
 from dumpable_entry_helper import CANARY_ENV, read_process
 
 HELPER = Path(__file__).with_name("dumpable_entry_helper.py")

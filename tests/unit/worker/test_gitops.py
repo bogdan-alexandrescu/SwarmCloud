@@ -28,7 +28,7 @@ from agent_worker.logs import build_logger
 from agent_worker.secrets import GIT_PROVIDER, resolve_git_token
 from swarm_common.models import Tenant, utcnow
 
-from conftest import TENANT
+from worker_seeds import TENANT
 from fakes import FakeSecretClient
 
 

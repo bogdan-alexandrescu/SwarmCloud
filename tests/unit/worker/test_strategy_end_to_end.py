@@ -35,7 +35,7 @@ import pytest
 
 from agent_worker import gitops, lifecycle, workspace as workspace_mod
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
-from conftest import record_as_earlier_attempt
+from worker_seeds import record_as_earlier_attempt
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 

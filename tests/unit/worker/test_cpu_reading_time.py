@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 def test_the_source_goes_beside_a_limit_and_only_as_a_known_word():

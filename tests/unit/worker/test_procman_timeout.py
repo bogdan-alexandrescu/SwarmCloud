@@ -19,7 +19,7 @@ from agent_worker.logs import build_logger
 from agent_worker.procman import ChildProcess, ProcessError, run_child, validate_argv
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 IGNORES_SIGTERM = (
     "import signal, sys, time\n"

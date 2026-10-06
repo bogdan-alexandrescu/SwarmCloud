@@ -35,7 +35,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.lifecycle import _stream_spend_estimate
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from test_spend_on_every_exit import (
     COST,
     a_long_mock_run,
