@@ -1008,15 +1008,26 @@ class Worker:
                         reload=credential_reloads,
                         resumed=resumed,
                     )
-                    self.control.emit(
-                        EventType.RETRYING,
-                        {
-                            "cause": "credential_reloaded",
-                            "provider": refusal.get("provider"),
-                            "reload": credential_reloads,
-                            "resumed": resumed,
-                        },
-                    )
+                    try:
+                        # An audit record (#70): an event that cannot be
+                        # written must not cost the reload, as it does not
+                        # cost a checkpoint (`_announce_checkpoint`).
+                        self.control.emit(
+                            EventType.RETRYING,
+                            {
+                                "cause": "credential_reloaded",
+                                "provider": refusal.get("provider"),
+                                "reload": credential_reloads,
+                                "resumed": resumed,
+                            },
+                        )
+                    except (FencedError, TenantMismatchError):
+                        raise
+                    except Exception as exc:
+                        self.log.warning(
+                            "could not record the credential reload; reloading anyway",
+                            error=f"{type(exc).__name__}: {_one_line(exc)}",
+                        )
                     ws.credential_path.unlink(missing_ok=True)
                     # Rebuilt, not patched: `_build_child_env` is the one place
                     # that knows which env names this profile's credential maps
@@ -1036,6 +1047,20 @@ class Worker:
                         return self._park_credential_missing(exc)
                     except NoAccountAvailable as exc:
                         return self._park_no_account(exc)
+                    except Exception as exc:
+                        # THE TENANT READ COULD NOT REACH FIRESTORE (#70),
+                        # after its budget. There is no runner to keep going
+                        # and no credential to start the next one with: this
+                        # is a runner start, and an outage at a runner start
+                        # is exit 69, as before the first runner. Anything
+                        # else -- a fence included -- is raised as before.
+                        if isinstance(
+                            exc, (FencedError, TenantMismatchError)
+                        ) or not _control_plane_unreachable(exc):
+                            raise
+                        return self._exit_control_plane_outage(
+                            None, exc, where="for the credential reload's tenant read"
+                        )
                     continue
                 if refusal is not None:
                     self.log.error(
@@ -2005,8 +2030,19 @@ class Worker:
         )
         return exc if outage else None
 
-    def _exit_control_plane_outage(self, child: ChildProcess, exc: Exception) -> Outcome:
+    def _exit_control_plane_outage(
+        self,
+        child: ChildProcess | None,
+        exc: Exception,
+        *,
+        where: str = "past the lease while the agent ran",
+    ) -> Outcome:
         """Firestore stayed unreachable past the lease: checkpoint, stop, exit 69 (#70).
+
+        `child` is None on the credential reload's exit, taken between two
+        runners when the tenant read could not be made: there is nothing to
+        stop, and the rest is the same. `where` says which, in the log and on
+        the attempt's document.
 
         Owner decision, 2026-09-28. Until now a Firestore call that failed
         while the agent ran raised into the crash handler, which FAILED the
@@ -2034,7 +2070,7 @@ class Worker:
         """
         cfg = self.cfg
         self.log.error(
-            "the control plane stayed unreachable past the lease; checkpointing, "
+            f"the control plane stayed unreachable {where}; checkpointing, "
             "stopping the runner and exiting 69 for a requeue",
             error_type=type(exc).__name__,
             error=_one_line(exc),
@@ -2045,16 +2081,17 @@ class Worker:
             ),
         )
         self._checkpoint(CONTROL_PLANE_OUTAGE)
-        child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
-        child.finish()
-        self._child_ended()
+        if child is not None:
+            child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
+            child.finish()
+            self._child_ended()
         self._control_plane_down = True
         try:
             self.control.record_attempt_end(
                 exit_code=ExitCode.UNAVAILABLE,
                 error=self._scrub(
-                    f"{CONTROL_PLANE_OUTAGE}: the control plane was unreachable past "
-                    f"the lease while the agent ran ({type(exc).__name__}: "
+                    f"{CONTROL_PLANE_OUTAGE}: the control plane was unreachable "
+                    f"{where} ({type(exc).__name__}: "
                     f"{_one_line(exc, 300)}); the attempt checkpointed and exited "
                     "for a requeue"
                 ),
@@ -5088,9 +5125,9 @@ class Worker:
             else:
                 # Under the startup budget before the runner. The credential
                 # reload calls this again mid-run, outside the window, and gets
-                # the library's defaults there.
+                # the mid-run `tenant` budget there (#70).
                 tenant = load_tenant(
-                    self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+                    self.db, self.cfg.tenant_id, call_options=self.control.call_options("tenant")
                 )
                 resolved = resolve_credentials(
                     tenant=tenant,
