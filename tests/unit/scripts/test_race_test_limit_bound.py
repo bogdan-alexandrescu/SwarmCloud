@@ -24,8 +24,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from swarm_api.schemas import LimitRequest
-
 ROOT = Path(__file__).resolve().parents[3]
 RACE_TEST = ROOT / "scripts" / "race-test.sh"
 
@@ -40,6 +38,11 @@ def _script_bound() -> int:
 
 
 def _api_bound() -> int:
+    # Imported here, not at module top: swarm_api.schemas loads pydantic and the
+    # swarm_api package, which every collection of tests/unit/scripts would
+    # otherwise pay for (test_collection_stays_cheap.py holds this).
+    from swarm_api.schemas import LimitRequest
+
     bounds = [
         getattr(meta, "le")
         for meta in LimitRequest.model_fields["limit"].metadata

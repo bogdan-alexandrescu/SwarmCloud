@@ -24,6 +24,7 @@ touches the network.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -943,8 +945,21 @@ def test_docs_say_auto_merge_must_be_allowed_on_the_repository():
 # Where they differ the merge is always the stricter: it is the unattended
 # path, and §8 forbids it ever being looser than the human one.
 
-from agent_worker import forge as worker_forge  # noqa: E402
-from agent_worker import merge as worker_merge  # noqa: E402
+class _Imported:
+    """`<module>.<name>` imports the module on first use, not at collection:
+    agent_worker is only needed by the parity tests below, and importing it at
+    module top made every collection of tests/unit/scripts pay for it
+    (test_collection_stays_cheap.py holds this)."""
+
+    def __init__(self, module: str) -> None:
+        self._module = module
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(importlib.import_module(self._module), name)
+
+
+worker_forge: Any = _Imported("agent_worker.forge")
+worker_merge: Any = _Imported("agent_worker.merge")
 
 #: (title, gate refuses, merge refuses, why they differ or None)
 TITLE_PARITY = [

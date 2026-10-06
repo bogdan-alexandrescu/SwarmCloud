@@ -19,25 +19,28 @@ numbers can be trusted:
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import logging
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
-from google.api_core import exceptions as gexc
-
-from control_plane.fakes import FakeFirestore, FakeTransaction
-from control_plane.test_request_cancel_is_transactional import ContendedFirestore
 
 ROOT = Path(__file__).resolve().parents[3]
 HARNESS = ROOT / "scripts" / "bench_contention.py"
 WRAPPER = ROOT / "scripts" / "bench-contention.sh"
 
 
-def _load():
+# The harness imports google.cloud.firestore and scheduler.store, and the fakes
+# import google.api_core: together most of a second. Loaded on first use rather
+# than at import, so collecting tests/unit/scripts does not pay for them when
+# no test here is selected (test_collection_stays_cheap.py holds this).
+@functools.cache
+def _load() -> ModuleType:
     spec = importlib.util.spec_from_file_location("bench_contention", HARNESS)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -47,7 +50,20 @@ def _load():
     return module
 
 
-bc = _load()
+class _Harness:
+    """`bc.<name>` loads scripts/bench_contention.py once, on first use."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_load(), name)
+
+
+bc = _Harness()
+
+
+def _fake_firestore() -> Any:
+    from control_plane.fakes import FakeFirestore
+
+    return FakeFirestore()
 
 
 class FakeClock:
@@ -121,7 +137,7 @@ def test_the_wrapper_refuses_the_live_database_without_credentials(tmp_path) -> 
 # --------------------------------------------------------------------------
 
 def test_every_offered_admission_runs_the_frozen_transaction_and_is_measured() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     shape, tasks, result = _run_one(db)
 
     assert len(result.admissions) == len(tasks) == 6
@@ -148,7 +164,7 @@ def test_every_offered_admission_runs_the_frozen_transaction_and_is_measured() -
 
 
 def test_the_open_loop_schedule_offers_the_stated_rate() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     _, _, result = _run_one(db, rate=120, count=6)
     # Arrivals 0.5 s apart; with zero-time admissions nothing lags.
     assert [a.due - result.admissions[0].due for a in result.admissions] == pytest.approx(
@@ -161,6 +177,10 @@ def test_the_open_loop_schedule_offers_the_stated_rate() -> None:
 
 
 def test_a_concurrent_commit_to_global_is_a_rerun_in_the_samples() -> None:
+    # A control_plane test module: importing it loads control_plane/conftest.py
+    # and the whole service stack, so only this test pays for it.
+    from control_plane.test_request_cancel_is_transactional import ContendedFirestore
+
     db = ContendedFirestore()
     shape = bc.Shape()
     bc.seed_pools(db, "r1", shape)
@@ -185,21 +205,26 @@ def test_a_concurrent_commit_to_global_is_a_rerun_in_the_samples() -> None:
     assert r["reruns"]["admissions_rerun"] == 1
 
 
-class _AlwaysAborts(FakeTransaction):
-    def _commit(self) -> list[Any]:
-        self._buffer = []
-        raise gexc.Aborted("contended")
+def _saturated() -> Any:
+    """A Firestore where every admission commit aborts; batches and the lock still work."""
+    from google.api_core import exceptions as gexc
 
+    from control_plane.fakes import FakeFirestore, FakeTransaction
 
-class _Saturated(FakeFirestore):
-    """Every admission commit aborts; batches and the lock still work."""
+    class _AlwaysAborts(FakeTransaction):
+        def _commit(self) -> list[Any]:
+            self._buffer = []
+            raise gexc.Aborted("contended")
 
-    def transaction(self, **kwargs: Any) -> FakeTransaction:
-        return _AlwaysAborts(self)
+    class _Saturated(FakeFirestore):
+        def transaction(self, **kwargs: Any) -> FakeTransaction:
+            return _AlwaysAborts(self)
+
+    return _Saturated()
 
 
 def test_an_admission_that_exhausts_its_retries_is_an_abort_not_a_fast_one() -> None:
-    db = _Saturated()
+    db = _saturated()
     _, _, result = _run_one(db, count=3)
 
     assert [a.outcome for a in result.admissions] == ["aborted"] * 3
@@ -212,23 +237,29 @@ def test_an_admission_that_exhausts_its_retries_is_an_abort_not_a_fast_one() -> 
     assert any(f.startswith("aborted") for f in r["findings"])
 
 
-class _ReadAborts(FakeTransaction):
-    def get(self, ref: Any, **kwargs: Any) -> Any:
-        if getattr(ref, "path", "").startswith("pools/"):
-            raise gexc.Aborted("contended read")
-        return super().get(ref, **kwargs)
+def _reads_abort() -> Any:
+    """A Firestore where every transactional read of a pool document returns
+    ABORTED, which `firestore.transactional` does not retry: it reaches the
+    caller raw."""
+    from google.api_core import exceptions as gexc
 
+    from control_plane.fakes import FakeFirestore, FakeTransaction
 
-class _ReadsAbort(FakeFirestore):
-    """Every transactional read of a pool document returns ABORTED, which
-    `firestore.transactional` does not retry: it reaches the caller raw."""
+    class _ReadAborts(FakeTransaction):
+        def get(self, ref: Any, **kwargs: Any) -> Any:
+            if getattr(ref, "path", "").startswith("pools/"):
+                raise gexc.Aborted("contended read")
+            return super().get(ref, **kwargs)
 
-    def transaction(self, **kwargs: Any) -> FakeTransaction:
-        return _ReadAborts(self)
+    class _ReadsAbort(FakeFirestore):
+        def transaction(self, **kwargs: Any) -> FakeTransaction:
+            return _ReadAborts(self)
+
+    return _ReadsAbort()
 
 
 def test_an_aborted_read_is_an_abort_in_the_samples_not_an_error() -> None:
-    db = _ReadsAbort()
+    db = _reads_abort()
     _, _, result = _run_one(db, count=1)
 
     (adm,) = result.admissions
@@ -243,7 +274,7 @@ def test_an_aborted_read_is_an_abort_in_the_samples_not_an_error() -> None:
 
 
 def test_release_lock_leaves_another_runs_lock_alone() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     bc.take_lock(db, "mine")
     bc.release_lock(db, "theirs")
     assert db.docs[f"{bc.LOCK_COLLECTION}/{bc.LOCK_DOC}"]["run_id"] == "mine"
@@ -254,7 +285,7 @@ def test_release_lock_leaves_another_runs_lock_alone() -> None:
 def test_an_admission_with_no_record_is_not_measured(monkeypatch) -> None:
     """If acquire_lease stopped logging, the harness must go red, not fast."""
     monkeypatch.setattr(logging.getLogger(bc.STORE_LOGGER), "disabled", True)
-    db = FakeFirestore()
+    db = _fake_firestore()
     _, _, result = _run_one(db, count=3)
 
     latency = _by_metric(bc.samples(result), "contention.admission_latency")
@@ -277,7 +308,7 @@ def test_a_row_the_harness_could_not_offer_says_so() -> None:
 
 
 def test_the_table_states_n() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     _, _, result = _run_one(db, count=4)
     text = bc.render([bc.row(result)])
     header, _, line = text.splitlines()[:3]
@@ -290,7 +321,7 @@ def test_the_table_states_n() -> None:
 # --------------------------------------------------------------------------
 
 def test_run_deletes_its_own_documents_and_nothing_else() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     db.docs["tasks/someone-elses"] = {"id": "someone-elses", "state": "READY"}
     db.docs["pools/runner:mock"] = {"name": "runner:mock", "hard_limit": 3, "active": 1}
     clock = FakeClock()
@@ -309,7 +340,7 @@ def test_run_deletes_its_own_documents_and_nothing_else() -> None:
 
 
 def test_a_second_run_is_refused_while_the_first_holds_the_lock() -> None:
-    db = FakeFirestore()
+    db = _fake_firestore()
     bc.take_lock(db, "first")
     with pytest.raises(bc.Refused):
         bc.take_lock(db, "second")
