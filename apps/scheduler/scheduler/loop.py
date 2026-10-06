@@ -312,6 +312,9 @@ class Scheduler:
         # drains on purpose: that is what moves the window.
         self._park_cursors: dict[ParkReason, str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
+        # Tasks this run ended itself (`_note_ended`), whose dependants it
+        # resolves before it returns (`_release_ended`, #636). Per run.
+        self._ended: list[str] = []
         # Where the child-cascade sweep resumes: (parent_task_id, child id).
         self._child_cursor: tuple[str, str] | None = None
         cutoff = settings.on_step_failure_enforced_since
@@ -348,6 +351,7 @@ class Scheduler:
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
         self._swept_workflows = set()
+        self._ended = []
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
 
@@ -380,6 +384,9 @@ class Scheduler:
             log.exception("child-task sweeps failed this drain; admission continues")
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm(report)
+        # The sweeps above run AFTER `_promote_dependencies`, so what they
+        # ended is resolved here, not on the next tick (#636).
+        self._release_ended(report)
 
         while True:
             if report.passes >= self._settings.max_passes_per_run:
@@ -403,6 +410,9 @@ class Scheduler:
                 report.stop_reason = "no_admissible_work"
                 break
 
+        # And what admission ended: a cancel it honoured, a step its workflow
+        # sweep cancelled, a dispatch that failed on the last attempt.
+        self._release_ended(report)
         report.duration_seconds = self._monotonic() - started
         self._metrics.runs.labels(stop_reason=report.stop_reason).inc()
         self._metrics.run_seconds.observe(report.duration_seconds)
@@ -508,7 +518,7 @@ class Scheduler:
             report.stop_reason = "not_terminal"
             return self._end_finish_event(report, started)
 
-        released = self._release_chain(parent, report)
+        released = self._release_chain([parent], report)
         report.promoted_dependencies = len(released)
 
         # Re-read: each `_admit_one` write is guarded on the state it was
@@ -519,45 +529,100 @@ class Scheduler:
             if task is not None and task.state is TaskState.READY
         ]
         self._admission_pass(report, started, include=fresh)
+        # What that pass ended itself has no worker to ring for it either.
+        self._release_ended(report)
         report.stop_reason = "task_finished"
         return self._end_finish_event(report, started)
 
-    def _release_chain(self, parent: Task, report: DrainReport) -> list[str]:
-        """Resolve `parent`'s dependants, and the dependants of any this cancels.
+    def _release_chain(self, ended: list[Task], report: DrainReport) -> list[str]:
+        """Resolve the dependants of the `ended` tasks, and of every task that ends meanwhile.
 
         A dependant the rule CANCELS -- its parent did not succeed -- has
         itself reached a terminal state, and no worker will ring a wake for
         it. Stopping at the first level left its own dependants PARKED until
-        the next drain's sweep, one tick per link of the chain (#636). So a
-        task cancelled here is resolved in turn, breadth first, through the
+        the next drain's sweep, one tick per link of the chain (#636). So
+        every task ended while this runs -- a dependant cancelled, or the
+        steps a `fail_workflow` sweep inside `_resolve_dependency` cancelled
+        -- is resolved in turn (`_note_ended`), breadth first, through the
         same `_resolve_dependency`, with the same tenant filter in
         `dependants_waiting_on` (invariant 9).
 
-        Only a cancel extends the chain. A promoted dependant is READY, not
+        Only an end extends the chain. A promoted dependant is READY, not
         ended; its dependants wait for its own finish. Bounded by
-        `dependency_sweep_size` tasks in all, and by a visited set; whatever
-        the bound leaves is the next drain's, as before. Returns the ids
-        promoted, for the admission pass.
+        `dependency_sweep_size` dependants in all and as many ended tasks
+        looked up, and by visited sets; whatever the bounds leave is the next
+        drain's, as before. Returns the ids promoted, for the admission pass.
         """
         budget = self._settings.dependency_sweep_size
+        lookups = self._settings.dependency_sweep_size
         released: list[str] = []
-        visited: set[str] = {parent.id}
-        ended: list[Task] = [parent]
-        while ended and budget > 0:
-            current = ended.pop(0)
+        resolved: set[str] = set()
+        expanded: set[str] = {task.id for task in ended}
+        queue: list[Task] = list(ended)
+        while queue and budget > 0 and lookups > 0:
+            current = queue.pop(0)
+            lookups -= 1
             for task in self._store.dependants_waiting_on(current, budget):
-                if task.id in visited or budget <= 0:
+                if task.id in resolved or budget <= 0:
                     continue
-                visited.add(task.id)
+                resolved.add(task.id)
                 budget -= 1
-                cancels_before = report.cancelled
                 if self._resolve_dependency(task, report):
                     released.append(task.id)
-                elif report.cancelled > cancels_before:
-                    fresh = self._store.get_task(task.id)
-                    if fresh is not None and fresh.state in TERMINAL_STATES:
-                        ended.append(fresh)
+            queue.extend(self._take_ended(expanded))
+        # Left by the bounds: the next drain's `_promote_dependencies` has them.
+        self._ended.clear()
         return released
+
+    def _note_ended(self, task_id: str) -> None:
+        """This run wrote a terminal state on `task_id`. Every such write calls it.
+
+        No worker rings `task_finished` for a task the scheduler ended, and
+        `_promote_dependencies` has already run by the time the sweeps and
+        admission write these, so its dependants waited for the next tick
+        (#636, left by #741). `_release_ended` resolves them in this run.
+        """
+        self._ended.append(task_id)
+
+    def _take_ended(self, expanded: set[str]) -> list[Task]:
+        """The tasks noted ended since the last call and not yet expanded, re-read."""
+        noted, self._ended = self._ended, []
+        out: list[Task] = []
+        for task_id in dict.fromkeys(noted):
+            if task_id in expanded:
+                continue
+            expanded.add(task_id)
+            task = self._store.get_task(task_id)
+            if task is not None and task.state in TERMINAL_STATES:
+                out.append(task)
+        return out
+
+    def _release_ended(self, report: DrainReport) -> None:
+        """Resolve the dependants of what this run ended itself. Never fails the run.
+
+        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, never
+        SUCCEEDED, so the rule CANCELS its dependants and promotes none: this
+        writes no READY and takes no lease, and creates no demand (invariant
+        1). The scheduler does not publish a `task_finished` wake to itself
+        instead: it is the wake's receiver, and that message would queue
+        behind the drain lock this run holds.
+
+        A failure here is logged and the run goes on: resolving now is a
+        latency win, and the next drain's `_promote_dependencies` resolves the
+        same dependants by the same rule, as it did before #636.
+        """
+        if not self._ended:
+            return
+        try:
+            ended = self._take_ended(set())
+            if ended:
+                report.promoted_dependencies += len(self._release_chain(ended, report))
+        except Exception:
+            self._ended.clear()
+            log.exception(
+                "resolving the dependants of tasks this run ended failed; "
+                "the next drain's dependency sweep resolves them"
+            )
 
     def _end_finish_event(self, report: DrainReport, started: float) -> DrainReport:
         report.duration_seconds = self._monotonic() - started
@@ -791,11 +856,14 @@ class Scheduler:
             )
             if not returned.applied:
                 self._count_stale(returned, report)
-            elif returned.target == TaskState.FAILED.value and task.workflow_id:
-                # This drain just wrote FAILED on a workflow step. Its siblings
-                # may be next in this very pass, and the verdict cached for the
-                # workflow was read before the failure existed.
-                self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
+            elif returned.target == TaskState.FAILED.value:
+                self._note_ended(task.id)
+                if task.workflow_id:
+                    # This drain just wrote FAILED on a workflow step. Its
+                    # siblings may be next in this very pass, and the verdict
+                    # cached for the workflow was read before the failure
+                    # existed.
+                    self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
             log.warning(
@@ -939,6 +1007,7 @@ class Scheduler:
         outcome = self._store.cancel(task, text, detail, end_cause=end_cause)
         if outcome.applied:
             self._count_cancel(report, reason=why)
+            self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
 
@@ -1065,6 +1134,7 @@ class Scheduler:
                 )
                 if outcome.applied:
                     self._count_cancel(report, reason="workflow_failed")
+                    self._note_ended(step.id)
                     cancelled += 1
                 else:
                     # Leased by a concurrent drain, or finished, since the
@@ -1105,7 +1175,8 @@ class Scheduler:
         (`_stop_for_failed_workflow`). Under `continue`, and for a CANCELLED
         parent under either setting, only the dependency rule below applies. It
         is transitive: a cancelled child is itself a "failed parent" to its own
-        children, on this drain or the next.
+        children, resolved in this drain (`_release_ended`, #636), or on the
+        next when a bound stops it.
         """
         promoted = 0
         for task in self._store.parked_tasks(
@@ -1299,6 +1370,7 @@ class Scheduler:
         )
         if outcome.applied:
             report.dead_lettered += 1
+            self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
 
@@ -1402,6 +1474,7 @@ class Scheduler:
                 )
                 if outcome.applied:
                     report.dead_lettered += 1
+                    self._note_ended(task.id)
                 else:
                     self._count_stale(outcome, report)
                 continue
@@ -1474,6 +1547,7 @@ class Scheduler:
         )
         if result == "cancelled":
             self._count_cancel(report, reason="child_cascade")
+            self._note_ended(child_id)
         return 1 if result is not None else 0
 
     def _promote_manual_pauses(self, report: DrainReport) -> int:

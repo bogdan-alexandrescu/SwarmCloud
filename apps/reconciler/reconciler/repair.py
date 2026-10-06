@@ -46,7 +46,7 @@ from urllib.parse import urlparse
 
 from swarm_common.models import EndCause, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
-from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
+from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, EventType, TaskState
 
 from .backends import (
     Backend,
@@ -58,6 +58,7 @@ from .backends import (
 )
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
+from .finishwake import FinishAnnouncer, PubSubFinishAnnouncer
 from .detect import (
     CLOUD_RUN,
     ENDED_AT_STARTUP_STATES,
@@ -457,6 +458,7 @@ class Reconciler:
         logger: Any,
         checkpoint_store: CheckpointStore | None = None,
         hold_releaser: HoldReleaser | None = _FROM_ENV,
+        finish_announcer: FinishAnnouncer | None = _FROM_ENV,
     ) -> None:
         self._store = store
         self._backends = backends
@@ -474,6 +476,15 @@ class Reconciler:
         # deployment has no broker, and the holds age out on their TTL.
         self._holds: HoldReleaser | None = (
             BrokerHoldReleaser.from_env() if hold_releaser is _FROM_ENV else hold_releaser
+        )
+        # Who rings the scheduler's `task_finished` wake for a task a repair
+        # ended (#636, `finishwake`). From DISPATCH_TOPIC unless a caller
+        # supplies one; None means no wake, and the scheduler's safety tick
+        # releases the dependants as it did before.
+        self._finish: FinishAnnouncer | None = (
+            PubSubFinishAnnouncer.from_env()
+            if finish_announcer is _FROM_ENV
+            else finish_announcer
         )
         #: lease id -> when HELD_PAST_TTL was last logged for it, so it is
         #: logged once per lease per hour. Per instance: a cold instance logs a
@@ -1917,7 +1928,37 @@ class Reconciler:
                 attempt_id=finding.attempt_id,
                 lease_id=finding.lease_id,
             )
+            if repaired in TERMINAL_STATES:
+                self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
         return outcome
+
+    def _announce_finished(
+        self, task_id: str, tenant_id: str, state: TaskState, outcome: RepairOutcome
+    ) -> None:
+        """Ring the scheduler: this repair ENDED the task, its dependants may run (#636).
+
+        After the commit and its event, so the scheduler that wakes reads the
+        task terminal and its lease released (the same transaction released
+        it). Only for a terminal `repaired_to`: a requeue to READY is not an
+        end, and its dependants still wait on it. Once per repair, and a repair
+        is written once -- the next pass finds the lease released and nothing
+        to act on. Never raises: a lost wake costs one safety tick, and the
+        repair it follows has already happened.
+        """
+        if self._finish is None:
+            return
+        try:
+            published = bool(
+                self._finish.announce(task_id=task_id, tenant_id=tenant_id, state=state)
+            )
+            result = "published" if published else "refused"
+        except Exception as exc:
+            # The type only: a transport error's text can name the request.
+            result = f"error:{type(exc).__name__}"
+        outcome.actions.append(f"finish wake {result}")
+        self._log.info(
+            "finish wake", task_id=task_id, state=state.value, outcome=result
+        )
 
     def _never_started_wait(self, lease_id: str | None, snapshot: ControlSnapshot) -> float | None:
         """Seconds until this lease's never-started worker is its own evidence.

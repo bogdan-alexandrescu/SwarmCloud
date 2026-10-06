@@ -718,6 +718,7 @@ class ChildService:
         why: str,
         by: str,
         targets: list[ExecutionTarget] | None = None,
+        ended: list[str] | None = None,
     ) -> int:
         """Cancel `parent`'s non-terminal children. Returns how many were changed.
 
@@ -730,6 +731,8 @@ class ChildService:
 
         `targets`, when given, collects each newly flagged child's execution
         for the route to ask to be stopped, as the parent's own (#627).
+        `ended`, when given, collects the id of each child this call made
+        CANCELLED, for the route to ring the finish wake for (#636).
         """
         changed = 0
         for child in self.children_of(tenant_id, parent_task_id):
@@ -745,6 +748,7 @@ class ChildService:
                     by=by,
                     now=self._now(),
                     targets=targets,
+                    ended=ended,
                 ):
                     changed += 1
             except Exception:  # one child's failure must not strand its siblings
@@ -763,10 +767,12 @@ def cascade_children(
     why: str,
     by: str,
     targets: list[ExecutionTarget] | None = None,
+    ended: list[str] | None = None,
 ) -> int:
     """The cancel route's cascade (§3.4 step 1). Never fails the parent's cancel,
     which has already committed: a failure here is logged, and the scheduler's
-    sweep cancels whatever this left."""
+    sweep cancels whatever this left. `ended` receives the ids of the children
+    it made CANCELLED (`ChildService.cascade`)."""
     try:
         return ChildService(
             settings=ctx.settings,
@@ -775,7 +781,9 @@ def cascade_children(
             submissions=ctx.submissions,
             verifier=None,
             now=ctx.now,
-        ).cascade(parent.tenant_id, parent.id, why=why, by=by, targets=targets)
+        ).cascade(
+            parent.tenant_id, parent.id, why=why, by=by, targets=targets, ended=ended
+        )
     except Exception:
         log.exception("child cascade of parent=%s failed; the scheduler sweep retries it", parent.id)
         return 0
@@ -791,11 +799,15 @@ def cascade_cancel_child(
     by: str,
     now: datetime,
     targets: list[ExecutionTarget] | None = None,
+    ended: list[str] | None = None,
 ) -> bool:
     """One child, one transaction. True when it wrote anything.
 
     `targets`, when given, receives the child's execution on its FIRST cancel
     (`store.first_cancel_target`, #627), only once the transaction committed.
+    `ended`, when given, receives `child_id` when that commit made the child
+    CANCELLED -- it held no capacity, so no worker will ring the finish wake
+    for it (#636) -- and nothing when it only flagged a live one.
 
     Tenant first: a child whose `tenant_id` is not its parent's, or whose
     `parent_task_id` no longer names this parent, is left alone and logged.
@@ -832,6 +844,7 @@ def cascade_cancel_child(
             "updated_at": now,
         }
         immediate = state in PENDING_STATES
+        made_terminal[:] = [immediate]
         if immediate:
             assert_transition(state, TaskState.CANCELLED)
             patch.update(
@@ -865,7 +878,10 @@ def cascade_cancel_child(
 
     # Set by the attempt that commits: a retried transaction overwrites it.
     found: list[ExecutionTarget | None] = []
+    made_terminal: list[bool] = []
     wrote = _apply(db.transaction())
     if wrote and targets is not None and found and found[0] is not None:
         targets.append(found[0])
+    if wrote and ended is not None and made_terminal and made_terminal[0]:
+        ended.append(child_id)
     return wrote
