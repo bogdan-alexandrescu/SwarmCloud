@@ -1146,11 +1146,14 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
               <b>{Math.round(strip.data.totals.rate.p * 100)} %</b> success, {strip.data.totals.rate.k} of {strip.data.totals.rate.n} decided
             </span>
           )}
-          <span className="tl-x">
-            <b>{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed or dead-lettered
-          </span>
-          <span className="tl-x">
-            <b>{strip.data.totals.cancelled.total}</b> cancelled
+          {/* THE FINISHED TOTAL, SPLIT INTO PARTS THAT ADD UP TO IT (#123):
+              succeeded + failed + cancelled = finished, with failed FAILED +
+              DEAD_LETTERED, the one definition the ledger uses. The rate
+              beside it leaves the cancels out, so its n is not this total. */}
+          <span className="tl-x tl-ended">
+            <b className="tl-n-ended">{strip.data.totals.ended}</b> finished: <b className="tl-n-ok">{strip.data.totals.succeeded}</b> succeeded ·{' '}
+            <b className="tl-n-bad">{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed ·{' '}
+            <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
           </span>
           {unread > 0 && fenced === 0 ? (
             <span className="tl-x">

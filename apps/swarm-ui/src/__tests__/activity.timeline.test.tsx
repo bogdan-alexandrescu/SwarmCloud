@@ -1351,7 +1351,7 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
       expect(n(succeeded!) + n(failed!) + n(cancelled!), `${cells[0]} does not add up`).toBe(n(finished!))
     }
     const row = root.querySelectorAll('.ol-table tbody tr')[10]!
-    expect((row.children[failed!]!.textContent ?? '').trim()).toBe('8')
+    expect((row.children[failed!]!.textContent ?? '').trim()).toBe('8 · 3 dead-lettered')
   })
 
   it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {
