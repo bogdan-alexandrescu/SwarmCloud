@@ -586,11 +586,13 @@ MERGE_TARGET_FIELD = "merge_target"
 #: `merge.MERGEABLE_HOSTS` is held equal to this by test_merge_action.py.
 MERGE_FORGE_HOSTS = frozenset({"github.com", "www.github.com"})
 
-#: Attempts a merge step gets. A required check still running fails the
-#: attempt retryably and the step waits READY, holding nothing, for the
-#: worker's `CHECKS_PENDING_RETRY_SECONDS` (300 s) before reading again; ten
-#: attempts is about 45 minutes of CI, against the three a task gets by
-#: default. The API's own ceiling on `max_attempts` is 10.
+#: Attempts a merge step gets. A required check still running no longer
+#: spends one: the step parks CI_PENDING and its attempt is refunded, up to the
+#: worker's `MERGE_CI_MAX_WAKES` (lane MS2, docs/merge-step.md "Revised
+#: 2026-10-06" §1). Past that bound each wake counts, so ten is how many wakes
+#: a pull request whose CI never settles gets after its refunds, and how many
+#: outages a merge survives, against the three a task gets by default. The
+#: API's own ceiling on `max_attempts` is 10.
 MERGE_STEP_MAX_ATTEMPTS = 10
 
 #: The step id an appended merge step takes, suffixed when a step already has it.
@@ -802,6 +804,13 @@ CHILD_REQUEST_ID_METADATA_KEY = "child_request_id"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): what its park waits on, written by the worker's CI_PENDING park, and
+#: the wake marker in it, written by the wake tick (`mergewake`). Restated by
+#: the worker and the scheduler; tests/unit/worker/test_merge_action.py holds
+#: the strings equal.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -815,6 +824,7 @@ RESERVED_METADATA_KEYS = (
     CHILD_REQUEST_ID_METADATA_KEY,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     CHILD_CASCADE_METADATA_KEY,
+    MERGE_WAIT_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1453,6 +1463,11 @@ _RESERVED_BECAUSE = {
     CHILD_CASCADE_METADATA_KEY: (
         f"metadata.{CHILD_CASCADE_METADATA_KEY} is reserved: it is set only on a "
         "child task cancelled because of its parent. Drop the key from metadata."
+    ),
+    MERGE_WAIT_METADATA_KEY: (
+        f"metadata.{MERGE_WAIT_METADATA_KEY} is reserved: it is set only on a merge "
+        "step waiting for its pull request's checks, by the worker that parked it "
+        "and the tick that wakes it. Drop the key from metadata."
     ),
 }
 

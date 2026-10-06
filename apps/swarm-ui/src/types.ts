@@ -2352,15 +2352,17 @@ export const END_CAUSES: readonly EndCause[] = [
 /**
  * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a
  * parent whose agent awaits the child tasks it submitted
- * (docs/design/child-tasks.md).
+ * (docs/design/child-tasks.md). CI_PENDING is contract request 49: a merge
+ * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
+  | 'CI_PENDING'
 
 /**
- * The same nine as a value, so a test can compare the list against
+ * The same ten as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2381,6 +2383,7 @@ export const PARK_REASONS = [
   'BUDGET_EXHAUSTED',
   'CREDENTIAL_MISSING',
   'CHILDREN_INCOMPLETE',
+  'CI_PENDING',
 ] as const
 
 /**
@@ -2427,6 +2430,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   // past `child_await_max_seconds` (a day) it cancels the outstanding ones and
   // promotes it anyway (docs/design/child-tasks.md §5 F7).
   'CHILDREN_INCOMPLETE',
+  // A merge step waiting for the checks on its pull request (contract request
+  // 49). It ends on its own: the swarm-api wake tick marks it once the checks
+  // settle, and past its fallback instant the scheduler wakes it anyway
+  // (docs/merge-step.md, 2026-10-06, §1).
+  'CI_PENDING',
 ])
 
 /**
@@ -2446,7 +2454,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the nine ParkReasons.
+ * admission plus the ten ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2472,6 +2480,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
   CHILDREN_INCOMPLETE: 'Waiting for the child tasks its agent submitted. Holds no capacity.',
+  CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',

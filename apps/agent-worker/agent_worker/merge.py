@@ -25,11 +25,15 @@ THE ORDER IS #219's (docs/merge-step.md §2.2): the reap and every check that
 needs no credential first; then the token; then the forge's facts; then the
 merge, pinned to the head; then the record and the issues. A refusal ends the
 step FAILED with MERGE_REFUSED and its code in `result_summary.merge.refusal`.
-Two refusals are waits rather than verdicts -- a required check still pending,
-and GitHub not having computed mergeability -- and fail the ATTEMPT
-retryably, so the step waits READY at no cost (invariants 1 and 4) and every
-retry reads every fact again. The merge call itself is never resent: a
-merge whose answer was lost ends MERGE_FAILED, never retried blindly.
+Three facts are waits rather than verdicts -- a required check still pending,
+no check reported at all on a branch that requires none, and GitHub not having
+computed mergeability -- and PARK the step on CI_PENDING (lane MS2,
+docs/merge-step.md "Revised 2026-10-06" §1): no lease, no pool count, the
+attempt refunded up to MERGE_CI_MAX_WAKES (invariants 1, 3 and 4). swarm-api's
+wake tick marks it once the checks settle, the scheduler promotes it on that
+mark or at the fallback instant, and the next attempt reads every fact again.
+The merge call itself is never resent: a merge whose answer was lost ends
+MERGE_FAILED, never retried blindly.
 
 THE GITHUB SPECIFICS ARE BEHIND `ForgeMerger`, with `GitHubMerger` its only
 implementation. swarm-api refuses a repository whose host has no merger at
@@ -55,7 +59,7 @@ from swarm_common.states import TaskState
 
 from . import forge as forge_mod
 from . import verdict as verdict_mod
-from .errors import InputUnavailable
+from .errors import ExitCode, InputUnavailable
 from .post_verdict import (
     ActionContext,
     ActionOutcome,
@@ -97,11 +101,23 @@ OTHER_TOLERATED = frozenset({"success", "skipped", "neutral"})
 MERGEABLE_REREADS = 2
 MERGEABLE_REREAD_SECONDS = 2.0
 
-#: How long a step whose checks are still running waits, READY and holding
-#: nothing, before its next attempt reads them again. CI on this repository
-#: takes about eight minutes; five minutes between reads is a handful of
-#: attempts, each a few seconds of a container (invariants 1 and 4).
-CHECKS_PENDING_RETRY_SECONDS = 300
+#: How many CI_PENDING parks give their attempt back (the await park's rule,
+#: `control.ControlPlane.park_ci_pending`): waiting is not failing, so a slow
+#: CI does not use up the step's attempts. Past the bound a wake counts like
+#: any attempt, so a pull request whose CI never settles still ends at
+#: `max_attempts`. 60, the design's figure: with swarm-api's wake tick marking
+#: a park as soon as its checks settle, a park lasts about one CI run, and the
+#: fallback below alone gives 60 x 15 min = 15 h of waiting, past the design's
+#: 6 h `MERGE_CI_MAX_SECONDS`.
+MERGE_CI_MAX_WAKES = 60
+
+#: When the scheduler wakes a CI_PENDING park nobody marked: the park instant
+#: plus this, as `next_eligible_at`. A dead wake tick, or a token swarm-api
+#: cannot use, then costs a wake every 15 minutes -- one lease of a few
+#: seconds -- instead of stranding the merge. Not shorter, the design's 900:
+#: each fallback wake is a Job execution and a cold start, which the tick
+#: exists to avoid.
+MERGE_CI_FALLBACK_SECONDS = 900
 
 #: The hosts `GitHubMerger` can merge on: github.com, where the tenant's
 #: token may be sent at all (`forge.may_receive_forge_token`, #307).
@@ -529,11 +545,23 @@ class _Run:
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
 
-    def wait(self, code: str, message: str, delay: int) -> ActionOutcome:
-        """A fact that may change by itself: fail the attempt, retryably."""
-        self.summary["refusal"] = {"code": code, "message": message}
-        return _outcome(TaskState.FAILED, EndCause.MERGE_REFUSED, self.summary,
-                        f"{code}: {message}", retryable=True, retry_delay_seconds=delay)
+    def wait(self, code: str, message: str, *, head: str, pull_request: int,
+             pending: list[str]) -> ActionOutcome:
+        """A fact that may change by itself: park CI_PENDING, holding nothing.
+
+        Not a retry: the lifecycle writes the park, the refund and the
+        fallback instant in one fenced transaction
+        (`control.ControlPlane.park_ci_pending`), releases the lease and exits
+        75. `head` is the head the checks were read at, which swarm-api's wake
+        tick reads them at again.
+        """
+        self.summary["wait"] = {"code": code, "message": message}
+        return _outcome(
+            TaskState.PARKED, None, self.summary, f"{code}: {message}",
+            exit_code=ExitCode.PARKED,
+            ci_wait={"code": code, "head": head, "pull_request": pull_request,
+                     "pending": sorted(pending)},
+        )
 
 
 def run_merge(ctx: ActionContext) -> ActionOutcome:
@@ -718,7 +746,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             return run.wait("no_checks",
                             f"{pr.base_ref} requires no check and none has reported at "
                             f"{pinned}; the merge needs at least one green check",
-                            CHECKS_PENDING_RETRY_SECONDS)
+                            head=pinned, pull_request=number, pending=[])
         for check in checks:
             if other_check_blocks(check.as_run()):
                 label = f"{check.name} ({check.conclusion or check.status})"
@@ -727,7 +755,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("checks_failed", f"at {pinned}: " + ", ".join(sorted(failed)))
     if pending:
         return run.wait("checks_pending", f"at {pinned}: " + ", ".join(sorted(pending)),
-                        CHECKS_PENDING_RETRY_SECONDS)
+                        head=pinned, pull_request=number, pending=pending)
 
     mergeable = pr.mergeable
     rereads = 0
@@ -741,7 +769,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if mergeable is None:
         return run.wait("mergeability_unknown",
                         f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads",
-                        CHECKS_PENDING_RETRY_SECONDS)
+                        head=pinned, pull_request=number, pending=[])
 
     # ---- §2.2 8: fencing and cancel, immediately before the call.
     if ctx.recheck():

@@ -43,9 +43,10 @@ def world(db) -> None:
 
 def ci_park(db, *, due: datetime = NOW + timedelta(minutes=15), marker=None,
             task_id: str = TASK, **extra) -> dict:
+    # The sweep reads the park, not the profile: `mock`, so admission after
+    # the promotion parks nothing for a credential this tenant lacks.
     doc = seed_task(db, task_id=task_id, tenant_id="eng", state="PARKED",
-                    runner_profile="merge", park_reason=ParkReason.CI_PENDING.value,
-                    next_eligible_at=due)
+                    park_reason=ParkReason.CI_PENDING.value, next_eligible_at=due)
     wait = {"head": "a" * 40, "pull_request": 41, "wakes": 1, "updates": 0,
             "first_parked_at": NOW - timedelta(minutes=5)}
     if marker is not None:
@@ -70,7 +71,9 @@ def test_the_wake_marker_promotes_the_park_to_ready_alone(db, make_scheduler):
     assert report.promoted_ci_waits == 1
     task = db.docs[f"tasks/{TASK}"]
     assert task["state"] == "READY"
-    assert task["park_reason"] is None and task["blocked_by"] == []
+    assert task["park_reason"] is None
+    # What admission wrote after (the global pool is at 0), not the park's.
+    assert ParkReason.CI_PENDING.value not in str(task["blocked_by"])
     # READY alone: no lease was taken, nothing was counted (invariant 1).
     assert task["current_lease_id"] is None
     assert task["attempt_count"] == 0

@@ -1257,6 +1257,8 @@ class Worker:
         """End the task the way the action's outcome says (merge-step.md §6, §6a)."""
         if outcome.credential_missing is not None:
             return self._park_credential_missing(outcome.credential_missing)
+        if outcome.ci_wait is not None:
+            return self._park_ci_pending(action, outcome.ci_wait)
         summary = self._upload_outputs()
         summary["merge" if action is WorkerAction.MERGE else "verdict"] = self._scrub(
             dict(outcome.summary)
@@ -1292,6 +1294,31 @@ class Worker:
             self.log.error("worker action ended", action=action.value, code=code,
                            end_cause=outcome.end_cause.value if outcome.end_cause else None)
         return Outcome(exit_code=outcome.exit_code, state=outcome.state)
+
+    def _park_ci_pending(
+        self, action: WorkerAction, wait: dict[str, Any]
+    ) -> Outcome:
+        """The merge's CI wait: park CI_PENDING, release, exit 75 (MS2).
+
+        docs/merge-step.md "Revised 2026-10-06" §1: a wait is a park, not a
+        retry. The fenced park, its refund and its fallback instant are one
+        transaction (`ControlPlane.park_ci_pending`); a superseded attempt
+        raises `FencedWriteRefused` there, which `run` stands down on, with
+        nothing written and the lease untouched (invariant 5). No checkpoint:
+        a worker action keeps no workspace.
+        """
+        self._export_metrics()
+        refunded = self.control.park_ci_pending(
+            code=str(wait.get("code") or "checks_pending"),
+            head=str(wait.get("head") or ""),
+            pull_request=int(wait.get("pull_request") or 0),
+            pending=[str(name) for name in wait.get("pending") or []],
+            max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
+            fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
+        )
+        self.log.info("worker action parked until CI settles", action=action.value,
+                      code=wait.get("code"), attempt_refunded=refunded)
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _await_children(self, result: ChildResult) -> Outcome | None:
         """Park on CHILDREN_INCOMPLETE when this parent's children still run.

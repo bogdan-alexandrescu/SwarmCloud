@@ -55,6 +55,15 @@ from .store import GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
 
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): `metadata.merge_wait`, written by the worker's
+#: `control.ControlPlane.park_ci_pending`, and inside it the marker swarm-api's
+#: wake tick (`swarm_api.mergewake`) writes once the checks have settled.
+#: Restated because the scheduler image carries neither; held equal by
+#: tests/unit/worker/test_merge_action.py.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+MERGE_WAKE_MARKER = "wake_requested_at"
+
 #: Park reasons that a provider pool's `quota_derived_limit` already guards, so
 #: promoting them early is safe: admission still refuses until quota returns.
 PREWARM_REASONS = (
@@ -227,6 +236,9 @@ class DrainReport:
     #: CHILDREN_INCOMPLETE parks returned to READY: every child terminal with
     #: its outputs staged, or the await deadline passed (child tasks, §3.3).
     promoted_child_awaits: int = 0
+    #: CI_PENDING parks returned to READY: swarm-api's wake tick marked their
+    #: checks settled, or their fallback instant passed (lane MS2).
+    promoted_ci_waits: int = 0
     #: Children this drain cancelled or flagged because of their parent: its
     #: cancel, its end, or its await deadline (child tasks, §3.4). The ones
     #: that became CANCELLED here are also in `cancelled`.
@@ -358,6 +370,7 @@ class Scheduler:
         report.promoted_credentials = self._promote_credentials(report)
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
+        report.promoted_ci_waits = self._promote_ci_waits(report)
         # Guarded: a child sweep that cannot query (its index still building
         # after a release, say) must not stop admission for every tenant.
         try:
@@ -1226,8 +1239,15 @@ class Scheduler:
                 promoted += 1
         return promoted
 
-    def _end_exhausted_retry(self, task: Task, report: DrainReport) -> None:
-        text = (
+    def _end_exhausted_retry(
+        self,
+        task: Task,
+        report: DrainReport,
+        *,
+        reason: ParkReason = ParkReason.SCHEDULED_RETRY,
+        text: str | None = None,
+    ) -> None:
+        text = text or (
             f"interrupted on its last attempt ({task.attempt_count} of "
             f"{task.max_attempts}); retries exhausted"
         )
@@ -1241,12 +1261,75 @@ class Scheduler:
             )
             return
         outcome = self._store.dead_letter_parked(
-            task, text, detail={"park_reason": ParkReason.SCHEDULED_RETRY.value}
+            task, text, detail={"park_reason": reason.value}
         )
         if outcome.applied:
             report.dead_lettered += 1
         else:
             self._count_stale(outcome, report)
+
+    def _promote_ci_waits(self, report: DrainReport) -> int:
+        """Return CI_PENDING parks to READY on the wake marker or the fallback.
+
+        docs/merge-step.md "Revised 2026-10-06" §1. The scheduler promotes; it
+        never reads GitHub -- it holds no forge token and must not, so a
+        GitHub outage can never slow admission. A merge step parked waiting
+        for its pull request's checks is due when either:
+
+          * `metadata.merge_wait.wake_requested_at` is set: swarm-api's wake
+            tick read the checks settled. Any value counts: the marker is on
+            a tenant-writable document, and a forged one costs one early
+            wake, whose worker re-reads every fact and trusts nothing the
+            tick saw;
+          * `next_eligible_at` has passed: the worker set it to the park
+            instant plus `MERGE_CI_FALLBACK_SECONDS`, so a dead tick or a
+            broken token never strands a merge. A park with no instant at all
+            is due, as `_promote_scheduled_retries` reads one.
+
+        A park on a task that has used its last attempt -- past the worker's
+        `MERGE_CI_MAX_WAKES` a park is not refunded -- is ended at once,
+        DEAD_LETTERED (or CANCELLED when a cancel was requested), exactly as
+        `_end_exhausted_retry` ends a SCHEDULED_RETRY park: admission does not
+        check the cap, so READY would lease one attempt too many.
+
+        Promotion is `promote_to_ready`, guarded on the state and park reason
+        this sweep read, so two drains racing promote it once. It writes the
+        task alone: no lease, no pool count. Only admission, later, takes
+        capacity (invariants 1 and 3).
+        """
+        promoted = 0
+        now = self._now()
+        for task in self._parked_window(ParkReason.CI_PENDING):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            if task.retries_exhausted():
+                self._end_exhausted_retry(
+                    task,
+                    report,
+                    reason=ParkReason.CI_PENDING,
+                    text=(
+                        f"waited for its pull request's checks on its last attempt "
+                        f"({task.attempt_count} of {task.max_attempts}); retries exhausted"
+                    ),
+                )
+                continue
+            wait = (task.metadata or {}).get(MERGE_WAIT_METADATA_KEY)
+            marked = isinstance(wait, dict) and bool(wait.get(MERGE_WAKE_MARKER))
+            eligible_at = task.next_eligible_at
+            if not marked and eligible_at is not None and eligible_at > now:
+                continue
+            if self._promote(
+                task,
+                kind="ci_wait",
+                detail={
+                    "reason": "wake_requested" if marked else "fallback_due",
+                    "park_reason": ParkReason.CI_PENDING.value,
+                    "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
+                },
+                report=report,
+            ):
+                promoted += 1
+        return promoted
 
     # -- child tasks (docs/design/child-tasks.md) ---------------------------
 

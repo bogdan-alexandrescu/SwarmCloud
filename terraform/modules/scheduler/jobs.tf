@@ -143,7 +143,7 @@ resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the per-tenant workflow-rollup, issue-run-advance and repo-index-poll jobs. swarm-api admits it to those three /v1/admin routes only. No project roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the per-tenant workflow-rollup, issue-run-advance, repo-index-poll and merge-wake jobs. swarm-api admits it to those four /v1/admin routes only. No project roles."
 }
 
 locals {
@@ -300,6 +300,62 @@ resource "google_cloud_scheduler_job" "repo_index_poll" {
   # No retry: the next tick IS the retry, five minutes later. Every queueing
   # is a claim in a Firestore transaction, so an overlapping retry could never
   # queue a second run of one registration; it would only repeat the reads.
+  retry_config {
+    retry_count = 0
+  }
+}
+
+# --- The merge step's wake (docs/merge-step.md "Revised 2026-10-06" §1, MS2) --
+#
+# POST /v1/admin/merges/wake (apps/swarm-api/swarm_api/routes/admin.py,
+# swarm_api.mergewake.wake_tenant) reads, for each of one tenant's merge steps
+# PARKED on CI_PENDING, the pull request and its checks at the head the step
+# parked at, with that tenant's own -git token, and marks the ones whose checks
+# have settled (`metadata.merge_wait.wake_requested_at`). The scheduler's
+# `_promote_ci_waits` returns a marked park to READY; only admission takes
+# capacity (invariants 1-3). The platform has no webhook receiver, so this
+# re-read IS the signal that CI has finished; without it a parked merge waits
+# for its fallback instant (15 minutes) instead of about a minute.
+#
+# SAME TENANTS AND SAME IDENTITY as the jobs above: the route takes exactly one
+# tenant_id, and swarm-api admits the rollup-sweeper account to it by name
+# (swarm_api.auth.ROLLUP_SWEEPER_ROUTES) and to nothing wider. Its one grant,
+# run.invoker on swarm-api, is already the rollup's (terraform/infra main.tf,
+# rollup_sweeper_invokes_api), so this job adds no IAM member. The token it
+# reads is swarm-api's existing per-secret accessor grant on the tenant's -git
+# secret (terraform/modules/secret_manager), the same the issue-run CI loop
+# uses.
+
+resource "google_cloud_scheduler_job" "merge_wake" {
+  for_each = var.rollup_tenant_ids
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-merge-wake-${each.key}"
+
+  description = "managed-by=swarm-terraform; merge_wake: marks tenant ${each.key}'s CI-waiting merge steps whose checks have settled (docs/merge-step.md, 2026-10-06)"
+  # Every minute: a parked merge waits on this read between its CI settling
+  # and its wake. A tick with no CI_PENDING park costs one Firestore query and
+  # reads no token; each park is read at most once per CI_READ_SECONDS (30 s).
+  schedule  = "* * * * *"
+  time_zone = var.time_zone
+  paused    = var.paused
+
+  # One page of parks, a few GETs each, each bounded by the writer's timeout.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/merges/wake?tenant_id=${urlencode(each.key)}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next tick IS the retry, a minute later. Each mark is a
+  # guarded transaction, so an overlapping retry could only repeat the reads.
   retry_config {
     retry_count = 0
   }
