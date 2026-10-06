@@ -25,6 +25,7 @@ import { num, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
+import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
 import { checkpointsLine, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
@@ -1772,15 +1773,6 @@ function tokenTotal(k: TokenKinds): number | null {
   return [k.input, k.output, k.cacheRead, k.cacheWrite].reduce<number | null>((t, v) => addCount(t, v), null)
 }
 
-/**
- * A count as the tile prints it: whole below 10,000 (`9,955`, `52`), in three
- * significant figures above (`59.7k`, `1.34M`) -- the shape of the owner's
- * decided caption, where an exact seven-digit figure would outweigh the tile.
- */
-function tokenCount(n: number): string {
-  return n < 10_000 ? n.toLocaleString('en-US') : compactCount(n)
-}
-
 /** `in 52 · out 9,955 · cache read 1.34M · write 59.7k`, leaving out what nobody reported. */
 function tokenKindsNote(k: TokenKinds): string {
   const parts: string[] = []
@@ -1793,18 +1785,6 @@ function tokenKindsNote(k: TokenKinds): string {
     parts.push(`write ${tokenCount(k.cacheWrite)}`)
   }
   return parts.join(' · ')
-}
-
-/**
- * A token count in three significant figures: `1.01M`, `12.3k`, `940`. For a
- * qualifier line, where the exact figure would outweigh the tile it sits under.
- */
-function compactCount(n: number): string {
-  if (n < 1000) return `${n}`
-  const k = Number((n / 1000).toPrecision(3))
-  // 999,999 rounds to `1000k`; that is `1M`.
-  if (k < 1000) return `${k}k`
-  return `${Number((n / 1_000_000).toPrecision(3))}M`
 }
 
 /**

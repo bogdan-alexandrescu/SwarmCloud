@@ -10,6 +10,30 @@
 locals {
   artifact_bucket_name = "${var.name_prefix}-artifacts-${var.bucket_suffix}"
   log_bucket_name      = "${var.name_prefix}-access-logs-${var.bucket_suffix}"
+
+  # WHAT NEARLINE MAY TOUCH: every mapped tenant's tasks/ and verdicts/, and
+  # never its repos/ (docs/repo-index.md §2.3, owner decision 2026-10-06). A
+  # GCS lifecycle condition can only INCLUDE prefixes, never exclude one, so
+  # the cold-stored prefixes are listed per tenant from the tenants map
+  # instead of the old single `tenants/`. Under repos/ live the index copies
+  # and the content-addressed graph blobs that planners read on every run and
+  # that stay referenced for months: Nearline would charge a retrieval fee on
+  # each read and a 30-day minimum on each deletion. Retention there is the
+  # index-run sweep's (images/agent-runtime-indexer/repo-index/
+  # repo_graph_shards.py `sweep`): the last 20 versions, then unreferenced
+  # blobs.
+  #
+  # This list governs Nearline ONLY. The customTime Delete below stays
+  # bucket-wide, so every tenant's task objects still expire -- including
+  # the personal tenants (`u-<slug>`) the API creates at runtime, which are
+  # never in this map. Those tenants' task objects are simply not
+  # cold-stored: a storage-class cost difference, nothing kept forever.
+  # repos/ is off the Delete clock because the worker never stamps customTime
+  # under it (agent_worker.objectstore `is_repos_key`), the same way a
+  # checkpoint is.
+  aged_prefixes = flatten([
+    for t in var.tenants : ["tenants/${t}/tasks/", "tenants/${t}/verdicts/"]
+  ])
 }
 
 resource "google_storage_bucket" "access_logs" {
@@ -82,16 +106,21 @@ resource "google_storage_bucket" "artifacts" {
     log_object_prefix = "${var.name_prefix}-artifacts"
   }
 
-  # Cold-store what nobody reads.
-  lifecycle_rule {
-    condition {
-      age            = var.nearline_after_days
-      with_state     = "LIVE"
-      matches_prefix = ["tenants/"]
-    }
-    action {
-      type          = "SetStorageClass"
-      storage_class = "NEARLINE"
+  # Cold-store what nobody reads: tasks/ and verdicts/, never repos/ (see
+  # `aged_prefixes`). With no tenant the rule is omitted, because a
+  # condition with an empty matches_prefix matches EVERY object.
+  dynamic "lifecycle_rule" {
+    for_each = length(local.aged_prefixes) > 0 ? [local.aged_prefixes] : []
+    content {
+      condition {
+        age            = var.nearline_after_days
+        with_state     = "LIVE"
+        matches_prefix = lifecycle_rule.value
+      }
+      action {
+        type          = "SetStorageClass"
+        storage_class = "NEARLINE"
+      }
     }
   }
 
@@ -128,6 +157,13 @@ resource "google_storage_bucket" "artifacts" {
   #
   # Stamping a checkpoint by mistake would put it back on the clock this rule
   # exists to take it off, which is why the filter is on the key and not a guess.
+  #
+  # BUCKET-WIDE ON PURPOSE (lane IX3). A per-tenant prefix list would drop
+  # every runtime personal tenant off the clock, keeping its task objects
+  # forever. repos/ is protected instead by carrying no customTime: the
+  # worker does not stamp anything under tenants/<t>/repos/
+  # (agent_worker.objectstore `is_repos_key`), and the graph writer uploads
+  # without one, so this rule cannot match an index copy or a graph blob.
   lifecycle_rule {
     condition {
       days_since_custom_time = var.artifact_retention_days

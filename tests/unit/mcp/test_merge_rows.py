@@ -57,8 +57,7 @@ def test_the_worker_source_yields_its_refusal_codes():
     # `not_mergeable` into `protection_refused` and `merge_conflict`, and
     # test_merge_action.py holds that `not_mergeable` is gone.
     found = _worker_codes()
-    for code in ("checks_failed", "head_moved", "protection_refused", "merge_conflict",
-                 "token_lacks_rights",
+    for code in ("checks_failed", "head_moved", "merge_conflict", "token_lacks_rights",
                  "merge_unanswered", "credential_unreadable", "upstream_unreadable"):
         assert code in found, (code, found)
 

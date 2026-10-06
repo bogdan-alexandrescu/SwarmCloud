@@ -28,14 +28,14 @@
 //     that is waiting AFTER an earlier attempt ran still carries a start time.
 //     It is drawn as waiting, never as running.
 
-import { NEVER_STARTED_WORD, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { NEVER_STARTED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
 import {
   absentCell,
   costCell,
   countCell,
   durationText,
   measuredCell,
-  tokenCell,
+  tokenCount,
   TOKENS_NOT_REPORTED,
   type Absence,
   type Cell,
@@ -1123,17 +1123,70 @@ export function boardResultNote(gap: BoardTelemetryGap): string {
   }
 }
 
-/** Input and output tokens as one cell: each half its own, a missing half not a zero. */
-export function tokenPairCell(input: number | null | undefined, output: number | null | undefined, note: string): Cell {
-  const tin = tokenCell(input, '')
-  const tout = tokenCell(output, '')
-  if (tin.kind === 'absent' && tout.kind === 'absent') return absentCell(TOKENS_NOT_REPORTED)
+/**
+ * The four kinds of token a step can report, each its own sum: null is "no
+ * attempt reported this kind", never zero.
+ */
+export interface TokenKindCounts {
+  readonly input: number | null | undefined
+  readonly output: number | null | undefined
+  readonly cacheRead: number | null | undefined
+  readonly cacheWrite: number | null | undefined
+}
+
+/** A count is a finite number; anything else is a kind nobody reported. */
+function reportedCount(v: number | null | undefined): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * `in 52 · out 9,955 · cache read 1.34M · write 59.7k`, leaving out what
+ * nobody reported -- Agent › Details' caption, word for word (#322).
+ */
+export function tokenKindsCaption(k: TokenKindCounts): string {
+  const parts: string[] = []
+  const add = (label: string, v: number | null | undefined) => {
+    const n = reportedCount(v)
+    if (n !== null) parts.push(`${label} ${tokenCount(n)}`)
+  }
+  add('in', k.input)
+  add('out', k.output)
+  add('cache read', k.cacheRead)
+  add('write', k.cacheWrite)
+  return parts.join(' · ')
+}
+
+/**
+ * A step's or an attempt's tokens as one cell (#322): THE TOTAL OF EVERY KIND
+ * THAT WAS REPORTED, and each kind's count in the note.
+ *
+ * `X in · Y out` was the shape before, and it left the cache out: a step that
+ * read 1.34M cached tokens printed `52 in · 9,955 out` beside a cost that paid
+ * for all of them, so the cost read as wrong when it was right. The owner's
+ * decided shape for Agent › Details is the total as the headline with each
+ * kind's count underneath; a node is budgeted for a 20-character figure, so
+ * here the headline is the cell and the kinds are its note (the `title` and
+ * the node's `?`).
+ *
+ * A KIND NO ATTEMPT REPORTED IS LEFT OUT, of the total and of the caption --
+ * never added as a zero. The 5m/1h write split is Agent › Details' alone: it
+ * comes from the CLI's own `usage.cache_creation`, which neither the attempt
+ * documents nor `runner.usage` carry.
+ */
+export function tokenKindsCell(k: TokenKindCounts, note: string): Cell {
+  const total = [k.input, k.output, k.cacheRead, k.cacheWrite]
+    .map(reportedCount)
+    .reduce<number | null>((t, v) => (v === null ? t : t === null ? v : t + v), null)
+  if (total === null) return absentCell(TOKENS_NOT_REPORTED)
   return measuredCell(
-    [tin.kind === 'measured' ? `${tin.text} in` : null, tout.kind === 'measured' ? `${tout.text} out` : null]
-      .filter((x): x is string => x !== null)
-      .join(' · '),
-    note,
+    tokenCount(total),
+    `${tokenKindsCaption(k)}. ${note} A kind left out was not reported, which is not the same as none.`,
   )
+}
+
+/** A step result's four kinds, in the shape `tokenKindsCell` reads. */
+export function resultTokenKinds(r: ResultUsage): TokenKindCounts {
+  return { input: r.inputTokens, output: r.outputTokens, cacheRead: r.cacheReadTokens, cacheWrite: r.cacheCreationTokens }
 }
 
 /**
@@ -1169,14 +1222,18 @@ export function attemptFacts(
     typeof a.exit_code === 'number' && Number.isFinite(a.exit_code)
       ? measuredCell(`${a.exit_code}`, 'The agent process’s exit code.')
       : absentCell(exitAbsence(started, completed, phase))
-  const own = tokenPairCell(
-    a.input_tokens,
-    a.output_tokens,
-    'This attempt’s own token counts. A half that is missing was not reported, which is not the same as none.',
+  const own = tokenKindsCell(
+    {
+      input: a.input_tokens,
+      output: a.output_tokens,
+      cacheRead: a.cache_read_input_tokens,
+      cacheWrite: a.cache_creation_input_tokens,
+    },
+    'This attempt’s own token counts.',
   )
   const borrowed =
-    own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
-      ? tokenPairCell(result.inputTokens, result.outputTokens, FROM_RESULT_NOTE)
+    own.kind === 'absent' && result !== null && hasTokenKind(result)
+      ? tokenKindsCell(resultTokenKinds(result), FROM_RESULT_NOTE)
       : null
   const ownCost = costCell(a.cost_usd, 'This attempt’s own cost. Token cost only; no infrastructure cost is recorded anywhere.')
   const borrowedCost =
@@ -1514,4 +1571,173 @@ export function workflowPullRequest(
     found ??= here
   }
   return found
+}
+
+// ---------------------------------------------------------------------------
+// The merge step's card (docs/merge-step.md "Revised 2026-10-06" §6 MS4)
+// ---------------------------------------------------------------------------
+
+/** The frozen catalogue's merge profile (contract request 47): a step that runs no agent. */
+export const MERGE_PROFILE = 'merge'
+
+/**
+ * `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`: how many times the step
+ * updates a branch that is behind before it refuses `behind_too_often`.
+ * Restated because the console carries no worker; the card prints "n of 3".
+ */
+export const MERGE_MAX_BRANCH_UPDATES = 3
+
+/** What the merge step is doing, as its card says it. */
+export type MergeCardState =
+  /** PARKED on CI_PENDING: `metadata.merge_wait`'s code, pending names and head. */
+  | { readonly kind: 'waiting'; readonly code: string | null; readonly pending: readonly string[]; readonly head: string | null }
+  /** PARKED on CI_PENDING after GitHub merged the base into the branch. Null: no count recorded. */
+  | { readonly kind: 'updated'; readonly updates: number | null; readonly head: string | null }
+  | {
+      readonly kind: 'merged'
+      readonly commit: string | null
+      /** `merged_by_this_task`; false with `already` is another merger at the pinned head. */
+      readonly byThisTask: boolean | null
+      readonly already: boolean
+      readonly closed: readonly number[]
+      readonly notClosed: number
+      readonly beyondPage: boolean
+      readonly updates: number | null
+    }
+  /** `failed` is MERGE_FAILED (or another end cause), not a MERGE_REFUSED refusal. */
+  | { readonly kind: 'refused'; readonly failed: boolean; readonly code: string | null; readonly reason: string | null }
+  | { readonly kind: 'not-yet'; readonly state: TaskState }
+
+export interface MergeCard {
+  readonly state: MergeCardState
+  /** The pull request: a link only when a worker-written result yields one. */
+  readonly pullRequest: { readonly number: number; readonly href: string | null } | null
+  /** `metadata.merge_wait.first_parked_at`: when the step first parked for CI. */
+  readonly firstParkedAt: string | null
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const strOf = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+const posInt = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null)
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+const ints = (v: unknown): number[] => (Array.isArray(v) ? v.filter((n): n is number => posInt(n) !== null) : [])
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => strOf(s) !== null) : [])
+
+/** A GitHub owner or repository name; never `.` or `..`, never a path. */
+const GH_NAME = /^[A-Za-z0-9_.-]+$/
+const ghName = (s: string | undefined): boolean => s !== undefined && GH_NAME.test(s) && !/^\.+$/.test(s)
+const GH_PULL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([0-9]+)$/
+
+/**
+ * The pull request's link, from a WORKER-WRITTEN result only (MS4: "built from
+ * the result, never from caller text"). The merge step merges on github.com
+ * alone (`agent_worker.merge.MERGEABLE_HOSTS`), so:
+ *
+ *  1. the merge result's `repository` (the worker's `owner/repo`) and
+ *     `pull_request` number make `https://github.com/<owner>/<repo>/pull/<n>`;
+ *  2. before the step has a result -- every CI park -- the opening step's
+ *     recorded `git.pull_request.url`, the task its SIGNED `merge_target`
+ *     names, when it is exactly a github.com pull request URL for that number.
+ *
+ * Anything else keeps the number and draws no link. The task's
+ * `repository_url`, its input and every caller metadata key are never read.
+ */
+function mergePullRequest(
+  merge: Record<string, unknown> | null,
+  wait: Record<string, unknown> | null,
+  opener: Task | null,
+): MergeCard['pullRequest'] {
+  const recorded = isObj(opener?.result_summary?.['git']) ? (opener!.result_summary!['git'] as Record<string, unknown>)['pull_request'] : null
+  const openerPr = isObj(recorded) ? recorded : null
+  const number = posInt(merge?.['pull_request']) ?? posInt(wait?.['pull_request']) ?? posInt(openerPr?.['number'])
+  if (number === null) return null
+  const repository = strOf(merge?.['repository'])
+  const [owner, repo, ...rest] = (repository ?? '').split('/')
+  if (posInt(merge?.['pull_request']) === number && rest.length === 0 && ghName(owner) && ghName(repo)) {
+    return { number, href: `https://github.com/${owner}/${repo}/pull/${number}` }
+  }
+  const url = strOf(openerPr?.['url'])
+  const m = url === null ? null : GH_PULL.exec(url)
+  if (m !== null && ghName(m[1]) && ghName(m[2]) && Number(m[3]) === number) return { number, href: url }
+  return { number, href: null }
+}
+
+/**
+ * THE MERGE STEP'S CARD, or null for any step that is not one.
+ *
+ * Read from what the platform wrote and nothing else:
+ *
+ *  * a CI_PENDING park from `metadata.merge_wait` (`control.ControlPlane.
+ *    park_ci_pending`): `branch_updated` is "behind and updated", any other
+ *    code is "waiting for CI". A park writes no result, so this is the only
+ *    record of it. It holds no capacity and wakes by itself (invariant 1), so
+ *    nothing here calls it stalled or blocked;
+ *  * an end from `result_summary.merge` (`agent_worker.merge.run_merge`):
+ *    merged, with the commit and the issues it closed; or refused, with
+ *    `refusal.code` and its message;
+ *  * the pull request as `mergePullRequest` says.
+ *
+ * `tasks` is the workflow's tasks as read, for the opening step only.
+ */
+export function mergeCardOf(task: Task, tasks: Iterable<Task>): MergeCard | null {
+  if (task.runner_profile !== MERGE_PROFILE) return null
+  const meta = isObj(task.metadata) ? task.metadata : null
+  const wait = isObj(meta?.['merge_wait']) ? (meta!['merge_wait'] as Record<string, unknown>) : null
+  const merge = isObj(task.result_summary?.['merge']) ? (task.result_summary!['merge'] as Record<string, unknown>) : null
+  const dispatch = isObj(meta?.['dispatch']) ? (meta!['dispatch'] as Record<string, unknown>) : null
+  const target = isObj(dispatch?.['merge_target']) ? (dispatch!['merge_target'] as Record<string, unknown>) : null
+  const openerId = strOf(target?.['pull_request'])
+  let opener: Task | null = null
+  if (openerId !== null) {
+    for (const t of tasks) {
+      if (t.id === openerId) {
+        opener = t
+        break
+      }
+    }
+  }
+
+  let state: MergeCardState
+  if (task.state === 'PARKED' && task.park_reason === 'CI_PENDING') {
+    // The park's own record, or -- from an API that dropped the metadata --
+    // the blocker the same transaction wrote.
+    const blocker = ((task.blocked_by ?? []) as unknown[]).find(
+      (b): b is Record<string, unknown> => isObj(b) && b['reason'] === 'CI_PENDING',
+    )
+    const from = wait ?? blocker ?? null
+    const code = strOf(from?.['code'])
+    const head = strOf(from?.['head'])
+    if (code === 'branch_updated') {
+      const n = countOf(wait?.['updates'])
+      state = { kind: 'updated', updates: n !== null && n > 0 ? n : null, head }
+    } else {
+      state = { kind: 'waiting', code, pending: strs(from?.['pending']), head }
+    }
+  } else if (task.state === 'SUCCEEDED') {
+    const by = merge?.['merged_by_this_task']
+    state = {
+      kind: 'merged',
+      commit: strOf(merge?.['merge_commit']),
+      byThisTask: typeof by === 'boolean' ? by : null,
+      already: merge?.['already_merged'] === true,
+      closed: ints(merge?.['issues_closed']),
+      notClosed: Array.isArray(merge?.['issues_not_closed']) ? (merge!['issues_not_closed'] as unknown[]).length : 0,
+      beyondPage: isObj(merge?.['issues_beyond_page']),
+      updates: countOf(merge?.['updates']),
+    }
+  } else if (task.state === 'FAILED' || task.state === 'DEAD_LETTERED') {
+    const r = merge?.['refusal']
+    const refusal = isObj(r) ? r : null
+    const cause = strOf(task.end_cause)
+    state = {
+      kind: 'refused',
+      failed: cause !== null ? cause !== 'merge_refused' : refusal === null,
+      code: strOf(refusal?.['code']),
+      reason: strOf(refusal?.['message']) ?? (strOf(task.last_error)?.split('\n', 1)[0] ?? null),
+    }
+  } else {
+    state = { kind: 'not-yet', state: task.state }
+  }
+  const first = strOf(wait?.['first_parked_at'])
+  return { state, pullRequest: mergePullRequest(merge, wait, opener), firstParkedAt: first }
 }

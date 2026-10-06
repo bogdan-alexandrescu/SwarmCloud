@@ -140,6 +140,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
+from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
@@ -599,6 +600,16 @@ class Worker:
         # run the schedule without waiting it out.
         self.startup_sleep: Callable[[float], Any] = time.sleep
         self.startup_clock: Callable[[], float] = time.monotonic
+        # The egress probe (#721 (a), `agent_worker.egress`): started at the
+        # top of `run`, waited for by the clone only, stopped when the startup
+        # window closes. The connect, cap and interval are replaceable so a
+        # test never touches the network nor waits out the cap. None until
+        # `run` starts it; `_maybe_clone` called alone then waits for nothing.
+        self.egress_connect: Callable[..., Any] | None = None
+        self.egress_cap_seconds: float = egress_mod.EGRESS_PROBE_CAP_SECONDS
+        self.egress_interval_seconds: float = egress_mod.EGRESS_PROBE_INTERVAL_SECONDS
+        self._egress: egress_mod.EgressProbe | None = None
+        self._egress_marked = False
         # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
@@ -837,6 +848,79 @@ class Worker:
     # entrypoint
     # ------------------------------------------------------------------
     def run(self) -> int:
+        # FIRST, so the probe runs alongside everything below -- the
+        # generation check, the spec, the checkpoint restore, the secret
+        # reads -- and none of it waits for the probe. Stopped when the
+        # startup window closes (`_execute`); here as well, for every exit
+        # that never reaches it, so no probe thread outlives the run.
+        self._start_egress_probe()
+        try:
+            return self._run()
+        finally:
+            self._stop_egress_probe()
+
+    def _start_egress_probe(self) -> None:
+        """Probe the forge's path from process start (#721 (a)). Never raises.
+
+        github.com always, repository or not (`egress.probe_targets`): the
+        dispatcher sets no REPOSITORY_URL (`scheduler.dispatch.worker_env`),
+        so the repository is known only from the signed task document, read
+        well after this. `_add_egress_target` adds the clone host then, when
+        it is elsewhere. A task with nothing to clone only has the probe
+        stopped at the end of the startup window.
+        """
+        try:
+            targets = egress_mod.probe_targets(self.cfg.repository_url)
+            if not targets:
+                return
+            probe = egress_mod.EgressProbe(
+                targets,
+                cap_seconds=self.egress_cap_seconds,
+                interval_seconds=self.egress_interval_seconds,
+                connect=self.egress_connect,
+            )
+            probe.start()
+            self._egress = probe
+        except Exception as exc:  # a measurement is never worth an attempt
+            self.log.warning("egress probe did not start", error=type(exc).__name__)
+
+    def _add_egress_target(self, url: Any) -> None:
+        """Probe the clone host too, once the verified task names it. Never raises."""
+        probe = self._egress
+        if probe is None or not isinstance(url, str):
+            return
+        try:
+            probe.add_target(egress_mod.target_of(url))
+        except Exception as exc:  # a measurement is never worth an attempt
+            self.log.warning("egress probe: clone host not added", error=type(exc).__name__)
+
+    def _stop_egress_probe(self) -> None:
+        probe = self._egress
+        if probe is not None:
+            probe.stop()
+
+    def _mark_egress_ready(self) -> None:
+        """`egress_ready`: when the forge's path opened (#721 (a)). Once per attempt.
+
+        Next to `clone_timed`, on the same RUNNING startup-mark path, written
+        by `_maybe_clone` once the clone is done -- or has failed, the
+        attempts whose timing matters most -- so inside the startup window and
+        its budget. A task that clones nothing (or restores its clone from a
+        checkpoint) writes none: its probe is only stopped with the window.
+        The probe is stopped first: the clone was its only waiter. The
+        detail is `egress`: `egress_ready_seconds` (process start to the first
+        github.com connect that succeeded, None if none did), `probe_attempts`,
+        how the probe `ended` (ready, cap, stopped) and the same two numbers
+        per target. Numbers and host names only.
+        """
+        probe = self._egress
+        if probe is None or self._egress_marked:
+            return
+        self._egress_marked = True
+        probe.stop()
+        self._emit_startup_mark("egress_ready", {"egress": probe.result()})
+
+    def _run(self) -> int:
         self._install_signal_handlers()
 
         # ---- STEP 1: fencing, before anything else exists ---------------
@@ -986,6 +1070,9 @@ class Worker:
             if unavailable is None:
                 raise
             return Outcome(exit_code=self._exit_unavailable_before_runner(exc, unavailable))
+        finally:
+            # The startup window is over: no probe thread runs past it.
+            self._stop_egress_probe()
         if callable(prepared):
             return prepared()
         child_env = prepared
@@ -1289,8 +1376,21 @@ class Worker:
         if isinstance(base, str):
             skipped(base)
             return None
-        # The base index: the staged-input path a workflow input takes -- the
-        # successful attempt's manifest, a key under this tenant's prefix.
+        # The base index: its copy under repos/ first (lane IX3), which no
+        # lifecycle rule expires; then the staged-input path a workflow input
+        # takes -- the successful attempt's manifest, a key under this
+        # tenant's prefix -- for a version promoted before the copy existed.
+        # Either is checked against the digest promotion recorded.
+        destination = ws.work / indexrun_mod.BASE_INDEX_FILE
+        try:
+            kept = self.store.download_bytes(where.index_key(base_sha))
+        except Exception:
+            kept = None
+        if (kept is not None and len(kept) <= indexrun_mod.MAX_BASE_INDEX_BYTES
+                and indexrun_mod.content_digest(kept) == base.digest):
+            destination.write_bytes(kept)
+            return self._index_read_base_graph(program, env, where, base, base_sha, started,
+                                               skipped, source="its copy under repos/")
         try:
             upstream = inputs_mod.fetch_upstream_task(
                 self.db, upstream_task_id=base.task_id, tenant_id=cfg.tenant_id,
@@ -1304,7 +1404,6 @@ class Worker:
                 skipped(f"the base index is {reference.size_bytes} bytes, over the "
                         f"{indexrun_mod.MAX_BASE_INDEX_BYTES} an index may be")
                 return None
-            destination = ws.work / indexrun_mod.BASE_INDEX_FILE
             self.store.download_file(reference.key, destination)
             data = destination.read_bytes()
         except InputUnavailable as exc:
@@ -1317,6 +1416,17 @@ class Worker:
             skipped("the base index no longer matches the digest recorded when it was "
                     "promoted, so it is not built on")
             return None
+        return self._index_read_base_graph(program, env, where, base, base_sha, started, skipped,
+                                           source="the index task's artifact")
+
+    def _index_read_base_graph(
+        self, program: str, env: dict[str, str], where: indexrun_mod.Target,
+        base: indexrun_mod.BaseVersion, base_sha: str, started: float,
+        skipped: Callable[[str], None], *, source: str,
+    ) -> str | None | Outcome:
+        """`swarm-repo-graph read` of the base, once its index is staged from `source`."""
+        cfg, ws = self.cfg, self.ws
+        assert ws is not None
         ran = self._run_index_phase(
             "stage_base",
             indexrun_mod.graph_read_argv(
@@ -1332,7 +1442,7 @@ class Worker:
             skipped(f"the base graph was not read ({ran.status}: {ran.reason or 'no file'})")
             return None
         ran.seconds = round(time.monotonic() - started, 3)
-        ran.reason = f"base {base_sha[:12]} staged"
+        ran.reason = f"base {base_sha[:12]} staged, its index from {source}"
         self._note_index_phase(ran)
         return base_sha
 
@@ -1387,11 +1497,24 @@ class Worker:
             return None
         assert not isinstance(where, str) and program is not None
         self.phases.enter("index_graph_write")
+        # RETENTION OF repos/ (§2.3, lane IX3): the commits whose versions
+        # swarm-api still holds, so the writer's sweep retires every other
+        # commit's manifest and index copy. Unread, nothing is retired.
+        try:
+            keep = indexrun_mod.kept_commits(
+                self.db, tenant_id=cfg.tenant_id, where=where, own=self._index_commit(),
+                call_options=self.control.call_options("tenant"),
+            )
+        except Exception as exc:
+            keep = f"the kept versions could not be read ({type(exc).__name__})"
+        if isinstance(keep, str):
+            self.log.info("index retention skipped; the sweep retires nothing", reason=keep)
         ran = self._run_index_phase(
             "graph_write",
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
                 bucket=cfg.artifact_bucket, base_sha=self._index_base,
+                keep=None if isinstance(keep, str) else keep,
             ),
             cwd=ws.work,
             env=env,
@@ -1401,6 +1524,48 @@ class Worker:
             return ran
         self._note_index_phase(ran)
         return None
+
+    def _index_commit(self) -> str | None:
+        """The commit an index run indexed: the SIGNED spec's `repository_ref`
+        (`swarm_api.repoindex.indexer_task` sets it to the sha), never metadata."""
+        ref = (self._task or {}).get("repository_ref") or self.cfg.repository_ref
+        return ref if isinstance(ref, str) and indexrun_mod.is_commit_sha(ref) else None
+
+    def _index_keep_copy(self, artifacts: list[dict[str, Any]]) -> None:
+        """Copy the uploaded repo-index.json to its own home under repos/ (§2, lane IX3).
+
+        The artifact lives under `tasks/`, which the bucket's lifecycle cold-
+        stores and expires; the index must outlive it, so the worker -- the
+        only identity that may write under the tenant's prefix, swarm-api
+        reads only -- copies it to `indexrun.Target.index_key`. The bytes are
+        read back from the uploaded object, so the copy is the artifact byte
+        for byte, which promotion checks before it records the copy. A copy
+        that fails is logged and the run goes on: promotion then records the
+        artifact alone, as before.
+        """
+        cfg = self.cfg
+        if not indexrun_mod.is_index_run(cfg.runner_profile):
+            return
+        if not any(entry.get("name") == indexrun_mod.INDEX_FILE for entry in artifacts):
+            return
+        where = indexrun_mod.target(
+            cfg.tenant_id, (self._task or {}).get("repository_url") or cfg.repository_url
+        )
+        commit = self._index_commit()
+        if isinstance(where, str) or commit is None:
+            self.log.warning(
+                "the index was not copied under repos/",
+                reason=where if isinstance(where, str) else "the task names no commit sha",
+            )
+            return
+        key = where.index_key(commit)
+        try:
+            data = self.store.download_bytes(f"{cfg.artifact_prefix}/{indexrun_mod.INDEX_FILE}")
+            self.store.upload_bytes(key, data, content_type="application/json")
+        except Exception as exc:
+            self.log.warning("the index was not copied under repos/", error=type(exc).__name__)
+            return
+        self.log.info("index copied under repos/", key=key, bytes=len(data))
 
     def _run_index_phase(
         self, name: str, argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
@@ -1945,6 +2110,9 @@ class Worker:
         self.phases.enter("verify_spec")
         task, create_time = self.control.fetch_task_snapshot()
         self._verify_spec(task, create_time)
+        # The clone host joins the egress probe (#721 (a)) as soon as the
+        # document naming it is verified, the same URL `_maybe_clone` reads.
+        self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
 
         # ---- STEP 4a: every signed parent has SUCCEEDED -------------------
         # Contract request 34, decision 7. A tenant agent can write a parked
@@ -3799,10 +3967,12 @@ class Worker:
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
                     token=None if refusal else self._git_token(),
+                    egress=self._egress,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
+                self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
                 # Not the end of the step: the branch tip is what every step
@@ -3830,10 +4000,13 @@ class Worker:
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
                 token=None if refusal else self._git_token(),
+                egress=self._egress,
             ))
         except GitTransient as exc:
+            self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
+            self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
                 "pushed when that step publishes -- it was not found or could "
@@ -3852,6 +4025,7 @@ class Worker:
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
         self._mark_clone_timed(clone, tries=tries[0], pinned=pinned_clone)
+        self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
         # `result_summary.git.clone_commit` (merge-step.md §3): the only record
@@ -9446,6 +9620,9 @@ class Worker:
         # above decides which files are taken, not the order a reader sees
         # them in, nor which of them the listing route's first page holds.
         artifacts.sort(key=lambda entry: entry["name"].split("/"))
+        # An index run's repo-index.json also goes to its home under repos/
+        # (lane IX3), before `finish` makes the task promotable.
+        self._index_keep_copy(artifacts)
 
         # WHAT A CLI AGENT WITH NO REPOSITORY CREATED IN ITS WORKING FOLDER
         # (#184, owner decision of 2026-09-26), after the artifacts folder so a

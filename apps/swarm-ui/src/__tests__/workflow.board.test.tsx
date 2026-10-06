@@ -1852,7 +1852,7 @@ describe('the owner’s decisions: the open card', () => {
     }
     // THE FIGURE, WHOLE, and nothing else in its slot.
     expect(row('cost').querySelector('dd')!.textContent).toBe('$0.50')
-    expect(row('tokens').querySelector('dd')!.textContent).toBe('123.4k in · 45.6k out')
+    expect(row('tokens').querySelector('dd')!.textContent).toBe('169k')
     expect(node.querySelector('.node-num .wf-src'), 'the note still shares the figure’s column').toBeNull()
 
     // THE NOTE, in the one spelling, naming the figures it is about.

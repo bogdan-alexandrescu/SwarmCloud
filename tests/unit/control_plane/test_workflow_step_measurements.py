@@ -308,8 +308,22 @@ def test_every_step_figure_goes_through_measure():
     """No screen-local formatting, and no `?? 0` on the way in."""
     text = src("Workflows.tsx")
     figures = body_of(text, "function figuresFor(") + body_of(text, "function tokensOf(")
-    for helper in ("costCell(", "tokenCell(", "countCell(", "absentCell(", "measuredCell("):
-        assert helper in figures, f"the step figures no longer use {helper}"
+    # Tokens go through `tokenKindsCell` (stepviews.ts), which builds on
+    # measure.ts's `measuredCell`/`absentCell`; the old `tokenCell(` counted
+    # only in/out and was removed by #322 item 9c.
+    for helper in ("costCell(", "tokenKindsCell(", "countCell(", "absentCell(", "measuredCell("):
+        assert helper in figures or helper in ("absentCell(", "measuredCell("), (
+            f"the step figures no longer use {helper}"
+        )
+    # THE PROPERTY: the Tokens column counts all four kinds, not only in/out.
+    tokens = body_of(text, "function tokensOf(")
+    for kind in ("u.inputTokens", "u.outputTokens", "u.cacheReadTokens", "u.cacheCreationTokens"):
+        assert kind in tokens, f"the Tokens column no longer counts {kind}"
+    cell = body_of(src("stepviews.ts"), "export function tokenKindsCell(")
+    for kind in ("k.input", "k.output", "k.cacheRead", "k.cacheWrite"):
+        assert kind in cell, f"tokenKindsCell no longer sums {kind}"
+    assert "measuredCell(" in cell and "absentCell(" in cell
+    assert "?? 0" not in cell and "|| 0" not in cell
     for forbidden in ("?? 0", "|| 0", "toFixed(", "toLocaleString("):
         assert forbidden not in figures, (
             f"the step figures contain {forbidden!r}, which manufactures a zero "
