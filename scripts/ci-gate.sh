@@ -46,7 +46,7 @@
 # file, and its `startup_failure` conclusion is exactly "failed to start".
 #
 # Usage:
-#   scripts/ci-gate.sh wait --event pull_request|push --sha <40 hex>
+#   scripts/ci-gate.sh wait --event pull_request|push|merge_group --sha <40 hex>
 #                           (--base <sha> | --changed FILE) [--repo owner/name]
 #   scripts/ci-gate.sh expected --event EVENT --changed FILE
 #   scripts/ci-gate.sh paths --workflow FILE --event EVENT
@@ -285,9 +285,12 @@ cmd_wait() {
       *) die "wait: unknown argument: $1" ;;
     esac
   done
+  # merge_group: a merge queue entry (docs/ci.md, "Main merges through a merge
+  # queue"). Its runs are found by the entry's commit and that event, and
+  # every gated workflow runs there unfiltered, so each is expected.
   case "${event}" in
-    pull_request|push) ;;
-    *) die "--event must be pull_request or push, not '${event}'" ;;
+    pull_request|push|merge_group) ;;
+    *) die "--event must be pull_request, push or merge_group, not '${event}'" ;;
   esac
   [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] \
     || die "--sha must be a full 40-character commit id, not '${sha}': runs are found by it exactly"
