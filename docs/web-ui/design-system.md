@@ -892,10 +892,29 @@ greyscale.
 > `Activity.tsx`), `.coverage > i` (the usage-coverage strip in
 > `Activity.tsx`), and `.ctl-track > i`, which the comment beside the default
 > rule keeps `--info` on purpose as "the meter beside a number" (no screen
-> currently renders a bare `<i>` inside `.ctl-track`). They share the
-> `background: var(--info)` rule in `styles.css`. Whether the same "colour on a
-> bar is a verdict" rule extends to them is a question for the owner and was
-> not decided here. One consequence of the corrected guard: if a screen ever
+> currently renders a bare `<i>` inside `.ctl-track`). They shared the
+> `background: var(--info)` rule in `styles.css`.
+>
+> **Decided (#122, recorded here 2026-10-06 for #74): the rule extends to
+> both, grey, always.** The owner chose option 1 of #74's three. `.sr-bar > i`
+> and `.coverage > i` take `--text-dim`, as every other proportion does, and
+> `.sr-bar > i.bad` keeps `--bad`: that is the only verdict hue either bar has.
+> `.coverage` has no verdict at all, so its fill never takes a hue. Option 2
+> (`.coverage` in `--warn` while partial) was not taken. `.coverage` was then
+> retired with its only caller, the Timeline's row-count strip (TS-12): read
+> on main on 2026-10-06, no shipped sheet declares `.coverage > i`, and the
+> Timeline no longer renders a `.sr-bar` (Admin › Platform counts is the one
+> screen that does). The shared rule in `styles.css` now paints
+> `.ctl-track > i, .ctl-util-fill, .sr-bar > i` in `--text-dim`, so
+> `.ctl-track > i` went grey under the same #122 rule. Two guards hold it.
+> PR #722 added `proportion.verdict.test.tsx` (vitest), which renders Platform
+> counts and reads every fill it draws. #74's Python half extends
+> `test_a_proportion_fill_takes_a_hue_only_from_a_verdict`: it tries every
+> `<i>` in a `.sr-bar` or `.coverage` against every background rule in every
+> shipped sheet and fails on any hue that is not `.sr-bar > i.bad`.
+> `test_the_bar_fill_check_fails_on_a_hued_bar` puts the #74 rule back on each
+> bar, tries five other ways in, and requires the check to fail on every one.
+> A `.sr-bar > i.bad` verdict must still pass. One consequence of the corrected guard: if a screen ever
 > renders a `.ctl-util-fill` as an `<i>` inside `.ctl-track`, then
 > `.ctl-track > i` (0,1,1) outranks the grey default (0,1,0) and paints it
 > blue. The guard fails on that, because it reads the parent.
