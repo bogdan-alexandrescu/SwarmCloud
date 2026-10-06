@@ -1,12 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { loadWorkflow, loadWorkflowUsage, type StepUsage, type WorkflowRead } from './api'
 import { Dash } from './components/Chip'
+import { PARK_WORD } from './components/StatePill'
 import { workflowSpend } from './dag'
 import { spanText } from './duration'
 import { NamedMark, StateMark } from './marks'
 import { usd } from './measure'
 import { timeAgo } from './Shell'
+import { mergeCardOf, type MergeCard } from './stepviews'
 import { TERMINAL_STATES } from './types'
+import { MergeStepCard } from './WorkflowViews'
 import type { IssueRun, IssueRunState, Task, TaskState } from './types'
 
 /**
@@ -121,6 +124,8 @@ export interface StepRow {
   /** Null when the step has no task yet, or the read did not carry it. */
   task: Task | null
   dependsOn: string[]
+  /** The merge step's card (MS4), from its task and its workflow's; null for every other step. */
+  merge: MergeCard | null
 }
 
 /** Every step of every workflow the run started that was read, in workflow order. */
@@ -132,18 +137,29 @@ export function stepRows(run: IssueRun, read: RunWorkflows): StepRow[] {
     const tasks = new Map(load.data.tasks.map((t) => [t.id, t]))
     for (const s of load.data.workflow.steps) {
       const taskId = s.task_id ? s.task_id : null
+      const task = taskId === null ? null : (tasks.get(taskId) ?? null)
       rows.push({
         key: `${load.round}:${s.step_id}`,
         round: load.round,
         stepId: s.step_id,
         title: load.round === 0 ? (titles.get(s.step_id) ?? null) : null,
         taskId,
-        task: taskId === null ? null : (tasks.get(taskId) ?? null),
+        task,
         dependsOn: s.depends_on ?? [],
+        merge: task === null ? null : mergeCardOf(task, load.data.tasks),
       })
     }
   }
   return rows
+}
+
+/**
+ * A park's reason in the pill's words (`PARK_WORD`): CI_PENDING is "waiting
+ * for CI", never "ci pending". A reason this build does not know is printed
+ * as it came, lower case.
+ */
+function parkWord(reason: string): string {
+  return (PARK_WORD as Readonly<Record<string, string>>)[reason] ?? reason.toLowerCase().replace(/_/g, ' ')
 }
 
 /** A task state in words: lower case, never the API's capitals (PICKS.md). */
@@ -210,11 +226,17 @@ function StepLine({ row, go, now }: { row: StepRow; go: (to: string) => void; no
           <>
             <span>{elapsed(t, now)}</span>
             <span>{attemptText(t)}</span>
-            {t.state === 'PARKED' && t.park_reason && <span>{String(t.park_reason).toLowerCase().replace(/_/g, ' ')}</span>}
+            {t.state === 'PARKED' && t.park_reason && <span>{parkWord(String(t.park_reason))}</span>}
           </>
         )}
       </span>
       {row.taskId !== null && <OpenAgent taskId={row.taskId} go={go} />}
+      {/* The merge step's card, across the row's whole width under it. */}
+      {row.merge !== null && (
+        <div className="rn-srow-merge" style={{ gridColumn: '1 / -1' }}>
+          <MergeStepCard card={row.merge} now={now} />
+        </div>
+      )}
     </li>
   )
 }

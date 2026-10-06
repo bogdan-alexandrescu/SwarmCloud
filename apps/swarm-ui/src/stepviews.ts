@@ -1515,3 +1515,172 @@ export function workflowPullRequest(
   }
   return found
 }
+
+// ---------------------------------------------------------------------------
+// The merge step's card (docs/merge-step.md "Revised 2026-10-06" §6 MS4)
+// ---------------------------------------------------------------------------
+
+/** The frozen catalogue's merge profile (contract request 47): a step that runs no agent. */
+export const MERGE_PROFILE = 'merge'
+
+/**
+ * `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`: how many times the step
+ * updates a branch that is behind before it refuses `behind_too_often`.
+ * Restated because the console carries no worker; the card prints "n of 3".
+ */
+export const MERGE_MAX_BRANCH_UPDATES = 3
+
+/** What the merge step is doing, as its card says it. */
+export type MergeCardState =
+  /** PARKED on CI_PENDING: `metadata.merge_wait`'s code, pending names and head. */
+  | { readonly kind: 'waiting'; readonly code: string | null; readonly pending: readonly string[]; readonly head: string | null }
+  /** PARKED on CI_PENDING after GitHub merged the base into the branch. Null: no count recorded. */
+  | { readonly kind: 'updated'; readonly updates: number | null; readonly head: string | null }
+  | {
+      readonly kind: 'merged'
+      readonly commit: string | null
+      /** `merged_by_this_task`; false with `already` is another merger at the pinned head. */
+      readonly byThisTask: boolean | null
+      readonly already: boolean
+      readonly closed: readonly number[]
+      readonly notClosed: number
+      readonly beyondPage: boolean
+      readonly updates: number | null
+    }
+  /** `failed` is MERGE_FAILED (or another end cause), not a MERGE_REFUSED refusal. */
+  | { readonly kind: 'refused'; readonly failed: boolean; readonly code: string | null; readonly reason: string | null }
+  | { readonly kind: 'not-yet'; readonly state: TaskState }
+
+export interface MergeCard {
+  readonly state: MergeCardState
+  /** The pull request: a link only when a worker-written result yields one. */
+  readonly pullRequest: { readonly number: number; readonly href: string | null } | null
+  /** `metadata.merge_wait.first_parked_at`: when the step first parked for CI. */
+  readonly firstParkedAt: string | null
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const strOf = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+const posInt = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null)
+const countOf = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+const ints = (v: unknown): number[] => (Array.isArray(v) ? v.filter((n): n is number => posInt(n) !== null) : [])
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => strOf(s) !== null) : [])
+
+/** A GitHub owner or repository name; never `.` or `..`, never a path. */
+const GH_NAME = /^[A-Za-z0-9_.-]+$/
+const ghName = (s: string | undefined): boolean => s !== undefined && GH_NAME.test(s) && !/^\.+$/.test(s)
+const GH_PULL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/([0-9]+)$/
+
+/**
+ * The pull request's link, from a WORKER-WRITTEN result only (MS4: "built from
+ * the result, never from caller text"). The merge step merges on github.com
+ * alone (`agent_worker.merge.MERGEABLE_HOSTS`), so:
+ *
+ *  1. the merge result's `repository` (the worker's `owner/repo`) and
+ *     `pull_request` number make `https://github.com/<owner>/<repo>/pull/<n>`;
+ *  2. before the step has a result -- every CI park -- the opening step's
+ *     recorded `git.pull_request.url`, the task its SIGNED `merge_target`
+ *     names, when it is exactly a github.com pull request URL for that number.
+ *
+ * Anything else keeps the number and draws no link. The task's
+ * `repository_url`, its input and every caller metadata key are never read.
+ */
+function mergePullRequest(
+  merge: Record<string, unknown> | null,
+  wait: Record<string, unknown> | null,
+  opener: Task | null,
+): MergeCard['pullRequest'] {
+  const recorded = isObj(opener?.result_summary?.['git']) ? (opener!.result_summary!['git'] as Record<string, unknown>)['pull_request'] : null
+  const openerPr = isObj(recorded) ? recorded : null
+  const number = posInt(merge?.['pull_request']) ?? posInt(wait?.['pull_request']) ?? posInt(openerPr?.['number'])
+  if (number === null) return null
+  const repository = strOf(merge?.['repository'])
+  const [owner, repo, ...rest] = (repository ?? '').split('/')
+  if (posInt(merge?.['pull_request']) === number && rest.length === 0 && ghName(owner) && ghName(repo)) {
+    return { number, href: `https://github.com/${owner}/${repo}/pull/${number}` }
+  }
+  const url = strOf(openerPr?.['url'])
+  const m = url === null ? null : GH_PULL.exec(url)
+  if (m !== null && ghName(m[1]) && ghName(m[2]) && Number(m[3]) === number) return { number, href: url }
+  return { number, href: null }
+}
+
+/**
+ * THE MERGE STEP'S CARD, or null for any step that is not one.
+ *
+ * Read from what the platform wrote and nothing else:
+ *
+ *  * a CI_PENDING park from `metadata.merge_wait` (`control.ControlPlane.
+ *    park_ci_pending`): `branch_updated` is "behind and updated", any other
+ *    code is "waiting for CI". A park writes no result, so this is the only
+ *    record of it. It holds no capacity and wakes by itself (invariant 1), so
+ *    nothing here calls it stalled or blocked;
+ *  * an end from `result_summary.merge` (`agent_worker.merge.run_merge`):
+ *    merged, with the commit and the issues it closed; or refused, with
+ *    `refusal.code` and its message;
+ *  * the pull request as `mergePullRequest` says.
+ *
+ * `tasks` is the workflow's tasks as read, for the opening step only.
+ */
+export function mergeCardOf(task: Task, tasks: Iterable<Task>): MergeCard | null {
+  if (task.runner_profile !== MERGE_PROFILE) return null
+  const meta = isObj(task.metadata) ? task.metadata : null
+  const wait = isObj(meta?.['merge_wait']) ? (meta!['merge_wait'] as Record<string, unknown>) : null
+  const merge = isObj(task.result_summary?.['merge']) ? (task.result_summary!['merge'] as Record<string, unknown>) : null
+  const dispatch = isObj(meta?.['dispatch']) ? (meta!['dispatch'] as Record<string, unknown>) : null
+  const target = isObj(dispatch?.['merge_target']) ? (dispatch!['merge_target'] as Record<string, unknown>) : null
+  const openerId = strOf(target?.['pull_request'])
+  let opener: Task | null = null
+  if (openerId !== null) {
+    for (const t of tasks) {
+      if (t.id === openerId) {
+        opener = t
+        break
+      }
+    }
+  }
+
+  let state: MergeCardState
+  if (task.state === 'PARKED' && task.park_reason === 'CI_PENDING') {
+    // The park's own record, or -- from an API that dropped the metadata --
+    // the blocker the same transaction wrote.
+    const blocker = ((task.blocked_by ?? []) as unknown[]).find(
+      (b): b is Record<string, unknown> => isObj(b) && b['reason'] === 'CI_PENDING',
+    )
+    const from = wait ?? blocker ?? null
+    const code = strOf(from?.['code'])
+    const head = strOf(from?.['head'])
+    if (code === 'branch_updated') {
+      const n = countOf(wait?.['updates'])
+      state = { kind: 'updated', updates: n !== null && n > 0 ? n : null, head }
+    } else {
+      state = { kind: 'waiting', code, pending: strs(from?.['pending']), head }
+    }
+  } else if (task.state === 'SUCCEEDED') {
+    const by = merge?.['merged_by_this_task']
+    state = {
+      kind: 'merged',
+      commit: strOf(merge?.['merge_commit']),
+      byThisTask: typeof by === 'boolean' ? by : null,
+      already: merge?.['already_merged'] === true,
+      closed: ints(merge?.['issues_closed']),
+      notClosed: Array.isArray(merge?.['issues_not_closed']) ? (merge!['issues_not_closed'] as unknown[]).length : 0,
+      beyondPage: isObj(merge?.['issues_beyond_page']),
+      updates: countOf(merge?.['updates']),
+    }
+  } else if (task.state === 'FAILED' || task.state === 'DEAD_LETTERED') {
+    const r = merge?.['refusal']
+    const refusal = isObj(r) ? r : null
+    const cause = strOf(task.end_cause)
+    state = {
+      kind: 'refused',
+      failed: cause !== null ? cause !== 'merge_refused' : refusal === null,
+      code: strOf(refusal?.['code']),
+      reason: strOf(refusal?.['message']) ?? (strOf(task.last_error)?.split('\n', 1)[0] ?? null),
+    }
+  } else {
+    state = { kind: 'not-yet', state: task.state }
+  }
+  const first = strOf(wait?.['first_parked_at'])
+  return { state, pullRequest: mergePullRequest(merge, wait, opener), firstParkedAt: first }
+}
