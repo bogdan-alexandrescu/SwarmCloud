@@ -160,6 +160,16 @@ def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
 #:   event       30 s. An event is an audit record; the loop does not wait on it.
 #:   attempt     30 s for this attempt's own document (its end, its usage, its
 #:               spend), written on the way out, when the exit is waiting.
+#:   tenant      30 s for the tenant read of a credential reload, made between
+#:               one runner and the next with nothing beating. It kept the
+#:               library's 300 s; it is now one read like the poll's, and an
+#:               outage past it leaves through the same exit 69.
+#:
+#: LIBRARY DEFAULTS, ON PURPOSE: the terminal transitions (`finish`, through
+#: `transition`) and the lease release. Each is made once, on the way out, by
+#: an attempt whose agent has stopped, and is the write that ends the task;
+#: cutting it short would leave the reconciler to repair what one longer
+#: retry would have written.
 #:
 #: What happens when a budget is spent is the lifecycle's: a failed beat or
 #: poll is logged and the loop goes on while the lease is live, and once the
@@ -172,6 +182,7 @@ MID_RUN_BUDGETS: dict[str, tuple[float, float]] = {
     "checkpoint": (60.0, 10.0),
     "event": (30.0, 10.0),
     "attempt": (30.0, 10.0),
+    "tenant": (30.0, 10.0),
 }
 
 
@@ -999,7 +1010,7 @@ class ControlPlane:
 
         The quota preflight makes the one poll that comes before the runner,
         inside `startup_budget()`, and so under the budget. The supervision
-        loop's polls keep the library's defaults.
+        loop's polls carry `MID_RUN_BUDGETS["poll"]` (#70) on each read.
         """
         try:
             task = self.fetch_task()
