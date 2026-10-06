@@ -84,9 +84,16 @@ def close_job(workflow: dict) -> dict:
     return jobs["close-issues"]
 
 
-def test_the_workflow_has_exactly_the_enable_disable_and_close_issues_jobs(workflow: dict):
+@pytest.fixture(scope="module")
+def requeue_job(workflow: dict) -> dict:
     jobs = workflow.get("jobs") or {}
-    assert set(jobs) == {"enable", "disable", "close-issues"}, sorted(jobs)
+    assert "requeue" in jobs, f"expected a job keyed 'requeue', found {sorted(jobs)}"
+    return jobs["requeue"]
+
+
+def test_the_workflow_has_exactly_the_enable_requeue_disable_and_close_issues_jobs(workflow: dict):
+    jobs = workflow.get("jobs") or {}
+    assert set(jobs) == {"enable", "requeue", "disable", "close-issues"}, sorted(jobs)
 
 
 def _step(job: dict, step_id: str) -> dict:
@@ -104,9 +111,11 @@ def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflo
     """MUTATION: add `pull_request` or `push`, or drop one of the five types --
     each of `synchronize`/`reopened`/`edited` is what lets the `disable` job
     catch a new head, and dropping one leaves that path unguarded; `closed`
-    is what lets `close-issues` see the merge (#621)."""
+    is what lets `close-issues` see the merge (#621). `workflow_run` and
+    `workflow_dispatch` are the re-evaluation of a `ready` label that landed
+    while checks were still running (#697), held below."""
     on = workflow["on"]
-    assert set(on) == {"pull_request_target"}, on
+    assert set(on) == {"pull_request_target", "workflow_run", "workflow_dispatch"}, on
     assert set(on["pull_request_target"]["types"]) == {
         "labeled",
         "synchronize",
@@ -119,6 +128,11 @@ def test_it_runs_on_labeling_and_on_events_that_can_invalidate_the_label(workflo
 def test_the_job_is_gated_on_the_ready_label(job: dict):
     condition = str(job.get("if") or "")
     assert re.search(r"github\.event\.label\.name\s*==\s*'ready'", condition), condition
+    # The label path is only the label event itself; the other way in is the
+    # re-evaluation dispatch, whose `resolve` step requires `ready` on the PR.
+    assert re.search(r"github\.event\.action\s*==\s*'labeled'", condition), condition
+    assert re.search(r"github\.event_name\s*==\s*'workflow_dispatch'", condition), condition
+    assert "workflow_run" not in condition, "a workflow_run event carries no pull request; requeue dispatches"
 
 
 def test_it_never_checks_out_or_runs_the_pull_requests_code(workflow: dict, job: dict):
@@ -224,8 +238,13 @@ def test_both_merge_calls_pin_to_the_reviewed_head_commit(job: dict):
 
 
 def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
-    env = job.get("env") or {}
-    assert env.get("HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", env
+    """Through the `pr` step's output, which is the event's head on a label
+    and the API's head on a re-evaluation."""
+    resolve_env = _step(job, "pr").get("env") or {}
+    assert resolve_env.get("EVENT_HEAD_SHA") == "${{ github.event.pull_request.head.sha }}", resolve_env
+    for step_id in ("gate", "merge"):
+        env = _step(job, step_id).get("env") or {}
+        assert env.get("HEAD_SHA") == "${{ steps.pr.outputs.head_sha }}", (step_id, env)
     run = _step(job, "merge")["run"]
     assert "github.event" not in run
 
@@ -244,18 +263,36 @@ def test_a_direct_merge_happens_only_when_github_says_the_pr_is_already_clean(jo
 
 
 def test_the_title_and_number_come_from_the_event(job: dict):
+    """On a label they are the event's; on a re-evaluation the number is the
+    dispatch input and the rest is read back from the API by the `pr` step."""
     env = job.get("env") or {}
-    assert env.get("PR_TITLE") == "${{ github.event.pull_request.title }}", env
-    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number }}", env
-    assert env.get("BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number || inputs.pr }}", env
+    assert env.get("EVENT_NAME") == "${{ github.event_name }}", env
+    resolve_env = _step(job, "pr").get("env") or {}
+    assert resolve_env.get("EVENT_TITLE") == "${{ github.event.pull_request.title }}", resolve_env
+    assert resolve_env.get("EVENT_BASE_REF") == "${{ github.event.pull_request.base.ref }}", resolve_env
+    gate_env = _step(job, "gate").get("env") or {}
+    assert gate_env.get("PR_TITLE") == "${{ steps.pr.outputs.title }}", gate_env
+    assert gate_env.get("BASE_REF") == "${{ steps.pr.outputs.base_ref }}", gate_env
+    merge_env = _step(job, "merge").get("env") or {}
+    assert merge_env.get("PR_TITLE") == "${{ steps.pr.outputs.title }}", merge_env
 
 
 def test_the_merge_runs_only_after_the_gate(job: dict):
     steps = job.get("steps") or []
     ids = [step.get("id") for step in steps]
-    assert ids.index("gate") < ids.index("app-token") < ids.index("merge"), ids
+    assert ids.index("pr") < ids.index("gate") < ids.index("app-token") < ids.index("merge"), ids
     for step in steps[ids.index("gate") + 1 :]:
         assert "always()" not in str(step.get("if") or ""), step
+
+
+def test_the_token_is_minted_and_the_merge_made_only_when_the_gate_says_merge(job: dict):
+    """A gate that WAITS exits 0, so "the gate step succeeded" is no longer
+    "the gate passed". MUTATION: drop either `if:`, and a pull request whose
+    checks are still running is merged (or auto-merge is armed on it) at once."""
+    assert _step(job, "gate").get("if") == "steps.pr.outputs.evaluate == 'true'"
+    for step_id in ("app-token", "merge"):
+        assert _step(job, step_id).get("if") == "steps.gate.outputs.decision == 'merge'", step_id
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +365,34 @@ if [[ "${1:-} ${2:-}" == "pr comment" ]]; then
   done
   exit 0
 fi
+# A re-evaluation's refusal turns auto-merge off and drops `ready`. Only
+# exactly those: any other `pr merge` from the gate is a merge it must not make.
+if [[ "$*" == "pr merge ${PR_NUMBER} --disable-auto" || "$*" == "pr edit ${PR_NUMBER} --remove-label ready" ]]; then
+  exit 0
+fi
 echo "fake gh: unexpected call: $*" >&2
 exit 3
 """
+
+
+def _outputs(path: Path) -> dict[str, str]:
+    """Parse a $GITHUB_OUTPUT file the way the runner does: `k=v` lines, and
+    `k<<DELIM` ... `DELIM` blocks for multi-line values."""
+    outputs: dict[str, str] = {}
+    lines = path.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if "<<" in line and ("=" not in line or line.index("<<") < line.index("=")):
+            key, delimiter = line.split("<<", 1)
+            end = lines.index(delimiter, i + 1)
+            outputs[key] = "\n".join(lines[i + 1 : end])
+            i = end + 1
+            continue
+        key, _, value = line.partition("=")
+        outputs[key] = value
+        i += 1
+    return outputs
 
 
 @pytest.fixture
@@ -354,6 +416,7 @@ def run_gate(job: dict, tmp_path: Path):
         head_sha: str = "0000000000000000000000000000000000abcd",
         check_runs: list[dict] | None = None,
         rules: list[dict] | None = None,
+        event_name: str = "pull_request_target",
     ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
@@ -366,12 +429,15 @@ def run_gate(job: dict, tmp_path: Path):
         log = tmp_path / "gh.log"
         comments = tmp_path / "comments.md"
         summary = tmp_path / "summary.md"
-        for path in (log, comments, summary):
+        # The test reads the gate's `decision` from here (_outputs).
+        output = tmp_path / "output.txt"
+        for path in (log, comments, summary, output):
             path.write_text("")
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(tmp_path),
             "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "EVENT_NAME": event_name,
             "PR_NUMBER": "4242",
             "PR_TITLE": title,
             "BASE_REF": base_ref,
@@ -379,6 +445,7 @@ def run_gate(job: dict, tmp_path: Path):
             "MERGE_APP_ID": app_id,
             "HAS_MERGE_APP_KEY": has_key,
             "GITHUB_STEP_SUMMARY": str(summary),
+            "GITHUB_OUTPUT": str(output),
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_BRANCH": str(branch_file),
             "FAKE_GH_CHECK_RUNS": str(check_runs_file),
@@ -583,16 +650,51 @@ def test_a_failing_check_on_the_head_is_refused(run_gate):
     assert "check-runs" in calls, calls
 
 
-def test_a_still_running_check_on_the_head_is_refused(run_gate):
-    """MUTATION: only refuse on `conclusion == "failure"`, ignoring an
-    incomplete `status`."""
+@pytest.mark.parametrize("status", ["in_progress", "queued"])
+def test_a_still_running_check_on_the_head_is_queued_not_refused(run_gate, tmp_path: Path, status: str):
+    """#697: `ready` landed while CI ran, the gate refused, and nothing ever
+    looked again. Now it waits: no refusal, no merge, no armed auto-merge,
+    and one comment saying what it waits for and when it looks again.
+    MUTATION: refuse on an incomplete `status` again, or let it fall
+    through to `decision=merge`."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "kubernetes manifests", "status": status, "conclusion": None}],
+    )
+    assert proc.returncode == 0, proc.stderr + comments
+    assert _outputs(tmp_path / "output.txt").get("decision") == "wait"
+    assert "Not queued" not in comments, comments
+    assert "Queued for auto-merge" in comments and "kubernetes manifests" in comments, comments
+    assert "re-evaluated" in comments, comments
+    assert "pr merge" not in calls and "pr edit" not in calls, calls
+
+
+def test_a_failing_check_beside_a_running_one_is_refused_not_queued(run_gate, tmp_path: Path):
+    """Red at the head already decides it: waiting for the rest cannot turn it green.
+    MUTATION: test for running checks before failing ones."""
     proc, _calls, comments = run_gate(
         "A fact-style headline",
         PROTECTED,
-        check_runs=[{"name": "kubernetes manifests", "status": "in_progress", "conclusion": None}],
+        check_runs=[
+            {"name": "kubernetes manifests", "status": "in_progress", "conclusion": None},
+            {"name": "shellcheck", "status": "completed", "conclusion": "failure"},
+        ],
     )
-    assert proc.returncode != 0, "a still-running check on the head passed the gate"
-    assert "kubernetes manifests" in comments, comments
+    assert proc.returncode != 0
+    assert "Not queued for auto-merge" in comments and "shellcheck" in comments, comments
+    assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
+
+
+def test_a_green_gate_says_merge(run_gate, tmp_path: Path):
+    """The control for the two above: a gate that never says `merge` would pass them."""
+    proc, _calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "shellcheck", "status": "completed", "conclusion": "success"}],
+    )
+    assert proc.returncode == 0, comments
+    assert _outputs(tmp_path / "output.txt").get("decision") == "merge"
 
 
 @pytest.mark.parametrize("conclusion", ["timed_out", "action_required", "cancelled"])
@@ -893,11 +995,15 @@ CHECK_PARITY = [
 @pytest.mark.parametrize(("status", "conclusion", "gate_refuses", "merge_refuses", "why"),
                          CHECK_PARITY, ids=[f"{c[0]}-{c[1]}" for c in CHECK_PARITY])
 def test_the_merge_steps_other_check_rule_matches_gate_5(
-    run_gate, status, conclusion, gate_refuses, merge_refuses, why
+    run_gate, tmp_path, status, conclusion, gate_refuses, merge_refuses, why
 ):
     run = {"name": "terraform", "status": status, "conclusion": conclusion}
     proc, _calls, _comments = run_gate("A fact-style headline", PROTECTED, check_runs=[run])
-    assert (proc.returncode != 0) is gate_refuses, (run, proc.stderr)
+    # "Refuses" here means HOLDS the merge: a refusal, or (for a check still
+    # running, #697) a wait for the re-evaluation. Either way, no merge now.
+    decision = _outputs(tmp_path / "output.txt").get("decision")
+    holds = proc.returncode != 0 or decision != "merge"
+    assert holds is gate_refuses, (run, proc.stderr, decision)
     assert worker_merge.other_check_blocks(run) is merge_refuses, run
     if gate_refuses:
         assert merge_refuses, f"the merge step is looser than gate 5 on {run}"
@@ -1022,3 +1128,466 @@ def test_docs_describe_closing_the_merged_pull_requests_issues():
     assert "closingIssuesReferences" in text
     assert "part of #N" in text
     assert "#621" in text
+
+
+# ---------------------------------------------------------------------------
+# A `ready` label that lands while checks still run is re-evaluated (#697)
+# ---------------------------------------------------------------------------
+# Measured 2026-10-06 (observer P13): #697 got `ready` while its CI ran, the
+# gate refused it ("failing or still running"), and nothing looked again, so
+# it sat unmerged after going green. Every SwarmCloud pull request opened
+# with pr_label ready hits that. Owner decision, 2026-10-06: a pull request
+# labelled early is merged once its checks are green at head. So the gate
+# WAITS on a running check, and `requeue` -- on every `workflow_run:
+# completed` of a workflow that runs on pull requests -- dispatches this
+# workflow for each open `ready` pull request at that run's head, which runs
+# the same gate and, when it passes, the same App-token merge.
+
+
+def _pull_request_workflow_names() -> set[str]:
+    """The `name:` of every workflow that runs on `pull_request`."""
+    names = set()
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        data = _workflow(path)
+        on = data.get("on") or {}
+        events = set(on) if isinstance(on, (dict, list)) else {on}
+        if "pull_request" in events:
+            names.add(data["name"])
+    return names
+
+
+def test_it_re_evaluates_when_any_pull_request_workflow_completes(workflow: dict):
+    """A check left out of the list is one whose completion never re-evaluates:
+    if it is the last to finish, the pull request sits, which is #697 again.
+    MUTATION: drop `ci-gate` (or any name) from `workflows:`, or listen to
+    `requested` instead of `completed`."""
+    names = _pull_request_workflow_names()
+    assert {"application", "terraform", "security", "ci-gate"} <= names, names  # the control
+    workflow_run = workflow["on"]["workflow_run"]
+    assert workflow_run["types"] == ["completed"], workflow_run
+    assert set(workflow_run["workflows"]) == names, workflow_run
+
+
+def test_check_suite_is_not_the_completion_event(workflow: dict):
+    """GitHub does not run a workflow on `check_suite` for a suite GitHub
+    Actions created -- which is every suite here -- so it would never fire.
+    MUTATION: listen to `check_suite: completed` instead of `workflow_run`."""
+    assert "check_suite" not in workflow["on"], workflow["on"]
+
+
+def test_the_dispatch_takes_one_required_pull_request_number(workflow: dict):
+    inputs = (workflow["on"]["workflow_dispatch"] or {}).get("inputs") or {}
+    assert set(inputs) == {"pr"}, inputs
+    assert inputs["pr"].get("required") is True, inputs
+
+
+def test_the_requeue_job_runs_only_on_a_pull_request_run_completing(requeue_job: dict):
+    """MUTATION: drop the `workflow_run.event == 'pull_request'` guard (every
+    push to main would list ready pull requests for nothing), or the
+    MERGE_APP_ID guard (with no App every completion would re-refuse)."""
+    condition = str(requeue_job.get("if") or "")
+    assert re.search(r"github\.event_name\s*==\s*'workflow_run'", condition), condition
+    assert re.search(r"github\.event\.workflow_run\.event\s*==\s*'pull_request'", condition), condition
+    assert "vars.MERGE_APP_ID != ''" in condition, condition
+
+
+def test_the_requeue_job_holds_no_app_token_and_least_privilege(requeue_job: dict):
+    """It merges nothing: it dispatches (actions: write, which the
+    GITHUB_TOKEN may do -- a dispatch is one of the two events that token
+    still starts) and lists pull requests (pull-requests: read).
+    MUTATION: mint the App token here, check out code, or widen permissions."""
+    assert requeue_job.get("permissions") == {"actions": "write", "pull-requests": "read"}, requeue_job.get(
+        "permissions"
+    )
+    text = json.dumps(requeue_job)
+    assert "app-token" not in text and "MERGE_APP_PRIVATE_KEY" not in text, text
+    steps = requeue_job.get("steps") or []
+    assert steps, "the requeue job has no steps, so this checked nothing"
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+        assert "github.event" not in str(step.get("run") or ""), step
+
+
+def test_the_enable_and_disable_jobs_never_run_on_a_workflow_run(workflow: dict, job: dict, disable_job: dict):
+    """A `workflow_run` event carries no pull request. MUTATION: drop the
+    disable job's event_name guard."""
+    disable = str(disable_job.get("if") or "")
+    assert re.search(r"github\.event_name\s*==\s*'pull_request_target'", disable), disable
+
+
+def test_a_re_evaluation_queues_separately_from_the_label_events(workflow: dict):
+    """A queued run in a concurrency group cancels the one queued before it.
+    Sharing the label events' group, a burst of re-evaluations could cancel a
+    queued `synchronize` run, and a stale auto-merge would stay armed.
+    MUTATION: drop the `requeue-` prefix."""
+    group = workflow["concurrency"]["group"]
+    assert "github.event_name == 'workflow_dispatch' && 'requeue-'" in group, group
+    assert "github.event.pull_request.number || inputs.pr" in group, group
+
+
+FAKE_GH_REQUEUE = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+case "$1 $2" in
+  "pr list") cat "${FAKE_GH_PRS}" ;;
+  "workflow run") ;;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 3 ;;
+esac
+"""
+
+
+@pytest.fixture
+def run_requeue(requeue_job: dict, tmp_path: Path):
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    steps = requeue_job.get("steps") or []
+    assert len(steps) == 1, f"expected one step in the requeue job, found {len(steps)}"
+    script = steps[0]["run"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_REQUEUE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    def run(prs: list[dict], run_head_sha: str):
+        prs_file = tmp_path / "prs.json"
+        prs_file.write_text(json.dumps(prs))
+        log = tmp_path / "gh.log"
+        summary = tmp_path / "summary.md"
+        for path in (log, summary):
+            path.write_text("")
+        env = {
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "RUN_HEAD_SHA": run_head_sha,
+            "DEFAULT_BRANCH": "main",
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_PRS": str(prs_file),
+        }
+        proc = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
+        )
+        return proc, log.read_text()
+
+    return run
+
+
+def test_requeue_dispatches_each_ready_pull_request_at_the_runs_head(run_requeue):
+    """MUTATION: dispatch every ready pull request (not only this head's), or
+    stop after the first."""
+    head = "ab" * 20
+    proc, calls = run_requeue(
+        [
+            {"number": 11, "headRefOid": head},
+            {"number": 12, "headRefOid": "cd" * 20},
+            {"number": 13, "headRefOid": head},
+        ],
+        head,
+    )
+    assert proc.returncode == 0, proc.stderr
+    dispatches = [line for line in calls.splitlines() if line.startswith("workflow run")]
+    assert dispatches == [
+        "workflow run auto-merge.yml --ref main -f pr=11",
+        "workflow run auto-merge.yml --ref main -f pr=13",
+    ], calls
+    assert "pr list --state open --label ready" in calls, calls
+    assert "dispatched 2" in proc.stdout, proc.stdout
+
+
+def test_requeue_dispatches_nothing_when_no_ready_pull_request_is_at_the_head(run_requeue):
+    """A run for a superseded head (or a pull request without `ready`) re-evaluates nothing."""
+    proc, calls = run_requeue([{"number": 12, "headRefOid": "cd" * 20}], "ab" * 20)
+    assert proc.returncode == 0, proc.stderr
+    assert "workflow run" not in calls, calls
+    assert "dispatched 0" in proc.stdout, proc.stdout
+
+
+FAKE_GH_VIEW = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+if [[ "$1 $2" == "pr view" ]]; then
+  cat "${FAKE_GH_VIEW}"
+  exit 0
+fi
+echo "fake gh: unexpected call: $*" >&2
+exit 3
+"""
+
+
+@pytest.fixture
+def run_resolve(job: dict, tmp_path: Path):
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    script = _step(job, "pr")["run"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_VIEW)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    def run(event_name: str, *, view: dict | None = None, number: str = "4242", event: dict | None = None):
+        view_file = tmp_path / "view.json"
+        view_file.write_text(json.dumps(view or {}))
+        log = tmp_path / "gh.log"
+        summary = tmp_path / "summary.md"
+        output = tmp_path / "output.txt"
+        for path in (log, summary, output):
+            path.write_text("")
+        event = event or {}
+        env = {
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "EVENT_NAME": event_name,
+            "PR_NUMBER": number,
+            "EVENT_TITLE": event.get("title", ""),
+            "EVENT_BASE_REF": event.get("base", ""),
+            "EVENT_HEAD_SHA": event.get("head", ""),
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "GITHUB_OUTPUT": str(output),
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_VIEW": str(view_file),
+        }
+        proc = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
+        )
+        return proc, log.read_text(), _outputs(output)
+
+    return run
+
+
+HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_on_a_label_the_pull_request_is_the_events_and_no_api_is_read(run_resolve):
+    proc, calls, outputs = run_resolve(
+        "pull_request_target", event={"title": "A fact-style headline", "base": "main", "head": HEAD}
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert calls == "", calls
+    assert outputs == {"evaluate": "true", "title": "A fact-style headline", "base_ref": "main", "head_sha": HEAD}
+
+
+def test_on_a_re_evaluation_the_pull_request_is_read_back_from_the_api(run_resolve):
+    """MUTATION: read the title or head from anywhere but the pull request itself."""
+    view = {"state": "OPEN", "title": "A fact-style headline", "baseRefName": "main", "headRefOid": HEAD,
+            "labels": [{"name": "enhancement"}, {"name": "ready"}]}
+    proc, calls, outputs = run_resolve("workflow_dispatch", view=view)
+    assert proc.returncode == 0, proc.stderr
+    assert "pr view 4242 --json" in calls, calls
+    assert outputs == {"evaluate": "true", "title": "A fact-style headline", "base_ref": "main", "head_sha": HEAD}
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {"state": "OPEN", "title": "t", "baseRefName": "main", "headRefOid": HEAD, "labels": []},
+        {"state": "MERGED", "title": "t", "baseRefName": "main", "headRefOid": HEAD, "labels": [{"name": "ready"}]},
+        {"state": "CLOSED", "title": "t", "baseRefName": "main", "headRefOid": HEAD, "labels": [{"name": "ready"}]},
+    ],
+    ids=["ready-removed", "merged", "closed"],
+)
+def test_a_re_evaluation_of_a_pull_request_no_longer_open_and_ready_does_nothing(run_resolve, view):
+    """The dispatch is a request to look again, not a second `ready`: a pull
+    request whose label was dropped (a push, a refusal) or that merged is
+    left alone. MUTATION: drop the label or state check."""
+    proc, _calls, outputs = run_resolve("workflow_dispatch", view=view)
+    assert proc.returncode == 0, proc.stderr
+    assert outputs == {"evaluate": "false"}, outputs
+
+
+@pytest.mark.parametrize("number", ["", "0", "12; touch x", "-1"])
+def test_a_dispatch_input_that_is_not_a_pull_request_number_fails(run_resolve, number):
+    proc, calls, _outputs = run_resolve("workflow_dispatch", number=number)
+    assert proc.returncode != 0
+    assert calls == "", calls
+
+
+def test_a_title_cannot_forge_another_output(run_resolve):
+    """The title is the pull request author's text and is written to
+    $GITHUB_OUTPUT. MUTATION: write it as `title=${title}`, and this one
+    sets head_sha."""
+    title = f"A headline\nhead_sha={'f' * 40}\nevaluate=true"
+    view = {"state": "OPEN", "title": title, "baseRefName": "main", "headRefOid": HEAD, "labels": [{"name": "ready"}]}
+    proc, _calls, outputs = run_resolve("workflow_dispatch", view=view)
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["head_sha"] == HEAD, outputs
+    assert outputs["title"] == title, outputs
+
+
+def test_a_re_evaluation_that_finds_a_failing_check_drops_ready_and_says_so(run_gate, tmp_path: Path):
+    """The refusal still happens, once: it turns auto-merge off and removes
+    `ready`, so the next completion does not comment again, and it does not
+    fail a run that sits on main's head commit.
+    MUTATION: keep the label (one comment per finishing run), or exit 1."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        event_name="workflow_dispatch",
+        check_runs=[{"name": "format / unit tests", "status": "completed", "conclusion": "failure"}],
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
+    assert "pr merge 4242 --disable-auto" in calls, calls
+    assert "pr edit 4242 --remove-label ready" in calls, calls
+    assert "format / unit tests" in comments and "ready" in comments, comments
+
+
+def test_a_re_evaluation_still_refuses_a_swarm_task_title(run_gate, tmp_path: Path):
+    """Refusals are unchanged by the way in: a re-evaluation runs the same gate."""
+    proc, calls, comments = run_gate("[swarm] task_01J9ZK3Q8R", PROTECTED, event_name="workflow_dispatch")
+    assert proc.returncode == 0, proc.stderr
+    assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
+    assert REFUSED_PREFIX in comments, comments
+    assert "pr edit 4242 --remove-label ready" in calls, calls
+
+
+def test_a_re_evaluation_without_the_merge_app_keeps_ready_for_the_merge_watcher(run_gate, tmp_path: Path):
+    """Without the App, `ready` is what the operator's merge watcher reads;
+    the label run already said why, and the pull request cannot fix it.
+    MUTATION: drop the label on this refusal too."""
+    proc, calls, comments = run_gate("A fact-style headline", PROTECTED, app_id="", event_name="workflow_dispatch")
+    assert proc.returncode == 0, proc.stderr
+    assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
+    assert "pr edit" not in calls and "pr comment" not in calls and comments == "", calls
+
+
+def test_a_re_evaluation_still_waiting_is_silent(run_gate, tmp_path: Path):
+    """The label run already said it waits; each finishing run must not say it again."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        event_name="workflow_dispatch",
+        check_runs=[{"name": "ci-gate", "status": "in_progress", "conclusion": None}],
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _outputs(tmp_path / "output.txt").get("decision") == "wait"
+    assert comments == "" and "pr comment" not in calls, calls
+
+
+def test_a_re_evaluation_with_every_check_green_says_merge(run_gate, tmp_path: Path):
+    """The point of the whole path: #697, once green, is merged."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        RULESET_ONLY_BRANCH,
+        rules=RULESET_RULES,
+        event_name="workflow_dispatch",
+        check_runs=[{"name": c, "status": "completed", "conclusion": "success"} for c in RULESET_CHECKS],
+    )
+    assert proc.returncode == 0, proc.stderr + comments
+    assert _outputs(tmp_path / "output.txt").get("decision") == "merge"
+    assert "pr edit" not in calls and comments == "", calls
+
+
+def test_a_label_time_refusal_is_unchanged_and_keeps_the_label(run_gate, tmp_path: Path):
+    """The label path refuses exactly as before: comment, red, label left on."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline",
+        PROTECTED,
+        check_runs=[{"name": "shellcheck", "status": "completed", "conclusion": "failure"}],
+    )
+    assert proc.returncode != 0
+    assert "Not queued for auto-merge" in comments, comments
+    assert "pr edit" not in calls and "--disable-auto" not in calls, calls
+
+
+FAKE_GH_MERGE = r"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+if [[ "$1 $2" == "pr merge" ]]; then
+  for arg in "$@"; do
+    if [[ "${arg}" == "--auto" ]]; then
+      echo "fake gh: ${FAKE_GH_AUTO_ERROR}" >&2
+      exit 1
+    fi
+  done
+  exit 0
+fi
+if [[ "$1 $2" == "pr view" ]]; then
+  cat "${FAKE_GH_VIEW}"
+  exit 0
+fi
+echo "fake gh: unexpected call: $*" >&2
+exit 3
+"""
+
+
+@pytest.fixture
+def run_merge(job: dict, tmp_path: Path):
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    script = _step(job, "merge")["run"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_MERGE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    def run(view: dict):
+        view_file = tmp_path / "view.json"
+        view_file.write_text(json.dumps(view))
+        log = tmp_path / "gh.log"
+        summary = tmp_path / "summary.md"
+        for path in (log, summary):
+            path.write_text("")
+        env = {
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+            "PR_NUMBER": "4242",
+            "PR_TITLE": "A fact-style headline",
+            "HEAD_SHA": HEAD,
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_VIEW": str(view_file),
+            "FAKE_GH_AUTO_ERROR": "auto-merge could not be enabled",
+        }
+        proc = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
+        )
+        merges = [line for line in log.read_text().splitlines() if line.startswith("pr merge")]
+        return proc, merges, summary.read_text()
+
+    return run
+
+
+def test_a_re_evaluation_of_an_already_armed_auto_merge_succeeds_without_merging(run_merge):
+    """A label that landed before any check existed armed native auto-merge
+    at once; its re-evaluation then finds it armed. That is queued, not an
+    error. MUTATION: drop the autoMergeRequest branch (a red run), or merge
+    directly there (bypassing what the armed auto-merge waits for)."""
+    proc, merges, summary = run_merge({"state": "OPEN", "mergeStateStatus": "BLOCKED",
+                                       "autoMergeRequest": {"mergeMethod": "SQUASH"}})
+    assert proc.returncode == 0, proc.stderr
+    assert len(merges) == 1 and "--auto" in merges[0], merges
+    assert "Queued for auto-merge" in summary, summary
+
+
+def test_a_pull_request_merged_meanwhile_succeeds_without_merging(run_merge):
+    proc, merges, _summary = run_merge({"state": "MERGED", "mergeStateStatus": "UNKNOWN", "autoMergeRequest": None})
+    assert proc.returncode == 0, proc.stderr
+    assert len(merges) == 1, merges
+
+
+def test_an_auto_merge_error_on_a_blocked_unarmed_pull_request_still_fails(run_merge):
+    """The control: the new branches do not swallow a real failure."""
+    proc, merges, _summary = run_merge({"state": "OPEN", "mergeStateStatus": "BLOCKED", "autoMergeRequest": None})
+    assert proc.returncode != 0
+    assert len(merges) == 1, merges
+
+
+def test_an_already_clean_pull_request_is_merged_directly(run_merge):
+    proc, merges, _summary = run_merge({"state": "OPEN", "mergeStateStatus": "CLEAN", "autoMergeRequest": None})
+    assert proc.returncode == 0, proc.stderr
+    assert len(merges) == 2 and "--auto" not in merges[1], merges
+    assert f"--match-head-commit {HEAD}" in merges[1], merges
+
+
+def test_docs_describe_the_re_evaluation_of_an_early_ready_label():
+    """MUTATION: drop the docs/ci.md paragraph."""
+    text = CI_DOC.read_text()
+    assert "#697" in text
+    assert "workflow_run" in text and "workflow_dispatch" in text
+    assert "re-evaluat" in text
