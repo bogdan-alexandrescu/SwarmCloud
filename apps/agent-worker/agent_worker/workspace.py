@@ -348,8 +348,122 @@ def link_artifacts(ws: Workspace, within: Path | None = None) -> bool:
 def destroy(ws: Workspace) -> None:
     """Best-effort teardown. The container usually dies first; this is for
     long-lived sandboxes and local runs, where leaving a tenant's working tree
-    on disk would be a cross-tenant leak."""
-    shutil.rmtree(ws.root, ignore_errors=True)
+    on disk would be a cross-tenant leak.
+
+    WITHOUT RECURSION (#737). This was `shutil.rmtree(ws.root,
+    ignore_errors=True)`, which on Python 3.11 recurses one frame per folder
+    level, and `ignore_errors` swallows only `OSError`: a tree about 1,000
+    folders deep raised `RecursionError` out of `_cleanup`, after the task
+    had SUCCEEDED, and the container exited 1. `_remove_tree` is the same
+    best-effort removal from an explicit stack. Never raises `OSError`."""
+    _remove_tree(ws.root)
+
+
+#: How `_remove_tree` opens a folder: never through a link (`O_NOFOLLOW` makes
+#: a link at the name fail with ELOOP rather than open its target).
+_REMOVE_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _clear_files(fd: int) -> list[str]:
+    """Unlink every entry of the folder open at `fd` that is not a real folder
+    -- a file, or a link of any kind, which is unlinked and never followed --
+    and return the names of the real folders left in it."""
+    folders: list[str] = []
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                try:
+                    is_folder = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    is_folder = False
+                if is_folder:
+                    folders.append(entry.name)
+                    continue
+                try:
+                    os.unlink(entry.name, dir_fd=fd)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return folders
+
+
+def _remove_tree(root: Path) -> None:
+    """Remove `root` and everything under it, bottom-up, never recursing and
+    never following a link.
+
+    ONE DESCRIPTOR AT A TIME. A stack of open descriptors, one per level,
+    would run out of them on a tree as deep as the one this exists for (the
+    usual limit is 1,024). The stack holds, per level, the folder's name in
+    its parent, its identity, and the sub-folders not yet entered: a frame is
+    a few strings, not a Python frame or a descriptor. Every name is opened
+    relative to its parent's descriptor, so no path is longer than one name
+    however deep the tree is (a full path past PATH_MAX cannot be opened).
+
+    CLIMBING BACK UP is `..` of the folder just emptied, and it is checked to
+    be the very folder (device and inode) that was descended from. An agent
+    process that outlived its runner shares the worker's uid and could move a
+    folder out of the tree mid-removal; a `..` that no longer leads back stops
+    the removal there rather than deleting wherever it now leads.
+
+    Best effort, as `rmtree(ignore_errors=True)` was: anything that cannot be
+    listed, opened or removed is left, and no `OSError` escapes."""
+    root = Path(root)
+    try:
+        if not os.path.isdir(root) or os.path.islink(root):
+            if os.path.lexists(root):
+                os.unlink(root)
+            return
+        fd = os.open(root, _REMOVE_OPEN_FLAGS)
+    except OSError:
+        return
+    try:
+        here = os.fstat(fd)
+        # (name in the parent, (st_dev, st_ino), sub-folders still to enter)
+        stack: list[tuple[str, tuple[int, int], list[str]]] = [
+            ("", (here.st_dev, here.st_ino), _clear_files(fd))
+        ]
+        while stack:
+            name, _, pending = stack[-1]
+            if pending:
+                child = pending.pop()
+                try:
+                    child_fd = os.open(child, _REMOVE_OPEN_FLAGS, dir_fd=fd)
+                except OSError:
+                    # Gone, unreadable, or swapped for a link since it was
+                    # listed: a link is unlinked, a folder that cannot be
+                    # opened is left.
+                    try:
+                        os.unlink(child, dir_fd=fd)
+                    except OSError:
+                        pass
+                    continue
+                os.close(fd)
+                fd = child_fd
+                here = os.fstat(fd)
+                stack.append((child, (here.st_dev, here.st_ino), _clear_files(fd)))
+                continue
+            stack.pop()
+            if not stack:
+                break
+            parent_fd = os.open("..", _REMOVE_OPEN_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = parent_fd
+            parent = os.fstat(fd)
+            if (parent.st_dev, parent.st_ino) != stack[-1][1]:
+                return
+            try:
+                os.rmdir(name, dir_fd=fd)
+            except OSError:
+                pass
+    except OSError:
+        return
+    finally:
+        os.close(fd)
+    try:
+        os.rmdir(root)
+    except OSError:
+        pass
 
 
 def is_empty(path: Path) -> bool:

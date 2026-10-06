@@ -29,6 +29,8 @@ import os
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from agent_worker import standalone_outputs, workspace as workspace_mod
 from agent_worker.checkpoint import CHECKPOINT_MAX_DEPTH, CheckpointManager, CheckpointRecord
 from agent_worker.logs import build_logger
@@ -38,6 +40,20 @@ from conftest import TENANT
 DEPTH = 1100
 LINK_AT = 600
 OUTSIDE_BYTES = 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _no_deep_tree_left_behind(tmp_path):
+    """Remove what each test built, pass or fail, without recursion.
+
+    pytest keeps the last three runs' `tmp_path`s under TMPDIR, which in a
+    SwarmCloud run is the attempt's own `tmp/`: a tree this deep left there
+    was what `workspace.destroy` met at the end of the attempt (#737), and
+    pytest's own pruning of old runs is a recursive `rmtree` that raises
+    `RecursionError` on it."""
+    yield
+    for entry in list(tmp_path.iterdir()):
+        workspace_mod._remove_tree(entry)
 
 
 def _logger(log_stream):
