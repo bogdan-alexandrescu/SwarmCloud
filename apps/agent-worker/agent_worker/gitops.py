@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
+from .egress import EGRESS_PROBE_CAP_SECONDS, target_of
 from .forge import may_receive_forge_token
 from .procman import run_child
 
@@ -749,6 +750,41 @@ def _run_git_steps(
     return total
 
 
+#: The most a clone waits for the egress probe (#721 (a)). The probe's own
+#: cap: it ends by then anyway, counted from process start, so by the time the
+#: clone asks the wait left is shorter. A backstop, not a schedule.
+EGRESS_CLONE_WAIT_SECONDS = EGRESS_PROBE_CAP_SECONDS
+
+
+def await_egress(egress: Any, url: str, logger: Any) -> bool:
+    """Wait, bounded, for the egress probe to reach the clone's host (#721 (a)).
+
+    True once the host answered. False -- at once -- with no probe, for a
+    host the probe does not cover (a `file://` origin, for one), or when the
+    probe ends without an answer or the bound passes: the clone then runs
+    exactly as it did before the probe existed. Never raises.
+    """
+    if egress is None:
+        return False
+    try:
+        target = target_of(url)
+        if not egress.covers(target):
+            return False
+        started = time.monotonic()
+        ready = bool(egress.wait(target, EGRESS_CLONE_WAIT_SECONDS))
+        logger.info(
+            "egress probe: the clone waited for the forge's path to open"
+            if ready else "egress probe: no answer; cloning as before",
+            host=target[0] if target else None,
+            waited_seconds=round(time.monotonic() - started, 3),
+        )
+        return ready
+    except Exception as exc:  # a measurement never stops a clone
+        logger.warning("egress probe: wait failed; cloning as before",
+                       error=type(exc).__name__)
+        return False
+
+
 def shallow_clone(
     *,
     url: str,
@@ -760,6 +796,7 @@ def shallow_clone(
     logger: Any,
     token: str | None = None,
     git_binary: str = "git",
+    egress: Any = None,
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
 
@@ -774,6 +811,8 @@ def shallow_clone(
     destination.mkdir(parents=True, exist_ok=True)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
 
     env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
 
@@ -835,6 +874,7 @@ def clone_at_commit(
     logger: Any,
     token: str | None = None,
     git_binary: str = "git",
+    egress: Any = None,
 ) -> CloneResult:
     """Check out exactly `commit` of `url` into `destination` (the workflow base pin).
 
@@ -858,6 +898,8 @@ def clone_at_commit(
     destination.mkdir(parents=True, exist_ok=True)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
 
     env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
     g = [git_binary, *config_args, "-C", str(destination)]
