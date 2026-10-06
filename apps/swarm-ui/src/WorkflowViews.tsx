@@ -27,8 +27,10 @@ import {
   type StepWhy,
   type TimelineAxis,
   type WorkflowView,
+  MERGE_MAX_BRANCH_UPDATES,
+  type MergeCard,
 } from './stepviews'
-import { TERMINAL_STATES, bytesLabel, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
+import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -1367,6 +1369,130 @@ export function StepInspector({
         )}
         <Id title={workflowId}>{workflowId}</Id>
       </div>
+    </section>
+  )
+}
+
+/** `abc1234`, with the whole sha as its title. */
+function Sha({ sha }: { sha: string }) {
+  return (
+    <span className="mono" title={sha}>
+      {sha.length > 12 ? sha.slice(0, 7) : sha}
+    </span>
+  )
+}
+
+/** What a CI park waits on, by the park's code (`agent_worker.merge._with_forge`). */
+function waitsOn(code: string | null, pending: readonly string[]): string {
+  if (pending.length > 0) return `pending: ${pending.join(', ')}`
+  if (code === 'mergeability_unknown') return 'GitHub has not computed mergeability yet'
+  if (code === 'no_checks') return 'no check has reported yet; it waits for a first check'
+  return 'the pull request\'s checks'
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+/**
+ * THE MERGE STEP'S CARD (docs/merge-step.md "Revised 2026-10-06" §6 MS4), on
+ * the run page's Steps card and in the workflow page's step inspector: the
+ * state -- waiting for CI with the pending checks and the head, behind and
+ * updated (n of 3), merged with the commit and the issues closed, or refused
+ * with the code and the reason -- the pull request, and when the step first
+ * parked for CI. Every fact is `mergeCardOf`'s; this draws them.
+ *
+ * A CI_PENDING park is "waiting for CI". It holds no lease, no pool count and
+ * no Job (invariant 1), and swarm-api's tick or the fallback instant wakes it,
+ * so it is never worded as stalled or blocked.
+ */
+export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
+  const s = card.state
+  let head: string
+  let lines: ReactNode[] = []
+  switch (s.kind) {
+    case 'waiting':
+      head = 'waiting for CI'
+      lines = [
+        <>{waitsOn(s.code, s.pending)}{s.head !== null && <> · at <Sha sha={s.head} /></>}</>,
+        'Holds no capacity. Woken when the checks settle.',
+      ]
+      break
+    case 'updated':
+      head =
+        s.updates === null
+          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_BRANCH_UPDATES}`
+          : `behind, updated ${s.updates} of ${MERGE_MAX_BRANCH_UPDATES}`
+      lines = [
+        <>GitHub merged the base into the branch; the checks run again{s.head !== null && <> at <Sha sha={s.head} /></>}</>,
+        'Holds no capacity. Woken when the checks settle.',
+      ]
+      break
+    case 'merged':
+      head = 'merged'
+      lines = [
+        <>
+          {s.byThisTask === true
+            ? 'by this step'
+            : s.already
+              ? 'already merged at the pinned head, not by this step'
+              : s.byThisTask === false
+                ? 'not by this step'
+                : 'whether this step merged was not recorded'}
+          {s.commit !== null && <> · commit <Sha sha={s.commit} /></>}
+          {s.updates !== null && s.updates > 0 && <> · after {plural(s.updates, 'branch update')}</>}
+        </>,
+        <>
+          {s.closed.length === 0 ? 'no issue closed' : <>closed {s.closed.map((n) => `#${n}`).join(', ')}</>}
+          {s.notClosed > 0 && <> · {plural(s.notClosed, 'issue')} not closed</>}
+          {s.beyondPage && <> · more references than one page: the rest were not closed</>}
+        </>,
+      ]
+      break
+    case 'refused':
+      head = s.failed ? 'merge failed' : 'refused'
+      lines = [
+        <>
+          {s.code !== null && <span className="mono">{s.code}</span>}
+          {s.code !== null && s.reason !== null && ': '}
+          {s.reason ?? (s.code === null ? 'no reason recorded' : null)}
+        </>,
+      ]
+      break
+    case 'not-yet':
+      head = `${TERMINAL_STATES.has(s.state) ? 'not merged' : 'not merged yet'} · ${s.state.toLowerCase().replace(/_/g, ' ')}`
+      break
+  }
+  const kind = s.kind
+  const pr = card.pullRequest
+  return (
+    <section className="wf-merge" aria-label="Merge" data-merge={kind}>
+      <div className="wf-card-h">
+        <b>Merge</b>
+        <span className={`wf-merge-out${kind === 'refused' ? ' is-bad' : ''}`}>{head}</span>
+        <span className="wf-card-r">
+          {pr === null ? (
+            'pull request not recorded'
+          ) : pr.href !== null ? (
+            <a className="ctl-link" data-fact="pull-request" href={pr.href} target="_blank" rel="noopener noreferrer">
+              #{pr.number}
+            </a>
+          ) : (
+            <span data-fact="pull-request">#{pr.number}</span>
+          )}
+        </span>
+      </div>
+      {lines.map((line, i) => (
+        <p key={i} className="wf-merge-head">
+          {line}
+        </p>
+      ))}
+      {card.firstParkedAt !== null && (
+        <p className="wf-card-foot" data-fact="first-parked">
+          first parked for CI{' '}
+          <time dateTime={card.firstParkedAt} title={card.firstParkedAt}>
+            {timeAgo(card.firstParkedAt, now)}
+          </time>
+        </p>
+      )}
     </section>
   )
 }

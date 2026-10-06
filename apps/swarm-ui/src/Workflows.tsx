@@ -103,6 +103,7 @@ import {
   tokenPairCell,
   workflowLabel,
   workflowPullRequest,
+  mergeCardOf,
   VIEW_LABEL,
   type BoardTelemetryGap,
   type StepWhy,
@@ -135,6 +136,7 @@ import {
   TERMINAL_STATES,
 } from './types'
 import {
+  MergeStepCard,
   SourceNote,
   StepInspector,
   StrayMark,
@@ -2020,7 +2022,7 @@ function InspectorSlot({
       now={now}
       load={loadAttempts}
     >
-      {page ? <StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} /> : null}
+      {page ? <StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} now={now} /> : null}
     </StepInspector>
   )
 }
@@ -2036,12 +2038,14 @@ function StepCardExtras({
   state,
   taskById,
   reload,
+  now,
 }: {
   workflow: Workflow
   step: WorkflowStep
   state: StepState
   taskById: ReadonlyMap<string, Task> | null
   reload: () => void
+  now: number
 }) {
   const tasks =
     taskById === null
@@ -2053,7 +2057,10 @@ function StepCardExtras({
   const task = state.kind === 'state' ? state.task : null
   const verdict = task === null ? null : verdictFor(task.id, tasks)
   const reviewed = task !== null && verdict === null && isReviewedBy(task.id, tasks)
-  const merge = task === null ? null : mergeOf(task)
+  // A merge-profile step draws the MS4 card (WorkflowViews `MergeStepCard`)
+  // in place of the checklist below, which reads the retired design's block.
+  const mergeCard = task === null ? null : mergeCardOf(task, tasks)
+  const merge = task === null || mergeCard !== null ? null : mergeOf(task)
   return (
     <>
       {task !== null && (
@@ -2068,6 +2075,7 @@ function StepCardExtras({
           run, and the review's verdict file is read only by them.
         </p>
       )}
+      {mergeCard !== null && <MergeStepCard card={mergeCard} now={now} />}
       {merge !== null && <MergeCard merge={merge} />}
     </>
   )
