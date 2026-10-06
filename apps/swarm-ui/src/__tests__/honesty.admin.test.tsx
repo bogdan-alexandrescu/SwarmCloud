@@ -24,6 +24,7 @@ import type { Capacity, Pool, QuotaState, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadAdminQuota: vi.fn(),
   // Pool limits reads the session to lock Edit for a non-admin. Unanswered

@@ -232,13 +232,21 @@ function bucketMarks(root: HTMLElement, i: number, key: 'wide' | 'mid' | 'narrow
 }
 
 /**
- * The readout's figures, in order: rate, succeeded, failed, dead-lettered,
+ * The readout's figures, in order: rate, succeeded, failed (FAILED +
+ * DEAD_LETTERED, #123; dead-lettered is its qualifier, not a figure),
  * cancelled (all causes, no key), requested or other (the flat bars' key),
  * after a failure (the outline's key), after a cancel (the outlined bars' key,
  * #185 decision 2), submitted, finished.
  */
 function readout(root: HTMLElement): string[] {
   return [...root.querySelectorAll('.ol-legend .ol-n')].map((n) => (n.textContent ?? '').trim())
+}
+
+/** The figure of the readout entry whose key carries `key`: the number that key's mark draws. */
+function keyed(root: HTMLElement, key: string): string {
+  const li = [...root.querySelectorAll('.ol-legend .ol-li')].find((x) => x.querySelector(`.ol-k.${key}`) !== null)
+  expect(li, `no legend entry keyed ${key}`).toBeTruthy()
+  return (li!.querySelector('.ol-n')?.textContent ?? '').trim()
 }
 
 function card(root: HTMLElement, title: RegExp): HTMLElement {
@@ -658,7 +666,7 @@ describe('the ledger', () => {
 describe('the readout', () => {
   it('reads out the span’s totals by default, with every cancel cause and the submitted count', async () => {
     const root = await timeline()
-    expect(readout(root)).toEqual(['90.7 %', '272', '28', '0', '416', '401', '15', '0', '730', '716'])
+    expect(readout(root)).toEqual(['90.7 %', '272', '28', '416', '401', '15', '0', '730', '716'])
     const legend = root.querySelector<HTMLElement>('.ol-legend')!
     expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
     expect(legend.textContent).toContain('requested 401 · other 0')
@@ -673,7 +681,7 @@ describe('the readout', () => {
     const root = await timeline()
     const c = cols(root)
     fireEvent.mouseEnter(c[10]!)
-    expect(readout(root)).toEqual(['75.8 %', '25', '8', '0', '305', '297', '8', '0', '338', '338'])
+    expect(readout(root)).toEqual(['75.8 %', '25', '8', '305', '297', '8', '0', '338', '338'])
     expect(root.querySelector('.ol-at')!.textContent).toContain(DAY('2026-09-22T00:00:00+03:00'))
     expect(c[10]!.classList.contains('is-picked')).toBe(true)
     fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: 'all' }))
@@ -696,11 +704,6 @@ describe('the readout', () => {
     // and the flat bars requested + other (297 + 0); the readout printed 5
     // beside the outline and 305 beside the flat bars, while the column's name
     // and the Table said 8.
-    const keyed = (root: HTMLElement, key: string): string => {
-      const li = [...root.querySelectorAll('.ol-legend .ol-li')].find((x) => x.querySelector(`.ol-k.${key}`) !== null)
-      expect(li, `no legend entry keyed ${key}`).toBeTruthy()
-      return (li!.querySelector('.ol-n')?.textContent ?? '').trim()
-    }
     const root = await timeline(ledgerFixture(), { view: '' })
     const b = ledgerFixture().buckets[10]!
     fireEvent.mouseEnter(cols(root)[10]!)
@@ -1037,10 +1040,10 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
       'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
-      'merge failed', 'publish refused', 'other', 'no reason recorded',
+      'merge failed', 'publish refused', 'other', 'no reason recorded', 'failed on purpose',
     ])
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
-      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0',
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0', '0',
     ])
     const timeout = rows[1]!
     expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
@@ -1194,13 +1197,14 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
-    // One per class in the route's vocabulary: fifteen since "publish
+    // One per class in the route's vocabulary: sixteen since "failed on
+    // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
     // four (contract requests 33 and 35), ten since "spec signature invalid"
     // (contract request 34), nine since "inputs unavailable" (#185,
     // decision 4).
     expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
-    expect(strips).toHaveLength(15)
+    expect(strips).toHaveLength(16)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
@@ -1306,17 +1310,49 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     }
   })
 
-  it('reads out succeeded, failed, dead-lettered and cancelled that sum to finished, for the span and for one bucket', async () => {
+  it('reads out succeeded, failed (dead-lettered included) and cancelled that sum to finished, for the span and for one bucket', async () => {
     const root = await timeline()
     const sum = () => {
       const r = readout(root).map(Number)
-      return { parts: r[1]! + r[2]! + r[3]! + r[4]!, finished: r[9]! }
+      return { parts: r[1]! + r[2]! + r[3]!, finished: r[8]! }
     }
     const span = sum()
     expect(span.parts).toBe(span.finished)
     fireEvent.mouseEnter(cols(root)[10]!)
     const day = sum()
     expect(day.parts).toBe(day.finished)
+  })
+
+  it('keys failed as FAILED + DEAD_LETTERED in the readout, the number its mark draws, so the parts sum to finished', async () => {
+    // Bucket 10 ends 25 succeeded, 8 failed and 305 cancelled: 338. Three of
+    // the 8 are dead-lettered, which the drawing already counts as failed.
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    expect(keyed(root, 'is-bad'), 'the failed key prints FAILED alone').toBe('8')
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('incl. dead-lettered 3')
+    const r = readout(root).map(Number)
+    expect(r[1]! + r[2]! + r[3]!, 'succeeded + failed + cancelled').toBe(r[8])
+  })
+
+  it('prints one Failed column in the Table, FAILED + DEAD_LETTERED, so every bucket row adds up to Finished', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d, { view: 'table=1' })
+    const heads = [...root.querySelectorAll('.ol-table thead th')].map((th) => (th.textContent ?? '').trim())
+    const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed · incl\. dead-lettered$/, /^Cancelled/, /^Finished$/].map(at)
+    expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
+    const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
+      const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
+      expect(n(succeeded!) + n(failed!) + n(cancelled!), `${cells[0]} does not add up`).toBe(n(finished!))
+    }
+    const row = root.querySelectorAll('.ol-table tbody tr')[10]!
+    expect((row.children[failed!]!.textContent ?? '').trim()).toBe('8 · 3 dead-lettered')
   })
 
   it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {

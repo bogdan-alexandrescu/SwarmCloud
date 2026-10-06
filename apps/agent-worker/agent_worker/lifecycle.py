@@ -200,9 +200,11 @@ from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
+    CloneResult,
     GitError,
     GitTransient,
     MergeOutcome,
+    branch_commits,
     clone_at_commit,
     commit_dirty,
     commit_tree_onto,
@@ -251,6 +253,7 @@ from .runners.cliagent import (
     RESUME_SESSION_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
+    carries_session_totals,
 )
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
@@ -741,6 +744,14 @@ class Worker:
         # True from a runner's start until its result has been collected. It
         # is what stops `_cleanup` collecting the same run a second time.
         self._spend_pending = False
+        # A RESUMED SESSION REPORTS ITS COST FOR THE WHOLE SESSION (#667, P14).
+        # Whether the runner now running continues an earlier runner's session
+        # (`--resume`), and `_spend` as it stood when that session began: the
+        # session's later figures replace what it reported before, and what
+        # was spent before it is kept (`_add_spend`). Set at each runner start
+        # (`_note_runner_spend_start`).
+        self._spend_resumes_session = False
+        self._session_spend_base: dict[str, Any] | None = None
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
@@ -767,6 +778,18 @@ class Worker:
         # `carrier: branches` (D13): the branch and head the last push of this
         # step's work landed, `{"name", "head"}`, or None before any.
         self._carrier_pushed: dict[str, str] | None = None
+        # The branch this attempt last pushed, as git in the publish repository
+        # read it after the push (#667, observer P11): `{name, head, head_sha,
+        # base_sha, commits: [{sha, subject}], commits_truncated}`. Becomes
+        # `result_summary.branch`. None until a push lands, so a step that
+        # pushed nothing never names a branch.
+        self._pushed_branch: dict[str, Any] | None = None
+        # The startup marks on the task's events (#667, lane OB1), each made
+        # at most once per attempt: `clone_timed` after the clone,
+        # `agent_started` at the first runner start. `_clone_marked` is also
+        # what the agent start reads to say whether this attempt cloned.
+        self._clone_marked = False
+        self._agent_start_marked = False
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -1008,15 +1031,26 @@ class Worker:
                         reload=credential_reloads,
                         resumed=resumed,
                     )
-                    self.control.emit(
-                        EventType.RETRYING,
-                        {
-                            "cause": "credential_reloaded",
-                            "provider": refusal.get("provider"),
-                            "reload": credential_reloads,
-                            "resumed": resumed,
-                        },
-                    )
+                    try:
+                        # An audit record (#70): an event that cannot be
+                        # written must not cost the reload, as it does not
+                        # cost a checkpoint (`_announce_checkpoint`).
+                        self.control.emit(
+                            EventType.RETRYING,
+                            {
+                                "cause": "credential_reloaded",
+                                "provider": refusal.get("provider"),
+                                "reload": credential_reloads,
+                                "resumed": resumed,
+                            },
+                        )
+                    except (FencedError, TenantMismatchError):
+                        raise
+                    except Exception as exc:
+                        self.log.warning(
+                            "could not record the credential reload; reloading anyway",
+                            error=f"{type(exc).__name__}: {_one_line(exc)}",
+                        )
                     ws.credential_path.unlink(missing_ok=True)
                     # Rebuilt, not patched: `_build_child_env` is the one place
                     # that knows which env names this profile's credential maps
@@ -1036,6 +1070,20 @@ class Worker:
                         return self._park_credential_missing(exc)
                     except NoAccountAvailable as exc:
                         return self._park_no_account(exc)
+                    except Exception as exc:
+                        # THE TENANT READ COULD NOT REACH FIRESTORE (#70),
+                        # after its budget. There is no runner to keep going
+                        # and no credential to start the next one with: this
+                        # is a runner start, and an outage at a runner start
+                        # is exit 69, as before the first runner. Anything
+                        # else -- a fence included -- is raised as before.
+                        if isinstance(
+                            exc, (FencedError, TenantMismatchError)
+                        ) or not _control_plane_unreachable(exc):
+                            raise
+                        return self._exit_control_plane_outage(
+                            None, exc, where="for the credential reload's tenant read"
+                        )
                     continue
                 if refusal is not None:
                     self.log.error(
@@ -1812,6 +1860,9 @@ class Worker:
         for stale in (ws.result_path, ws.quota_path, ws.credential_path):
             stale.unlink(missing_ok=True)
         self._spend_pending = True
+        # The session this runner reports for: its own, or an earlier
+        # runner's it continues with `--resume` (`_account_channel_env`).
+        self._note_runner_spend_start(resumed=bool(child_env.get(RESUME_SESSION_ENV)))
 
         if self.phases.current != "runner":
             # The last startup line. An in-place restart is not a new phase.
@@ -1848,6 +1899,8 @@ class Worker:
         disarm_stack_dump()
         child.start()
         self._start_sampler(child)
+        # After `start`, so the event's `at` is when the agent process exists.
+        self._mark_agent_started()
 
         now = time.monotonic()
         if self._lease_live_until is None:
@@ -2005,8 +2058,19 @@ class Worker:
         )
         return exc if outage else None
 
-    def _exit_control_plane_outage(self, child: ChildProcess, exc: Exception) -> Outcome:
+    def _exit_control_plane_outage(
+        self,
+        child: ChildProcess | None,
+        exc: Exception,
+        *,
+        where: str = "past the lease while the agent ran",
+    ) -> Outcome:
         """Firestore stayed unreachable past the lease: checkpoint, stop, exit 69 (#70).
+
+        `child` is None on the credential reload's exit, taken between two
+        runners when the tenant read could not be made: there is nothing to
+        stop, and the rest is the same. `where` says which, in the log and on
+        the attempt's document.
 
         Owner decision, 2026-09-28. Until now a Firestore call that failed
         while the agent ran raised into the crash handler, which FAILED the
@@ -2034,7 +2098,7 @@ class Worker:
         """
         cfg = self.cfg
         self.log.error(
-            "the control plane stayed unreachable past the lease; checkpointing, "
+            f"the control plane stayed unreachable {where}; checkpointing, "
             "stopping the runner and exiting 69 for a requeue",
             error_type=type(exc).__name__,
             error=_one_line(exc),
@@ -2045,16 +2109,17 @@ class Worker:
             ),
         )
         self._checkpoint(CONTROL_PLANE_OUTAGE)
-        child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
-        child.finish()
-        self._child_ended()
+        if child is not None:
+            child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
+            child.finish()
+            self._child_ended()
         self._control_plane_down = True
         try:
             self.control.record_attempt_end(
                 exit_code=ExitCode.UNAVAILABLE,
                 error=self._scrub(
-                    f"{CONTROL_PLANE_OUTAGE}: the control plane was unreachable past "
-                    f"the lease while the agent ran ({type(exc).__name__}: "
+                    f"{CONTROL_PLANE_OUTAGE}: the control plane was unreachable "
+                    f"{where} ({type(exc).__name__}: "
                     f"{_one_line(exc, 300)}); the attempt checkpointed and exited "
                     "for a requeue"
                 ),
@@ -2391,7 +2456,13 @@ class Worker:
             summary,
             self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused),
         )
-        if self._carrier_pushed is not None:
+        if self._pushed_branch is not None:
+            # The branch this attempt actually pushed, read from git after the
+            # push (#667, observer P11): a step summary can be checked against
+            # it. Its `name` and `head` are also what `carrier: branches` (D13)
+            # reads to start the next step from this one's work.
+            summary["branch"] = self._scrub(dict(self._pushed_branch))
+        elif self._carrier_pushed is not None:
             # `carrier: branches` (D13): where this step's work is kept for
             # the next step, by name and head, as the last push left it.
             summary["branch"] = self._scrub(dict(self._carrier_pushed))
@@ -3267,15 +3338,25 @@ class Worker:
         # task's attempt budget applies. A missing repository, refused
         # authentication or a bad ref is a plain `GitError` and stays
         # terminal, at once (#623).
-        retry = functools.partial(
-            retry_clone,
-            destination=destination,
-            max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
-            remaining_seconds=self._remaining_seconds,
-            logger=self.log,
-            sleep=self.forge_sleep,
-            on_retry=self._heartbeat,
-        )
+        # Every try counted, the pinned fetch's included: the clone's mark
+        # (`_mark_clone_timed`) says how many it took.
+        tries = [0]
+
+        def retry(call: Callable[[], CloneResult]) -> CloneResult:
+            def counted() -> CloneResult:
+                tries[0] += 1
+                return call()
+
+            return retry_clone(
+                counted,
+                destination=destination,
+                max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+                remaining_seconds=self._remaining_seconds,
+                logger=self.log,
+                sleep=self.forge_sleep,
+                on_retry=self._heartbeat,
+            )
+
         if pinned_sha is not None:
             try:
                 clone = retry(lambda: clone_at_commit(
@@ -3304,6 +3385,7 @@ class Worker:
                     error=self._scrub(str(exc)[:500]),
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
+        pinned_clone = clone is not None
         try:
             clone = clone or retry(lambda: shallow_clone(
                 url=url,
@@ -3339,6 +3421,7 @@ class Worker:
                     f"tenant git token because {refusal}"
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
+        self._mark_clone_timed(clone, tries=tries[0], pinned=pinned_clone)
         self._repo_url = clone.url
         self._clone_base = clone.commit
         # `result_summary.git.clone_commit` (merge-step.md §3): the only record
@@ -5088,9 +5171,9 @@ class Worker:
             else:
                 # Under the startup budget before the runner. The credential
                 # reload calls this again mid-run, outside the window, and gets
-                # the library's defaults there.
+                # the mid-run `tenant` budget there (#70).
                 tenant = load_tenant(
-                    self.db, self.cfg.tenant_id, call_options=self.control.call_options()
+                    self.db, self.cfg.tenant_id, call_options=self.control.call_options("tenant")
                 )
                 resolved = resolve_credentials(
                     tenant=tenant,
@@ -5671,6 +5754,78 @@ class Worker:
                 account_id=account.account_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
+        """One startup mark on the task's events: RUNNING, with `cause`.
+
+        RUNNING because the task is RUNNING by now and the frozen `EventType`
+        has no note-only type; `cause` says which mark it is, as it does for
+        `account_assigned`. The API serves an event's detail as stored
+        (`GET /v1/tasks/{id}/events`), so the marks need no reader of their
+        own. Not on a fenced exit, a tenant mismatch or a control-plane
+        outage: the stream is not this attempt's to write then. Never raises:
+        a measurement is never worth an attempt.
+        """
+        if self._fenced_exit or self._writes_forbidden or self._control_plane_down:
+            return
+        try:
+            self.control.emit(EventType.RUNNING, {"cause": cause, **detail})
+        except Exception as exc:
+            self.log.warning(
+                "could not record a startup mark on the task's events",
+                cause=cause,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _mark_clone_timed(self, clone: CloneResult, *, tries: int, pinned: bool) -> None:
+        """`clone_timed`: where the clone's time went (#667, lane OB1). Once per attempt.
+
+        MEASURED 2026-10-06 (chunk-1 observer): clones took a median 37.8 s
+        and a p90 70.9 s, clustered at ~38 s and ~71 s whatever the load, and
+        nothing recorded which part stalled. The detail is `clone`:
+        `seconds` (the git steps' wall time, as the worker measured it),
+        `tries` (one more for each in-process retry, `gitops.retry_clone`),
+        `pinned` (the workflow base pin's fetch by sha landed it), and
+        `gitops.clone_phase_timings`' numbers -- DNS, connect, TLS, ref
+        negotiation, the pack's wait and transfer, the checkout -- read from
+        git's traces in-process. Nothing from the trace's text is in it: the
+        wire trace carries request headers.
+        """
+        if self._clone_marked:
+            return
+        timings: dict[str, Any] = {
+            "seconds": round(float(clone.duration_seconds), 3),
+            "tries": int(tries),
+            "pinned": bool(pinned),
+            **clone.phases,
+        }
+        # Set before the write, so a failed write is not tried again later.
+        self._clone_marked = True
+        self._emit_startup_mark("clone_timed", {"clone": timings})
+
+    def _mark_agent_started(self) -> None:
+        """`agent_started`: the moment the agent process started (#667, lane OB1).
+
+        MEASURED 2026-10-06 (chunk-1 observer): dispatch -> container start
+        was 62-65 s while dispatch -> agent running was 107-141 s. The
+        attempt's `started_at` is written at the walk to RUNNING, BEFORE the
+        checkpoint restore, the clone, the credential fetch, the account hold
+        and the issue fetch, so it cannot say when the agent began. This
+        event's `at` is that moment: the first runner start of the attempt,
+        once, never an in-place restart. `seconds_since_process_start` is the
+        worker's own clock from its first line; `cloned` says whether this
+        attempt made a clone (a checkpoint can bring one back instead).
+        """
+        if self._agent_start_marked:
+            return
+        self._agent_start_marked = True
+        self._emit_startup_mark(
+            "agent_started",
+            {
+                "seconds_since_process_start": float(self.phases.seconds_since_start()),
+                "cloned": self._clone_marked,
+            },
+        )
 
     def _release_account(self) -> None:
         """Give the account back, on whatever path this attempt is leaving by.
@@ -6555,7 +6710,50 @@ class Worker:
             protected=protected,
         )
         self._carrier_pushed = {"name": branch, "head": pushed or made}
+        self._record_pushed_branch(publish_repo, branch=branch, head=pushed or made)
         self.log.info("carrier: pushed the step's committed work", branch=branch)
+
+    def _record_pushed_branch(self, publish_repo: Path, *, branch: str, head: str) -> None:
+        """Keep what a push just landed, read from git, for `result_summary.branch`.
+
+        MEASURED 2026-10-06 (#667, observer P11): C1A's agent named a branch,
+        `c1a-631-failure-classes`, that was never pushed; the real one was
+        `swarm/task_<id>`. This record is the worker's, not the agent's: the
+        name it pushed, the head it pushed (`head`, as `carrier: branches`
+        always recorded it, and `head_sha`), the base it built on
+        (`base_sha`, None for an empty repository's first push) and the
+        commits between, newest first, from `gitops.branch_commits` in the
+        publish repository the push ran in. Never raises: the push has
+        happened, and a record that could not be read leaves the commits out.
+        """
+        ws = self.ws
+        assert ws is not None
+        base = self._publish_base
+        base_sha = base if isinstance(base, str) and _FULL_SHA_RE.fullmatch(base) else None
+        try:
+            commits, truncated = branch_commits(
+                repo=publish_repo,
+                base=base_sha,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not read the pushed branch's commits",
+                branch=branch,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            commits, truncated = [], False
+        self._pushed_branch = {
+            "name": branch,
+            "head": head,
+            "head_sha": head,
+            "base_sha": base_sha,
+            "commits": commits,
+            "commits_truncated": truncated,
+        }
 
     @contextmanager
     def _heartbeat_meanwhile(self, what: str) -> Iterator[None]:
@@ -8024,6 +8222,7 @@ class Worker:
         # pull request, so a six-step `integrate` workflow produced six of them
         # against an API whose schema, validator and docs all say it produces
         # ONE. The branch is the deliverable here; the integrator merges it.
+        self._record_pushed_branch(publish_repo, branch=branch, head=str(pushed or work_head or ""))
         if carrier == "branches":
             self._carrier_pushed = {"name": branch, "head": str(pushed or work_head or "")}
         if pr_role == "amender":
@@ -8979,7 +9178,24 @@ class Worker:
                 if "total_cost_usd" in more:
                     self._spend["cost_estimated"] = True
         if usage:
-            self._spend = _add_spend(self._spend, usage)
+            self._spend = _add_spend(
+                self._spend,
+                usage,
+                session_base=self._session_spend_base if self._spend_resumes_session else None,
+            )
+
+    def _note_runner_spend_start(self, *, resumed: bool) -> None:
+        """Say, at a runner's start, whose session its spend will report.
+
+        A runner that starts a NEW session -- every first start, and a restart
+        from the prompt -- marks the spend so far as what was spent before
+        that session. A runner that RESUMES one leaves the mark where the
+        session began, so `_add_spend` can replace the session's earlier
+        figures with its later, cumulative ones (#667, observer P14).
+        """
+        self._spend_resumes_session = resumed
+        if not resumed or self._session_spend_base is None:
+            self._session_spend_base = dict(self._spend)
 
     def _stopped_run_estimate(self) -> dict[str, Any]:
         """`_stream_spend_estimate` over this profile's agent capture, or {}."""
@@ -10938,15 +11154,47 @@ _SUMMED_SPEND = (
 )
 
 
-def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
+#: The fields of a usage summary that are a CLI session's RUNNING TOTALS
+#: (`cliagent.SESSION_SPEND_KEYS`, #667 observer P14): a runner that resumed
+#: an earlier runner's session reports them for the whole session.
+_SESSION_SPEND = ("total_cost_usd", "duration_api_ms")
+
+
+def _add_spend(
+    total: dict[str, Any],
+    more: dict[str, Any],
+    *,
+    session_base: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Two usage summaries as one: numbers summed, model lists unioned.
+
+    `session_base` is given for a runner that RESUMED an earlier runner's
+    session (`--resume`): `total` as it stood when that session began. Its
+    `_SESSION_SPEND` figures are then the session's running totals, so the
+    attempt's figure is what was spent before the session plus the later
+    total -- not plus every figure the session reported along the way. A
+    later total below the session's earlier one was not carried over
+    (`cliagent.carries_session_totals`), and is added like any other.
+    Tokens, turns and `duration_ms` are each invocation's own and always add.
 
     A key absent from BOTH stays absent. "Not reported" is not zero (see
     `control.record_spend`), and a sum must not turn the one into the other.
     """
     out = dict(total)
+    session = False
+    if session_base is not None:
+        session_so_far = {
+            key: total[key] - session_base.get(key, 0)
+            for key in _SESSION_SPEND
+            if key in total
+        }
+        session = carries_session_totals(session_so_far, more)
     for key in _SUMMED_SPEND:
-        if key in more:
+        if key not in more:
+            continue
+        if session and session_base is not None and key in _SESSION_SPEND:
+            out[key] = session_base.get(key, 0) + more[key]
+        else:
             out[key] = out.get(key, 0) + more[key]
     if "total_cost_usd" in out:
         # Summing binary floats accumulates noise (0.1 + 0.2); no cost figure

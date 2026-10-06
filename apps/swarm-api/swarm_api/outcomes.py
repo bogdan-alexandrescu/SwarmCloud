@@ -163,8 +163,13 @@ _CACHE_MAX_ENTRIES = 256
 #: because of its parent (`EndCause.CHILD_CASCADE`) is its own cancel cause,
 #: `child_cascade` -- not `requested`, which is a cancel somebody pressed. A
 #: stored day counted under 5 has no such key.
-DERIVE_VERSION = 6
-CLASSIFIER_VERSION = 2
+#: 7 (2026-10-06, #631): a failure the caller asked for is its own class,
+#: `intended`, and a publish refusal written before request 29 is read as
+#: `publish_refused` from its text. A stored day counted under 6 has no
+#: `intended` key and counted both under `runner_error`. CLASSIFIER_VERSION
+#: moves to 3 with it: a text rule was added.
+DERIVE_VERSION = 7
+CLASSIFIER_VERSION = 3
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
 #: is split into shard documents `{id}_s{n}`. The whole write is one batch, and
@@ -263,6 +268,11 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     ("publish_refused", "publish refused"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
+    # #631: a runner that failed because its caller asked it to (the mock's
+    # `fail: true`, which every acceptance run submits). Last, because it is
+    # not a defect at all: on dev, 2026-10-05, 191 of the 213 "runner errors"
+    # were these, and a runner error has to mean a real one.
+    ("intended", "failed on purpose"),
 )
 #: `after_cancel` (decision 2) follows `after_failure`: both are the cascade
 #: a parent's end sent down its dependants, and they differ only in which end.
@@ -386,6 +396,19 @@ _INPUTS_UNAVAILABLE_RE = re.compile(
     r"|staging .+ from upstream task )",
     re.DOTALL,
 )
+#: agent_worker/lifecycle.py, the two publish refusals: `final_tree_leak`'s
+#: reason and `_refused_title_reason`'s. Both fail the attempt with exit 0.
+#: Since contract request 29 (2026-10-02) the worker types them
+#: PUBLISH_REFUSED; before it, a task carried no cause or the one its writer
+#: used then (runner_error for the scan, outputs_missing for the title), and
+#: every one was counted under it (#631: 9 tasks and 23 retried attempts on
+#: dev, 2026-10-05, none of them counted as a refusal).
+_PUBLISH_REFUSED_RE = re.compile(
+    r"(?:the final tree adds a credential in |pr-title\.txt refused: )"
+)
+#: The typed causes a pre-request-29 refusal may carry, which its text is read
+#: over. No other: a timeout or a lost worker is what its writer said it was.
+_REFUSAL_CARRIED_AS = frozenset({EndCause.RUNNER_ERROR.value, EndCause.OUTPUTS_MISSING.value})
 #: scheduler/store.py `f"{error_code} (attempt {reference})"`; the codes are
 #: dispatch.py's DispatchError codes and loop.py's scheduler_internal_error.
 _DISPATCH_FAILED_RE = re.compile(r"[a-z][a-z0-9_]* \(attempt [^)]+\)")
@@ -417,6 +440,7 @@ def classify_failure(
     final_attempt_exit_code: int | None,
     *,
     end_cause: Any = None,
+    intended: bool = False,
 ) -> str | None:
     """Why a FAILED or DEAD_LETTERED task failed, as one fixed class. First match wins.
 
@@ -441,17 +465,44 @@ def classify_failure(
     "runner exited N"); anything else set and unmatched is `other`, which is
     always a counted row, never dropped.
 
+    TWO REFINEMENTS, #631 (owner decision 2026-10-05):
+
+      * A PUBLISH REFUSAL WRITTEN BEFORE CONTRACT REQUEST 29 is read from its
+        text: a task with no cause, or with the RUNNER_ERROR or
+        OUTPUTS_MISSING its writer used then, whose final attempt exited 0
+        and whose `last_error` opens with one of the worker's two refusal
+        literals, is `publish_refused`. Exit 0 is the guard: the worker's
+        refusal records the runner's 0, and a runner's own failure -- whose
+        error text is the agent's to write -- never does.
+      * `intended`: the caller asked for this failure (`failed_on_purpose`).
+        It turns only what would be `runner_error` into `intended`; a timeout,
+        a lost worker or a refusal before the deliberate failure is real.
+
     DEAD_LETTERED is classified exactly like FAILED. No writer produces it today.
     Any other state has no failure class: None.
     """
     if _state_value(state) not in _FAILED_VALUES:
         return None
     cause = _cause_value(end_cause)
+    text = str(last_error).lstrip() if last_error is not None else ""
+    if (
+        (cause is None or cause in _REFUSAL_CARRIED_AS)
+        and final_attempt_exit_code == 0
+        and _PUBLISH_REFUSED_RE.match(text)
+    ):
+        return "publish_refused"
+    found = _classify_failure(cause, text, final_attempt_exit_code)
+    if intended and found == "runner_error":
+        return "intended"
+    return found
+
+
+def _classify_failure(cause: str | None, text: str, final_attempt_exit_code: int | None) -> str:
+    """`classify_failure`'s stages 0-3, for a failed task: `text` is stripped."""
     if cause is not None:
         return _FAILURE_OF_CAUSE.get(cause, "other")
     if final_attempt_exit_code == EXIT_CANNOT_START:
         return "could_not_start"
-    text = str(last_error).lstrip() if last_error is not None else ""
     if not text:
         return "no_reason"
     if _TIMEOUT_RE.match(text):
@@ -469,6 +520,24 @@ def classify_failure(
     if final_attempt_exit_code is not None:
         return "runner_error"
     return "other"
+
+
+def failed_on_purpose(task: Mapping[str, Any]) -> bool:
+    """True when the task's caller asked its runner to fail (#631).
+
+    The profile must DECLARE a boolean `fail` input in the catalogue -- the
+    mock does: "fail on purpose, after the steps" -- and the stored input must
+    hold `fail: true`, the boolean, as the declaration admits. Read from the
+    catalogue, never by profile name, so a profile that starts declaring it is
+    read the moment it does, and a stored `fail` on a profile that declares
+    none means nothing.
+    """
+    profile = RUNNER_PROFILES.get(str(task.get("runner_profile") or ""))
+    declared = profile.inputs.get("fail") if profile is not None else None
+    if declared is None or declared.kind != "boolean":
+        return False
+    given = task.get("input")
+    return isinstance(given, Mapping) and given.get("fail") is True
 
 
 def cancel_cause(
@@ -1361,7 +1430,9 @@ def tuple_from_docs(
         "attempt_count": _int(task.get("attempt_count")),
         "att_docs": len(ordered),
         "timeout_s": _int(timeout) if timeout is not None else None,
-        "failure_class": classify_failure(state, last_error, final_exit, end_cause=end_cause),
+        "failure_class": classify_failure(
+            state, last_error, final_exit, end_cause=end_cause, intended=failed_on_purpose(task)
+        ),
         "cancel_cause": (
             cancel_cause(
                 bool(task.get("cancel_requested")),

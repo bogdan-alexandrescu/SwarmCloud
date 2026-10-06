@@ -39,9 +39,11 @@ requests" has no mechanism to do so -- not a quota it would exhaust first.
 from __future__ import annotations
 
 import base64
+import functools
 import http.client
 import json
 import re
+import socket
 import ssl
 import time
 import urllib.error
@@ -407,16 +409,141 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+@dataclass(frozen=True)
+class ConnectBound:
+    """A connect timeout apart from the read timeout, and how often to retry it.
+
+    urllib has one `timeout`, and http.client gives it to the TCP connect, the
+    TLS handshake and every later read alike. A caller that wants a stalled
+    connect to give up early and try again -- without cutting short a forge
+    that connected and is slow to answer -- passes one of these to
+    `open_without_redirects`. Only a timeout or a refused/reset connection is
+    retried: a certificate the host could not prove (`ssl.SSLError`) and a
+    DNS failure (`socket.gaierror`) are not `ConnectionError`s and raise at
+    once, to the caller's own classification.
+    """
+
+    timeout: float
+    tries: int = 1
+    #: The wait before the second try; doubled before each later one.
+    backoff_seconds: float = 0.0
+    sleep: Callable[[float], Any] = time.sleep
 
 
-def open_without_redirects(request: urllib.request.Request, *, timeout: float = _TIMEOUT) -> Any:
+#: The attribute of a `Request` that carries its `ConnectBound` to the handler.
+#: urllib keeps `timeout` on the request the same way.
+_CONNECT_BOUND_ATTR = "swarm_connect_bound"
+
+
+class _ConnectBounded:
+    """An http.client connection whose connect obeys a `ConnectBound`.
+
+    `self.timeout` (urllib's `timeout`) is kept as the READ timeout: the
+    connect runs under the bound's own timeout, and the connected socket --
+    the TLS one, for https -- is then set to the read timeout. Subclassing the
+    connection and overriding `connect` is the smallest correct way with
+    urllib: the connect timeout is fixed at `socket.create_connection` and the
+    TLS handshake inherits it, so nothing outside the connection can tell the
+    two phases apart.
+    """
+
+    def __init__(self, *args: Any, connect_bound: ConnectBound, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        self._connect_bound = connect_bound
+
+    def connect(self) -> None:
+        bound = self._connect_bound
+        read_timeout = self.timeout  # type: ignore[has-type]
+        if read_timeout is socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+            read_timeout = socket.getdefaulttimeout()
+        attempt = 1
+        while True:
+            self.timeout = bound.timeout
+            try:
+                super().connect()  # type: ignore[misc]
+            except ssl.SSLError:
+                self._drop_socket()
+                raise
+            except (TimeoutError, ConnectionError):
+                self._drop_socket()
+                if attempt >= bound.tries:
+                    raise
+                bound.sleep(bound.backoff_seconds * (2 ** (attempt - 1)))
+                attempt += 1
+                continue
+            finally:
+                self.timeout = read_timeout
+            self.sock.settimeout(read_timeout)  # type: ignore[attr-defined]
+            return
+
+    def _drop_socket(self) -> None:
+        # The socket only, never `close()`: http.client connects lazily inside
+        # `send()`, after the request line is queued, and `close()` would reset
+        # that request's state and fail the try that does connect.
+        sock, self.sock = self.sock, None  # type: ignore[has-type]
+        if sock is not None:
+            sock.close()
+
+
+class _ConnectBoundedHTTP(_ConnectBounded, http.client.HTTPConnection):
+    pass
+
+
+class _ConnectBoundedHTTPS(_ConnectBounded, http.client.HTTPSConnection):
+    pass
+
+
+_BOUNDED_CONNECTION = {
+    http.client.HTTPConnection: _ConnectBoundedHTTP,
+    http.client.HTTPSConnection: _ConnectBoundedHTTPS,
+}
+
+
+class _HonoursConnectBound:
+    """Opens a request carrying a `ConnectBound` through `_ConnectBounded`.
+
+    `do_open` is where urllib hands over the connection class, in every
+    Python this worker runs; a request with no bound is opened exactly as the
+    stock handler opens it.
+    """
+
+    def do_open(self, http_class, req, **http_conn_args):  # noqa: ANN001
+        bound = getattr(req, _CONNECT_BOUND_ATTR, None)
+        if bound is not None:
+            http_class = functools.partial(_BOUNDED_CONNECTION[http_class], connect_bound=bound)
+        return super().do_open(http_class, req, **http_conn_args)  # type: ignore[misc]
+
+
+class _HTTPHandler(_HonoursConnectBound, urllib.request.HTTPHandler):
+    pass
+
+
+class _HTTPSHandler(_HonoursConnectBound, urllib.request.HTTPSHandler):
+    pass
+
+
+#: Subclasses of HTTPHandler and HTTPSHandler REPLACE the defaults in
+#: `build_opener`, as `_NoRedirect` replaces the redirect handler.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect, _HTTPHandler, _HTTPSHandler)
+
+
+def open_without_redirects(
+    request: urllib.request.Request,
+    *,
+    timeout: float = _TIMEOUT,
+    connect: ConnectBound | None = None,
+) -> Any:
     """Send one request through the no-redirect opener. A 3xx raises as HTTPError.
 
     The only way a request carrying a forge token leaves this process. It
     reads `_NO_REDIRECT_OPENER` at call time, so a test that replaces it sees
     every call.
+
+    With `connect`, `timeout` bounds each read only and the connect is bounded
+    and retried by `connect` (`ConnectBound`); without it, `timeout` bounds
+    the connect and each read alike, as urllib does.
     """
+    setattr(request, _CONNECT_BOUND_ATTR, connect)
     return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
 
 

@@ -38,6 +38,7 @@ import type { Capacity, QuotaState, Stats } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadStats: vi.fn(),
   // Platform counts reads the session to price its first run (AH-9).

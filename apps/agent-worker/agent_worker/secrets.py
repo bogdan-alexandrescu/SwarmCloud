@@ -69,7 +69,8 @@ def load_tenant(
 
     `call_options` is the read's `retry` and `timeout`. The lifecycle passes
     its startup budget before the runner starts (`ControlPlane.call_options`),
-    and nothing mid-run, where the library's defaults apply.
+    and the mid-run `tenant` budget for a credential reload
+    (`control.MID_RUN_BUDGETS`, #70).
     """
     snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
     if not snap.exists:

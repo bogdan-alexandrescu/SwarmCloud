@@ -20,7 +20,7 @@ import type { Capacity, Pool, RunnerProfile } from '../types'
 import { painted } from './marks'
 import { cellStyle, lengthPx, textPx } from './tablefit'
 
-const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), setPoolLimit: vi.fn(), loadMe: vi.fn() }))
+const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn(), setPoolLimit: vi.fn(), loadMe: vi.fn() }))
 vi.mock('../api', () => api)
 
 const { AdminSettingsScreen } = await import('../AdminSettings')

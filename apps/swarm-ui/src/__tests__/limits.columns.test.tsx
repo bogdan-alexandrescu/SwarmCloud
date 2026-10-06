@@ -27,6 +27,7 @@ const STYLES = `${SHEET}\n${ADMIN}`
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadMe: vi.fn(),
 }))

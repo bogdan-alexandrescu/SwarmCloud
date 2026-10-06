@@ -1034,11 +1034,12 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
             <span className="ol-li">
               <i className="ol-k is-ok" aria-hidden /> succeeded <b className="ol-n">{shown.succeeded}</b>
             </span>
+            {/* FAILED IS FAILED + DEAD_LETTERED (#123), the count lane 2's
+                failed mark draws, so succeeded + failed + cancelled is
+                finished with nothing to add; dead-lettered is its qualifier. */}
             <span className="ol-li">
-              <i className="ol-k is-bad" aria-hidden /> failed <b className="ol-n">{shown.failed}</b>
-            </span>
-            <span className="ol-li">
-              dead-lettered <b className="ol-n">{shown.dead_lettered}</b>
+              <i className="ol-k is-bad" aria-hidden /> failed <b className="ol-n">{shown.failed + shown.dead_lettered}</b>{' '}
+              <span className="ol-q">incl. dead-lettered {shown.dead_lettered}</span>
             </span>
             {/* ONE NUMBER PER KEY, AND IT IS THE NUMBER THE KEY'S MARK DRAWS
                 (TS-9). The flat bars are requested + other, the outlined bars

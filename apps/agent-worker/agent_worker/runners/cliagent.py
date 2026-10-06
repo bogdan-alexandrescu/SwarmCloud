@@ -918,17 +918,56 @@ def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir:
     return "\n".join(lines)
 
 
-def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    """The spend of two invocations of one session: numbers summed, at any depth.
+#: THE FIGURES A CLI's `result` EVENT REPORTS FOR THE WHOLE SESSION (#667,
+#: observer P14). Measured 2026-10-06 on C1C's implement step: the first pass
+#: reported $1.8037 and 260,533 ms of API time; the same session resumed to
+#: finish reported $1.8804 and 272,258 ms with 951 output tokens -- the CLI
+#: restores its cost tracker on `--resume`, so the cost and the API time (and
+#: `modelUsage`, which that tracker also keeps) are the session's running
+#: totals. `usage`, `num_turns` and `duration_ms` are counted by the
+#: invocation and are its own. Summing the first kind recorded $3.684 for a
+#: step that cost about $1.88.
+SESSION_SPEND_KEYS: tuple[str, ...] = ("total_cost_usd", "duration_api_ms", "modelUsage")
 
-    A resumed invocation's `result` event totals that invocation only, so the
-    step's spend is both. A value that is not a number on both sides is the
-    later one's.
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def carries_session_totals(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> bool:
+    """True when `later`, from a resumed invocation, already includes `earlier`.
+
+    Read off the cost, else the API time: a session's running total never
+    falls, so a later figure at least the earlier one is the session's total.
+    A LOWER one was not carried over -- a CLI that could not restore its
+    tracker reports the invocation alone -- and then the two are added, so a
+    resume never records less than was measured. False when neither figure
+    is on both sides.
     """
+    for key in ("total_cost_usd", "duration_api_ms"):
+        before, after = _number(earlier.get(key)), _number(later.get(key))
+        if before is not None and after is not None:
+            return after >= before
+    return False
+
+
+def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """The spend of two invocations of one session, `second` the resumed one.
+
+    `SESSION_SPEND_KEYS` are the session's running totals, so `second`'s
+    replace `first`'s whenever it carries them (`carries_session_totals`).
+    Every other number is the invocation's own and is summed, at any depth.
+    A value that is not a number on both sides is the later one's.
+    """
+    session = carries_session_totals(first, second)
     out = dict(first)
     for key, value in second.items():
         prior = out.get(key)
-        if isinstance(prior, dict) and isinstance(value, dict):
+        if session and key in SESSION_SPEND_KEYS:
+            out[key] = value
+        elif isinstance(prior, dict) and isinstance(value, dict):
             out[key] = _combined_spend(prior, value)
         elif (
             isinstance(prior, (int, float)) and isinstance(value, (int, float))
