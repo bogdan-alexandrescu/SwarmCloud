@@ -27,6 +27,14 @@ artifacts and logs expire on the clock and a checkpoint is invisible to it: the
 reference collector, `reconciler.checkpoints`, is the only thing that removes
 one. It replaced an `age` rule that deleted a PARKED task's only checkpoint on
 the same schedule as a finished task's leftovers (D14).
+
+The repository index is off the clock the same way (lane IX3,
+docs/repo-index.md §2.3): nothing under `tenants/<t>/repos/` is stamped
+(`is_repos_key`), so the index copies and graph objects a kept version still
+names are removed only by the index run's retention sweep, never by age. The
+Delete rule therefore stays bucket-wide and keeps covering every tenant's
+task objects, including personal tenants the API creates at runtime, which
+no per-tenant prefix in Terraform could list.
 """
 
 from __future__ import annotations
@@ -84,6 +92,32 @@ def is_checkpoint_key(key: str) -> bool:
     ):
         return False
     return all(parts[1:8])
+
+
+#: The path segment that holds a tenant's repository index and graph:
+#: `tenants/<t>/repos/<repo_id>/...` (agent_worker.indexrun).
+REPOS_SEGMENT = "repos"
+
+
+def is_repos_key(key: str) -> bool:
+    """True for an object under a tenant's repository index:
+    `tenants/<t>/repos/<repo_id>/<object...>`. Its retention is the index
+    run's sweep (the last 20 versions, then unreferenced graph blobs), so it
+    must never carry the customTime the bucket's Delete rule keys on."""
+    parts = key.split("/")
+    return (
+        len(parts) >= 5
+        and parts[0] == "tenants"
+        and parts[2] == REPOS_SEGMENT
+        and all(parts[1:5])
+    )
+
+
+def is_off_the_clock(key: str) -> bool:
+    """An object the bucket's customTime Delete must never reach: a
+    checkpoint (removed by reference) or anything under repos/ (removed by the
+    index retention sweep)."""
+    return is_checkpoint_key(key) or is_repos_key(key)
 
 
 @runtime_checkable
@@ -198,12 +232,13 @@ class GcsObjectStore:
 
     def _upload_blob(self, key: str):
         """The blob an upload writes, with customTime set unless it is a
-        checkpoint's (see the module docstring). Set on the blob before the
-        upload, so it is part of the object resource the upload sends: the
+        checkpoint's or under repos/ (see the module docstring). Set on the
+        blob before the upload, so it is part of the object resource the
+        upload sends: the
         object is never, even briefly, live without the stamp the bucket's
         Delete rule keys on."""
         blob = self._get_bucket().blob(validate_key(key))
-        if not is_checkpoint_key(key):
+        if not is_off_the_clock(key):
             blob.custom_time = datetime.now(timezone.utc)
         return blob
 
