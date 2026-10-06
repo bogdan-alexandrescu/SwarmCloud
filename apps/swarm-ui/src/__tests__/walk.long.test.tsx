@@ -135,7 +135,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
 
 describe('C: no empty band between the workflow page’s tabs and its card', () => {
   it('draws nothing between the tabs and the card, and holds them 12px apart', async () => {
-    const tabs = await page(`/workflows/${WF}`, '.wfp > .c-tabs')
+    const tabs = await page(`/workflows/${WF}`, '.wfp:not(.is-loading) > .c-tabs')
     const board = tabs.nextElementSibling!
     expect(board.classList.contains('wf-board'), `the tabs are followed by ${board.className}`).toBe(true)
     expect(board.firstElementChild?.classList.contains('wf-card'), 'something is drawn above the card').toBe(true)
