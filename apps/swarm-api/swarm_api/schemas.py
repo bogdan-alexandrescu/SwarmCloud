@@ -146,6 +146,13 @@ class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
     priority: int = Field(default=0, ge=-100, le=100)
     on_step_failure: Literal["fail_workflow", "continue"] = "fail_workflow"
+    #: Free-form, copied onto every step's task. Three keys are the merge
+    #: step's, checked at submission by `validation` rather than typed here, so
+    #: a refusal names the key and its accepted values in the API's 422 shape:
+    #: `merge` ("on" | "off", `resolve_merge_choice`), `merge_fix_rounds`
+    #: (0-5, only beside a merge step, `resolve_merge_fix_rounds`) and
+    #: `merge_label_dropped`, which only swarm-api writes
+    #: (`refuse_merge_label_record`; docs/merge-step.md, 2026-10-06, MS1).
     metadata: dict[str, Any] = Field(default_factory=dict)
     #: Chosen once for the whole workflow, not per step: `integrate` produces
     #: ONE pull request, so "which repository" cannot be a per-step answer.
