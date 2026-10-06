@@ -6,7 +6,7 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, shellcheck, make, the docker CLI) | every profile but `browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI; tofu and tflint only with `INSTALL_TOFU_TFLINT=1`) | every profile but `browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` (GKE Autopilot) |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 
@@ -59,6 +59,7 @@ the image:
 | | gke-gcloud-auth-plugin | 4.0 | 10 |
 | | shellcheck 0.11.0 | 3.8 | |
 | | **total** | **~202** | |
+| trivy (2026-10-06, #442) | trivy 0.75.0 | 51.0 | 165 |
 
 **The registry bisect (the operator, 2026-10-05 ~11:05Z, #625).** Run with
 `scripts/image-sizes.sh` over 101 releases of agent-runtime-base:
@@ -109,6 +110,16 @@ in the LSP self-test (owner decision 2026-10-05), so it stays a
 `DISABLED_SERVERS` spec in `lsp/servers.py` until it resolves. gopls is
 compiled from module source with the golang.org/x modules trivy flagged
 raised (#661); HashiCorp's prebuilt zip is not used.
+
+**trivy joined the base on 2026-10-06 (#442).** BUILD_PROMPT_V2 §2.12 and the
+owner's decision on #442 put all eleven toolbox tools in agent-runtime-base;
+three were held back on 2026-10-01 because every release of each failed the
+promote scan. trivy 0.75.0 scanned clean, so it is in the default build, and
+it costs every agent start its 51 MB layer (measured as above: the pinned
+tarball, sha256-checked, unpacked, `gzip -6`). tofu and tflint stay behind
+`INSTALL_TOFU_TFLINT`; turning it on adds about 52 MB (tofu 1.13.1 34.7,
+tflint 0.64.0 16.8). Why each still fails the scan is recorded beside its pin in the
+Dockerfile.
 
 ## Adding to a worker image
 

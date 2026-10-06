@@ -64,6 +64,9 @@
 /* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
 .adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
 .adm-changed > time { color: var(--text-dim); }
+/* A record the pool no longer holds (#133): neutral, like `.adm-over` -- a
+   ceiling written since by scripts/pool-limit.sh is a fact to read, not a fault. */
+.adm-changed-since { color: var(--text-dim); text-decoration: underline dotted; cursor: help; }
 /* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
    a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
    outlined tag, never `--warn` or `--bad`: the row is reporting an operator's

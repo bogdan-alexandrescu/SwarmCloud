@@ -23,7 +23,7 @@ import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -49,6 +49,36 @@ export async function loadCapacity(options: { frame?: boolean } = {}): Promise<R
   // `frame`: the shell's capacity meter reads this too, as the FRAME's read
   // (CH-2), so its age never stands in for the page's own.
   return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0, { frame: options.frame === true })
+}
+
+/**
+ * `GET /v1/admin/pools` (#133): every pool, with who last changed it through
+ * an admin route, when, and what changed. Admin-gated, so a non-admin's 403 is
+ * information. Pool limits joins it onto `/v1/capacity` by pool name; the
+ * record is not on `/v1/capacity` because every tenant member reads that.
+ */
+export async function loadAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
+  if (USE_FIXTURES) return fixtureAdminPools()
+  return read<{ pools: AdminPool[] }>(route('/v1/admin/pools'), (d) => d.pools.length === 0)
+}
+
+async function fixtureAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
+  const cap = await fixtureCapacity()
+  noteFixtureProbe(route('/v1/admin/pools'), 0, true)
+  if (cap.status !== 'ok') return { status: 'empty', fetchedAt: Date.now() }
+  // One pool carries a record, so the row that prints it is looked at; the
+  // rest are null, as a pool no admin has touched is.
+  const pools = cap.data.pools.map((p, i): AdminPool =>
+    i === 0 && p.hard_limit !== null
+      ? {
+          ...p,
+          admin_changed_by: 'ops@saga.xyz',
+          admin_changed_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+          admin_change: { hard_limit: { from: p.hard_limit * 2, to: p.hard_limit } },
+        }
+      : { ...p, admin_changed_by: null, admin_changed_at: null, admin_change: null },
+  )
+  return { status: 'ok', fetchedAt: Date.now(), data: { pools } }
 }
 
 // `TASK_PAGE_LIMIT` lives in `pageLimits.ts`: the check layer (checks.ts)

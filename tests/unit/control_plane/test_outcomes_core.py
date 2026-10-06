@@ -306,11 +306,12 @@ def test_the_vocabulary_order_is_fixed():
         "merge_refused", "merge_failed",  # contract request 33
         "publish_refused",  # contract request 29
         "other", "no_reason",
+        "intended",  # #631
     ]
     assert [c["key"] for c in VOCAB["cancel_causes"]] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",
     ]
-    assert VOCAB["classifier_version"] == 2
+    assert VOCAB["classifier_version"] == 3
 
 
 @pytest.mark.parametrize(

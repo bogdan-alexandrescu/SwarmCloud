@@ -74,6 +74,7 @@ from swarm_common.profiles import InputRefused, RunnerProfile
 from .errors import InputUnavailable
 from .forge import (
     GITHUB_HOSTS,
+    ConnectBound,
     ForgeUnavailable,
     RepoRef,
     RetryPolicy,
@@ -91,10 +92,30 @@ INPUT_KEY = "issue"
 #: The file in `work/` the issue is written to.
 FILE_NAME = "issue.md"
 
-#: Per request. Shorter than the forge module's 30 s because this runs before
-#: the agent, inside the reconciler's heartbeat grace, and the worker proves
-#: liveness between requests (`on_request`).
-_TIMEOUT = 20
+#: The connect (TCP and TLS) and the reads are bounded apart (observer proposal
+#: P3, owner decision 2026-10-06). Measured 2026-10-06: C1E's issue fetch timed
+#: out at exactly 20 s and succeeded on a retry 2 s later, and C1A's took
+#: 19.99 s, both against one 20 s timeout that bounded the connect and the reads
+#: alike -- so a stalled connect spent the whole 20 s before anything tried
+#: again. A connect to api.github.com that has not finished in 5 s is stalled,
+#: not slow; it is given up and tried again, up to 3 times, inside the request.
+_CONNECT_TIMEOUT = 5
+_CONNECT_TRIES = 3
+#: Before the second connect try; doubled before the third. Three stalled
+#: tries and their backoff (3 x 5 s + 0.5 s + 1 s) stay inside the 20 s the
+#: single timeout allowed, so the worst connect is no slower than before.
+_CONNECT_BACKOFF_SECONDS = 0.5
+#: Each read once connected. Kept at the old 20 s: a forge that connected and
+#: is slow to answer (C1A's 19.99 s) is still waited for, and one that never
+#: answers still fails here and is retried as a whole fetch by `stage_issue`.
+#: Shorter than the forge module's 30 s because this runs before the agent,
+#: inside the reconciler's heartbeat grace, and the worker proves liveness
+#: between requests (`on_request`).
+_READ_TIMEOUT = 20
+
+_CONNECT = ConnectBound(
+    timeout=_CONNECT_TIMEOUT, tries=_CONNECT_TRIES, backoff_seconds=_CONNECT_BACKOFF_SECONDS
+)
 
 _UA = "swarmcloud-agent-worker"
 
@@ -222,7 +243,7 @@ def _open(req: urllib.request.Request) -> tuple[int, Any, Mapping[str, str]]:
     GitHub's rate-limit headers to tell a rate limit from a refusal.
     """
     try:
-        with open_without_redirects(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_READ_TIMEOUT, connect=_CONNECT) as response:
             raw = _read_capped(response, req=req).decode("utf-8", errors="replace")
             headers = dict(response.headers.items()) if response.headers else {}
             return response.status, (json.loads(raw) if raw.strip() else None), headers

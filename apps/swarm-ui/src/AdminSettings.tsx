@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
-import { loadCapacity, loadMe, setPoolLimit } from './api'
+import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
@@ -9,6 +9,7 @@ import {
   poolKind,
   poolLabel,
   setBy,
+  type AdminPool,
   type Capacity,
   type Me,
   type Pool,
@@ -103,7 +104,8 @@ export function AdminSettingsScreen() {
 
   const reread = async (over: Capacity, pool: string): Promise<boolean> => {
     mark(pool, 'rereading')
-    const r = await loadCapacity()
+    // With the record (#133), so the row names the change just made.
+    const r = await loadLimits()
     if (r.status === 'ok' || r.status === 'stale') {
       setFresh({ over, data: r.data })
       mark(pool, 'saved')
@@ -121,7 +123,7 @@ export function AdminSettingsScreen() {
       // that does not exist, and it restated the section it already sits under
       // ("Admin") instead of naming the thing on the screen.
       title="Pool limits"
-      load={loadCapacity}
+      load={loadLimits}
       // A count, not a promise. "changes take effect immediately" was a
       // rationale in the one slot on this screen a reader cannot skip.
       summary={(d) =>
@@ -143,6 +145,62 @@ export function AdminSettingsScreen() {
       )}
     </Screen>
   )
+}
+
+/**
+ * WHERE THE RECORD OF WHO CHANGED A POOL CAME FROM (#133), per pool.
+ *
+ *   served       the admin pool read answered: the pool's record is what it
+ *                served, and null fields mean no admin route has changed it
+ *   admins-only  the admin pool read refused (403): the record exists for
+ *                admins, and saying "not recorded" would be untrue
+ *   unread       the admin pool read failed, or this pool was not in it
+ */
+type RecordRead = 'served' | 'admins-only' | 'unread'
+
+/** A pool as this screen draws it: `/v1/capacity`'s, with the admin record joined on. */
+type LimitPool = Pool & Partial<Pick<AdminPool, 'admin_changed_by' | 'admin_changed_at' | 'admin_change'>> & {
+  record?: RecordRead
+}
+
+/**
+ * `/v1/capacity`, WITH WHO CHANGED EACH POOL JOINED ON FROM `/v1/admin/pools`
+ * (#133), by pool name.
+ *
+ * TWO READS, NOT ONE. The record is served on the admin read only, because
+ * `/v1/capacity` serves pools to every tenant member and an admin's email is
+ * not tenant data. Reading `/v1/capacity` alone is why every row once said
+ * "not recorded" against an API that held the record. The figures stay
+ * `/v1/capacity`'s -- the profiles' arithmetic is taken over them -- and the
+ * admin read contributes the three record fields and nothing else.
+ *
+ * The admin read failing never fails the screen: the ceilings are still
+ * editable, and the rows say the record was not read.
+ */
+export async function loadLimits(): Promise<Result<Capacity>> {
+  const [cap, admin] = await Promise.all([
+    loadCapacity(),
+    Promise.resolve(loadAdminPools()).catch(() => undefined),
+  ])
+  if (cap === undefined || (cap.status !== 'ok' && cap.status !== 'stale')) return cap
+  const served = admin !== undefined && (admin.status === 'ok' || admin.status === 'stale' || admin.status === 'empty')
+  const refused = admin !== undefined && admin.status === 'error' && admin.error.kind === 'admin_required'
+  const byName = new Map(
+    admin !== undefined && (admin.status === 'ok' || admin.status === 'stale') ? admin.data.pools.map((p) => [p.name, p]) : [],
+  )
+  const pools = cap.data.pools.map((p): LimitPool => {
+    if (refused) return { ...p, record: 'admins-only' }
+    const found = byName.get(p.name)
+    if (found === undefined) return { ...p, record: served && byName.size === 0 ? 'served' : 'unread' }
+    return {
+      ...p,
+      admin_changed_by: found.admin_changed_by,
+      admin_changed_at: found.admin_changed_at,
+      admin_change: found.admin_change,
+      record: 'served',
+    }
+  })
+  return { ...cap, data: { ...cap.data, pools } }
 }
 
 /**
@@ -438,31 +496,74 @@ function deltaWords(from: number | null, to: number): string {
 }
 
 /**
- * WHY "not recorded". Who changed a ceiling and when needs `admin_changed_by`
- * and `admin_changed_at` on the pool, which the store writes on every admin
- * write (`Store.upsert_pool`) and `/v1/capacity` does not serve yet. The pool's
- * `updated_at` is NOT that: admission rewrites the pool document on every
- * lease, so it moves with traffic, and printing it as "last changed" would
- * name a time nobody changed anything.
+ * WHY A POOL SHOWS NO RECORD, by where the record came from (#133). Never the
+ * pool's `updated_at` in its place: admission rewrites the pool document on
+ * every lease, so it moves with traffic, and printing it as "last changed"
+ * would name a time nobody changed anything.
  */
-const NOT_RECORDED_WHY =
-  'Not recorded: the API does not serve admin_changed_by or admin_changed_at for this pool, so who changed this ceiling, and when, is not known here.'
+function notRecordedWhy(pool: Pool): string {
+  const record = (pool as LimitPool).record
+  if (record === 'served')
+    return 'Not recorded: no admin has changed this ceiling through the API since changes began to be recorded, so admin_changed_by and admin_changed_at are empty for this pool.'
+  if (record === 'admins-only')
+    return 'Visible to admins only: who changed a ceiling, and when (admin_changed_by, admin_changed_at), is served on the admin pool read, which needs the platform admin group.'
+  return 'Not known here: the admin pool read (/v1/admin/pools), which serves admin_changed_by and admin_changed_at, did not answer for this pool, so who changed this ceiling, and when, is not known.'
+}
+
+/** The last admin write to a pool: who, when, what, and whether the pool still holds it. */
+interface Change {
+  by: string
+  at: string
+  /** `20 → 10`, `drained`; null when the record names no field (written before #133 recorded one). */
+  what: string | null
+  /** Set when the pool no longer holds what this change wrote: why, in a sentence. */
+  since: string | null
+}
 
 /**
  * The last admin write to a pool, when the response carries it (#133).
  *
- * READ DEFENSIVELY, OFF THE POOL AS SERVED. `Pool` in types.ts mirrors what
- * `/v1/capacity` serves today, which is neither field; the moment the API
- * serves them they are printed, and until then a pool without both reads
- * "not recorded". Both or nothing: a name with no time, or a time with no
- * name, is half a record and is not drawn as a whole one.
+ * READ DEFENSIVELY, OFF THE POOL AS SERVED: `loadLimits` joins the record on
+ * from the admin read, and a pool without both `admin_changed_by` and
+ * `admin_changed_at` reads "not recorded". Both or nothing: a name with no
+ * time, or a time with no name, is half a record and is not drawn as a whole
+ * one.
+ *
+ * A CEILING WRITTEN SINCE IS NOT CREDITED TO THE LAST ADMIN. The record is the
+ * newest change made through the API. `scripts/pool-limit.sh` writes Firestore
+ * directly and records nothing, so when the pool's hard limit is no longer the
+ * `to` of the record, the record is drawn with `changed since` and the
+ * sentence why, rather than as the reason for the value on screen.
  */
-function changeOf(pool: Pool): { by: string; at: string } | null {
-  const served = pool as Pool & { admin_changed_by?: unknown; admin_changed_at?: unknown }
+function changeOf(pool: Pool): Change | null {
+  const served = pool as LimitPool & { admin_changed_by?: unknown; admin_changed_at?: unknown }
   const by = served.admin_changed_by
   const at = served.admin_changed_at
   if (typeof by !== 'string' || by === '' || typeof at !== 'string' || Number.isNaN(Date.parse(at))) return null
-  return { by, at }
+  const limit = served.admin_change?.hard_limit
+  const enabled = served.admin_change?.enabled
+  const what: string[] = []
+  const since: string[] = []
+  if (limit !== undefined) {
+    what.push(`${limit.from === null ? 'no limit set' : limit.from} → ${limit.to}`)
+    if (pool.hard_limit !== limit.to)
+      since.push(
+        `The hard limit is ${pool.hard_limit === null ? 'not set' : pool.hard_limit} now, not the ${limit.to} this change wrote.`,
+      )
+  }
+  if (enabled !== undefined) {
+    what.push(enabled.to ? 'reopened' : 'drained')
+    if (pool.enabled !== enabled.to) since.push(`The pool is ${pool.enabled ? 'open' : 'drained'} now, not ${enabled.to ? 'open' : 'drained'}.`)
+  }
+  return {
+    by,
+    at,
+    what: what.length === 0 ? null : what.join(' · '),
+    since:
+      since.length === 0
+        ? null
+        : `${since.join(' ')} It was written since by something that records nothing -- scripts/pool-limit.sh writes Firestore directly -- so this record is not why the pool reads as it does.`,
+  }
 }
 
 /** "1 unit", "3 units" (browser QA D32: the editor said "1 units"). */
@@ -481,11 +582,20 @@ export function AdmSetBy({ pool }: { pool: Pool }) {
   return by.term === 'configured' ? <span className="adm-setby-cfg">configured</span> : <>{by.term}</>
 }
 
-/** `ops@… · 3h ago`, with the instant on the `time` element. */
-function Changed({ change, now, as: Tag }: { change: { by: string; at: string }; now: number; as: 'dd' | 'p' | 'span' }) {
+/** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
+function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
-      {change.by} · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.by} · {change.what !== null && <span className="mono">{change.what} · </span>}
+      <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.since !== null && (
+        <>
+          {' · '}
+          <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
+            changed since
+          </span>
+        </>
+      )}
     </Tag>
   )
 }
@@ -849,9 +959,9 @@ function PoolRow({
       </td>
       <td role="cell" data-label="Last changed">
         {/* THE LAST ADMIN WRITE, OR A DASH WITH ITS REASON. Never `updated_at`,
-            which admission rewrites on every lease (NOT_RECORDED_WHY). */}
+            which admission rewrites on every lease (notRecordedWhy). */}
         {change === null ? (
-          <i className="ctl-em adm-changed-none" title={NOT_RECORDED_WHY} aria-label={NOT_RECORDED_WHY}>
+          <i className="ctl-em adm-changed-none" title={notRecordedWhy(pool)} aria-label={notRecordedWhy(pool)}>
             —
           </i>
         ) : (
@@ -974,7 +1084,7 @@ function SideEditor({
         )}
         <dt>Last changed</dt>
         {change === null ? (
-          <dd className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+          <dd className="adm-not-recorded" title={notRecordedWhy(pool)}>
             not recorded
           </dd>
         ) : (
@@ -1067,11 +1177,12 @@ function SideEditor({
       </div>
 
       {/* THE NEWEST WRITE IS ALL THE API CAN SERVE: the pool document holds
-          the last admin change and no earlier one, so History is that entry
-          and says nothing about the ones before it. */}
+          the last admin change -- who, when, and the value before and after
+          (#133) -- and no earlier one, so History is that entry and says
+          nothing about the ones before it. */}
       <span className="adm-side-k">History</span>
       {change === null ? (
-        <p className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+        <p className="adm-not-recorded" title={notRecordedWhy(pool)}>
           not recorded
         </p>
       ) : (

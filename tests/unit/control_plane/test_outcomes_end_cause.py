@@ -135,7 +135,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
         "outputs_missing", "dispatch_failed", "spec_signature_invalid",
         "verdict_refused", "verdict_failed", "merge_refused", "merge_failed",
         "publish_refused",
-        "other", "no_reason",
+        "other", "no_reason", "intended",
     ]
     # Its own class, never "other" or "runner error": every one is a tenant's
     # agent rewriting a step or a platform bug, and both are alerted on.

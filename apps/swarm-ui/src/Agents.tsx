@@ -676,7 +676,7 @@ function FlatRows({
   openTaskId: string | null
   classes: ResourceClasses | null
 }) {
-  const shared = flatShared(rows.map((t) => rowReason(t, classes)))
+  const shared = flatShared(rows.map((t) => rowReason(t, classes, now)))
   return (
     <div className="rows">
       {rows.map((t, i) => (
@@ -779,7 +779,12 @@ function matchesQuery(t: Task, needle: string): boolean {
 /** A row's why line and whether it asks a person to act -- `TaskRow`'s own reading. */
 type RowReason = { text: string; warn: boolean }
 
-function rowReason(task: Task, classes: ResourceClasses | null): RowReason {
+function rowReason(task: Task, classes: ResourceClasses | null, now: number): RowReason {
+  // A SILENT WORKER FIRST (#179, AG-14's fourth kind): `whyAgent` writes
+  // nothing for a task that holds a slot, and this is the one thing about one
+  // that needs a person.
+  const silent = silentWorkerLine(task, now)
+  if (silent !== null) return { text: silent, warn: true }
   // THE TASK'S WEIGHT, FROM THE CATALOGUE (#66) -- never `RESOURCE_UNITS`,
   // which is what fed `whyAgent`/`whyNeedsAction` a `full` reading for a pool
   // too small to ever admit this task. `classUnits` is null exactly when the
@@ -787,6 +792,43 @@ function rowReason(task: Task, classes: ResourceClasses | null): RowReason {
   // display badge keeps its own bundled fallback.
   const units = classUnits(classes, task.resource_class)
   return { text: whyAgent(task, units), warn: whyNeedsAction(task, units) }
+}
+
+/**
+ * THE LIST'S SILENT-WORKER LINE (#179), or null. AG-14 (#82) names a stuck or
+ * silent worker as one of the four kinds a `--warn` why line is for; the
+ * inspector draws it from the task's events (`SilentWorker` in
+ * AgentDetail.tsx), and a list row draws it from the heartbeat the task routes
+ * now carry on each lease-holding row (`swarm_api/heartbeats.py`).
+ *
+ * THE RECONCILER'S RULE, NOT A GUESS: beaten at least once and quiet for
+ * LONGER THAN `heartbeat_grace_seconds` -- the row's own grace, resolved
+ * server-side the way the reconciler resolves it (`routes/leases.py` judges
+ * `silent_seconds > grace` too). No constant here: a reconciler configured to
+ * 300s would otherwise be second-guessed at 90.
+ *
+ * NO LINE WHEN THE ROW CANNOT SAY: a `heartbeat` other than `'read'` (the
+ * lease read failed, or there is no lease) is "could not look", never "nothing
+ * happened"; a null `heartbeat_at` is a lease that has never beaten -- a
+ * booting worker, which the reconciler judges by its dispatch deadline
+ * instead -- and an older API sends none of the three fields at all.
+ *
+ * `now` is the list's clock (`rowClock`), which stops advancing once the page
+ * is older than a poll, so a list that stopped reading does not age a beat it
+ * can no longer see into silence.
+ */
+export function silentWorkerLine(task: Task, now: number): string | null {
+  if (!CONCURRENCY_STATES.has(task.state)) return null
+  if (task.heartbeat !== 'read') return null
+  const grace = task.heartbeat_grace_seconds
+  if (task.heartbeat_at == null || typeof grace !== 'number') return null
+  const beat = Date.parse(task.heartbeat_at)
+  if (!Number.isFinite(beat)) return null
+  const quiet = Math.floor((now - beat) / 1000)
+  if (!(quiet > grace)) return null
+  const mins = Math.floor(quiet / 60)
+  const span = mins >= 1 ? `${mins}m` : `${quiet}s`
+  return `No heartbeat for ${span}. The worker may be gone; the reconciler reclaims a stale lease.`
 }
 
 /**
@@ -867,7 +909,7 @@ function GroupedRows({
     <>
       {groups.map(([wf, tasks]) => {
         const roll = rollupState(tasks.map((t) => t.state))
-        const said = groupReasons(tasks.map((t) => rowReason(t, classes)))
+        const said = groupReasons(tasks.map((t) => rowReason(t, classes, now)))
         return (
           <section className="section group" key={wf || 'standalone'}>
             <h2>
@@ -993,7 +1035,7 @@ export function TaskRow({
   /** The reason is said once for this row and its neighbours (#100); keep it for a screen reader only. */
   whyShared?: boolean
 }) {
-  const why = rowReason(task, classes)
+  const why = rowReason(task, classes, now)
   const whyHidden = whyShared && !why.warn
   return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
 }

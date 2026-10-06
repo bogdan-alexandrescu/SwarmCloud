@@ -25,7 +25,7 @@ import type { Capacity, Pool, Runtime } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
-const api = vi.hoisted(() => ({ loadCapacity: vi.fn() }))
+const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
 const { CapacityScreen } = await import('../Capacity')

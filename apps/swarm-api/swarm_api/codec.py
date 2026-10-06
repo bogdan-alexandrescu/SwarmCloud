@@ -598,16 +598,58 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
         {
             "admin_changed_by": data.get("admin_changed_by"),
             "admin_changed_at": as_datetime(data.get("admin_changed_at")),
+            "admin_change": _admin_change(data.get("admin_change")),
         },
     )
     return pool
+
+
+#: The fields `Store.upsert_pool` records in `admin_change`, and their types.
+_ADMIN_CHANGE_FIELDS: dict[str, type] = {"hard_limit": int, "enabled": bool}
+
+
+def _admin_change(raw: Any) -> dict[str, dict[str, Any]] | None:
+    """`admin_change` as stored, narrowed to the fields an admin route writes (#133).
+
+    Each entry is `{"from": ..., "to": ...}`. `from` is null when the pool did
+    not exist, or carried no value, before the write. Anything else in the map
+    -- a field this codec does not know, a value of the wrong type -- is left
+    out rather than served as if it were a ceiling. A pool with nothing left
+    is null: no admin change on record.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def typed(v: Any, kind: type) -> Any:
+        if v is None:
+            return None
+        # `bool` is an `int` in Python: a ceiling of `True` is not a ceiling.
+        if kind is int and (isinstance(v, bool) or not isinstance(v, int)):
+            return _INVALID
+        if kind is bool and not isinstance(v, bool):
+            return _INVALID
+        return v
+
+    out: dict[str, dict[str, Any]] = {}
+    for field, kind in _ADMIN_CHANGE_FIELDS.items():
+        entry = raw.get(field)
+        if not isinstance(entry, dict):
+            continue
+        before, after = typed(entry.get("from"), kind), typed(entry.get("to"), kind)
+        if before is _INVALID or after is _INVALID or after is None:
+            continue
+        out[field] = {"from": before, "to": after}
+    return out or None
+
+
+_INVALID = object()
 
 
 _POOL_ATTRIBUTION = "_swarm_admin_attribution"
 
 
 def pool_attribution(pool: SlotPool) -> dict[str, Any]:
-    """`admin_changed_by` / `admin_changed_at` of a pool read by `pool_from_dict` (#133).
+    """`admin_changed_by` / `admin_changed_at` / `admin_change` of a pool read by `pool_from_dict` (#133).
 
     FOR THE ADMIN POOL READS ONLY, which is why it is not in `pool_to_api`:
     `/v1/capacity` serves pools to every tenant member, and an admin's email is
@@ -618,7 +660,7 @@ def pool_attribution(pool: SlotPool) -> dict[str, Any]:
     """
     found = getattr(pool, _POOL_ATTRIBUTION, None)
     if not isinstance(found, dict):
-        return {"admin_changed_by": None, "admin_changed_at": None}
+        return {"admin_changed_by": None, "admin_changed_at": None, "admin_change": None}
     return dict(found)
 
 

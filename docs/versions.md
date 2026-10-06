@@ -68,7 +68,8 @@ table and the Dockerfile disagree.
 The versions were chosen **against the promote gate**, not by recency: on
 2026-10-01 each artifact was scanned with trivy 0.74.0 using the release's own
 filter (fixable HIGH/CRITICAL). That is why two of them differ from the
-operator pins in the table at the top.
+operator pins in the table at the top. tofu, tflint and trivy were re-scanned
+on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z) for #442.
 
 | Tool | In the image | Default build | Why this version |
 |---|---|---|---|
@@ -79,15 +80,15 @@ operator pins in the table at the top.
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
 | `docker` | **29.8.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket |
-| `tofu` | **1.13.0** | **no** | no release scans clean: x/mod 0.39.0, grpc 1.83.1 |
+| `trivy` | **0.75.0** | yes | newest; scan clean on 2026-10-06 (0.74.0 had grpc 1.82.1; #442) |
+| `tofu` | **1.13.1** | **no** | no release scans clean: x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
 | `tflint` | **0.64.0** | **no** | no release scans clean: Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
-| `trivy` | **0.74.0** | **no** | no release scans clean: grpc 1.82.1 |
 
-The last three are installed only with `--build-arg INSTALL_TOFU_TFLINT_TRIVY=1`.
+The last two are installed only with `--build-arg INSTALL_TOFU_TFLINT=1`.
 The install path is complete and covered by the build's smoke step. It is off
 because the gate refuses the whole image over one tool's dependency. Turn it on
-once each vendor ships a release that scans clean, re-scanning first, or once
-the owner accepts the findings in `.trivyignore.yaml` with an expiry.
+once both vendors ship a release that scans clean, re-scanning first. The
+owner ruled out a `.trivyignore.yaml` waiver for them (#442).
 
 ---
 
