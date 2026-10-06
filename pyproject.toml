@@ -65,5 +65,7 @@ markers = [
     "serial: measures elapsed time or process liveness; must not run under -n",
 ]
 testpaths = ["tests/unit"]
-addopts = "-q"
+# No -q here (observer P32, owner decision 2026-10-06): callers add their own, and
+# -q twice hides the "N passed, M failed" line, so agents re-ran suites to read a count.
+addopts = ""
 filterwarnings = ["ignore::DeprecationWarning"]
