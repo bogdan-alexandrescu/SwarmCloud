@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from .credentials import REFRESH_SUFFIX
 
@@ -94,6 +94,22 @@ RETAINED_VERSIONS = 3
 #: name cannot re-point the resource path at another secret or another project,
 #: and the leading anchor is what refuses `agents-staging-swarm-tenant-x`.
 _PLATFORM_SECRET_NAME = re.compile(r"\Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z")
+
+#: The ONLY secrets whose readers follow an account's `lend_to`: a pool
+#: account's ACCESS-token half, `swarm-account-<tenant>--<label>`. Narrower than
+#: `_PLATFORM_SECRET_NAME` on purpose. A tenant's own key (`swarm-tenant-*`) is
+#: never lent, and the `-refresh` half holds the pair a borrower must never
+#: read -- with it, a pod could mint successors forever. The broker's
+#: `setIamPolicy` is project-WIDE in a SHARED project, so this expression is
+#: what keeps a lending bug off every other secret, the other team's included.
+_LENDABLE_SECRET_NAME = re.compile(
+    rf"\Aswarm-account-[A-Za-z0-9_-]+(?<!{re.escape(REFRESH_SUFFIX)})\Z"
+)
+
+#: How many times a reader sync re-reads the policy after another writer's
+#: setIamPolicy made its etag stale. Two lending changes to one account racing
+#: is the only realistic writer, so a small bound is plenty.
+_POLICY_WRITE_ATTEMPTS = 3
 
 #: A version's own resource name, as Secret Manager returns it. Parsed rather
 #: than trusted: the project and the secret in it are re-checked against the
@@ -268,6 +284,86 @@ class SecretManagerStore:
             return
         binding.members.extend(missing)
         client.set_iam_policy(request={"resource": resource, "policy": policy})
+
+    def set_worker_readers(
+        self,
+        name: str,
+        *,
+        readers: Sequence[str],
+        manages: Callable[[str], bool],
+        revoke: bool = True,
+    ) -> tuple[list[str], list[str]]:
+        """Make the worker accessors of one account secret exactly `readers`.
+
+        Returns (added, removed). Idempotent: an unchanged policy is not
+        written, because setIamPolicy on an unchanged policy still burns a
+        write quota and still races any other writer of the same policy.
+
+        WHY THIS EXISTS. Lending an account changed Firestore and nothing else,
+        so a borrower was ASSIGNED an account its worker could not read --
+        measured 2026-10-06, when every `smoke` attempt on `eng:team` read
+        PermissionDenied. `ensure_secret` binds the owner's worker at
+        provisioning; this is what follows `lend_to` after that.
+
+        ONLY MEMBERS `manages` CLAIMS ARE EVER REMOVED -- tenant worker service
+        accounts. The broker, a human group, terraform's own grants and every
+        conditional binding are left exactly as they were, so an unlend
+        cannot lock out anything but the tenant it names. A reader `manages`
+        does not claim is refused rather than granted, since this call could
+        never take it back.
+
+        `revoke=False` is the first half of a lending change: grants land
+        BEFORE the account document says the borrower may use it, revokes
+        AFTER it says it may not, so at no instant does the pool assign an
+        account to a worker that cannot read it.
+        """
+        if not _LENDABLE_SECRET_NAME.match(name):
+            raise ValueError(
+                f"{name!r} is not a pool account's access-token secret; only "
+                "those follow an account's lending"
+            )
+        wanted = list(dict.fromkeys(readers))
+        unmanaged = [m for m in wanted if not manages(m)]
+        if unmanaged:
+            raise ValueError(
+                f"{len(unmanaged)} reader(s) are not tenant worker service "
+                "accounts, and a reader sync only grants what it can revoke"
+            )
+
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        resource = f"{self.parent}/secrets/{name}"
+        for attempt in range(_POLICY_WRITE_ATTEMPTS):
+            policy = client.get_iam_policy(request={"resource": resource})
+            binding = None
+            for existing in policy.bindings:
+                if existing.role == ACCESSOR_ROLE and not existing.condition.expression:
+                    binding = existing
+                    break
+            present = list(binding.members) if binding is not None else []
+            added = [m for m in wanted if m not in present]
+            removed = (
+                [m for m in present if manages(m) and m not in wanted] if revoke else []
+            )
+            if not added and not removed:
+                return [], []
+            if binding is None:
+                binding = policy.bindings.add()
+                binding.role = ACCESSOR_ROLE
+            keep = [m for m in present if m not in removed]
+            del binding.members[:]
+            binding.members.extend(keep + added)
+            if not binding.members:
+                policy.bindings.remove(binding)
+            try:
+                client.set_iam_policy(request={"resource": resource, "policy": policy})
+            except gexc.Aborted:
+                if attempt + 1 >= _POLICY_WRITE_ATTEMPTS:
+                    raise
+                continue
+            return added, removed
+        raise AssertionError("unreachable: the loop returns or raises")
 
     def add_version(self, name: str, payload: str) -> None:
         """Publish `payload`, then expire what it superseded.

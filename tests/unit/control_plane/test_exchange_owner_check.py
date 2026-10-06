@@ -51,6 +51,10 @@ class _Secrets:
         self.created[name] = dict(labels)
         return True
 
+    def set_worker_readers(self, name, *, readers, manages, revoke=True):
+        # The lending sync; this double records no IAM, so nothing changes.
+        return [], []
+
     def add_version(self, name, payload):
         if name not in self.created:
             raise KeyError(name)
