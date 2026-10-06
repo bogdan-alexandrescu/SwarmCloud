@@ -1738,13 +1738,32 @@ class Store:
 
         Internal writers (tenant creation, the quota broker) pass nothing, and
         leave the last admin's name in place.
+
+        WHAT CHANGED RIDES WITH WHO (#133): `admin_change` holds each field the
+        admin write named -- `hard_limit`, `enabled` -- with the value before
+        and after, so the record says "20 -> 10" and not only "ops@, 3h ago".
+        It is the newest admin change and replaces the one before it. A reader
+        compares its `to` against the pool's live value: a ceiling written
+        since by something that records nothing (scripts/pool-limit.sh writes
+        Firestore directly) shows as a mismatch rather than being credited to
+        the last admin.
         """
         ref = self._db.collection(POOLS).document(name)
         snap = ref.get()
         now = self._now()
-        attribution: dict[str, Any] = (
-            {"admin_changed_by": by, "admin_changed_at": now} if by else {}
-        )
+        before = (snap.to_dict() or {}) if snap.exists else {}
+        attribution: dict[str, Any] = {}
+        if by:
+            asked = {"hard_limit": hard_limit, "enabled": enabled}
+            attribution = {
+                "admin_changed_by": by,
+                "admin_changed_at": now,
+                "admin_change": {
+                    field: {"from": before.get(field), "to": value}
+                    for field, value in asked.items()
+                    if value is not None
+                },
+            }
         if not snap.exists:
             pool = SlotPool(
                 name=name,

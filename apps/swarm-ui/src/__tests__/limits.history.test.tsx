@@ -3,8 +3,9 @@
 // The L2 side editor already previews the impact and asks for the pool's name
 // before a drastic cut (limits.side.test.tsx). What #133 still asked for:
 //
-//   * LAST CHANGED BY, AND WHEN, once the API serves the `admin_changed_by` /
-//     `admin_changed_at` the store already writes. Until a pool carries them
+//   * LAST CHANGED BY, AND WHEN, off the `admin_changed_by` /
+//     `admin_changed_at` the store writes and the admin pool read serves
+//     (joined on in limits.record.test.tsx). Until a pool carries them
 //     the editor says "not recorded" (pinned in limits.side.test.tsx); once it
 //     does, the editor prints them.
 //   * A NEUTRAL OVER-CEILING MARK on a row whose units in use exceed its
@@ -32,6 +33,7 @@ const STYLES = `${SHEET}\n${ADMIN}`
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadMe: vi.fn(),
 }))

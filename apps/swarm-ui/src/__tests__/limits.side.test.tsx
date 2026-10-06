@@ -3,10 +3,11 @@
 //
 // Picking a pool opens a side editor with the new ceiling, its impact, a typed
 // confirmation for a drastic change -- to 0, or a cut of half or more -- and
-// the pool's history. Who changed a ceiling, and when, needs admin_changed_by
-// and admin_changed_at, which the API does not serve: until it does, Last
-// changed and History read "not recorded". A non-admin reads every ceiling
-// with Edit locked and one line saying why.
+// the pool's history. Who changed a ceiling, and when, is admin_changed_by
+// and admin_changed_at, served on the admin pool read (#133,
+// limits.record.test.tsx); a pool that carries neither reads "not recorded"
+// in Last changed and History. A non-admin reads every ceiling with Edit
+// locked and one line saying why.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -16,6 +17,7 @@ import type { Capacity, Me, Pool, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadMe: vi.fn(),
 }))
@@ -251,7 +253,7 @@ describe('Pool limits says what a change does, from figures it has (L2)', () => 
   })
 })
 
-describe('Pool limits says "not recorded" where the API serves no history (L2)', () => {
+describe('Pool limits says "not recorded" where a pool carries no record (L2)', () => {
   it('reads not recorded for Last changed and for History, with the reason on hover', async () => {
     const side = await open('tenant:eng')
     const marks = [...side.querySelectorAll('.adm-not-recorded')]
