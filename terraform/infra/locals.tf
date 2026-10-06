@@ -883,6 +883,14 @@ locals {
       # scheduler's copy above; the quota_broker_url_is_wired check covers both.
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # Where the reconciler rings `task_finished` for a task a repair ended
+      # (#636, `reconciler.finishwake`), so its dependants are released at once
+      # rather than on the next safety tick. The same name and topic as
+      # swarm-api's above; publish is already granted (the reconciler is one
+      # of the wake topic's publisher_members in main.tf). Unset, the
+      # reconciler logs a warning at start and the tick does the release.
+      DISPATCH_TOPIC = local.wake_topic
     })
   }
 }

@@ -219,6 +219,16 @@ def test_no_topic_means_no_announcer(monkeypatch):
     assert announcer.topic == "projects/swarm-unit-test/topics/swarm-scheduler-wake"
 
 
+def test_a_reconciler_with_no_wake_topic_says_so_once_at_start(db, config):
+    """A deployment missing DISPATCH_TOPIC rings no wake; the log line is the
+    only sign of it, as for a missing QUOTA_BROKER_URL."""
+    _, stream = build(db, config, None)
+    assert stream.getvalue().count("DISPATCH_TOPIC unset") == 1
+
+    _, stream = build(db, config, RecordingAnnouncer())
+    assert "DISPATCH_TOPIC unset" not in stream.getvalue()
+
+
 # -- the same request as the worker's ------------------------------------------
 
 

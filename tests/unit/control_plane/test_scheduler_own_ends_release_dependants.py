@@ -19,7 +19,8 @@ What is held here, per path that writes a terminal state:
     a READY task cancelled at admission (its cancel was requested)
     a step cancelled by an `on_step_failure: fail_workflow` sweep, reached
         from the credential sweep and from the prewarm sweep
-    a task whose dispatch failed on its last attempt (FAILED)
+    a task whose dispatch failed on its last attempt (FAILED), or after its
+        cancel was requested (CANCELLED)
     a chain: the dependant this cancels takes its own dependant with it
     a terminal write made inside a finish event resolves in that event
 
@@ -172,6 +173,31 @@ def test_a_dispatch_that_fails_on_its_last_attempt_cancels_its_dependant_in_the_
 
     assert db.docs["tasks/task_a"]["state"] == "FAILED"
     # The failed dispatch gave its capacity straight back (invariants 2-3).
+    assert db.docs["pools/global"]["active"] == 0
+    _resolved_once(db, scheduler, "task_b")
+
+
+def test_a_dispatch_that_fails_after_a_cancel_cancels_its_dependant_in_the_same_drain(
+    db, make_scheduler, dispatcher, monkeypatch
+):
+    # The cancel lands between admission and the failed dispatch, so the
+    # return writes CANCELLED (store `_returned`), not READY or FAILED.
+    _base(db)
+    seed_task(db, task_id="task_a", tenant_id="eng")
+    _dependant(db, "task_b", on="task_a")
+    dispatcher.fail_for = {"task_a"}
+    fail = dispatcher.dispatch
+
+    def cancel_then_fail(**kwargs):
+        db.docs["tasks/task_a"]["cancel_requested"] = True
+        return fail(**kwargs)
+
+    monkeypatch.setattr(dispatcher, "dispatch", cancel_then_fail)
+    scheduler = make_scheduler()
+
+    scheduler.drain()
+
+    assert db.docs["tasks/task_a"]["state"] == "CANCELLED"
     assert db.docs["pools/global"]["active"] == 0
     _resolved_once(db, scheduler, "task_b")
 

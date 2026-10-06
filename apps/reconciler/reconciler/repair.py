@@ -494,6 +494,14 @@ class Reconciler:
         #: (`_read_finished`). Reset every pass; `_admit` judges a
         #: lost-after-finish finding on the backend this attempt names.
         self._finished: dict[str, AttemptView] = {}
+        if self._finish is None:
+            # Said once, here, for the same reason as the broker below: a
+            # deployment missing DISPATCH_TOPIC rings no wake and would
+            # otherwise look exactly like one that rang every wake (#636).
+            self._log.warning(
+                "no wake topic configured (DISPATCH_TOPIC unset); a task a repair "
+                "ends releases its dependants on the scheduler's next tick"
+            )
         if self._holds is None:
             # Said once, here, because the per-fence path returns silently: a
             # deployment missing QUOTA_BROKER_URL would otherwise look exactly

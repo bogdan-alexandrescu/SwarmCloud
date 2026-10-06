@@ -277,7 +277,31 @@ def test_a_child_the_cascade_only_flags_rings_nothing(client, api_context, db):
     assert _finish_rings(api_context) == []
 
 
-def test_the_childs_wake_releases_its_dependant_and_a_lost_one_leaves_the_tick(
+def test_the_childs_wake_releases_its_dependant_before_any_tick(
+    client, api_context, db, make_scheduler, dispatcher
+):
+    _base(db)
+    seed_task(db, task_id="task_parent", tenant_id="eng", state="RUNNING")
+    _child_of(db, "task_kid", "task_parent")
+    _waiting(db, "task_after", "task_kid")
+
+    client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice"))
+    [ring] = _finish_rings(api_context)
+    assert ring["task_id"] == "task_kid"
+    assert db.docs["tasks/task_after"]["state"] == "PARKED"
+
+    # Delivered: the wake alone resolves the dependant, with no drain first.
+    scheduler = make_scheduler()
+    report = scheduler.release_dependants(ring["task_id"])
+    assert db.docs["tasks/task_after"]["state"] == "CANCELLED"
+    assert report.cancelled == 1, report.to_dict()
+    # And the tick after has nothing left to do.
+    tick = scheduler.drain()
+    assert tick.cancelled == 0 and tick.stale_writes == 0, tick.to_dict()
+    assert dispatcher.dispatched == []
+
+
+def test_a_lost_child_wake_leaves_the_dependant_to_the_tick(
     client, api_context, db, make_scheduler, dispatcher
 ):
     _base(db)

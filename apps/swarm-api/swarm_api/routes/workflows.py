@@ -270,7 +270,10 @@ def cancel_workflow(
     # released; what a cancel can free is capacity -- a step with no live
     # worker gives its lease back in its cancel -- and READY work elsewhere
     # waited a safety tick for it. A drain admits that work and runs the
-    # dependency sweep too. After the response, as the task route does.
+    # dependency sweep too, which also resolves the dependants of the children
+    # the cascade above cancelled -- so unlike the task route, those children
+    # ring no `task_finished` of their own. After the response, as the task
+    # route does.
     if result.get("tasks_cancelled"):
         background.add_task(
             ring, ctx.waker, ctx.metrics, "workflow_cancelled",

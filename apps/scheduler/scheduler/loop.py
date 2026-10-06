@@ -856,9 +856,12 @@ class Scheduler:
             )
             if not returned.applied:
                 self._count_stale(returned, report)
-            elif returned.target == TaskState.FAILED.value:
+            elif returned.target in (TaskState.FAILED.value, TaskState.CANCELLED.value):
+                # CANCELLED when a cancel was requested meanwhile (store
+                # `_returned`): terminal all the same, so its dependants are
+                # resolved in this run too (#636).
                 self._note_ended(task.id)
-                if task.workflow_id:
+                if returned.target == TaskState.FAILED.value and task.workflow_id:
                     # This drain just wrote FAILED on a workflow step. Its
                     # siblings may be next in this very pass, and the verdict
                     # cached for the workflow was read before the failure
