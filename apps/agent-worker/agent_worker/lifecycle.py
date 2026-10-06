@@ -140,6 +140,7 @@ from swarm_redaction import RULES as CREDENTIAL_RULES
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
 from . import continuation as continuation_mod
+from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
@@ -599,6 +600,16 @@ class Worker:
         # run the schedule without waiting it out.
         self.startup_sleep: Callable[[float], Any] = time.sleep
         self.startup_clock: Callable[[], float] = time.monotonic
+        # The egress probe (#721 (a), `agent_worker.egress`): started at the
+        # top of `run`, waited for by the clone only, stopped when the startup
+        # window closes. The connect, cap and interval are replaceable so a
+        # test never touches the network nor waits out the cap. None until
+        # `run` starts it; `_maybe_clone` called alone then waits for nothing.
+        self.egress_connect: Callable[..., Any] | None = None
+        self.egress_cap_seconds: float = egress_mod.EGRESS_PROBE_CAP_SECONDS
+        self.egress_interval_seconds: float = egress_mod.EGRESS_PROBE_INTERVAL_SECONDS
+        self._egress: egress_mod.EgressProbe | None = None
+        self._egress_marked = False
         # Which window a SIGTERM lands in. `_on_signal` reads it; `run` and
         # `_execute` set it, always through `_signal_policy` so that it is
         # restored however the window is left.
@@ -837,6 +848,79 @@ class Worker:
     # entrypoint
     # ------------------------------------------------------------------
     def run(self) -> int:
+        # FIRST, so the probe runs alongside everything below -- the
+        # generation check, the spec, the checkpoint restore, the secret
+        # reads -- and none of it waits for the probe. Stopped when the
+        # startup window closes (`_execute`); here as well, for every exit
+        # that never reaches it, so no probe thread outlives the run.
+        self._start_egress_probe()
+        try:
+            return self._run()
+        finally:
+            self._stop_egress_probe()
+
+    def _start_egress_probe(self) -> None:
+        """Probe the forge's path from process start (#721 (a)). Never raises.
+
+        github.com always, repository or not (`egress.probe_targets`): the
+        dispatcher sets no REPOSITORY_URL (`scheduler.dispatch.worker_env`),
+        so the repository is known only from the signed task document, read
+        well after this. `_add_egress_target` adds the clone host then, when
+        it is elsewhere. A task with nothing to clone only has the probe
+        stopped at the end of the startup window.
+        """
+        try:
+            targets = egress_mod.probe_targets(self.cfg.repository_url)
+            if not targets:
+                return
+            probe = egress_mod.EgressProbe(
+                targets,
+                cap_seconds=self.egress_cap_seconds,
+                interval_seconds=self.egress_interval_seconds,
+                connect=self.egress_connect,
+            )
+            probe.start()
+            self._egress = probe
+        except Exception as exc:  # a measurement is never worth an attempt
+            self.log.warning("egress probe did not start", error=type(exc).__name__)
+
+    def _add_egress_target(self, url: Any) -> None:
+        """Probe the clone host too, once the verified task names it. Never raises."""
+        probe = self._egress
+        if probe is None or not isinstance(url, str):
+            return
+        try:
+            probe.add_target(egress_mod.target_of(url))
+        except Exception as exc:  # a measurement is never worth an attempt
+            self.log.warning("egress probe: clone host not added", error=type(exc).__name__)
+
+    def _stop_egress_probe(self) -> None:
+        probe = self._egress
+        if probe is not None:
+            probe.stop()
+
+    def _mark_egress_ready(self) -> None:
+        """`egress_ready`: when the forge's path opened (#721 (a)). Once per attempt.
+
+        Next to `clone_timed`, on the same RUNNING startup-mark path, written
+        by `_maybe_clone` once the clone is done -- or has failed, the
+        attempts whose timing matters most -- so inside the startup window and
+        its budget. A task that clones nothing (or restores its clone from a
+        checkpoint) writes none: its probe is only stopped with the window.
+        The probe is stopped first: the clone was its only waiter. The
+        detail is `egress`: `egress_ready_seconds` (process start to the first
+        github.com connect that succeeded, None if none did), `probe_attempts`,
+        how the probe `ended` (ready, cap, stopped) and the same two numbers
+        per target. Numbers and host names only.
+        """
+        probe = self._egress
+        if probe is None or self._egress_marked:
+            return
+        self._egress_marked = True
+        probe.stop()
+        self._emit_startup_mark("egress_ready", {"egress": probe.result()})
+
+    def _run(self) -> int:
         self._install_signal_handlers()
 
         # ---- STEP 1: fencing, before anything else exists ---------------
@@ -986,6 +1070,9 @@ class Worker:
             if unavailable is None:
                 raise
             return Outcome(exit_code=self._exit_unavailable_before_runner(exc, unavailable))
+        finally:
+            # The startup window is over: no probe thread runs past it.
+            self._stop_egress_probe()
         if callable(prepared):
             return prepared()
         child_env = prepared
@@ -2023,6 +2110,9 @@ class Worker:
         self.phases.enter("verify_spec")
         task, create_time = self.control.fetch_task_snapshot()
         self._verify_spec(task, create_time)
+        # The clone host joins the egress probe (#721 (a)) as soon as the
+        # document naming it is verified, the same URL `_maybe_clone` reads.
+        self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
 
         # ---- STEP 4a: every signed parent has SUCCEEDED -------------------
         # Contract request 34, decision 7. A tenant agent can write a parked
@@ -3877,10 +3967,12 @@ class Worker:
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
                     token=None if refusal else self._git_token(),
+                    egress=self._egress,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
+                self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
                 # Not the end of the step: the branch tip is what every step
@@ -3908,10 +4000,13 @@ class Worker:
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
                 token=None if refusal else self._git_token(),
+                egress=self._egress,
             ))
         except GitTransient as exc:
+            self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
+            self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
                 "pushed when that step publishes -- it was not found or could "
@@ -3930,6 +4025,7 @@ class Worker:
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
         self._mark_clone_timed(clone, tries=tries[0], pinned=pinned_clone)
+        self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
         # `result_summary.git.clone_commit` (merge-step.md §3): the only record

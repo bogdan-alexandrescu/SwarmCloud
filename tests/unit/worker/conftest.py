@@ -424,9 +424,22 @@ def build_worker(
     # (`Worker._forge_retry`); a test waits for none of it. A test about the
     # waits records them by setting its own.
     worker.forge_sleep = lambda _seconds: None
+    # The egress probe (#721) never touches the network in a unit test: every
+    # connect "answers" at once, so no clone waits. A test about the probe
+    # sets its own.
+    worker.egress_connect = _egress_answers
     if sign_spec:
         _sign_before_run(worker, db, config)
     return worker, config, exporter
+
+
+class _AnsweredConnection:
+    def close(self) -> None:
+        return None
+
+
+def _egress_answers(_target: Any, timeout: float | None = None) -> _AnsweredConnection:
+    return _AnsweredConnection()
 
 
 def _sign_before_run(worker: Worker, db: FakeFirestore, config: WorkerConfig) -> None:
