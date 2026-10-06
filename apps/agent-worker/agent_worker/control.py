@@ -1669,6 +1669,13 @@ class ControlPlane:
         scheduler's sweep, not a clock, promotes it.
 
         Returns whether the attempt was refunded.
+
+        THE ATTEMPT'S END IS WRITTEN AFTER THE TRANSACTION, as `park` writes
+        it (#163): exit 75 and CHILDREN_INCOMPLETE as its `error`. A refund
+        gives back the attempt's COUNT, not the attempt: a resume is a new
+        attempt document, so this one has ended. Without it a parent cancelled
+        while it waited read as one attempt still running. A fenced await park
+        raises in the transaction and closes no document.
         """
         write = "await park"
         reason = ParkReason.CHILDREN_INCOMPLETE
@@ -1699,6 +1706,15 @@ class ControlPlane:
             return refund, used + (1 if refund else 0)
 
         refunded, resumes = self._run_transaction(_apply)
+        # Best effort, as in `park`: the park has landed, and the event and
+        # the release below are what give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the await park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
         self.emit(
             EventType.PARKED,
             {
