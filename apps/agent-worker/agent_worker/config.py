@@ -353,6 +353,8 @@ class WorkerConfig:
     #: unsigned; the default is what the platform returns to after the window.
     spec_signature_mode: str = "enforce"
     #: The moment the signing swarm-api revision took all traffic (RFC 3339).
+    #: Never later than `specverify.SPEC_SIGNING_RELEASED_AT` in effect: the
+    #: check caps it there (#355), whatever terraform renders.
     spec_legacy_cutover: datetime | None = None
     #: The crypto key whose versions the worker trusts: projects/.../cryptoKeys/<k>.
     spec_signing_key: str = ""

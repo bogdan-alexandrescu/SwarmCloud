@@ -69,6 +69,17 @@ if TYPE_CHECKING:  # pragma: no cover
 #: remembers to turn off stops working anyway.
 SPEC_LEGACY_UNTIL = datetime(2026, 10, 20, tzinfo=timezone.utc)
 
+#: THE LATEST CUTOVER ANY CONFIGURATION CAN SET (#355). The creation time of
+#: swarm-api-00119-lcs, the first revision carrying SPEC_SIGNING_KEY_VERSION
+#: (#353's release, 5cf0c9b), read from Cloud Run's
+#: metadata.creationTimestamp on 2026-10-01 and truncated to the second; dev's
+#: `spec_legacy_cutover` is the same value. Every task swarm-api has created
+#: since is signed, so an unsigned task Firestore created at or after it had
+#: its signature stripped, and no SPEC_LEGACY_CUTOVER -- however late it is
+#: set, until SPEC_LEGACY_UNTIL -- admits one. Tasks parked before it are
+#: still admitted in legacy, which is the constraint #355 names.
+SPEC_SIGNING_RELEASED_AT = datetime(2026, 9, 30, 21, 24, 36, tzinfo=timezone.utc)
+
 #: The formats of the canonical form this worker can verify: every one the
 #: contract names (format 2 is contract request 42, a child's parent fields),
 #: each under its own projection, so a task signed before format 2 still runs.
@@ -223,21 +234,47 @@ def gke_job_name(task_id: str, generation: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _legacy_admits(cfg: "WorkerConfig", create_time: Any, now: datetime, log: Any) -> bool:
+def legacy_cutover(cfg: "WorkerConfig") -> datetime | None:
+    """The cutover the legacy rule judges against: the configured one, capped
+    at SPEC_SIGNING_RELEASED_AT. None when none is configured."""
+    if cfg.spec_legacy_cutover is None:
+        return None
+    return min(cfg.spec_legacy_cutover, SPEC_SIGNING_RELEASED_AT)
+
+
+def _legacy_admits(
+    cfg: "WorkerConfig", create_time: Any, now: datetime, log: Any
+) -> tuple[bool, str]:
+    """Whether legacy admits this unsigned task, and if not, the refusal's detail.
+
+    The detail is "" in enforce, so an enforce refusal reads exactly as it
+    always has; in legacy it says which rule refused, so an operator reading
+    `last_error` knows a stripped signature from a late cutover.
+    """
     if cfg.spec_signature_mode != "legacy":
-        return False
+        return False, ""
     if now >= SPEC_LEGACY_UNTIL:
         if log is not None:
             log.warning(
                 "SPEC_SIGNATURE_MODE=legacy ignored: past SPEC_LEGACY_UNTIL, enforcing",
                 spec_legacy_until=SPEC_LEGACY_UNTIL.isoformat(),
             )
-        return False
-    cutover = cfg.spec_legacy_cutover
-    if cutover is None or not isinstance(create_time, datetime):
-        return False
+        return False, f"legacy mode ignored past SPEC_LEGACY_UNTIL {SPEC_LEGACY_UNTIL.isoformat()}"
+    cutover = legacy_cutover(cfg)
+    if cutover is None:
+        return False, "legacy mode has no SPEC_LEGACY_CUTOVER, so it admits no unsigned task"
+    if not isinstance(create_time, datetime):
+        return False, "legacy mode could not read the task's Firestore create_time"
     created = create_time if create_time.tzinfo else create_time.replace(tzinfo=timezone.utc)
-    return created < cutover
+    if created < cutover:
+        return True, ""
+    capped = " (SPEC_LEGACY_CUTOVER capped at the signing release)" if (
+        cutover != cfg.spec_legacy_cutover
+    ) else ""
+    return False, (
+        f"created {created.astimezone(timezone.utc).isoformat()}, at or after the legacy "
+        f"cutover {cutover.astimezone(timezone.utc).isoformat()}{capped}"
+    )
 
 
 def _verify_signature(pem: str, signature_b64: Any, digest: bytes) -> bool:
@@ -319,9 +356,10 @@ def verify_step_spec(
 
     # 1. Presence, or the legacy rule -- BEFORE the format.
     if not signature or not version:
-        if _legacy_admits(cfg, create_time, now, log):
+        admitted, why_not = _legacy_admits(cfg, create_time, now, log)
+        if admitted:
             return SpecCheck(reason="legacy_unsigned", task_id=task_id)
-        raise SpecSignatureInvalid("unsigned", task_id=task_id)
+        raise SpecSignatureInvalid("unsigned", task_id=task_id, detail=why_not)
 
     key_version, hexdigest = _verify_signed(doc, task_id=task_id, cfg=cfg)
 
