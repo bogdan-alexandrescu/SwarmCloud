@@ -42,6 +42,36 @@ def test_the_merge_target_key_and_the_forge_hosts_are_swarm_apis():
     assert set(merge.MERGEABLE_HOSTS) == set(validation.MERGE_FORGE_HOSTS)
 
 
+def test_every_merge_target_key_swarm_api_writes_is_one_the_worker_reads():
+    """MS1 writes `merge_target.base` for a registered repository; a worker that
+    refused an unknown key would refuse every merge there as merge_target_invalid."""
+    from swarm_api.validation import DispatchOptions
+
+    block = DispatchOptions(strategy="integrate", carrier="patches").with_merge_target(
+        pull_request=OPENER, review="task_rev", verdict_file="verdict.json", base="develop",
+    ).to_metadata()
+    target = merge.parse_merge_target(block)
+    assert target == merge.MergeTarget(OPENER, "task_rev", "verdict.json", base="develop")
+    bare = DispatchOptions(strategy="direct-pr", carrier="patches").with_merge_target(
+        pull_request=OPENER,
+    ).to_metadata()
+    assert merge.parse_merge_target(bare) == merge.MergeTarget(OPENER)
+
+
+def test_a_registered_base_in_the_target_still_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.target["base"] = "main"
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1
+
+
+@pytest.mark.parametrize("base", ["", 7, None, ["main"]])
+def test_a_base_that_is_not_a_branch_name_is_an_invalid_target(base):
+    with pytest.raises(merge.TargetInvalid, match="base"):
+        merge.parse_merge_target({"merge_target": {"pull_request": OPENER, "base": base}})
+
+
 def test_a_green_merge_verdict_pull_request_is_squash_merged_at_the_pinned_head(tmp_path):
     world = MergeWorld(tmp_path)
     outcome = merge.run_merge(world.context())
