@@ -59,34 +59,93 @@ BEAT = 22
 
 
 class _Clock:
-    """Monotonic seconds that move only when something waits on them."""
+    """Monotonic seconds with ONE writer: the thread that runs the clone.
+
+    The review of #742 measured the first version of this clock flaking: the
+    heartbeat thread's wait moved the clock too, and while it slept 2 ms of
+    real time the clone moved it on by seconds, so a beat landed 2-3 fake
+    seconds late by however the scheduler felt. Now the heartbeat thread only
+    parks until a fake time. Every step of the clone advances the clock and
+    then SETTLES: it waits until each thread started through
+    `_fake_threading` is parked on a time still ahead, or has ended. So a
+    beat lands at the first whole step at or after it is due, every run.
+    """
+
+    #: Real seconds a settle waits for a heartbeat thread before failing the
+    #: test rather than hanging it.
+    SETTLE_SECONDS = 10.0
 
     def __init__(self) -> None:
-        self.now = time.monotonic()
-        self._lock = threading.Lock()
+        # A whole number, so 1 s steps add up exactly.
+        self.now = float(round(time.monotonic()))
+        self.cond = threading.Condition()
+        self.parked: dict[Any, float] = {}
+        self.busy: set[Any] = set()
 
     def __call__(self) -> float:
-        with self._lock:
+        with self.cond:
             return self.now
 
     def advance(self, seconds: float) -> None:
-        with self._lock:
+        with self.cond:
             self.now += max(0.0, float(seconds))
+            self.cond.notify_all()
+        self.settle()
+
+    def settle(self) -> None:
+        give_up = time.monotonic() + self.SETTLE_SECONDS
+        with self.cond:
+            while self.busy or any(at <= self.now for at in self.parked.values()):
+                left = give_up - time.monotonic()
+                assert left > 0, f"a heartbeat thread never settled: {self.busy} {self.parked}"
+                self.cond.wait(left)
+
+    def park(self, until: float, event: threading.Event) -> bool:
+        """Block the calling heartbeat thread until `until` or `event`."""
+        me = threading.current_thread()
+        with self.cond:
+            self.busy.discard(me)
+            self.parked[me] = until
+            self.cond.notify_all()
+            while self.now < until and not event.is_set():
+                self.cond.wait()
+            del self.parked[me]
+            self.busy.add(me)
+            return event.is_set()
 
 
 def _fake_threading(clock: _Clock) -> types.SimpleNamespace:
-    """`threading` for the lifecycle module, whose Event waits on `clock`.
+    """`threading` for the lifecycle module, on `clock`.
 
-    A wait moves the clock on by its timeout at once, so the heartbeat
-    thread's interval passes in fake time; a set event still ends it.
+    A thread it starts is the clock's to wait for: `start` returns once the
+    thread has parked or ended, and its `Event.wait` parks until the clone's
+    thread moves the clock past the timeout. A wait on any other thread --
+    the clone's own -- moves the clock itself, as that thread is the writer.
     """
+
+    class Thread(threading.Thread):
+        def start(self) -> None:
+            with clock.cond:
+                clock.busy.add(self)
+            super().start()
+            clock.settle()
+
+        def run(self) -> None:
+            try:
+                super().run()
+            finally:
+                with clock.cond:
+                    clock.busy.discard(self)
+                    clock.cond.notify_all()
 
     class Event:
         def __init__(self) -> None:
             self._real = threading.Event()
 
         def set(self) -> None:
-            self._real.set()
+            with clock.cond:
+                self._real.set()
+                clock.cond.notify_all()
 
         def is_set(self) -> bool:
             return self._real.is_set()
@@ -94,11 +153,12 @@ def _fake_threading(clock: _Clock) -> types.SimpleNamespace:
         def wait(self, timeout: float | None = None) -> bool:
             if self._real.is_set():
                 return True
+            if isinstance(threading.current_thread(), Thread):
+                return clock.park(clock() + (timeout or 0.0), self._real)
             clock.advance(timeout or 0.0)
-            # Real time too, so the clone's thread gets to run meanwhile.
-            return self._real.wait(0.002)
+            return self._real.is_set()
 
-    return types.SimpleNamespace(Event=Event, Thread=threading.Thread)
+    return types.SimpleNamespace(Event=Event, Thread=Thread)
 
 
 def _on_the_clock(monkeypatch, clock: _Clock) -> None:
@@ -113,7 +173,6 @@ def _takes(clock: _Clock, seconds: float) -> None:
     end = clock() + seconds
     while clock() < end:
         clock.advance(1.0)
-        time.sleep(0.001)
 
 
 def _stalling_clone(clock: _Clock, plan: list[tuple[float, BaseException | None]]):
@@ -192,8 +251,9 @@ def test_a_200_s_clone_keeps_the_lease_beating_inside_the_grace(db, worker_facto
     assert len(inside) >= 200 // BEAT - 1, f"{len(inside)} beats in a {ended - started:.0f} s clone"
     gaps = _gaps(beats, ended)
     assert max(gaps) < GRACE, f"a {max(gaps)} s silence against a {GRACE} s grace: {gaps}"
-    # And at the beat's own cadence, with room for one beat's latency.
-    assert max(gaps) <= BEAT + 2, gaps
+    # And at the beat's own cadence: the clock moves in 1 s steps, so a beat
+    # lands at most one step after it is due.
+    assert max(gaps) <= BEAT + 1, gaps
     assert db.doc("leases/lease_1")["heartbeat_at"] is not None
 
 
@@ -334,6 +394,15 @@ def test_retry_clone_records_a_permanent_failure_before_raising_it(tmp_path):
             record=record,
         )
     assert [(r["ok"], r["error_class"]) for r in record] == [(False, "GitError")]
+
+
+def test_each_git_error_has_its_own_phases():
+    """A class-level dict would be shared by every failure, so one try's
+    timings could surface on another's record."""
+    first, second = gitops.GitError("a"), gitops.GitTransient(CLONE_CONNECT)
+    first.phases["connect_seconds"] = 1.0
+    assert second.phases == {} and first.phases is not second.phases
+    assert second.tries == 1 and str(first) == "a"
 
 
 def _clone_marks(db) -> list[dict]:

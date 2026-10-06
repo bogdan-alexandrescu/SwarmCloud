@@ -3976,6 +3976,10 @@ class Worker:
                 remaining_seconds=self._remaining_seconds,
                 logger=self.log,
                 sleep=self.forge_sleep,
+                # Redundant under `_clone_keeping_lease`, whose thread beats
+                # meanwhile; kept so `_maybe_clone` called alone still beats
+                # between tries. At worst one beat is doubled, an unfenced
+                # refresh of a lease the thread has just checked is ours.
                 on_retry=self._heartbeat,
                 record=tries,
             )
@@ -3997,7 +4001,7 @@ class Worker:
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
-                self._mark_clone_timed(None, tries=tries, pinned=False)
+                self._mark_clone_timed(None, tries=tries, pinned=True)
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:

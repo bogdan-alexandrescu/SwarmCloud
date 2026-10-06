@@ -77,8 +77,13 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@/-]*$")
 class GitError(RuntimeError):
     #: The failed try's `clone_phase_timings`, set by the clone functions on
     #: the way out, so `retry_clone` can record a try that failed (#742).
-    #: Empty when the failure was not a clone's, or git wrote no trace.
-    phases: dict[str, Any] = {}
+    #: Empty when the failure was not a clone's, or git wrote no trace. Each
+    #: instance gets its own dict, so no timing can leak between failures.
+    phases: dict[str, Any]
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.phases = {}
 
 
 class GitTransient(GitError):
