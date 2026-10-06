@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import repograph
+from swarm_api import repograph, repoindex
 from swarm_api.errors import UpstreamUnavailable
 from swarm_api.objects import InMemoryObjectReader
 
@@ -159,6 +159,12 @@ def test_promotion_records_the_graph_manifest_and_its_digest(
     )
     assert version["graph_manifest"] == report["manifest"]
     assert version["graph_digest"] == report["manifest_digest"]
+    # Lane IX2 review: what the next run's `choose_kind` reads. This graph's
+    # files carry no blob id (it is shaped like one promoted before IX2), so
+    # the next run is submitted full, with the full timeout.
+    assert version["graph_extractor"] == {"version": "1", "blob_ids": False,
+                                          "files_not_listed": 0, "truncated": []}
+    assert "blob id" in repoindex.graph_carry_refusal(version["graph_extractor"])
     run = db.docs[f"repo_index_runs/{task_id}"]
     assert run["promotion"]["outcome"] == "promoted"
     assert db.docs[f"repositories/{repo_id}"]["index"]["current_sha"] == ONE
@@ -170,6 +176,7 @@ def test_an_index_with_no_graph_promotes_with_no_graph_fields(client, db, object
     assert _settle(client, repo_id).status_code == 200
     version = db.docs[f"repositories/{repo_id}/index_versions/{ONE}"]
     assert version["graph_manifest"] is None and version["graph_digest"] is None
+    assert version["graph_extractor"] is None
 
 
 def _refused(db, repo_id: str, task_id: str) -> str:

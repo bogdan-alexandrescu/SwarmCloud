@@ -482,6 +482,95 @@ import scan: the file tree, the symbols and the `ast` and `import` edges all
 come from one parse per file (§3.5). The timeouts in §3.1 were RI0's; §3.5's
 budget table replaces them for any run that builds the graph.
 
+**Built (revised 2026-10-06, owner, lane IX2).** Until this lane
+`check_run_kind` refused `incremental`, because the design above stages the
+previous index as an `input_from` file and a standalone index task cannot
+be given one (a plain task's `metadata.input_from` is refused at submission,
+`validation._RESERVED_BECAUSE`). Every trigger was therefore a full rebuild:
+on 2026-10-06 the run for `36ac73bd` re-indexed all 1,685 files two commits
+after the previous index (`fe9e69c6`). What runs now, and why each piece is
+shaped the way it is:
+
+* **The base is staged by reference, not copied.** swarm-api names it in the
+  task's prompt, on a line of its own (`swarm-index-base: <sha>`,
+  `repoindex.BASE_LINE`). The prompt is inside the signed `input`;
+  `metadata.index_kind` and `base_sha` are swarm-api's own record and are
+  outside the spec signature, so the worker never reads them
+  (`tests/unit/common/test_specsign_covers.py`), and a signed metadata key
+  would need `SIGNED_METADATA_KEYS`, which is frozen. Before the extractor
+  the worker runs a fourth phase, `stage_base`
+  (`agent_worker/indexrun.py`): it reads the promoted version
+  (`repositories/<repo_id>/index_versions/<base_sha>`, under the repo_id the
+  signed spec derives), fetches that version's task's `repo-index.json`
+  through the staged-input path a workflow input takes
+  (`inputs.fetch_upstream_task`, `inputs.artifact_reference`: the successful
+  attempt's manifest, a key inside the tenant's own prefix), checks it
+  against the digest promotion recorded, and reads the base graph back from
+  its shards with `swarm-repo-graph read`, checked against the recorded
+  manifest digest. No new grant: the step's account already reads its
+  tenant's artifacts and graph prefix (invariant 9). The base line is still
+  a request: whatever names it can only make the run full or pick another
+  promoted version of the same registration, whose content the digests
+  vouch for.
+* **What changed is measured by blob id, not by `git diff`.** The worker's
+  checkout is one commit deep, so `<base_sha>` is not in it; the head's
+  tree is. The extractor records each file's git blob id in the graph's
+  `files` rows and compares the head's (`git ls-files -s`) with the base's.
+  A base graph from before this lane has no blob ids, so the first run after
+  it is full.
+* **A base the extractor would refuse is a full run before it is submitted.**
+  The extractor also refuses a base graph of another extractor version, a
+  truncated one (`files_not_listed`, or any `truncated` entry, the shard
+  writer's ceiling cuts included) and one without blob ids. swarm-api cannot
+  see those in GitHub's compare, so promotion records them on the version
+  (`graph_extractor`: the manifest's extractor `version`, its `blob_ids`
+  marker, `files_not_listed` and `truncated`), and `choose_kind` refuses the
+  same bases with the reason. Without that the run would be submitted
+  incremental, with the 900-second timeout, and the extractor would then
+  read the whole repository inside it -- about 20 minutes measured on this
+  repository, so a pre-IX2 base, or a repository whose graph is always
+  truncated, would get a half-timeout full run on every trigger. Such a run
+  is submitted full, with the full timeout; the first run after deploy
+  against a pre-IX2 base is one of them, and the version it promotes
+  carries the record.
+* **What is re-resolved.** The tree-sitter pass still parses every file
+  (seconds; a changed file's calls resolve against every other file's
+  definitions). The LSP pass -- the minutes -- is asked only about the
+  affected files: the changed ones, every file whose base edges point into
+  a changed or deleted file, and every file whose fresh edges point into a
+  changed one (a new definition can capture an old call, which §3.5's rule
+  alone would miss). Every other file keeps its base edges verbatim, `lsp`
+  evidence included, so its shards come out as the same blobs and
+  `swarm-repo-graph write --base-commit` counts them carried
+  (`shards_carried`) rather than writing them. Deleted files leave every list.
+* **The agent's reading is carried.** The extractor's output carries each
+  module's base `purpose` and the commit its entry was read at
+  (`commit_sha`: the base's for an untouched module, the head's for a touched
+  one), the base's entry points, test layout, always-tests, territory,
+  commands and notes minus rows naming a deleted file (`carried`), and the
+  diff (`changes`). The agent revises only what the diff touches.
+* **Who decides.** swarm-api first (`repoindex.choose_kind`, on the promoted
+  version and GitHub's compare): a promoted index with a graph, of an
+  ANCESTOR of the head (`ahead`), fewer than 300 changed files (GitHub's
+  compare lists at most 300, so 300 is exactly what this side cannot see
+  whole), no build, test, lockfile, CI or language-server configuration
+  changed, and the last full run younger than `full_every_days`
+  (`last_full_at`, written only when a full index is promoted). Then the
+  extractor again, on the diff it measures (`incremental_changes`, the same
+  lists, held equal by `tests/unit/worker/test_repo_index_incremental.py`).
+  Either one falling back makes the run full and records why: the run's
+  `kind_reason`, or the extractor's `extractor.incremental.reason` and the
+  `stage_base` phase record. A fallback is never a failed run.
+* **What is recorded.** The run: `kind`, `base_sha`, `requested_kind`,
+  `kind_reason`; the version and the promotion: the document's `kind` and
+  `base_sha`. Promotion refuses an index that claims a base its run was not
+  given. "Index now" with no kind stays full; the console's button, the
+  poll and a pending head ask for `incremental`.
+
+§3.5 asks for a configuration change to force a full run *for that
+language*; it forces the whole run full, because one index carries one
+`kind`.
+
 ### 3.5 The AST and LSP passes (revised 2026-10-04, owner)
 
 The owner accepted about ten times RI0's extractor time for a graph a
@@ -590,6 +679,7 @@ indexrun.py`):
 
 | phase | what | timeout, of a 1,800 s full run |
 |---|---|---|
+| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | a quarter of the extractor's budget (90 s of an incremental run's 360) |
 | `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>` | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
 | `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
@@ -624,8 +714,8 @@ Promotion is unchanged: it still checks the index's `graph.manifest_digest`
 against the manifest the writer stored (§2.3, `repograph`).
 
 Not in this change: the extractor's own time (~6 minutes, most of it
-Pyright reaching its 300 s server budget), and `full_every_days`, which the
-registration stores and `repoindex.py` does not read yet (lane IX2).
+Pyright reaching its 300 s server budget). `full_every_days` is read since
+lane IX2 (§3.4).
 
 ---
 

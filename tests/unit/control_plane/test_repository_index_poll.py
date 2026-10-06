@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forge
+from swarm_api import forge, repoindex
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -465,3 +465,54 @@ def test_only_the_scheduler_identity_may_poll(client, db, repo_id, user):
 def test_the_tenant_must_be_named(client):
     response = client.post("/v1/admin/repositories/poll", headers=SWEEPER_HEADERS)
     assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# lane IX2: the poll asks for an incremental run, granted by §3.4's rules
+# --------------------------------------------------------------------------
+
+def _with_a_graph(db, repo_id, commit) -> None:
+    """The promoted version of `commit`, as promotion records one with a graph."""
+    db.docs[f"repositories/{repo_id}/index_versions/{commit}"] = {
+        "commit_sha": commit, "task_id": "task_base", "kind": "full",
+        "digest": "sha256:" + "cd" * 32, "graph_digest": "sha256:" + "ab" * 32,
+        "graph_extractor": {"version": repoindex.INDEXER_EXTRACTOR_VERSION, "blob_ids": True,
+                            "files_not_listed": 0, "truncated": []},
+    }
+
+
+def test_a_moved_head_is_indexed_incrementally_from_the_promoted_ancestor(
+    client, db, repo_id, github, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    _index(db, repo_id)["last_kind"] = "full"
+    _with_a_graph(db, repo_id, ONE)
+    github.heads["main"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 2,
+                                   "files": ["src/a.py", "src/b.py"]}
+
+    assert _poll(client).json()["report"]["submitted"] == 1
+
+    [task] = _tasks(db)
+    assert task["metadata"]["index_kind"] == "incremental"
+    assert task["metadata"]["base_sha"] == ONE
+    assert task["timeout_seconds"] == 900
+    run = db.docs[f"repo_index_runs/{task['id']}"]
+    assert run["kind"] == "incremental" and run["requested_kind"] == "incremental"
+
+
+def test_the_poll_runs_full_when_the_weekly_full_run_is_due(
+    client, db, repo_id, github, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(days=8))
+    _index(db, repo_id)["last_kind"] = "full"
+    _with_a_graph(db, repo_id, ONE)
+    github.heads["main"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "files": ["src/a.py"]}
+
+    _poll(client)
+
+    [task] = _tasks(db)
+    assert task["metadata"]["index_kind"] == "full"
+    run = db.docs[f"repo_index_runs/{task['id']}"]
+    assert "due every 7" in run["kind_reason"]

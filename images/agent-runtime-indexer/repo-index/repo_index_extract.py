@@ -75,6 +75,12 @@ still succeeds. A timeout is a less certain index, never a failed one.
 The 90-day window is anchored at the HEAD commit's committer time, not the
 wall clock, so a rerun on the same commit counts the same commits.
 
+INCREMENTAL (§3.4, lane IX2). `--base-sha`, `--base-index` and `--base-graph`
+give the run the previous promoted index of an ancestor, as the worker staged
+it. The run is incremental when `incremental_changes` allows it and full,
+with the reason in `extractor.incremental`, when it does not; the section
+"incremental runs" below says what is rewritten and what is carried.
+
 Symlinks are listed and never followed: a checkout is untrusted input, and a
 link to a file outside it must not put that file's contents in an artifact.
 """
@@ -82,6 +88,7 @@ link to a file outside it must not put that file's contents in an artifact.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import importlib.metadata
 import hashlib
 import json
@@ -155,6 +162,45 @@ MAX_SYMBOL_TEST_MAP = 200_000
 
 # How often the walk looks at the clock. Cheap enough to be frequent.
 _CLOCK_EVERY = 256
+
+# §3.4: an incremental run over this many changed files or more is a full
+# run. GitHub's compare lists at most 300 files, which is where swarm-api
+# reads the same rule (`swarm_api.repoindex.MAX_INCREMENTAL_CHANGES`); the
+# two are held equal by tests/unit/worker/test_repo_index_incremental.py.
+MAX_INCREMENTAL_CHANGES = 300
+
+# §3.4 and §3.5: a change to any of these changes what `commands`, `test_map`
+# or a language server's resolution mean EVERYWHERE, not only in the changed
+# file, so carrying the other entries forward would carry stale meaning. Such
+# a change makes the run full. By file name, by base-name glob, and by
+# directory. swarm-api applies the same lists before it submits
+# (`swarm_api.repoindex.CONFIG_FILENAMES` and friends), held equal by the
+# same test; this side applies them again to the diff it actually reads.
+CONFIG_FILENAMES = frozenset({
+    "Makefile", "GNUmakefile", "makefile",
+    "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini", "noxfile.py",
+    "conftest.py", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lockb",
+    "go.mod", "go.sum", "go.work",
+    "pyrightconfig.json", ".terraform.lock.hcl",
+})
+CONFIG_GLOBS = (
+    "requirements*.txt", "tsconfig*.json", "jsconfig*.json", "jest.config.*",
+    "vitest.config.*", "vitest.workspace.*", "playwright.config.*", "karma.conf.*",
+    ".mocharc*",
+)
+CONFIG_DIRECTORIES = (".github/workflows/",)
+
+
+def is_config_path(path: str) -> bool:
+    """Whether a change to `path` forces a full run (§3.4, §3.5)."""
+    name = posixpath.basename(path)
+    if name in CONFIG_FILENAMES:
+        return True
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in CONFIG_GLOBS):
+        return True
+    return any(path.startswith(prefix) for prefix in CONFIG_DIRECTORIES)
 
 # --- languages --------------------------------------------------------------
 
@@ -1106,6 +1152,234 @@ def _list_paths(root: Path, in_git: bool) -> list[str]:
     return sorted(set(found))
 
 
+# --- incremental runs (§3.4, §3.5) -------------------------------------------
+#
+# An incremental run is given the previous promoted index of an ancestor
+# commit: its repo-index.json and its graph, reassembled from the shards by
+# `swarm-repo-graph read`. The worker stages both (agent_worker/indexrun.py);
+# this tool decides, from what it can measure itself, whether the run may be
+# incremental, and runs full -- saying why -- whenever it may not.
+#
+# WHAT CHANGED is measured per file, by git's blob id of every tracked file
+# (`git ls-files -s`), against the blob id the base graph recorded for it.
+# Not `git diff <base>..HEAD`: the worker's checkout is one commit deep, so
+# the base commit is not in it, while the head's tree -- every blob id -- is.
+#
+# WHAT IS REWRITTEN. The tree-sitter pass still parses every file: it takes
+# seconds, and resolving a changed file's calls needs every other file's
+# definitions. The LSP pass -- the minutes -- is asked only about the
+# AFFECTED files: the changed ones, every file whose base edges point into a
+# changed or deleted file (a renamed or deleted function's callers must be
+# re-resolved, §3.5), and every file whose fresh edges point into a changed
+# one (a new definition can capture an old call). Every other file keeps its
+# base edges verbatim, `lsp` evidence included, and its symbols and file row
+# come out byte-identical, so its shards are the same blobs (§2.5) and the
+# writer stores nothing new for them. Deleted files are gone from every list.
+#
+# The agent's reading -- module purposes, entry points, territory, commands,
+# notes -- is carried from the base index, minus what names a deleted file;
+# each module says which commit its entry was read at (`commit_sha`): the
+# base's for an untouched module, the head's for one the diff touched.
+
+#: The base index's keys the agent wrote, carried forward for it to revise.
+CARRIED_KEYS = ("entry_points", "test_layout", "always_tests", "territory", "commands", "notes")
+#: A carried row that names a deleted file in any of these is dropped.
+_ROW_PATH_KEYS = ("path", "file", "source", "root", "target")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class Base:
+    """The previous promoted index of an ancestor commit, as the worker staged it."""
+
+    sha: str
+    graph: Any
+    index: Any = None
+
+
+@dataclass(frozen=True)
+class Changes:
+    """The files that differ from the base, by blob id."""
+
+    added: tuple[str, ...]
+    modified: tuple[str, ...]
+    deleted: tuple[str, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.added) + len(self.modified) + len(self.deleted)
+
+    @property
+    def changed(self) -> set[str]:
+        return set(self.added) | set(self.modified)
+
+
+def _budget_record(budget: Budget) -> dict:
+    return {"max_file_bytes": budget.max_file_bytes,
+            "max_total_bytes": budget.max_total_bytes,
+            "max_files": budget.max_files,
+            "file_timeout_seconds": budget.file_timeout_seconds}
+
+
+def _blob_ids(root: Path) -> dict[str, str] | None:
+    """Every tracked path's git blob id, from the index of the checkout."""
+    try:
+        done = _git(root, "ls-files", "-s", "-z")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    found: dict[str, str] = {}
+    for entry in done.stdout.split(b"\x00"):
+        meta, tab, path = entry.partition(b"\t")
+        parts = meta.split()
+        if not tab or len(parts) < 2:
+            continue
+        found[path.decode("utf-8", errors="surrogateescape")] = parts[1].decode("ascii", "replace")
+    return found
+
+
+def _path_of(node_id: str) -> str:
+    """The file a symbol id (`<path>#<name>`) or a file id names."""
+    return node_id.split("#", 1)[0]
+
+
+def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: Budget,
+                        commit_sha: str | None) -> Changes | str:
+    """The diff an incremental run rewrites, or why this run has to be full."""
+    graph, index = base.graph, base.index
+    if not isinstance(base.sha, str) or not _SHA_RE.match(base.sha):
+        return "the base is not a 40-hex commit sha"
+    if not isinstance(graph, dict) or graph.get("schema") != GRAPH_SCHEMA:
+        return f"no base graph ({GRAPH_SCHEMA}) was staged"
+    if graph.get("commit_sha") != base.sha:
+        return "the base graph describes another commit than the base"
+    if not isinstance(index, dict) or index.get("schema") != SCHEMA:
+        return f"no base index ({SCHEMA}) was staged"
+    if index.get("commit_sha") != base.sha:
+        return "the base index describes another commit than the base"
+    if commit_sha is None or head_blobs is None:
+        return "the checkout is not a git repository, so no file can be compared"
+    if commit_sha == base.sha:
+        return "the base is the commit being indexed"
+    extractor = graph.get("extractor") if isinstance(graph.get("extractor"), dict) else {}
+    if extractor.get("version") != EXTRACTOR_VERSION:
+        return (f"the base was extracted by version {extractor.get('version')!r} of "
+                f"{EXTRACTOR_NAME}, this is version {EXTRACTOR_VERSION!r}")
+    if extractor.get("budget") != _budget_record(budget):
+        return "the base was extracted under another size budget"
+    if extractor.get("files_not_listed") or graph.get("truncated"):
+        return ("the base graph was truncated "
+                f"({', '.join(graph.get('truncated') or ['files'])}), so it cannot be carried")
+    rows = graph.get("files")
+    if not isinstance(rows, list):
+        return "the base graph lists no files"
+    base_blobs: dict[str, str] = {}
+    for row in rows:
+        blob = row.get("blob") if isinstance(row, dict) else None
+        if not isinstance(blob, str) or not blob:
+            return ("the base graph records no per-file blob id (it was extracted before "
+                    "incremental runs existed)")
+        base_blobs[str(row.get("path"))] = blob
+    changes = Changes(
+        added=tuple(sorted(set(head_blobs) - set(base_blobs))),
+        modified=tuple(sorted(p for p in set(head_blobs) & set(base_blobs)
+                              if head_blobs[p] != base_blobs[p])),
+        deleted=tuple(sorted(set(base_blobs) - set(head_blobs))),
+    )
+    if changes.count >= MAX_INCREMENTAL_CHANGES:
+        return (f"{changes.count} files changed since the base, at or over the "
+                f"{MAX_INCREMENTAL_CHANGES} an incremental run takes")
+    config = sorted(p for p in (*changes.added, *changes.modified, *changes.deleted)
+                    if is_config_path(p))
+    if config:
+        more = f" and {len(config) - 1} more" if len(config) > 1 else ""
+        return (f"a build, test or language-server configuration changed ({config[0]}{more}), "
+                "which changes what every entry means")
+    return changes
+
+
+def _affected(changes: Changes, base_graph: dict, fresh: "_Edges") -> set[str]:
+    """The files whose edges are re-resolved: changed, and what points into the change."""
+    changed = changes.changed
+    gone = set(changes.modified) | set(changes.deleted)
+    affected = set(changed)
+    for edge in base_graph.get("call_edges") or []:
+        if isinstance(edge, dict) and _path_of(str(edge.get("to"))) in gone:
+            affected.add(_path_of(str(edge.get("from"))))
+    for frm, to, _kind in fresh.edges:
+        if _path_of(to) in changed:
+            affected.add(_path_of(frm))
+    return affected - set(changes.deleted)
+
+
+def _carry_edges(fresh: "_Edges", base_graph: dict, affected: set[str],
+                 deleted: set[str]) -> "_Edges":
+    """The affected files' fresh edges, and every other file's base edges verbatim."""
+    merged = _Edges()
+    for key, edge in fresh.edges.items():
+        if _path_of(key[0]) in affected:
+            merged.edges[key] = edge
+    for edge in base_graph.get("call_edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        frm, to, kind = str(edge.get("from")), str(edge.get("to")), str(edge.get("kind"))
+        source = _path_of(frm)
+        if source in affected or source in deleted or _path_of(to) in deleted:
+            continue
+        merged.edges.setdefault((frm, to, kind), dict(edge))
+    return merged
+
+
+def _module_for(path: str, module_paths: set[str]) -> str | None:
+    """The module a file counts under: its directory, or the deepest module above it."""
+    directory = posixpath.dirname(path) or "."
+    if directory in module_paths:
+        return directory
+    above = [m for m in module_paths if m != "." and directory.startswith(m + "/")]
+    return max(above, key=len) if above else None
+
+
+def carry_modules(modules: list[dict], base_index: dict, changes: Changes,
+                  base_sha: str, commit_sha: str) -> list[dict]:
+    """Each module with the base's purpose, and the commit its entry was read at."""
+    before = {m["path"]: m for m in base_index.get("modules") or []
+              if isinstance(m, dict) and isinstance(m.get("path"), str)}
+    now_paths = {m["path"] for m in modules}
+    touched: set[str] = set()
+    for path in (*changes.added, *changes.modified, *changes.deleted):
+        for found in (_module_for(path, now_paths), _module_for(path, set(before))):
+            if found is not None:
+                touched.add(found)
+    carried = []
+    for module in modules:
+        entry = dict(module)
+        old = before.get(module["path"])
+        if old is not None and isinstance(old.get("purpose"), str) and old["purpose"]:
+            entry["purpose"] = old["purpose"]
+        if old is None or module["path"] in touched:
+            entry["commit_sha"] = commit_sha
+        else:
+            read_at = old.get("commit_sha")
+            entry["commit_sha"] = read_at if isinstance(read_at, str) and _SHA_RE.match(
+                read_at) else base_sha
+        carried.append(entry)
+    return carried
+
+
+def carried_reading(base_index: dict, deleted: Iterable[str]) -> dict[str, list[dict]]:
+    """The base index's agent-written lists, without the rows that name a deleted file."""
+    gone = set(deleted)
+    reading: dict[str, list[dict]] = {}
+    for key in CARRIED_KEYS:
+        rows = base_index.get(key)
+        if not isinstance(rows, list):
+            continue
+        reading[key] = [row for row in rows if isinstance(row, dict) and not any(
+            row.get(name) in gone for name in _ROW_PATH_KEYS)]
+    return reading
+
+
 # --- import resolution ------------------------------------------------------
 
 
@@ -1611,11 +1885,13 @@ def _parse_file(parsers: _Parsers, grammar: str, data: bytes, facts: Facts,
 
 
 def extract(root: Path, budget: Budget | None = None,
-            lsp: "lsp_pass.LspOptions | None" = None) -> dict:
+            lsp: "lsp_pass.LspOptions | None" = None, base: Base | None = None) -> dict:
     """The mechanical index of the checkout at `root`.
 
     With `lsp` the LSP pass runs after the tree-sitter pass and its resolved
-    sites become `lsp` edges; without it no server is started.
+    sites become `lsp` edges; without it no server is started. With `base`
+    the run is incremental when `incremental_changes` allows it, and full,
+    with the reason in `extractor.incremental`, when it does not.
     """
     budget = budget or Budget()
     root = Path(root).resolve()
@@ -1626,6 +1902,23 @@ def extract(root: Path, budget: Budget | None = None,
     truncated: set[str] = set()
 
     all_paths = _list_paths(root, in_git)
+    head_blobs = _blob_ids(root) if in_git else None
+    commit_sha = branch = None
+    if in_git:
+        rev = _git(root, "rev-parse", "HEAD")
+        if rev.returncode == 0:
+            commit_sha = rev.stdout.decode().strip()
+        ref = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
+        if ref.returncode == 0:
+            branch = ref.stdout.decode().strip() or None
+    changes: Changes | None = None
+    fell_back: str | None = None
+    if base is not None:
+        planned = incremental_changes(base, head_blobs, budget, commit_sha)
+        if isinstance(planned, str):
+            fell_back = planned
+        else:
+            changes = planned
     listed = all_paths[:budget.max_files]
     not_listed = len(all_paths) - len(listed)
     if not_listed:
@@ -1639,6 +1932,9 @@ def extract(root: Path, budget: Budget | None = None,
         full = root / rel
         record: dict[str, Any] = {"path": rel, "language": None, "lines": 0, "bytes": 0,
                                   "status": "", "reason": None, "test": False}
+        # git's blob id: what the next incremental run compares this file by.
+        if head_blobs is not None and rel in head_blobs:
+            record["blob"] = head_blobs[rel]
         files.append(record)
         try:
             info = os.lstat(full)
@@ -1722,10 +2018,23 @@ def extract(root: Path, budget: Budget | None = None,
     edges, imports_of = _build_edges(resolver, facts)
 
     symbols = [s for path in sorted(facts) for s in facts[path].symbols]
+    affected: set[str] | None = None
+    if changes is not None and base is not None:
+        affected = _affected(changes, base.graph, edges)
+        edges = _carry_edges(edges, base.graph, affected, set(changes.deleted))
     lsp_result = None
     if lsp is not None:
-        lsp_result = lsp_pass.run_pass(root, {path: facts[path].language for path in facts},
-                                       symbols, _lsp_sites(facts), lsp)
+        lsp_files = {path: facts[path].language for path in facts}
+        sites = _lsp_sites(facts)
+        if affected is not None:
+            # Only the affected files' sites are asked, and only their
+            # languages' servers started; every other file keeps its edges.
+            wanted = {facts[path].language for path in affected if path in facts}
+            lsp_files = {path: lang for path, lang in lsp_files.items() if lang in wanted}
+            sites = [site for site in sites if site.path in affected]
+        if affected is None or lsp_files:
+            lsp_result = lsp_pass.run_pass(root, lsp_files, symbols, sites, lsp)
+    if lsp_result is not None:
         for edge in lsp_result.edges:
             edges.add(edge.frm, edge.to, edge.kind, "lsp", edge.confidence, edge.path, edge.line)
     routes = [r for path in sorted(facts) for r in facts[path].routes]
@@ -1750,25 +2059,34 @@ def extract(root: Path, budget: Budget | None = None,
 
     test_edges = _test_map(files, imports_of, symbol_test_map, co_pairs, test_files)
 
-    commit_sha = branch = None
-    if in_git:
-        rev = _git(root, "rev-parse", "HEAD")
-        if rev.returncode == 0:
-            commit_sha = rev.stdout.decode().strip()
-        ref = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
-        if ref.returncode == 0:
-            branch = ref.stdout.decode().strip() or None
-
     edge_list = list(edges.edges.values())
     symbols, edge_list, symbol_test_map, routes, test_edges = _apply_caps(
         symbols, edge_list, symbol_test_map, routes, test_edges, truncated)
     modules = _modules(files, truncated)
+    incremental = None
+    if base is not None:
+        incremental = {"base_sha": base.sha if isinstance(base.sha, str) else None,
+                       "ran": changes is not None, "reason": fell_back}
+    carried: dict[str, Any] = {}
+    if changes is not None and base is not None and commit_sha is not None:
+        modules = carry_modules(modules, base.index, changes, base.sha, commit_sha)
+        carried = {
+            "changes": {"added": list(changes.added), "modified": list(changes.modified),
+                        "deleted": list(changes.deleted),
+                        "affected": sorted(affected or ())},
+            "carried": carried_reading(base.index, changes.deleted),
+        }
+    carried_languages = None
+    if changes is not None and base is not None:
+        carried_languages = {row["language"]: row for row in base.graph.get("languages") or []
+                             if isinstance(row, dict) and isinstance(row.get("language"), str)}
 
     return {
-        "kind": "full",
+        **carried,
+        "kind": "incremental" if changes is not None else "full",
         "commit_sha": commit_sha,
         "branch": branch,
-        "base_sha": None,
+        "base_sha": base.sha if changes is not None and base is not None else None,
         "built_at": None,
         "modules": modules,
         "routes": sorted(routes, key=lambda r: (r["file"], r["start_line"], r["method"], r["path"])),
@@ -1777,18 +2095,21 @@ def extract(root: Path, budget: Budget | None = None,
         "symbol_test_map": sorted(symbol_test_map, key=lambda m: (m["symbol"], m["test"])),
         "test_map": sorted(test_edges, key=lambda t: (t["source"], t["test"])),
         "hot_spots": hot_spots,
-        "languages": _languages(files, lsp_result),
+        "languages": _languages(files, lsp_result, carried_languages),
         "files": files,
         "truncated": sorted(truncated),
         "extractor": {
             "name": EXTRACTOR_NAME,
             "version": EXTRACTOR_VERSION,
             "grammars": {lang: f"{pkg} {_grammar_version(pkg)}" for lang, pkg in sorted(GRAMMAR_PACKAGES.items())},
-            "budget": {"max_file_bytes": budget.max_file_bytes,
-                       "max_total_bytes": budget.max_total_bytes,
-                       "max_files": budget.max_files,
-                       "file_timeout_seconds": budget.file_timeout_seconds},
+            "budget": _budget_record(budget),
             "files_not_listed": not_listed,
+            # Every listed file carries its git blob id, so a later run can
+            # carry this graph (§3.4). Promotion records it on the version and
+            # the API's `choose_kind` submits a run full, with the full
+            # timeout, when the promoted graph lacks it.
+            "blob_ids": head_blobs is not None and all(
+                isinstance(row.get("blob"), str) and bool(row["blob"]) for row in files),
             "history": history,
             "lsp": None if lsp_result is None else {
                 "servers": dict(sorted(lsp_result.servers.items())),
@@ -1797,6 +2118,7 @@ def extract(root: Path, budget: Budget | None = None,
                 "total_budget_seconds": lsp_result.total_budget_seconds,
                 "memory_limit_mib": lsp_result.memory_limit_mib,
             },
+            **({} if incremental is None else {"incremental": incremental}),
         },
     }
 
@@ -1935,7 +2257,8 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
     return modules[:MAX_MODULES]
 
 
-def _languages(files: list[dict], lsp_result: Any = None) -> list[dict]:
+def _languages(files: list[dict], lsp_result: Any = None,
+               carried: dict[str, dict] | None = None) -> list[dict]:
     """The `languages` table: what each language got, and why.
 
     Without the LSP pass every language with a grammar is `unsupported`
@@ -1964,11 +2287,18 @@ def _languages(files: list[dict], lsp_result: Any = None) -> list[dict]:
                 "parsed": 0, "timed_out": 0, "failed": 0, "too_large": 0, "over_budget": 0,
             }
             ran = None if lsp_result is None else lsp_result.languages.get(language)
+            before = (carried or {}).get(language)
             if supported and ran is not None:
                 entry.update(status=ran.status, reason=ran.reason,
                              fallback=None if ran.status == "ok" else "ast")
                 if ran.server is not None:
                     entry.update(server=ran.server, lsp=dict(sorted(ran.counts.items())))
+            elif supported and before is not None:
+                # An incremental run asked no server about this language: its
+                # edges are the base's, and so is what the base's server said.
+                for key in ("status", "reason", "fallback", "server", "lsp"):
+                    if key in before:
+                        entry[key] = before[key]
             table[language] = entry
         entry["files"] += 1
         if f["status"] in ("parsed", "timed_out", "failed", "too_large", "over_budget"):
@@ -2104,6 +2434,12 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
     }
     # The graph's own cuts are named too, so the index never hides them.
     index["graph"]["truncated"] = sorted(set(facts["truncated"]) & _GRAPH_TRUNCATIONS)
+    # An incremental run's diff and the base's carried reading, for the
+    # agent to start from (§3.4). Neither is a key of the artifact's shape:
+    # the agent copies the carried rows into their own keys.
+    for key in ("changes", "carried"):
+        if key in facts:
+            index[key] = facts[key]
 
     def size() -> int:
         index["truncated"] = sorted(truncated)
@@ -2246,6 +2582,16 @@ def lsp_self_test(bin_dir: Path, request_timeout_seconds: float = 30.0) -> int:
     return 0
 
 
+def _read_json(path: str | None) -> Any:
+    """A staged base document, or None when it is absent or not JSON."""
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_bytes())
+    except (OSError, ValueError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=EXTRACTOR_NAME,
@@ -2281,6 +2627,11 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: 3/4 of the container's limit, or 4096)")
     parser.add_argument("--lsp-self-test", action="store_true",
                         help="start each language server on a scratch workspace and exit")
+    parser.add_argument("--base-sha",
+                        help="incremental (§3.4): the commit of the previous promoted index")
+    parser.add_argument("--base-index", help="incremental: that index's repo-index.json")
+    parser.add_argument("--base-graph",
+                        help="incremental: its graph, as `swarm-repo-graph read` wrote it")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -2296,7 +2647,13 @@ def main(argv: list[str] | None = None) -> int:
         bin_dir=Path(args.lsp_bin_dir), request_timeout_seconds=args.lsp_request_timeout_seconds,
         server_budget_seconds=args.lsp_server_budget_seconds,
         total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
-    facts = extract(root, budget, lsp=lsp_options)
+    base = None
+    if args.base_sha:
+        # A base that cannot be read makes the run full and says why; it
+        # never fails the run (§3.5: a less certain index, never a lost one).
+        base = Base(sha=args.base_sha, graph=_read_json(args.base_graph),
+                    index=_read_json(args.base_index))
+    facts = extract(root, budget, lsp=lsp_options, base=base)
     graph_payload = dumps(graph_document(facts))
     index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
     payload = dumps(index)
@@ -2311,8 +2668,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.buffer.write(payload)
     summary = index["graph"]
+    incremental = facts["extractor"].get("incremental") or {}
     print(
-        f"{EXTRACTOR_NAME}: files={summary['files']} symbols={summary['symbols']} "
+        f"{EXTRACTOR_NAME}: kind={facts['kind']}"
+        + (f" base={str(incremental.get('base_sha'))[:12]}" if incremental else "")
+        + (f" changed={sum(len(v) for k, v in facts['changes'].items() if k != 'affected')}"
+           f" affected={len(facts['changes']['affected'])}" if "changes" in facts else "")
+        + (f" full_because={incremental['reason']!r}" if incremental.get("reason") else "")
+        + f" files={summary['files']} symbols={summary['symbols']} "
         f"edges={summary['call_edges']} routes={len(index['routes'])} "
         f"statuses={json.dumps(summary['files_by_status'], sort_keys=True)} "
         f"index_bytes={len(payload)} graph_bytes={len(graph_payload)} "

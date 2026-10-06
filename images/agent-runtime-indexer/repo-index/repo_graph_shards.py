@@ -64,6 +64,15 @@ After the upload every blob is checked again, so a blob that appeared
 between the listing and the upload (a 412 in the batch) is accepted when it
 holds our bytes and refused when it does not.
 
+READING ONE BACK (lane IX2). `read --commit <sha> --manifest-digest <d>`
+rebuilds a stored commit's graph document from its manifest -- symbols,
+the edges by caller module, the test map and the files -- for an incremental
+run's base (§3.4). The manifest is checked against the digest promotion
+recorded and every blob against its name before it is decompressed, so a
+rewritten graph is refused, never built on. `write --base-commit <sha>`
+counts the shards whose blob the base manifest already names
+(`shards_carried`): the unchanged modules, which it does not upload again.
+
 THE SWEEP. `sweep` lists every manifest of one registration and every blob,
 and deletes a blob only when (a) no manifest names it -- a promoted manifest
 is one of them, so a blob any promoted manifest references is never removed
@@ -602,22 +611,63 @@ def _check_present(store: Store, expected: dict[str, bytes], listed: dict[str, s
     return absent
 
 
+def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: str,
+                    base_commit: str) -> tuple[int, int, set[str]]:
+    """(shards carried, shards rewritten, the base's blob digests) against a base commit.
+
+    A shard is CARRIED when the base manifest names the same blob for the
+    same layer and module: an incremental run's unchanged modules (§2.5).
+    A base manifest that cannot be read carries nothing; the write itself
+    never depends on it.
+    """
+    try:
+        base = json.loads(store.get(manifest_key(tenant_id, repo_id, base_commit)))
+        base_blobs = referenced_blobs(base)
+    except (StoreError, ValueError):
+        return 0, 0, set()
+    ours = json.loads(manifest)["shards"]
+    carried = rewritten = 0
+    for layer, modules in ours.items():
+        before = base["shards"].get(layer) or {}
+        for module, entry in modules.items():
+            if (before.get(module) or {}).get("blob") == entry["blob"]:
+                carried += 1
+            else:
+                rewritten += 1
+    return carried, rewritten, base_blobs
+
+
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
                 max_commit_bytes: int = MAX_COMMIT_BYTES,
-                graph_digest: str | None = None) -> dict:
+                graph_digest: str | None = None, base_commit: str | None = None) -> dict:
     """Shard `document` into `store`: blobs first (never clobbered), manifest last.
 
     RESUMABLE: a blob already at its path with our bytes counts as written
     (`blobs_reused`), so a run interrupted after any number of blobs
     completes when it is run again; one with other bytes raises
     `ConflictError` and the manifest is not written.
+
+    INCREMENTAL (`base_commit`, §2.5): the shards whose blob the base
+    manifest already names are the unchanged modules' and are counted
+    `shards_carried`; a listed blob the base names is taken as ours without
+    reading it back, since a manifest is written only after its blobs and
+    the sweep never deletes a blob a manifest names. Only the rest is
+    checked and uploaded.
     """
     key, manifest, blobs = build(document, tenant_id=tenant_id, repo_id=repo_id,
                                  max_commit_bytes=max_commit_bytes, graph_digest=graph_digest)
     blob_prefix = f"{graph_root(tenant_id, repo_id)}/blobs/"
     expected = {blob_key(tenant_id, repo_id, hexdigest): data
                 for hexdigest, data in blobs.items()}
-    missing = _check_present(store, expected, _md5s(store, blob_prefix))
+    carried = rewritten = 0
+    base_blobs: set[str] = set()
+    if base_commit is not None:
+        carried, rewritten, base_blobs = _carried_shards(
+            store, manifest, tenant_id=tenant_id, repo_id=repo_id, base_commit=base_commit)
+    listed = _md5s(store, blob_prefix)
+    known = {blob_key(tenant_id, repo_id, hexdigest) for hexdigest in base_blobs}
+    missing = _check_present(
+        store, {k: v for k, v in expected.items() if not (k in known and k in listed)}, listed)
     reused = len(expected) - len(missing)
     todo = missing
     upload_error: StoreError | None = None
@@ -641,7 +691,7 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
     current = _md5s(store, key)
     if current.get(key) is None or current[key] != md5_of(manifest):
         store.put(key, manifest, no_clobber=False)
-    return {
+    report = {
         "manifest": key,
         "manifest_digest": digest_of(manifest),
         "blobs_written": len(missing),
@@ -649,6 +699,90 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
         "stored_bytes": sum(len(b) for b in blobs.values()),
         "manifest_bytes": len(manifest),
     }
+    if base_commit is not None:
+        report.update(base_commit=base_commit, shards_carried=carried,
+                      shards_rewritten=rewritten)
+    return report
+
+
+# --- reading a stored graph back (an incremental run's base, §3.4) ------------
+
+#: The layers a graph document is rebuilt from, and the list each one fills.
+#: Every edge is in `callees` exactly once (sharded by its caller's module),
+#: so `callers`, the same edges by callee, is not read.
+READ_LAYERS = {"symbols": "symbols", "callees": "call_edges", "tests": "symbol_test_map",
+               "files": "files"}
+
+
+def decode_shard(data: bytes) -> list[dict]:
+    """A blob's rows: gzip, then one canonical JSON object per line."""
+    rows = []
+    for line in gzip.decompress(data).splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("a shard line is not a JSON object")
+            rows.append(row)
+    return rows
+
+
+def read_manifest(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+                  manifest_digest: str | None = None) -> dict:
+    """The commit's manifest, checked against the digest promotion recorded, when given."""
+    if not _SHA.match(commit_sha or ""):
+        raise ValueError("the commit to read is not a 40-hex commit sha")
+    raw = store.get(manifest_key(tenant_id, repo_id, commit_sha))
+    if manifest_digest is not None and digest_of(raw) != manifest_digest:
+        raise ValueError(f"the manifest of {commit_sha} does not match the digest promotion "
+                         "recorded for it; it was rewritten, so it is not read")
+    manifest = json.loads(raw)
+    referenced_blobs(manifest)
+    for name, want in (("tenant_id", tenant_id), ("repo_id", repo_id),
+                       ("commit_sha", commit_sha)):
+        if manifest.get(name) != want:
+            raise ValueError(f"the manifest at {commit_sha}'s path names another {name}")
+    return manifest
+
+
+def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+               manifest_digest: str | None = None) -> dict:
+    """The `swarm.repo-graph/v1` document a commit's shards hold.
+
+    Every blob is checked against the digest its name is BEFORE it is
+    decompressed, so a rewritten blob is refused, not read.
+    """
+    manifest = read_manifest(store, tenant_id=tenant_id, repo_id=repo_id,
+                             commit_sha=commit_sha, manifest_digest=manifest_digest)
+    wanted: dict[str, list[str]] = {}
+    for layer in READ_LAYERS:
+        for entry in (manifest["shards"].get(layer) or {}).values():
+            hexdigest = entry["blob"].split(":", 1)[1]
+            wanted.setdefault(layer, []).append(hexdigest)
+    keys = sorted({blob_key(tenant_id, repo_id, h) for hs in wanted.values() for h in hs})
+    fetched = _get_many(store, keys)
+    document: dict[str, Any] = {
+        "schema": GRAPH_SCHEMA, "kind": manifest.get("kind"), "commit_sha": commit_sha,
+        "branch": manifest.get("branch"), "base_sha": manifest.get("base_sha"),
+        "languages": manifest.get("languages") or [],
+        "truncated": list(manifest.get("truncated") or []),
+        "extractor": manifest.get("extractor") or {},
+    }
+    for layer, target in READ_LAYERS.items():
+        rows: list[dict] = []
+        for hexdigest in wanted.get(layer, []):
+            data = fetched.get(blob_key(tenant_id, repo_id, hexdigest))
+            if data is None or hashlib.sha256(data).hexdigest() != hexdigest:
+                raise ValueError(f"blob {hexdigest} does not hold the bytes its name is the "
+                                 "digest of; the graph is not read")
+            rows.extend(decode_shard(data))
+        document[target] = rows
+    document["symbols"].sort(key=lambda s: (str(s.get("path")), s.get("start_line") or 0,
+                                            str(s.get("id"))))
+    document["call_edges"].sort(key=lambda e: (str(e.get("from")), str(e.get("to")),
+                                               str(e.get("kind"))))
+    document["symbol_test_map"].sort(key=lambda t: (str(t.get("symbol")), str(t.get("test"))))
+    document["files"].sort(key=lambda f: str(f.get("path")))
+    return document
 
 
 # --- the sweep ----------------------------------------------------------------
@@ -812,7 +946,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     write = sub.add_parser("write", help="shard a swarm-repo-index --graph-out document")
     sweeper = sub.add_parser("sweep", help="delete blobs no manifest names")
-    for command in (write, sweeper):
+    reader = sub.add_parser("read", help="rebuild a stored commit's graph document "
+                                         "(an incremental run's base)")
+    for command in (write, sweeper, reader):
         command.add_argument("--store",
                              help="gs://<bucket>, or a local directory standing in for it "
                                   f"(default: gs://${BUCKET_ENV} from the step's configuration)")
@@ -827,6 +963,12 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--index", help="repo-index.json: its graph.manifest_digest is set")
     write.add_argument("--max-commit-bytes", type=int, default=MAX_COMMIT_BYTES)
     write.add_argument("--no-sweep", action="store_true", help="skip the sweep after writing")
+    write.add_argument("--base-commit",
+                       help="incremental: the base's commit, to count the shards carried")
+    reader.add_argument("--commit", required=True, help="the commit whose graph to read")
+    reader.add_argument("--manifest-digest",
+                        help="sha256:<hex> promotion recorded; a manifest that differs is refused")
+    reader.add_argument("--out", required=True, help="where to write the graph document")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -839,11 +981,19 @@ def main(argv: list[str] | None = None) -> int:
         store = open_store(spec)
         if args.command == "sweep":
             report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id)}
+        elif args.command == "read":
+            graph = read_graph(store, tenant_id=tenant, repo_id=args.repo_id,
+                               commit_sha=args.commit, manifest_digest=args.manifest_digest)
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(canonical(graph) + b"\n")
+            report = {"read": args.commit, "symbols": len(graph["symbols"]),
+                      "call_edges": len(graph["call_edges"]), "files": len(graph["files"])}
         else:
             raw = Path(args.graph).read_bytes()
             report = write_graph(json.loads(raw), store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
-                                 graph_digest=digest_of(raw))
+                                 graph_digest=digest_of(raw), base_commit=args.base_commit)
             if args.index:
                 index_path = Path(args.index)
                 index = json.loads(index_path.read_bytes())

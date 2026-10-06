@@ -39,6 +39,38 @@ by tests/unit/worker/test_index_run_phases.py). The task's metadata names
 the repo_id too, but the spec signature does not cover it
 (`swarm_common.specsign.SIGNED_METADATA_KEYS`), so the worker never reads
 it: a rewritten metadata cannot point the write at another registration.
+
+AN INCREMENTAL RUN'S BASE, BY REFERENCE (§3.4, lane IX2). swarm-api decides
+incremental or full (`swarm_api.repoindex.choose_kind`) and names the base
+in the task's PROMPT, as one line of its own (`BASE_LINE`). The prompt is
+inside the signed `input`; the task's `metadata.index_kind` and `base_sha`
+are not (`swarm_common.specsign.SIGNED_METADATA_KEYS`, frozen), so the
+worker never reads them -- tests/unit/common/test_specsign_covers.py holds
+it to that. Before the extractor the worker stages the base, as a fourth
+phase, `stage_base`:
+
+    the version     repositories/<repo_id>/index_versions/<base_sha>, under the
+                    repo_id derived above from signed fields only
+    the index       that version's task's repo-index.json, resolved and fetched
+                    by the staged-input path every workflow input takes
+                    (`inputs.fetch_upstream_task`, `inputs.artifact_reference`):
+                    the successful attempt's manifest, a key inside this
+                    tenant's own prefix, checked against the digest the
+                    version recorded at promotion
+    the graph       `swarm-repo-graph read` of the base commit's shards, its
+                    manifest checked against the digest the version recorded
+
+No workspace copy and no new grant: the step's own account already reads its
+tenant's artifacts and graph prefix (invariant 9), and the object keys are
+built from this worker's tenant, never from a document. The base line is
+still a REQUEST, and everything staged for it is checked: the version is
+read under the registration the signed spec names, and both documents
+against the digests promotion recorded, so whatever names the base can only
+make the run full or pick another promoted version of the same
+registration, whose content the digests vouch for. Whatever cannot be staged makes
+the run full, and the phase record says why; it never fails the run. The
+extractor then decides for itself, from the files it can compare
+(`repo_index_extract.incremental_changes`), and runs full when it must.
 """
 
 from __future__ import annotations
@@ -70,6 +102,21 @@ PHASES_FILE = "repo-index.phases.json"
 #: The document promotion validates: the agent writes it, the graph write
 #: sets its `graph.manifest_digest` (`swarm_api.repoindex.INDEX_FILE`).
 INDEX_FILE = "repo-index.json"
+#: An incremental run's base, staged in `work/` beside the extractor's
+#: output (`swarm_api.repoindex.BASE_INDEX_FILE` names the first in the prompt).
+BASE_INDEX_FILE = "repo-index.base.json"
+BASE_GRAPH_FILE = "repo-graph.base.json"
+
+#: Where swarm-api keeps a registration and its promoted versions
+#: (`swarm_api.repositories.COLLECTION`, `swarm_api.repoindex.VERSIONS_COLLECTION`).
+REPOSITORIES_COLLECTION = "repositories"
+VERSIONS_COLLECTION = "index_versions"
+#: The prompt line that names an incremental run's base
+#: (`swarm_api.repoindex.BASE_LINE`): a line of its own, the prefix and a
+#: 40-hex sha. A request, checked; see the module doc.
+BASE_LINE = "swarm-index-base: "
+#: A base index larger than the index's own bound (§2.2) is not one swarm-api promoted.
+MAX_BASE_INDEX_BYTES = 512 * 1024
 
 #: The share of the task's timeout the extractor may take. 0.4 of a full
 #: run's 1,800 s is 720 s: twice the ~6 minutes measured on a 1,685-file
@@ -88,6 +135,12 @@ EXTRACT_LSP_RESERVE_SECONDS = 180
 #: took ~3.9 s a blob, ~24 minutes, and could never fit.
 GRAPH_WRITE_SHARE = 0.15
 GRAPH_WRITE_MIN_SECONDS = 120
+#: Reading the base graph back is one batched download of a few hundred
+#: small blobs: a quarter of the extractor's budget, 90 s of an incremental
+#: run's 360, is several times what it takes, and a read that runs out
+#: only makes the run full.
+BASE_READ_SHARE = 0.25
+BASE_READ_MIN_SECONDS = 30
 
 #: Environment names a phase inherits from the worker. Nothing else: the
 #: worker's own environment carries control-plane identifiers and the spec
@@ -113,6 +166,7 @@ class Budgets:
     extract: int
     lsp_total: int
     graph_write: int
+    base_read: int
 
 
 def budgets(timeout_seconds: int) -> Budgets:
@@ -126,7 +180,8 @@ def budgets(timeout_seconds: int) -> Budgets:
     extract = min(total, max(EXTRACT_MIN_SECONDS, int(total * EXTRACT_SHARE)))
     write = min(total, max(GRAPH_WRITE_MIN_SECONDS, int(total * GRAPH_WRITE_SHARE)))
     lsp = max(30, extract - EXTRACT_LSP_RESERVE_SECONDS)
-    return Budgets(extract=extract, lsp_total=lsp, graph_write=write)
+    base_read = min(total, max(BASE_READ_MIN_SECONDS, int(extract * BASE_READ_SHARE)))
+    return Budgets(extract=extract, lsp_total=lsp, graph_write=write, base_read=base_read)
 
 
 def repo_id_for(tenant_id: str, owner: str, repo: str) -> str:
@@ -176,23 +231,113 @@ def phase_env(*, home: Path, tmp: Path, tenant_id: str, bucket: str) -> dict[str
     return env
 
 
-def extractor_argv(program: str, *, checkout: Path, work: Path, lsp_total: int) -> list[str]:
-    return [
+def extractor_argv(
+    program: str, *, checkout: Path, work: Path, lsp_total: int, base_sha: str | None = None
+) -> list[str]:
+    argv = [
         program, "--repo", str(checkout), "--out", str(work / EXTRACT_FILE),
         "--graph-out", str(work / GRAPH_FILE),
         "--lsp-total-budget-seconds", str(lsp_total),
     ]
+    if base_sha is not None:
+        argv += ["--base-sha", base_sha, "--base-index", str(work / BASE_INDEX_FILE),
+                 "--base-graph", str(work / BASE_GRAPH_FILE)]
+    return argv
 
 
 def graph_write_argv(
-    program: str, *, work: Path, artifacts: Path, where: Target, bucket: str
+    program: str, *, work: Path, artifacts: Path, where: Target, bucket: str,
+    base_sha: str | None = None,
 ) -> list[str]:
-    return [
+    argv = [
         program, "write", "--graph", str(work / GRAPH_FILE),
         "--repo-id", where.repo_id, "--destination", where.destination,
         "--tenant", where.tenant_id, "--store", f"gs://{bucket}",
         "--index", str(artifacts / INDEX_FILE),
     ]
+    if base_sha is not None:
+        argv += ["--base-commit", base_sha]
+    return argv
+
+
+def graph_read_argv(
+    program: str, *, work: Path, where: Target, bucket: str, base: "BaseVersion"
+) -> list[str]:
+    return [
+        program, "read", "--commit", base.sha, "--manifest-digest", base.graph_digest,
+        "--repo-id", where.repo_id, "--destination", where.destination,
+        "--tenant", where.tenant_id, "--store", f"gs://{bucket}",
+        "--out", str(work / BASE_GRAPH_FILE),
+    ]
+
+
+# --------------------------------------------------------------------------
+# an incremental run's base (§3.4)
+# --------------------------------------------------------------------------
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+_BASE_LINE = re.compile(r"^" + re.escape(BASE_LINE) + r"([0-9a-f]{40})$", re.MULTILINE)
+
+
+def requested_base(task_input: Any) -> str | None:
+    """The base swarm-api asked this run to build on, from the SIGNED prompt; None for full.
+
+    Exactly one base line, or none: two that disagree are no request at all.
+    """
+    prompt = task_input.get("prompt") if isinstance(task_input, Mapping) else None
+    if not isinstance(prompt, str):
+        return None
+    found = set(_BASE_LINE.findall(prompt))
+    return found.pop() if len(found) == 1 else None
+
+
+@dataclass(frozen=True)
+class BaseVersion:
+    """A promoted index version: what produced it, and the digests promotion recorded."""
+
+    sha: str
+    task_id: str
+    digest: str
+    graph_digest: str
+
+
+def resolve_base(
+    db: Any, *, tenant_id: str, where: Target, base_sha: str,
+    call_options: Mapping[str, Any] | None = None,
+) -> BaseVersion | str:
+    """The base's promoted version, or why there is none (a reason, never an exception).
+
+    Read under the registration the SIGNED spec names (`where.repo_id`), and
+    only when that registration is this tenant's.
+    """
+    options = dict(call_options or {})
+    registration = db.collection(REPOSITORIES_COLLECTION).document(where.repo_id)
+    snapshot = registration.get(**options)
+    if not snapshot.exists:
+        return f"the registration {where.repo_id} has no document"
+    if (snapshot.to_dict() or {}).get("tenant_id") != tenant_id:
+        return f"the registration {where.repo_id} is not this tenant's"
+    version = registration.collection(VERSIONS_COLLECTION).document(base_sha).get(**options)
+    if not version.exists:
+        return f"no promoted index of {base_sha[:12]} is kept for this repository"
+    data = version.to_dict() or {}
+    task_id, digest, graph_digest = data.get("task_id"), data.get("digest"), \
+        data.get("graph_digest")
+    if not isinstance(task_id, str) or not task_id:
+        return f"the index version of {base_sha[:12]} names no task"
+    if not isinstance(digest, str) or not _DIGEST.match(digest):
+        return f"the index version of {base_sha[:12]} records no digest"
+    if not isinstance(graph_digest, str) or not _DIGEST.match(graph_digest):
+        return f"the index version of {base_sha[:12]} has no graph to build on"
+    return BaseVersion(sha=base_sha, task_id=task_id, digest=digest, graph_digest=graph_digest)
+
+
+def content_digest(data: bytes) -> str:
+    """`sha256:<hex>`, as promotion records it (`swarm_api.repoindex.content_digest`)."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 @dataclass
@@ -226,8 +371,10 @@ def last_line(path: Path, limit: int = 300) -> str | None:
 
 
 __all__ = [
-    "Budgets", "EXTRACTOR_COMMAND", "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND",
-    "INDEXER_PROFILE", "INDEX_FILE", "PHASES_FILE", "PhaseRecord", "Target", "budgets",
-    "extractor_argv", "graph_write_argv", "is_index_run", "last_line", "phase_env",
-    "repo_id_for", "resolve", "target", "write_phases",
+    "BASE_GRAPH_FILE", "BASE_INDEX_FILE", "BaseVersion", "Budgets", "EXTRACTOR_COMMAND",
+    "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND", "INDEXER_PROFILE", "INDEX_FILE",
+    "MAX_BASE_INDEX_BYTES", "PHASES_FILE", "PhaseRecord", "Target", "budgets",
+    "content_digest", "extractor_argv", "graph_read_argv", "graph_write_argv", "is_index_run",
+    "last_line", "phase_env", "repo_id_for", "requested_base", "resolve", "resolve_base",
+    "target", "write_phases",
 ]
