@@ -200,7 +200,7 @@ _mock_check_retry() {
 }
 
 _mock_check_park_and_restore() {
-  local task="$1" state doc reason held parked_at eligible_at waited latest restored last_before released
+  local task="$1" state doc reason held signal_at parked_at eligible_at waited latest restored last_before released
   acc_check "mock: quota_exhausted parks with its retry_after, holds no capacity, then resumes"
   [[ -n "${task}" ]] || { acc_fail "not submitted"; return 0; }
   if ! state="$(wait_for_state "${task}" "PARKED|SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${ACC_TIMEOUT}")"; then
@@ -225,17 +225,26 @@ _mock_check_park_and_restore() {
   else
     acc_fail "while PARKED it still holds capacity: current_lease_id=${held}; ${released}" "${task}"
   fi
+  # MEASURED FROM THE QUOTA SIGNAL, NOT FROM THE PARK. The worker sets
+  # next_eligible_at = signal time + retry_after (agent_worker/quota.py
+  # decide()) and writes the `quota_exhausted` event in the park's own
+  # transaction; the `parked` event follows only after the attempt's end is
+  # recorded. Release 37413200995 wrote `parked` 53 s after the signal (a
+  # worker stall) and this check, then measured from `parked`, read 35 s
+  # against a retry_after of 90 for an eligibility that was exactly right.
+  # The 5 s margin is the clock between decide() and the park's commit.
+  signal_at="$(acc_events "${task}" | jq -sr '[.[] | select(.type == "quota_exhausted")] | sort_by(.at) | last | .at // empty')"
   parked_at="$(acc_events "${task}" | jq -sr '[.[] | select(.type == "parked")] | sort_by(.at) | last | .at // empty')"
   eligible_at="$(jq -r '.next_eligible_at // empty' <<<"${doc}")"
-  if [[ -n "${parked_at}" && -n "${eligible_at}" ]]; then
-    waited=$(( $(acc_iso_epoch "${eligible_at}") - $(acc_iso_epoch "${parked_at}") ))
+  if [[ -n "${signal_at}" && -n "${eligible_at}" ]]; then
+    waited=$(( $(acc_iso_epoch "${eligible_at}") - $(acc_iso_epoch "${signal_at}") ))
     if [[ "${waited}" -ge 85 ]]; then
-      acc_pass "next_eligible_at is ${waited}s after the park (retry_after 90)" "${task}"
+      acc_pass "next_eligible_at is ${waited}s after the quota_exhausted signal (retry_after 90; parked at ${parked_at:-unrecorded})" "${task}"
     else
-      acc_fail "next_eligible_at is only ${waited}s after the park; retry_after was 90" "${task}"
+      acc_fail "next_eligible_at is only ${waited}s after the quota_exhausted signal; retry_after was 90" "${task}"
     fi
   else
-    acc_fail "the park left no parked event or no next_eligible_at to compare" "${task}"
+    acc_fail "the park left no quota_exhausted event or no next_eligible_at to compare (parked at ${parked_at:-unrecorded})" "${task}"
   fi
   if [[ "$(acc_events "${task}" | jq -s '[.[] | select(.type == "retrying")] | length')" == "0" ]]; then
     acc_pass "parked at once: a 90 s wait is not retried in place" "${task}"
