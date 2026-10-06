@@ -95,7 +95,8 @@ def test_active_lists_every_running_workflow_in_one_page_past_older_history(db, 
     assert [w["workflow_id"] for w in body["workflows"]] == live
     assert {w["state"] for w in body["workflows"]} == {"RUNNING"}
     assert body["next_page_token"] is None
-    # The route says it filtered in the query, so a client can trust one page.
+    # The route says it filtered in the query, so a client knows finished
+    # SUCCEEDED/CANCELLED history was skipped there.
     assert body["filter"]["active"] is True
     assert "SUCCEEDED" not in body["filter"]["stored_states"]
     assert "CANCELLED" not in body["filter"]["stored_states"]

@@ -684,9 +684,12 @@ _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 #: from a deployment that filters only after its rollup (no `filter` in its
 #: answer): there a tenant with a long finished history can need several pages
 #: to reach an old running workflow. A deployment that serves `active=true`
-#: from its indexed stored-state query is read ONE page (owner decision
-#: 2026-10-06, P4): measured that day, the old walk read 4 pages of 50 to list
-#: 7 running workflows and still said it was incomplete.
+#: from its indexed stored-state query skips stored SUCCEEDED and CANCELLED
+#: history in the query (owner decision 2026-10-06, P4: measured that day, the
+#: old walk read 4 pages of 50 to list 7 running workflows and still said it
+#: was incomplete), and is read until its last page or a page full of
+#: unfinished workflows -- usually one; still at most this many when newer
+#: FAILED or DEAD_LETTERED history, which the query must keep, fills them.
 WORKFLOW_LIST_PAGES = 4
 WORKFLOW_PAGE_SIZE = 50
 
@@ -780,10 +783,15 @@ def running_workflows(
     the list itself cannot be read: "could not ask" is never an empty list.
 
     ONE PAGE when the route says it filtered in its query
-    (`filter.stored_states`): that page is the newest `WORKFLOW_PAGE_SIZE`
-    workflows not finished by their stored state, so it is the running set
-    unless a token says there are more -- and then that is reported, not
-    walked. Otherwise up to `pages` pages, as before.
+    (`filter.stored_states`) and the page is either the last one or FULL of
+    unfinished workflows: then it is the running set, or more than a page of
+    it -- which is reported, not walked. The query leaves out only stored
+    SUCCEEDED and CANCELLED (`Store.stored_states_for`); a stored FAILED or
+    DEAD_LETTERED workflow is still fetched, because a retry can revive it,
+    and the route drops it after deriving. So a short page with a token is
+    newer failed history in front of older running workflows, and the walk
+    goes on, up to `pages` pages, exactly as for a deployment without the
+    filter. `incomplete_because` says which of the two stopped it.
     """
     now = now or datetime.now(timezone.utc)
     found: list[dict[str, Any]] = []
@@ -791,6 +799,7 @@ def running_workflows(
     token: str | None = None
     read = 0
     indexed = False
+    full_page = False
     for _ in range(max(1, pages)):
         page = client.workflows(
             states=ACTIVE_WORKFLOW_STATES,
@@ -800,13 +809,16 @@ def running_workflows(
         )
         read += 1
         tenant = tenant or page.get("tenant_id")
+        unfinished = 0
         for workflow in page["workflows"]:
             if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
                 found.append(_running_entry(workflow, now))
+                unfinished += 1
         token = page.get("next_page_token") or None
         filtered = page.get("filter")
         indexed = isinstance(filtered, dict) and bool(filtered.get("stored_states"))
-        if token is None or indexed:
+        full_page = indexed and unfinished >= WORKFLOW_PAGE_SIZE
+        if token is None or full_page:
             break
 
     detailed = found[: max(0, detail_reads)]
@@ -826,9 +838,9 @@ def running_workflows(
     }
     if token is not None:
         out["incomplete_because"] = (
-            f"more than {WORKFLOW_PAGE_SIZE} workflows are unfinished; read 1 page of "
-            f"the newest {WORKFLOW_PAGE_SIZE}, and older running workflows are not listed"
-            if indexed
+            f"a page of {WORKFLOW_PAGE_SIZE} unfinished workflows was full; read "
+            f"{read} page(s), and older running workflows are not listed"
+            if full_page
             else f"stopped after {read} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
             "running workflows, if any, are not listed"
         )

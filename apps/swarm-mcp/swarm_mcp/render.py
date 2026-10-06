@@ -1724,8 +1724,9 @@ class Snapshot:
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-#: The park reason `find_trouble` leaves out: waiting for a parent step.
-_DEPENDENCY_WAIT = "DEPENDENCY_INCOMPLETE"
+#: The park reason `find_trouble` leaves out: waiting for a parent step. From
+#: the frozen enum; `compact` imports it from here.
+_DEPENDENCY_WAIT = _states.ParkReason.DEPENDENCY_INCOMPLETE.value
 
 
 def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
@@ -1856,8 +1857,8 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
                     # Not trouble (owner decision 2026-10-06, P5): a step
                     # waiting for its parents holds no capacity (invariant 1)
                     # and is the ordinary shape of a workflow whose earlier
-                    # steps still run. A parent that FAILED shows as its own
-                    # finding; this one would only bury it.
+                    # steps still run. A parent that dead-lettered shows as its
+                    # own finding; this one would only bury it.
                     continue
                 parked[reason] = parked.get(reason, 0) + 1
             elif state in ("DEAD_LETTERED", "DEAD_LETTER"):

@@ -277,6 +277,13 @@ def _final_workflow_states() -> frozenset[TaskState]:
     DEAD_LETTERED with a FAILED sibling, can come back to life; a stored
     SUCCEEDED or CANCELLED cannot. Computed from `can_transition` rather than
     listed, so this cannot drift from the contract.
+
+    It goes by severity rank, not by the steps a workflow actually has, so a
+    stored DEAD_LETTERED workflow whose steps are all DEAD_LETTERED, CANCELLED
+    or SUCCEEDED -- truly final -- is still fetched by every filtered list and
+    dropped after deriving. That costs a row read, never a wrong answer; ruling
+    it out in the query needs a "finished" marker written back with the
+    rollup, which is a document-shape change of its own.
     """
     final: set[TaskState] = set()
     for rank, state in enumerate(_TERMINAL_SEVERITY):
