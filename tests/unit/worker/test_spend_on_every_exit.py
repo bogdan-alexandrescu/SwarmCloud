@@ -50,7 +50,7 @@ USAGE = {
 COST = 0.4213
 
 #: A stand-in for `claude --print --output-format json`. It reads its plan from
-#: the prompt (the last argv element), which is the only channel a real caller
+#: the prompt (read on its stdin), which is the only channel a real caller
 #: has into an agent, and prints ONE JSON object -- including when it fails,
 #: which is what the real CLI does and is the whole point here.
 FAKE_AGENT = r"""#!/usr/bin/env python3
@@ -59,7 +59,7 @@ import json, os, pathlib, sys, time
 # Only the leading JSON value: every CLI prompt now ends with the platform's
 # line naming $SWARM_ARTIFACTS_DIR (#184).
 try:
-    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(sys.stdin.read())
 except (ValueError, IndexError):
     plan = {}
 

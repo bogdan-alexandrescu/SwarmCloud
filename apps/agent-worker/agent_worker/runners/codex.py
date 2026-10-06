@@ -23,6 +23,10 @@ SPEC = CliAgentSpec(
     key_env="OPENAI_API_KEY",
     model_flag="--model",
     transcript_name="codex-transcript.json",
+    # `codex exec -` reads the prompt from stdin, where `cliagent` writes it:
+    # never in the argv, which every process listing shows (owner decision
+    # 2026-10-06, observer P9).
+    stdin_arg=("-",),
 )
 
 

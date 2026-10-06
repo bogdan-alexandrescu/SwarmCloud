@@ -8,9 +8,9 @@ code is the only way those two runners stay identical in behaviour.
 
 On flags: the argv prefix has a conservative default and can be overridden with
 an environment variable set by the PLATFORM (the image, or the Cloud Run Job
-definition) -- never by a caller, whose input never reaches argv except as the
-prompt. That is what keeps these runners working across CLI releases without
-anybody guessing at flags in a Dockerfile.
+definition) -- never by a caller, whose input never reaches argv at all: the
+prompt is written to the CLI's stdin. That is what keeps these runners working
+across CLI releases without anybody guessing at flags in a Dockerfile.
 
 Two properties that are load-bearing rather than incidental:
 
@@ -180,6 +180,12 @@ class CliAgentSpec:
     #: to `REPAIR_MAX_TURNS` repair turns naming what failed (#624, owner
     #: decision 2026-10-05; see `repair_problems`). Needs `resume_flag`.
     repair_checks: bool = False
+    #: What follows the flags to tell the CLI its prompt is on stdin. The
+    #: prompt is ALWAYS written to the CLI's stdin, never put in its argv
+    #: (owner decision 2026-10-06, observer P9; see `run_cli_agent`).
+    #: claude-code in print mode reads stdin when no prompt argument is given,
+    #: so it needs nothing; codex reads stdin when its prompt argument is `-`.
+    stdin_arg: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +458,7 @@ def _run_watched(
     log: Any,
     log_argv: list[str],
     watcher: AccountStreamWatcher,
+    stdin_data: bytes,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -472,6 +479,7 @@ def _run_watched(
         keep_tail=True,
         log_argv=log_argv,
         stdout_tap=watcher.tap(),
+        stdin_data=stdin_data,
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
@@ -1032,25 +1040,28 @@ def run_cli_agent(
     # same workspace. The original prompt is already in the session.
     resume = os.environ.get(RESUME_SESSION_ENV, "").strip()
     # The argv every start of this step shares; a finish pass (below) adds its
-    # own `--resume <id>` and prompt to it.
+    # own `--resume <id>` to it, and writes its own prompt to stdin.
     base_argv = list(argv)
     if resume and not (spec.resume_flag and _SESSION_ID.match(resume)):
         raise RunnerFailure(f"{spec.name} was asked to resume a session it cannot resume")
+    # THE PROMPT GOES ON STDIN, NEVER IN THE ARGV (owner decision 2026-10-06,
+    # observer P9). Measured on task_cb50036f4e264168b39e: the agent ran
+    # `ps aux | grep "[p]ytest tests/unit/scripts" | awk '{print $2}' | xargs
+    # -r kill`, its brief contained that very text, and the prompt was the
+    # CLI's last argument -- so the grep matched the CLI's own command line
+    # and the agent killed its own CLI (exit 143). Every process listing shows
+    # the argv; nothing caller-written is in it now. One argv string is also
+    # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
     if resume:
         argv += [spec.resume_flag, resume]
-        argv.append(resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip()))
+        stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
     else:
-        # The prompt is the only caller-controlled value that reaches argv,
-        # and it is passed as a single trailing argument with no shell.
-        argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
-    # ...and it is the one argument `run_child`'s `child started` line must not
-    # print (the PR #229 review): this process's stderr is served by `/logs`,
-    # and the task routes serve the prompt masked. Its length says what the
-    # line needs to say -- that a prompt was passed, and how big. A resumed
-    # session's id is masked the same way: it never reaches a log line.
-    log_argv = [*argv[:-1], f"<prompt: {len(argv[-1])} characters>"]
-    if resume:
-        log_argv = [("<session>" if arg == resume else arg) for arg in log_argv]
+        stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+    argv += spec.stdin_arg
+    # `run_child`'s `child started` line prints the argv (the PR #229 review:
+    # this process's stderr is served by `/logs`) and the prompt's size only.
+    # A resumed session's id is masked: it never reaches a log line.
+    log_argv = [("<session>" if resume and arg == resume else arg) for arg in argv]
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
@@ -1158,9 +1169,11 @@ def run_cli_agent(
     )
 
     def start(
-        run_argv: list[str], run_log_argv: list[str], timeout_seconds: float
+        run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
-        """One start of the CLI, its captures redacted before anything reads them."""
+        """One start of the CLI, `run_prompt` on its stdin, its captures redacted
+        before anything reads them."""
+        stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path)
         if run_watcher is None:
@@ -1176,6 +1189,7 @@ def run_cli_agent(
                 max_stderr_bytes=run_limits.max_stderr_bytes,
                 logger=log,
                 log_argv=run_log_argv,
+                stdin_data=stdin_data,
                 # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under
                 # stream-json the stdout is the whole conversation, and its
                 # LAST line is the `result` event: the answer, the spend, the
@@ -1200,6 +1214,7 @@ def run_cli_agent(
                 log=log,
                 log_argv=run_log_argv,
                 watcher=run_watcher,
+                stdin_data=stdin_data,
             )
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
@@ -1279,7 +1294,7 @@ def run_cli_agent(
             + _without_capture_notices(_tail(stderr_path))
         )
 
-    result, watcher = start(argv, log_argv, limits.timeout_seconds)
+    result, watcher = start(argv, log_argv, stdin_prompt, limits.timeout_seconds)
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -1316,7 +1331,7 @@ def run_cli_agent(
     duration_seconds = result.duration_seconds
     stdout_bytes, stderr_bytes = result.stdout_bytes, result.stderr_bytes
 
-    def resume_pass(session: str, pass_prompt: str, pass_log_prompt: str, remaining: float) -> Any:
+    def resume_pass(session: str, pass_prompt: str, remaining: float) -> Any:
         """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
 
         Shared by the finish pass and the repair turns. The step's record is
@@ -1328,11 +1343,9 @@ def run_cli_agent(
         first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
         first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
         first_spend = spend
-        pass_argv = [*base_argv, str(spec.resume_flag), session, pass_prompt]
-        pass_log_argv = [
-            ("<session>" if arg == session else arg) for arg in pass_argv[:-1]
-        ] + [pass_log_prompt]
-        result, watcher = start(pass_argv, pass_log_argv, remaining)
+        pass_argv = [*base_argv, str(spec.resume_flag), session, *spec.stdin_arg]
+        pass_log_argv = [("<session>" if arg == session else arg) for arg in pass_argv]
+        result, watcher = start(pass_argv, pass_log_argv, pass_prompt, remaining)
         # ONE RECORD OF THE STEP. Each start truncates the captures, so the
         # earlier starts' are put back in front of this one's: the stdout log
         # stays the whole conversation, in order.
@@ -1396,7 +1409,7 @@ def run_cli_agent(
             # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            finish_parsed = resume_pass(session, FINISH_PROMPT, FINISH_PROMPT, remaining)
+            finish_parsed = resume_pass(session, FINISH_PROMPT, remaining)
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(
@@ -1476,7 +1489,7 @@ def run_cli_agent(
                 remaining_seconds=round(remaining, 1),
             )
             text = repair_prompt(missing, flagged, ctx.artifacts_dir)
-            resume_pass(session, text, f"<prompt: {len(text)} characters>", remaining)
+            resume_pass(session, text, remaining)
             after_missing, after_flagged = run_checks()
             # What a turn fixed is what it was asked to fix and no longer fails.
             # A credential line is named by `path:line rule`, so one that only

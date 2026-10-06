@@ -70,7 +70,7 @@ settings = argv[argv.index("--settings") + 1] if "--settings" in argv else None
 with (home / "runs.jsonl").open("a") as f:
     f.write(json.dumps({
         "resume": resume,
-        "prompt": argv[-1],
+        "prompt": sys.stdin.read(),
         "settings": settings,
         "no_background": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
     }) + "\n")

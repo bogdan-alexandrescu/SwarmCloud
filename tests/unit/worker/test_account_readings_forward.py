@@ -350,7 +350,7 @@ def _fake_cli(tmp_path: Path) -> Path:
         "#!" + sys.executable + "\n"
         "import json, sys\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
-        " 'result': 'argv=' + json.dumps(sys.argv[1:])}))\n"
+        " 'result': 'argv=' + json.dumps([*sys.argv[1:], sys.stdin.read()])}))\n"
     )
     script.chmod(0o755)
     return script
@@ -378,9 +378,11 @@ def test_a_resumed_start_passes_resume_and_logs_the_session_masked(
 
     out = run_cli_agent(ctx, spec)
 
-    argv = json.loads(out["summary"].split("argv=", 1)[1])
-    assert argv[-3:] == ["--resume", sid, RESUME_PROMPT]
-    assert "the original prompt" not in json.dumps(argv), "the session already holds it"
+    # The fake appends what it read on stdin after its argv: the message is
+    # the resume prompt, delivered on stdin after `--resume <id>`.
+    received = json.loads(out["summary"].split("argv=", 1)[1])
+    assert received[-3:] == ["--resume", sid, RESUME_PROMPT]
+    assert "the original prompt" not in json.dumps(received), "the session already holds it"
     err = capsys.readouterr().err
     assert sid not in err and "<session>" in err
 

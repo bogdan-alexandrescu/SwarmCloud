@@ -460,6 +460,8 @@ _RECORDING_CLI = r"""#!/usr/bin/env python3
 import json, os, sys
 with open(os.path.join(os.environ["SWARM_WORK_DIR"], "argv.json"), "w") as fh:
     json.dump(sys.argv, fh)
+with open(os.path.join(os.environ["SWARM_WORK_DIR"], "prompt.txt"), "w") as fh:
+    fh.write(sys.stdin.read())
 print(json.dumps({"result": "ok"}))
 """
 
@@ -487,7 +489,8 @@ def _prompt(tmp_path: Path, monkeypatch, payload: dict[str, Any], *, issue_text:
         args_env="FAKE_ARGS", args_default=("--print",), key_env="FAKE_KEY", model_flag=None,
     )
     run_cli_agent(ctx, spec)
-    return json.loads((work / "argv.json").read_text())[-1], work, artifacts
+    assert json.loads((work / "argv.json").read_text())[1:] == ["--print"]
+    return (work / "prompt.txt").read_text(), work, artifacts
 
 
 def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_instructions(
@@ -537,7 +540,7 @@ import json, os, sys
 work = os.environ["SWARM_WORK_DIR"]
 path = os.path.join(work, "issue.md")
 record = {
-    "prompt": sys.argv[-1],
+    "prompt": sys.stdin.read(),
     "cwd": os.getcwd(),
     "issue_md": open(path).read() if os.path.isfile(path) else None,
     "env": dict(os.environ),
