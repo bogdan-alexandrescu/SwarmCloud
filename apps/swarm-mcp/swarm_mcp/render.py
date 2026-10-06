@@ -1724,6 +1724,10 @@ class Snapshot:
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+#: The park reason `find_trouble` leaves out: waiting for a parent step.
+_DEPENDENCY_WAIT = "DEPENDENCY_INCOMPLETE"
+
+
 def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
     """Everything wrong right now, worst first.
 
@@ -1848,6 +1852,13 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             state = task.get("state")
             if state == "PARKED":
                 reason = str(task.get("park_reason") or "no reason recorded")
+                if reason == _DEPENDENCY_WAIT:
+                    # Not trouble (owner decision 2026-10-06, P5): a step
+                    # waiting for its parents holds no capacity (invariant 1)
+                    # and is the ordinary shape of a workflow whose earlier
+                    # steps still run. A parent that FAILED shows as its own
+                    # finding; this one would only bury it.
+                    continue
                 parked[reason] = parked.get(reason, 0) + 1
             elif state in ("DEAD_LETTERED", "DEAD_LETTER"):
                 dead += 1

@@ -680,9 +680,13 @@ ACTIVE_WORKFLOW_STATES: tuple[str, ...] = tuple(
 
 _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 
-#: Pages of `GET /v1/workflows` read before the list says it stopped short.
-#: The route filters each page after its rollup, so a tenant with a long
-#: finished history can need several pages to reach an old running workflow.
+#: Pages of `GET /v1/workflows` read before the list says it stopped short,
+#: from a deployment that filters only after its rollup (no `filter` in its
+#: answer): there a tenant with a long finished history can need several pages
+#: to reach an old running workflow. A deployment that serves `active=true`
+#: from its indexed stored-state query is read ONE page (owner decision
+#: 2026-10-06, P4): measured that day, the old walk read 4 pages of 50 to list
+#: 7 running workflows and still said it was incomplete.
 WORKFLOW_LIST_PAGES = 4
 WORKFLOW_PAGE_SIZE = 50
 
@@ -768,27 +772,41 @@ def running_workflows(
 
     The tenant is the API's: `GET /v1/workflows` answers for the caller's own
     tenant (`tenant_scope`), and nothing here names one. The route is asked for
-    `ACTIVE_WORKFLOW_STATES` and the answer is filtered AGAIN, because a
-    deployment older than that filter ignores the parameter and serves every
-    workflow -- and attaching a finished one would start rows with nothing to
-    watch. A workflow whose detail read says it has since finished is dropped
-    for the same reason. Raises `SwarmError` when the list itself cannot be
-    read: "could not ask" is never an empty list.
+    `active=true` and `ACTIVE_WORKFLOW_STATES`, and the answer is filtered
+    AGAIN, because a deployment older than those filters ignores the
+    parameters and serves every workflow -- and attaching a finished one would
+    start rows with nothing to watch. A workflow whose detail read says it has
+    since finished is dropped for the same reason. Raises `SwarmError` when
+    the list itself cannot be read: "could not ask" is never an empty list.
+
+    ONE PAGE when the route says it filtered in its query
+    (`filter.stored_states`): that page is the newest `WORKFLOW_PAGE_SIZE`
+    workflows not finished by their stored state, so it is the running set
+    unless a token says there are more -- and then that is reported, not
+    walked. Otherwise up to `pages` pages, as before.
     """
     now = now or datetime.now(timezone.utc)
     found: list[dict[str, Any]] = []
     tenant: str | None = None
     token: str | None = None
+    read = 0
+    indexed = False
     for _ in range(max(1, pages)):
         page = client.workflows(
-            states=ACTIVE_WORKFLOW_STATES, limit=WORKFLOW_PAGE_SIZE, page_token=token
+            states=ACTIVE_WORKFLOW_STATES,
+            active=True,
+            limit=WORKFLOW_PAGE_SIZE,
+            page_token=token,
         )
+        read += 1
         tenant = tenant or page.get("tenant_id")
         for workflow in page["workflows"]:
             if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
                 found.append(_running_entry(workflow, now))
         token = page.get("next_page_token") or None
-        if token is None:
+        filtered = page.get("filter")
+        indexed = isinstance(filtered, dict) and bool(filtered.get("stored_states"))
+        if token is None or indexed:
             break
 
     detailed = found[: max(0, detail_reads)]
@@ -808,7 +826,10 @@ def running_workflows(
     }
     if token is not None:
         out["incomplete_because"] = (
-            f"stopped after {pages} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
+            f"more than {WORKFLOW_PAGE_SIZE} workflows are unfinished; read 1 page of "
+            f"the newest {WORKFLOW_PAGE_SIZE}, and older running workflows are not listed"
+            if indexed
+            else f"stopped after {read} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
             "running workflows, if any, are not listed"
         )
     return out
