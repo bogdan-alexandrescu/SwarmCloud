@@ -100,5 +100,9 @@ describe('Help’s long form carries no UI rationale (#131)', () => {
       // And it is gone from the Help page.
       expect(HELP[id as TopicId].long.join(' ')).not.toContain(phrase)
     }
+    // api-reads gave two; the second is the p95's counterfactual.
+    const reads = sections.find((s) => s.startsWith('`api-reads`'))!.replace(/\s*\n>?\s*/g, ' ')
+    expect(reads).toContain('the same class of claim')
+    expect(HELP['api-reads'].long.join(' ')).not.toContain('the same class of claim')
   })
 })

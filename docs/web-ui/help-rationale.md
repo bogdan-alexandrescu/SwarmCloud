@@ -43,6 +43,12 @@ mark, and the mark carries the meaning, so it survives greyscale.
 > deliberately. … a console that reported that as a fault would be
 > reporting itself broken every time a non-admin opened it.
 
+> … a number labelled as though it were would be the same class of claim as a
+> total summed over a partial response.
+
+That second sentence is about the p95 on the dock's collapsed line: it is one
+sample per route, because the tab keeps no request history.
+
 ## `checkpoints`
 
 > A screen that drew a file tree here would be inventing it.

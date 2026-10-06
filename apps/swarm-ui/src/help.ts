@@ -269,7 +269,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       // out of product copy and the fact kept.
       'A route is a path template with ids and query removed. Its status is the last attempt of any call to it, and its age is the newest successful payload of any call to it; each panel still carries its own age and its own failure, and the head beside the page title shows the screen’s own newest read.',
       'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
-      'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
+      'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute.',
       'A 403 on an admin-only route is counted apart from failures. Someone who is not an admin genuinely cannot read those routes, so a 403 there says who is reading, not that anything is broken.',
     ],
   },
