@@ -11,26 +11,26 @@ locals {
   artifact_bucket_name = "${var.name_prefix}-artifacts-${var.bucket_suffix}"
   log_bucket_name      = "${var.name_prefix}-access-logs-${var.bucket_suffix}"
 
-  # WHAT THE CLOCK MAY TOUCH: every tenant's tasks/ and verdicts/, and never
-  # its repos/ (docs/repo-index.md §2, owner decision 2026-10-06). A GCS
-  # lifecycle condition can only INCLUDE prefixes, never exclude one, so the
-  # aged prefixes are listed per tenant from the tenants map instead of the
-  # old single `tenants/`. Under repos/ live the index copies and the
-  # content-addressed graph blobs that planners read on every run and that
-  # stay referenced for months: Nearline would charge a retrieval fee on each
-  # read and a 30-day minimum on each deletion, and an age or customTime
-  # Delete would remove a blob a kept manifest still names. Retention there
-  # is the index-run sweep's (images/agent-runtime-indexer/repo-index/
+  # WHAT NEARLINE MAY TOUCH: every mapped tenant's tasks/ and verdicts/, and
+  # never its repos/ (docs/repo-index.md §2.3, owner decision 2026-10-06). A
+  # GCS lifecycle condition can only INCLUDE prefixes, never exclude one, so
+  # the cold-stored prefixes are listed per tenant from the tenants map
+  # instead of the old single `tenants/`. Under repos/ live the index copies
+  # and the content-addressed graph blobs that planners read on every run and
+  # that stay referenced for months: Nearline would charge a retrieval fee on
+  # each read and a 30-day minimum on each deletion. Retention there is the
+  # index-run sweep's (images/agent-runtime-indexer/repo-index/
   # repo_graph_shards.py `sweep`): the last 20 versions, then unreferenced
   # blobs.
   #
-  # verdicts/ stays on the clock it was on before (Nearline at
-  # nearline_after_days, Delete by customTime), and so do tasks/ --
-  # artifacts, logs and checkpoints alike.
-  #
-  # A tenant registered by scripts/register-tenant.sh alone, and not in this
-  # map, is on no clock at all: its objects are kept, never deleted early.
-  # Add it to the tenants map to put it back on the clock.
+  # This list governs Nearline ONLY. The customTime Delete below stays
+  # bucket-wide, so every tenant's task objects still expire -- including
+  # the personal tenants (`u-<slug>`) the API creates at runtime, which are
+  # never in this map. Those tenants' task objects are simply not
+  # cold-stored: a storage-class cost difference, nothing kept forever.
+  # repos/ is off the Delete clock because the worker never stamps customTime
+  # under it (agent_worker.objectstore `is_repos_key`), the same way a
+  # checkpoint is.
   aged_prefixes = flatten([
     for t in var.tenants : ["tenants/${t}/tasks/", "tenants/${t}/verdicts/"]
   ])
@@ -158,21 +158,19 @@ resource "google_storage_bucket" "artifacts" {
   # Stamping a checkpoint by mistake would put it back on the clock this rule
   # exists to take it off, which is why the filter is on the key and not a guess.
   #
-  # ONLY tasks/ AND verdicts/ (lane IX3): the worker stamps customTime on the
-  # index copy it writes under repos/ too, so an unprefixed rule would delete
-  # a kept version's index artifact_retention_days after it was written. The
-  # rule is omitted with no tenant, as the Nearline rule above is.
-  dynamic "lifecycle_rule" {
-    for_each = length(local.aged_prefixes) > 0 ? [local.aged_prefixes] : []
-    content {
-      condition {
-        days_since_custom_time = var.artifact_retention_days
-        with_state             = "LIVE"
-        matches_prefix         = lifecycle_rule.value
-      }
-      action {
-        type = "Delete"
-      }
+  # BUCKET-WIDE ON PURPOSE (lane IX3). A per-tenant prefix list would drop
+  # every runtime personal tenant off the clock, keeping its task objects
+  # forever. repos/ is protected instead by carrying no customTime: the
+  # worker does not stamp anything under tenants/<t>/repos/
+  # (agent_worker.objectstore `is_repos_key`), and the graph writer uploads
+  # without one, so this rule cannot match an index copy or a graph blob.
+  lifecycle_rule {
+    condition {
+      days_since_custom_time = var.artifact_retention_days
+      with_state             = "LIVE"
+    }
+    action {
+      type = "Delete"
     }
   }
 

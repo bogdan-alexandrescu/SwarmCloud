@@ -316,24 +316,47 @@ registration is not this tenant's, or more than 200 are listed, no
 orphan blobs, as it always has). Deleted objects become noncurrent versions,
 which the bucket's noncurrent rules remove (3 newer versions, or 30 days).
 
-**The lifecycle, per prefix** (`terraform/modules/storage/main.tf`,
-`aged_prefixes`). GCS `matchesPrefix` can only include, never exclude, so the
-two rules on live objects list `tenants/<t>/tasks/` and `tenants/<t>/verdicts/`
-for every tenant in the Terraform tenants map, instead of `tenants/`:
+**The lifecycle, per prefix** (`terraform/modules/storage/main.tf`). The two
+rules on live objects keep `repos/` off the clock in two different ways,
+because GCS `matchesPrefix` can only include, never exclude:
+
+* **Nearline** lists `tenants/<t>/tasks/` and `tenants/<t>/verdicts/` for
+  every tenant in the Terraform tenants map (`aged_prefixes`), instead of
+  `tenants/`. With no tenant at all the rule is omitted, because an empty
+  `matchesPrefix` would match every object.
+* **The customTime Delete stays bucket-wide**, unprefixed, as it was before
+  IX3. A per-tenant prefix list there would take every tenant outside the
+  map off the clock for good -- above all the personal tenants (`u-<slug>`)
+  the API creates at runtime, which Terraform never lists. `repos/` is out of
+  its reach because nothing there carries a customTime: the worker stamps one
+  on every upload except a checkpoint's and anything under
+  `tenants/<t>/repos/` (`agent_worker.objectstore.is_repos_key`), and the
+  graph writer's `gcloud storage` uploads set none. GCS never matches
+  `daysSinceCustomTime` against an object without one.
 
 | prefix | Nearline at `nearline_after_days` | Delete at `artifact_retention_days` after customTime | noncurrent cleanup |
 |---|---|---|---|
-| `tenants/<t>/tasks/` (artifacts, logs, checkpoints) | yes | yes (checkpoints carry no customTime) | yes |
-| `tenants/<t>/verdicts/` | yes | yes | yes |
-| `tenants/<t>/repos/` (index copies, graph) | **never** | **never** | yes |
+| `tenants/<t>/tasks/` (artifacts, logs, checkpoints), `<t>` in the map | yes | yes (checkpoints carry no customTime) | yes |
+| `tenants/<t>/verdicts/`, `<t>` in the map | yes | yes | yes |
+| `tenants/<t>/tasks/`, `tenants/<t>/verdicts/`, `<t>` **not** in the map (runtime personal tenants, a tenant registered by `scripts/register-tenant.sh` alone) | **no** | yes | yes |
+| `tenants/<t>/repos/` (index copies, graph), every tenant | **never** | **never** (no customTime) | yes |
 
-A tenant registered by `scripts/register-tenant.sh` alone, and not in the
-tenants map, is on no lifecycle clock at all -- its objects are kept, never
-deleted early -- until it is added to the map. With no tenant at all the two
-rules are omitted, because an empty `matchesPrefix` would match every object.
-`tests/terraform/artifact_lifecycle.tftest.hcl` evaluates every rule's
-prefixes against a key under `repos/` (must match none) and keys under
-`tasks/` and `verdicts/` (must match).
+So a tenant outside the map loses only the cold-storage step: its task
+objects stay in Standard until the Delete removes them -- a storage-class
+cost difference, nothing kept forever. Adding it to the map puts it back on
+Nearline.
+
+`tests/terraform/artifact_lifecycle.tftest.hcl` evaluates the Nearline
+rule's prefixes against keys under `repos/` (must match none) and under
+`tasks/` and `verdicts/` (must match), holds every live Delete to customTime
+alone (no `age`, no `created_before`), and checks the Delete reaches a
+personal tenant's task key; `tests/unit/worker/test_repos_objects_carry_no_custom_time.py`
+holds the worker's side: nothing it writes under `repos/` is stamped, and
+task artifacts, logs and verdicts still are.
+
+**After an unregister** nothing deletes `tenants/<t>/repos/<repo_id>/`: no
+lifecycle rule reaches it and no index run sweeps a registration that no
+longer exists. Those objects stay until deleted by hand.
 
 ### 2.4 Why two tenants on one repository do not share an index
 
