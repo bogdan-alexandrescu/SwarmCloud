@@ -87,10 +87,14 @@ def test_a_write_that_hangs_costs_one_timeout_not_one_per_write():
             self.calls.append(kwargs)
             released.wait(60)
 
+    # Loaded before the clock starts: its first import is not what is timed.
+    from google.cloud import monitoring_v3  # noqa: F401
+
+    bound = 0.5
     log, stream = _logger()
     client = HangingClient()
     exporter = CloudMonitoringExporter(
-        "proj-x", "europe-west1", log, client=client, timeout_seconds=0.3
+        "proj-x", "europe-west1", log, client=client, timeout_seconds=bound
     )
     try:
         started = time.monotonic()
@@ -99,11 +103,11 @@ def test_a_write_that_hangs_costs_one_timeout_not_one_per_write():
     finally:
         released.set()
 
-    assert elapsed < 0.3 * 2, elapsed
-    # The memory write hung; the CPU write was not tried against the same
-    # hung endpoint.
+    # One bound, not two: the memory write hung, and the CPU write was not
+    # tried against the same hung endpoint.
+    assert bound <= elapsed < bound * 2, elapsed
     assert len(client.calls) == 1
-    assert client.calls[0]["timeout"] == 0.3
+    assert client.calls[0]["timeout"] == bound
     warnings = _warnings(stream)
     assert len(warnings) == 1, warnings
     assert warnings[0]["write"] == "memory"

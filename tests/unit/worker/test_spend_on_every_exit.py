@@ -207,16 +207,18 @@ def test_a_worker_crash_after_the_agent_finished_still_records_spend(
 ):
     """The crash path is `_safe_finish`, and it never reached `record_spend`.
 
-    Driven by making the metrics export raise, which is one of the calls that
-    sat between the agent finishing and the old, single `record_spend` call.
+    Driven by making `_carry_parked_uploads` raise: it sits between the agent
+    finishing and the terminal write. This used to be the metrics export,
+    which no longer raises at all -- it runs after the terminal write and a
+    failure there is logged and swallowed (test_park_before_metrics.py).
     """
     seed(db, usage=USAGE, cost_usd=COST)
-    worker, _, exporter = worker_factory(runner_profile=PROFILE)
+    worker, _, _ = worker_factory(runner_profile=PROFILE)
 
     def explode(*_args: Any, **_kwargs: Any) -> None:
-        raise RuntimeError("the metrics client blew up")
+        raise RuntimeError("carrying the parked uploads blew up")
 
-    exporter.export = explode  # type: ignore[method-assign]
+    worker._carry_parked_uploads = explode  # type: ignore[method-assign]
 
     assert worker.run() == ExitCode.FAILED
     assert_recorded(db)

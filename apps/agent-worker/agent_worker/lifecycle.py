@@ -1523,13 +1523,19 @@ class Worker:
         """End the task the way the action's outcome says (merge-step.md §6, §6a)."""
         if outcome.credential_missing is not None:
             return self._park_credential_missing(outcome.credential_missing)
+        with self._metrics_after_the_record():
+            return self._record_worker_action_end(action, outcome)
+
+    def _record_worker_action_end(
+        self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
+    ) -> Outcome:
+        """`_end_worker_action`'s uploads and terminal write, before any metrics export."""
         summary = self._upload_outputs()
         summary["merge" if action is WorkerAction.MERGE else "verdict"] = self._scrub(
             dict(outcome.summary)
         )
         if outcome.spec_check is not None:
             summary["spec_check"] = dict(outcome.spec_check)
-        self._export_metrics()
         error = str(self._scrub(outcome.message[:4000])) if outcome.message else None
         refusal = outcome.summary.get("refusal") if isinstance(outcome.summary, dict) else None
         code = refusal.get("code") if isinstance(refusal, dict) else None
@@ -1631,7 +1637,6 @@ class Worker:
         """Checkpoint, upload, park on CHILDREN_INCOMPLETE, release, exit (§3.3 step 3)."""
         self._checkpoint("child-await")
         uploaded = self._upload_outputs().get("artifacts")
-        self._export_metrics()
         detail: dict[str, Any] = {
             "park_phase": "child_await",
             "asked": requested,
@@ -1640,11 +1645,12 @@ class Worker:
         if child_path is not None:
             detail["child_path"] = child_path
         # Recorded with the park, for the attempt that finishes the parent (#166).
-        self.control.park_awaiting_children(
-            max_resumes=self.cfg.max_child_await_resumes,
-            detail=detail,
-            uploads=uploaded if isinstance(uploaded, list) else None,
-        )
+        with self._metrics_after_the_record():
+            self.control.park_awaiting_children(
+                max_resumes=self.cfg.max_child_await_resumes,
+                detail=detail,
+                uploads=uploaded if isinstance(uploaded, list) else None,
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
@@ -2501,12 +2507,12 @@ class Worker:
         try:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
-            self._export_metrics()
-            self.control.park(
-                reason=ParkReason.SCHEDULED_RETRY,
-                next_eligible_at=utcnow(),
-                detail={"cause": "worker_interrupted", **summary},
-            )
+            with self._metrics_after_the_record():
+                self.control.park(
+                    reason=ParkReason.SCHEDULED_RETRY,
+                    next_eligible_at=utcnow(),
+                    detail={"cause": "worker_interrupted", **summary},
+                )
         except FencedError as exc:
             return Outcome(
                 exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
@@ -2539,14 +2545,14 @@ class Worker:
         self._checkpoint("cancellation")
         summary = self._upload_outputs()
         self._add_runner_block(summary)
-        self._export_metrics()
-        self.control.finish(
-            state=TaskState.CANCELLED,
-            exit_code=None,
-            error="cancelled by request",
-            result_summary=summary,
-            end_cause=self.control.cancel_cause(),
-        )
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.CANCELLED,
+                exit_code=None,
+                error="cancelled by request",
+                result_summary=summary,
+                end_cause=self.control.cancel_cause(),
+            )
         return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
     # -- the fenced exits ---------------------------------------------------
@@ -2683,6 +2689,15 @@ class Worker:
     # finalisation
     # ------------------------------------------------------------------
     def _finalise(self, result: ChildResult) -> Outcome:
+        """The runner ended on its own: record the end, THEN export metrics.
+
+        Every branch of `_record_finalised` ends in a terminal write, and the
+        export waits for whichever one it took (`_metrics_after_the_record`).
+        """
+        with self._metrics_after_the_record():
+            return self._record_finalised(result)
+
+    def _record_finalised(self, result: ChildResult) -> Outcome:
         ws = self.ws
         assert ws is not None
 
@@ -2751,7 +2766,6 @@ class Worker:
                 summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
         if self._pr_text_from is not None:
             summary["pull_request_text_from"] = dict(self._pr_text_from)
-        self._export_metrics()
 
         runner_result = self._add_runner_block(summary)
 
@@ -3746,16 +3760,16 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["clone_check"] = {"cause": FORGE_UNREACHABLE, "tries": tries}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
-            detail={"clone": "repository", "tries": tries},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"clone": "repository", "tries": tries},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _upstream_base_pin(
@@ -4029,8 +4043,8 @@ class Worker:
                 "upstream": list(upstream),
             },
         }
-        self._export_metrics()
-        self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
+        with self._metrics_after_the_record():
+            self.control.finish(state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary)
         self.log.info(
             "nothing to change: a step this one needs changed nothing; no agent ran",
             upstream=list(upstream),
@@ -6185,44 +6199,48 @@ class Worker:
         )
         self._checkpoint("no-account")
         summary = self._upload_outputs()
-        self._export_metrics()
         detail = {
             "provider": exc.provider,
             "account_pool_reason": exc.decision.reason,
             **summary,
         }
-        self.control.park(
-            # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
-            # the tenant HAS credentials, they are simply all spent or all
-            # unobserved, and sending an operator to look at that wastes their
-            # time. CREDENTIAL_MISSING when it will NOT recover on its own --
-            # a broker that refused this worker, or an account whose secret
-            # nobody granted it access to, is a configuration error, and that
-            # ParkReason is the one that means "an admin must act".
-            #
-            # A ParkReason naming the pool would be more honest than either;
-            # ParkReason is in the frozen contract, so that is a request in the
-            # report, not a change.
-            reason=(
-                ParkReason.CREDENTIAL_MISSING
-                if configuration_error
-                else ParkReason.PROVIDER_QUOTA_EXHAUSTED
-            ),
-            next_eligible_at=next_eligible,
-            detail={**detail, "park_phase": "account_assign"},
-            # THE ANNOUNCEMENT IS WRITTEN IN THE PARK'S OWN TRANSACTION. It used
-            # to be emitted just above this call. A fence that landed during
-            # the checkpoint's upload or the output upload was met by the park,
-            # which refused, and QUOTA_EXHAUSTED was already in a task stream
-            # that belonged to a newer generation, announcing a park that never
-            # happened. Now it commits with the park or not at all.
-            announce=[
-                (
-                    EventType.QUOTA_EXHAUSTED,
-                    {**detail, "next_eligible_at": next_eligible, "park_phase": "account_assign"},
-                )
-            ],
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                # PROVIDER_QUOTA_EXHAUSTED when the pool will recover on its own:
+                # the tenant HAS credentials, they are simply all spent or all
+                # unobserved, and sending an operator to look at that wastes their
+                # time. CREDENTIAL_MISSING when it will NOT recover on its own --
+                # a broker that refused this worker, or an account whose secret
+                # nobody granted it access to, is a configuration error, and that
+                # ParkReason is the one that means "an admin must act".
+                #
+                # A ParkReason naming the pool would be more honest than either;
+                # ParkReason is in the frozen contract, so that is a request in the
+                # report, not a change.
+                reason=(
+                    ParkReason.CREDENTIAL_MISSING
+                    if configuration_error
+                    else ParkReason.PROVIDER_QUOTA_EXHAUSTED
+                ),
+                next_eligible_at=next_eligible,
+                detail={**detail, "park_phase": "account_assign"},
+                # THE ANNOUNCEMENT IS WRITTEN IN THE PARK'S OWN TRANSACTION. It used
+                # to be emitted just above this call. A fence that landed during
+                # the checkpoint's upload or the output upload was met by the park,
+                # which refused, and QUOTA_EXHAUSTED was already in a task stream
+                # that belonged to a newer generation, announcing a park that never
+                # happened. Now it commits with the park or not at all.
+                announce=[
+                    (
+                        EventType.QUOTA_EXHAUSTED,
+                        {
+                            **detail,
+                            "next_eligible_at": next_eligible,
+                            "park_phase": "account_assign",
+                        },
+                    )
+                ],
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_credential_missing(self, exc: CredentialMissing) -> Outcome:
@@ -6230,12 +6248,12 @@ class Worker:
         self.log.error("tenant credential missing; parking", provider=exc.provider)
         self._checkpoint("credential-missing")
         summary = self._upload_outputs()
-        self._export_metrics()
-        self.control.park(
-            reason=ParkReason.CREDENTIAL_MISSING,
-            next_eligible_at=utcnow() + timedelta(hours=1),
-            detail={"provider": exc.provider, **summary},
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=ParkReason.CREDENTIAL_MISSING,
+                next_eligible_at=utcnow() + timedelta(hours=1),
+                detail={"provider": exc.provider, **summary},
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -6248,7 +6266,8 @@ class Worker:
         )
         self._checkpoint("quota-park")
         summary = self._upload_outputs()
-        self._export_metrics()
+        # No metrics export here: it comes after the broker update and the
+        # park below (`_metrics_after_the_record`, measured 2026-10-06).
         provider = str(decision.detail.get("provider") or self.cfg.provider or "")
         if provider:
             # NOT FENCED, and not a task write. This is the tenant's document
@@ -6276,21 +6295,22 @@ class Worker:
         # that landed during the uploads above was met by the park, which
         # refused, and the announcement of a park that never happened was
         # already in a stream that belonged to a newer generation.
-        self.control.park(
-            reason=decision.reason,
-            next_eligible_at=decision.next_eligible_at,
-            detail={**decision.detail, "park_phase": source, **summary},
-            announce=[
-                (
-                    EventType.QUOTA_EXHAUSTED,
-                    {
-                        **decision.detail,
-                        "next_eligible_at": decision.next_eligible_at,
-                        "park_phase": source,
-                    },
-                )
-            ],
-        )
+        with self._metrics_after_the_record():
+            self.control.park(
+                reason=decision.reason,
+                next_eligible_at=decision.next_eligible_at,
+                detail={**decision.detail, "park_phase": source, **summary},
+                announce=[
+                    (
+                        EventType.QUOTA_EXHAUSTED,
+                        {
+                            **decision.detail,
+                            "next_eligible_at": decision.next_eligible_at,
+                            "park_phase": source,
+                        },
+                    )
+                ],
+            )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _quota_from_child(self, result: ChildResult) -> Any:
@@ -6799,14 +6819,14 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["carrier_check"] = {"cause": FORGE_READ_ONLY, "reason": reason}
-        self._export_metrics()
-        self.control.finish(
-            state=TaskState.FAILED,
-            exit_code=None,
-            error=error,
-            result_summary=summary,
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _fail_forge_unreachable(self, url: str, reason: str) -> Outcome:
@@ -6825,16 +6845,16 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["carrier_check"] = {"cause": FORGE_UNREACHABLE, "reason": reason}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
-            detail={"carrier": "branches"},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"carrier": "branches"},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _forge_retry(self) -> forge_mod.RetryPolicy:
@@ -6885,16 +6905,18 @@ class Worker:
         )
         summary = self._upload_outputs()
         summary["issue_check"] = {"cause": FORGE_UNREACHABLE, "issue": number, "tries": tries}
-        self._export_metrics()
-        state = self.control.fail_retryably(
-            exit_code=None,
-            error=error,
-            cause=FORGE_UNREACHABLE,
-            result_summary=summary,
-            retry_delay_seconds=max(FORGE_UNREACHABLE_RETRY_DELAY_SECONDS, int(retry_after or 0)),
-            detail={"input": "issue", "issue": number},
-            end_cause=EndCause.CANNOT_START,
-        )
+        with self._metrics_after_the_record():
+            state = self.control.fail_retryably(
+                exit_code=None,
+                error=error,
+                cause=FORGE_UNREACHABLE,
+                result_summary=summary,
+                retry_delay_seconds=max(
+                    FORGE_UNREACHABLE_RETRY_DELAY_SECONDS, int(retry_after or 0)
+                ),
+                detail={"input": "issue", "issue": number},
+                end_cause=EndCause.CANNOT_START,
+            )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _carrier_fold_onto_tip(
@@ -9587,30 +9609,65 @@ class Worker:
             parts.append(self._sampler.usage)
         return combine_usage(parts)
 
+    @contextmanager
+    def _metrics_after_the_record(self) -> Iterator[None]:
+        """Export the attempt's metrics AFTER the write that records its end.
+
+        Every park and every terminal write runs inside this, so telemetry can
+        never delay one. Measured on mock execution swarm-job-smoke-mock-sk8h9
+        (2026-10-06 06:05): `_park_for_quota` exported first, and 53 s passed
+        between the "attempt resource usage" line and the broker POST with
+        nothing logged (1.3-3.1 s across 24 other quota parks). For all of it
+        the task was LEASED and held its slot -- invariant 3 counts it -- for
+        a measurement. The exporter is bounded too
+        (`metrics.EXPORT_TIMEOUT_SECONDS`); that bound now only limits how
+        long a hung exporter holds the exit.
+
+        In a `finally`: a write the fence refused still exports, as it did
+        when the export came first, and the refusal then propagates as before.
+        """
+        try:
+            yield
+        finally:
+            self._export_metrics()
+
     def _export_metrics(self) -> None:
-        # Once per attempt. Several exits reach this, and one that failed
-        # partway -- an export that raised -- falls through to the crash
-        # handler, which calls it again; a successful export is not repeated.
+        """Export once per attempt. Never raises.
+
+        It runs after the park or terminal write (`_metrics_after_the_record`),
+        so an exception here would reach the crash handler with the task
+        already PARKED or ended, and `_safe_finish` would write FAILED over
+        it. A failure is logged once and swallowed, and not retried: the
+        measurement is also in the exporter's log line, and a retry would wait
+        on the same failing endpoint.
+        """
         if self._metrics_exported:
             return
         usage = self._attempt_usage()
         if usage is None:
             return
-        self.metrics.export(
-            usage,
-            {
-                "tenant_id": self.cfg.tenant_id,
-                "runner_profile": self.cfg.runner_profile,
-                # The sized class (#205): the sizing decisions read this label,
-                # and the profile's would file a narrowed step under a class
-                # its container was not.
-                "resource_class": self._memory_class(),
-                "backend": self.cfg.backend,
-                "attempt_id": self.cfg.attempt_id,
-                "task_id": self.cfg.task_id,
-            },
-        )
         self._metrics_exported = True
+        try:
+            self.metrics.export(
+                usage,
+                {
+                    "tenant_id": self.cfg.tenant_id,
+                    "runner_profile": self.cfg.runner_profile,
+                    # The sized class (#205): the sizing decisions read this
+                    # label, and the profile's would file a narrowed step under
+                    # a class its container was not.
+                    "resource_class": self._memory_class(),
+                    "backend": self.cfg.backend,
+                    "attempt_id": self.cfg.attempt_id,
+                    "task_id": self.cfg.task_id,
+                },
+            )
+        except Exception as exc:
+            self.log.warning(
+                "metrics export failed",
+                exporter=type(self.metrics).__name__,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     # -- misc --------------------------------------------------------------
     def _remaining_seconds(self) -> float:
@@ -9690,14 +9747,14 @@ class Worker:
             self._add_runner_block(summary)
             if extra_summary:
                 summary = {**(summary or {}), **extra_summary}
-            self._export_metrics()
-            self.control.finish(
-                state=state,
-                exit_code=exit_code,
-                error=self._scrub(error[:4000]),
-                result_summary=summary,
-                end_cause=end_cause,
-            )
+            with self._metrics_after_the_record():
+                self.control.finish(
+                    state=state,
+                    exit_code=exit_code,
+                    error=self._scrub(error[:4000]),
+                    result_summary=summary,
+                    end_cause=end_cause,
+                )
         except FencedError as exc:
             return self._stand_down(exc, where="crash")
         except Exception as exc:

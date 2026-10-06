@@ -679,7 +679,9 @@ def test_a_fence_that_lands_between_the_parks_read_and_its_write_is_still_honour
 #
 # The first two tests put the fence where the old code's announcement came
 # next: after the last thing the park did before it (the provider publish on
-# the quota park, the metrics export on the account park). The third lands the
+# the quota park, the output upload on the account park -- which exported its
+# metrics there too, until the export moved after the park on 2026-10-06,
+# test_park_before_metrics.py). The third lands the
 # fence inside the park's own transaction, just after its read of the task.
 # Every check made before that read passes, because nothing is fenced yet. So
 # an announcement written before it is written, and the park it announces is
@@ -759,7 +761,10 @@ def test_a_quota_park_the_fence_overtakes_does_not_announce_itself(db, worker_fa
 
 
 def test_an_account_park_the_fence_overtakes_does_not_announce_itself(db, worker_factory):
-    """`_park_no_account`: checkpoint, upload, export, ANNOUNCE, park.
+    """`_park_no_account`: checkpoint, upload, ANNOUNCE, park, export.
+
+    The fence lands after the upload, the last step before the park now that
+    the metrics export follows it.
 
     claude-code, because it is the profile an account can serve, so it is the
     one that asks the pool. The pool has accounts and every one is spent. That
@@ -776,21 +781,22 @@ def test_an_account_park_the_fence_overtakes_does_not_announce_itself(db, worker
     worker._account_broker = pool
     parking = park_began(worker, "no-account")
     frozen: dict[str, World] = {}
-    real_export = worker._export_metrics
+    real_upload = worker._upload_outputs
 
-    def export() -> None:
-        real_export()
+    def upload(*args: Any, **kwargs: Any) -> Any:
+        summary = real_upload(*args, **kwargs)
         if parking.is_set() and "world" not in frozen:
             fence(db)
             frozen["world"] = freeze(db)
+        return summary
 
-    worker._export_metrics = export  # type: ignore[method-assign]
+    worker._upload_outputs = upload  # type: ignore[method-assign]
 
     exit_code = worker.run()
 
     assert pool.assigns == 1, "the worker never asked the pool, so this was not an account park"
     assert pool.releases == 0, "nothing was assigned, so nothing may be released"
-    assert "world" in frozen, "the park never exported its metrics, so no fence was placed"
+    assert "world" in frozen, "the park never uploaded its outputs, so no fence was placed"
     assert quota_exhausted_events(db) == [], (
         "QUOTA_EXHAUSTED announced a park that the fence refused: "
         f"{quota_exhausted_events(db)}"
