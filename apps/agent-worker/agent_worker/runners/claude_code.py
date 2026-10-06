@@ -72,6 +72,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -189,6 +190,22 @@ SPEC = CliAgentSpec(
     # credential scan run against the tree, and a failure is resumed for up
     # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
     repair_checks=True,
+    # The CLI warns on EVERY headless run that it ignores the settings' allow
+    # list because the workspace is untrusted ("Ignoring 23 permissions.allow
+    # entries from .claude/settings.json: this workspace has not been trusted.
+    # Run Claude Code interactively ..."). It is benign -- the platform runs
+    # with --dangerously-skip-permissions -- and was recorded as the error of a
+    # run SIGTERM killed (owner decision 2026-10-06). Matched by its stable
+    # prefix, with the entry count as a number, plus the advice should the CLI
+    # wrap it onto a line of its own. The workspace is NOT marked trusted: the
+    # owner chose filtering only.
+    benign_stderr=(
+        re.compile(
+            r"\s*Ignoring \d+ permissions\.allow entries from \S*: "
+            r"this workspace has not been trusted"
+        ),
+        re.compile(r"\s*Run Claude Code interactively"),
+    ),
 )
 
 
