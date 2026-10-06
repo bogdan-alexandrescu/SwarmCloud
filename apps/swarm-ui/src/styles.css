@@ -10138,9 +10138,27 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
   height: 1em;
   vertical-align: middle;
 }
+/* THE BAR'S OWN CONTRAST STEP (#113), not `.ctl-pending`'s. That class fills
+   with `--surface-2` and sweeps `--ctl-pending`, an opaque gradient over the
+   same `--surface-2`: about 1.07:1 against the light card, a loading card
+   drawn and not seen. Swapping the class would not have fixed it, so the bar
+   takes the shared `.skeleton`'s step -- `--text-faint` mixed into the card's
+   surface, 1.5:1 or better against `--bg` and `--surface` in both themes
+   (workflows.skeleton.test.tsx) -- and its lighter sweeping band. The moving
+   bar keeps `.ctl-pending`'s `ctl-sweep` and its reduced-motion stop; the
+   static one is the same fill, not moving. */
+.ol-skel-bar.ctl-pending,
 .ol-skel-bar.is-static {
   border-radius: var(--ctl-radius-sm);
-  background-color: var(--surface-2);
+  background-color: color-mix(in srgb, var(--text-faint) 45%, var(--surface));
+}
+.ol-skel-bar.ctl-pending {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 50%,
+    transparent 100%
+  );
 }
 
 
