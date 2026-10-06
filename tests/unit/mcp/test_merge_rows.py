@@ -55,7 +55,7 @@ def test_the_worker_source_yields_its_refusal_codes():
     # The control: a regex that matched nothing would make every case below
     # vacuous. These are codes the worker refuses with on main.
     found = _worker_codes()
-    for code in ("checks_failed", "head_moved", "not_mergeable", "token_lacks_rights",
+    for code in ("checks_failed", "head_moved", "merge_conflict", "token_lacks_rights",
                  "merge_unanswered", "credential_unreadable", "upstream_unreadable"):
         assert code in found, (code, found)
 
