@@ -27,9 +27,11 @@ WHAT IS ASSERTED, and why each one is a test and not a review comment:
   * gcloud's bundled Python is removed, because that copy (cryptography 46.0.7,
     urllib3 2.7.0, msgpack 1.1.2, setuptools 70.3.0 in google-cloud-cli
     587.0.0) carries fixable HIGH advisories the promote scan refuses;
-  * tools held back from the default build are only the three that had no
-    clean release on 2026-10-01, and the hold is a build argument whose install
-    path is real, not a TODO;
+  * tools held back from the default build are only the ones that had no
+    clean release when last scanned (tofu and tflint, 2026-10-06; trivy left
+    the hold at 0.75.0, #442), the hold is a build argument whose install path
+    is real, not a TODO, and no tool is installed by default at a release the
+    scan recorded as failing;
   * docs/versions.md states the same versions the Dockerfile pins.
 
 NOT asserted: that the pinned versions are free of advisories. That is a fact
@@ -68,11 +70,25 @@ REQUIRED_TOOLS = (
 )
 
 #: The only tools allowed behind the default-off build argument. Each had a
-#: fixable HIGH advisory in every published release on 2026-10-01 (see the
-#: Dockerfile). Anything else added here is a tool quietly dropped.
-MAY_BE_HELD = {"tofu", "tflint", "trivy"}
+#: fixable HIGH advisory in every published release when last scanned
+#: (2026-10-06, see the Dockerfile). trivy left this set when 0.75.0 scanned
+#: clean (#442). Anything else added here is a tool quietly dropped.
+MAY_BE_HELD = {"tofu", "tflint"}
 
-HOLD_ARG = "INSTALL_TOFU_TFLINT_TRIVY"
+HOLD_ARG = "INSTALL_TOFU_TFLINT"
+
+#: Releases the image scan (`trivy rootfs --scanners vuln --severity
+#: HIGH,CRITICAL --ignore-unfixed`, the promote gate's filter) found a fixable
+#: HIGH in. The Dockerfile records each finding beside the pin. A tool in the
+#: default build pinned at one of these is an image the promote gate refuses.
+SCANNED_FAILING = {
+    "TOFU_VERSION": {"1.12.6", "1.12.7", "1.13.0", "1.13.1"},
+    "TFLINT_VERSION": {"0.64.0"},
+    "TRIVY_VERSION": {"0.74.0"},
+}
+
+#: Which pin each toolbox tool's ARG is.
+PIN_OF = {"tofu": "TOFU_VERSION", "tflint": "TFLINT_VERSION", "trivy": "TRIVY_VERSION"}
 
 
 # --------------------------------------------------------------------------- #
@@ -179,7 +195,7 @@ def test_the_smoke_step_names_every_required_tool() -> None:
     assert not missing, f"the build never checks {missing}"
 
 
-def test_only_the_three_tools_without_a_clean_release_are_held() -> None:
+def test_only_the_tools_without_a_clean_release_are_held() -> None:
     _, held = _smoke_tool_lists()
     assert set(held) <= MAY_BE_HELD, (
         f"{sorted(set(held) - MAY_BE_HELD)} moved behind {HOLD_ARG}: a tool with a "
@@ -188,6 +204,64 @@ def test_only_the_three_tools_without_a_clean_release_are_held() -> None:
     gate = _arg_defaults(_runtime_stage()).get(HOLD_ARG)
     assert gate is not None, f"{HOLD_ARG} must be a declared build argument"
     assert _arg_value(gate) in {"0", "1"}
+
+
+def _held_blocks(text: str) -> list[str]:
+    """The bodies of every `if [ "${HOLD_ARG}" = "1" ]; then ... fi` in `text`."""
+    return re.findall(
+        r'if \[ "\$\{' + HOLD_ARG + r'\}" = "1" \]; then(.*?)\bfi\b', text, flags=re.S
+    )
+
+
+def test_trivy_is_in_the_default_build_and_its_install_is_unconditional() -> None:
+    always, held = _smoke_tool_lists()
+    assert "trivy" in always, "trivy 0.75.0 scanned clean (#442): the default build checks it"
+    assert "trivy" not in held
+    installs = [
+        _shell_text(i) for i in _runtime_stage()
+        if i.keyword == "RUN" and "aquasecurity/trivy/releases/download" in _shell_text(i)
+    ]
+    assert len(installs) == 1, "trivy is downloaded by exactly one RUN"
+    text = installs[0]
+    assert "/usr/local/bin/trivy" in text
+    for block in _held_blocks(text):
+        assert "trivy" not in block, f"trivy is still installed only behind {HOLD_ARG}"
+
+
+def test_every_held_install_sits_behind_the_hold_argument() -> None:
+    # The converse: tofu and tflint still have no clean release, so their
+    # downloads must be inside the guarded block, or the default build fails
+    # the promote gate over them.
+    stage_text = "\n".join(_shell_text(i) for i in _runtime_stage() if i.keyword == "RUN")
+    blocks = "\n".join(_held_blocks(stage_text))
+    visited = 0
+    for tool in sorted(MAY_BE_HELD):
+        assert f"/usr/local/bin/{tool}" in blocks, f"{tool} is installed outside {HOLD_ARG}"
+        visited += 1
+    assert visited == len(MAY_BE_HELD)
+
+
+def test_no_default_tool_is_pinned_at_a_release_the_scan_failed() -> None:
+    always, _ = _smoke_tool_lists()
+    args = _arg_defaults(_runtime_stage())
+    checked = 0
+    for tool, var in PIN_OF.items():
+        pinned = _arg_value(args[var])
+        if tool in always:
+            assert pinned not in SCANNED_FAILING[var], (
+                f"{tool} {pinned} is in the default build, and the scan found a fixable HIGH in it"
+            )
+            checked += 1
+    assert checked >= 1, "no default-build tool was checked against the scan record"
+
+
+def test_the_hold_default_is_off_while_any_held_tool_has_no_clean_release() -> None:
+    args = _arg_defaults(_runtime_stage())
+    still_failing = [t for t in MAY_BE_HELD if _arg_value(args[PIN_OF[t]]) in SCANNED_FAILING[PIN_OF[t]]]
+    if still_failing:
+        assert _arg_value(args[HOLD_ARG]) == "0", (
+            f"{HOLD_ARG} defaults on while {sorted(still_failing)} has no clean release"
+        )
 
 
 def _fake_tools(bin_dir: Path, names: list[str]) -> None:

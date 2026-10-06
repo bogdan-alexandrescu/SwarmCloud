@@ -587,36 +587,44 @@ RUN mkdir -p /tmp/toolbox \
 # https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS.
 ARG TERRAFORM_VERSION=1.16.4
 ARG TERRAFORM_SHA256=dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
-# INSTALL_TOFU_TFLINT_TRIVY is OFF by default because no published release of
-# these three passed the promote gate on 2026-10-01, and the gate refuses the
-# whole image, not just the tool. Each was scanned at its newest release:
+# INSTALL_TOFU_TFLINT is OFF by default because no published release of tofu
+# or tflint passes the promote gate, and the gate refuses the whole image, not
+# just the tool. Re-scanned on 2026-10-06 with trivy 0.75.0, the gate's filter
+# (`trivy rootfs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed`,
+# vulnerability DB updated 2026-10-05T19:07Z), at each newest release:
 #
-#   tofu 1.13.0 (2026-09-30)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
+#   tofu 1.13.1 (2026-10-01)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
 #                              CVE-2026-56865; fixed 0.40.0), google.golang.org/
 #                              grpc 1.83.1 (CVE-2026-84445; fixed 1.83.2). The
-#                              1.12.6 docs/versions.md names had fourteen.
+#                              same two as 1.13.0 (2026-10-01 scan). The 1.12
+#                              line's newest, 1.12.7, has eight: otel/sdk
+#                              1.42.0, x/mod 0.38.0, grpc 1.79.3, oras-go 2.6.1.
 #   tflint 0.64.0 (2026-07-17) Go stdlib 1.26.3 (eleven CVEs, fixed 1.26.6),
 #                              x/crypto 0.53.0 (CVE-2026-56854), x/mod 0.37.0,
 #                              grpc 1.82.0 (CVE-2026-84304, CVE-2026-84445,
-#                              GHSA-hrxh-6v49-42gf). No newer release exists.
-#   trivy 0.74.0 (2026-08-14)  grpc 1.82.1 (CVE-2026-84304, fixed 1.83.1;
-#                              CVE-2026-84445, fixed 1.83.2). No newer release.
+#                              GHSA-hrxh-6v49-42gf). Still no newer release.
+#
+# trivy WAS held here too (0.74.0: grpc 1.82.1, CVE-2026-84304 and
+# CVE-2026-84445). 0.75.0 (2026-10-01) carries grpc 1.83.2, x/mod 0.41.0,
+# x/crypto 0.57.0 and Go 1.27.1, and that scan found nothing fixable at any
+# severity, so it left the hold (#442) and is installed below by default.
 #
 # Building them from source with patched dependencies is ruled out (see the
 # header of this section), and an ignore entry for another project's
-# dependencies is the owner's decision, not this file's. So the install below
-# is complete -- pinned, verified, and covered by the smoke step when the
-# argument is 1 -- and turning it on is one build argument once the vendors
-# ship a release that scans clean (or the owner accepts these findings in
-# .trivyignore.yaml with an expiry). Re-scan before flipping it.
+# dependencies is the owner's decision, not this file's (#442: no waiver). So
+# the install below is complete -- pinned, verified, and covered by the smoke
+# step when the argument is 1 -- and turning it on is one build argument once
+# both vendors ship a release that scans clean. Re-scan before flipping it,
+# and record the release and the scan here; a tool can also leave the hold on
+# its own, as trivy did.
 #
-# Checksums: https://github.com/opentofu/opentofu/releases/download/v1.13.0/tofu_1.13.0_SHA256SUMS
-# (tofu_1.13.0_linux_amd64.tar.gz) and
+# Checksums: https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_SHA256SUMS
+# (tofu_1.13.1_linux_amd64.tar.gz) and
 # https://github.com/terraform-linters/tflint/releases/download/v0.64.0/checksums.txt
 # (tflint_linux_amd64.zip).
-ARG INSTALL_TOFU_TFLINT_TRIVY=0
-ARG TOFU_VERSION=1.13.0
-ARG TOFU_SHA256=1f0cb37fc85dea4e7633a72aca2332b801f72650a32be911b8b9b32907f214fb
+ARG INSTALL_TOFU_TFLINT=0
+ARG TOFU_VERSION=1.13.1
+ARG TOFU_SHA256=378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
 ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
 RUN mkdir -p /tmp/toolbox \
@@ -625,7 +633,7 @@ RUN mkdir -p /tmp/toolbox \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
+ && if [ "${INSTALL_TOFU_TFLINT}" = "1" ]; then \
       curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
         "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && curl -fsSL -o /tmp/toolbox/tflint.zip \
@@ -639,7 +647,7 @@ RUN mkdir -p /tmp/toolbox \
     fi \
  && rm -rf /tmp/toolbox
 
-# Linters and scanners: shellcheck always, trivy behind the same argument.
+# Linters and scanners: shellcheck and trivy.
 #
 # shellcheck 0.11.0, the newest release and the version docs/versions.md pins
 # (Debian bookworm's apt package is 0.9.0).
@@ -648,14 +656,18 @@ RUN mkdir -p /tmp/toolbox \
 # file, so the sha256 is the asset digest GitHub records for
 # shellcheck-v0.11.0.linux.x86_64.tar.gz in
 # https://api.github.com/repos/koalaman/shellcheck/releases/latest, recomputed
-# over the downloaded file. trivy 0.74.0: see INSTALL_TOFU_TFLINT_TRIVY above;
-# checksum from
-# https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_checksums.txt
-# (trivy_0.74.0_Linux-64bit.tar.gz).
+# over the downloaded file.
+#
+# trivy 0.75.0 (2026-10-01), the newest release: it scanned clean on
+# 2026-10-06 (see INSTALL_TOFU_TFLINT above for the scan and why 0.74.0 could
+# not ship). It is the agent's scanner, not the gate's: CI and the release pin
+# their own trivy in .github/workflows. Checksum from
+# https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_checksums.txt
+# (trivy_0.75.0_Linux-64bit.tar.gz), recomputed over the downloaded file.
 ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
-ARG TRIVY_VERSION=0.74.0
-ARG TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+ARG TRIVY_VERSION=0.75.0
+ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
 RUN mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
       "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
@@ -663,13 +675,11 @@ RUN mkdir -p /tmp/toolbox \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
-        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
-      && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
-      && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy ; \
-    fi \
+ && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
+      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+ && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
+ && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy \
  && rm -rf /tmp/toolbox
 
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
@@ -741,8 +751,8 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # will run it. A missing or unrunnable tool fails the build and is named; the
 # count is printed so a list that collapsed to one word cannot read as a pass.
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov shellcheck make docker" \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then tools="$tools tofu tflint trivy"; fi \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker" \
+ && if [ "${INSTALL_TOFU_TFLINT}" = "1" ]; then tools="$tools tofu tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \
  && n=0 && missing="" \
  && for t in $tools; do \
