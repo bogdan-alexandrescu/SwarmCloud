@@ -51,6 +51,15 @@ What this revision changes in the BUILT step is how it waits and what it
 does about a branch that is behind. Who merges, with what token, and which
 pull request it merges all stay the same.
 
+### Owner decisions on this plan (2026-10-06)
+
+The four questions this revision raised were answered by the owner on 2026-10-06:
+
+1. **CI wait park reason:** add `ParkReason.CI_PENDING`. Frozen-contract request (A) is accepted by the owner (2026-10-06). It is applied in MS2 with the phrase the frozen-contract guard reads. A CI wait refunds the attempt, up to the maximum wake count.
+2. **PRs no workflow opened:** a merge-only workflow that names a pull request and its head sha runs just the merge step. It is a separate lane after MS3.
+3. **The close-issues job:** it survives `auto-merge.yml`'s retirement as its own `close-merged-issues.yml`, which runs `scripts/close-merged-issues.sh` on every merge into main.
+4. **The unused #295 pieces:** the per-tenant review, post-verdict and merge service accounts, the `worker_objects` split and the disabled single-pr catalogue entries are removed in a cleanup lane. The Terraform IAM change goes to the owner at dev-iam, and frozen-contract request (B) retires the catalogue entries.
+
 ### 1. Lifecycle
 
 **Submitted with the workflow.** The merge step is submitted with the
