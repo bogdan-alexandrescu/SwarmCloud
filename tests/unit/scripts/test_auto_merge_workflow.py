@@ -209,13 +209,12 @@ def test_the_merge_is_native_auto_merge_squashed_under_the_pr_title(job: dict):
     """MUTATION: drop `--auto` (merges now, green or not), drop `--subject`
     (a one-commit squash takes the commit message, #238), or use `--merge`."""
     run = _step(job, "merge")["run"]
-    # Join continuation lines, so each `gh pr merge` is one logical command.
-    joined = re.sub(r"\\\n\s*", " ", run)
-    merges = [line.strip() for line in joined.splitlines() if "gh pr merge" in line]
+    merges = _squash_merges(run)
     assert merges, run
     # The first attempt is always native auto-merge. The only other merge is
     # the already-green fallback, and it must say the same things.
     assert "--auto" in merges[0], merges
+    assert len(merges) == 2, merges
     for command in merges:
         args = command.split("gh pr merge", 1)[1]
         assert '"${PR_NUMBER}"' in args, args
@@ -225,6 +224,23 @@ def test_the_merge_is_native_auto_merge_squashed_under_the_pr_title(job: dict):
         assert "--admin" not in args, "--admin bypasses the required checks the auto-merge waits for"
 
 
+def _merge_commands(run: str) -> list[str]:
+    """Every `gh pr merge` in `run`, one logical command each (continuation
+    lines joined)."""
+    joined = re.sub(r"\\\n\s*", " ", run)
+    return [line.strip() for line in joined.splitlines() if "gh pr merge" in line]
+
+
+def _squash_merges(run: str) -> list[str]:
+    """The merges made when the base requires no merge queue: squashed."""
+    return [m for m in _merge_commands(run) if "--squash" in m]
+
+
+def _queue_merges(run: str) -> list[str]:
+    """The merges made when it does: the queue's own method decides."""
+    return [m for m in _merge_commands(run) if "--squash" not in m]
+
+
 def test_both_merge_calls_pin_to_the_reviewed_head_commit(job: dict):
     """A push after the `ready` label -- including the SwarmCloud worker's own
     push, or a fork push in the seconds before this job starts -- must not let
@@ -232,11 +248,15 @@ def test_both_merge_calls_pin_to_the_reviewed_head_commit(job: dict):
     MUTATION: drop `--match-head-commit` from either `gh pr merge` call, or
     interpolate the sha through `${{ }}` instead of the `HEAD_SHA` env var."""
     run = _step(job, "merge")["run"]
-    joined = re.sub(r"\\\n\s*", " ", run)
-    merges = [line.strip() for line in joined.splitlines() if "gh pr merge" in line]
-    assert len(merges) == 2, merges
+    merges = _merge_commands(run)
+    # Two squash merges (auto, and the already-green fallback) and one queue
+    # entry (auto, on a base that requires a merge queue).
+    assert len(merges) == 3, merges
     for command in merges:
         assert '--match-head-commit "${HEAD_SHA}"' in command, command
+    # The queue's already-green fallback is GraphQL's enqueue, pinned the same way.
+    assert "enqueuePullRequest" in run
+    assert "expectedHeadOid" in run and 'head="${HEAD_SHA}"' in run, run
 
 
 def test_the_head_sha_reaches_the_merge_step_only_through_env(job: dict):
@@ -259,9 +279,31 @@ def test_a_direct_merge_happens_only_when_github_says_the_pr_is_already_clean(jo
     auto = run.index("--auto")
     clean = run.index('!= "CLEAN"')
     direct = [m.start() for m in re.finditer(r"gh pr merge", run)]
-    assert len(direct) == 2, direct
+    assert len(direct) == 3, direct
     assert auto < clean < direct[1], "the direct merge must sit behind the CLEAN check"
     assert "exit 1" in run[clean : direct[1]], "a non-CLEAN failure must fail the job"
+    # The queue's branch: its enqueue sits behind its own CLEAN check.
+    queue_clean = run.index('!= "CLEAN"', clean + 1)
+    enqueue = run.index("enqueuePullRequest")
+    assert direct[2] < queue_clean < enqueue, "the enqueue must sit behind the CLEAN check"
+    assert "exit 1" in run[queue_clean:enqueue], "a non-CLEAN failure must fail the job"
+
+
+def test_on_a_merge_queue_base_the_merge_is_auto_without_a_method_or_subject(job: dict):
+    """A base that requires a merge queue merges by the queue's method; a
+    `--squash` there is ignored with a warning and `--subject` means nothing.
+    MUTATION: send `--admin` (bypasses the queue) or drop `--auto`."""
+    (command,) = _queue_merges(_step(job, "merge")["run"])
+    args = command.split("gh pr merge", 1)[1]
+    assert '"${PR_NUMBER}"' in args and "--auto" in args, args
+    for flag in ("--admin", "--merge", "--rebase", "--squash", "--subject"):
+        assert flag not in args, (flag, args)
+
+
+def test_the_merge_step_learns_the_queue_from_the_gate(job: dict):
+    """One read of the rules, in the gate; the merge step takes its answer."""
+    env = _step(job, "merge").get("env") or {}
+    assert env.get("QUEUE") == "${{ steps.gate.outputs.queue }}", env
 
 
 def test_the_title_and_number_come_from_the_event(job: dict):
@@ -697,6 +739,29 @@ def test_a_green_gate_says_merge(run_gate, tmp_path: Path):
     )
     assert proc.returncode == 0, comments
     assert _outputs(tmp_path / "output.txt").get("decision") == "merge"
+
+
+MERGE_QUEUE_RULE = {"type": "merge_queue", **_RULE_SOURCE, "parameters": {
+    "merge_method": "MERGE", "grouping_strategy": "ALLGREEN", "max_entries_to_build": 5,
+    "min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 0,
+    "check_response_timeout_minutes": 60,
+}}
+
+
+@pytest.mark.parametrize(("rules", "queue"), [
+    (RULESET_RULES, "false"),
+    (RULESET_RULES + [MERGE_QUEUE_RULE], "true"),
+], ids=["no-queue", "merge-queue"])
+def test_a_green_gate_says_whether_the_base_requires_a_merge_queue(run_gate, tmp_path: Path,
+                                                                   rules, queue):
+    """Read from the same effective rules as gate 3 (main-protection, 24160219,
+    gains a `merge_queue` rule when the operator applies docs/ci.md's change).
+    MUTATION: hard-code `queue=false`, and a queued base gets `--squash`."""
+    proc, _calls, comments = run_gate("A fact-style headline", RULESET_ONLY_BRANCH, rules=rules)
+    assert proc.returncode == 0, (proc.stderr, comments)
+    outputs = _outputs(tmp_path / "output.txt")
+    assert outputs.get("decision") == "merge", outputs
+    assert outputs.get("queue") == queue, outputs
 
 
 @pytest.mark.parametrize("conclusion", ["timed_out", "action_required", "cancelled"])
@@ -1514,6 +1579,9 @@ printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
 if [[ "$1 $2" == "pr merge" ]]; then
   for arg in "$@"; do
     if [[ "${arg}" == "--auto" ]]; then
+      if [[ -z "${FAKE_GH_AUTO_ERROR}" ]]; then
+        exit 0
+      fi
       echo "fake gh: ${FAKE_GH_AUTO_ERROR}" >&2
       exit 1
     fi
@@ -1523,6 +1591,13 @@ fi
 if [[ "$1 $2" == "pr view" ]]; then
   cat "${FAKE_GH_VIEW}"
   exit 0
+fi
+# GraphQL: whether the pull request is in the merge queue, and the enqueue.
+if [[ "$1 $2" == "api graphql" ]]; then
+  case "$*" in
+    *enqueuePullRequest*) printf '%s\n' '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":1}}}}'; exit 0 ;;
+    *isInMergeQueue*) printf '%s\n' "${FAKE_GH_IN_QUEUE}"; exit 0 ;;
+  esac
 fi
 echo "fake gh: unexpected call: $*" >&2
 exit 3
@@ -1540,7 +1615,8 @@ def run_merge(job: dict, tmp_path: Path):
     fake.write_text(FAKE_GH_MERGE)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
-    def run(view: dict):
+    def run(view: dict, *, queue: str | None = None, in_queue: str = "false",
+            auto_error: str = "auto-merge could not be enabled"):
         view_file = tmp_path / "view.json"
         view_file.write_text(json.dumps(view))
         log = tmp_path / "gh.log"
@@ -1557,12 +1633,18 @@ def run_merge(job: dict, tmp_path: Path):
             "GITHUB_STEP_SUMMARY": str(summary),
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_VIEW": str(view_file),
-            "FAKE_GH_AUTO_ERROR": "auto-merge could not be enabled",
+            "FAKE_GH_AUTO_ERROR": auto_error,
+            "FAKE_GH_IN_QUEUE": in_queue,
         }
+        # Unset, as on every run before the gate said it: the no-queue path.
+        if queue is not None:
+            env["QUEUE"] = queue
         proc = subprocess.run(
             ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
         )
-        merges = [line for line in log.read_text().splitlines() if line.startswith("pr merge")]
+        calls = log.read_text().splitlines()
+        merges = [line for line in calls if line.startswith("pr merge")]
+        run.calls = calls
         return proc, merges, summary.read_text()
 
     return run
@@ -1598,6 +1680,62 @@ def test_an_already_clean_pull_request_is_merged_directly(run_merge):
     assert proc.returncode == 0, proc.stderr
     assert len(merges) == 2 and "--auto" not in merges[1], merges
     assert f"--match-head-commit {HEAD}" in merges[1], merges
+
+
+def test_without_a_merge_queue_the_merge_is_the_squash_it_always_was(run_merge):
+    """`QUEUE=false`, as the gate says it for main today: the same calls as
+    with no QUEUE at all."""
+    for queue in (None, "false"):
+        proc, merges, _summary = run_merge({"state": "OPEN", "mergeStateStatus": "CLEAN",
+                                            "autoMergeRequest": None}, queue=queue)
+        assert proc.returncode == 0, proc.stderr
+        assert len(merges) == 2 and all("--squash" in m for m in merges), merges
+        assert not any(c.startswith("api graphql") for c in run_merge.calls), run_merge.calls
+
+
+def test_on_a_merge_queue_auto_merge_enqueues_without_a_method(run_merge):
+    """`gh pr merge --auto` on a base that requires a merge queue enqueues the
+    pull request once its required checks pass (GitHub's documented behaviour)."""
+    proc, merges, summary = run_merge({"state": "OPEN", "mergeStateStatus": "BLOCKED",
+                                       "autoMergeRequest": None}, queue="true", auto_error="")
+    assert proc.returncode == 0, proc.stderr
+    (merge_call,) = merges
+    assert "--auto" in merge_call and f"--match-head-commit {HEAD}" in merge_call, merge_call
+    assert "--squash" not in merge_call and "--subject" not in merge_call, merge_call
+    assert "merge queue" in summary, summary
+
+
+def test_an_already_clean_pull_request_is_enqueued_through_graphql_not_merged(run_merge):
+    """The queue's already-green path: never a direct merge, which would be a
+    bypass of the queue. MUTATION: fall back to `gh pr merge` without --auto."""
+    proc, merges, summary = run_merge({"id": "PR_kwDOexample", "state": "OPEN",
+                                       "mergeStateStatus": "CLEAN", "autoMergeRequest": None},
+                                      queue="true")
+    assert proc.returncode == 0, proc.stderr
+    assert len(merges) == 1, merges
+    (enqueue,) = [c for c in run_merge.calls if "enqueuePullRequest" in c]
+    assert "id=PR_kwDOexample" in enqueue and f"head={HEAD}" in enqueue, enqueue
+    assert "merge queue" in summary, summary
+
+
+def test_a_pull_request_already_in_the_queue_is_not_enqueued_again(run_merge):
+    proc, merges, summary = run_merge({"id": "PR_kwDOexample", "state": "OPEN",
+                                       "mergeStateStatus": "CLEAN", "autoMergeRequest": None},
+                                      queue="true", in_queue="true")
+    assert proc.returncode == 0, proc.stderr
+    assert len(merges) == 1, merges
+    assert not [c for c in run_merge.calls if "enqueuePullRequest" in c], run_merge.calls
+    assert "already in" in summary, summary
+
+
+def test_on_a_merge_queue_a_blocked_unarmed_pull_request_still_fails(run_merge):
+    """The control: a queue does not turn a real failure into a success."""
+    proc, merges, _summary = run_merge({"id": "PR_kwDOexample", "state": "OPEN",
+                                        "mergeStateStatus": "BLOCKED", "autoMergeRequest": None},
+                                       queue="true")
+    assert proc.returncode != 0
+    assert len(merges) == 1, merges
+    assert not [c for c in run_merge.calls if "enqueuePullRequest" in c], run_merge.calls
 
 
 def test_docs_describe_the_re_evaluation_of_an_early_ready_label():
