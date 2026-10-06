@@ -17,7 +17,9 @@
  * The controls pin that boundary both ways.
  *
  * MUTATION: put "A screen that drew a file tree here would be inventing it."
- * back into `checkpoints`, or delete a topic's section from the doc.
+ * back into `checkpoints`, or delete a topic's section from the doc. The
+ * verbs include `showed` and `asked`, and the hand-written-description form:
+ * the review of #131 found three paragraphs the narrower pattern let through.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -28,7 +30,7 @@ import { HELP, TOPIC_IDS, type TopicId } from '../help'
 const DOC = join(__dirname, '..', '..', '..', '..', 'docs', 'web-ui', 'help-rationale.md')
 
 const UI_RATIONALE =
-  /\bthis UI’s\b|\b(this|the) (whole )?app (exists|is about)\b|\bwould be inventing\b|\b(a|any) (screen|panel|chip|console|button) that (drew|draws|read|reads|reported|kept|fell|says)\b|\bwhy the screens\b|\bthe intended cost\b/i
+  /\bthis UI’s\b|\b(this|the) (whole )?app (exists|is about)\b|\bwould be inventing\b|\b(a|any) (screen|panel|chip|console|button) that (drew|draws|read|reads|reported|kept|fell|says|showed|shows|asked|asks)\b|\bhand-written description would be\b|\bwhy the screens\b|\bthe intended cost\b/i
 
 /** The topics whose UI rationale moved to the doc, and a phrase of what moved. */
 const MOVED: Readonly<Record<string, string>> = {
@@ -44,6 +46,10 @@ const MOVED: Readonly<Record<string, string>> = {
   'clipboard-secure-context': 'the small version of the bug',
   'withheld-total': 'deliberately more annoying',
   'provider-quota-states': 'fell through to',
+  'what-sets-it-apart-is-arithmetic': 'could quietly stop being true',
+  'sign-in-not-paste': 'handle key material by hand',
+  'ceiling-change-evicts-nothing': 'as breakage',
+  'credential-split': 'for no operational benefit',
 }
 
 describe('Help’s long form carries no UI rationale (#131)', () => {
@@ -59,6 +65,10 @@ describe('Help’s long form carries no UI rationale (#131)', () => {
       'the failure this whole app exists to prevent',
       'A chip that fell through to "unknown"',
       'That is why the screens draw a paused pool',
+      'A screen that showed that as a fault would be reporting an operator’s own action back to them as breakage.',
+      'A hand-written description would be the one thing on the Runtimes screen that could quietly stop being true.',
+      'A screen that asked for a pasted credential was asking a person to handle key material by hand',
+      'A console that showed a length would be publishing a fact about a secret',
     ]) {
       expect(UI_RATIONALE.test(bad), `the pattern misses "${bad}"`).toBe(true)
     }

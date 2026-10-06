@@ -622,7 +622,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Both refuse admission, and on a board of figures they can look alike: nothing new starts. The difference is who has to act, and what they have to do.',
       'A full pool has as many units in use as its ceiling allows. Nothing is wrong with it: admission is doing its job, and the pool admits again as soon as running work finishes and releases its slots. Waiting, or raising the ceiling, are the two ways past it.',
       'A paused pool has been switched off by an operator. It refuses every task that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
-      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. The Ceilings screen marks a paused pool as paused, not as a pool at its limit, so look for that mark before reaching for the ceiling.',
+      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. The Pools screen marks a paused pool with a “paused” chip, not as a pool at its limit, so look for that chip before reaching for the ceiling.',
     ],
     see: ['what-a-pool-is', 'ceiling-change-evicts-nothing'],
   },
@@ -821,7 +821,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The comparison is computed: largest, smallest, only one of its kind, different backend from the rest. It is derived from the same response the cards are drawn from.',
       'When the computation finds nothing, the card says so rather than reaching for a sentence somebody typed. "Nothing separates it from the rest" is a measured answer.',
-      'A hand-written description would be the one thing on the Runtimes screen that could quietly stop being true.',
+      'So a line that looks wrong can be checked against the other cards on the Runtimes screen, and it changes only when the catalogue does.',
       'Disabled is the catalogue’s own flag, not a reading of load. The runtime is still served because tasks already submitted under its name have to render, and the API refuses any new submission that names it. The reason printed on its card is the platform’s, and usually names the runtime to use instead.',
     ],
   },
@@ -981,7 +981,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The provider’s client accepts exactly one redirect target — its own callback page, which displays a code. A third-party application cannot register a redirect back to this console, so your browser cannot be sent here and the displayed code is what closes the loop.',
       'Nothing secret passes through the sign-in panel on Accounts. The verifier stays on the server, keyed by the sign-in; a verifier the browser holds is a flow that proves nothing. What comes back is an account and an expiry, never key material and never its length.',
-      'That is the whole procedure. A screen that asked for a pasted credential was asking a person to handle key material by hand, which is the part this replaces.',
+      'That is the whole procedure. The only thing you paste is the short code the provider’s page shows; nothing in it asks for a key or a credential file.',
     ],
   },
 
@@ -993,7 +993,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'One secret holds the pair the broker exchanges. Nothing outside the broker reads it, and no route returns it.',
       'The other holds only the short-lived token, and that is the one a tenant’s workload mounts. It expires on its own, and the sweep replaces it before it does.',
-      'Neither is ever rendered anywhere in the console, not even as a length. A console that showed a length would be publishing a fact about a secret for no operational benefit.',
+      'Neither is ever rendered anywhere in the console, not even as a length. If a pod is compromised, revoke the account’s sign-in.',
     ],
   },
 
@@ -1539,7 +1539,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The two numbers have different owners. One is an operator’s decision; the other is the platform’s live accounting, and a console that wrote both would be able to invent capacity.',
       'So a ceiling set below what is currently in use is a legal, quiet state: the pool reads as over its ceiling until enough work finishes.',
-      'A screen that showed that as a fault would be reporting an operator’s own action back to them as breakage.',
+      'On Pool limits such a pool carries a neutral “over ceiling” mark, not a fault. Wait for the work in use to finish, or raise the ceiling again if the change was a mistake.',
     ],
   },
 

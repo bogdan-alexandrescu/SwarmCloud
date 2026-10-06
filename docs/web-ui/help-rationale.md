@@ -22,8 +22,9 @@ word for word, under the topic it left. Each topic's long form now states the
 fact the reader needs and ends in its action.
 
 The test's pattern finds the shape this rationale took — a screen, panel,
-chip, console or button "that drew", "that kept", "that fell through"; "this
-UI's defining bug"; "the failure this whole app exists to prevent". It does
+chip, console or button "that drew", "that kept", "that fell through", "that
+showed", "that asked"; "a hand-written description would be"; "this
+UI’s defining bug"; "the failure this whole app exists to prevent". It does
 not catch a statement of what the console does now ("this app never claims
 to"), or a platform rule's own reason ("a console that answered differently
 would be an oracle" explains the API's refusal, not a drawing choice). Both
@@ -31,7 +32,7 @@ belong in Help.
 
 ## `absent-vs-zero`
 
-> They are different facts, and drawing them alike was this UI's defining bug.
+> They are different facts, and drawing them alike was this UI’s defining bug.
 
 The four kinds of figure — measured, never measured, not read, stale — were
 once drawn alike, and an unread figure read as a zero. Each now has its own
@@ -117,3 +118,30 @@ changed, and would then disagree without any mark.
 > A chip that fell through to "unknown" for a state it did not recognise would
 > mislabel exactly the condition the Provider quota screen exists for, so every
 > member is drawn by name.
+
+## `what-sets-it-apart-is-arithmetic`
+
+> A hand-written description would be the one thing on the Runtimes screen
+> that could quietly stop being true.
+
+Every "sets it apart" line is computed from the same catalogue response the
+cards are drawn from, so it cannot disagree with them.
+
+## `sign-in-not-paste`
+
+> That is the whole procedure. A screen that asked for a pasted credential was
+> asking a person to handle key material by hand, which is the part this
+> replaces.
+
+## `credential-split`
+
+> A console that showed a length would be publishing a fact about a secret for
+> no operational benefit.
+
+## `ceiling-change-evicts-nothing`
+
+> A screen that showed that as a fault would be reporting an operator’s own
+> action back to them as breakage.
+
+That is why Pool limits draws a pool over its ceiling with a neutral mark
+(`apps/swarm-ui/src/AdminSettings.tsx`, #133).
