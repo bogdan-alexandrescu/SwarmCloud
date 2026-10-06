@@ -1267,6 +1267,13 @@ class Store:
 
             now = self._now()
             patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
+            if first_request:
+                # The clock the reconciler's cancel bound runs from
+                # (`reconciler.detect.detect_cancel_overdue`, #627). Not
+                # `updated_at`: a worker's checkpoint writes move that, so a
+                # worker ignoring the cancel would keep it looking fresh.
+                # Written once; a second press does not restart the bound.
+                patch["cancel_requested_at"] = now
             nobody = (
                 _no_live_worker(data, lease, attempt, now)
                 if task.state in _WORKER_AWAITED_STATES
