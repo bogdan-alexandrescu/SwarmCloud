@@ -6208,6 +6208,8 @@ relies on for correctness.
 
 ## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
 
+**Superseded in part 2026-10-06 (lane MS0, part of #352):** the App-shaped half -- `provider="git-merge"`, the merge App, its own Job account -- was already replaced by request 47; the [2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs) keeps everything else this request applied (`WorkerAction`, `RunnerProfile.worker_action`, the `merge` entry, `MERGE_REFUSED`/`MERGE_FAILED`) as the merge step's own vocabulary, and adds new refusal codes inside `result_summary.merge.refusal`, not new end causes.
+
 **Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
 #342. APPLIED 2026-10-01, the build accepted by the owner on 2026-10-01**
 (functionality wave 3, lane M1). The owner decided that #295 is built now
@@ -7630,6 +7632,8 @@ it were found wrong while building it (#353, #354), and one decision was added:
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
 
+**Superseded 2026-10-06 (lane MS0, part of #352):** the merge step anchors the verdict on the review's verdict file and green required checks, not on an App's GitHub review, and there is no review App ([2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs), §3). The applied entry stays disabled; retiring it is that revision's request (B), the owner's decision.
+
 **Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
 (functionality wave 3, lane M1): `WorkerAction.POST_VERDICT`, the
 `post-verdict` entry (`available=False` until #342 is enforced and the review
@@ -7826,6 +7830,8 @@ merge step cannot be enabled for any tenant without this.
 ---
 
 ## 36. `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint`
+
+**Superseded 2026-10-06 (lane MS0, part of #352) for the profile, not the field:** the review-only-writable prefix the `claude-code-review` profile served went with the review App ([2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs), §3), so the entry stays disabled and retiring it is that revision's request (B). `never_restore_checkpoint` stays: the lifecycle reads it.
 
 **Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
 (functionality wave 3, lane M1): `RunnerProfile.never_restore_checkpoint`

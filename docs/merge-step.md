@@ -11,7 +11,742 @@ frozen-contract half is contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); the example spec is
 in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request).
 **Superseded in part on 2026-10-04: the merge step is built, on the tenant's
-`-git` token -- the next section says what changed and why.**
+`-git` token -- "Revised 2026-10-04 (owner)" says what changed and why.**
+**Revised again on 2026-10-06: merging becomes its own step that parks while
+CI runs, updates a branch that is behind, and replaces `auto-merge.yml` --
+the first section below is that design and its build plan (lane MS0); the
+section after it is what is built today.**
+
+## Revised 2026-10-06 (owner): merging is its own step, parked while CI runs
+
+**Status: DESIGN AND BUILD PLAN, lane MS0 (functionality wave 10), part of
+#352 and #295. Nothing in this section is built yet.** What runs today is the
+2026-10-04 step described in the next section: it waits for CI by failing its
+attempt retryably and sitting READY for `CHECKS_PENDING_RETRY_SECONDS`, at most
+`MERGE_STEP_MAX_ATTEMPTS` times, and refuses a branch that is behind. The
+lanes in §6 below replace that, smallest first.
+
+The owner decided on 2026-10-06 (#352, last comment) that merging is a
+distinct workflow step -- **implement → review → fix → merge** -- that:
+
+* parks while the pull request's CI runs, holding no capacity (invariant 4);
+* is woken when the checks complete;
+* updates the branch and re-checks when the branch is behind;
+* squash-merges with the tenant's `-git` token (the 2026-10-04 decision);
+* closes the issues its pull request names;
+* replaces `.github/workflows/auto-merge.yml` for SwarmCloud's own pull
+  requests, and works on any repository a workflow runs on, registered or
+  not (the repository registry, [repo-index.md](repo-index.md) §1, and
+  swarm-api's `/v1/repositories` routes);
+* leaves `auto-merge.yml` in place until the step has merged about ten pull
+  requests cleanly. Then `auto-merge.yml` is retired.
+
+The 2026-10-04 decisions all still hold. The credential is the tenant's
+`-git` token. Merging is a platform default (`merge_by_default`) that a job
+overrides with `metadata.merge`. Any repository the workflow names can be
+merged. The token is read at merge time only, under #219's rules (the next
+section, decision 1).
+
+What this revision changes in the BUILT step is how it waits and what it
+does about a branch that is behind. Who merges, with what token, and which
+pull request it merges all stay the same.
+
+### Owner decisions on this plan (2026-10-06)
+
+The four questions this revision raised were answered by the owner on 2026-10-06:
+
+1. **CI wait park reason:** add `ParkReason.CI_PENDING`. Frozen-contract request (A) is accepted by the owner (2026-10-06). It is applied in MS2 with the phrase the frozen-contract guard reads. A CI wait refunds the attempt, up to the maximum wake count.
+2. **PRs no workflow opened:** a merge-only workflow that names a pull request and its head sha runs just the merge step. It is a separate lane after MS3.
+3. **The close-issues job:** it survives `auto-merge.yml`'s retirement as its own `close-merged-issues.yml`, which runs `scripts/close-merged-issues.sh` on every merge into main.
+4. **The unused #295 pieces:** the per-tenant review, post-verdict and merge service accounts, the `worker_objects` split and the disabled single-pr catalogue entries are removed in a cleanup lane. The Terraform IAM change goes to the owner at dev-iam, and frozen-contract request (B) retires the catalogue entries.
+
+### 1. Lifecycle
+
+**Submitted with the workflow.** The merge step is submitted with the
+workflow in one of two ways. A caller can state it (`runner_profile:
+"merge"`). Or swarm-api appends it before signing, when `metadata.merge` is
+`"on"`, or when it is absent and `merge_by_default` is on
+(`apps/swarm-api/swarm_api/validation.py::resolve_merge_choice`,
+`apps/swarm-api/swarm_api/validation.py::plan_merge`).
+
+Its signed dispatch block names its target by task id (`merge_target`), so
+it never follows a pointer the signed spec does not name. Until the step
+that opens the pull request (and the review, when there is one) has ended,
+it is PARKED on `DEPENDENCY_INCOMPLETE`, like every step. None of this
+changes.
+
+**First run.** The step runs as a worker action: no agent, no workspace, a
+lease only while it reads. It does every check that needs no credential, and
+then reads the token. It then reads the pull request and the base branch's
+required checks
+(`apps/agent-worker/agent_worker/merge.py::run_merge`,
+`apps/agent-worker/agent_worker/merge.py::required_check_state`). The
+outcome is one of three:
+
+* a verdict -- merged, or refused;
+* an update of the branch (below);
+* or **a wait**. A wait is any of: a required check still queued or in
+  progress; no check reported yet on a branch that requires none; or
+  GitHub's mergeability not yet computed.
+
+**A wait is a park, not a retry.** In one fenced transaction the worker
+writes PARKED with **`CI_PENDING`** as the park reason. It records three
+things on the task:
+
+* the head it is waiting at;
+* the pending check names, in `blocked_by`;
+* `metadata.merge_wait`: `first_parked_at`, `wakes`, `updates`.
+
+It refunds the attempt that admission counted, up to `MERGE_CI_MAX_WAKES`
+(proposed 60). Then it releases the lease and exits 75.
+
+This is the await park's shape exactly
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.park_awaiting_children`):
+waiting is not failing, so a slow CI does not use up the step's attempts.
+Past the bound, a wake counts like any attempt, so a pull request whose CI
+never settles still ends at `max_attempts`.
+
+A `CI_PENDING` task is PARKED. It holds **no capacity**: no lease, no pool
+count, no Job execution (invariants 1 and 3). The park reason is new, and it
+is a frozen-contract change: request (A) at the end of this section.
+
+**Woken by the periodic tick, not by a webhook.**
+
+The platform has **no webhook receiver**. No route verifies a GitHub
+delivery. The repository index's push webhook is phase 3 (RI8,
+[repo-index.md](repo-index.md) §3.3) and unbuilt. A webhook would need three
+things this design avoids:
+
+* an HMAC secret per registration;
+* a hook installed in every repository, which needs `admin:repo_hook` on the
+  token -- a wider token than §2 needs;
+* a public unauthenticated route.
+
+So the signal is a **cheap re-read on the periodic tick the platform already
+runs**. A new per-tenant Cloud Scheduler job, `merge_wake`, runs every
+minute. It has the same shape and OIDC identity as `issue_run_advance`
+(`terraform/modules/scheduler/jobs.tf` (`resource "google_cloud_scheduler_job" "issue_run_advance"`)):
+
+* its description carries `managed-by=swarm-terraform`, since a Cloud
+  Scheduler job has no labels;
+* it calls `POST /v1/admin/merges/wake?tenant_id=<tenant>` as
+  `swarm-rollup-sweeper`;
+* swarm-api admits that account to this one route besides its three
+  (`apps/swarm-api/swarm_api/auth.py::ROLLUP_SWEEPER_ROUTES`).
+
+For each of the tenant's `CI_PENDING` tasks, the route makes one indexed
+query: `tenant_id`, `state`, `park_reason`. It reads the pull request's
+check runs and statuses at the recorded head. It reads with the tenant's own
+`-git` token, through
+`apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens`. That is the
+same credential, and the same reads, that the issue-run CI loop already makes
+(`apps/swarm-api/swarm_api/issueci.py::from_checks`). A task is read at most
+once per `apps/swarm-api/swarm_api/issueci.py::CI_READ_SECONDS`.
+
+When nothing it waits on is still pending, the route writes
+`merge_wait.wake_requested_at` in a transaction guarded on the task still
+being PARKED/`CI_PENDING`. "Nothing still pending" covers every check
+completed, the head moved, the pull request closed or merged, or
+mergeability computed. That write is the route's only write to the task.
+
+**Why the tick, and why swarm-api rather than the scheduler:**
+
+* **The scheduler holds no forge token, and must not.** A GitHub outage must
+  never slow admission. swarm-api already reads each tenant's `-git` token
+  for exactly these reads, under that tenant only (invariant 9).
+* **A blind time-based wake costs a Job execution and a lease every time.**
+  A cold start takes tens of seconds; SwarmCloud's own CI takes about 10-20
+  minutes. A check read through the API costs one GET and holds nothing.
+* **A webhook can be added later without redesign.** The webhook, if RI8
+  ever builds it, writes the same marker.
+
+**The scheduler promotes; it never reads GitHub.** A new sweep,
+`_promote_ci_waits`, beside
+`apps/scheduler/scheduler/loop.py::Scheduler._promote_child_awaits`, returns
+a `CI_PENDING` park to READY in either of two cases:
+
+* `merge_wait.wake_requested_at` is set;
+* `next_eligible_at` has passed. The worker sets it to the park instant plus
+  `MERGE_CI_FALLBACK_SECONDS` (proposed 900), so a dead tick or a broken
+  token never strands a merge.
+
+The promotion is guarded on the state and park reason it read, and writes
+READY alone (invariant 1). A task that has used its last attempt is
+dead-lettered, as `_end_exhausted_retry` does.
+
+**A forged marker is harmless.** Firestore has no document-level IAM, so any
+tenant identity can write the marker. At worst that causes an early wake:
+the worker re-reads every fact and trusts nothing the tick saw.
+
+**On wake, the worker reads everything again** and takes the first row that
+matches:
+
+| what GitHub says now | what the step does |
+|---|---|
+| merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
+| merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
+| the head moved, and the step did not move it, or a CI-fix round of this workflow did not move it (below) | MERGE_REFUSED `head_moved` |
+| a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
+| still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
+| still pending, or mergeability unknown | park `CI_PENDING` again |
+| **behind** the base: GitHub's `mergeable_state` is `behind` (the base requires an up-to-date branch) | **update the branch** (below), then park `CI_PENDING` at the new head |
+| `mergeable` false (`dirty`) | MERGE_REFUSED `merge_conflict` |
+| green at the pinned head and mergeable | **squash-merge** (below); SUCCEEDED |
+
+**Updating a branch that is behind.** Before the call, the worker runs the
+same fencing and cancel recheck as before the merge call, because this is a
+write to the forge. A stale worker exits without making it (invariant 5).
+
+It calls `PUT /repos/{o}/{r}/pulls/{n}/update-branch` with
+`expected_head_sha` set to the pinned head, so GitHub refuses if anyone
+pushed in between. GitHub, not an agent, makes the merge commit of the base
+into the branch. The responses map as follows:
+
+* a 422 that says the update conflicts → `merge_conflict`;
+* any other 422 → `head_moved`;
+* more than `MERGE_MAX_BRANCH_UPDATES` (proposed 3) updates →
+  `behind_too_often`, because a base moving faster than CI is a question for
+  a person.
+
+The new head becomes the pinned head. That is a fact about GitHub, never
+about the tenant-writable task document. On every wake the worker walks
+first parents from the live head back to the head the opening step pushed
+(the signed target's recorded `pushed_head`), at most
+`MERGE_MAX_BRANCH_UPDATES` steps. It accepts only these chains:
+
+* the head is the pushed head itself;
+* each step down the chain is a two-parent merge commit whose second parent
+  is already on the base branch (`compare` reports `behind` or
+  `identical`).
+
+Anything else is `head_moved`.
+
+The review's verdict covered the code before the update. What the update
+adds is commits already on the base branch, each merged through its own
+pull request, and the required checks run again on the merged head before
+the merge. This is the owner's 2026-10-06 decision, and it supersedes §9's
+"never update the branch" for a base that requires an up-to-date branch. On
+a base that does not require one, §9 stands: if GitHub says the branch
+merges cleanly, it is merged, with no update.
+
+**The merge.** The worker runs the fencing recheck, then makes a squash
+merge (`apps/agent-worker/agent_worker/merge.py::GitHubMerger.merge`):
+
+* the commit title is the pull request's own title, as `<title> (#<n>)`;
+* `sha` is pinned to the head the checks were green at;
+* the body is the provenance text, with no attribution line.
+
+The merge call is never resent. A merge whose answer was lost ends
+`merge_unanswered` (MERGE_FAILED), because only GitHub can say whether it
+merged. A 405 or 422 whose message is GitHub's branch-protection refusal is
+**`protection_refused`**, carrying GitHub's message. Examples: a required
+review is missing, a required signature is missing, or a rule the token
+cannot satisfy. A 405 because the branch is behind takes the update row
+above. A 409 is `head_moved`.
+
+**Then the issues.** The worker reads GitHub's own `closingIssuesReferences`
+and closes every one that is still OPEN and in the same repository. It
+comments `Closed by #<pr>, merged by SwarmCloud task <task_id>` on each.
+
+These are the rules of `scripts/close-merged-issues.sh`, kept equal to it
+(`apps/agent-worker/agent_worker/merge.py::_close_issues`, built):
+
+* it never reads the pull request's text, so `part of #N` closes nothing;
+* an issue already closed gets no second comment;
+* an issue in another repository is recorded and left alone;
+* one refused close does not stop the others.
+
+MS3 adds the script's page rule: a pull request with more references than
+one page (`scripts/close-merged-issues.sh` (`PAGE=100`)) closes that page
+and records `issues_beyond_page`. It never silently closes only part. The
+step ends **SUCCEEDED** whatever the closes answer, because the merge
+stands; every close that failed is in `result_summary.merge`.
+
+**The CI-fix loop.** An issue run keeps its own loop, unchanged
+(`apps/swarm-api/swarm_api/issueci.py::_merge`). It submits its merge-only
+continuation only once CI is green and its `Closes #N` block is written.
+That step therefore parks only on mergeability or a behind branch.
+
+A workflow that is not an issue run gets the same loop on request, as MS7.
+`metadata.merge_fix_rounds` is 0-5 and defaults to 0. When the tick reads a
+red required check for a `CI_PENDING` merge with rounds left, it claims the
+round in the merge task's metadata in a guarded transaction, then submits
+the continuation the issue-run loop already builds
+(`apps/swarm-api/swarm_api/issueci.py::ci_fix_workflow`): `continues_task`
+names the task that pushed the head, under the tenant. The merge stays
+parked until that continuation ends and CI settles at the head it pushed.
+
+On wake, the worker accepts the new head only if the task that pushed it
+continues the signed target's task. That is the rule
+`apps/swarm-api/swarm_api/issueci.py::_pushing_task` applies, rechecked by
+the worker from GitHub and the task store.
+
+**Refusals: each ends MERGE_REFUSED, with its code in
+`result_summary.merge.refusal`, and changes nothing on the forge.**
+
+| refusal | code | read from |
+|---|---|---|
+| a pull request from a fork | `from_fork` (today folded into `pull_request_not_this_workflows`; MS3 splits it out) | the head repository differs from the base repository |
+| a base that is not the repository's default branch | `base_not_default` (new) | the registered repository's `default_branch` when the tenant registered it, else GitHub's `default_branch` |
+| the worker's placeholder title, `[swarm] task_` in any case or with leading space | `title_placeholder` (built) | `apps/agent-worker/agent_worker/merge.py::title_is_placeholder`, the same rule as `.github/workflows/auto-merge.yml` (`if [[ "${lower_title}" == "[swarm] task_"* ]]; then`) |
+| GitHub's branch protection refused the merge | `protection_refused` (new, split out of `not_mergeable`) | the merge call's 405/422 message |
+| a merge conflict, at merge time or on update | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false`, or update-branch's 422 |
+| a failing required check, no fix rounds left | `checks_failed` (built) | the check runs and statuses at the pinned head |
+| CI never settled | `checks_timeout` (new) | `merge_wait.first_parked_at` and `MERGE_CI_MAX_SECONDS` |
+| the base moved faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | `merge_wait.updates`, rechecked by the first-parent walk |
+
+The other built refusals stand, each with the same code: `verdict_not_merge`,
+`head_moved`, `pull_request_closed`, `token_lacks_rights`, and the rest. A
+host no `ForgeMerger` serves is still refused at submission
+(`apps/swarm-api/swarm_api/validation.py::refuse_unmergeable_forge`).
+
+### 2. Identity
+
+The token is the tenant's existing forge token,
+**`swarm-tenant-<tenant>-git`**, read by the merge Job, which runs as the
+tenant's worker account. Where [git-tokens.md](git-tokens.md) resolves a
+per-repository token for the workflow's repository, that token is used
+instead, by the same resolution order and never by anything a caller sends.
+It is stored only with `scripts/create-secrets.sh --stdin`. It is read at
+merge time only: after the reap and every check that needs no credential,
+registered with the redaction, and sent only in the Authorization header to
+github.com (#219, #307).
+
+The swarm-api wake route reads the same secret for its check reads, as
+`issueci` does.
+
+**The GitHub permissions it needs, for a fine-grained token on each
+repository it merges in:**
+
+| permission | for |
+|---|---|
+| **Contents: write** | the squash merge (`PUT .../pulls/{n}/merge`) |
+| **Pull requests: write** | reading the pull request, `update-branch`, and the provenance comment |
+| **Issues: write** | closing the named issues and commenting on them |
+| **Checks: read** | check runs at the head |
+| **Commit statuses: read** | legacy commit statuses, which a required check with no App is matched against by name |
+| **Workflows: write** | only when the pull request, or the base merged in by `update-branch`, changes `.github/workflows/`: GitHub refuses any token without it to write those paths |
+| Metadata: read | mandatory on every fine-grained token; the branch rules (`rules/branches/{b}`) and protection summary (`branches/{b}`) |
+
+A classic personal access token needs the `repo` and `workflow` scopes for
+the same calls.
+
+The step **does not need Administration**. It never reads or changes a
+ruleset's configuration: it reads the rules that apply to a branch, which
+Metadata covers.
+
+**Branch protection still applies.** GitHub enforces the base branch's
+rulesets and classic protection on the merge call itself, whoever makes it:
+
+* required checks;
+* required reviews;
+* signed commits;
+* linear history;
+* merge-method restrictions.
+
+The step reads the required checks first, so that it can say which check is
+red rather than relay a 405. But GitHub's refusal is the final word, and it
+ends `protection_refused`.
+
+**The residual is bypass.** If the token's owner is a repository admin, or
+is on a ruleset's bypass list, GitHub lets that token merge through
+protection. The step never asks for a bypass -- it sends no admin flag, and
+it does its own required-check read before every merge -- so for an admin
+token, the step's own check is the gate rather than GitHub's. The owner can
+close this by making the token's account a non-bypassing collaborator.
+Recorded, not closed.
+
+### 3. What this supersedes
+
+Superseded, in the 2026-09-29 sections below and on epic #352, by the
+2026-10-04 decisions that this revision builds on:
+
+* **The per-tenant review App and merge App**, their keys `-git-review` and
+  `-git-merge`, and the owner-side creation and installation of both (§1.3,
+  §2.1, §8, epic item 8). The tenant's `-git` token can already merge (#476),
+  so an App identity buys no isolation from an agent that holds it.
+* **The `single-pr` strategy and everything only it needs:**
+  * `pr_role`, the `merges` block, the proof step and its anchor (§1, §3,
+    §4.1);
+  * the `post-verdict` worker action and its GitHub-review verdict anchor
+    (§4.3, §5.2a, §6a);
+  * the `claude-code-review` profile and its review-only-writable prefix,
+    and residual **R8**, which only that prefix had;
+  * the `swarm-<tenant>-merge`, `-post-verdict` and `-review` accounts.
+
+  The built step anchors the verdict on the review's verdict file and on
+  green required checks (next section). The code that was built for
+  `single-pr` stays disabled (`available=False`); removing it is a frozen
+  change (request (B) below), not this plan's.
+* **§2.1b's Terraform-rendered `FORGE_*` Job values for the merge.** Owner
+  and repository come from the signed `repository_url`.
+* **The M2 `restrict-updates` ruleset dry run (§7 Q3, §8).** It restricted
+  merging to the Apps, and there are no Apps.
+* **§9's "never update the branch"**, for a base that requires an up-to-date
+  branch (§1 above).
+* **The 10-attempt READY wait** (`MERGE_STEP_MAX_ATTEMPTS`,
+  `CHECKS_PENDING_RETRY_SECONDS`), replaced by the `CI_PENDING` park once MS2
+  lands.
+
+**Kept, each with its reason:**
+
+* **Signed step specs (#342, CR 34), enforced.** They are no longer a gate
+  on building, but they remain what makes the step safe to leave parked. A
+  `CI_PENDING` step sits for the length of a CI run. Through all of that
+  time, any tenant identity can write its Firestore document (§0), and only
+  the signature stops a rewrite of its `merge_target` or `repository_url`
+  aiming the merge at another pull request (T14). A longer park makes the
+  signature matter more, not less.
+* **#219's token rules.** They are unchanged (the next section, decision 1).
+* **The verdict file.** It must say `MERGE` when the workflow has a review.
+* **`head_moved`, `sha` pinning and `merge_unanswered`.** These do not
+  depend on any identity choice.
+
+### 4. Invariants
+
+* **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** The step
+  holds a lease only while it reads and acts, which takes seconds. A
+  `CI_PENDING` task is PARKED and costs nothing, and the wake tick runs in
+  swarm-api and holds no lease. The scheduler's promotion writes READY
+  alone; only admission takes capacity.
+* **2. All-or-nothing reservation.** This is unchanged. Each wake is admitted
+  like any task, in admission's one transaction.
+* **3. Concurrency counts from LEASED.** This is unchanged. A parked merge is
+  not counted; a woken one is counted from its lease.
+* **4. Never sleep through a long wait.** This is the point of the
+  revision. The step parks, releases and exits 75 instead of waiting.
+  Today's in-worker sleep is bounded by `MERGEABLE_REREADS`, a few seconds
+  for mergeability; past that, the step parks.
+* **5. Fencing.** The park and the merge-wait counters are written in the
+  fenced transaction every park uses. The update-branch call and the merge
+  call are each preceded by the fencing and cancel recheck. A stale worker
+  exits with neither call made and without touching the lease.
+* **6. Spot disabled.** This is unchanged. The merge Job is an ordinary
+  Cloud Run Job.
+* **7. `requests == limits`.** This is unchanged. The merge profile's
+  resource class is as request 47 left it.
+* **8. Checkpointing.** A worker action keeps no workspace, so there is
+  nothing to checkpoint, and it never restores one (CR 36's rule). Its
+  durable state is the fenced park record, plus GitHub itself, which every
+  wake re-reads. Nothing a lost attempt did is lost: a pinned update is
+  re-derived from the first-parent walk.
+* **9. Per-tenant isolation.** The step uses the tenant's own token, in the
+  tenant's own namespace and Job, and acts only on the workflow's own signed
+  `repository_url`. The wake route runs per tenant (`tenant_id` on the
+  Scheduler job). It reads that tenant's parks with that tenant's token and
+  no other.
+* **10. Profiles by name.** A caller asks for the step by naming the `merge`
+  profile or setting `metadata.merge`, and for CI-fix rounds with a bounded
+  integer, `metadata.merge_fix_rounds`. Nothing a caller sends picks an
+  image, a command, a token, a branch or a pull request. The target is
+  resolved by swarm-api into the signed block.
+
+### 5. Retiring `auto-merge.yml`
+
+**While both run.** A workflow that has a merge step does not also get the
+`ready` label. swarm-api drops a `pr_label` of `ready` from the dispatch
+block when the workflow has a merge step, and records it
+(`apps/swarm-api/swarm_api/validation.py::workflow_label` is where the
+label is resolved; MS1). Without that, two mergers race. The race is benign
+-- the loser finds the pull request merged at the pinned head, and the close
+script skips closed issues -- but the step's merges would never be the ones
+counted. Pull requests SwarmCloud did not open keep `auto-merge.yml`,
+unchanged, until the gate below.
+
+**The gate is 10 clean step merges in SwarmCloud's own repository.** Each
+must meet every one of these:
+
+* `result_summary.merge.merged_by_this_task` is true;
+* no `issues_not_closed`;
+* `application.yml` and `release.yml` started on the merge commit. A merge
+  made with the `-git` token starts workflows, which a `GITHUB_TOKEN` merge
+  does not -- the reason `auto-merge.yml` needed an App;
+* no operator intervention;
+* no MERGE_FAILED among them.
+
+MS6 lists them with their run links in its pull request.
+
+**Then MS6 removes:**
+
+* `.github/workflows/auto-merge.yml`;
+* `tests/unit/scripts/test_auto_merge_workflow.py`, whose parity cases have
+  moved to the step's tests;
+* its entry in `.github/workflows/application.yml`'s actionlint list and path
+  filter, and in `tests/unit/scripts/test_workflow_step_reachability.py`;
+* `docs/runbooks/merge-app.md`;
+* the `ready` paragraph of `CLAUDE.md` and of `docs/ci.md`, rewritten to say
+  a SwarmCloud pull request is merged by its workflow's merge step.
+
+The `close-issues` job also closes issues for merges a person makes, so it
+moves to its own workflow running `scripts/close-merged-issues.sh`, unless
+the owner drops it (owner question MS0-Q3).
+
+The owner then uninstalls the `swarmcloud-merge` App and deletes
+`MERGE_APP_ID` and `MERGE_APP_PRIVATE_KEY`, which are owner-side steps.
+
+Pull requests a person or a laptop lane opened, with no workflow behind
+them, need an owner decision before the retirement: merge by hand, or a
+merge-only workflow naming a pull request (owner question MS0-Q2).
+
+### 6. Build plan
+
+Smallest first. Each lane is one pull request, and a dependent lane launches
+only after its dependency has merged.
+
+#### MS1 -- API/spec: the step's knobs, its validation, and the frozen request
+
+**What:**
+
+* File request (A) (`ParkReason.CI_PENDING`) and request (B) in
+  `docs/contract-change-requests.md`.
+* Add `metadata.merge_fix_rounds` (0-5, default 0; refused without a merge
+  step).
+* Drop `pr_label: "ready"` beside a merge step, recorded as
+  `metadata.merge_label_dropped`.
+* Write the `base_not_default` input into `merge_target`: the registered
+  repository's `default_branch` when the tenant has registered it, so the
+  worker never reads the registry itself.
+
+**Territory:**
+
+* `apps/swarm-api/swarm_api/validation.py`: `plan_merge`, `merge_step_for`,
+  `workflow_label`;
+* `apps/swarm-api/swarm_api/schemas.py`;
+* `apps/swarm-api/swarm_api/repositories.py` (read only);
+* `docs/contract-change-requests.md`;
+* `docs/workflows.md` (merge section);
+* `tests/unit/control_plane/test_merge_step_submission.py`.
+
+**Depends on:** this design (MS0).
+
+**Tests:** in `test_merge_step_submission.py`:
+
+* `merge_fix_rounds` out of range, or without a merge step, is a 422;
+* `ready` is dropped only beside a merge step;
+* `merge_target.base` is the registration's branch for a registered
+  repository and absent otherwise.
+
+#### MS2 -- worker/scheduler: the `CI_PENDING` park and its wake
+
+**What:**
+
+* Apply request (A) once the owner accepts it.
+* Worker: park `CI_PENDING` with refund, in place of `run.wait`.
+* Scheduler: `_promote_ci_waits`, which promotes on the marker or the
+  fallback, and dead-letters an exhausted park.
+* swarm-api: `POST /v1/admin/merges/wake`, plus the route in
+  `ROLLUP_SWEEPER_ROUTES`.
+* Terraform: the `merge_wake` Cloud Scheduler job per tenant.
+
+**Territory:**
+
+* `apps/common/swarm_common/states.py` (request (A) only, after acceptance);
+* `apps/agent-worker/agent_worker/merge.py`: `_Run.wait`;
+* `apps/agent-worker/agent_worker/control.py` (a `park_ci_pending` beside
+  `park_awaiting_children`);
+* `apps/scheduler/scheduler/loop.py`;
+* `apps/swarm-api/swarm_api/routes/admin.py`;
+* `apps/swarm-api/swarm_api/auth.py`;
+* a new `apps/swarm-api/swarm_api/mergewake.py`;
+* `terraform/modules/scheduler/jobs.tf`;
+* `tests/terraform/`;
+* `scripts/lib/check-contract-parity.sh` (the new reason's mirrors).
+
+**Depends on:** MS1, and the owner's acceptance of request (A).
+
+**Tests:**
+
+* `tests/unit/worker/test_merge_action.py`: pending checks produce a fenced
+  park with a refund, and a refund past `MERGE_CI_MAX_WAKES` counts as an
+  attempt.
+* A new `tests/unit/control_plane/test_merge_wake.py`: the route writes the
+  marker only when settled, at most once per `CI_READ_SECONDS`, and only for
+  its own tenant's parks with its own tenant's token.
+* `tests/unit/control_plane/test_scheduler_ci_wait.py`: promotion happens on
+  the marker or the fallback and writes READY only; an exhausted park is
+  dead-lettered.
+* A `terraform test` assertion: the job's description carries
+  `managed-by=swarm-terraform`, and its OIDC account is the sweeper.
+
+#### MS3 -- the merge action: branch update, split refusals, issue closing
+
+**What:**
+
+* `update-branch` with `expected_head_sha`, behind the fencing recheck.
+* The first-parent walk.
+* `MERGE_MAX_BRANCH_UPDATES`.
+* The refusals `from_fork`, `base_not_default`, `protection_refused`,
+  `merge_conflict`, `checks_timeout` and `behind_too_often`, split out of
+  today's codes.
+* The close script's page rule (`issues_beyond_page`).
+
+**Territory:**
+
+* `apps/agent-worker/agent_worker/merge.py`: `GitHubMerger`,
+  `_with_forge`, `_close_issues`;
+* `tests/unit/worker/test_merge_action.py`;
+* `tests/unit/worker/merge_world.py`.
+
+**Depends on:** MS2.
+
+**Tests:** in `test_merge_action.py`, against `merge_world.py`'s fake forge:
+
+* behind leads to an update with `expected_head_sha`, and a re-park at the
+  new head;
+* an update 422 for a conflict gives `merge_conflict`;
+* a fourth update gives `behind_too_often`;
+* a head that is not a GitHub base-merge of the pushed head gives
+  `head_moved`;
+* a stale generation makes no update call;
+* each new refusal code;
+* 101 closing references close 100 and record `issues_beyond_page`;
+* a parity case with `tests/unit/scripts/test_close_merged_issues.py` over
+  the same references.
+
+#### MS4 -- console: the merge card on the run and workflow pages
+
+**What:** a card on the merge step showing three things:
+
+* the state: waiting for CI (with the pending checks and the head), behind
+  and updated (n of 3), merged (commit and issues closed), or refused (code
+  and reason);
+* the pull request link;
+* `merge_wait.first_parked_at`.
+
+A `CI_PENDING` park reads "waiting for CI", never "stalled".
+
+**Territory:**
+
+* `apps/swarm-ui/src/RunSteps.tsx`;
+* `apps/swarm-ui/src/WorkflowViews.tsx`;
+* `apps/swarm-ui/src/stepviews.ts`;
+* `apps/swarm-ui/src/types.ts`;
+* `apps/swarm-ui/src/__tests__/` (a new `merge.card.test.tsx`).
+
+**Depends on:** MS2 (the park reason exists); MS3 for the update and
+refusal fields.
+
+**Tests:** in `merge.card.test.tsx`, one render per state; no
+`stalled`/`blocked` wording on `CI_PENDING`; the pull request link is built
+from the result, never from caller text.
+
+#### MS5 -- plugin rows: `swarm_workflow`, `swarm_trouble`, `swarm_follow`
+
+**What:**
+
+* `CI_PENDING` gets its plain-language row: "waiting for the pull request's
+  checks".
+* `swarm_trouble` leaves it out, as it leaves out dependency parks.
+* The merge result gets a compact row: merged / refused `<code>`, and the
+  issues closed.
+
+**Territory:**
+
+* `apps/swarm-mcp/swarm_mcp/progress.py`: `_PARKED_BECAUSE`;
+* `apps/swarm-mcp/swarm_mcp/compact.py`;
+* `apps/swarm-mcp/swarm_mcp/render.py`;
+* `tests/unit/mcp/`.
+
+**Depends on:** MS2.
+
+**Tests:**
+
+* every `ParkReason` member has a `_PARKED_BECAUSE` entry;
+* `swarm_trouble` omits `CI_PENDING`;
+* the merge row renders each refusal code.
+
+#### MS6 -- retire `auto-merge.yml`
+
+**What:** §5's removals, after its gate.
+
+**Territory:**
+
+* `.github/workflows/auto-merge.yml`;
+* `.github/workflows/application.yml`;
+* a new `.github/workflows/close-merged-issues.yml` (if Q3 keeps it);
+* `tests/unit/scripts/test_auto_merge_workflow.py`;
+* `tests/unit/scripts/test_workflow_step_reachability.py`;
+* `docs/ci.md`;
+* `docs/runbooks/merge-app.md`;
+* `CLAUDE.md`.
+
+**Depends on:** MS3, plus 10 clean step merges (§5), plus Q2 answered.
+
+**Tests:**
+
+* the reachability test no longer lists `auto-merge.yml`;
+* `test_close_merged_issues.py` runs against the new workflow if it is kept;
+* a doc test that no doc still tells a reader to label `ready` to merge.
+
+#### MS7 -- the CI-fix hand-off for workflows that are not issue runs
+
+**What:** the tick claims a round when it reads red with rounds left, and
+submits `issueci.ci_fix_workflow`'s continuation. The worker accepts the
+fix round's head by the continuation rule.
+
+**Territory:**
+
+* `apps/swarm-api/swarm_api/mergewake.py`;
+* `apps/swarm-api/swarm_api/issueci.py`: `ci_fix_workflow` and
+  `_pushing_task` made callable from it, behaviour unchanged;
+* `apps/agent-worker/agent_worker/merge.py` (the head-acceptance rule);
+* `tests/unit/control_plane/test_merge_wake.py`.
+
+**Depends on:** MS3.
+
+**Tests:**
+
+* red with rounds left claims once and submits once, even across two racing
+  ticks;
+* red with none left wakes the step to `checks_failed`;
+* the head a fix round pushed is accepted, and any other head is
+  `head_moved`;
+* `tests/unit/control_plane/test_issue_run_auto_merge.py` is unchanged and
+  green.
+
+### 7. Epic #352, re-triaged against this plan
+
+| box | triage |
+|---|---|
+| 1. CR 33 decided (`worker_action`, `merge` profile, MERGE_REFUSED/MERGE_FAILED) | done: accepted 2026-09-29, applied 2026-10-01, enabled by CR 47 on 2026-10-04; the end causes are this step's |
+| 2. CR 35 (`post-verdict`) decided | superseded because the verdict is no longer anchored on an App's GitHub review (§3); decided and applied 2026-10-01, disabled, removal is request (B) |
+| 3. CR 36 (`claude-code-review`, `restore_on_retry`) decided | superseded because the review-only-writable prefix it served is gone with the review App (§3); decided and applied 2026-10-01, disabled |
+| 4. Terraform per-tenant review/post-verdict/merge accounts and the `worker_objects` split | superseded because the merge Job runs as the tenant's worker account on `-git` (CR 47); the accounts exist on main, unused by the merge; their removal is a Track C follow-up (owner question MS0-Q4) |
+| 4a. Never restore a checkpoint on `claude-code-review`/`post-verdict`/`merge` | done: `never_restore_checkpoint` is read by the lifecycle (`tests/unit/worker/test_never_restore_checkpoint.py`); a worker action keeps no workspace either way |
+| 5. `register-tenant.sh` refuses `git-merge`/`git-review` on the worker account; the bucket split | superseded because there are no `git-merge`/`git-review` credentials; the refusal is harmless and stays until request (B) |
+| 6. swarm-api `single-pr`, `pr_role`, the `merges` block, the refusals, #342 verification | superseded because the merge is appended to any `integrate` or one-step `direct-pr` workflow (CR 47); the #342 verification half is done (CR 34); the new submission work is kept as MS1 |
+| 7. Worker: `pr-title.txt`, `pr_role`s, `post-verdict`, the merge action, the `auto-merge.yml` parity test | superseded because `single-pr` and `post-verdict` are (§3); the merge action is built (CR 47); the branch update, the split refusals and the close parity are kept as MS3; the wait is kept as MS2 |
+| 8. Owner: create the review and merge Apps, the ruleset dry run, Q3/Q4 | superseded because there are no Apps (§3); the owner-side step left is retiring the `swarmcloud-merge` App, kept as MS6 |
+| 9. Move `release.yml`'s `id-token: write` to job level | done: `release.yml` grants it per job (`tests/unit/scripts/test_release_id_token_scope.py`); separate from this plan, and never gated on it |
+
+### Frozen-contract requests this plan needs (requests, not changes)
+
+**(A) `ParkReason.CI_PENDING`** in `apps/common/swarm_common/states.py`, after
+`CHILDREN_INCOMPLETE`, with the docstring "a merge step waits for its pull
+request's checks; promoted by the scheduler's CI-wait sweep on the wake
+marker or the fallback instant."
+
+None of the existing members fits:
+
+* `SCHEDULED_RETRY` is promoted by time alone and counts every wake as an
+  attempt, which is today's behaviour;
+* `DEPENDENCY_INCOMPLETE` is promoted when the workflow's upstream steps end,
+  which they already have;
+* `CHILDREN_INCOMPLETE` names child tasks, and the observer tools treat it
+  that way (`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`).
+
+MS1 files it in `docs/contract-change-requests.md`. MS2 applies it on
+acceptance, with its mirrors: the UI's park list, the MCP rows, and
+`check-contract-parity.sh`. The owner can instead choose to keep
+`SCHEDULED_RETRY` (owner question MS0-Q1). If so, MS2 parks on it with a
+`blocked_by` reason of `CI_PENDING` and no refund, and nothing frozen
+changes.
+
+**(B) Retire the disabled `single-pr` catalogue entries.** These are the
+`post-verdict` and `claude-code-review` profiles,
+`WorkerAction.POST_VERDICT`, and `VERDICT_REFUSED`/`VERDICT_FAILED` --
+dead since 2026-10-04 and kept disabled. It is not in this plan's lanes. It
+is listed so that the decision is the owner's rather than an omission.
 
 ## Revised 2026-10-04 (owner)
 
