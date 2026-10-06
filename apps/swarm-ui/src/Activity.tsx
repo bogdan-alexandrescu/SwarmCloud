@@ -50,18 +50,21 @@ import {
   viewDays,
   viewerZone,
   wallOf,
+  withRows,
   type BucketChoice,
   type GroupBy,
   type Kind,
   type LedgerView,
   type OutcomeBucket,
   type Outcomes,
+  type RowOutcome,
   type Span,
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { TimelinePages } from './TimelineLanes'
+import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
@@ -174,7 +177,9 @@ export function ActivityScreen({
     (next: LedgerView) => {
       const q = serializeView(next)
       setOwn(q)
-      rememberView(q)
+      // The filters are remembered; an open figure's rows are not -- a bare
+      // `#work/timeline` tomorrow should not reopen today's list of failures.
+      rememberView(serializeView({ ...next, rows: null, at: null, rowsKey: null }))
       onView?.(q)
     },
     [onView],
@@ -193,6 +198,28 @@ export function ActivityScreen({
     },
     [view, setView],
   )
+
+  // A FIGURE OPENS THE TASKS BEHIND IT (#116), on this page: a bucket's (or
+  // the span's) failed, cancelled or succeeded, and a Reliability cell's --
+  // that person's, profile's or tenant's -- read from the same fold the
+  // figure was counted from. The open figure is in the address, so the list
+  // behind "Failed 21" is a link someone can send.
+  const viewLink = useCallback(
+    (next: LedgerView): RowLink => {
+      const q = serializeView(next)
+      return { href: q === '' ? '#work/timeline/outcomes' : `#work/timeline/outcomes?${q}`, open: () => setView(next) }
+    },
+    [setView],
+  )
+  const figureLink = useCallback(
+    (outcome: RowOutcome, at: string | null): RowLink => viewLink(withRows(view, outcome, at)),
+    [view, viewLink],
+  )
+  const cellLink = useCallback(
+    (outcome: RowOutcome, rowKey: string): RowLink | null => viewLink(withRows(view, outcome, null, rowKey)),
+    [view, viewLink],
+  )
+  const closeRows = useCallback(() => setView({ ...view, rows: null, at: null, rowsKey: null }), [view, setView])
 
   // ---- the ledger read ---------------------------------------------------
   // THE HEADLINE'S OWN READ, AND ONLY ITS SECTIONS (#377). The success rate,
@@ -377,8 +404,19 @@ export function ActivityScreen({
   const data = good?.data ?? null
   const dim = pending || (good !== null && good.key !== key)
 
+  // A zoom changes the buckets, so an open bucket's rows (named by its start) close with it.
   const zoom = (b: OutcomeBucket) =>
-    setView({ ...view, span: null, since: b.start, until: b.end, bucket: 'auto', back: serializeView({ ...view, back: null }) })
+    setView({
+      ...view,
+      span: null,
+      since: b.start,
+      until: b.end,
+      bucket: 'auto',
+      back: serializeView({ ...view, back: null }),
+      rows: null,
+      at: null,
+      rowsKey: null,
+    })
   const mine = () => setView({ ...view, platform: false, tenant: [], exclude_tenant: [], group: view.group === 'tenant_id' ? 'runner_profile' : view.group })
 
   return (
@@ -431,9 +469,11 @@ export function ActivityScreen({
                 picked={picked}
                 onPick={setPicked}
                 onZoom={zoom}
+                figureLink={figureLink}
               />
             </div>
           )}
+          {view.rows !== null && <EndedRowsCard view={view} tz={tz} nonce={nonce} onClose={closeRows} />}
           {/* EVERY CARD READS ITS OWN PART, WHEN IT SCROLLS INTO VIEW (#377),
               whether or not the headline has landed: they are separate reads. */}
           <div className="ctl-cards ol-cards">
@@ -454,6 +494,7 @@ export function ActivityScreen({
                   platform={view.platform}
                   onGroup={(g: GroupBy) => setView({ ...view, group: g })}
                   rowLink={rowLink}
+                  cellLink={cellLink}
                 />
               )}
             </LedgerPart>
@@ -700,12 +741,14 @@ function LedgerSection({
   picked,
   onPick,
   onZoom,
+  figureLink,
 }: {
   data: Outcomes
   view: LedgerView
   picked: string | null
   onPick: (start: string | null) => void
   onZoom: (b: OutcomeBucket) => void
+  figureLink: (outcome: RowOutcome, at: string | null) => RowLink
 }) {
   const t = data.totals
   const delta = deltaWords(data)
@@ -791,7 +834,7 @@ function LedgerSection({
       {view.table ? (
         <LedgerTable data={data} />
       ) : (
-        <OutcomeLedger data={data} picked={picked} onPick={onPick} onZoom={onZoom} />
+        <OutcomeLedger data={data} picked={picked} onPick={onPick} onZoom={onZoom} figureLink={figureLink} />
       )}
     </section>
   )
