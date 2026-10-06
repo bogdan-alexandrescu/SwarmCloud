@@ -680,9 +680,16 @@ ACTIVE_WORKFLOW_STATES: tuple[str, ...] = tuple(
 
 _TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
 
-#: Pages of `GET /v1/workflows` read before the list says it stopped short.
-#: The route filters each page after its rollup, so a tenant with a long
-#: finished history can need several pages to reach an old running workflow.
+#: Pages of `GET /v1/workflows` read before the list says it stopped short,
+#: from a deployment that filters only after its rollup (no `filter` in its
+#: answer): there a tenant with a long finished history can need several pages
+#: to reach an old running workflow. A deployment that serves `active=true`
+#: from its indexed stored-state query skips stored SUCCEEDED and CANCELLED
+#: history in the query (owner decision 2026-10-06, P4: measured that day, the
+#: old walk read 4 pages of 50 to list 7 running workflows and still said it
+#: was incomplete), and is read until its last page or a page full of
+#: unfinished workflows -- usually one; still at most this many when newer
+#: FAILED or DEAD_LETTERED history, which the query must keep, fills them.
 WORKFLOW_LIST_PAGES = 4
 WORKFLOW_PAGE_SIZE = 50
 
@@ -768,27 +775,50 @@ def running_workflows(
 
     The tenant is the API's: `GET /v1/workflows` answers for the caller's own
     tenant (`tenant_scope`), and nothing here names one. The route is asked for
-    `ACTIVE_WORKFLOW_STATES` and the answer is filtered AGAIN, because a
-    deployment older than that filter ignores the parameter and serves every
-    workflow -- and attaching a finished one would start rows with nothing to
-    watch. A workflow whose detail read says it has since finished is dropped
-    for the same reason. Raises `SwarmError` when the list itself cannot be
-    read: "could not ask" is never an empty list.
+    `active=true` and `ACTIVE_WORKFLOW_STATES`, and the answer is filtered
+    AGAIN, because a deployment older than those filters ignores the
+    parameters and serves every workflow -- and attaching a finished one would
+    start rows with nothing to watch. A workflow whose detail read says it has
+    since finished is dropped for the same reason. Raises `SwarmError` when
+    the list itself cannot be read: "could not ask" is never an empty list.
+
+    ONE PAGE when the route says it filtered in its query
+    (`filter.stored_states`) and the page is either the last one or FULL of
+    unfinished workflows: then it is the running set, or more than a page of
+    it -- which is reported, not walked. The query leaves out only stored
+    SUCCEEDED and CANCELLED (`Store.stored_states_for`); a stored FAILED or
+    DEAD_LETTERED workflow is still fetched, because a retry can revive it,
+    and the route drops it after deriving. So a short page with a token is
+    newer failed history in front of older running workflows, and the walk
+    goes on, up to `pages` pages, exactly as for a deployment without the
+    filter. `incomplete_because` says which of the two stopped it.
     """
     now = now or datetime.now(timezone.utc)
     found: list[dict[str, Any]] = []
     tenant: str | None = None
     token: str | None = None
+    read = 0
+    indexed = False
+    full_page = False
     for _ in range(max(1, pages)):
         page = client.workflows(
-            states=ACTIVE_WORKFLOW_STATES, limit=WORKFLOW_PAGE_SIZE, page_token=token
+            states=ACTIVE_WORKFLOW_STATES,
+            active=True,
+            limit=WORKFLOW_PAGE_SIZE,
+            page_token=token,
         )
+        read += 1
         tenant = tenant or page.get("tenant_id")
+        unfinished = 0
         for workflow in page["workflows"]:
             if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
                 found.append(_running_entry(workflow, now))
+                unfinished += 1
         token = page.get("next_page_token") or None
-        if token is None:
+        filtered = page.get("filter")
+        indexed = isinstance(filtered, dict) and bool(filtered.get("stored_states"))
+        full_page = indexed and unfinished >= WORKFLOW_PAGE_SIZE
+        if token is None or full_page:
             break
 
     detailed = found[: max(0, detail_reads)]
@@ -808,7 +838,10 @@ def running_workflows(
     }
     if token is not None:
         out["incomplete_because"] = (
-            f"stopped after {pages} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
+            f"a page of {WORKFLOW_PAGE_SIZE} unfinished workflows was full; read "
+            f"{read} page(s), and older running workflows are not listed"
+            if full_page
+            else f"stopped after {read} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
             "running workflows, if any, are not listed"
         )
     return out

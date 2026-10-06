@@ -74,7 +74,7 @@ from .progress import (
     questions_count,
     questions_words,
 )
-from .render import describe_blocker, parse_time, task_label
+from .render import _DEPENDENCY_WAIT, describe_blocker, parse_time, task_label
 
 #: The longest one progress call may hold: thirty minutes (owner decision,
 #: 2026-10-01, #448). A held call costs a task read per poll and NOTHING in the
@@ -224,10 +224,6 @@ def waits_for(task: dict[str, Any]) -> str:
 #: The states that hold capacity (invariant 3: concurrency counts from LEASED),
 #: from the frozen contract. One state for the hold: see the module docstring.
 _HOLDING = frozenset(state.value for state in CONCURRENCY_STATES)
-
-#: What a dependent step waits in before it can start.
-_DEPENDENCY_WAIT = "DEPENDENCY_INCOMPLETE"
-
 
 def _wake_key(task: dict[str, Any]) -> str:
     """What ends a window early: the task's state, as a row acts on it.

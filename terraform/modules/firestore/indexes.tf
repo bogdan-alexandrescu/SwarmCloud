@@ -362,6 +362,12 @@ locals {
     }
 
     # ---- workflows ----------------------------------------------------------
+    # GET /v1/workflows?active=true / ?state=... -- `tenant_id ==, state IN
+    # [...] ORDER BY created_at DESC` (Store.list_workflows, stored_states).
+    # The IN lists every stored state but the final ones, because the stored
+    # state is a cache that can lag the steps; the route derives each row
+    # after. It is what makes a tenant's running workflows one page however
+    # long its finished history is (owner decision 2026-10-06, P4).
     "workflows-tenant-state-created" = {
       collection  = "workflows"
       query_scope = "COLLECTION"

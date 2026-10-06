@@ -1296,6 +1296,7 @@ class SwarmClient:
         self,
         *,
         states: Sequence[str] = (),
+        active: bool = False,
         limit: int | None = None,
         page_token: str | None = None,
     ) -> dict[str, Any]:
@@ -1303,9 +1304,14 @@ class SwarmClient:
 
         `states` filters on the DERIVED state, after the route's rollup, so a
         page may come back short or empty with a `next_page_token` still set.
-        The tenant is the route's (`tenant_scope`), never a parameter here.
+        `active` keeps the unfinished ones, and a route that serves it from its
+        indexed stored-state query says so in `filter.stored_states`; an older
+        route ignores it. The tenant is the route's (`tenant_scope`), never a
+        parameter here.
         """
         params: list[tuple[str, str]] = [("state", s) for s in states]
+        if active:
+            params.append(("active", "true"))
         if limit is not None:
             params.append(("limit", str(limit)))
         if page_token:

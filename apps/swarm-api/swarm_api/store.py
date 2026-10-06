@@ -16,6 +16,8 @@ immediately -- an index with any other field in between does NOT satisfy it:
     tasks-tenant-runner-created     tenant_id ASC, runner_profile ASC, created_at DESC
     tasks-tenant-parent-created     tenant_id ASC, parent_task_id ASC, created_at DESC
     workflows-tenant-created        tenant_id ASC, created_at DESC
+    workflows-tenant-state-created  tenant_id ASC, state ASC, created_at DESC
+                                    (`state IN`, for a filtered workflow list)
 
 Only the first exists in terraform/modules/firestore/indexes.tf today. See the
 handover note in this track's report: the other four are required before
@@ -72,7 +74,9 @@ from swarm_common.states import (
     EventType,
     TaskState,
     assert_transition,
+    can_transition,
 )
+from swarm_rollup import _TERMINAL_SEVERITY
 
 from .codec import (
     attempt_from_dict,
@@ -259,6 +263,40 @@ def _no_live_worker(
 #: this -- only data written outside the validation -- derives UNKNOWN on its
 #: own and cannot spend a neighbour's reads.
 _STEP_READS_PER_WORKFLOW = 50
+
+
+def _final_workflow_states() -> frozenset[TaskState]:
+    """The stored workflow states no later derivation can change.
+
+    WHY NOT "EVERY TERMINAL STATE". A workflow's stored `state` is a cache of
+    `swarm_rollup.derive`, which reports a finished workflow as its WORST
+    step (`_TERMINAL_SEVERITY`). A stored T therefore says every step was
+    terminal and no worse than T when it was written -- and that stays true
+    only if none of those step states has a way out. The frozen state machine
+    allows FAILED -> READY (a retry), so a stored FAILED, and a stored
+    DEAD_LETTERED with a FAILED sibling, can come back to life; a stored
+    SUCCEEDED or CANCELLED cannot. Computed from `can_transition` rather than
+    listed, so this cannot drift from the contract.
+
+    It goes by severity rank, not by the steps a workflow actually has, so a
+    stored DEAD_LETTERED workflow whose steps are all DEAD_LETTERED, CANCELLED
+    or SUCCEEDED -- truly final -- is still fetched by every filtered list and
+    dropped after deriving. That costs a row read, never a wrong answer; ruling
+    it out in the query needs a "finished" marker written back with the
+    rollup, which is a document-shape change of its own.
+    """
+    final: set[TaskState] = set()
+    for rank, state in enumerate(_TERMINAL_SEVERITY):
+        possible = _TERMINAL_SEVERITY[rank:]
+        if not any(can_transition(step, to) for step in possible for to in TaskState):
+            final.add(state)
+    return frozenset(final)
+
+
+#: Stored workflow states that are the derivation's last word (SUCCEEDED,
+#: CANCELLED today). The only ones a filtered workflow listing may leave out
+#: of its query: every other stored state can be stale behind the steps.
+FINAL_WORKFLOW_STATES: frozenset[TaskState] = _final_workflow_states()
 
 #: `evaluate_capacity` treats a MISSING pool as unlimited, but a Firestore
 #: document has no "absent integer" -- so a pool created only to carry an
@@ -659,7 +697,8 @@ class Store:
 
         `lower` (inclusive) and `upper` (exclusive) bound `field`, so windows
         with a shared edge tile without overlap. `base` must carry EQUALITY
-        filters only: the run reads add an equality on `field` to it.
+        (or IN, a disjunction of equalities) filters only: the run reads add an
+        equality on `field` to it.
         """
         mark = (after.at, after.doc_id) if after is not None else None
 
@@ -1540,6 +1579,40 @@ class Store:
             raise NotFound(f"workflow {workflow_id!r} not found")
         return workflow
 
+    @staticmethod
+    def stored_states_for(
+        *, active: bool, states: Sequence[str] | None
+    ) -> list[str] | None:
+        """The STORED states a workflow listing filtered this way must query.
+
+        The caller filters on the DERIVED state, which is what the API serves;
+        the stored one is a cache that can lag the steps (`swarm_api.rollup`).
+        So this never asks for the state the caller named. It asks for every
+        stored state a workflow that DERIVES it could still carry: every state
+        but the final ones (`FINAL_WORKFLOW_STATES`), plus any final state the
+        caller named, whose own cache is right. The route then derives each
+        row and filters on that, so a stale cache costs a row read, never a
+        wrong answer -- and the read repairs it, so the next query skips it.
+
+        None means "no stored filter": nothing was asked, or a name was given
+        that no stored state can rule out -- UNKNOWN, which is derived when a
+        step cannot be read whatever the cache says, or a name that is not a
+        state at all.
+        """
+        live = [s.value for s in TaskState if s not in FINAL_WORKFLOW_STATES]
+        if active:
+            # Not terminal (UNKNOWN included): a final stored state is never
+            # active, so the live set is the whole answer, and a `states`
+            # filter beside it can only narrow the rows, not the query.
+            return live
+        if not states:
+            return None
+        known = {s.value for s in TaskState}
+        if any(name not in known for name in states):
+            return None
+        named_final = {s.value for s in FINAL_WORKFLOW_STATES} & set(states)
+        return live + sorted(named_final)
+
     def list_workflows(
         self,
         tenant_id: str,
@@ -1547,14 +1620,26 @@ class Store:
         limit: int = 50,
         page_token: str | None = None,
         submitted_by: str | None,
+        stored_states: Sequence[str] | None = None,
     ) -> Page:
         """One page of this tenant's workflows; `submitted_by` exactly as on
         `list_tasks` (filtered after the cursor is taken), and paged on
-        (created_at, workflow_id) like it."""
+        (created_at, workflow_id) like it.
+
+        `stored_states` (from `stored_states_for`) narrows the QUERY to those
+        stored states -- `tenant_id ==, state IN, ORDER BY created_at DESC`,
+        served by `workflows-tenant-state-created` -- so a tenant's running
+        workflows are one page however long its finished history is. At most
+        ten values, inside Firestore's limit of 30 for IN. The keyset is the
+        same (created_at, workflow_id) one, so a token stays a position.
+        """
+        base = self._db.collection(WORKFLOWS).where(
+            filter=FieldFilter("tenant_id", "==", tenant_id)
+        )
+        if stored_states is not None:
+            base = base.where(filter=FieldFilter("state", "in", list(stored_states)))
         page = self._keyset_page(
-            self._db.collection(WORKFLOWS).where(
-                filter=FieldFilter("tenant_id", "==", tenant_id)
-            ),
+            base,
             field="created_at",
             decode=workflow_from_dict,
             key=lambda workflow: (workflow.created_at, workflow.workflow_id),
