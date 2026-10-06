@@ -2132,6 +2132,45 @@ should not be one.
 an assertion strong enough that the mutation would fail it, and let CI
 demonstrate that — not by running the mutation here.
 
+### A SwarmCloud agent runs `scripts/changed-guards.sh` before it finishes
+
+The laptop rule above does not bind an agent in a SwarmCloud container
+(CLAUDE.md, "A SwarmCloud agent is not this machine"): it runs the unit tests
+for its area, then this one command:
+
+```bash
+scripts/changed-guards.sh            # diff = origin/main...HEAD + work tree
+scripts/changed-guards.sh --list     # print the selection, run nothing
+scripts/changed-guards.sh --base <rev> | --files <list>|-
+```
+
+**Why.** On 2026-10-05, 33 of 131 lane PRs (25%) were red on their first CI
+run, and the reds were mostly repo-wide guards that a lane's narrowed
+`pytest tests/unit/<area>` never collects: `test_docs_describe_what_was_built`,
+`test_docs_spec_amendments`, the route seam
+`test_every_v1_path_the_ui_calls_is_served_by_this_api`, `test_specsign_covers`
+and the contract-parity script (#591, #611, #614; issue #642). Those tests read
+source and docs **as text**, so an import graph does not find them; their text
+naming the changed file does.
+
+**What it selects.** For a non-empty diff: the fixed guard set (always), every
+changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
+text names a changed path by repo-relative path or basename. A generic basename
+(`__init__.py`, `package.json`, …) selects by full path only, or it would pick
+half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+(collecting `tests/unit/scripts` whole costs ~135 s, so files, not
+directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
+deadlines so the whole stays under the ten minutes a lane allows a command. It
+prints the last lines of the output and keeps the full log only on failure. An
+empty diff runs nothing and exits 0; a base that does not resolve exits 2
+rather than reading as an empty diff.
+
+**What it does not do.** It does not replace the area run (a test that imports
+a changed module without naming its file is not selected), it does not run
+vitest, `terraform test` or anything needing credentials, and a green run proves
+nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
+selection against fixture diffs.
+
 ## Where the suites are documented
 
 [`testing.md`](testing.md) is still the reference for **what each suite covers
