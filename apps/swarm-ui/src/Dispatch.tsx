@@ -4,11 +4,11 @@ import {
   CARRIER_NOTE,
   DISPATCH_CARRIERS,
   DISPATCH_STRATEGIES,
-  STRATEGY_LABEL,
   TERMINAL_STATES,
   consequenceOf,
   dispatchOf,
   needsRepository,
+  strategyLabel,
   type DispatchCarrier,
   type DispatchStrategy,
   type Task,
@@ -158,7 +158,7 @@ export function DispatchChoice({
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
         {offered.map((s) => {
-          const c = consequenceOf(s, steps)
+          const c = consequenceOf(s, steps, scale)
           return (
             <label key={s} className={`dsp-option${draft.strategy === s ? ' is-on' : ''}`}>
               <input
@@ -170,7 +170,7 @@ export function DispatchChoice({
               />
               <span className="dsp-option-body">
                 <span className="dsp-option-head">
-                  <b>{STRATEGY_LABEL[s]}</b>
+                  <b>{strategyLabel(s, scale)}</b>
                   <code className="dsp-code">{s}</code>
                   {s === 'collect' && <span className="dsp-default">default</span>}
                 </span>

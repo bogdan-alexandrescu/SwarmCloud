@@ -62,6 +62,7 @@ import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
   pluralise,
+  reasonCopy,
   type Stats,
   type TaskPage,
 } from './types'
@@ -451,7 +452,7 @@ export function WorkflowsFailedCard({
                     </span>
                   </th>
                   {/* The route sends '' as well as null for no submitter: both are an absence. */}
-                  <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : r.submitted_by}</td>
+                  <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : <Who address={r.submitted_by} />}</td>
                   <td>
                     <Steps row={r} />
                   </td>
@@ -738,6 +739,22 @@ const GROUP_HEAD: Record<GroupBy, string> = {
   submitted_by: 'Person',
 }
 
+/**
+ * A PERSON IS PRINTED BY THE LOCAL PART OF THEIR ADDRESS, the whole address in
+ * the title (QA G3-17, 2026-10-07). Full service-account addresses took ~410px
+ * of a 1440 table and pushed "Reported cost" and "Ended" past the card's edge.
+ * The cell is also capped (`.ol-who`, 220px with an ellipsis), so a long local
+ * part cannot do the same. A key with no `@` is printed whole.
+ */
+export function Who({ address }: { address: string }) {
+  const at = address.indexOf('@')
+  return (
+    <span className="ol-who" title={address}>
+      {at > 0 ? address.slice(0, at) : address}
+    </span>
+  )
+}
+
 /** A cost cell: `—` when nothing reported, `$0.00` only for a reported zero, partial when some attempts did not report. */
 export function CostFigure({ c, what }: { c: CostCell; what: string }) {
   if (c.sum_usd === null || c.reporting === 0) {
@@ -902,7 +919,7 @@ export function ReliabilityCard({
                     {r.key === '' ? (
                       <i className="ctl-em">not recorded</i>
                     ) : link === null ? (
-                      r.key
+                      g.by === 'submitted_by' ? <Who address={r.key} /> : r.key
                     ) : (
                       <a
                         className="ctl-link ol-row-link"
@@ -913,7 +930,7 @@ export function ReliabilityCard({
                           link.open()
                         }}
                       >
-                        {r.key}
+                        {g.by === 'submitted_by' ? <Who address={r.key} /> : r.key}
                       </a>
                     )}
                     {r.declared_cost && (
@@ -1129,6 +1146,26 @@ export function unfiltered(view: LedgerView): string[] {
   return out
 }
 
+/**
+ * PARK REASONS IN WORDS, NOT ENUMS (QA G3-24, 2026-10-07): the card printed
+ * `clears itself DEPENDENCY_INCOMPLETE 8`. Each reason is `reasonCopy`'s words
+ * -- the ones the Agents list and Overview use -- with its count, and the
+ * route's token in the title for whoever is matching it to a log. A reason
+ * with no copy falls back to its raw token, which is `reasonCopy`'s rule.
+ */
+function Reasons({ of }: { of: ReadonlyArray<readonly [string, number]> }) {
+  return (
+    <>
+      {of.map(([r, c], i) => (
+        <span key={r} className="ol-reason" title={r}>
+          {i > 0 && ' · '}
+          {reasonCopy(r).replace(/\.$/, '')} <b className="ol-n">{c}</b>
+        </span>
+      ))}
+    </>
+  )
+}
+
 export function OpenWorkCard({
   open,
   view,
@@ -1211,11 +1248,13 @@ export function OpenWorkCard({
               <span className="ol-warn-mark" aria-hidden>
                 ▲
               </span>{' '}
-              needs a person {person.map(([r, c]) => `${r} ${c}`).join(' · ')}
+              needs a person <Reasons of={person} />
             </p>
           )}
           {itself.length > 0 && (
-            <p className="ol-line">clears itself {itself.map(([r, c]) => `${r} ${c}`).join(' · ')}</p>
+            <p className="ol-line ol-itself">
+              clears itself <Reasons of={itself} />
+            </p>
           )}
           {more && (
             <p className="ol-line">

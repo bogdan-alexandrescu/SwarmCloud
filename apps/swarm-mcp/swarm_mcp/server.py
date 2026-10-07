@@ -823,6 +823,25 @@ TOOLS: list[dict[str, Any]] = [
                         "carries the digest of what was received either way."
                     ),
                 },
+                "merge_pr": {
+                    "type": "object",
+                    "description": (
+                        "Merge a pull request NO workflow opened, at the head sha you "
+                        "name (#352): submits one `merge` step and nothing else, so it "
+                        "takes no `steps`/`spec` and only `repo` and `title` beside it. "
+                        "The repository is `repo` when given, which must be one your "
+                        "tenant registered, else your tenant's only registered one. The "
+                        "API refuses a pull request that is closed, merged, from a fork, "
+                        "or whose head is not `head_sha` now; the step merges only once "
+                        "every required check is green at that head."
+                    ),
+                    "properties": {
+                        "number": {"type": "integer", "minimum": 1},
+                        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                    },
+                    "required": ["number", "head_sha"],
+                    "additionalProperties": False,
+                },
                 "infer": {
                     "type": "boolean",
                     "default": False,
@@ -2201,6 +2220,107 @@ def _follow_rows(
     )
 
 
+#: What `merge_pr` takes beside it: the repository and the run's name. Every
+#: other `swarm_workflow` argument would add work to, or move, a pull request
+#: that is already written, and swarm-api would refuse it anyway.
+_MERGE_PR_BESIDE = ("repo", "title", "target", "merge_pr")
+
+
+def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
+    """`swarm_workflow` with `merge_pr` (#352): one merge step for an existing PR."""
+    beside = sorted(
+        k for k, v in args.items()
+        if k not in _MERGE_PR_BESIDE and v is not None and v is not False
+    )
+    if beside:
+        raise SwarmError(
+            f"swarm_workflow was given `merge_pr` AND {beside}; `merge_pr` submits the one "
+            "merge step for an existing pull request and takes only `repo` and `title` "
+            "beside it. Nothing was sent"
+        )
+    merge_pr = args["merge_pr"]
+    if not isinstance(merge_pr, dict) or set(merge_pr) != {"number", "head_sha"}:
+        raise SwarmError(
+            "`merge_pr` is {\"number\": <the pull request's number>, \"head_sha\": <its "
+            "full head sha>} and nothing else. Nothing was sent"
+        )
+    number = merge_pr["number"]
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise SwarmError("`merge_pr.number` is the pull request's number, a positive integer. "
+                         "Nothing was sent")
+    placed = _placement("swarm_workflow", args, profiles=["merge"])
+    repo = args.get("repo") or None
+    envelope = workflows.submit_merge_pr(
+        client, number=number, head_sha=str(merge_pr["head_sha"]),
+        repository_url=repo,
+        title=workflows.check_title(args.get("title"), where="swarm_workflow"),
+    )
+    return _workflow_created(
+        envelope, placed=placed,
+        repository={"url": repo, "ref": None,
+                    "source": "named" if repo else "the tenant's only registered repository"},
+    )
+
+
+def _workflow_created(
+    envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
+    digest: str | None = None, expected_digest: Any = None,
+) -> str:
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    workflow = envelope["workflow"]
+    workflow_id = workflow.get("workflow_id")
+    if not workflow_id:
+        # Same refusal `swarm_dispatch` makes about a missing task id, for
+        # the same reason: every tool below takes this string, and handing
+        # back an empty one produces a session that polls "" forever.
+        raise SwarmError(
+            "the API accepted the workflow but its response named no id: "
+            f"{sorted(workflow)}"
+        )
+    steps = [
+        with_console(
+            {
+                "step_id": step.get("step_id"),
+                "task_id": step.get("task_id"),
+                "runner_profile": step.get("runner_profile"),
+                "depends_on": step.get("depends_on") or [],
+                "input_from": step.get("input_from") or {},
+            },
+            step,
+        )
+        for step in workflow.get("steps") or []
+    ]
+    created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
+    created.update({
+        "steps": steps,
+        "dispatch": envelope.get("dispatch"),
+        "repository": repository,
+        # NO STATE HERE, deliberately. The create response is the one read
+        # that honestly says `state_source: "stored"`: the step tasks were
+        # written microseconds ago and deriving over them would spend a read
+        # per step to be told what this very request just decided. Echoing
+        # the stored QUEUED would look like an answer.
+        "state_available_from": (
+            "swarm_workflow_status -- a create response does not derive a "
+            "workflow state and this tool will not quote the stored one"
+        ),
+        "target": placed,
+        # Which bridge answered: /sc:swarmcloud names it when this
+        # session's bridge refuses the follow its rows make.
+        "bridge_version": bridge_version(),
+    })
+    if digest is not None:
+        # What was RECEIVED, so a caller that did not pass `spec_digest` can
+        # still compare it with the spec it meant.
+        created["spec_digest"] = digest
+        created["spec_digest_checked"] = expected_digest not in (None, "")
+    task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
+    if task_ids:
+        created["follow_with"] = "swarm_follow"
+        created["follow_live_with"] = follow_command(task_ids)
+    return json.dumps(created, indent=2)
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
@@ -2542,6 +2662,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
         return result.render()
 
+    if name == "swarm_workflow" and args.get("merge_pr") is not None:
+        return _workflow_merge_pr(client, args)
+
     if name == "swarm_workflow":
         # BY REFERENCE (measured 2026-10-01): a spec a relay retyped came back
         # altered three times in one evening. `spec_path` and `spec_ref` put
@@ -2625,58 +2748,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             label=fields["label"],
             title=fields["title"],
         )
-        workflow = envelope["workflow"]
-        workflow_id = workflow.get("workflow_id")
-        if not workflow_id:
-            # Same refusal `swarm_dispatch` makes about a missing task id, for
-            # the same reason: every tool below takes this string, and handing
-            # back an empty one produces a session that polls "" forever.
-            raise SwarmError(
-                "the API accepted the workflow but its response named no id: "
-                f"{sorted(workflow)}"
-            )
-        steps = [
-            with_console(
-                {
-                    "step_id": step.get("step_id"),
-                    "task_id": step.get("task_id"),
-                    "runner_profile": step.get("runner_profile"),
-                    "depends_on": step.get("depends_on") or [],
-                    "input_from": step.get("input_from") or {},
-                },
-                step,
-            )
-            for step in workflow.get("steps") or []
-        ]
-        created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
-        created.update({
-            "steps": steps,
-            "dispatch": envelope.get("dispatch"),
-            "repository": repository.as_dict(),
-            # NO STATE HERE, deliberately. The create response is the one read
-            # that honestly says `state_source: "stored"`: the step tasks were
-            # written microseconds ago and deriving over them would spend a read
-            # per step to be told what this very request just decided. Echoing
-            # the stored QUEUED would look like an answer.
-            "state_available_from": (
-                "swarm_workflow_status -- a create response does not derive a "
-                "workflow state and this tool will not quote the stored one"
-            ),
-            "target": placed,
-            # Which bridge answered: /sc:swarmcloud names it when this
-            # session's bridge refuses the follow its rows make.
-            "bridge_version": bridge_version(),
-        })
-        if digest is not None:
-            # What was RECEIVED, so a caller that did not pass `spec_digest` can
-            # still compare it with the spec it meant.
-            created["spec_digest"] = digest
-            created["spec_digest_checked"] = expected_digest not in (None, "")
-        task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
-        if task_ids:
-            created["follow_with"] = "swarm_follow"
-            created["follow_live_with"] = follow_command(task_ids)
-        return json.dumps(created, indent=2)
+        return _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
+                                 digest=digest, expected_digest=expected_digest)
 
     if name in ("swarm_workflow_status", "swarm_workflow_result"):
         # ONE read for both. The difference is only how much of each step's task

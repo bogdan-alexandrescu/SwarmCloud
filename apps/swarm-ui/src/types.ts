@@ -849,6 +849,8 @@ export interface DispatchConsequence {
 export function consequenceOf(
   strategy: DispatchStrategy,
   steps: number,
+  /** The form it is said on (QA G4-29): a lone task has no steps to count. */
+  scale: 'task' | 'workflow' = 'workflow',
 ): DispatchConsequence {
   const n = Math.max(1, steps)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
@@ -876,6 +878,23 @@ export function consequenceOf(
         'no pull request and pushes nothing',
       )
     case 'direct-pr':
+      // ONE TASK, ONE BRANCH (QA G4-29): the task form read "Up to 1 pull
+      // request — one per step." on a form that has no steps. Still a ceiling:
+      // an agent that changed nothing opens none.
+      if (scale === 'task') {
+        return withOpens(
+          {
+            pullRequests: 1,
+            atMost: true,
+            pushes: true,
+            headline: 'One pull request, from this task’s branch — none if it changed nothing.',
+            detail:
+              'The task pushes its own branch and opens one pull request from it. An agent that ' +
+              'changed nothing opens none, which is why this is a ceiling and not a count.',
+          },
+          '1 pull request, from this task’s branch',
+        )
+      }
       return withOpens(
         {
           pullRequests: n,
@@ -917,6 +936,16 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   collect: 'Collect',
   'direct-pr': 'A PR per step',
   integrate: 'One PR for all steps',
+}
+
+/**
+ * A strategy's label on the form it is offered on (QA G4-29). On the task
+ * form `direct-pr` is one pull request, so "A PR per step" named steps the
+ * form does not have; everywhere else -- a workflow, a task's read-back --
+ * the label is `STRATEGY_LABEL`'s.
+ */
+export function strategyLabel(strategy: DispatchStrategy, scale: 'task' | 'workflow'): string {
+  return scale === 'task' && strategy === 'direct-pr' ? 'Open a pull request' : STRATEGY_LABEL[strategy]
 }
 
 /**

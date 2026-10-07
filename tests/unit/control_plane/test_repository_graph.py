@@ -341,6 +341,64 @@ def test_a_rewritten_blob_is_refused_before_it_is_decompressed(objects, promoted
         graph.callers("src/store/db.py#fetch")
 
 
+def test_prefetch_reads_every_shard_of_a_layer_and_answers_from_them(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    graph.prefetch(("symbols", "callers"))
+    # Read once: the shards are served from memory, so a removed blob is not re-read.
+    for key in [k for k in objects.objects if "/graph/blobs/" in k]:
+        del objects.objects[key]
+    assert [s["id"] for s in graph.symbols("src/api")] == [
+        "src/api/users.py#get_user", "src/api/users.py#load_user"
+    ]
+    assert [e["from"] for e in graph.callers("src/store/db.py#fetch")] == [
+        "src/api/users.py#load_user"
+    ]
+    # The control: a layer not prefetched is still read on demand, and is gone.
+    with pytest.raises(repograph.GraphUnavailable):
+        graph.tests_for("src/store/db.py#fetch")
+    with pytest.raises(repograph.InvalidGraph):
+        graph.prefetch(("nonsense",))
+
+
+def test_prefetch_refuses_a_rewritten_blob_as_a_single_read_does(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    entry = graph.manifest["shards"]["callers"]["src/store"]
+    key = repograph.blob_key(promoted["tenant"], promoted["repo_id"], entry["blob"])
+    objects.put(key, gzip.compress(b'{"from":"x","to":"src/store/db.py#fetch"}\n'))
+    with pytest.raises(repograph.GraphDigestMismatch):
+        graph.prefetch(("symbols", "callers"))
+
+
+def test_prefetch_says_an_unreadable_store_is_unavailable(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    objects.fail_on(f"tenants/{promoted['tenant']}/repos/{promoted['repo_id']}/graph/blobs/")
+    with pytest.raises(UpstreamUnavailable):
+        graph.prefetch(("callees",))
+
+
+def test_a_cached_view_is_kept_per_store_and_per_key(objects, promoted):
+    graphs = repograph.RepoGraph(lambda: objects)
+    calls: list[str] = []
+
+    def compute(name: str):
+        return lambda: calls.append(name) or {"name": name}
+
+    key = (promoted["tenant"], promoted["repo_id"], "sha256:" + "a" * 64, "module")
+    assert graphs.view(key, compute("one")) == {"name": "one"}
+    assert graphs.view(key, compute("two")) == {"name": "one"}
+    assert graphs.view(key[:3] + ("package",), compute("three")) == {"name": "three"}
+    # Another store (another deployment's bucket, another test) has its own views.
+    assert repograph.RepoGraph(lambda: InMemoryObjectReader()).view(key, compute("four")) \
+        == {"name": "four"}
+    assert calls == ["one", "three", "four"]
+
+
 def test_a_version_with_no_graph_says_so(objects, promoted):
     version = dict(promoted["version"], graph_manifest=None, graph_digest=None)
     with pytest.raises(repograph.NoGraph):

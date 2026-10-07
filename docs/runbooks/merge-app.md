@@ -10,7 +10,7 @@ Measured 2026-10-01: `.github/workflows/auto-merge.yml` refuses to queue a
 "The merge App is not configured (vars.MERGE_APP_ID and
 secrets.MERGE_APP_PRIVATE_KEY). A merge made with the workflow's own
 GITHUB_TOKEN would start no build and no release on main, so this does not
-fall back to it." (the refusal is at `auto-merge.yml` line 171-172).
+fall back to it." (the refusal is item 4 of the `enable` job's `gate` step).
 
 Until this runbook is done, a `ready` pull request merges only while an
 operator's session runs the merge watcher. The reason an App is needed and the
@@ -26,16 +26,103 @@ token from Secret Manager. The two do not share credentials.
 
 ## What the workflow expects
 
+Step names below are `auto-merge.yml`'s; line numbers drift, step ids do not.
+
 | Thing | Name | Read at |
 |---|---|---|
-| Actions variable | `MERGE_APP_ID` | `auto-merge.yml` line 94 (presence check) and line 207 (`app-id`) |
-| Actions secret | `MERGE_APP_PRIVATE_KEY` | `auto-merge.yml` line 95 (presence check) and line 208 (`private-key`) |
+| Actions variable | `MERGE_APP_ID` | the `enable` job's `gate` step (presence check), both `app-token` steps (`app-id`), and the `disable` job's `app-token` condition |
+| Actions secret | `MERGE_APP_PRIVATE_KEY` | the `gate` step (presence check) and both `app-token` steps (`private-key`) |
 
-`actions/create-github-app-token@v2` (line 205) mints an installation token
-scoped to this repository only (`repositories:`, line 210) with exactly three
-permissions (lines 211-213). That token enables native squash auto-merge
-(`gh pr merge --auto --squash`, line 233) or, for an already-green pull request
-that GitHub will not queue, merges directly (line 244).
+`actions/create-github-app-token@v2` (the `app-token` steps) mints an
+installation token scoped to this repository only (`repositories:`). In the
+`enable` job it carries exactly three permissions and enables native squash
+auto-merge (`gh pr merge --auto --squash`, the `merge` step) or, for an
+already-green pull request that GitHub will not queue, merges directly. It is
+also what turns auto-merge **off** -- see below. The `disable` job's token
+asks for contents and pull requests only: turning auto-merge off writes no
+workflow file.
+
+## The App also turns auto-merge off (#795)
+
+Measured 2026-10-07: the `disable` job, on a push after `ready`, ran
+`gh pr merge --disable-auto` with the workflow's GITHUB_TOKEN, which held only
+`pull-requests: write`. GitHub answered
+"Resource not accessible by integration" every time, and an `|| true` after
+the call hid it. So `ready`
+was removed and auto-merge stayed armed: 17 of the 24 pull requests merged
+that day merged with no label, at a head nobody had labelled -- the #269 rule
+that `ready` binds to the head it was given for was not enforced for the
+merge itself.
+
+Why the GITHUB_TOKEN was refused: that token held `pull-requests: write`
+only, and the auto-merge mutation evidently needs more -- most likely
+`contents: write`, which the App's token has always carried for enabling. Rather
+than widen a `pull_request_target` job's GITHUB_TOKEN to `contents: write`,
+the identity that armed auto-merge, holding both, turns it off: the `disarm` step (the same
+script in both jobs, which a test holds equal) reads whether auto-merge is
+armed with the GITHUB_TOKEN, turns it off with the App's token, and reads it
+back. Each of these fails the job, with an `::error::` saying auto-merge is
+still on:
+
+* GitHub refuses the disable (for example the App lost its pull requests or
+  contents permission);
+* GitHub still reports auto-merge armed after a disable it accepted;
+* auto-merge is armed and the App is not configured (`MERGE_APP_ID` unset), so
+  nothing here can turn it off.
+
+The `ready` label is still removed after a failed disable, and the comment
+says auto-merge could not be turned off. The fix is the App's permissions
+(step 1 below); re-run the failed job once they are back.
+
+Not verified from this repository: exactly which grant GitHub found missing
+(the error does not say). The App's token holds contents and pull requests
+write, so the fix does not depend on it; a GITHUB_TOKEN with `contents: write`
+might also have worked, and was deliberately not tried. The first push to an
+armed pull request after this lands is the measurement: the `disarm` step's
+log says `turned off auto-merge`, or the job is red.
+
+### A pure base merge keeps `ready` (owner decision, 2026-10-07)
+
+A push whose new head is a **pure base merge** -- a merge commit whose first
+parent is the head that carried `ready`, whose second parent is already on the
+base branch, and whose tree is exactly the merge of those two, which is what
+GitHub's "Update branch" makes -- keeps `ready` and auto-merge: the `disable`
+job's `classify` step says so and every later step is skipped. It reads the
+commits by sha into a scratch bare repository (`contents: read`, nothing
+checked out, nothing run) and compares the head's tree with
+`git merge-tree --write-tree` of its parents. Any other push -- a commit, a
+merge that also changes something, a merge of a branch not on the base, a
+force-push, a reopen, a new base -- turns auto-merge off and removes `ready`.
+If the classifier cannot read the commits it says so in a warning and treats
+the push as any other.
+
+The `enable` job uses the same classifier when GitHub refuses to arm with
+"expected head oid does not match" (the runner queue was 400-600 s on
+2026-10-07, long enough for an Update branch to land): if the head moved by a
+pure base merge of the labelled head it arms once more at the new head; if it
+moved by anything else it arms nothing, because that head was never labelled.
+
+The disable job classifies a push against `before`, the head just before it,
+so the exemption is only safe if **every push's own run executes**. In one
+shared concurrency group a newer pending run cancels the older pending one:
+label L, push a foreign commit A, click Update branch (B merges main into A),
+and B's run -- correctly a pure merge over A -- would have cancelled A's run and
+left auto-merge armed with `ready` on an unreviewed A. So every
+`pull_request_target` run except `labeled` has a concurrency group of its own
+(the run id is in it) and is never cancelled; A's run disarms and strips in
+whichever order the two runs land. Two `labeled` runs still share a group.
+Running a disable beside a `labeled` run is safe because every arming is
+pinned with `--match-head-commit`, and the enable job re-arms only over a pure
+base merge of the head it was labelled at.
+
+### Fewer runs (#795)
+
+`auto-merge.yml` re-evaluates `ready` pull requests when a CI run completes.
+It used to listen to application, ci-gate, security and terraform, which
+started 294+ runs of it in one night, nearly all skipped. ci-gate is the last
+job of application.yml and waits for terraform's run at its head, so only
+application's (that is, ci-gate's) and security's completions can be the last
+one on a head; those are the two it listens to now.
 
 ## 1. Create the App
 
@@ -50,12 +137,12 @@ repository).
 
 | Permission | Level | Why, and the line that needs it |
 |---|---|---|
-| Contents | Read and write | `permission-contents: write`, line 211. Squash-merging writes the commit to `main`. |
-| Pull requests | Read and write | `permission-pull-requests: write`, line 212. Enabling auto-merge (line 233) and merging (line 244) are pull request mutations. |
-| Workflows | Read and write | `permission-workflows: write`, line 213. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
+| Contents | Read and write | `permission-contents: write`. Squash-merging writes the commit to `main`; enabling and disabling auto-merge need it too. |
+| Pull requests | Read and write | `permission-pull-requests: write`. Enabling auto-merge, turning it off (the `disarm` steps, #795) and merging are pull request mutations. |
+| Workflows | Read and write | `permission-workflows: write`, the `enable` job only. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
 
   Metadata: Read is added by GitHub automatically. The App does **not** need
-  Checks or Actions: the gate reads check runs (line 185) with the workflow's
+  Checks or Actions: the gate reads check runs with the workflow's
   own GITHUB_TOKEN, which holds `checks: read`, not with the App token.
   The token mint requests only permissions the App already holds, so an App
   with fewer than these three makes the mint step fail.
@@ -113,6 +200,14 @@ gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=t
 If the run instead comments "The merge App is not configured", the variable or
 the secret is missing: `gh variable list` and `gh secret list` show names (never
 values).
+
+5. Then push a commit to that pull request (or one like it) while it is
+   armed: the `disable auto-merge on a new head` job should be green, its log
+   should say `turned off auto-merge`, and the pull request should no longer
+   show "Auto-merge enabled". A red job with "stays enabled" means the App
+   cannot turn auto-merge off -- check its pull requests and contents
+   permissions. "Update branch" instead should leave both the label and
+   auto-merge on.
 
 ## Rotate the key
 

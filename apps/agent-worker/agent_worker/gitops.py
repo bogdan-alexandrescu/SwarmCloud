@@ -1459,11 +1459,18 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         # graph the agent wrote; this switches graphs off for every worker
         # git as well, so none is read even where one exists. Command-scope
         # configuration outranks any repository's own `core.commitGraph`.
-        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_COUNT": "3",
         "GIT_CONFIG_KEY_0": "core.commitGraph",
         "GIT_CONFIG_VALUE_0": "false",
         "GIT_CONFIG_KEY_1": "fetch.writeCommitGraph",
         "GIT_CONFIG_VALUE_1": "false",
+        # `GIT_GRAFT_FILE=/dev/null` above makes git open a graft file, which
+        # succeeds, and print its eight-line graft-deprecation advice on every
+        # command (#808). The advice key only decides whether that message
+        # prints: grafts stay off. Command-scope configuration outranks the
+        # clone's `.git/config`, so the agent cannot turn the hint back on.
+        "GIT_CONFIG_KEY_2": "advice.graftFileDeprecated",
+        "GIT_CONFIG_VALUE_2": "false",
     }
 
 
@@ -2490,7 +2497,15 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:
 #: * no system file and no global file, so the only configuration read is the
 #:   clone's and the command line's;
-#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
+#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`.
+#:   The graft file here is a path that cannot exist, not /dev/null (#808):
+#:   git prints its graft-deprecation advice whenever the graft file OPENS,
+#:   and upload-pack never loads `advice.*` -- its config callback does not
+#:   chain to git's default one (git 2.39.5 measured, master read), so
+#:   `advice.graftFileDeprecated=false` cannot reach it from the command line,
+#:   the environment or any config file. `/dev/null/no-grafts` fails to open
+#:   with ENOTDIR, which git's `fopen_or_warn` skips silently, and a graft
+#:   file that does not open means no grafts -- exactly what /dev/null gave;
 #: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
 #:   (`extensions.partialClone`, `remote.<name>.promisor`) makes a git that
 #:   misses an object FETCH it from the remote the clone's config names, with
@@ -2508,7 +2523,7 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:   command-line one. `false` is the worker's own program and connects to
 #:   nothing.
 _UPLOAD_PACK_ENV = [
-    "GIT_GRAFT_FILE=/dev/null",
+    "GIT_GRAFT_FILE=/dev/null/no-grafts",
     "GIT_NO_REPLACE_OBJECTS=1",
     "GIT_CONFIG_NOSYSTEM=1",
     "GIT_CONFIG_GLOBAL=/dev/null",

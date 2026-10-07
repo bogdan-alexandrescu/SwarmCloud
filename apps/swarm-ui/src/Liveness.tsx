@@ -59,11 +59,15 @@ export function livenessOf(
     return { kind: 'finished', word: 'done', copy: '', say: 'Finished.', tone: 'unknown' }
   }
   if (!CONCURRENCY_STATES.has(task.state)) {
+    // THE STATE'S OWN WORD (G2-08, QA 2026-10-07): a parked task's chip said
+    // `parked` while this said `queued · not dispatched`, because every state
+    // outside a slot collapsed to `queued`. The word is read from the state,
+    // as `elapsed()` names a concurrency state, never from a list typed here.
     return {
       kind: 'not-started',
-      word: 'queued',
+      word: task.state.toLowerCase(),
       copy: 'not dispatched',
-      say: 'Not dispatched yet, so there is no worker to be live or silent.',
+      say: `${task.state.charAt(0)}${task.state.slice(1).toLowerCase()} and not dispatched, so there is no worker to be live or silent.`,
       tone: 'unknown',
     }
   }

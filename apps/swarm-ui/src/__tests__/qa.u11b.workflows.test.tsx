@@ -260,11 +260,13 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
     Object.defineProperty(Element.prototype, 'scrollIntoView', { value: spy, configurable: true, writable: true })
     window.history.replaceState(null, '', `/workflows/${WF}`)
     render(<App />)
-    const node = await waitFor(() => {
-      const n = document.querySelector<HTMLButtonElement>('.wf-canvas button.node')
-      expect(n).not.toBeNull()
-      return n!
-    })
+    // A node the page did NOT pick on arrival: clicking the one it did closes
+    // its card, and the arrival pick itself is not scrolled to (QA G3-28).
+    // Queried AFTER the arrival pick has landed: the canvas redraws its nodes
+    // then, and a node taken before it is a detached element a click misses.
+    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull())
+    const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!
+    expect(node).not.toBeNull()
     fireEvent.click(node)
     await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true))
   })

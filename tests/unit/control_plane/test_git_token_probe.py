@@ -29,7 +29,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -91,6 +91,8 @@ def key_of(url: str) -> str:
         return "receive_pack"
     if path == "/user":
         return "user"
+    if path == "/user/orgs":
+        return "orgs"
     if path.endswith("/check-runs"):
         return "checks"
     if "/rules/branches/" in path:
@@ -108,8 +110,9 @@ class ProbeForge:
     """api.github.com and github.com as the probe sees them, in memory.
 
     `status` maps a read (`repo`, `receive_pack`, `checks`, `rules`, `issues`,
-    `workflows`, `user`) to the status it answers; `raises` maps one to an
-    exception the transport raises; `body` overrides one's JSON.
+    `workflows`, `user`, `orgs`) to the status it answers; `raises` maps one
+    to an exception the transport raises; `body` overrides one's JSON.
+    `orgs` is the logins `GET /user/orgs` lists, paged as GitHub pages.
     """
 
     def __init__(self, *, scopes: str | None = "repo, workflow",
@@ -118,8 +121,10 @@ class ProbeForge:
                  status: dict[str, int] | None = None,
                  raises: dict[str, Exception] | None = None,
                  body: dict[str, Any] | None = None,
-                 headers: dict[str, dict[str, str]] | None = None) -> None:
+                 headers: dict[str, dict[str, str]] | None = None,
+                 orgs: list[str] | None = None) -> None:
         self.scopes = scopes
+        self.orgs = orgs or []
         self.expiry = expiry
         self.repo = repo or repo_body()
         self.status = status or {}
@@ -151,6 +156,12 @@ class ProbeForge:
             payload: Any = self.body[key]
         elif status != 200:
             payload = {"message": "refused"}
+        elif key == "orgs":
+            query = parse_qs(urlparse(url).query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            payload = [{"login": login, "id": 1000 + i, "url": f"https://api.github.com/orgs/{login}"}
+                       for i, login in enumerate(self.orgs)][(page - 1) * per_page: page * per_page]
         else:
             payload = {
                 "user": {"login": "swarm-bot"},
@@ -514,7 +525,7 @@ def test_verify_one_repository_and_all_known(probe_client, slots, fake, clock) -
     assert first.status_code == 200, first.text
     assert first.json()["token"]["probe"]["repositories"] == []
     assert first.json()["token"]["verified_at"] == T0.isoformat()
-    assert fake.keys() == ["user"]
+    assert fake.keys() == ["user", "orgs"]
     # Scoped to one repository: that pair is probed and remembered.
     clock.now = T0 + timedelta(minutes=5)
     scoped = probe_client.post(f"/v1/git-tokens/{default_id}/verify",
