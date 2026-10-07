@@ -337,8 +337,11 @@ def test_the_token_is_minted_and_the_merge_made_only_when_the_gate_says_merge(jo
     "the gate passed". MUTATION: drop either `if:`, and a pull request whose
     checks are still running is merged (or auto-merge is armed on it) at once."""
     assert _step(job, "gate").get("if") == "steps.pr.outputs.evaluate == 'true'"
-    for step_id in ("app-token", "merge"):
-        assert _step(job, step_id).get("if") == "steps.gate.outputs.decision == 'merge'", step_id
+    assert _step(job, "merge").get("if") == "steps.gate.outputs.decision == 'merge'"
+    # Also minted to turn auto-merge off after a refusal on re-evaluation (#795).
+    assert _step(job, "app-token").get("if") == (
+        "steps.gate.outputs.decision == 'merge' || steps.gate.outputs.disarm == 'true'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +414,10 @@ if [[ "${1:-} ${2:-}" == "pr comment" ]]; then
   done
   exit 0
 fi
-# A re-evaluation's refusal turns auto-merge off and drops `ready`. Only
-# exactly those: any other `pr merge` from the gate is a merge it must not make.
-if [[ "$*" == "pr merge ${PR_NUMBER} --disable-auto" || "$*" == "pr edit ${PR_NUMBER} --remove-label ready" ]]; then
+# A re-evaluation's refusal drops `ready`; turning auto-merge off is the
+# `disarm` step's, with the App token (#795). Any `pr merge` from the gate is
+# a call it must not make.
+if [[ "$*" == "pr edit ${PR_NUMBER} --remove-label ready" ]]; then
   exit 0
 fi
 echo "fake gh: unexpected call: $*" >&2
@@ -844,8 +848,11 @@ def test_the_disable_job_never_runs_on_the_close(disable_job: dict):
 
 
 def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disable_job: dict):
-    """MUTATION: add a checkout step, or widen permissions past pull-requests: write."""
-    assert disable_job.get("permissions") == {"pull-requests": "write"}, disable_job.get("permissions")
+    """MUTATION: add a checkout step, or widen permissions past contents: read
+    (the base-merge classifier's fetch, #795) and pull-requests: write."""
+    assert disable_job.get("permissions") == {"contents": "read", "pull-requests": "write"}, disable_job.get(
+        "permissions"
+    )
     steps = disable_job.get("steps") or []
     assert steps, "the disable job has no steps, so this checked nothing"
     for step in steps:
@@ -854,8 +861,17 @@ def test_the_disable_job_never_checks_out_pr_code_and_uses_least_privilege(disab
 
 FAKE_GH_DISABLE = r"""#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+printf '%s [as %s]\n' "$*" "${GH_TOKEN:-}" >> "${FAKE_GH_LOG}"
+if [[ "${1:-} ${2:-}" == "pr view" ]]; then
+  if [[ -f "${FAKE_GH_ARMED}" ]]; then
+    echo '{"autoMergeRequest":{"mergeMethod":"SQUASH"}}'
+  else
+    echo '{"autoMergeRequest":null}'
+  fi
+  exit 0
+fi
 if [[ "${1:-} ${2:-}" == "pr merge" ]]; then
+  rm -f "${FAKE_GH_ARMED}"
   exit 0
 fi
 if [[ "${1:-} ${2:-}" == "pr edit" ]]; then
@@ -877,13 +893,18 @@ exit 3
 """
 
 
+# Which identity made each call, in plain words: the fake logs them.
+DISABLE_WORKFLOW_IDENTITY = "workflow"
+DISABLE_APP_IDENTITY = "app"
+
+
 @pytest.fixture
 def run_disable(disable_job: dict, tmp_path: Path):
-    if shutil.which("bash") is None:
-        pytest.skip("bash is required")
-    steps = disable_job.get("steps") or []
-    assert len(steps) == 1, f"expected one step in the disable job, found {len(steps)}"
-    script = steps[0]["run"]
+    """The disable job's `disarm` then `strip` steps, as they run on a push
+    that is not a pure base merge (#795; the classifier is run in
+    test_auto_merge_base_merge.py)."""
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "gh"
@@ -891,28 +912,37 @@ def run_disable(disable_job: dict, tmp_path: Path):
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     log = tmp_path / "gh.log"
     comments = tmp_path / "comments.md"
-    log.write_text("")
-    comments.write_text("")
+    armed = tmp_path / "armed"
+    for path in (log, comments, armed):
+        path.write_text("")
     env = {
         "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
         "HOME": str(tmp_path),
         "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
         "PR_NUMBER": "4242",
+        "GH_TOKEN": DISABLE_WORKFLOW_IDENTITY,
+        "APP_TOKEN": DISABLE_APP_IDENTITY,
+        "DISARM_OUTCOME": "success",
         "FAKE_GH_LOG": str(log),
         "FAKE_GH_COMMENTS": str(comments),
+        "FAKE_GH_ARMED": str(armed),
     }
-    proc = subprocess.run(
-        ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
-    )
-    return proc, log.read_text(), comments.read_text()
+    procs = []
+    for step_id in ("disarm", "strip"):
+        procs.append(subprocess.run(
+            ["bash", "-c", _step(disable_job, step_id)["run"]],
+            env=env, capture_output=True, text=True, timeout=30, check=False,
+        ))
+    return procs, log.read_text(), comments.read_text()
 
 
 def test_a_push_after_ready_disables_auto_merge_and_removes_the_label(run_disable):
-    """RUN, against a fake `gh`: the disable job's own shell, not just its YAML.
+    """RUN, against a fake `gh`: the disable job's own shells, not just its YAML.
     MUTATION: drop the `--disable-auto` call, or the `--remove-label ready` call."""
-    proc, calls, comments = run_disable
-    assert proc.returncode == 0, proc.stderr + proc.stdout
-    assert "pr merge 4242 --disable-auto" in calls, calls
+    procs, calls, comments = run_disable
+    for proc in procs:
+        assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert "pr merge 4242 --disable-auto [as app]" in calls, calls
     assert "pr edit 4242 --remove-label ready" in calls, calls
     assert "pr comment 4242" in calls, calls
     assert "ready" in comments.lower(), comments
@@ -1243,21 +1273,23 @@ RETIRED_WORKFLOW_NAMES = {"ci-gate"}
 
 
 def test_it_re_evaluates_when_any_pull_request_workflow_completes(workflow: dict):
-    """A check left out of the list is one whose completion never re-evaluates:
-    if it is the last to finish, the pull request sits, which is #697 again.
-    MUTATION: drop `ci-gate` (or any name) from `workflows:`, or listen to
+    """A check whose completion can be the LAST one on a head must re-evaluate:
+    if it is left out, the pull request sits, which is #697 again. Since #795
+    that is ci-gate and every pull-request workflow ci-gate does not wait for
+    -- ci-gate completes after application and terraform -- and the exact set
+    is held in test_auto_merge_base_merge.py.
+    MUTATION: drop `ci-gate` or `security` from `workflows:`, or listen to
     `requested` instead of `completed`."""
     names = _pull_request_workflow_names()
     assert {"application", "terraform", "security"} <= names, names  # the control
     workflow_run = workflow["on"]["workflow_run"]
     assert workflow_run["types"] == ["completed"], workflow_run
-    assert names <= set(workflow_run["workflows"]), workflow_run
-    # A listed name no workflow carries never fires, so it costs nothing. The
-    # one allowed is `ci-gate`: since 2026-10-07 ci-gate is a job of
-    # application.yml, not a workflow of its own, and this file stays as it is
-    # while another decision on it is pending; application's completion is
-    # ci-gate's now. Anything else unlisted here is a typo.
-    assert set(workflow_run["workflows"]) - names <= RETIRED_WORKFLOW_NAMES, workflow_run
+    # `ci-gate` is a job of application.yml since 2026-10-07, not a workflow:
+    # application's completion is ci-gate's. Anything listed that no workflow
+    # carries is a typo, or a name that never fires.
+    listened = set(workflow_run["workflows"])
+    assert {"application", "security"} <= listened, workflow_run
+    assert listened - names <= RETIRED_WORKFLOW_NAMES, workflow_run
 
 
 def test_check_suite_is_not_the_completion_event(workflow: dict):
@@ -1521,8 +1553,10 @@ def test_a_re_evaluation_that_finds_a_failing_check_drops_ready_and_says_so(run_
         check_runs=[{"name": "format / unit tests", "status": "completed", "conclusion": "failure"}],
     )
     assert proc.returncode == 0, proc.stderr
-    assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
-    assert "pr merge 4242 --disable-auto" in calls, calls
+    outputs = _outputs(tmp_path / "output.txt")
+    assert outputs.get("decision") == "refused"
+    assert outputs.get("disarm") == "true", outputs
+    assert "--disable-auto" not in calls, calls
     assert "pr edit 4242 --remove-label ready" in calls, calls
     assert "format / unit tests" in comments and "ready" in comments, comments
 
@@ -1543,6 +1577,7 @@ def test_a_re_evaluation_without_the_merge_app_keeps_ready_for_the_merge_watcher
     proc, calls, comments = run_gate("A fact-style headline", PROTECTED, app_id="", event_name="workflow_dispatch")
     assert proc.returncode == 0, proc.stderr
     assert _outputs(tmp_path / "output.txt").get("decision") == "refused"
+    assert _outputs(tmp_path / "output.txt").get("disarm") != "true"
     assert "pr edit" not in calls and "pr comment" not in calls and comments == "", calls
 
 
@@ -1630,7 +1665,9 @@ def run_merge(job: dict, tmp_path: Path):
     def run(view: dict, *, queue: str | None = None, in_queue: str = "false",
             auto_error: str = "auto-merge could not be enabled"):
         view_file = tmp_path / "view.json"
-        view_file.write_text(json.dumps(view))
+        # The head has not moved since the label (the move is held in
+        # test_auto_merge_base_merge.py).
+        view_file.write_text(json.dumps({"headRefOid": HEAD, **view}))
         log = tmp_path / "gh.log"
         summary = tmp_path / "summary.md"
         for path in (log, summary):
