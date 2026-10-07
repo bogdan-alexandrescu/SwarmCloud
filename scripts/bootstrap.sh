@@ -9,11 +9,21 @@
 #   1. prerequisites
 #   2. .env from .env.example, if absent
 #   3. Terraform state bucket (created only if missing; versioning + UBLA)
-#   4. terraform/bootstrap apply, when Track C has provided it
+#   4. terraform/bootstrap apply, against its remote state in the bucket
+#      above (gs://<bucket>/bootstrap). REFUSED when that state is empty while
+#      the deployer service account already exists: see "Bootstrap layer".
 #   5. terraform init for the selected environment
 #
 # Usage: scripts/bootstrap.sh [--environment dev] [--skip-prereq] [--yes]
 #                             [--target ADDRESS]...
+#        scripts/bootstrap.sh --migrate-state [--skip-prereq]
+#
+# --migrate-state is ONE-TIME (#827): it copies a local
+# terraform/bootstrap/terraform.tfstate into gs://<bucket>/bootstrap with
+# `terraform init -migrate-state`, after a typed confirmation that ignores
+# --yes and SWARM_ASSUME_YES, and stops. It refuses when this checkout holds no
+# local state file, or when the bucket already holds a bootstrap state. Run it
+# from the checkout that holds the file; docs/operations.md has the command.
 #
 # --target ADDRESS (repeatable) limits step 4's plan, and so its apply, to that
 # resource in terraform/bootstrap. For applying one change while another pending
@@ -26,6 +36,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 SKIP_PREREQ=0
+MIGRATE_STATE=0
 # Passed to the bootstrap plan as-is; expanded with the bash 3.2 empty-array
 # guard below. BOOTSTRAP_TARGET_NOTE is the same list for people to read.
 BOOTSTRAP_TARGETS=()
@@ -41,12 +52,24 @@ while [[ $# -gt 0 ]]; do
       BOOTSTRAP_TARGETS+=("-target=$2")
       BOOTSTRAP_TARGET_NOTE="${BOOTSTRAP_TARGET_NOTE} $2"
       shift 2 ;;
-    -h|--help)        sed -n '2,22p' "$0"; exit 0 ;;
+    --migrate-state)  MIGRATE_STATE=1; shift ;;
+    -h|--help)        sed -n '2,32p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 export ENVIRONMENT
 TF_STATE_PREFIX="infra/${ENVIRONMENT}"
+
+if [[ "${MIGRATE_STATE}" -eq 1 ]]; then
+  # A targeted migration means nothing: state moves whole or not at all.
+  [[ -z "${BOOTSTRAP_TARGET_NOTE}" ]] || die "--migrate-state moves the whole bootstrap state; it takes no --target"
+  # Moving the one copy of the deployer's state is never pre-approved. --yes
+  # set this a few lines up; an inherited value is refused the same way.
+  if [[ -n "${SWARM_ASSUME_YES:-}" ]]; then
+    warn "ignoring --yes / SWARM_ASSUME_YES: --migrate-state always requires a typed confirmation"
+    unset SWARM_ASSUME_YES
+  fi
+fi
 
 require_cmd gcloud jq curl
 
@@ -55,6 +78,7 @@ info "project      ${PROJECT_ID}"
 info "region       ${REGION}"
 info "environment  ${ENVIRONMENT}"
 info "state        gs://${TF_STATE_BUCKET}/${TF_STATE_PREFIX}"
+info "bootstrap    gs://${TF_STATE_BUCKET}/${TF_BOOTSTRAP_STATE_PREFIX}"
 
 if [[ "${SKIP_PREREQ}" -eq 0 ]]; then
   step "Prerequisites"
@@ -141,15 +165,170 @@ rm -f "${VERSIONING_ERR}"
 
 step "Bootstrap layer"
 BOOTSTRAP_DIR="${REPO_ROOT}/terraform/bootstrap"
+# The pre-#827 state: a local file, in whichever checkout last applied this
+# root. terraform no longer reads it once the gcs backend is initialised; it is
+# looked at only to migrate it, and to say so when a checkout still holds one.
+BOOTSTRAP_LOCAL_STATE="${BOOTSTRAP_DIR}/terraform.tfstate"
+# The object the gcs backend writes for the default workspace.
+BOOTSTRAP_STATE_URL="gs://${TF_STATE_BUCKET}/${TF_BOOTSTRAP_STATE_PREFIX}/default.tfstate"
+# Bucket from the environment, prefix from backend.tf -- the same split as
+# terraform/infra, whose backend block names neither. -reconfigure for the same
+# reason as the environment init below: a checkout's .terraform/ must never
+# decide which state this root reads.
+BOOTSTRAP_BACKEND_ARGS=(-backend-config="bucket=${TF_STATE_BUCKET}")
+# google_service_account.deployer in terraform/bootstrap/wif.tf:
+# "${var.name_prefix}-tf-deployer", name_prefix "swarm".
+BOOTSTRAP_DEPLOYER="$(guard_name_prefix)tf-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# How many resource instances a local state file holds; 0 for a file with none.
+# `terraform state list` prints one line per instance, data sources included,
+# and so does this, so the two counts are comparable after a migration.
+bootstrap_local_instances() {
+  jq '[.resources[]?.instances[]?] | length' "${BOOTSTRAP_LOCAL_STATE}" \
+    || die "cannot read ${BOOTSTRAP_LOCAL_STATE} as a terraform state file"
+}
+
+# bootstrap_state_list FILE -- the remote state's addresses into FILE, one per
+# line. An empty FILE is an empty state. terraform answers a backend with no
+# object yet with "No state file was found!" and exit 1; that, and only that,
+# is read as empty. Any other failure is fatal: a state that could not be read
+# is not evidence that it is empty.
+bootstrap_state_list() {
+  local file="$1" errfile rc=0
+  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-bootstrap-state-err.XXXXXX")"
+  tf -chdir="${BOOTSTRAP_DIR}" state list >"${file}" 2>"${errfile}" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    if grep -q 'No state file was found' "${errfile}"; then
+      : >"${file}"
+    else
+      err "could not list the bootstrap state at ${BOOTSTRAP_STATE_URL}:"
+      redact <"${errfile}" | head -n 5 | sed 's/^/     /' >&2
+      rm -f "${errfile}"
+      die "refusing to plan the bootstrap layer against a state that could not be read"
+    fi
+  fi
+  rm -f "${errfile}"
+}
+
+if [[ "${MIGRATE_STATE}" -eq 1 ]]; then
+  # ONE-TIME (#827). Copies the local state into the bucket and stops; the next
+  # `make bootstrap`, from any checkout, plans against the copy.
+  [[ -f "${BOOTSTRAP_LOCAL_STATE}" ]] \
+    || die "no ${BOOTSTRAP_LOCAL_STATE} in this checkout: run --migrate-state from the checkout that holds the bootstrap layer's local state"
+  LOCAL_INSTANCES="$(bootstrap_local_instances)"
+  LOCAL_SERIAL="$(jq -r '.serial // "unknown"' "${BOOTSTRAP_LOCAL_STATE}")"
+  [[ "${LOCAL_INSTANCES}" -gt 0 ]] \
+    || die "${BOOTSTRAP_LOCAL_STATE} holds no resources; there is nothing to migrate"
+  info "local state   ${BOOTSTRAP_LOCAL_STATE}: serial ${LOCAL_SERIAL}, ${LOCAL_INSTANCES} resource instances"
+
+  # Never over an existing remote state: -force-copy below would replace it,
+  # and a checkout's local file is OLDER than a state the bucket already holds.
+  REMOTE_RC=0
+  shared_resource_present "the bootstrap state ${BOOTSTRAP_STATE_URL}" \
+    gcloud storage objects describe "${BOOTSTRAP_STATE_URL}" --project "${PROJECT_ID}" \
+    || REMOTE_RC=$?
+  case "${REMOTE_RC}" in
+    0) die "${BOOTSTRAP_STATE_URL} already exists, so the migration has been done. This checkout's local file is stale: move it aside and run scripts/bootstrap.sh without --migrate-state." ;;
+    1) ok "${BOOTSTRAP_STATE_URL} does not exist yet" ;;
+    *) die "refusing to migrate without knowing whether ${BOOTSTRAP_STATE_URL} already exists" ;;
+  esac
+
+  # A copy outside terraform's reach, before terraform touches the file.
+  # build/ is gitignored; state holds resource ids and some sensitive values.
+  BOOTSTRAP_BACKUP="${BUILD_DIR}/bootstrap-local-$(date -u +%Y%m%dT%H%M%SZ).tfstate"
+  (umask 077 && cp "${BOOTSTRAP_LOCAL_STATE}" "${BOOTSTRAP_BACKUP}")
+  ok "backed up the local state to ${BOOTSTRAP_BACKUP}"
+
+  confirm "About to copy the bootstrap layer's local state (serial ${LOCAL_SERIAL}, ${LOCAL_INSTANCES} resource instances) into ${BOOTSTRAP_STATE_URL}. Every checkout plans against that copy from then on." "migrate"
+  # -force-copy answers terraform's own "copy existing state?" prompt; the
+  # typed "migrate" above and the existence check are the questions it asks.
+  tf -chdir="${BOOTSTRAP_DIR}" init -input=false -migrate-state -force-copy \
+    "${BOOTSTRAP_BACKEND_ARGS[@]}"
+
+  MIGRATED_LIST="$(mktemp "${TMPDIR:-/tmp}/swarm-bootstrap-state.XXXXXX")"
+  bootstrap_state_list "${MIGRATED_LIST}"
+  REMOTE_INSTANCES="$(wc -l <"${MIGRATED_LIST}" | tr -d ' ')"
+  rm -f "${MIGRATED_LIST}"
+  if [[ "${REMOTE_INSTANCES}" -ne "${LOCAL_INSTANCES}" ]]; then
+    die "${BOOTSTRAP_STATE_URL} lists ${REMOTE_INSTANCES} resource instances, the local state held ${LOCAL_INSTANCES}. Do NOT plan or apply; the original is backed up at ${BOOTSTRAP_BACKUP}."
+  fi
+  ok "migrated: ${BOOTSTRAP_STATE_URL} lists the same ${REMOTE_INSTANCES} resource instances"
+  hr
+  cat >&2 <<'NEXT'
+Next:
+  1. scripts/bootstrap.sh --environment dev    (from any checkout; expect no
+                                                creates of the deployer)
+  2. once that plan is clean, move terraform/bootstrap/terraform.tfstate and
+     terraform.tfstate.backup out of this checkout. terraform no longer reads
+     them; the copy in build/ is the rollback.
+NEXT
+  exit 0
+fi
+
 if compgen -G "${BOOTSTRAP_DIR}/*.tf" >/dev/null; then
-  info "applying terraform/bootstrap"
+  info "applying terraform/bootstrap (state ${BOOTSTRAP_STATE_URL})"
   if [[ -n "${BOOTSTRAP_TARGET_NOTE}" ]]; then
     # Said before the plan and again at the prompt: a targeted plan shows only
     # what was named, so the owner must know the rest of the root is pending.
     warn "TARGETED: this plan covers only${BOOTSTRAP_TARGET_NOTE}"
     warn "everything else pending in terraform/bootstrap is left for a later, untargeted run"
   fi
-  tf -chdir="${BOOTSTRAP_DIR}" init -upgrade -input=false
+  tf -chdir="${BOOTSTRAP_DIR}" init -upgrade -input=false -reconfigure \
+    "${BOOTSTRAP_BACKEND_ARGS[@]}"
+
+  # THE EMPTY-STATE GUARD (#827). An empty bootstrap state plans every resource
+  # in this root as a create -- on 2026-10-07, from a worktree, that was "9 to
+  # import, 91 to add", the live deployer and all its grants. An empty state is
+  # right only on a project that has never been bootstrapped, and the deployer
+  # service account is the measurement of that: this root creates it, and
+  # nothing else does.
+  STATE_LIST="$(mktemp "${TMPDIR:-/tmp}/swarm-bootstrap-state.XXXXXX")"
+  bootstrap_state_list "${STATE_LIST}"
+  LOCAL_HELD=0
+  if [[ -f "${BOOTSTRAP_LOCAL_STATE}" ]]; then
+    LOCAL_HELD="$(bootstrap_local_instances)"
+  fi
+  if [[ -s "${STATE_LIST}" ]]; then
+    ok "bootstrap state lists $(wc -l <"${STATE_LIST}" | tr -d ' ') resource instances"
+    if [[ "${LOCAL_HELD}" -gt 0 ]]; then
+      warn "${BOOTSTRAP_LOCAL_STATE} is a pre-migration copy; terraform does not read it. Move it out of this checkout."
+    fi
+  else
+    if [[ "${LOCAL_HELD}" -gt 0 ]]; then
+      rm -f "${STATE_LIST}"
+      err "the bootstrap state at ${BOOTSTRAP_STATE_URL} is EMPTY, and this checkout holds a local one"
+      err "(${BOOTSTRAP_LOCAL_STATE}, ${LOCAL_HELD} resource instances). Migrate it first, once:"
+      err "    scripts/bootstrap.sh --migrate-state"
+      die "refusing to plan the bootstrap layer against an empty state"
+    fi
+    DEPLOYER_RC=0
+    shared_resource_present "${BOOTSTRAP_DEPLOYER}" \
+      gcloud iam service-accounts describe "${BOOTSTRAP_DEPLOYER}" \
+        --project "${PROJECT_ID}" --format='value(email)' \
+      || DEPLOYER_RC=$?
+    case "${DEPLOYER_RC}" in
+      0)
+        rm -f "${STATE_LIST}"
+        err "the bootstrap state at ${BOOTSTRAP_STATE_URL} is EMPTY, but ${BOOTSTRAP_DEPLOYER} exists."
+        err "This project has been bootstrapped; its state is somewhere else, most likely a local"
+        err "terraform/bootstrap/terraform.tfstate in the checkout that last applied it. A plan from here"
+        err "would offer to re-create the live deployer and every grant it holds."
+        err "Migrate that state first, once, from that checkout:"
+        err "    scripts/bootstrap.sh --migrate-state"
+        err "(docs/operations.md, \"The bootstrap layer's state\")"
+        die "refusing to plan the bootstrap layer against an empty state while the deployer exists"
+        ;;
+      1)
+        info "empty bootstrap state and no ${BOOTSTRAP_DEPLOYER}: a project never bootstrapped, so everything is a create"
+        ;;
+      *)
+        rm -f "${STATE_LIST}"
+        die "refusing to plan against an empty bootstrap state without knowing whether ${BOOTSTRAP_DEPLOYER} exists"
+        ;;
+    esac
+  fi
+  rm -f "${STATE_LIST}"
+
   tf -chdir="${BOOTSTRAP_DIR}" plan -input=false -out="${BUILD_DIR}/bootstrap.tfplan" \
     -var="project_id=${PROJECT_ID}" -var="region=${REGION}" \
     ${BOOTSTRAP_TARGETS[@]+"${BOOTSTRAP_TARGETS[@]}"}
