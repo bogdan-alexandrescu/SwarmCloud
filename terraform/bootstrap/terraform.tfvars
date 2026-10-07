@@ -138,3 +138,11 @@ frontend_iap_members = [
 frontend_iap_programmatic_clients = [
   "209012342332-deadkn6c5s1ghe0s5lnq3khmekogn2tv.apps.googleusercontent.com",
 ]
+
+# The GitHub user slots' IAM (forge_user_slots.tf; #780 lane OB2, owner
+# decisions D2, D3 and D7 of 2026-10-07): swarmForgeSlotCreator for swarm-api,
+# and per tenant in dev.tfvars, swarm-api's version-add on the user slots and
+# read on their -refresh twins, and the worker's read on the base slots. Read
+# the plan's four kinds of grant against docs/runbooks/github-app.md, step 2,
+# before applying.
+enable_forge_user_slots = true

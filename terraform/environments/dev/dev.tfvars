@@ -436,6 +436,22 @@ alert_emails  = []
 enable_frontend   = true
 frontend_hostname = "swarm.saga.xyz"
 
+# --- the SwarmCloud GitHub App (#780, docs/runbooks/github-app.md) -----------
+# enable_github_app declares the App's two empty secret slots, which swarm-api
+# alone reads (github_app.tf). The three settings below are the App's PUBLIC
+# ones, copied from its settings page after the owner registers it (runbook
+# step 3) and empty until then. The client SECRET and the private key are
+# never written here -- the repository is public -- they go to Secret Manager
+# by `scripts/create-secrets.sh --github-app <slot> --stdin` (runbook step 4).
+enable_github_app    = true
+github_app_id        = ""
+github_app_client_id = ""
+github_app_slug      = ""
+
+# The 15-minute user-token refresh sweep, swarm-forge-refresh. Off until
+# swarm-api serves POST /v1/admin/forge/refresh (lane OB3; runbook step 7).
+enable_forge_refresh = false
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.

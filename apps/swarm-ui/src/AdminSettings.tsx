@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
@@ -575,11 +576,37 @@ export function unitsWord(n: number): string {
  * WHAT SET A POOL'S CEILING, NEVER A BLANK CELL (browser QA D32, 2026-10-04).
  * #132 left the configured case empty so the column would not restate the
  * Ceiling, and every row then read as a cell nobody filled in. The configured
- * case is the word, faint; AIMD and provider quota stand out in ink.
+ * case is a faint dot (G5-19), named for a screen reader; AIMD and provider
+ * quota stand out in ink.
  */
 export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
-  return by.term === 'configured' ? <span className="adm-setby-cfg">configured</span> : <>{by.term}</>
+  // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
+  // nearly every row hid the rows where something else set the ceiling.
+  return by.term === 'configured' ? (
+    <span className="adm-setby-cfg" role="img" aria-label="configured">·</span>
+  ) : (
+    <>{by.term}</>
+  )
+}
+
+/**
+ * A pool key that breaks only after a colon (QA G5-11): the family tables
+ * wrap anywhere, and `provider:anthropic:tenant:smok / e` is not a key anyone
+ * can read or paste. The text is unchanged; `<wbr>` only offers the break.
+ */
+export function keyBreaks(name: string): ReactNode {
+  const parts = name.split(':')
+  return parts.map((part, i) =>
+    i < parts.length - 1 ? (
+      <Fragment key={i}>
+        {`${part}:`}
+        <wbr />
+      </Fragment>
+    ) : (
+      <Fragment key={i}>{part}</Fragment>
+    ),
+  )
 }
 
 /** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
@@ -634,10 +661,14 @@ function PoolEditor({
     poolLabel(p.name).toLowerCase().includes(needle) ||
     // The open editor's row is never filtered away from under what was typed.
     p.name === editing?.pool
+  // ONE POOL ORDER (QA G5-22): Pools' -- family, problems first, this
+  // tenant, name (`comparePools`). It was alphabetical here, so `standard`
+  // sat third on this screen and first on Pools.
+  const order = comparePools(poolViewer(capacity))
   const families = POOL_FAMILY_ORDER.flatMap((kind) => {
     const rows = pools
       .filter((p) => poolKind(p.name) === kind && matches(p))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(order)
     return rows.length === 0 ? [] : [{ kind, rows }]
   })
 
@@ -793,13 +824,16 @@ function Family({
   admin: boolean | null
   onOpen: (pool: string) => void
 }) {
+  // A RECORD PER POOL ON A PHONE (QA G5-08): at 390 the table ran 553-626px in
+  // a 356px box and cut `edit` to `edi`.
+  const phone = usePhoneTables()
   return (
     <section className="ctl-card adm-family">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <div className="ctl-table is-scroll">
+        <div className={`ctl-table ${tableMode(phone)}`}>
           {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
               SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
               family where some pool was not at its configured value, so the
@@ -884,7 +918,7 @@ function PoolRow({
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
-        <span className="ctl-sub">{pool.name}</span>
+        <span className="ctl-sub">{keyBreaks(pool.name)}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="adm-ceiling-cell">
@@ -901,6 +935,18 @@ function PoolRow({
         ) : (
           <span className="adm-ceiling">{pool.effective_limit}</span>
         )}
+        {/* THE CONFIGURED HARD LIMIT BESIDE THE EFFECTIVE ONE, AS POOLS DRAWS
+            IT (G5-21, QA 2026-10-07): a quota-held pool read "50" here and
+            "50/100" on Pools, and its editor then prefilled 100. A slot of its
+            own and a fixed width, drawn empty when the two agree, so `edit`
+            still starts at one x in every row. */}
+        <span className="adm-was">
+          {pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit && (
+            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+              /{pool.hard_limit}
+            </span>
+          )}
+        </span>
         <span className="limit-edit">
           {/* A pool nothing can write gets no editor to open: an enabled
               control that silently does nothing is worse than none. The
@@ -1079,7 +1125,7 @@ function SideEditor({
         {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>
-            <dd>{pool.hard_limit}</dd>
+            <dd>{unitsWord(pool.hard_limit)}</dd>
           </>
         )}
         <dt>Last changed</dt>
@@ -1093,8 +1139,12 @@ function SideEditor({
       </dl>
 
       <div className="adm-side-field">
+        {/* THE FIELD SAYS WHAT IT EDITS AND WHAT IT HOLDS (G5-21): the write
+            sets the HARD limit, and the prefill is that hard limit -- not the
+            effective ceiling printed above it when a quota or an adaptive
+            target holds the pool lower. */}
         <label className="adm-side-k" htmlFor={`${titleId}-new`}>
-          New ceiling
+          {pool.hard_limit === null ? 'New hard limit' : `New hard limit (now ${pool.hard_limit})`}
         </label>
         <input
           id={`${titleId}-new`}

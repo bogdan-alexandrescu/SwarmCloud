@@ -675,7 +675,7 @@ describe('Accounts, with every help card closed', () => {
     const item = chooseAccount('eng:never')
     const onItem = item.querySelector('.acct-window')!
     expect(onItem.classList.contains('acct-unmeasured')).toBe(true)
-    expect(textOf(onItem)).toBe('—')
+    expect(textOf(onItem.querySelector('.acct-pct'))).toBe('—')
 
     // The 5h and 7d tiles of the account nobody has polled.
     const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]
@@ -861,7 +861,7 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     expect(accountCell('eng:old', '7d used').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
   })
 
-  it('keeps the track a fixed 40px inline beside the figure, and hides it at 560px and below', async () => {
+  it('draws the tile’s track across the tile, and hides it at 560px and below', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
     const track = accountCell('eng:live', '5h used').querySelector('.acct-window > .ctl-util-track')
@@ -871,7 +871,9 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
       expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
       return r.winner?.value ?? null
     }
-    expect(won('width', 1440)).toBe('40px')
+    // The tile's width (G5-07, QA 2026-10-07): 40px of a 122px tile was a
+    // lone fill nobody could read as a share (qa.g5.accounts.test.tsx).
+    expect(won('width', 1440)).toBe('100%')
     expect(won('display', 1440)).toBe('inline-flex')
     // The phone block's own rule governs, as it does every other track.
     expect(won('display', 390)).toBe('none')

@@ -24,6 +24,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
+import { disabledSentence } from './ProfileMatrix'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
@@ -1043,7 +1044,7 @@ export function ProfileTile({
   if (profile.available === false) {
     const reason = profile.disabled_reason || 'refused by the platform'
     return (
-      <div className="ov-hp is-off" title={`${name} is disabled: ${reason}. Nothing can start on it, whatever the pools hold.`}>
+      <div className="ov-hp is-off" title={`${disabledSentence(name, profile.disabled_reason)} Nothing can start on it, whatever the pools hold.`}>
         <span className="ov-idc" title={name}>{name}</span>
         <b className="ov-hp-off">disabled</b>
         <small title={reason}>{reason}</small>
@@ -1184,6 +1185,15 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
               stale); the whole sentence, age included, is the line's title. */}
           best {pool.best.label} at <span className="ov-num">{Math.round(pool.pct)}%</span> of its {pool.best.window} window
           {staleFoot(Date.parse(pool.best.observedAt), now) !== null && ` · ${staleFoot(Date.parse(pool.best.observedAt), now)}`}
+        </span>
+      )}
+      {/* NAMED, NOT COUNTED (QA G5-05, 2026-10-07): an account whose window
+          has reset since it was read is kept out of `best` -- a projection is
+          not headroom -- and it is usually the one with the most room, so the
+          line says which ones it left out rather than reading as if they had none. */}
+      {pool.projected.length > 0 && (
+        <span className="ov-acc-proj" title="Their last figure describes a window that has since reset or gone stale, so it is not counted as room. Accounts shows them with ~.">
+          · {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
@@ -1416,9 +1426,26 @@ function RunningCard({
         {running.map((t) => (
           <li key={t.id}>
             <StateMark state={t.state} />
-            <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
-              {rowLabel(t, titleOf(t))}
-            </a>
+            <span className="ov-prun-m">
+              <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
+                {rowLabel(t, titleOf(t))}
+              </a>
+              {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
+                  (QA G1-08, 2026-10-07): a dot and "implement" twice could
+                  not be told apart. State, profile, and the workflow by its
+                  short id, whole in the link's title. */}
+              <span className="ov-prun-sub">
+                {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+                {t.workflow_id && (
+                  <>
+                    {' · '}
+                    <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
+                      {shortWorkflowId(t.workflow_id)}
+                    </a>
+                  </>
+                )}
+              </span>
+            </span>
             <em>
               <Runtime task={t} leasedAt={leased.get(t.id)} />
             </em>
@@ -1502,7 +1529,10 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   const page = dataOf(leases)
   if (page === null) return out
   for (const l of page.leases) {
-    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+    // `starting` is a worker that has not beaten yet inside its dispatch
+    // deadline (G5-01): booting, not silent, so it is not one of the item's.
+    const { kind } = leaseLiveliness(l, page.thresholds)
+    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
   }
   return out
 }
@@ -1522,6 +1552,11 @@ function leasedAtByTask(leases: Result<LeasePage>): Map<string, string> {
     if (had === undefined || l.generation > had.generation) out.set(l.task_id, { at: l.created_at, generation: l.generation })
   }
   return new Map([...out].map(([id, v]) => [id, v.at]))
+}
+
+/** `wf_ccdd1422ab` -> `wf_ccdd14…`: what a phone row has room for. A short id stays whole. */
+function shortWorkflowId(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 9)}…`
 }
 
 function startKey(t: Task): number {
@@ -1849,6 +1884,13 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   usable: number | null
   /** Accounts in scope, whether or not any reading arrived. */
   total: number
+  /**
+   * Accounts with a real figure that is no longer current -- stale, or a
+   * window that has reset since -- by label. Kept out of `best` and `usable`,
+   * and NAMED on the account line (QA G5-05): they are often the accounts with
+   * the most room, and a line that drops them silently reads as if they had none.
+   */
+  projected: string[]
 } {
   if (state.status === 'loading') {
     return {
@@ -1860,6 +1902,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: null,
       usable: null,
       total: 0,
+      projected: [],
     }
   }
   if (state.status === 'error') {
@@ -1872,6 +1915,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: null,
       usable: null,
       total: 0,
+      projected: [],
     }
   }
   if (state.status === 'empty') {
@@ -1884,6 +1928,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: 'no accounts',
       usable: 0,
       total: 0,
+      projected: [],
     }
   }
 
@@ -1977,6 +2022,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: 'nothing measured',
       usable: 0,
       total: accounts.length,
+      projected,
     }
   }
 
@@ -2001,6 +2047,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
     absent: null,
     usable,
     total: accounts.length,
+    projected,
   }
 }
 

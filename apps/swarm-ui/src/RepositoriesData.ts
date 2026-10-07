@@ -458,6 +458,22 @@ function normHistory(v: unknown): IndexHistory | null {
   return c === undefined ? null : { co_change: c, reason: str(v.reason) }
 }
 
+/** One always-run test (repoindex.py `AlwaysTest`): run on every change, with why and where that is declared. */
+export interface AlwaysTestRow {
+  target: string
+  because: string | null
+  /** The file that declares it (`CLAUDE.md`, a workflow); null when the index did not say. */
+  source: string | null
+  command: string | null
+}
+/** One test suite (repoindex.py `TestSuite`): where it lives, how it runs, what it needs, the globs it covers. */
+export interface SuiteRow {
+  root: string
+  framework: string | null
+  command: string | null
+  needs: string[]
+  covers: string[]
+}
 export interface IndexDoc {
   commit_sha: string | null
   built_at: string | null
@@ -469,6 +485,8 @@ export interface IndexDoc {
   co_changes: CoChange[]
   test_map: TestEdge[]
   unmapped: string[]
+  always_tests: AlwaysTestRow[]
+  test_layout: SuiteRow[]
   /** The document's `languages` rows; null when the document carries no such array. */
   languages: LanguageRow[] | null
   /** The version's `history` judgement; null when the API served none. */
@@ -537,6 +555,14 @@ export function normIndexDoc(v: unknown): IndexDoc | null {
     co_changes: co,
     test_map: tm,
     unmapped: strs(d.unmapped),
+    always_tests: recs(d.always_tests).flatMap((a): AlwaysTestRow[] => {
+      const target = str(a.target)
+      return target === null ? [] : [{ target, because: str(a.because), source: str(a.source), command: str(a.command) }]
+    }),
+    test_layout: recs(d.test_layout).flatMap((t): SuiteRow[] => {
+      const root = str(t.root)
+      return root === null ? [] : [{ root, framework: str(t.framework), command: str(t.command), needs: strs(t.needs), covers: strs(t.covers) }]
+    }),
     languages: Array.isArray(d.languages) ? normLanguages(d.languages) : null,
     history: normHistory(meta.history),
   }
@@ -554,6 +580,66 @@ export function testMapRows(edges: readonly TestEdge[]): TestMapRow[] {
     if (e.test !== null && !row.tests.some((t) => t.test === e.test)) row.tests.push({ test: e.test, evidence: e.evidence, command: e.command })
   }
   return [...rows.values()]
+}
+
+/**
+ * A test-map source as a glob: its stem and the `/**` that makes it a whole
+ * directory, so the page can draw the glob as a glob (QA G4-08) -- a
+ * directory edge says every file under it maps to its tests.
+ */
+export function globParts(glob: string): { stem: string; tail: string | null } {
+  return glob.endsWith('/**') ? { stem: glob.slice(0, -3), tail: '/**' } : { stem: glob, tail: null }
+}
+
+/** The paths typed into the Test map's lookup: split on commas, spaces and new lines, each once, in order. */
+export function pathsOf(text: string): string[] {
+  return [...new Set(text.split(/[\s,]+/).filter((p) => p !== ''))]
+}
+
+/** One test the selection picked: the paths that reached it and its strongest evidence. */
+export interface SelectedTest {
+  target: string
+  command: string | null
+  because: string[]
+  evidence: string | null
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/tests:select` (routes/repositories.py
+ * `select_repository_tests`, repoindex.py `select_tests`): the paths in,
+ * `{tests, always, unmapped, fallback}` out. `unmapped` is the honest half --
+ * a path no edge covers is listed with the suite to run instead, never
+ * dropped -- and `reason` says why nothing is mapped when no index exists.
+ */
+export interface TestSelection {
+  index_sha: string | null
+  tests: SelectedTest[]
+  always: { target: string; command: string | null; because: string | null }[]
+  unmapped: string[]
+  fallback: string | null
+  /** False when no suite covers every unmapped path and the fallback is the widest suite; null with nothing unmapped. */
+  fallback_covers_every_unmapped_path: boolean | null
+  reason: string | null
+}
+
+export function normTestSelection(v: unknown): TestSelection | null {
+  if (!isRec(v)) return null
+  const covers = v.fallback_covers_every_unmapped_path
+  return {
+    index_sha: str(v.index_sha),
+    tests: recs(v.tests).flatMap((t): SelectedTest[] => {
+      const target = str(t.target)
+      return target === null ? [] : [{ target, command: str(t.command), because: strs(t.because), evidence: str(t.evidence) }]
+    }),
+    always: recs(v.always).flatMap((a) => {
+      const target = str(a.target)
+      return target === null ? [] : [{ target, command: str(a.command), because: str(a.because) }]
+    }),
+    unmapped: strs(v.unmapped),
+    fallback: str(v.fallback),
+    fallback_covers_every_unmapped_path: typeof covers === 'boolean' ? covers : null,
+    reason: str(v.reason),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,13 +680,27 @@ export function normLanguages(v: unknown): LanguageRow[] {
 // Readable repositories (Register C)
 // ---------------------------------------------------------------------------
 
+export type Visibility = 'public' | 'private' | 'internal'
+
 export interface Readable {
   owner: string
   repo: string
   default_branch: string | null
-  private: boolean | null
+  /**
+   * As the API serves it (`forge.py::_visibility`): public, private or
+   * internal; null when it answered `unknown` or nothing. An older answer
+   * that carried only `private` is read from that (QA G4-16).
+   */
+  visibility: Visibility | null
+  archived: boolean | null
   pushed_at: string | null
   registered: boolean
+}
+
+/** A page after the first that did not come back: the list holds the pages before it. */
+export interface ReadableGap {
+  page: number
+  message: string
 }
 
 export interface ReadableList {
@@ -608,10 +708,31 @@ export interface ReadableList {
   secret_name: string | null
   total: number | null
   repositories: Readable[]
+  /** The page the API offers next; null once it offers none. */
+  next_page: number | null
+  /** The API reached its page cap with a full page: the token may read more than is listed. */
+  capped: boolean
+  /** The API's page cap and page size, when it said them. */
+  max_pages: number | null
+  per_page: number | null
+  /** How many pages this list was read from. */
+  pages: number
+  /** A later page that failed, so the list is short; null when every page came back. */
+  gap: ReadableGap | null
 }
 
+function visibilityOf(r: Record<string, unknown>): Visibility | null {
+  const v = str(r.visibility)
+  if (v === 'public' || v === 'private' || v === 'internal') return v
+  const p = bool(r.private)
+  return p === null ? null : p ? 'private' : 'public'
+}
+
+/** One page of `GET /v1/repositories/readable` (`swarm_api/repositories.py::readable`). */
 export function normReadable(v: unknown): ReadableList {
-  if (!isRec(v)) return { secret_name: null, total: null, repositories: [] }
+  if (!isRec(v)) {
+    return { secret_name: null, total: null, repositories: [], next_page: null, capped: false, max_pages: null, per_page: null, pages: 0, gap: null }
+  }
   const repositories = recs(v.repositories)
     .map((r) => {
       let owner = str(r.owner)
@@ -625,13 +746,45 @@ export function normReadable(v: unknown): ReadableList {
         owner,
         repo,
         default_branch: str(r.default_branch),
-        private: bool(r.private),
+        visibility: visibilityOf(r),
+        archived: bool(r.archived),
         pushed_at: str(r.pushed_at),
         registered: r.registered === true,
       }
     })
     .filter((r): r is Readable => r !== null)
-  return { secret_name: str(v.secret_name), total: num(v.total), repositories }
+  const next = num(v.next_page)
+  return {
+    secret_name: str(v.secret_name),
+    total: num(v.total),
+    repositories,
+    next_page: next !== null && Number.isInteger(next) && next > 1 ? next : null,
+    capped: v.capped === true,
+    max_pages: num(v.max_pages),
+    per_page: num(v.per_page),
+    pages: 1,
+    gap: null,
+  }
+}
+
+/**
+ * The list so far with one more page appended. The later page decides where
+ * paging stands (`next_page`, `capped`); a repository already listed is not
+ * listed twice, in case the forge's order shifted between two pages.
+ */
+export function appendReadable(sofar: ReadableList, more: ReadableList): ReadableList {
+  const seen = new Set(sofar.repositories.map((r) => `${r.owner}/${r.repo}`.toLowerCase()))
+  const added = more.repositories.filter((r) => !seen.has(`${r.owner}/${r.repo}`.toLowerCase()))
+  return {
+    ...more,
+    secret_name: sofar.secret_name ?? more.secret_name,
+    total: sofar.total ?? more.total,
+    max_pages: more.max_pages ?? sofar.max_pages,
+    per_page: more.per_page ?? sofar.per_page,
+    repositories: [...sofar.repositories, ...added],
+    pages: sofar.pages + more.pages,
+    gap: null,
+  }
 }
 
 // ---------------------------------------------------------------------------

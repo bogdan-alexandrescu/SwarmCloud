@@ -39,9 +39,10 @@
 # tests/unit/worker/test_agent_seam_end_to_end.py. Check 2 here proves the rest
 # of the chain: harvest, manifest, GCS prefix and the HTTP read path.
 #
-# Nothing here writes to Firestore. Everything it creates is a task or a
-# workflow submitted through the API, and every one of them is cancelled on the
-# way out.
+# Nothing here writes to Firestore directly. What it creates through the API is
+# two workflows, whose step tasks are cancelled on the way out (cleanup()
+# cancels tasks; a workflow is never cancelled as a workflow), and one pending
+# sign-in record from check 4, which is left behind: see check 4 for why.
 #
 # Usage: scripts/e2e-test.sh [--timeout 900] [--keep] [--require-spend]
 
@@ -455,8 +456,11 @@ if api_send POST "/accounts/authorize" \
   # THE ONE THING THIS SUITE LEAVES BEHIND, named so nobody has to discover it.
   # A pending sign-in record keyed by the state, in the broker's own collection.
   # It carries a PKCE verifier and no credential, it is unreachable without the
-  # state, and it expires on its own -- there is no route that deletes one, so
-  # cleaning it up is not available rather than skipped.
+  # state, and it stops being redeemable after the broker's 15-minute
+  # PENDING_TTL. It is NOT deleted, then or ever: PENDING_TTL is checked only
+  # when someone redeems the state, and `account_auth` has no Firestore TTL
+  # policy. There is no route that deletes one either, so cleaning it up is not
+  # available rather than skipped, and every run leaves one such record.
   #
   # The state itself is NOT printed, at any length. It is the only thing binding
   # a redemption to the sign-in that started it (see routes/accounts.py

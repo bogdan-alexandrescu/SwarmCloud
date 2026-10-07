@@ -4,8 +4,9 @@ import { Segmented, ToneMark } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
 import { Mark } from './primitives'
-import { HOLDERS_POLL_MS, capacityPoll, useLinkedPool } from './capacityPoll'
+import { HOLDERS_POLL_MS, capacityPoll, paneHref, tableMode, useLinkedParam, useLinkedPool, usePhoneTables } from './capacityPoll'
 import { Screen } from './Shell'
+import { LeaseRef, TaskRef } from './TaskRef'
 import './styles/capacity.css'
 import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -478,13 +479,17 @@ function HolderTable({
 }: {
   rows: LeaseRow[]
   coverage: LeaseCoverage
-  page: Pick<LeasePage, 'thresholds'>
+  page: Pick<LeasePage, 'thresholds' | 'evaluated_at'>
 }) {
   // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
   // this read loaded. The filter narrows what is drawn; the note beside the
   // heading still says what the loaded rows are out of, so a filtered list is
   // never read as the platform's whole.
-  const [tenant, setTenant] = useState<string | null>(null)
+  // IN THE ADDRESS (QA G5-23): `?tenant=`, so a filtered list can be linked
+  // to and survives a reload, beside the `?pool=` a Pools row links with.
+  // A linked tenant with no row here filters nothing: `All` is drawn chosen,
+  // never an empty table under a tenant chip that is not on screen.
+  const linkedTenant = useLinkedParam('tenant')
   // AND BY POOL, WHEN A LINK NAMED ONE (#125): a Pools row's name links here
   // as `?pool=<name>`, and the table draws the leases whose `pools` list names
   // it. `All pools` drops it; the address is moved too, so a reload does not
@@ -495,8 +500,17 @@ function HolderTable({
   const now = useNow(AGE_TICK_MS)
   const inPool = pool === null ? rows : rows.filter((l) => Array.isArray(l.pools) && l.pools.includes(pool))
   const tenants = [...new Set(inPool.map((l) => l.tenant_id))].sort()
+  const tenant = linkedTenant !== null && tenants.includes(linkedTenant) ? linkedTenant : null
   const shown = tenant === null ? inPool : inPool.filter((l) => l.tenant_id === tenant)
   const sorted = [...shown].sort((a, b) => b.units - a.units)
+  const clearPool = (name: string) => {
+    setCleared(name)
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/holders', { tenant })
+  }
+  const setTenant = (next: string | null) => {
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/holders', { pool, tenant: next })
+  }
+  const phone = usePhoneTables()
   return (
     /* §B6.1: the screen's one full-width table is the one box on it. It was
        a card wrapping a card-body wrapping a `.ctl-table`, which drew two
@@ -519,10 +533,7 @@ function HolderTable({
             <button
               type="button"
               className="hold-pool-clear"
-              onClick={() => {
-                setCleared(pool)
-                if (typeof window !== 'undefined') window.location.hash = '#capacity/holders'
-              }}
+              onClick={() => clearPool(pool)}
             >
               All pools
             </button>
@@ -550,7 +561,7 @@ function HolderTable({
           {coverage.kind === 'unreported' && ' · completeness unreported'}
         </span>
       </div>
-      <div className="ctl-table is-scroll">
+      <div className={`ctl-table ${tableMode(phone)}`}>
           <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -571,15 +582,31 @@ function HolderTable({
               </tr>
             </thead>
             <tbody role="rowgroup">
+              {/* A POOL NOBODY HOLDS SAYS SO (G5-14, QA 2026-10-07). The
+                  filter drew a header row and nothing else, with "0 of 3" in
+                  the toolbar the only clue. One row: which pool, which kind of
+                  nothing -- `real zero` only over every live lease, the
+                  coverage mark otherwise -- and the way back. */}
+              {pool !== null && inPool.length === 0 && (
+                <tr role="row" className="hold-empty">
+                  <td role="cell" colSpan={7}>
+                    No lease holds <span className="mono">{pool}</span> right now ·{' '}
+                    {coverageMark(rows.length, coverage, 'This list') ?? <span className="ctl-mark is-zero">real zero</span>}
+                    {' · '}
+                    <button type="button" className="hold-pool-clear" onClick={() => clearPool(pool)}>
+                      All pools
+                    </button>
+                  </td>
+                </tr>
+              )}
               {sorted.map((l) => (
                 <tr role="row" key={l.lease_id}>
                   <th role="rowheader" scope="row">
-                    {/* The task links to the agent, which is where a reader
-                        goes from "what holds this" to "why is it still here". */}
-                    <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(l.task_id)}`} title={l.task_id}>
-                      {l.task_id.slice(-10)}
-                    </a>
-                    <span className="ctl-sub">{l.lease_id.slice(-10)}</span>
+                    {/* ONE TASK REFERENCE (QA G5-15): `task_…` and the last
+                        eight, as Accounts prints the same task, and the lease
+                        under it says it is a lease. */}
+                    <TaskRef id={l.task_id} />
+                    <LeaseRef id={l.lease_id} />
                   </th>
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
                   <td role="cell" data-label="Units (weighted)" className="is-num">{l.units}</td>
@@ -600,7 +627,7 @@ function HolderTable({
                     <HeldFor createdAt={l.created_at} now={now} />
                   </td>
                   <td role="cell" data-label="Heartbeat">
-                    <Heartbeat lease={l} page={page} />
+                    <Heartbeat lease={l} page={page} now={now} />
                   </td>
                 </tr>
               ))}
@@ -624,29 +651,69 @@ function HeldFor({ createdAt, now }: { createdAt: string | null | undefined; now
 
 /**
  * How long this lease's worker has been quiet, with the verdict the reconciler
- * acts on (#92). `silent_seconds` is the server's, at `evaluated_at`, and the
- * verdict is `leaseLiveliness` over the page's own thresholds -- the function
- * Overview's silent-workers item counts with -- so a lease is "silent" here
- * exactly when it is one of that item's. A lease never beaten says so: its
- * age then counts from the lease's creation, not from a heartbeat.
+ * acts on (#92). The verdict is `leaseLiveliness` over the page's own
+ * thresholds -- the function Overview's silent-workers item counts with -- so
+ * a lease is "silent" here exactly when it is one of that item's.
+ *
+ * THE AGE TICKS ON THE ROW'S CLOCK (G5-06, QA 2026-10-07). It was
+ * `silent_seconds` as of the read while Held for, beside it, moved on
+ * `useNow`, so one row said "Held for 3m 29s" and "never beat, 2m 38s". A
+ * lease that has beaten ages by `silent_seconds` plus the time since the page
+ * was evaluated; one never beaten ages from its creation, which is what Held
+ * for shows, so the two figures are the same figure.
+ *
+ * A LEASE NEVER BEATEN IS STARTING, NOT SILENT, until its dispatch deadline
+ * passes (G5-01): neutral, with how long it has booted and how long it has
+ * left.
  */
 function Heartbeat({
   lease,
   page,
+  now,
 }: {
   lease: LeaseRow
-  page: Pick<LeasePage, 'thresholds'>
+  page: Pick<LeasePage, 'thresholds' | 'evaluated_at'>
+  now: number
 }) {
-  const age = formatDuration(lease.silent_seconds * 1000)
-  const since = lease.heartbeat_ever ? age : `never beat, ${age}`
+  const ageMs = heartbeatAgeMs(lease, page.evaluated_at, now)
+  const age = formatDuration(ageMs)
+  const since = lease.heartbeat_ever ? age : `no beat yet, ${age}`
   // A page that arrived without its thresholds cannot be judged, and a local
   // grace would colour at a threshold the reconciler does not act on: the age
   // alone, with no verdict.
   if (page.thresholds === undefined) return <span title="No heartbeat thresholds arrived with this page">{since}</span>
-  const { kind, copy } = leaseLiveliness(lease, page.thresholds)
+  const { kind, copy } = leaseLiveliness({ ...lease, silent_seconds: ageMs / 1000 }, page.thresholds)
+  if (kind === 'starting') {
+    const deadline = Date.parse(lease.dispatch_deadline)
+    const left = Number.isFinite(deadline) ? deadline - now : NaN
+    const due = !Number.isFinite(left) ? null : left > 0 ? `deadline in ${formatDuration(left)}` : 'deadline due'
+    return (
+      <ToneMark tone="info" title={copy}>
+        starting · {since}
+        {due !== null && <> · {due}</>}
+      </ToneMark>
+    )
+  }
   const tone = kind === 'presumed-dead' ? 'is-bad' : kind === 'silent' ? 'is-warn' : 'is-ok'
   const word = kind === 'presumed-dead' ? 'presumed dead' : kind === 'silent' ? 'silent' : 'beating'
   return (
     <ToneMark tone={tone} title={copy}>{word} · {since}</ToneMark>
   )
+}
+
+/**
+ * How long a lease's worker has been quiet, now. Never beaten: since the
+ * lease's `created_at`. Beaten: the server's `silent_seconds` at
+ * `evaluated_at`, plus what has passed since. Either instant unreadable, the
+ * server's figure as it came -- an age that does not move, never an invented
+ * one.
+ */
+function heartbeatAgeMs(lease: LeaseRow, evaluatedAt: string | undefined, now: number): number {
+  const served = lease.silent_seconds * 1000
+  if (!lease.heartbeat_ever) {
+    const created = Date.parse(lease.created_at)
+    return Number.isFinite(created) ? Math.max(0, now - created) : served
+  }
+  const read = evaluatedAt ? Date.parse(evaluatedAt) : NaN
+  return Number.isFinite(read) ? served + Math.max(0, now - read) : served
 }

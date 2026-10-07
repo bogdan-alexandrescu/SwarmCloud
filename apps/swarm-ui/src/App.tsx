@@ -32,6 +32,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
 import { NotFound, nearestPath } from './NotFound'
+import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -836,9 +837,11 @@ export function fromAddress(full: string): Route {
     // link opened the page at no row at all. Only `pool` is kept.
     // Pools and Holders keep it too (#125, #128): a Pools row links to
     // Holders filtered by its pool, and Provider quota to the pool's row.
-    if (tab && keepsPool(section.id, tab.id)) {
-      const pool = new URLSearchParams(query).get('pool')
-      if (pool) return { sectionId: section.id, tab: tab.id, ...blank, view: poolQuery(pool) }
+    // Holders' tenant chip and Accounts' chosen account ride the same way
+    // (QA G5-23): `?tenant=` and `?account=`, so either can be linked to.
+    if (tab && keptKeys(section.id, tab.id).length > 0) {
+      const kept = keptQuery(keptKeys(section.id, tab.id), query)
+      if (kept !== '') return { sectionId: section.id, tab: tab.id, ...blank, view: kept }
     }
     if (tab) return { sectionId: section.id, tab: tab.id, ...blank }
     // A Work tail that matches no tab is a task id from the old nav.
@@ -860,17 +863,29 @@ export function fromAddress(full: string): Route {
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
 
-/** The panes whose address carries the `?pool=` a link named, and no other. */
-function keepsPool(sectionId: string, tab: string): boolean {
-  return (
-    (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) ||
-    (sectionId === CAPACITY && (tab === 'pools' || tab === 'holders'))
-  )
+/**
+ * The query keys a pane's address carries, and no other: the `?pool=` a link
+ * named on Pool limits, Pools and Holders (#125, #128, #134), Holders' tenant
+ * chip and Accounts' chosen account (QA G5-23).
+ */
+function keptKeys(sectionId: string, tab: string): readonly string[] {
+  if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
+  if (sectionId !== CAPACITY) return []
+  if (tab === 'pools') return ['pool']
+  if (tab === 'holders') return ['pool', 'tenant']
+  if (tab === 'accounts') return ['account']
+  return []
 }
 
-/** Pool limits' query for one pool: `pool=tenant%3Aeng`. */
-function poolQuery(pool: string): string {
-  return new URLSearchParams({ pool }).toString()
+/** `query` cut to `keys`, in that order: `pool=tenant%3Aeng&tenant=eng`. */
+function keptQuery(keys: readonly string[], query: string): string {
+  const from = new URLSearchParams(query)
+  const out = new URLSearchParams()
+  for (const k of keys) {
+    const v = from.get(k)
+    if (v) out.set(k, v)
+  }
+  return out.toString()
 }
 
 /** The one spelling of a route. What the address bar is rewritten to. */
@@ -900,7 +915,7 @@ export function canonical(r: Route): string {
   }
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
   // Holders' (#125, #128).
-  if (keepsPool(r.sectionId, r.tab) && r.view) {
+  if (keptKeys(r.sectionId, r.tab).length > 0 && r.view) {
     return `${r.sectionId}/${r.tab}?${r.view}`
   }
   return `${r.sectionId}/${r.tab}`
@@ -1762,6 +1777,11 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
   useEffect(() => setFailuresOnly(asked), [asked])
   const ordered = referenceOrder(probes)
   const shown = failuresOnly ? ordered.filter(failing) : ordered
+  // THE 403 CAVEAT EXPLAINS A ROW, SO IT IS DRAWN WITH ONE (G1-15). An
+  // administrator gets 200 on /v1/admin and never has such a row; read off
+  // the rows rather than off `/v1/tenants/me`, because this page issues no
+  // read of its own and the rows are what the caveat is about.
+  const adminGated = shown.some((p) => p.lastKind === 'admin_required')
 
   return (
     <>
@@ -1836,7 +1856,9 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
                         it is about says so instead, and `describeProbe` already
                         draws that row with the neutral flat bar (`is-info`,
                         grey since CH-17) rather than in `--bad`. */}
-                    <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
+                    <th role="columnheader" scope="col">
+                      {adminGated ? 'Outcome (403 on /v1/admin is expected)' : 'Outcome'}
+                    </th>
                     <th role="columnheader" scope="col" className="is-num">Took</th>
                     <th role="columnheader" scope="col">Newest payload</th>
                   </tr>
@@ -1877,7 +1899,7 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
       <td role="cell" data-label="Outcome">
         <ToneMark tone={outcome.tone}>{outcome.label}</ToneMark>
       </td>
-      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
+      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{fmtLatency(probe.lastLatencyMs)}</td>
       <td role="cell" data-label="Newest payload">
         {/* THE COLUMN THAT MATTERS. A panel showing a figure from four minutes
             ago while its route has been failing for three of them looks

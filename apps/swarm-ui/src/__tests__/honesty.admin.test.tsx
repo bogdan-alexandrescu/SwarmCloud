@@ -415,8 +415,11 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     const global = document.querySelector('.adm-family')!
     expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).toContain('Set by')
     const cell = editorRow('global').querySelector('td[data-label="Set by"]')!
-    expect(cell.textContent).toBe('configured')
+    // A faint dot named `configured` since QA G5-19 (capacity.html §G): never
+    // blank, never the word on every row.
+    expect(cell.textContent).toBe('·')
     expect(cell.querySelector('.adm-setby-cfg'), 'configured is drawn as loud as an override').not.toBeNull()
+    expect(cell.querySelector('.adm-setby-cfg')?.getAttribute('aria-label')).toBe('configured')
   })
 })
 
@@ -535,17 +538,17 @@ async function renderQuota(rows: QuotaState[]): Promise<HTMLElement> {
 describe('Provider quota says what its cap is and which pool it feeds (CP-8)', () => {
   it('calls the cap a quota cap, in the header and in the stacked key', async () => {
     const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
-    expect(quotaHeads()).toContain('Quota cap')
+    expect(quotaHeads()).toContain('Quota cap (units)')
     expect(quotaHeads()).not.toContain('Limit')
     // The value is unchanged: the document's effective_limit.
-    expect(row.querySelector('td[data-label="Quota cap"]')?.textContent).toBe('50')
+    expect(row.querySelector('td[data-label="Quota cap (units)"]')?.textContent).toBe('50')
     expect(row.querySelector('td[data-label="Limit"]')).toBeNull()
   })
 
   it('names the pool the cap feeds, right after it, as a link to Pools', async () => {
     const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
     const heads = quotaHeads()
-    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap') + 1)
+    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap (units)') + 1)
     const link = row.querySelector('td[data-label="Feeds pool"] a')
     expect(link, 'the pool is not a link').not.toBeNull()
     // To THAT pool's row on Pools (#128), not to the top of the screen.

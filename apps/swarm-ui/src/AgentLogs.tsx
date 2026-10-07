@@ -16,6 +16,7 @@ import type { Result } from './fetch'
 import {
   ERROR_PATTERN_SAYS,
   arrivedLines,
+  isProgressStep,
   linesOf,
   tailGap,
   windowAt,
@@ -119,12 +120,16 @@ async function readFeed(task: Task, attemptId: string | null): Promise<Result<Lo
  * A BLANK LINE IS NO LINE (owner QA R9, 2026-10-04): a window ending in an
  * empty line drew the Details strip with nothing in it, which reads as a
  * line nobody can see rather than as no line at all.
+ *
+ * NOR IS A PROGRESS NOTICE (QA G2-26, 2026-10-07): the newest transcript
+ * step of a running agent was usually a `tool_progress`, so the strip read
+ * `other`. The line is the newest step that is not one (`isProgressStep`).
  */
 export function lastLineOf(feed: LogFeed | null, view: LogView): string | null {
   if (feed === null) return null
   if (view === 'transcript') {
     const steps = okFeed(feed.transcript)?.steps ?? []
-    const s = steps[steps.length - 1]
+    const s = [...steps].reverse().find((x) => !isProgressStep(x))
     if (s === undefined) return null
     const first = (s.text ?? s.tool?.name ?? '').split('\n').find((l) => l.trim() !== '') ?? ''
     return `${s.kind} ${first}`.trim()

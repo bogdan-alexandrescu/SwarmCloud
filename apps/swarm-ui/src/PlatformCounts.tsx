@@ -1,7 +1,8 @@
 import { useContext, useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
-import { HelpCard } from './HelpCard'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
 import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
@@ -199,9 +200,14 @@ export function PlatformCountsScreen() {
           )}
         </div>
       )}
+      {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
+          and why a state with no row is not a zero. */}
+      <HelpLinks topics={COUNTS_TOPICS} />
     </>
   )
 }
+
+const COUNTS_TOPICS: readonly TopicId[] = ['platform-counts', 'absent-vs-zero']
 
 /**
  * How many `count()` queries one run costs, for one scope.

@@ -4,7 +4,7 @@ import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS, capacityPoll, poolHref, useLinkedPool } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, comparePools, poolHref, poolViewer, tableMode, useLinkedPool, usePhoneTables } from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
@@ -93,7 +93,7 @@ export function CapacityScreen() {
               holding every pool a person has to act on (`needsAction`). A
               pool appears once: the top group takes it out of its family.
               The Cards view was the alternative set aside and is gone. */}
-          <CeilingTables pools={d.pools} viewer={viewerOf(d)} holders={d.holders} />
+          <CeilingTables pools={d.pools} viewer={poolViewer(d)} holders={d.holders} />
 
           <HelpLinks topics={CAPACITY_TOPICS} />
         </>
@@ -193,7 +193,7 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
   const paused = pools.filter(isPaused).length
   const over = pools.filter(overCeiling).length
-  const viewer = viewerOf(capacity)
+  const viewer = poolViewer(capacity)
   return (
     <>
       {pools.length} pools in {families} famil{families === 1 ? 'y' : 'ies'}
@@ -203,23 +203,6 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
       {over > 0 && ` · ${over} over ceiling`}
       {viewer !== undefined && ` · tenant ${viewer}`}
     </>
-  )
-}
-
-/**
- * The tenant this read is scoped to: whose pool a row's `this tenant` means.
- *
- * `/v1/capacity` names the tenant itself -- service.capacity() has always
- * sent `tenant_id`, and this file used to guess it back out of the pool
- * names. The regex stays as the fallback for an API that predates the
- * field, because a blank here silently drops the scope from every figure.
- */
-function viewerOf(capacity: Capacity): string | undefined {
-  return (
-    capacity.tenant_id ??
-    capacity.pools
-      .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
-      .find((t): t is string => Boolean(t))
   )
 }
 
@@ -274,7 +257,10 @@ function CeilingTables({
   holders: HolderCounts
 }) {
   const classes = useResourceClasses()
-  const act = pools.filter((p) => needsAction(p, classes)).sort(byUrgency)
+  // ONE POOL ORDER (QA G5-22): `comparePools`, the order Pool limits draws
+  // the same pools in -- family, problems first, this tenant, name.
+  const order = comparePools(viewer)
+  const act = pools.filter((p) => needsAction(p, classes)).sort(order)
   const rest = pools.filter((p) => !needsAction(p, classes))
   // THE ROW A LINK NAMED (#128): Provider quota's Feeds pool lands here, on
   // its pool's row, outlined the way Pool limits outlines its linked row.
@@ -299,7 +285,7 @@ function CeilingTables({
         />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
-        const family = rest.filter((p) => poolKind(p.name) === kind).sort(byUrgency)
+        const family = rest.filter((p) => poolKind(p.name) === kind).sort(order)
         if (family.length === 0) return null
         return (
           <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} target={target} holders={holders} />
@@ -312,26 +298,6 @@ function CeilingTables({
 /** The id of a pool's row on Pools, which a `?pool=` link scrolls to. */
 function poolRowId(pool: string): string {
   return `pool-${pool}`
-}
-
-/**
- * ABNORMAL ROWS FIRST, THEN THE FULLEST (#125). A family used to be sorted by
- * name, so at 3am the one full pool among twenty sat wherever its name put
- * it. Now a family reads worst first: over ceiling, paused, no limit set or
- * limit 0, full -- the order `classifyPool` draws its marks in -- then every
- * other row by used/ceiling, highest first, and by name only to break a tie.
- */
-export function byUrgency(a: Pool, b: Pool): number {
-  const rank = (p: Pool): number => {
-    const limit = p.effective_limit
-    if (overCeiling(p)) return 0
-    if (isPaused(p)) return 1
-    if (limit === null || limit === 0) return 2
-    if (p.active >= limit) return 3
-    return 4
-  }
-  const used = (p: Pool): number => (p.effective_limit !== null && p.effective_limit > 0 ? p.active / p.effective_limit : 0)
-  return rank(a) - rank(b) || used(b) - used(a) || a.name.localeCompare(b.name)
 }
 
 function Family({
@@ -414,8 +380,9 @@ function PoolTable({
   target: string | null
   holders: HolderCounts
 }) {
+  const phone = usePhoneTables()
   return (
-    <div className="ctl-table is-scroll cap-pools">
+    <div className={`ctl-table ${tableMode(phone)} cap-pools`}>
       <table role="table">
         <PoolCols />
         <thead role="rowgroup">
@@ -500,9 +467,12 @@ function PoolRow({
       className={[marks.row, target ? 'is-target' : ''].filter(Boolean).join(' ') || undefined}
     >
       <th role="rowheader" scope="row" title={pool.name}>
-        {/* THE NAME IS THE WAY TO WHO HOLDS IT (#125): Holders, filtered to
-            the leases that name this pool. */}
-        <a className="ctl-link" href={poolHref('capacity/holders', pool.name)}>
+        {/* THE NAME IS THIS ROW'S OWN ADDRESS (QA G5-23). It linked to
+            Holders filtered by the pool, the same target as `N holders` two
+            columns along; it is now the link to this row on this screen --
+            the one a reader copies to point someone at a pool -- and who holds
+            it stays one click away, in Open. */}
+        <a className="ctl-link" href={poolHref('capacity/pools', pool.name)}>
           {poolLabel(pool.name)}
         </a>
         {/* THE SCOPE, PER ROW (CP-2), under the name it qualifies: it says
@@ -510,7 +480,16 @@ function PoolRow({
             with. It was a column of its own, which the frame does not have
             and which wrapped the names beside it (#503). */}
         <span className="cap-sub">
-          <span className="ctl-sub">{pool.name}</span> · <span className="cap-scope">{scope}</span>
+          <span className="ctl-sub">{pool.name}</span>
+          {/* THE KEY IS NEVER THE PART THAT IS CUT (QA G5-11): at 1440
+              `provider:anthropic:tenant:smoke · tenant …` lost the scope and
+              `provider:mock-provider:tenant:eng · this t…` nearly lost the key.
+              The scope stays on every row (CP-2) but gives way first -- it is
+              the part a key with a `tenant:` segment already repeats. */}
+          <span className="cap-sub-scope">
+            {' · '}
+            <span className="cap-scope">{scope}</span>
+          </span>
         </span>
       </th>
       <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
@@ -550,12 +529,18 @@ function PoolRow({
           <PoolMarks marks={marks} />
         </span>
       </td>
-      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04). #125 left the
-          configured case empty, and with a links column that had no head the
-          holders/limit links then read as Set by's contents. The configured
-          case is the word, faint; AIMD and quota stand out in ink. */}
+      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04), AND NEVER THE WORD ON
+          EVERY ROW (QA G5-19; capacity.html §G, "Set by only when it is not
+          'configured'"). 28 of 29 rows said `configured` and drowned the one
+          that said `provider quota`. The configured case is a faint dot --
+          a filled cell, not a blank one -- named `configured` for a screen
+          reader and in the cell's title; AIMD and quota stand out in ink. */}
       <td role="cell" data-label="Set by" title={by.detail}>
-        {by.term === 'configured' ? <span className="cap-setby-cfg">configured</span> : by.term}
+        {by.term === 'configured' ? (
+          <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
+        ) : (
+          by.term
+        )}
       </td>
       <td role="cell" data-label="Links" className="cap-links">
         {/* Both name the pool (#125): Holders filtered to it, and its own row

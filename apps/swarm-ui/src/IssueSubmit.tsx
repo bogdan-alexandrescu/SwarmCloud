@@ -6,8 +6,9 @@ import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
-import { clockTime, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
+import { timeAgo, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
+import { useNow } from './useNow'
 import './styles/submit.css'
 import './styles/intake.css'
 
@@ -294,7 +295,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
         <Move n={2} title="The runner it plans and builds with" dim={read === null}>
           <RunnerPicker group="issue-runner" label="runner" profiles={catalogue} chosen={ISSUE_RUN_PROFILE}
-            keys={keys} onPick={() => {}} onlyUsable />
+            keys={keys} onPick={() => {}} onlyUsable heldAs="not used for issue runs" />
           {runner === null && (
             <p className="warn-text" role="alert">
               {ISSUE_RUN_PROFILE} is not in this tenant&rsquo;s catalogue, so the API would have no runner to plan with.
@@ -449,6 +450,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 }
 
 
+/**
+ * When the preview was read, as an age (`just now`, `3m ago`) with the
+ * absolute instant -- `2026-10-07 04:29:44 UTC` -- for its title. An instant
+ * that is not a number is `at an unknown time` with no title: never a made-up
+ * clock.
+ */
+export function readAtText(at: number, now: number): { text: string; title: string | undefined } {
+  if (!Number.isFinite(at)) return { text: 'at an unknown time', title: undefined }
+  const iso = new Date(at).toISOString()
+  return { text: timeAgo(at, now), title: `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC` }
+}
+
 /** What was read, as served: title, state, comments, labels, the body, the link. */
 export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
@@ -456,9 +469,13 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   const { issue } = read
   const [whole, setWhole] = useState(false)
   const closed = issue.state === 'closed'
-  // THE CONSOLE'S ONE CLOCK (browser QA N20, 2026-10-04): this said
-  // "11:45 PM" where every other screen says 23:45:10 (`clockTime`).
-  const time = clockTime(new Date(at).toISOString(), at)
+  // AN AGE, LIKE EVERYTHING ELSE IN THE AREA (QA G4-34, 2026-10-07). It
+  // printed the local wall clock -- "read 21:29:44", no date and no zone --
+  // beside relative ages; before that "11:45 PM" (N20). It reads "read just
+  // now" and moves on the console's shared age tick, and the absolute instant,
+  // in UTC and saying so, is the line's title.
+  const now = useNow()
+  const time = readAtText(at, now)
   return (
     <section className="in-preview" aria-label="The issue as read">
       <h3>{issue.title === '' ? <i className="ctl-em">&mdash; untitled</i> : <InlineText text={issue.title} />}</h3>
@@ -476,7 +493,7 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
         </span>
         <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}</span>
       </p>
-      <p className="in-meta in-read-at" title={time?.title}>read {time?.text ?? 'at an unknown time'} with this tenant&rsquo;s forge credential</p>
+      <p className="in-meta in-read-at" title={time.title}>read {time.text} with this tenant&rsquo;s forge credential</p>
       {issue.labels.length > 0 ? (
         <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>
       ) : (
