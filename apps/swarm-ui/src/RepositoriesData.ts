@@ -572,13 +572,27 @@ export function normLanguages(v: unknown): LanguageRow[] {
 // Readable repositories (Register C)
 // ---------------------------------------------------------------------------
 
+export type Visibility = 'public' | 'private' | 'internal'
+
 export interface Readable {
   owner: string
   repo: string
   default_branch: string | null
-  private: boolean | null
+  /**
+   * As the API serves it (`forge.py::_visibility`): public, private or
+   * internal; null when it answered `unknown` or nothing. An older answer
+   * that carried only `private` is read from that (QA G4-16).
+   */
+  visibility: Visibility | null
+  archived: boolean | null
   pushed_at: string | null
   registered: boolean
+}
+
+/** A page after the first that did not come back: the list holds the pages before it. */
+export interface ReadableGap {
+  page: number
+  message: string
 }
 
 export interface ReadableList {
@@ -586,10 +600,31 @@ export interface ReadableList {
   secret_name: string | null
   total: number | null
   repositories: Readable[]
+  /** The page the API offers next; null once it offers none. */
+  next_page: number | null
+  /** The API reached its page cap with a full page: the token may read more than is listed. */
+  capped: boolean
+  /** The API's page cap and page size, when it said them. */
+  max_pages: number | null
+  per_page: number | null
+  /** How many pages this list was read from. */
+  pages: number
+  /** A later page that failed, so the list is short; null when every page came back. */
+  gap: ReadableGap | null
 }
 
+function visibilityOf(r: Record<string, unknown>): Visibility | null {
+  const v = str(r.visibility)
+  if (v === 'public' || v === 'private' || v === 'internal') return v
+  const p = bool(r.private)
+  return p === null ? null : p ? 'private' : 'public'
+}
+
+/** One page of `GET /v1/repositories/readable` (`swarm_api/repositories.py::readable`). */
 export function normReadable(v: unknown): ReadableList {
-  if (!isRec(v)) return { secret_name: null, total: null, repositories: [] }
+  if (!isRec(v)) {
+    return { secret_name: null, total: null, repositories: [], next_page: null, capped: false, max_pages: null, per_page: null, pages: 0, gap: null }
+  }
   const repositories = recs(v.repositories)
     .map((r) => {
       let owner = str(r.owner)
@@ -603,13 +638,45 @@ export function normReadable(v: unknown): ReadableList {
         owner,
         repo,
         default_branch: str(r.default_branch),
-        private: bool(r.private),
+        visibility: visibilityOf(r),
+        archived: bool(r.archived),
         pushed_at: str(r.pushed_at),
         registered: r.registered === true,
       }
     })
     .filter((r): r is Readable => r !== null)
-  return { secret_name: str(v.secret_name), total: num(v.total), repositories }
+  const next = num(v.next_page)
+  return {
+    secret_name: str(v.secret_name),
+    total: num(v.total),
+    repositories,
+    next_page: next !== null && Number.isInteger(next) && next > 1 ? next : null,
+    capped: v.capped === true,
+    max_pages: num(v.max_pages),
+    per_page: num(v.per_page),
+    pages: 1,
+    gap: null,
+  }
+}
+
+/**
+ * The list so far with one more page appended. The later page decides where
+ * paging stands (`next_page`, `capped`); a repository already listed is not
+ * listed twice, in case the forge's order shifted between two pages.
+ */
+export function appendReadable(sofar: ReadableList, more: ReadableList): ReadableList {
+  const seen = new Set(sofar.repositories.map((r) => `${r.owner}/${r.repo}`.toLowerCase()))
+  const added = more.repositories.filter((r) => !seen.has(`${r.owner}/${r.repo}`.toLowerCase()))
+  return {
+    ...more,
+    secret_name: sofar.secret_name ?? more.secret_name,
+    total: sofar.total ?? more.total,
+    max_pages: more.max_pages ?? sofar.max_pages,
+    per_page: more.per_page ?? sofar.per_page,
+    repositories: [...sofar.repositories, ...added],
+    pages: sofar.pages + more.pages,
+    gap: null,
+  }
 }
 
 // ---------------------------------------------------------------------------

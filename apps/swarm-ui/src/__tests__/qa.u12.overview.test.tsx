@@ -24,6 +24,7 @@ import { task } from './runfixture'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
+const TABLET: CascadeEnv = { width: 820 }
 const NOW = Date.parse('2026-10-04T12:00:00Z')
 
 function ok<T>(data: T): Result<T> {
@@ -103,14 +104,19 @@ describe('N17/D19: no column is left blank beside a taller card', () => {
     host.remove()
   })
 
-  it('keeps O1\'s order in one column on a phone', () => {
+  it('keeps O1\'s order in one column under 1100px', () => {
     const host = frame()
     const grid = host.querySelector('.ov-cols')!
     for (const col of grid.querySelectorAll(':scope > .ov-col')) expect(painted(col, 'display', PHONE)).toBe('contents')
-    const order = (sel: string) => Number(painted(host.querySelector(sel)!, 'order', PHONE) ?? '0')
-    const seq = ['.ov-running', '.ov-spend', '.ov-waiting', '.ov-headroom', '.ov-pools', '.ov-failures'].map(order)
-    expect([...seq].sort((a, b) => a - b)).toEqual(seq)
-    expect(new Set(seq).size).toBe(6)
+    const order = (sel: string, env: CascadeEnv) => Number(painted(host.querySelector(sel)!, 'order', env) ?? '0')
+    const tablet = ['.ov-running', '.ov-spend', '.ov-waiting', '.ov-headroom', '.ov-pools', '.ov-failures'].map((s) => order(s, TABLET))
+    expect([...tablet].sort((a, b) => a - b)).toEqual(tablet)
+    expect(new Set(tablet).size).toBe(6)
+    // QA G1-07 (2026-10-07): on a phone, Recent failures comes before
+    // Headroom and the pools rather than under 29 pool rows.
+    const phone = ['.ov-running', '.ov-spend', '.ov-waiting', '.ov-failures', '.ov-headroom', '.ov-pools'].map((s) => order(s, PHONE))
+    expect([...phone].sort((a, b) => a - b)).toEqual(phone)
+    expect(new Set(phone).size).toBe(6)
     host.remove()
   })
 })

@@ -101,8 +101,10 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
       expect(r.querySelector('.cap-use-pct')!.textContent).toMatch(/%$/)
     }
     expect(rowOf('runner:zeta').querySelector('.cap-use-pct')!.textContent).toBe('100%')
-    // Never blank since browser QA D32 (2026-10-04): the configured case says so, faint.
-    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('configured')
+    // Never blank since browser QA D32 (2026-10-04); a faint dot named
+    // `configured` since QA G5-19 (capacity.html §G).
+    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('·')
+    expect(rowOf('global').querySelector('td[data-label="Set by"] [aria-label="configured"]')).not.toBeNull()
     expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
   })
 })

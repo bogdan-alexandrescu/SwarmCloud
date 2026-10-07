@@ -374,10 +374,11 @@ def _access() -> RepoAccess:
     )
 
 
-def test_an_adopted_pull_request_is_updated_when_asked(monkeypatch):
+def test_an_adopted_pull_request_gains_the_amendment_and_keeps_its_body(monkeypatch):
     """A retried attempt pushes the same branch and adopts the open pull
-    request. Asked to (the agent wrote its own text), the worker updates that
-    pull request's title and body, so `Closes #N` reaches it."""
+    request. Its body is KEPT and the attempt's section appended (#807), so a
+    new `Closes #N` reaches it without the old ones being lost; its title is
+    kept unless `retitle_if` says it is the worker's own."""
     seen = []
 
     def fake(url, *, token, method="GET", payload=None):
@@ -388,18 +389,19 @@ def test_an_adopted_pull_request_is_updated_when_asked(monkeypatch):
             return 200, {"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
                          "state": "open"}
         return 200, [{"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
-                      "state": "open"}]
+                      "state": "open", "title": "Old title", "body": "Closes #3"}]
 
     monkeypatch.setattr(forge_mod, "_request", fake)
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
-        title="New title", body="Closes #12", update_existing=True,
+        title="New title", body="Closes #12", amendment="## Republished (attempt 2): `t`\n\nCloses #12",
+        retitle_if=lambda t: False,
     )
-    assert pr.number == 47 and pr.created is False and pr.updated is True
+    assert pr.number == 47 and pr.created is False and pr.updated is True and pr.appended is True
     assert [m for m, _, _ in seen] == ["POST", "GET", "PATCH"], seen
     method, url, payload = seen[-1]
     assert url.endswith("/repos/acme/widgets/pulls/47"), url
-    assert payload == {"title": "New title", "body": "Closes #12"}, payload
+    assert payload == {"body": "Closes #3\n\n## Republished (attempt 2): `t`\n\nCloses #12\n"}, payload
 
 
 def test_a_failed_update_still_adopts_the_pull_request(monkeypatch):
@@ -414,16 +416,17 @@ def test_a_failed_update_still_adopts_the_pull_request(monkeypatch):
     monkeypatch.setattr(forge_mod, "_request", fake)
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
-        title="New title", body="Closes #12", update_existing=True,
+        title="New title", body="Closes #12", amendment="## Republished (attempt 2): `t`",
     )
     assert pr.number == 47 and pr.created is False and pr.updated is False
 
 
-def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
+def test_the_worker_always_offers_an_amendment_never_a_replacement(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """A human may have edited a generated title or body by hand; a retry that
-    has nothing of the agent's to say must not overwrite that."""
+    """A human may have edited the body by hand, and it holds the closing
+    keywords: an adopting publish appends to it whether or not the agent
+    wrote text (#807), and the agent's body is inside the section when it did."""
     _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-upd-none", files={},
         task_input={"issue": 5}, with_title=False,
@@ -432,7 +435,11 @@ def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
         worker_factory, monkeypatch, origin, task_id="t-pr-upd-agent",
         files={"pr-body.md": b"Closes #5\n"},
     )
-    assert [bool(p.get("update_existing")) for p in forge.pulls] == [False, True], forge.pulls
+    assert all("update_existing" not in p for p in forge.pulls), forge.pulls
+    none, agent = (p["amendment"] for p in forge.pulls)
+    assert none.startswith("## Republished (attempt `att-t-pr-upd-none`): `t-pr-upd-none`"), none
+    assert "Closes #5" not in none
+    assert "Closes #5" in agent.splitlines(), agent
 
 
 # -- the generated title never carries the task id (owner rule, 2026-09-28) ---
@@ -584,7 +591,6 @@ def test_an_adopted_pull_request_with_the_retired_title_is_retitled_only(monkeyp
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
         title="Make the widget refuse negatives.", body="generated",
-        update_existing=False,
         retitle_if=lambda t: "task_" in t.lower(),
     )
     assert pr.updated is True, pr
@@ -598,7 +604,6 @@ def test_an_adopted_pull_request_with_a_human_title_is_left_alone(monkeypatch):
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
         title="Make the widget refuse negatives.", body="generated",
-        update_existing=False,
         retitle_if=lambda t: "task_" in t.lower(),
     )
     assert pr.updated is False, pr

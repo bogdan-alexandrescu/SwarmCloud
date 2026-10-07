@@ -1148,8 +1148,10 @@ describe('the eight cards', () => {
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('3 parked · 3 running · 2 queued · 1 ready')
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
-    expect(person.textContent).toContain('CREDENTIAL_MISSING 2')
-    expect(c.textContent).toContain('clears itself PROVIDER_QUOTA_EXHAUSTED 1')
+    // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
+    expect(person.textContent).toContain('No provider key is registered for this tenant 2')
+    expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
+    expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
   })
 
   it('Not finished yet: says its counts are not filtered by profile when a profile filter is set', async () => {
@@ -1647,7 +1649,8 @@ describe('the tenants table', () => {
       fetchedAt: Date.now(),
     } satisfies Result<{ tenants: Tenant[] }>)
     const { container } = render(<TenantsScreen />)
-    await screen.findByText('eng@saga.xyz')
+    // The tenant's row head: the principal is drawn in pieces since G5-12.
+    await screen.findByRole('rowheader', { name: 'eng' }, { timeout: 5000 })
     const cell = container.querySelector('td[data-label="Credentials"]')!
     expect(cell.querySelectorAll('.tags > .tag'), 'two tags with nothing spacing them').toHaveLength(2)
   })

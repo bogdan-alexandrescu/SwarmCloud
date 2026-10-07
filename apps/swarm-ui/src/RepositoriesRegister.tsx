@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
-import { normRepo, type Readable } from './RepositoriesData'
+import { normRepo, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
@@ -11,8 +11,16 @@ import { timeAgo } from './types'
  * 2026-10-05): list what the tenant's git token can read, pick one, then set
  * the schedule and the change trigger.
  *
- * NOTHING IS TYPED AS owner/repo, so a registration can never name a
- * repository the platform cannot clone. NO CREDENTIAL IS ASKED FOR OR SHOWN:
+ * THE LIST IS EVERY PAGE THE API SERVES (OB0, docs/onboarding.md §5): the
+ * loader follows `next_page`, and a list the API `capped`, or one a later
+ * page failed to extend, says so. Owner chips narrow it to one owner.
+ *
+ * A REPOSITORY THE LIST DOES NOT CARRY IS TYPED AS owner/repo (OB0; owner,
+ * 2026-10-07, #780). It is registered through the same POST /v1/repositories,
+ * which reads the forge before it stores anything, so a typed name the
+ * platform cannot clone is refused there and the refusal is shown in the
+ * API's words: that refusal is what names SSO or a token policy (OB0b).
+ * NO CREDENTIAL IS ASKED FOR OR SHOWN:
  * the list names the secret it was read with by NAME (`swarm-tenant-eng-git`),
  * and the registration record holds no credential field (repo-index.md §1).
  *
@@ -38,9 +46,14 @@ const DEFAULT_PROFILE = 'claude-code'
 export function RegisterRepository({ go }: { go: (to: string) => void }) {
   const readable = useUrRead(loadReadableRepositories, 'readable')
   const [filter, setFilter] = useState('')
+  const [owner, setOwner] = useState<string | null>(null)
   const [picked, setPicked] = useState<Readable | null>(null)
+  const [typed, setTyped] = useState('')
   const [step, setStep] = useState<1 | 2>(1)
   const name = picked === null ? null : `${picked.owner}/${picked.repo}`
+  const byName = typedRepository(typed)
+  // A typed name is the pick while the field holds one; choosing a row empties the field.
+  const chosen = typed.trim() !== '' ? byName : picked
 
   return (
     <div className="ur-page ur-register">
@@ -96,10 +109,27 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
               const n = list.total ?? list.repositories.length
               const by = list.secret_name ?? "the tenant's git token"
               const f = filter.trim().toLowerCase()
-              const shown = list.repositories.filter((r) => f === '' || `${r.owner}/${r.repo}`.toLowerCase().includes(f))
+              const owners = ownerCounts(list)
+              // A chip whose owner a refresh no longer lists stops filtering.
+              const only = owner !== null && owners.some(([o]) => o === owner) ? owner : null
+              const shown = list.repositories.filter(
+                (r) => (only === null || r.owner === only) && (f === '' || `${r.owner}/${r.repo}`.toLowerCase().includes(f)),
+              )
+              const note = listNote(list, by)
               return (
                 <div className="c-card ur-picker">
+                  {note !== null && <p className="ur-hint is-warn ur-capped ur-picker-h">{note}</p>}
                   <div className="ur-picker-h">
+                    <div className="ur-checks" role="group" aria-label="Owner">
+                      <Button size="sm" kind={only === null ? 'secondary' : 'ghost'} aria-pressed={only === null} onClick={() => setOwner(null)}>
+                        All owners <span className="ur-mu">{list.repositories.length}</span>
+                      </Button>
+                      {owners.map(([o, count]) => (
+                        <Button key={o} size="sm" kind={only === o ? 'secondary' : 'ghost'} aria-pressed={only === o} onClick={() => setOwner(o)}>
+                          {o} <span className="ur-mu">{count}</span>
+                        </Button>
+                      ))}
+                    </div>
                     <input
                       type="search"
                       className="ur-search"
@@ -112,7 +142,7 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
                   <div role="radiogroup" aria-label="Repository">
                     {shown.map((r) => {
                       const full = `${r.owner}/${r.repo}`
-                      const on = name === full
+                      const on = typed.trim() === '' && name === full
                       return (
                         <button
                           key={full}
@@ -122,7 +152,10 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
                           aria-checked={on}
                           aria-disabled={r.registered || undefined}
                           disabled={r.registered}
-                          onClick={() => setPicked(r)}
+                          onClick={() => {
+                            setPicked(r)
+                            setTyped('')
+                          }}
                         >
                           <span className="ur-dot" aria-hidden />
                           <b>{full}</b>
@@ -131,17 +164,50 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
                         </button>
                       )
                     })}
-                    {shown.length === 0 && <p className="ur-none">No readable repository matches “{filter}”.</p>}
+                    {shown.length === 0 && (
+                      <p className="ur-none">
+                        {f === '' ? `No readable repository is owned by ${only ?? 'anyone'}.` : `No readable repository matches “${filter}”.`}
+                      </p>
+                    )}
                   </div>
                 </div>
               )
             }}
           </UrRegion>
+          {/* Outside the list's region: a token that lists nothing, or a list
+              that is not served, still leaves a repository to be registered by name. */}
+          <div className="ur-picker ur-typed">
+            <label className="ur-fl" htmlFor="ur-typed">
+              Not listed? Type owner/repo
+            </label>
+            <input
+              id="ur-typed"
+              type="text"
+              className="ur-search"
+              placeholder="owner/repo"
+              autoComplete="off"
+              spellCheck={false}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+            <p className="ur-hint">
+              Registering reads the repository on GitHub first. If SwarmCloud cannot reach it, the refusal says why, in
+              GitHub's terms.
+            </p>
+          </div>
           <div className="ur-formacts">
             <UrNavButton to={LIST} go={go} kind="ghost">
               Cancel
             </UrNavButton>
-            <Button kind="primary" disabled={picked === null} onClick={() => setStep(2)}>
+            <Button
+              kind="primary"
+              disabled={chosen === null}
+              onClick={() => {
+                if (chosen === null) return
+                setPicked(chosen)
+                setStep(2)
+              }}
+            >
               Next: schedule
             </Button>
           </div>
@@ -153,8 +219,43 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
   )
 }
 
+/**
+ * A typed `owner/repo` as a pick, or null while it is not one. Only the shape
+ * is checked here (one slash, two non-empty halves, no spaces): whether the
+ * repository exists and can be read is the API's answer, shown verbatim.
+ */
+function typedRepository(text: string): Readable | null {
+  const m = /^([^\s/]+)\/([^\s/]+)$/.exec(text.trim())
+  if (m === null) return null
+  return { owner: m[1]!, repo: m[2]!, default_branch: null, visibility: null, archived: null, pushed_at: null, registered: false }
+}
+
+/** Each owner in the list with how many of its repositories it carries, by name. */
+function ownerCounts(list: ReadableList): [string, number][] {
+  const counts = new Map<string, number>()
+  for (const r of list.repositories) counts.set(r.owner, (counts.get(r.owner) ?? 0) + 1)
+  return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b))
+}
+
+/** Why the list may not be everything the token reads, or null when it is. */
+function listNote(list: ReadableList, by: string): string | null {
+  if (list.gap !== null) {
+    return (
+      `Page ${list.gap.page} of the list could not be read (${list.gap.message}), so this shows the first ` +
+      `${list.repositories.length} only. Refresh to try again, or type owner/repo below.`
+    )
+  }
+  if (!list.capped) return null
+  const pages = list.max_pages ?? list.pages
+  const size = list.per_page === null ? '' : ` of ${list.per_page}`
+  return (
+    `The list stops at ${pages} pages${size}, and ${by} can read more than that. ` +
+    'A repository not listed here can still be registered: type its owner/repo below.'
+  )
+}
+
 function pickNote(r: Readable): string {
-  const vis = r.private === null ? 'visibility not read' : r.private ? 'private' : 'public'
+  const vis = (r.visibility ?? 'visibility not read') + (r.archived === true ? ' · archived' : '')
   return r.pushed_at === null ? `${vis} · last push not read` : `${vis} · pushed ${timeAgo(r.pushed_at)}`
 }
 
