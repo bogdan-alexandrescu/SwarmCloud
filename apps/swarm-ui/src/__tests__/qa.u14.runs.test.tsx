@@ -168,11 +168,12 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     const order = [...main.children]
     expect(order.indexOf(card)).toBe(order.indexOf(main.querySelector('.rn-state')!) + 1)
 
-    for (const [step, id, mark] of [['impl', 'task_impl', 'running'], ['docs', 'task_docs', 'parked'], ['wire', 'task_wire', 'queued']] as const) {
+    // Each under the list that holds it (QA G2-17): a parked or queued task waits.
+    for (const [step, id, mark, tab] of [['impl', 'task_impl', 'running', 'live'], ['docs', 'task_docs', 'parked', 'waiting'], ['wire', 'task_wire', 'queued', 'waiting']] as const) {
       const row = rowOf(card, step)
       expect(row, step).toBeDefined()
       const open = within(row).getByRole('link', { name: /Open agent/ })
-      expect(open.getAttribute('href')).toBe(`/agents/live/${id}`)
+      expect(open.getAttribute('href')).toBe(`/agents/${tab}/${id}`)
       expect(row.querySelector('[data-mark]')?.getAttribute('data-mark'), step).toBe(mark)
       expect(visible(row), step).toMatch(/attempt|no attempt yet/)
     }
@@ -321,8 +322,9 @@ describe('5: at CHECKING the pull request card leads, and the plan folds', () =>
     expect(order.indexOf(ci)).toBe(order.indexOf(main.querySelector('.rn-state')!) + 1)
     const head = ci.querySelector('.c-card-h')!
     expect(within(head as HTMLElement).getByRole('link', { name: /#564/ }).getAttribute('href')).toBe(PR_URL)
-    // The title is not served: said, with the field it would need.
-    expect(head.querySelector('.c-dash')?.getAttribute('title')).toMatch(/pull_request\.title/)
+    // No bare dash for the title the run does not serve (QA G2-06): the number alone.
+    expect(head.querySelector('.c-dash')).toBeNull()
+    expect(visible(head)).toBe('Pull request #564')
     // The head sha, short, with the whole one in its title.
     const sha = ci.querySelector(`code[title="${HEAD}"]`)
     expect(visible(sha)).toBe(HEAD.slice(0, 7))
@@ -353,7 +355,7 @@ describe('5: at CHECKING the pull request card leads, and the plan folds', () =>
     const folds = plan.querySelector(':scope > details.rn-fold') as HTMLDetailsElement
     expect(folds).not.toBeNull()
     expect(folds.open).toBe(false)
-    expect(visible(folds.querySelector('summary'))).toMatch(/The plan .*3 steps/)
+    expect(visible(folds.querySelector('summary'))).toMatch(/The plan .*3 planned steps \+ review \+ fix/)
     const overlaps = container.querySelector('.rn-overlaps > details.rn-fold') as HTMLDetailsElement
     expect(overlaps).not.toBeNull()
     expect(overlaps.open).toBe(false)

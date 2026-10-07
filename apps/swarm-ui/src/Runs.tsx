@@ -3,13 +3,13 @@ import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
-import { Banner, Button, Card, Chip, CIcon, CodeBlock, WarnMark } from './components'
+import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, WarnMark } from './components'
 import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
 import {
-  CostFact, PlanStepLive, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
+  CostFact, PlanStepLive, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
   type RunWorkflows, type StepRow,
 } from './RunSteps'
 import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
@@ -276,8 +276,35 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
 // the list
 // ---------------------------------------------------------------------------
 
+/** The Runs list's state chips (QA G2-18). */
+const RUN_FILTERS = ['all', 'active', 'done', 'failed'] as const
+type RunFilter = (typeof RUN_FILTERS)[number]
+
+const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRun) => boolean>> = {
+  all: () => true,
+  active: (r) => !r.terminal,
+  done: (r) => r.state === 'DONE',
+  failed: (r) => r.state === 'FAILED',
+}
+
+const RUN_FILTER_TITLE: Readonly<Record<RunFilter, string>> = {
+  all: 'Every run read, rejected and cancelled ones included',
+  active: 'Not finished: planning, waiting for approval, running, or in CI',
+  done: 'Ended DONE',
+  failed: 'Ended FAILED. A rejected or cancelled run is under all.',
+}
+
+/** Whether a run matches the search: its issue ref, its issue's title or its id, any case. */
+function runMatches(r: IssueRun, text: string): boolean {
+  const q = text.trim().toLowerCase()
+  if (q === '') return true
+  return [r.issue.ref, r.issue_read?.title ?? '', r.id].some((v) => v.toLowerCase().includes(q))
+}
+
 function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void }) {
   const now = useNow()
+  const [which, setWhich] = useState<RunFilter>('all')
+  const [text, setText] = useState('')
   const [older, setOlder] = useState<{ runs: IssueRun[]; next: string | null; error: ApiError | null; reading: boolean }>(
     { runs: [], next: first.next_page_token, error: null, reading: false },
   )
@@ -299,8 +326,36 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
 
   // In the order served: the API orders newest first, and this does not re-sort.
   const rows = [...first.runs, ...older.runs]
+  const counts = Object.fromEntries(RUN_FILTERS.map((f) => [f, rows.filter((r) => RUN_FILTER_TEST[f](r)).length])) as Record<RunFilter, number>
+  const shown = rows.filter((r) => RUN_FILTER_TEST[which](r) && runMatches(r, text))
+  const filtering = which !== 'all' || text.trim() !== ''
   return (
     <div className="rn-list">
+      {/* FILTER AND SEARCH (QA G2-18, 2026-10-07): over the runs read so far.
+          The API serves the list newest first with no filter, so an older run
+          is found once "Show older runs" has read it -- the note says so. */}
+      <div className="rn-filters">
+        <Segmented
+          label="Which runs"
+          value={which}
+          options={RUN_FILTERS.map((f) => ({ key: f, label: f, title: RUN_FILTER_TITLE[f], count: counts[f] }))}
+          onChange={setWhich}
+        />
+        <input
+          className="rn-search"
+          type="search"
+          aria-label="Find a run by issue or title"
+          placeholder="Find a run by issue or title"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        {filtering && older.next !== null && (
+          <span className="sb-note">Filters the {pluralise(rows.length, 'run')} read; older runs are not searched until shown.</span>
+        )}
+      </div>
+      {shown.length === 0 && (
+        <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${which}`}.</p>
+      )}
       <div className="rn-table-wrap">
         {/* FIXED COLUMNS (browser QA D11): the table was 1085px in a 1056px
             card and cut the By column mid-address. Each id and name is one
@@ -318,7 +373,7 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {shown.map((r) => (
               <tr key={r.id} className="rn-row">
                 <td data-label="Run" className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></td>
                 <td data-label="Issue">
@@ -333,9 +388,16 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
                 </td>
                 <td data-label="State"><RunStateMark state={r.state} /></td>
                 <td data-label="Plan approval">{r.plan_approval}</td>
-                <td data-label="Workflow">
-                  {r.workflow_id === null ? <i className="ctl-em">none yet</i> : <span className="mono rn-cut" title={r.workflow_id}>{r.workflow_id}</span>}
-                </td>
+                {r.workflow_id === null ? (
+                  <td data-label="Workflow"><i className="ctl-em">none yet</i></td>
+                ) : (
+                  <td data-label="Workflow">
+                    <span className="mono rn-cut" title={r.workflow_id}>
+                      <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: r.workflow_id }).toString()}`}
+                        href={`/workflows/${encodeURIComponent(r.workflow_id)}`}>{r.workflow_id}</InApp>
+                    </span>
+                  </td>
+                )}
                 <td data-label="Created" title={r.created_at}>{timeAgo(r.created_at, now)}</td>
                 <td data-label="By">{r.created_by ? <span className="rn-cut" title={r.created_by}>{r.created_by}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
               </tr>
@@ -531,6 +593,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
   const read = useRunWorkflows(run)
   const wfPr = wfPrOf(run, read)
   const rows = stepRows(run, read)
+  const progress = progressEntries(run, rows)
   const approved = planApproved(run)
   // From CHECKING the pull request is the subject: its card leads (item 5).
   const prLeads = lead(run)
@@ -627,7 +690,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
 
         <section className="rn-plan" aria-label="The plan">
           <Fold folded={approved && run.plan !== null}
-            line={run.plan === null ? null : <span className="sb-note">{pluralise(run.plan.steps.length, 'step')} · approved</span>}
+            line={run.plan === null ? null : <span className="sb-note">{plannedSteps(run.plan)} · approved</span>}
             head={
               <h3>
                 The plan
@@ -691,11 +754,11 @@ function RunPage({ run: served, reread, go, onHeading }: {
           <h3>Progress</h3>
           {/* THE STEPS' CHANGES UNDER THE RUN'S, OLDEST FIRST (item 3). */}
           <ol>
-            {progressEntries(run, rows).map((h) => h.kind === 'step' ? <StepProgress key={h.key} e={h} now={now} /> : (
+            {progress.map((h, i) => h.kind === 'step' ? <StepProgress key={h.key} e={h} prev={previousAt(progress, i)} now={now} /> : (
               <li key={h.key}>
                 <RunStateMark state={h.to} />
                 <span>{h.from === null ? 'created' : `from ${h.from}`} · by {h.by || '—'}</span>
-                <span className="sb-note" title={h.at ?? undefined}>{h.at === null ? '—' : timeAgo(h.at, now)}</span>
+                <ProgressTime at={h.at} prev={previousAt(progress, i)} now={now} />
               </li>
             ))}
           </ol>
@@ -1279,6 +1342,15 @@ function Fold({ folded, head, line, children }: { folded: boolean; head: ReactNo
   )
 }
 
+/**
+ * THE FOLDED PLAN'S COUNT, IN THE STEPS CARD'S TERMS (QA G2-30, 2026-10-07):
+ * "1 step · approved" sat beside "Steps · 3", because every compiled workflow
+ * adds a review and a fix gated on its verdict (`plan_shape`, issueruns.py).
+ */
+function plannedSteps(plan: RunPlan): string {
+  return `${pluralise(plan.steps.length, 'planned step')} + review + fix`
+}
+
 /** Whether the plan has been approved: it is no longer the page's question. */
 function planApproved(run: IssueRun): boolean {
   return run.approved_by !== null || run.workflow_id !== null
@@ -1463,8 +1535,6 @@ function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string
         Pull request{' '}
         {prUrl === null ? <span className="mono">#{pr.number}</span>
           : <a href={prUrl} target="_blank" rel="noreferrer" className="mono" title={prUrl}>#{pr.number}</a>}
-        {' · '}
-        <Dash why="The pull request's title is not served: the run records its number, link, head and checks, and no pull_request.title." />
       </>
     )}>
       <ul className="ctl-facts rn-ci-facts">
@@ -1474,13 +1544,15 @@ function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string
             ? <span>{pr.checks}{head ? <> at <code title={head}>{shortSha(head)}</code><CopyText text={head} /></> : null}</span>
             : <i className="ctl-em">not read yet</i>}
         </li>
+        {/* ONE REASON, NOT FOUR DASHES (QA G2-06, 2026-10-07): "passed — ·
+            pending — · failed — · skipped —" beside "checks green" read as a
+            result every count disowned. The one count the run can carry is
+            the failures its excerpt names at this head. */}
         <li className="ctl-fact rn-ci-counts">
           <b>by check</b>
-          <span>
-            passed <Dash why={notServed('How many passed is')} /> · pending <Dash why={notServed('How many are pending is')} />
-            {' · '}failed {redAtHead && pr?.checks === 'red' ? red!.names.length : <Dash why={notServed('How many failed at this head is')} />}
-            {' · '}skipped <Dash why={notServed('How many were skipped is')} />
-          </span>
+          {redAtHead && pr?.checks === 'red'
+            ? <span>failed {red!.names.length} · <i className="ctl-em" title={notServed('How many passed, are pending or were skipped is')}>the other counts not served</i></span>
+            : <i className="ctl-em" title={notServed('Each count is')}>per-check counts not served</i>}
         </li>
         {red !== null && red.names.length > 0 && (
           <li className="ctl-fact rn-ci-failed">
@@ -1574,7 +1646,7 @@ function MergeFact({ run }: { run: IssueRun }) {
       <b>merge</b>
       {run.state === 'CHECKING' || run.state === 'FIXING'
         ? <i className="ctl-em" title="A merged pull request ends the run DONE and a closed one fails it, so a CHECKING or FIXING run's was open at its last read.">open · not merged at the last read</i>
-        : <i className="ctl-em" title={why}>merge not reported{run.green_sha ? ' · green' : ''}</i>}
+        : <i className="ctl-em" title={why}>merge not reported</i>}
     </li>
   )
 }
