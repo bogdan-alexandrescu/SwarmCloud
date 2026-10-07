@@ -97,6 +97,7 @@ export type TopicId =
   | 'dispatch-strategies'
   | 'event-paging'
   | 'failure-classes'
+  | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
   | 'lease-and-pool-are-two-records'
@@ -109,6 +110,7 @@ export type TopicId =
   | 'not-a-machine-inventory'
   | 'oom-near-miss'
   | 'outcome-buckets'
+  | 'outcome-explained'
   | 'park-on-missing-credential'
   | 'partial-read'
   | 'paused-vs-full'
@@ -136,6 +138,7 @@ export type TopicId =
   | 'runtime-needs-no-provider'
   | 'second-browser-application'
   | 'sign-in-not-paste'
+  | 'strategy-on-a-task'
   | 'signin-201-no-name'
   | 'signin-deadlines'
   | 'signin-holds-label-and-lending'
@@ -284,6 +287,55 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
       'A task that counts no attempts and returned no documents is consistent, and its empty attempt list is a measurement rather than a failure.',
     ],
+  },
+
+  // G2-10 (QA 2026-10-07): THE INSPECTOR'S CARDS GET TOPICS OF THEIR OWN.
+  // The Outcome card's `?` opened `attempt-documents` (when an attempt
+  // document is written), the Input card's opened `input-is-opaque` ("whatever
+  // you type"), and the strategy chips' opened `dispatch-strategies` ("the
+  // number on each option is computed from the steps on the form"): each a
+  // Submit-side or unrelated text on a screen where nothing is typed and no
+  // form is drawn. These three say what the reader is looking at.
+  'outcome-explained': {
+    group: 'an-attempt',
+    title: 'What the outcome describes',
+    short:
+      'The outcome is what the task left when it finished: the pull request or branch it published, the files it uploaded and the answer it wrote. It is written once, when the task ends, so on a task that ran more than once it describes the last attempt only.',
+    long: [
+      'The outcome is read from the task’s result summary, which the worker writes once, at the end. It names what was published — a pull request, a branch, or nothing when the strategy publishes nothing — and counts the files uploaded as artifacts.',
+      'On a task that ran more than once, every part of it belongs to the last attempt. The earlier attempts’ output was never summarised, which is why a retried outcome is marked as the last attempt of several.',
+      'The files themselves are on the agent’s Artifacts tab, where each can be viewed or downloaded.',
+    ],
+    see: ['attempt-documents'],
+  },
+
+  'input-as-submitted': {
+    group: 'an-attempt',
+    title: 'The input, as it was submitted',
+    short:
+      'This is the input the task was submitted with, as the API serves it: masked where a value matched a credential pattern, otherwise unchanged. The platform handed it to the agent without reading it and checked nothing about it but its size.',
+    long: [
+      'The input is shown as the platform stored it at submission. The agent decided what it meant; the platform only carried it.',
+      'Values that look like credentials are masked when the input is served, and the number masked is shown beside the prompt. Masking changes the copy that is served, not the stored input.',
+      'The repository, model, priority and timeout beside it are the submission’s own fields. The image, the command and the resources come from the runner profile, never from the input.',
+    ],
+    see: ['masking-is-serve-time', 'runner-profile-by-name'],
+  },
+
+  'strategy-on-a-task': {
+    group: 'an-attempt',
+    title: 'What the task was asked to publish',
+    short:
+      'The chips name the dispatch strategy the task was submitted with — publish nothing, one pull request per step, or one for the whole workflow — and, in a workflow that integrates, this step’s role. What was actually published is the outcome, once the task ends.',
+    long: [
+      'The strategy is fixed when the task is submitted and does not change while it runs.',
+      'Under the integrating strategy each step has a role: a contributor pushes its branch and opens nothing, and the integrator opens the one pull request for the whole workflow.',
+      'The strategy is what was asked for. Whether a pull request was opened, and which one, is read from the task’s result summary once it ends.',
+    ],
+    // READ, not restated, as `dispatch-strategies` reads them.
+    values: () =>
+      DISPATCH_STRATEGIES.map((s) => ({ term: s, note: STRATEGY_LABEL[s] })),
+    see: ['outcome-explained'],
   },
 
   // AG-19. The Attempts toolbar's `?` opened "One message belongs to one
@@ -1666,6 +1718,18 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'attempt-documents': {
     subject: 'When an attempt exists',
     act: { say: 'For a task with no attempt, look at capacity, not at the worker: nothing has been reserved yet.', at: 'capacity/pools' },
+  },
+  'outcome-explained': {
+    subject: 'What an outcome describes',
+    act: { say: 'Open the agent’s Artifacts tab for the files, and its Attempts tab for what each earlier attempt did.' },
+  },
+  'input-as-submitted': {
+    subject: 'The submitted input',
+    act: { say: 'Read the prompt as the agent received it; the masked count says how much of it is hidden.' },
+  },
+  'strategy-on-a-task': {
+    subject: 'The strategy on a task',
+    act: { say: 'Read the outcome for what was published; the chips say only what was asked for.' },
   },
   'event-paging': {
     subject: 'Event paging',

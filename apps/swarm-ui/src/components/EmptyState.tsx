@@ -15,13 +15,27 @@ import { BadGlyph, RingGlyph, WarnGlyph } from './glyphs'
 
 export type EmptyKind = 'empty' | 'partial' | 'failed'
 
-export function EmptyState({ kind, heading, children, action }: { kind: EmptyKind; heading: string; children: ReactNode; action?: ReactNode }) {
+export function EmptyState({
+  kind,
+  heading,
+  children,
+  action,
+  page = false,
+}: {
+  kind: EmptyKind
+  heading: string
+  children: ReactNode
+  action?: ReactNode
+  /** The state IS the page (the not-found page): its heading is the page's `<h1>`, in the same face. */
+  page?: boolean
+}) {
+  const Heading = page ? 'h1' : 'h3'
   return (
     <div className={`c-emp${kind === 'empty' ? '' : ` is-${kind}`}`} data-kind={kind} role={kind === 'failed' ? 'alert' : undefined}>
-      <h3>
+      <Heading>
         <span className="c-emp-mark">{kind === 'failed' ? <BadGlyph /> : kind === 'partial' ? <WarnGlyph /> : <RingGlyph />}</span>
         {heading}
-      </h3>
+      </Heading>
       <p>{children}</p>
       {action}
     </div>

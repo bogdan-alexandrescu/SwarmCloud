@@ -26,10 +26,11 @@ import {
 } from './api'
 import { ArtifactViewer, Markdown } from './ArtifactViewer'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
+import { SkippedArtifactsNote } from './DecisionCard'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import { GapNotice, LogText, NO_MARKS, stepMarks, useLogMarks } from './logMarks'
-import { servedAge, Stream, useRead } from './RunFiles'
+import { servedAge, Stream, streamLabel, useRead } from './RunFiles'
 import { Id, Screen, type ScreenReading } from './Shell'
 import {
   ageSpan,
@@ -380,7 +381,7 @@ export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
               empty prompt
             </p>
           ) : (
-            <pre className="arts-prompt">{copy.prompt.text}</pre>
+            <PromptText text={copy.prompt.text} />
           )}
           {/* THE REST OF THE INPUT, LABELLED AND APART (U10a D33): it was a
               second unlabelled box touching the prompt's. */}
@@ -467,6 +468,33 @@ function Repository({ task }: { task: Task }) {
         </li>
       </ul>
     </div>
+  )
+}
+
+/** Twelve lines, the `-webkit-line-clamp` in details.css. */
+const PROMPT_LINES = 12
+/** Characters a line of the prompt box holds before it wraps, generously: a longer prompt may be over twelve lines. */
+const PROMPT_LINE_CHARS = 60
+
+/**
+ * THE PROMPT, TWELVE LINES AND `Show all` (G2-34, QA 2026-10-07). It was a
+ * 40vh box with a scroll of its own, which took the wheel inside the pane:
+ * reaching Outputs under it needed a scroll outside the box. Clamped, it
+ * scrolls nowhere; `Show all` lets it wrap in full, in the pane's one scroll.
+ * The button is offered only when the text can be longer than the clamp.
+ */
+export function PromptText({ text }: { text: string }) {
+  const [all, setAll] = useState(false)
+  const long = text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / PROMPT_LINE_CHARS)), 0) > PROMPT_LINES
+  return (
+    <>
+      <pre className={`arts-prompt ${all || !long ? 'is-all' : 'is-clamped'}`}>{text}</pre>
+      {long && (
+        <Button size="sm" aria-expanded={all} onClick={() => setAll((a) => !a)}>
+          {all ? 'Show less' : 'Show all'}
+        </Button>
+      )}
+    </>
   )
 }
 
@@ -652,6 +680,10 @@ function Outputs({ v }: { v: ArtifactsView }) {
   return (
     <section className="section arts-outputs">
       <h2>Outputs</h2>
+      {/* A step its review's verdict kept from running holds only the PR text
+          the worker copied to title its pull request; say so rather than
+          look empty (owner request 2026-10-07). */}
+      <SkippedArtifactsNote task={v.task} tasks={ok(v.workflow) ? v.workflow.data.tasks : []} />
       <Answer v={v} />
       <Files v={v} />
       <OverCap v={v} />
@@ -1083,7 +1115,9 @@ function Files({ v }: { v: ArtifactsView }) {
       </div>
       {body}
       {entries.length > 0 && (
-        <div className="ctl-table is-stacked">
+        // `is-roomy` (G2-33): a table in a pane 480px and wider, a stacked
+        // record per file below that (details.css).
+        <div className="ctl-table is-stacked is-roomy">
           <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -1439,7 +1473,7 @@ export function StreamsFrom({
               r.stream === null ? (
                 <tr role="row" key={r.name}>
                   <th role="rowheader" scope="row">
-                    <span className="mono">{r.name}</span>
+                    <span className="mono">{streamLabel(r.name)}</span>
                   </th>
                   <td role="cell" data-label="Size" className="is-num">
                     <Em />{' '}
@@ -1472,7 +1506,7 @@ export function StreamsFrom({
       {docked && rows.every(drawn) ? (
         <details className="ag-logmeta">
           <summary>
-            {rows.map((r) => r.name).join(' · ')} · size, age and location
+            {rows.map((r) => streamLabel(r.name)).join(' · ')} · size, age and location
           </summary>
           {table}
         </details>
@@ -1482,7 +1516,7 @@ export function StreamsFrom({
       {rows.map((r) =>
         drawn(r) && r.stream !== null && r.stream.content !== null ? (
           <div key={r.name} className="rf-window">
-            <span className="ctl-eyebrow">{r.name}</span>
+            <span className="ctl-eyebrow">{streamLabel(r.name)}</span>
             {/* THE LOGS TAB'S MARKS (logMarks.tsx): numbered lines, search hits,
                 error lines and the server's mask, and a gap in the tail at
                 the top of the window it precedes. Outside the tab nothing

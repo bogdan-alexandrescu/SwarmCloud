@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -30,7 +30,7 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
+import { SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
 import { NotFound, nearestPath } from './NotFound'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
@@ -717,7 +717,9 @@ export function fromLocation(): Route {
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
   const r = fromAddress(p.address)
-  return p.agentTab === null || r.taskId === null ? r : { ...r, list: { tab: p.agentTab, state: null } }
+  // The list an agent was opened from, with its state and toggles when the
+  // path's query names them (G2-22), so a reload closes to the same list.
+  return p.agentTab === null || r.taskId === null ? r : { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
 }
 
 /**
@@ -805,7 +807,8 @@ export function fromAddress(full: string): Route {
   // addresses (`running/bogus`, `running/live/failed`, `running/recent/faild`)
   // is the plain list, never a drawer and never a guessed tab.
   if (head === WORK && tail[0] === 'running' && tail.length > 1) {
-    const list = parseAgentList(tail.slice(1))
+    // The list's toggles ride on its query (G2-22): `running/recent?group=wf`.
+    const list = parseAgentList(tail.slice(1), query)
     return list === null
       ? { sectionId: WORK, tab: 'running', ...blank }
       : { sectionId: WORK, tab: 'running', ...blank, list }
@@ -883,7 +886,8 @@ export function canonical(r: Route): string {
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
   if (r.sectionId === WORK && r.tab === 'running' && r.list) {
-    return `${WORK}/running/${agentListPath(r.list)}`
+    const flags = agentListQuery(r.list)
+    return `${WORK}/running/${agentListPath(r.list)}${flags === '' ? '' : `?${flags}`}`
   }
   // The Timeline's view rides on its address, so a copied link reproduces the
   // page (#185). Written only for that route: no other screen reads a query.
@@ -947,7 +951,15 @@ export function App() {
 
   /** The path a route is written as: an open agent sits under its list's tab. */
   const pathFor = useCallback(
-    (r: Route) => r.missing ?? addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
+    (r: Route) => {
+      if (r.missing != null) return r.missing
+      const list = r.list ?? lastList.current
+      const path = addressToPath(canonical(r), list?.tab ?? 'live')
+      // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
+      // so a reload or a shared link closes to the same filtered list.
+      const search = r.taskId !== null && list !== null ? agentListSearch(list) : ''
+      return search === '' ? path : `${path}?${search}`
+    },
     [],
   )
 
@@ -961,7 +973,7 @@ export function App() {
         const u = new URL(to, window.location.origin)
         const p = pathToAddress(u.pathname, u.search, u.hash)
         r = p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
-        if (p !== null && p.agentTab !== null) r = { ...r, list: { tab: p.agentTab, state: null } }
+        if (p !== null && p.agentTab !== null) r = { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
       } else {
         r = fromAddress(to.replace(/^#/, ''))
       }
@@ -1052,14 +1064,21 @@ export function App() {
     list: lastList.current,
   })
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const title =
-    at.sectionId === SUBMIT
+  // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
+  // a page that is not Overview, because the spine lights the nearest section.
+  const title = at.missing
+    ? NOT_FOUND_TITLE
+    : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
           : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : openObjectOf(at)
+  useEffect(() => {
+    document.title = documentTitleOf(title, object)
+  }, [title, object])
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1073,6 +1092,7 @@ export function App() {
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
+          missing={Boolean(at.missing)}
           go={go}
           helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
@@ -1400,6 +1420,22 @@ export function crumbsOf({
   }
   if (object !== null) out.push({ key: 'object', label: at.taskId !== null && named !== null ? named : object, to: null })
   return out
+}
+
+/** The title of a path this console has no page for: the phone header's and the tab's. */
+export const NOT_FOUND_TITLE = 'Not found'
+
+/**
+ * THE TAB'S TITLE (QA G1-12, 2026-10-07): the page, then the console, and
+ * inside an open object its id first -- the part that tells two tabs apart.
+ * Every page was "SwarmCloud", so a row of tabs, the history menu and a
+ * bookmark could not say which was which. Set here, once, from the title the
+ * phone header draws, rather than in each `PageHead`: the 404 and an open
+ * agent draw no head of their own, and a page with an inspector draws two.
+ */
+export function documentTitleOf(title: string, object: string | null): string {
+  const page = title === 'SwarmCloud' ? 'SwarmCloud' : `${title} · SwarmCloud`
+  return object === null ? page : `${object} · ${page}`
 }
 
 /**

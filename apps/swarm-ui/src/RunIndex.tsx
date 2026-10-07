@@ -3,8 +3,8 @@ import { loadRepositories, loadRepositoryIndex, queryRepositoryImpact } from './
 import { Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
 import { fmt, fullSuiteWords, type ImpactPlan } from './RepoGraphData'
-import { freshness, notServed, pct, repoName, shortSha, type IndexDoc, type RepoRecord } from './RepositoriesData'
-import { UrFreshPill, UrLink, UrNavButton, repoAddress, useUrRead } from './RepositoriesParts'
+import { coverageWords, freshness, notServed, repoName, shortSha, type IndexDoc, type RepoRecord } from './RepositoriesData'
+import { testsMappedWhy, UrFreshPill, UrLink, UrNavButton, repoAddress, useUrRead } from './RepositoriesParts'
 import type { IssueRun } from './types'
 import './styles/repograph.css'
 
@@ -165,7 +165,7 @@ function IndexLine({ run, ctx }: { run: IssueRun; ctx: RunIndexRead }): ReactNod
       {' · '}
       <Modules state={ctx.index} />
       {' · '}
-      test map {r.index.coverage === null ? <Dash why="The index did not report its test-map coverage" /> : pct(r.index.coverage)}
+      test map {coverageWords(r.index.coverage) ?? <Dash why={testsMappedWhy(r)} />}
     </span>
   )
 }

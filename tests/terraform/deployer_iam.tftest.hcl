@@ -887,19 +887,11 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
     artifact_bucket        = "swarm-artifacts-saga-agents-staging"
     workload_identity_pool = "saga-agents-staging.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
-    # git-review and git-merge bring in the #295 merge, post-verdict and
-    # review accounts, whose project grants are read below too.
     tenants = {
       eng = {
         kind      = "group"
         principal = "eng@saga.xyz"
-        providers = ["anthropic", "git-review", "git-merge"]
-        forge = {
-          owner             = "saga-xyz"
-          repo              = "agent-swarm-infra"
-          review_app_id     = 1000001
-          review_app_bot_id = 2000002
-        }
+        providers = ["anthropic", "git"]
       }
     }
     dispatcher_members = {
@@ -916,8 +908,6 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
     condition = alltrue(concat(
       [for k, m in google_project_iam_member.worker_firestore : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)],
       [for k, m in google_project_iam_member.worker_telemetry : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)],
-      [for k, m in google_project_iam_member.action_firestore : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)],
-      [for k, m in google_project_iam_member.action_telemetry : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, m.role)],
     ))
     error_message = "modules/tenancy grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }

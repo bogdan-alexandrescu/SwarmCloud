@@ -69,9 +69,91 @@ export function repo(over: Json = {}, index: Json = {}): Json {
       last_indexed_at: ago(18 * MIN),
       last_kind: 'incremental',
       in_flight_task_id: null,
-      coverage: 0.86,
+      // As `swarm_api/repoindex.py` `coverage()` serves it: counts, not a ratio.
+      coverage: coverageOf(83, 20, 1339, 7),
       ...index,
     },
+  }
+}
+
+/** `index.coverage` as the API serves it on a registration (repoindex.py `coverage()`). */
+export function coverageOf(modules: number, withTests: number, edges: number, always: number): Json {
+  return { modules, modules_with_tests: withTests, test_map_edges: edges, always_tests: always }
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/index?format=json` EXACTLY AS THE LIVE API
+ * ANSWERS IT (routes/repositories.py `get_index`, read 2026-10-07): `index`
+ * is the version's METADATA (`version_to_api`) and `document` is the index
+ * itself (`RepoIndexSpec`). Test-map edges are `{source, test, evidence,
+ * command}`, one test per edge; hot-spots carry `co_changed`. An earlier
+ * builder served the document under `index`, which is how a page reading
+ * the metadata as the document shipped green (QA G4-01).
+ */
+export function liveIndex(repoId: string, doc: Json = {}, meta: Json = {}): Json {
+  const commit = sha('9f8e7d6')
+  const builtAt = ago(3 * HOUR)
+  const extractor = { ran: true, command: 'swarm-index', version: '1' }
+  return {
+    repo_id: repoId,
+    tenant_id: 'eng',
+    index: {
+      commit_sha: commit,
+      digest: ['sha256', 'ab'.repeat(32)].join(':'),
+      kind: 'full',
+      base_sha: null,
+      built_at: builtAt,
+      bytes: 393 * 1024,
+      truncated: ['test_map'],
+      extractor,
+      promoted_at: builtAt,
+      ...meta,
+    },
+    summary: null,
+    document: {
+      schema: 'swarm.repo-index/v1',
+      commit_sha: commit,
+      branch: 'main',
+      built_at: builtAt,
+      kind: 'full',
+      extractor,
+      modules: [
+        { path: 'apps/common/swarm_common', language: 'python', purpose: 'the frozen contract', files: 14, lines: 2600 },
+        { path: 'apps/swarm-api/swarm_api', language: 'python', purpose: 'the control-plane API', files: 60, lines: 31000 },
+        { path: 'docs', language: 'markdown', purpose: 'why, not what', files: 90, lines: 12000 },
+      ],
+      entry_points: [
+        { path: 'apps/swarm-api/swarm_api/main.py', kind: 'http' },
+        { path: 'apps/worker/worker/main.py', kind: 'cli' },
+      ],
+      routes: [],
+      test_layout: [],
+      test_map: [
+        { source: 'apps/common/swarm_common/**', test: 'tests/unit/common/test_models.py', evidence: 'import', command: 'uv run pytest tests/unit/common/test_models.py' },
+        { source: 'apps/common/swarm_common/**', test: 'tests/unit/common/test_state.py', evidence: 'import', command: 'uv run pytest tests/unit/common/test_state.py' },
+        { source: 'apps/common/swarm_common/**', test: 'tests/unit/scheduler/test_admission.py', evidence: 'co-change', command: null },
+        { source: 'apps/swarm-api/swarm_api/repoindex.py', test: 'tests/unit/control_plane/test_repo_index.py', evidence: 'naming', command: 'uv run pytest tests/unit/control_plane/test_repo_index.py' },
+      ],
+      always_tests: [{ target: 'tests/unit/scripts', because: 'guards the repository' }],
+      territory: [],
+      commands: [],
+      hot_spots: [
+        { path: 'apps/swarm-ui/src/App.tsx', changes: 61, co_changed: ['apps/swarm-ui/src/styles/app.css'] },
+        { path: 'apps/swarm-api/swarm_api/repoindex.py', changes: 30, co_changed: [] },
+      ],
+      notes: [],
+      languages: [
+        { language: 'python', files: 410, grammar: 'tree-sitter-python', server: 'pyright', status: 'ok', fallback: null },
+        { language: 'hcl', files: 80, grammar: 'tree-sitter-hcl', server: null, status: 'unsupported', fallback: 'ast and import edges only' },
+      ],
+      graph: { symbols: 9000, edges: 41000, top_symbols: [] },
+      truncated: ['test_map'],
+      ...doc,
+    },
+    freshness: { state: 'current', index_sha: commit, head_sha: commit, behind_by: 0, stale: false },
+    produced_by: { task_id: 'task_index', attempt_id: 'att_index', run: null },
+    in_flight: null,
+    pending_sha: null,
   }
 }
 
