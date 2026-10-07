@@ -4,7 +4,7 @@ import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, poolHref, useLinkedPool } from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
@@ -71,7 +71,7 @@ export function CapacityScreen() {
       load={loadPoolsBoard}
       // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
       // pauses the timer while the tab is hidden.
-      pollMs={POOLS_POLL_MS}
+      pollMs={capacityPoll(POOLS_POLL_MS)}
       summary={(d) => <PoolsSummary capacity={d} />}
       /* A REAL ZERO. Pools are created at provisioning time, so an environment
          with none has not been fully applied -- which is an absence the mark

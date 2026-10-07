@@ -234,33 +234,53 @@ describe('#503: in-card links are sky and sans, not underlined mono ink', () => 
 // #503 Page head: one row
 // ---------------------------------------------------------------------------
 
-describe('#503: the page head is one row -- title, meta chip, read · poll · refresh', () => {
-  it('puts the title, the meta chip and the provenance with its refresh in one row', async () => {
-    // MUTATION: render the sub-line as its own paragraph under the head again.
+// THE ROW'S CONTENTS CHANGED UNDER #138 (owner ruling 2026-10-07, design-system
+// §6.12): title left, actions right, nothing else. The meta chip left the row
+// for a note over the first card (`.c-count-note`), and `read · poll ·
+// refresh` became one quiet control in the actions (`.c-refresh`) carrying
+// the screen's ticking age, so the frame draws no second age on the row.
+describe('#503/#138: the page head is one row -- title left, refresh with its age right', () => {
+  it('puts the title and the refresh carrying its age in one row, and the count over the first card', async () => {
+    // MUTATION: render a sub-line or meta chip under or beside the title
+    // again, move the refresh out of the head's actions, or let the frame
+    // draw its age on the row of a screen that carries its own.
     const c = await at('/capacity/pools')
     const row = await waitFor(() => {
       const r = c.querySelector('main.work .c-phead')
       expect(r).not.toBeNull()
       return r!
     })
-    expect(row.querySelector('h1')).not.toBeNull()
-    await waitFor(() => expect(row.querySelector('.c-meta')).not.toBeNull())
-    const age = row.querySelector('.c-age')!
-    expect(age.querySelector('button')?.textContent).toBe('refresh')
-    // The head's age of this screen's reads is on the title row, not beside
-    // the breadcrumb (one age, one place).
-    await waitFor(() => expect(age.querySelector('.ctl-head-age')?.textContent).toMatch(/newest read|reading…/))
-    expect(c.querySelector('.ctl-head > .ctl-head-age')).toBeNull()
+    expect(row.querySelector(':scope > .head > h1')).not.toBeNull()
+    const acts = row.querySelector(':scope > .c-acts')
+    expect(acts, 'the head has no actions on its right').not.toBeNull()
+    expect(row.lastElementChild, 'the actions are not on the right of the row').toBe(acts)
+    const control = () => acts!.querySelector('.c-refresh')?.textContent ?? ''
+    // Pools polls (#117), so the control says its cadence and its read age.
+    await waitFor(() => expect(control()).toMatch(/^⟳ every \d+ (s|min) · read \d+ s ago$/), { timeout: 5000 })
+    expect(row.querySelector('.sub, .c-meta, .c-age'), 'a second line or chip in the head').toBeNull()
+    expect(c.querySelector('main.work p.sub'), 'a sub-line under the title').toBeNull()
+    // One age, one place: the frame draws none on this row nor by the breadcrumb.
+    expect(c.querySelector('.ctl-head-age')).toBeNull()
+    // The count is a note below the head, not part of it.
+    const note = await waitFor(() => {
+      const n = c.querySelector('main.work .c-count-note')
+      expect(n, 'the count note is missing').not.toBeNull()
+      return n!
+    })
+    expect(row.contains(note)).toBe(false)
   })
 
-  it('keeps the provenance group whole, so refresh never wraps onto its own line', () => {
+  it('keeps the head one row, its refresh whole, and its actions pushed right', () => {
+    // MUTATION: let `.c-phead` wrap, drop `nowrap` from `.c-refresh` (its
+    // `⟳` would wrap away from its age), or drop the actions' `margin-left: auto`.
     const host = document.createElement('div')
-    host.innerHTML = '<div class="c-phead"><div class="head"><h1>x</h1></div><p class="sub"><span class="c-age">read 4s ago · refresh</span></p></div>'
+    host.innerHTML = '<div class="c-phead"><div class="head"><h1>x</h1></div><div class="c-acts"><button type="button" class="c-refresh">⟳ every 30 s · read 4 s ago</button></div></div>'
     document.body.appendChild(host)
-    const age = host.querySelector('.c-age')!
-    expect(cascade(STYLES, age, 'white-space', WIDE).winner?.value).toBe('nowrap')
-    expect(cascade(STYLES, age, 'margin-left', WIDE).winner?.value).toBe('auto')
-    expect(cascade(STYLES, host.querySelector('.c-phead')!, 'display', WIDE).winner?.value).toBe('flex')
+    const head = host.querySelector('.c-phead')!
+    expect(cascade(STYLES, head, 'display', WIDE).winner?.value).toBe('flex')
+    expect(cascade(STYLES, head, 'flex-wrap', WIDE).winner?.value).toBe('nowrap')
+    expect(cascade(STYLES, host.querySelector('.c-acts')!, 'margin-left', WIDE).winner?.value).toBe('auto')
+    expect(cascade(STYLES, host.querySelector('.c-refresh')!, 'white-space', WIDE).winner?.value).toBe('nowrap')
     host.remove()
   })
 })

@@ -5,8 +5,8 @@ import {
   CAPABILITIES, SCOPE_WORD, createSecretsCommand, daysUntil, expiryWords, kindWords, normToken, repoName,
   type GitToken, type PermissionRow, type RepoRecord, type TokenScope,
 } from './RepositoriesData'
-import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
-import { PageHead } from './Shell'
+import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 
 /**
@@ -72,23 +72,22 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
   return (
     <div className="ur-page ur-tokens">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens' }]} go={go} />
-      <PageHead
-        title="Git tokens"
-        meta={n === null ? undefined : `${n} token${n === 1 ? '' : 's'}`}
-        action={
-          <UrRadio<ScopeFilter>
-            label="Scope"
-            value={scope}
-            onChange={setScope}
-            options={[
-              { key: 'all', label: 'All' },
-              { key: 'tenant', label: 'Tenant' },
-              { key: 'repository', label: 'Repository' },
-              { key: 'user', label: 'User' },
-            ]}
-          />
-        }
-      >
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the scope filter is an action of
+          the page, and the count is the note over its first card. */}
+      <PageHead title="Git tokens">
+        {/* The page's one age, on the control that renews it (#98). */}
+        <UrRefresh reads={[tokens, repos]} />
+        <UrRadio<ScopeFilter>
+          label="Scope"
+          value={scope}
+          onChange={setScope}
+          options={[
+            { key: 'all', label: 'All' },
+            { key: 'tenant', label: 'Tenant' },
+            { key: 'repository', label: 'Repository' },
+            { key: 'user', label: 'User' },
+          ]}
+        />
         <span className="ur-acts">
           <UrNavButton to={PERMISSIONS} go={go} size="sm">
             Permissions
@@ -98,6 +97,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           </Button>
         </span>
       </PageHead>
+      <CountNote>{n === null ? null : `${n} token${n === 1 ? '' : 's'}`}</CountNote>
       <UrRegion
         state={tokens.state}
         route="GET /v1/git-tokens"
@@ -348,17 +348,18 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
   return (
     <div className="ur-page ur-perms">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens', to: GT_PAGE }, { label: 'Permissions' }]} go={go} />
-      <PageHead
-        title="Permissions"
-        meta={data === null ? undefined : `${tokenIds.length} token${tokenIds.length === 1 ? '' : 's'} × ${repoIds.length} repositor${repoIds.length === 1 ? 'y' : 'ies'}`}
-        action={data?.order != null ? <Chip>{`order ${data.order}`}</Chip> : undefined}
-      >
+      <PageHead title="Permissions">
+        <UrRefresh reads={[perms]} />
+        {data?.order != null && <Chip>{`order ${data.order}`}</Chip>}
         <span className="ur-acts">
           <Button size="sm" busy={busy} disabled={tokenIds.length === 0} onClick={() => void verifyAll()}>
             Verify all
           </Button>
         </span>
       </PageHead>
+      <CountNote>
+        {data === null ? null : `${tokenIds.length} token${tokenIds.length === 1 ? '' : 's'} × ${repoIds.length} repositor${repoIds.length === 1 ? 'y' : 'ies'}`}
+      </CountNote>
       <UrRadio<RowFilter>
         label="Rows"
         value={filter}
