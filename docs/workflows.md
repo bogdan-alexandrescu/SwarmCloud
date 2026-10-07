@@ -1218,6 +1218,38 @@ is green and its `Closes #N` block is written, and only when its review said
 merges that task's pull request at the head that task pushed, with every
 check below except the verdict (it has no review). A tenant member's only.
 
+**A merge of a pull request no workflow opened** (#352, owner decision
+2026-10-07, MS0 question 2) is the same one-`merge`-step `direct-pr`
+workflow with `merge_pr: {number, head_sha}` in place of `continues_task`:
+
+```json
+{"strategy": "direct-pr",
+ "merge_pr": {"number": 41, "head_sha": "<the full 40-character head sha>"},
+ "steps": [{"step_id": "merge", "runner_profile": "merge"}]}
+```
+
+From the bridge it is `swarm merge 41 --sha <head>` (or `owner/repo#41`, or
+the pull request's URL), or `swarm_workflow` with `merge_pr`. Which
+repository: the one `repository_url` names, which must be one the caller's
+tenant registered (`/v1/repositories`), or -- when it names none -- the
+tenant's ONLY registration. Several registrations and none named is refused
+rather than guessed, because pull request numbers repeat across
+repositories, and an unregistered repository is refused even when the
+token could reach it, because the registration is the tenant's statement
+that its `-git` token is meant to act there. At submission swarm-api reads
+the pull request once with the tenant's `-git` token and refuses, writing
+nothing: a `head_sha` that is not its head now (the answer names the current
+head), a pull request that is closed or already merged, one not in that
+repository or from a fork, one on another base than the registered default
+branch, any step besides the one merge step, a `continues_task`,
+`repository_ref` or `merge_fix_rounds` beside it, and any strategy but
+`direct-pr`. A continuation-scoped account is refused before any read. The
+merge step's signed `merge_target` is then `{number, head_sha, base}` instead
+of a task id, and the worker merges through the gate every merge step uses:
+only at that head (or GitHub's own update of it onto the base), only with
+every required check green there. The console's Submit forms do not offer it
+yet; that is a follow-up.
+
 What swarm-api appends, before it signs anything:
 
 * **`depends_on` the step that opens the pull request and the review.**
@@ -1235,7 +1267,9 @@ What swarm-api appends, before it signs anything:
   nothing (invariants 1 and 4), then reads every fact again.
 * **Its signed dispatch block names its target by task id**
   (`merge_target: {pull_request, review, verdict_file}`), so the worker never
-  follows a pointer the signed spec does not name.
+  follows a pointer the signed spec does not name. A `merge_pr` workflow's
+  names the pull request instead (`merge_target: {number, head_sha}`),
+  because no task opened it.
 * **`merge_target.base`, the default branch the tenant registered the
   repository with** (`/v1/repositories`, [repo-index.md](repo-index.md) §1),
   read once at submission from the tenant's OWN registration, and absent when
