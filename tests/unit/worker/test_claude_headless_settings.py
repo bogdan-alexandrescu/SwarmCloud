@@ -46,5 +46,9 @@ def test_the_headless_settings_give_bash_ten_minutes(tmp_path):
 def test_the_headless_settings_keep_the_background_refusal(tmp_path):
     settings = _settings(tmp_path)
     assert settings["env"][claude_code.NO_BACKGROUND_ENV] == "1"
-    (entry,) = settings["hooks"]["PreToolUse"]
+    (entry,) = [
+        e
+        for e in settings["hooks"]["PreToolUse"]
+        if any("refuse-background.py" in h["command"] for h in e["hooks"])
+    ]
     assert "Bash" in entry["matcher"].split("|")

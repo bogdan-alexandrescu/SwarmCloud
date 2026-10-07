@@ -30,8 +30,10 @@ No credentials, no network, no emulator. Every token is built at runtime.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,9 +74,39 @@ def clock() -> Clock:
     return Clock()
 
 
+class QueueGitHub(forge_fakes.GitHubWrites):
+    """`GitHubWrites`, plus the one GraphQL read a `merge_queued` park makes
+    (lane C3H): whether the pull request is still in its base's merge queue,
+    and the last reason GitHub gave for removing it. Every REST route is the
+    parent's, unchanged."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_queue = True
+        self.removed_reason: str | None = None
+        self.graphql_errors: list[dict[str, str]] = []
+
+    def __call__(self, method, url, headers, body, timeout):
+        if urlparse(url).path != "/graphql":
+            return super().__call__(method, url, headers, body, timeout)
+        self.calls.append((method, url, dict(headers), body))
+        if self.graphql_errors:
+            return 200, json.dumps({"data": None, "errors": self.graphql_errors}).encode()
+        removals = ([{"reason": self.removed_reason, "createdAt": "2026-10-06T12:00:00Z"}]
+                    if self.removed_reason else [])
+        return 200, json.dumps({"data": {"repository": {"pullRequest": {
+            "isInMergeQueue": self.in_queue,
+            "mergeQueueEntry": {"id": "MQE_1", "position": 1, "state": "QUEUED"}
+            if self.in_queue else None,
+            "timelineItems": {"nodes": removals}}}}}).encode()
+
+    def graphql_calls(self) -> list[tuple[str, str, dict[str, str], bytes | None]]:
+        return [c for c in self.calls if urlparse(c[1]).path == "/graphql"]
+
+
 @pytest.fixture
 def github() -> forge_fakes.GitHubWrites:
-    gh = forge_fakes.GitHubWrites()
+    gh = QueueGitHub()
     gh.open_pull(NUMBER, HEAD, ref="swarm/task_int")
     gh.require(CHECK)
     return gh
@@ -597,3 +629,92 @@ def test_a_park_at_the_updated_head_reads_its_checks_there(db, wake_client, gith
     assert body["report"]["waiting"] == 1, body
     assert any(f"/commits/{MOVED}/check-runs" in u for u in _reads(github))
     assert not any(f"/commits/{HEAD}/" in u for u in _reads(github))
+
+
+# --------------------------------------------------------------------------
+# A park in the base's merge queue (lane C3H)
+# --------------------------------------------------------------------------
+# The worker found the base merges only through a merge queue, enqueued the
+# pull request and parked `merge_queued`. Its checks were green when it did,
+# so reading them would wake it for nothing; what it waits on is the queue.
+# The tick reads the pull request, and, while it is open at the recorded head,
+# whether it is still in the queue: merged wakes it (the worker succeeds),
+# out of the queue wakes it (the worker refuses with GitHub's reason).
+
+def test_a_pull_request_still_in_the_queue_is_a_wait_and_its_checks_are_not_read(
+    db, wake_client, github, tenant_tokens
+):
+    parked_merge(db, code=mergewake.MERGE_QUEUED, pending=[])
+    github.check(HEAD, CHECK, "success")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["waiting"] == 1 and body["report"]["woken"] == 0, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert _wait(db)["checked_at"] == NOW
+    assert not [u for u in _reads(github) if "/check-runs" in u or "/status" in u]
+    (call,) = github.graphql_calls()
+    method, url, headers, payload = call
+    assert method == "POST" and url == "https://api.github.com/graphql"
+    variables = json.loads(payload)["variables"]
+    assert variables == {"owner": "saga-xyz", "name": "widgets", "number": NUMBER}
+    (token,) = tenant_tokens.issued.values()
+    assert [k for k, v in headers.items() if token in str(v)] == ["Authorization"]
+    assert token not in payload.decode()
+
+
+def test_a_pull_request_removed_from_the_queue_wakes_the_step(db, wake_client, github):
+    """MUTATION: treat out-of-the-queue as a wait, and the step sleeps until
+    its fallback every 15 minutes, for MERGE_CI_MAX_SECONDS."""
+    parked_merge(db, code=mergewake.MERGE_QUEUED, pending=[])
+    github.in_queue = False
+    github.removed_reason = "The merge group failed a required status check"
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)[mergewake.WAKE_MARKER] == NOW
+    assert _wait(db)["wake_reason"] == "dequeued"
+
+
+@pytest.mark.parametrize("case", ["merged", "closed", "head_moved"])
+def test_a_queued_pull_request_merged_closed_or_moved_wakes_without_a_queue_read(
+    db, wake_client, github, case
+):
+    parked_merge(db, code=mergewake.MERGE_QUEUED, pending=[])
+    if case == "merged":
+        github.pulls[NUMBER].update(state="closed", merged=True)
+    elif case == "closed":
+        github.pulls[NUMBER]["state"] = "closed"
+    else:
+        github.pulls[NUMBER]["head"]["sha"] = MOVED
+
+    _tick(wake_client)
+
+    assert _wait(db)["wake_reason"] == case
+    assert github.graphql_calls() == []
+
+
+def test_a_queue_read_github_refuses_is_not_a_reading(db, wake_client, github):
+    parked_merge(db, code=mergewake.MERGE_QUEUED, pending=[])
+    github.graphql_errors = [{"message": "Resource not accessible by personal access token"}]
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["failed"] == 1 and body["report"]["woken"] == 0, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+
+
+def test_a_park_that_is_not_in_a_queue_never_reads_one(db, wake_client, github):
+    """The control: every other park is read exactly as before."""
+    parked_merge(db)
+    github.check(HEAD, CHECK, "success")
+    _tick(wake_client)
+    assert _wait(db)["wake_reason"] == "green"
+    assert github.graphql_calls() == []
+
+
+def test_the_queued_park_code_is_the_workers():
+    from agent_worker import merge as worker_merge
+
+    assert mergewake.MERGE_QUEUED == worker_merge.MERGE_QUEUED == "merge_queued"

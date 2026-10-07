@@ -14,6 +14,15 @@ on:
   pull_request:
   push:
     branches: [main]
+  # MAIN MERGES THROUGH A MERGE QUEUE (owner decision 2026-10-06, docs/ci.md
+  # "Main merges through a merge queue"). Four of the ruleset's required
+  # checks are this workflow's, and a queue entry waits for them on its own
+  # `gh-readonly-queue/main/...` ref: without this trigger they never report
+  # there and the queue drops every entry at its timeout. No filter, ever
+  # (tests/unit/scripts/test_merge_queue_workflows.py). While the queue is off
+  # GitHub never raises this event, so nothing else changes.
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Mondays, 06:00 UTC.
     - cron: "0 6 * * 1"
