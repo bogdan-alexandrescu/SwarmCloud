@@ -99,6 +99,9 @@ async function mount(served: unknown) {
   const { RunsScreen } = await import('../Runs')
   const utils = render(<RunsScreen view={`run=${RUN_ID}`} go={vi.fn()} />)
   await waitFor(() => expect(utils.container.querySelector('.rn-plan')).not.toBeNull(), WAIT)
+  // The page head reads the run id as a placeholder title until the run's own
+  // title lands (#113): the loaded page is the one whose heading is not the id.
+  await waitFor(() => expect(utils.container.querySelector('.rn-run .c-phead h1')?.getAttribute('title')).not.toBe(RUN_ID), WAIT)
   return utils
 }
 

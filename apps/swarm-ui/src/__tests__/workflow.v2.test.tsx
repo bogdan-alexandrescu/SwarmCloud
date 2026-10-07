@@ -454,7 +454,8 @@ async function listRow(id: string): Promise<HTMLElement> {
 async function pageHead(id: string): Promise<HTMLElement> {
   render(<WorkflowsScreen view={`wf=${id}`} />)
   return waitFor(() => {
-    const head = document.querySelector<HTMLElement>('.wfp-head')
+    // The loaded head: while the page reads, its skeleton draws one too (#113).
+    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > .wfp-head')
     expect(head, `no page head for ${id}`).toBeTruthy()
     return head!
   })

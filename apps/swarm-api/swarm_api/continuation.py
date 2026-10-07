@@ -33,16 +33,19 @@ THE RULES, and why each is a refusal rather than a quiet adjustment:
     An `integrate` CONTRIBUTOR is refused: its branch is merged by the
     integrator and has no pull request of its own, so a fix pushed there
     reaches nobody.
-  * An integrator is continuable by a tenant MEMBER only -- the issue run's
-    fix round submits as the run's creator -- and NOT by a
-    continuation-scoped account (`member_scope == "continuation"`, the CI
-    fixer's service account). That account's reach was reviewed and
-    accepted by the owner as "any `direct-pr` task"
-    (docs/contract-change-requests.md, request 30); letting it reach every
-    integrate pull request too would widen what a stolen fixer token can
-    push to without that decision. Checked on the ROOT as well, so the
-    account cannot reach an integrator through a member's continuation of
-    one.
+  * A continuation-scoped account (`member_scope == "continuation"`, the CI
+    fixer's service account) reaches the same two: a `direct-pr` task, as
+    contract request 30 accepted, and an `integrate` workflow's integrator,
+    owner decision 2026-10-06. Every SwarmCloud lane pull request is opened
+    by an integrator (the workflow's final fix step), so a fixer confined to
+    `direct-pr` tasks fixed none of them: PR #740's first real run was
+    refused here. The integrator is told apart by the `role` the API itself
+    recorded in the task's dispatch block (`validation.py`, a reserved key no
+    caller can write), never by anything the request carries, and only in
+    the caller's own tenant (the first rule). A contributor stays refused,
+    as for a member. A continuation of a continuation resolves to its root,
+    and for this account the root is checked again to be one of the two, so
+    no chain reaches a branch without a pull request.
   * The workflow must be `direct-pr` and have ONE step. Two steps pushing to
     one branch race to a non-fast-forward, and the loser's work is lost. A
     `merge` step (contract request 47) pushes nothing and is not counted,
@@ -123,12 +126,13 @@ def _dispatch_block(metadata: Any) -> dict[str, Any]:
 
 
 def resolve_continuation(
-    store: Store, tenant_id: str, spec: WorkflowCreate, *, allow_integrator: bool = True
+    store: Store, tenant_id: str, spec: WorkflowCreate, *, continuation_scoped: bool = False
 ) -> Continuation | None:
     """Check `spec.continues_task` and resolve it, or return None when absent.
 
-    `allow_integrator` is False for a continuation-scoped caller (module
-    docstring): only a `direct-pr` root is continuable then.
+    `continuation_scoped` is True for a continuation-scoped caller (module
+    docstring): it may push to a `direct-pr` task's or an integrator's
+    branch, and may not submit a merge-only continuation.
 
     Raises `DispatchOptionError` (422 `invalid_dispatch`) for every refusal,
     before anything is written.
@@ -149,7 +153,7 @@ def resolve_continuation(
     # A merge-only continuation -- ONE `merge` step and nothing that pushes --
     # merges the continued task's pull request (`validation.merge_sources`).
     merge_only = len(spec.steps) == 1 and not pushing
-    if merge_only and not allow_integrator:
+    if merge_only and continuation_scoped:
         # A merge is a wider power than the push request 30 accepted for the
         # continuation-scoped CI fixer: a member's only.
         raise DispatchOptionError(
@@ -197,8 +201,6 @@ def resolve_continuation(
         raise not_found from None
 
     block = _dispatch_block(task.metadata)
-    if not allow_integrator and block.get("strategy") == INTEGRATE_STRATEGY:
-        raise _integrator_refused(requested)
     if not _has_own_pull_request(block):
         strategy = block.get("strategy") or "collect"
         what = (
@@ -226,23 +228,19 @@ def resolve_continuation(
 
     upstream = block.get("continues")
     root = upstream if isinstance(upstream, str) and TASK_ID_RE.match(upstream) else task.id
-    if root != task.id and not allow_integrator:
+    if root != task.id and continuation_scoped:
         try:
             root_block = _dispatch_block(
                 store.get_task(tenant_id, root, submitted_by=None).metadata
             )
         except NotFound:
             root_block = {}
-        if root_block.get("strategy") != CONTINUABLE_STRATEGY:
-            raise _integrator_refused(requested)
+        if not _has_own_pull_request(root_block):
+            raise DispatchOptionError(
+                f"task {requested!r} continues a task that opened no pull request in your "
+                f"tenant; a continuation-scoped account continues only a "
+                f"{CONTINUABLE_STRATEGY!r} task or an {INTEGRATE_STRATEGY!r} workflow's "
+                f"{INTEGRATOR_ROLE}.",
+                detail={"continues_task": requested},
+            )
     return Continuation(root_task_id=root, repository_url=task.repository_url, task_id=task.id)
-
-
-def _integrator_refused(requested: str) -> DispatchOptionError:
-    return DispatchOptionError(
-        f"task {requested!r} continues an {INTEGRATE_STRATEGY!r} workflow's "
-        f"{INTEGRATOR_ROLE}, which a continuation-scoped account may not continue: "
-        f"its reach is {CONTINUABLE_STRATEGY!r} tasks only. A member of the tenant "
-        "can submit this continuation.",
-        detail={"continues_task": requested},
-    )

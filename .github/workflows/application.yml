@@ -72,6 +72,14 @@ on:
       # holds every image input to this list).
       - ".dockerignore"
       - ".gcloudignore"
+  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Main merges
+  # through a merge queue"). ci-gate is required and waits for this
+  # workflow's run at the entry's commit, so it runs there with NO path
+  # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
+  # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
+  # Never raised while the queue is off.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 # Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
@@ -1072,7 +1080,13 @@ jobs:
     # protect anything; it only makes the protection look like a bug.
     # A pull request builds the images it changes in `build-check` above, on
     # the runner, with no identity at all, and pushes nothing.
-    if: github.event_name != 'pull_request'
+    #
+    # NOR ON A MERGE QUEUE ENTRY, for the same reason: its OIDC ref is
+    # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects as it
+    # rejects refs/pull/*. Left to run, it would fail every entry's run and so
+    # ci-gate on every entry. The commit is built once it is on main, by the
+    # push run, as every commit is.
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).

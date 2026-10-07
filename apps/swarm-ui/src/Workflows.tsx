@@ -364,6 +364,10 @@ export function WorkflowsScreen({
           // THE META LINE UNDER THE TITLE (workflows.html B). Without it the
           // shell's line opened on a stray "·" before the read's age.
           summary={(d) => pageSummary(d, id)}
+          // THE PAGE'S OWN SKELETON (#113): its head row with the actions
+          // disabled, its view tabs and a body card, so the board lands under
+          // the tabs instead of pushing them in above generic rows.
+          skeleton={<WorkflowPageSkeleton id={id} query={query} choose={choose} />}
           empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
         >
           {(d) => <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} />}
@@ -4760,6 +4764,51 @@ function WorkflowPage({
   )
 }
 
+/** Each head chip's bar width while the page reads, in em: state, failure policy, cost. */
+const PAGE_SKELETON_CHIPS: readonly number[] = [5, 9, 4]
+/** Each line of the body card's skeleton, as a percentage of the card. */
+const PAGE_SKELETON_LINES: readonly number[] = [42, 88, 76, 64, 82, 58]
+
+/**
+ * ONE WORKFLOW'S PAGE WHILE ITS READ IS IN FLIGHT (#113). It drew the shell's
+ * generic full-width rows, and then the head row and the view tabs appeared
+ * above the board and pushed it down. Now the same `.wfp` frame is drawn: the
+ * head row with its chips as bars and Copy link and Cancel workflow DISABLED
+ * (there is no link to a workflow not yet read, and nothing to cancel), the
+ * real tabs -- each view is an address, so choosing one during the load is
+ * already meaningful -- with no step count, and a body card where the board's
+ * will be -- its own `.wfp-skel-body` in the card's frame, not a `.wf-card`,
+ * which everything that finds the loaded card keys on. The bars are
+ * `.wfl-skel`, the list's contrast step and sweep.
+ */
+function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: WorkflowQuery; choose: (q: WorkflowQuery) => void }) {
+  return (
+    <div className="wfp is-loading" aria-busy="true">
+      <div className="wfp-head">
+        <div className="wfp-chips" aria-hidden="true">
+          {PAGE_SKELETON_CHIPS.map((w, i) => (
+            <span key={i} className="c-chip">
+              <span className="wfl-skel" style={{ width: `${w}em` }} />
+            </span>
+          ))}
+        </div>
+        <span className="wfp-actions">
+          <Button disabled>Copy link</Button>
+          <Button kind="danger" disabled>
+            Cancel workflow
+          </Button>
+        </span>
+      </div>
+      <WfTabs id={id} query={query} view={query.tab} steps={null} onView={(v) => choose({ ...query, tab: v, stage: null, stepState: null })} />
+      <div className="wfp-skel-body" aria-hidden="true">
+        {PAGE_SKELETON_LINES.map((w, i) => (
+          <span key={i} className="wfl-skel" style={{ width: `${w}%` }} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline. */
 const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
 
@@ -4769,7 +4818,20 @@ const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
  * inside the body card (#503). Each tab is a route of its own, so the one on
  * screen is `aria-current="page"`, not a pressed toggle.
  */
-function WfTabs({ id, query, view, steps, onView }: { id: string; query: WorkflowQuery; view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+function WfTabs({
+  id,
+  query,
+  view,
+  steps,
+  onView,
+}: {
+  id: string
+  query: WorkflowQuery
+  view: WorkflowView
+  /** Null while the page reads: no count is drawn rather than one nobody read. */
+  steps: number | null
+  onView: (v: WorkflowView) => void
+}) {
   // THE CANONICAL UNDERLINE TABS (components.html A; workflows.html B): each
   // view is its own address, so each tab is a link that opens in a new tab,
   // and a plain click switches the view in place.
@@ -4778,7 +4840,7 @@ function WfTabs({ id, query, view, steps, onView }: { id: string; query: Workflo
     <Tabs
       label="Views of this workflow"
       current={view}
-      tabs={PAGE_TABS.map((v) => ({ key: v, label: VIEW_LABEL[v], href: href(v), ...(v === 'table' ? { count: steps } : {}) }))}
+      tabs={PAGE_TABS.map((v) => ({ key: v, label: VIEW_LABEL[v], href: href(v), ...(v === 'table' && steps !== null ? { count: steps } : {}) }))}
       onGo={(to) => {
         const v = PAGE_TABS.find((t) => href(t) === to)
         if (v !== undefined) onView(v)
