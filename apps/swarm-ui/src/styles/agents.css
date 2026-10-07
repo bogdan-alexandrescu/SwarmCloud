@@ -870,3 +870,14 @@
 
 /* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
 .cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+
+/* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
+   above's, in the same workflow, says so in place of a blank. Muted and at
+   the 12px floor -- it is a pointer to the line above, not a reason -- and
+   on the reason's own line, where the reader looks for one. */
+.row.is-compact > .why.is-same {
+  margin-top: 2px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}

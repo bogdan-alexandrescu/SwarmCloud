@@ -135,7 +135,9 @@ export function useNow(intervalMs: number = AGE_TICK_MS): number {
  * yet known) keeps the clock.
  *
  * HERE, BESIDE THE CLOCK IT CAPS, because two screens use it: the Agents
- * list's rows and the inspector's drawer. It was defined in Agents.tsx, and
+ * list's silent-worker line and the inspector's drawer. (The list's elapsed
+ * and waiting ages no longer read it: G2-04, dev QA 2026-10-07, found them
+ * minutes behind the drawer's on an aged read; see `AgentsBody`.) It was defined in Agents.tsx, and
  * the drawer importing it from there would have made the two modules import
  * each other.
  */
