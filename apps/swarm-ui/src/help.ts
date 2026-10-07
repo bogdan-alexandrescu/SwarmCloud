@@ -695,8 +695,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // twice: the help link under the table (AH-12's, for the columns) and the
   // budget note's `Why →` (AH-21's). The short form answers the column first.
   //
-  // Enforced is min(max_active, capacity_units) because that is what every
-  // writer of the tenant pool writes as its hard limit: swarm_api/store.py
+  // Enforced is the tenant pool's `effective_limit` as /v1/capacity serves it
+  // (G5-13, QA 2026-10-07; it was min(max_active, capacity_units) computed in
+  // the browser). The pool's hard limit is min(max_active, capacity_units)
+  // because that is what every writer of the tenant pool writes: swarm_api/store.py
   // `set_tenant_limits` whenever either changes, `ensure_tenant` on a first
   // sign-in, scripts/register-tenant.sh, and terraform/infra/locals.tf
   // `pool_tenants` when Terraform creates the pool. The last two wrote a
@@ -727,11 +729,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What each Tenants column means',
     short:
-      'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
+      'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
       'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
@@ -978,11 +980,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'submitting-work',
     title: 'How a workflow runs its steps',
     short:
-      'Steps run in stages. A step starts when every step it depends on has succeeded, and steps with nothing left to wait for run at the same time. A failure cancels its dependants — every step waiting on the failed one, directly or through another — and the steps that do not depend on it carry on.',
+      'Steps run in stages. A step starts when every step it depends on has succeeded, and steps with nothing left to wait for run at the same time. With the default, a failure cancels every step not yet started; with Continue, only its dependents.',
     long: [
       'A stage on Submit a workflow is a default for what a step waits for: a step in a later stage waits for every step in the stage before it, unless it is narrowed to a chosen set of earlier steps. The platform receives only the dependencies; stages are how the form lays them out.',
       'A step becomes eligible when every step it depends on has succeeded. Until then it holds no capacity and costs nothing. Steps whose dependencies have all succeeded run at the same time, within the ceilings of the pools they need.',
-      'When a step fails for good, its retries spent, the platform cancels every step that depends on it, directly or through another step, because none of them could ever start. A step that does not depend on the failed one is not touched and runs to its own end.',
+      'When a step fails for good, its retries spent, what happens next is the workflow’s failure policy, chosen in step 2 of Submit a workflow. With the default, Fail the workflow, every step not yet started is cancelled, whether or not it depends on the failed one; steps already running finish. With Continue, only its dependents are cancelled — every step that depends on it, directly or through another step, because none of them could ever start — and a step that does not depend on it is not touched.',
     ],
   },
 
@@ -1424,7 +1426,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by when it ended. Cancels are counted and drawn in a lane of their own, but left out of the rate. The band is a 95 % Wilson interval; a hollow point has under five decided, and a gap means nothing was decided.',
     long: [
-      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependants in turn; a cancel’s are the steps below one somebody stopped.',
+      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependents in turn; a cancel’s are the steps below one somebody stopped.',
       'A rate over a handful of tasks says little, so every rate carries its 95 % Wilson interval: the band behind the line, and the range printed with the figure and in the readout. A point drawn hollow covers fewer than five decided tasks. A bucket in which nothing was decided has no point at all and the line breaks there, because a rate over nothing is undefined, never zero.',
       'The comparison with the previous span is dropped, and says why, when that span has a bucket that could not be read or had nothing decided: a delta over part of a span compares two different things.',
       'Tenant scope and platform scope are never drawn side by side. Platform scope is an administrator’s view of every tenant, and the verification tenant can be left out of it in one click; the exclusion names that tenant, so a tenant created later is still counted.',

@@ -5,7 +5,7 @@
 // Each test names the mutation that turns it red.
 
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HoldersBoard } from '../api'
 import type { Result } from '../fetch'
@@ -18,6 +18,17 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { HoldersScreen } = await import('../Holders')
+
+// THE CLOCK STANDS AT THE PAGE'S `evaluated_at` (G5-06): the heartbeat age
+// now ticks from the read, so the figures below are the served ones only at
+// the instant the page was evaluated. Timers stay real.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-24T10:00:00Z'))
+})
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-24T10:00:00Z' }
@@ -80,7 +91,13 @@ describe('#92: holders, the overview silent-workers link’s destination, has a 
           lease('tsk_beating', { silent_seconds: 30 }),
           lease('tsk_quiet', { silent_seconds: 400 }),
           lease('tsk_gone', { silent_seconds: 900, expired: true }),
-          lease('tsk_never', { silent_seconds: 45, heartbeat_ever: false, heartbeat_at: null }),
+          lease('tsk_never', {
+            silent_seconds: 45,
+            heartbeat_ever: false,
+            heartbeat_at: null,
+            created_at: '2026-09-24T09:59:15Z',
+            dispatch_deadline: '2026-09-24T10:07:15Z',
+          }),
         ]),
       ),
     )
@@ -104,7 +121,9 @@ describe('#92: holders, the overview silent-workers link’s destination, has a 
     expect(cell('tsk_quiet').querySelector('.sk-st[data-tone="warn"]')).not.toBeNull()
     expect(text(cell('tsk_gone'))).toBe('presumed dead · 15m 0s')
     expect(cell('tsk_gone').querySelector('.sk-st[data-tone="bad"]')).not.toBeNull()
-    // Never beaten: the age counts from the lease's creation, and says so.
-    expect(text(cell('tsk_never'))).toBe('beating · never beat, 45s')
+    // Never beaten: the age counts from the lease's creation, and says so;
+    // inside its dispatch deadline it is starting, not beating (G5-01).
+    expect(text(cell('tsk_never'))).toBe('starting · no beat yet, 45s · deadline in 7m 15s')
+    expect(cell('tsk_never').querySelector('.sk-st[data-tone="info"]')).not.toBeNull()
   })
 })

@@ -3,9 +3,19 @@
 The CLI is started in print mode with STREAMED JSON output (one event per line,
 `--output-format stream-json --verbose`), in the repository checkout when the
 task has one and in the attempt's isolated work directory when it has none,
-with HOME the work directory either way, `--model` the Job's `MODEL`, the
-tenant's credential in its environment and nothing else from the worker's own
-environment. That credential is either `ANTHROPIC_API_KEY`
+with HOME the work directory either way and `--model` the Job's `MODEL`.
+
+Its environment is built from scratch by `cliagent.run_cli_agent`, not
+inherited. It holds the platform's own values (`PATH`, `HOME`, the locale,
+`TERM`, `CI`, `NO_COLOR`, `SWARM_ARTIFACTS_DIR`, `SWARM_WORK_DIR`, and this
+runner's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), the tenant's credential, and
+exactly these from the worker's own environment: `TMPDIR`; `HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` when set (the two proxy
+URLs registered for redaction, since one can embed a password); and the
+dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
+which the worker sets from the task so an agent's `git commit` names that
+person. Nothing else crosses. The credential is either `ANTHROPIC_API_KEY`
 (metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
 from `claude setup-token`) -- whichever the tenant's secret supplies. Only the
 one that is present is passed to the child.

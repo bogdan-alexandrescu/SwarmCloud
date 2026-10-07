@@ -165,6 +165,10 @@ table.ur-mx { border-collapse: collapse; width: 100%; font-size: var(--t-micro);
 table.ur-mx th { font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; vertical-align: bottom; }
 table.ur-mx td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; height: var(--h-ctl); }
 table.ur-mx .is-l { text-align: left; }
+/* G4-17: eight nowrap capability heads ("Workflow dispatch", "Push branches")
+   held the table 18 px wider than its card at 1440, clipping the last head.
+   They wrap instead, in 72 px columns a cell's ok/missing/unknown word fits. */
+table.ur-mx th.is-cap { white-space: normal; width: 72px; min-width: 0; }
 table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-align: left; }
 .ur-mx-cards { display: none; }
 .ur-mxcard { display: flex; flex-direction: column; gap: 6px; }

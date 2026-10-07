@@ -925,7 +925,10 @@ test('a topic published silently draws nothing at all', () => {
  * laying out, stages and what waits for what, had no topic at all. It has
  * one now, among the submitting-work topics, and it states the three rules a
  * plan runs by: steps run in stages, a step starts once every step it depends
- * on has succeeded, and a failure cancels its dependants.
+ * on has succeeded, and what a failure cancels: under the default policy
+ * every step not yet started, under Continue only its dependents (G4-27
+ * corrected the earlier "cancels its dependants", which was Continue's rule
+ * stated as everyone's).
  *
  * MUTATION: point `Lay out the plan` back at `runner-profile-by-name`, or drop
  * the failure rule from the topic.
@@ -937,7 +940,8 @@ test('the workflow-stages topic says how a plan runs, and the plan step opens it
   const all = [t.short, ...t.long].join(' ')
   assert.match(all, /\bstages?\b/i, 'the topic never says steps run in stages')
   assert.match(t.short, /every step it depends on has succeeded/, 'the start rule is not on the card')
-  assert.match(t.short, /cancels? (its|every step that depends|the steps that depend)/, 'the failure rule is not on the card')
+  assert.match(t.short, /default, a failure cancels every step not yet started/, 'the failure rule is not on the card')
+  assert.match(t.short, /Continue, only its dependents/, "Continue's failure rule is not on the card")
   const src = readFileSync(join(SRC, 'SubmitWorkflow.tsx'), 'utf8')
   const plan = /<Move n=\{1\} title="Lay out the plan" aside=\{<HelpCard topic="([a-z0-9-]+)" \/>\}>/.exec(src)
   assert.ok(plan, 'the plan step carries no `?`')

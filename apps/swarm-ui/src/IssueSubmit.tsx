@@ -100,6 +100,33 @@ type Sending =
   /** A 2xx whose answer named no run: something may exist that this page cannot name. */
   | { kind: 'unnamed' }
 
+/**
+ * AN ISSUE REFERENCE, PARSED HERE BEFORE ANYTHING IS SENT (QA G4-25), in the
+ * two shapes `validation.parse_issue_ref` takes: `owner/repo#N`, or an https
+ * URL on github.com naming `/owner/repo/issues/N`. "foo bar" went to the
+ * server, came back as a sentence about `repository_url` -- a field this form
+ * does not have -- and the dock counted a failed read. Null for anything the
+ * API would refuse as malformed; a `/pull/N` URL parses, because the server's
+ * answer to it is its own refusal, which points at the task form. The server
+ * stays the decider: this only keeps a reference that cannot parse unsent.
+ */
+export function parseIssueRef(typed: string): { owner: string; repo: string; number: number } | null {
+  const text = typed.trim()
+  const m =
+    /^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#([0-9]{1,7})$/.exec(text) ??
+    /^https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/(?:issues|pull|pulls)\/([0-9]{1,7})\/?(?:[?#].*)?$/i.exec(text)
+  const [owner, repo, raw] = [m?.[1], m?.[2], m?.[3]]
+  if (owner === undefined || repo === undefined || raw === undefined) return null
+  const name = repo.toLowerCase().endsWith('.git') ? repo.slice(0, -4) : repo
+  if (name === '' || name.startsWith('.')) return null
+  const number = Number(raw)
+  if (number < 1 || number > MAX_ISSUE_NUMBER) return null
+  return { owner, repo: name, number }
+}
+
+/** `validation.MAX_ISSUE_NUMBER`: the catalogue's ceiling on an issue number. */
+const MAX_ISSUE_NUMBER = 999_999
+
 /** The issue number out of what was typed, for a refusal's sentence; null when none is legible. */
 function issueNumber(ref: string): string | null {
   const m = /(?:#|\/issues\/)(\d+)\/?$/.exec(ref.trim())
@@ -158,9 +185,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const mergeOffered = mergeServed?.available === true
   const mergeOn = mergeOffered && merge
 
+  const parses = parseIssueRef(typed) !== null
+
   async function readIssue() {
     const ref = typed.trim()
-    if (ref === '') return
+    if (ref === '' || parseIssueRef(ref) === null) return
     setPreview({ kind: 'reading', ref })
     setClosedOk(false)
     const r = await loadIssuePreview(ref)
@@ -220,6 +249,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               value={typed}
               spellCheck={false}
               autoComplete="off"
+              aria-invalid={(typed.trim() !== '' && !parses) || undefined}
+              aria-describedby={typed.trim() !== '' && !parses ? 'in-ref-say' : undefined}
               onChange={(e) => retype(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -228,12 +259,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                 }
               }}
             />
-            <Button disabled={typed.trim() === '' || preview.kind === 'reading'}
+            <Button disabled={!parses || preview.kind === 'reading'}
               onClick={() => void readIssue()}>
               Read
             </Button>
           </div>
-          {preview.kind === 'idle' && (
+          {preview.kind === 'idle' && typed.trim() !== '' && !parses && (
+            <p id="in-ref-say" className="sb-note sbf-bad">
+              Not an issue reference yet: name it as <code>owner/repo#N</code> or paste its URL,{' '}
+              <code>https://github.com/owner/repo/issues/N</code>.
+            </p>
+          )}
+          {preview.kind === 'idle' && (typed.trim() === '' || parses) && (
             <p className="sb-note">
               Read with this tenant&rsquo;s own forge credential: only repositories it can read are reachable from
               here. Nothing is created by reading.
@@ -561,7 +598,10 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
       <WarnMark />
       <div className="in-refusal-t">
         <p>{words}</p>
-        <p className="sb-note">{error.message}</p>
+        {/* The server's sentence names the tenant and the secret -- except a
+            malformed reference's, which names the API's own fields
+            (`repository_url`, QA G4-25) and nothing the reader typed into. */}
+        {error.code !== 'validation_failed' && <p className="sb-note">{error.message}</p>}
         {action}
       </div>
     </div>

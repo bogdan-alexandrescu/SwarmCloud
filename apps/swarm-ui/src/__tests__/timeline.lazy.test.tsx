@@ -272,7 +272,7 @@ describe('Not finished yet reads when it scrolls into view', () => {
     await waitFor(() => expect(openCard(root).querySelector('.ol-card-failed')).not.toBeNull())
     expect(openCard(root).textContent).toContain('list refused')
     fireEvent.click(within(openCard(root)).getByRole('button', { name: /try again/i }))
-    await waitFor(() => expect(openCard(root).textContent).toContain('CREDENTIAL_MISSING 1'))
+    await waitFor(() => expect(openCard(root).textContent).toContain('No provider key is registered for this tenant 1'))
     expect(api.loadTasksInState).toHaveBeenCalledTimes(2)
   })
 

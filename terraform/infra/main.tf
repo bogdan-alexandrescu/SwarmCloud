@@ -253,6 +253,12 @@ module "secret_manager" {
   enable_subscription_refresh = true
   refresher_member            = module.iam.service_account_members["swarm-quota-broker"]
 
+  # The SwarmCloud GitHub App's client secret and private key (#780, OB2):
+  # two empty platform slots swarm-api alone reads. github_app.tf says why
+  # the user slots' grants are not made here.
+  github_app_secrets_enabled = var.enable_github_app
+  github_app_secret_readers  = [module.iam.service_account_members["swarm-api"]]
+
   labels = local.labels
 
   depends_on = [module.project_services]
@@ -484,6 +490,10 @@ module "scheduler" {
   # account, on var.issue_run_advance_schedule's default of every minute.
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
+
+  # D2 (#780, OB2): swarm-forge-refresh, the GitHub user-token refresh sweep,
+  # as the same rollup-sweeper account. Off until swarm-api serves the route.
+  enable_forge_refresh = var.enable_forge_refresh
 
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.

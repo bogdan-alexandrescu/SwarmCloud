@@ -51,7 +51,7 @@ from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
-from .continuation import resolve_continuation
+from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
 from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
@@ -140,6 +140,8 @@ class SubmissionService:
         metrics: ApiMetrics,
         now=utcnow,
         signer: SpecSigner | None = None,
+        forge_tokens: Any = None,
+        forge_writer: Any = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -150,6 +152,11 @@ class SubmissionService:
         #: in local development: `build_context` refuses a hardened
         #: environment without a key.
         self._signer = signer
+        #: The tenant's `-git` token reader and the pinned GitHub client, for
+        #: the one read a `merge_pr` workflow makes at submission (#352,
+        #: `continuation.resolve_merge_pr`). Neither builds a client until used.
+        self._forge_tokens = forge_tokens
+        self._forge_writer = forge_writer
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -443,6 +450,13 @@ class SubmissionService:
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
+            # A pull request no workflow opened (#352): checked against the
+            # tenant's registry and read from GitHub once, before the
+            # continuation (a `continues_task` beside it is refused for
+            # naming two) and before the dispatch options, because it
+            # supplies the repository they require. A continuation-scoped
+            # caller was refused above: `merge_pr` carries no continues_task.
+            named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
             # A continuation-scoped account continues a `direct-pr` task or an
@@ -456,7 +470,9 @@ class SubmissionService:
             # anything is built from the workflow's metadata (cifix.py).
             spec = stamp_ci_fix(self._store, tenant.tenant_id, spec, continuation)
             repository_url = (
-                continuation.repository_url if continuation else spec.repository_url
+                continuation.repository_url if continuation
+                else named_pull.repository_url if named_pull
+                else spec.repository_url
             )
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
@@ -501,6 +517,7 @@ class SubmissionService:
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
+                named_pull=named_pull is not None,
             )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
@@ -582,6 +599,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                named_pull=named_pull,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -788,6 +806,21 @@ class SubmissionService:
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
         )
 
+    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
+        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
+        if self._forge_tokens is None or self._forge_writer is None:
+            raise DispatchOptionError(
+                "merge_pr reads the pull request from GitHub at submission, and this "
+                "deployment has no forge reader configured.",
+                detail={"merge_pr": spec.merge_pr.model_dump() if spec.merge_pr else None},
+            )
+        return resolve_merge_pr(
+            spec, tenant,
+            repositories=Repositories(self._store.db, now=self._now),
+            tokens=self._forge_tokens,
+            writer=self._forge_writer,
+        )
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -818,6 +851,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        named_pull: NamedPull | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -862,6 +896,12 @@ class SubmissionService:
             # step it names is one it depends on, so topological order has
             # minted each id already.
             sources = merge_plan.sources
+            if sources.named and named_pull is not None:
+                # No task opened it (#352): the number and the head the
+                # caller named, as `resolve_merge_pr` checked them.
+                return dispatch.with_merge_target(
+                    number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                )
             return dispatch.with_merge_target(
                 pull_request=(
                     sources.pull_request if sources.continued

@@ -1461,9 +1461,11 @@ export function openObjectOf(at: Route): string | null {
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help, API reads and the Submit chooser draw from nothing they fetch, so
-  // there is no age -- and no "reading…" that never resolves (#503).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
+  // Help and API reads draw from nothing they fetch, so there is no age --
+  // and no "reading…" that never resolves (#503). The Submit chooser is not
+  // one of them: it reads your recent submissions and carries that read's age
+  // on its own refresh (QA G1-05/G4-23).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
