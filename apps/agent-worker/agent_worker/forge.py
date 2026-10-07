@@ -604,8 +604,12 @@ def _request(
 def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     """Ask the forge what this token may do. One GET, no side effect.
 
-    None means "this is not a forge I can publish to" -- an unrecognised host,
-    or no credential at all. The caller harvests a patch and says so.
+    None means the URL does not parse as a forge repository URL (no host, or
+    fewer than two path segments); there is no host allow-list, so any host
+    that parses is treated as GitHub. A missing credential, or a host the
+    tenant's credential may not be sent to, returns a `RepoAccess` with
+    `can_push=False` and the reason. Either way the caller harvests a patch
+    and says so.
     """
     ref = parse_repo(url)
     if ref is None:

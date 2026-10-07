@@ -100,8 +100,11 @@ variable "worker_network_tag" {
 
 variable "restrict_egress" {
   description = <<-EOT
-    When true, egress is default-deny with explicit allows for HTTPS, DNS and
-    the Google restricted VIP. Off by default because agent workers clone over
+    When true, egress is default-deny, with one allow for TCP
+    egress_allowed_ports (443 and 22 by default) and UDP 53 to any destination
+    (0.0.0.0/0). There is no restricted-VIP rule: traffic to the VIP already
+    passes the 443 allow, and narrowing the allow to the VIP would cut provider
+    and git egress. Off by default because agent workers clone over
     arbitrary git transports; turn it on per environment once the real egress
     set is known.
   EOT

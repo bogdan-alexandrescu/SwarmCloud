@@ -50,6 +50,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
+from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
@@ -81,7 +82,11 @@ TRANSCRIPT_MAX_CHARS = 4_000_000
 #: never a secret, so they are passed through without being redacted -- a path
 #: appearing in output is diagnostic information worth keeping readable.
 _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY")
-_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS")
+#: GIT_AUTHOR_* and GIT_COMMITTER_* name the person who dispatched the task
+#: (P37, `agent_worker.gitidentity`): the worker sets them from the task
+#: document, so an agent's `git commit` names that person instead of failing
+#: for want of an identity. A name and an address, never a secret.
+_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS", *GIT_IDENTITY_ENV)
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (

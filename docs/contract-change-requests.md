@@ -59,6 +59,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
+| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
 
 ---
 
@@ -8911,3 +8912,136 @@ rows for values nothing writes.
 - **Invariant 9.** The per-tenant review, post-verdict and merge service
   accounts are the Terraform half of the same cleanup (decision 4), decided
   at dev-iam, not here.
+
+---
+
+## 51. `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to
+
+**Status:** proposed, filed 2026-10-07 for #350, the Firestore document-shape
+record of #348 (the fix for S0 #347). A request, not a change: nothing under
+`apps/common/swarm_common/` is edited by it, and the owner accepts or refuses
+it.
+
+### What is true today
+
+Since #348, attempt documents (`attempts/<id>`) carry a field the frozen
+`Attempt` does not name: `checkpoint_sha256`, a map of checkpoint id to the
+SHA-256 of that checkpoint's archive. Its only name is the worker's
+`agent_worker.control.CHECKPOINT_DIGESTS_FIELD`, restated as a key by the test
+seeds in `tests/unit/worker/worker_seeds.py`.
+
+* **Who writes it, and when.** Only the worker:
+  `ControlPlane.record_checkpoint` adds `{checkpoint_id: archive_sha256}` in
+  the same merge-set of the attempt's own document that appends the id to
+  `checkpoints`, and only then runs the fenced transaction that moves
+  `task.latest_checkpoint` to the new checkpoint. A pointer therefore never
+  names a checkpoint whose digest is not yet recorded. A checkpoint recorded
+  without a digest adds no entry.
+* **Who reads it.** Only the worker of a LATER attempt of the same task:
+  `Worker._recorded_checkpoint` reads the document of the attempt that wrote
+  the checkpoint `latest_checkpoint` names (`ControlPlane.fetch_attempt`,
+  which refuses another tenant's document), and restores only when that
+  document is this task's, lists the checkpoint id in `checkpoints`, and
+  records the digest the manifest carries. The restore then checks the
+  archive's bytes against it (docs/checkpointing.md, "What is restored").
+* **Who drops it.** swarm-api's `codec.attempt_from_dict` builds an `Attempt`
+  field by field, so it reads the field nowhere and drops it silently -- the
+  same shape as the five spend fields this decoder once dropped while the
+  worker wrote them correctly (request 2).
+
+### Why
+
+A retry restores only a checkpoint whose archive digest its earlier attempt
+recorded. The manifest that also carries the digest sits in the bucket, and
+every agent of the tenant can write anywhere under `tenants/<tenant>/`
+(docs/security.md, "Which checkpoint is restored is not chosen from the
+bucket"). Before #348 a restore took whatever the bucket held under the task's
+prefix, and `.claude/` -- settings and hooks, which run code -- travels in
+every checkpoint because HOME is `work/`. Binding the restore to a digest in
+Firestore is what refuses an archive rewritten in place, even with its
+manifest rewritten to match. The field is a security record of S0 weight,
+and the frozen contract is where every other component learns what an
+attempt document holds.
+
+### The requested change
+
+In `apps/common/swarm_common/models.py`, on `Attempt`, after `checkpoints`:
+
+```python
+    #: Checkpoint id -> lowercase hex SHA-256 of that checkpoint's archive.
+    #: Written ONLY by the worker's `ControlPlane.record_checkpoint`, in the
+    #: same merge as `checkpoints` and before `task.latest_checkpoint` moves;
+    #: read ONLY by a later attempt of the same task, which restores a
+    #: checkpoint only when its archive matches the digest recorded here (#347).
+    #: Empty means "no digest recorded": a document written before #348, or a
+    #: checkpoint recorded without one. Its retry starts from an empty
+    #: workspace; an empty map is never read as "anything goes".
+    checkpoint_sha256: dict[str, str] = field(default_factory=dict)
+```
+
+* **Type:** `dict[str, str]`, keyed by checkpoint id (`ckpt-` and five or
+  more digits), valued by a 64-character lowercase hex digest.
+* **Default:** an empty dict, through `field(default_factory=dict)` as for
+  `checkpoints`, so every existing document still decodes.
+* **The mirrors that follow it, in the applying change:**
+  `CHECKPOINT_DIGESTS_FIELD` becomes `"checkpoint_sha256"` checked against
+  the dataclass field rather than a free string (a unit test, or a section of
+  `scripts/lib/check-contract-parity.sh`); `codec.attempt_from_dict` reads
+  it, keeping only `str -> str` entries. `codec.attempt_to_api` does not
+  serve it: no API caller needs it, and leaving it out keeps the response
+  shape unchanged. Whether a later change shows it to an operator is a
+  separate decision.
+
+No writer or reader changes behaviour. The worker writes and checks exactly
+what it does today.
+
+### What it would break if accepted
+
+Nothing that exists. A new optional field with an empty default: every
+stored attempt still parses, and no reader that ignores it changes.
+
+**Migration for existing attempt documents.** None is run, on purpose. An
+attempt document written before #348 has no `checkpoint_sha256`, decodes with
+the empty default, and a retry of that attempt starts from an empty workspace
+once, as docs/checkpointing.md already says. A backfill must **not** compute
+digests from the bucket: the bucket's current bytes are the value the binding
+exists to distrust, and a backfill would bless whatever a planter had already
+put there. How tasks that were mid-retry at deploy are treated is the owner's
+decision recorded on #348; this request takes no position on it and changes
+nothing about it.
+
+### If it is declined
+
+Behaviour is identical: the field stays a worker-private key in
+`agent_worker.control`, and the restore keeps working. What remains is that
+the frozen `Attempt` under-describes a security-relevant document, that
+swarm-api's decoder drops the field without anyone deciding to, and that a
+future writer of attempt documents (a reconciler repair, a copy tool) learns
+of the field only by reading the worker.
+
+### Invariants
+
+- **Invariant 1.** No state, lease or pool count changes. The field is
+  written by a RUNNING attempt that already holds its lease; a QUEUED, PARKED
+  or READY task creates no demand by having it.
+- **Invariant 2.** Untouched: nothing in admission's all-or-nothing
+  transaction reads or writes the attempt document.
+- **Invariant 3.** Untouched: concurrency counts from LEASED as before.
+- **Invariant 4.** No wait is added. The digest is computed while the
+  archive is written, and the restore's check is one point read at startup.
+- **Invariant 5.** The digest map is written to the attempt's OWN document;
+  the pointer that makes a later attempt read it moves only in the fenced
+  transaction. A stale worker can write digests into its own document, but
+  cannot repoint `latest_checkpoint`, so no later attempt reads them.
+- **Invariants 6 and 7.** Untouched: no Spot, no resource spec.
+- **Invariant 8.** Checkpointing stays mandatory and periodic at the same
+  cadence; this makes a restored checkpoint trustworthy against a
+  bucket-only writer. Its cost is that a retry of a pre-#348 attempt starts
+  clean once.
+- **Invariant 9.** `fetch_attempt` refuses another tenant's attempt
+  document, and the checkpoint must lie in the task's own prefix. Within one
+  tenant this stops a bucket-only writer, not one that also writes Firestore,
+  which has no document-level IAM (docs/multi-tenancy.md); that half rests on
+  signed step specs (#342).
+- **Invariant 10.** No caller sends it: no API route accepts the field, and
+  the serialiser does not return it.

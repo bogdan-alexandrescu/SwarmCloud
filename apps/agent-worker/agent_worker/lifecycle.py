@@ -236,6 +236,7 @@ from .gitops import (
     _git_text_full,
     _worker_identity,
 )
+from .gitidentity import git_identity_env
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -5918,6 +5919,10 @@ class Worker:
                 base[passthrough] = value
         if self.cfg.model:
             base["MODEL"] = self.cfg.model
+        # WHO THE AGENT'S COMMITS NAME (P37): the person who dispatched the
+        # task, from its document as swarm-api recorded it at submission --
+        # never from `input` (invariant 10). See `gitidentity`.
+        base.update(git_identity_env(self._task))
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
