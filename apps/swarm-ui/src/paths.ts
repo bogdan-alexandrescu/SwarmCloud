@@ -18,7 +18,7 @@
  * THE SERVER MUST SERVE index.html FOR EVERY PATH. images/swarm-ui/nginx.conf
  * already does (`try_files $uri $uri/ /index.html`); `/v1/*` never reaches it.
  */
-import { AGENT_TABS, type AgentTab } from './agentlist'
+import { AGENT_TABS, RECENT_STATES, agentList, agentListQuery, listFlags, parseAgentList, type AgentList, type AgentTab, type RecentState } from './agentlist'
 import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 
 /** The non-section addresses this file knows by name. */
@@ -86,11 +86,34 @@ function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')
 }
 
+function isRecentState(s: string | null): s is RecentState {
+  return (RECENT_STATES as readonly string[]).includes(s ?? '')
+}
+
 /**
- * The path for an address. `agentTab` is the list an open agent sits in
- * (`/agents/<tab>/<id>`), which the address does not carry; it defaults to
- * `live`, the list a pasted agent link is most often from.
+ * A list's query on a path: `state=failed&group=wf&first=failed` (G2-22). The
+ * state is the address's last segment and a query key on the path, as it
+ * always was; the toggles are a query on both.
+ *
+ * EXPORTED FOR AN OPEN AGENT'S PATH, which carries the list it was opened
+ * from: `/agents/recent/<id>?state=failed&group=wf`. Opening an agent from
+ * `Recent · failed` wrote `/agents/recent/<id>`, so a reload or a shared link
+ * landed beside the unfiltered list. `pathToAddress` reads it back as `list`.
  */
+export function agentListSearch(list: AgentList): string {
+  const q = new URLSearchParams()
+  if (list.tab === 'recent' && list.state !== null) q.set('state', list.state)
+  for (const [k, v] of new URLSearchParams(agentListQuery(list))) q.append(k, v)
+  return q.toString()
+}
+
+/** The list a path's query names, with the tab the path carries. */
+function listFromQuery(tab: AgentTab, query: string): AgentList {
+  const state = new URLSearchParams(query).get('state')
+  return agentList(tab, isRecentState(state) ? state : null, listFlags(query))
+}
+
+
 /** The panes of one workflow that are a path segment: `/workflows/<id>/<pane>`. */
 export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
 
@@ -99,6 +122,15 @@ export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot
 /** The one query a repository tab carries in the bar: the pull request the Impact tab opens on. */
 const REPO_TAB_QUERY: readonly string[] = ['pr']
 
+/**
+ * The path for an address. `agentTab` is the list an open agent sits in
+ * (`/agents/<tab>/<id>`), which the address does not carry; it defaults to
+ * `live`, the list a pasted agent link is most often from.
+ *
+ * The list's state and toggles ride on an open agent's path as its query
+ * (`agentListSearch`, G2-22), which `App` appends: this signature is the one
+ * `swarm_api.codec.agent_console_url` is held to.
+ */
 export function addressToPath(address: string, agentTab: AgentTab = 'live'): string {
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
@@ -109,9 +141,13 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   if (seg[0] === 'work' && seg[1] === 'task' && seg.length > 2) {
     return `/agents/${agentTab}/${seg.slice(2).join('/')}`
   }
-  // The agent list: `work/running/recent/failed` -> `/agents/recent?state=failed`.
+  // The agent list: `work/running/recent/failed?group=wf` ->
+  // `/agents/recent?state=failed&group=wf`.
   if (seg[0] === 'work' && seg[1] === 'running' && isAgentTab(seg[2])) {
-    return seg[3] === undefined ? `/agents/${seg[2]}` : `/agents/${seg[2]}?state=${seg[3]}`
+    const list = parseAgentList(seg.slice(2), query)
+    if (list === null) return seg[3] === undefined ? `/agents/${seg[2]}` : `/agents/${seg[2]}?state=${seg[3]}`
+    const search = agentListSearch(list)
+    return search === '' ? `/agents/${list.tab}` : `/agents/${list.tab}?${search}`
   }
   // One workflow rides on the list's query as `wf=<id>`; the rest is its filters.
   if (bare === 'work/workflows' && query !== '') {
@@ -170,6 +206,12 @@ export interface PathRoute {
   address: string
   /** For an agent path, the list it was opened from. */
   agentTab: AgentTab | null
+  /**
+   * For an agent path whose query names the list's state or toggles, that
+   * whole list (G2-22). Absent when the query names neither, so the list is
+   * `agentTab` alone.
+   */
+  list?: AgentList
 }
 
 /**
@@ -188,9 +230,17 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     const tab = seg[1]
     if (isAgentTab(tab)) {
       const rest = seg.slice(2)
-      if (rest.length > 0) return { address: `work/task/${rest.join('/')}`, agentTab: tab }
+      const list = listFromQuery(tab, query)
+      if (rest.length > 0) {
+        const named = list.state !== null || agentListQuery(list) !== ''
+        return { address: `work/task/${rest.join('/')}`, agentTab: tab, ...(named ? { list } : {}) }
+      }
+      // The state is kept as written, as it always was: a misspelt one lands
+      // on the plain list through `parseAgentList`, not here.
       const state = new URLSearchParams(query).get('state')
-      return plain(state === null || tab !== 'recent' ? `work/running/${tab}` : `work/running/${tab}/${state}`)
+      const flags = agentListQuery(list)
+      const at = state === null || tab !== 'recent' ? `work/running/${tab}` : `work/running/${tab}/${state}`
+      return plain(flags === '' ? at : `${at}?${flags}`)
     }
     return seg.length === 1 ? plain('work/running') : null
   }

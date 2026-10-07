@@ -417,6 +417,26 @@ row read `uv run`, which outside a checkout answers `Failed to spawn: swarm`
 installed on its own and can be another version. Run what the bridge hands
 back rather than retyping it.
 
+### Acting as one of several tenants
+
+A person in more than one registered tenant group acts as the **first**
+matching group, in the order the admin registered them, unless they choose
+another (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
+the API honours it only when your verified membership includes that tenant's
+group: the header selects among your memberships, it never grants one. A
+tenant you are not a member of is refused with 403 `tenant_not_member`, and
+that refusal is shown as the API wrote it.
+
+| Surface | List your tenants | Choose one |
+|---|---|---|
+| terminal | `swarm tenants` (`--json`), the current one marked `*` | `swarm --tenant <id> ...`, or `SWARM_TENANT=<id>`; the flag wins |
+| MCP | `swarm_tenants` (read-only) | `SWARM_TENANT` in the bridge's environment, read once when it starts |
+
+Nothing chosen sends no header at all, so behaviour is exactly what it was
+before. The bridge's setting is per session, not per call: a session whose
+calls could each name a tenant would read one tenant's rows and act on
+another's. `sc` does not take a tenant yet; it acts as your default.
+
 ## Choosing a runner profile
 
 A caller names a **profile** and nothing else — never an image, a command, a

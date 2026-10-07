@@ -288,7 +288,7 @@ describe('the capacity `?` belongs to the empty Live tab alone', () => {
   })
 })
 
-describe('the row clock does not run past the read (AG-1)', () => {
+describe('the list re-reads, and its row clock runs with the shared clock (AG-1, G2-04)', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -296,8 +296,9 @@ describe('the row clock does not run past the read (AG-1)', () => {
   /**
    * The list read once and its 1s clock went on adding to every row: a
    * finished agent read `running` and its elapsed kept climbing, on a page
-   * nobody had re-read. The cadence is §2.5's, and the clock stops one
-   * interval past the read -- when a fresh read was due and has not come.
+   * nobody had re-read. The list re-reads at §2.5's cadence now. `rowClock`
+   * still stops one interval past the read, for the silent-worker line and
+   * the inspector's drawer; the row's elapsed figure no longer reads it.
    */
   it('re-reads fast only while Live holds a row', () => {
     const live: TaskPage = { tasks: [task('task_ffffffff00000000000f', 'RUNNING')] }
@@ -316,10 +317,16 @@ describe('the row clock does not run past the read (AG-1)', () => {
   })
 
   /**
-   * BREAK IT: go back to `elapsed(task, Date.now())` on a 1s interval. A
-   * minute later the row reads `2m 3s` for an agent that was read at `1m 0s`.
+   * G2-04 (dev QA 2026-10-07) REVERSED THIS CASE'S OLD CLAIM. The row's elapsed
+   * figure was held one interval past the read, and with the read 5 min old
+   * the list said `12m 44s` beside an inspector saying `17m 33s` for the same
+   * task. It runs on the shared clock now; the read's age is the Screen's to
+   * show, and the list still re-reads (the case below). What stays capped is
+   * the silent-worker line -- `qa.g2.agents.test.tsx`.
+   *
+   * BREAK IT: hand the rows `rowClock(useNow(1000), readAt, interval)` again.
    */
-  it('stops a running row’s elapsed time once the read is older than one interval', async () => {
+  it('keeps a running row’s elapsed time moving after the read is older than one interval', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     const start = Date.now()
     // THE FIRST READ LANDS AND EVERY RE-READ FAILS. The list polls now, and a
@@ -357,13 +364,12 @@ describe('the row clock does not run past the read (AG-1)', () => {
     const when = () => container.querySelector('.row.clickable .when')?.textContent ?? ''
     await advance(0)
     expect(when()).toBe('1m 0s')
-    // Inside one interval the clock runs, as it should.
     await advance(3_000)
     expect(when()).toBe('1m 3s')
-    // A minute on, with no fresh read, it has stopped at the interval's edge.
+    // A minute on, with no fresh read, it has gone on with the clock.
     await advance(60_000)
     expect(reads, 'the list did not try to re-read at all').toBeGreaterThan(1)
-    expect(when(), 'the row went on counting past a read nobody refreshed').toBe('1m 5s')
+    expect(when(), 'the row stopped at the read while the clock went on').toBe('2m 3s')
   })
 
   /**

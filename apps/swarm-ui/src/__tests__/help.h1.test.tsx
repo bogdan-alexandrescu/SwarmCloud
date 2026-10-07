@@ -54,7 +54,9 @@ describe('H1: one page per group', () => {
     render(<HelpScreen topic={g.id} />)
     expect(text(document.querySelector('.head h1'))).toBe(g.title)
     expect([...document.querySelectorAll('.help-topic')].map((t) => t.id)).toEqual(inGroup(g.id).map((id) => HELP[id].anchor))
-    expect(text(document.querySelector('.head + .sub'))).toMatch(new RegExp(`^${inGroup(g.id).length} on this page · `))
+    // The page's line is the count note right after the head (#138), not a line under the title.
+    expect(document.querySelector('.c-phead .sub'), 'a line under the title').toBeNull()
+    expect(text(document.querySelector('.c-phead + .c-count-note'))).toMatch(new RegExp(`^${inGroup(g.id).length} on this page · `))
   })
 
   it('opens a topic’s own group for a deep link, and marks that topic current', () => {
@@ -153,7 +155,7 @@ describe('H1: the search spans every group', () => {
       expect(text(a.querySelector('small')).length, 'a hit does not name its group').toBeGreaterThan(0)
     }
     expect(text(document.querySelector('.head h1'))).toBe('Help')
-    expect(text(document.querySelector('.head + .sub'))).toMatch(new RegExp(`^${hits.length} of ${TOPIC_IDS.length} topics match “paused”$`))
+    expect(text(document.querySelector('.c-phead + .c-count-note'))).toMatch(new RegExp(`^${hits.length} of ${TOPIC_IDS.length} topics match “paused”$`))
     // The cards step aside while the results are up.
     expect(document.querySelector('.help-topic')).toBeNull()
 

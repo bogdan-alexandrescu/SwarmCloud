@@ -231,13 +231,16 @@
 }
 
 /* -- Platform counts -------------------------------------------------------- */
-/* PLATFORM COUNTS: THE RUN IS A BUTTON BESIDE THE TITLE (#503, frames 4-5 of
-   admin-help.html). It was an underlined `.sub button` inside the provenance
-   sentence, which read as a link in prose rather than the one billed action
-   on the page. Drawn to components.html A -- 32px tall, primary before the
-   first run and plain after it, when it is a re-run -- except the radius:
-   A's 8px is off spacing.test.tsx's corner scale (0, 2, 6, 10, 14, 999), so
-   the control takes the scale's control radius, 6px. */
+/* PLATFORM COUNTS: THE RUN IS THE HEAD'S ACTION (#503 frames 4-5 of
+   admin-help.html; AH-25 and #138, owner ruling 2026-10-07). It was an
+   underlined `.sub button` inside the provenance sentence, then a button
+   beside the title -- a second head shape on one Admin tab. It sits in the
+   head's actions now, right of the title like every screen's refresh, after
+   what the last count found. Drawn to components.html A -- 32px tall,
+   primary before the first run and plain after it, when it is a re-run --
+   except the radius: A's 8px is off spacing.test.tsx's corner scale (0, 2,
+   6, 10, 14, 999), so the control takes the scale's control radius, 6px. */
+.c-phead .counts-prov { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .c-phead .counts-run { align-self: center; }
 .counts-run .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 /* BEFORE THE FIRST RUN (#135): both cards drawn, each with the neutral

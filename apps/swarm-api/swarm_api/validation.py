@@ -611,16 +611,6 @@ MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
 MERGE_FIX_ROUNDS_DEFAULT = 0
 MERGE_FIX_ROUNDS_MAX = 5
 
-#: The label `.github/workflows/auto-merge.yml` merges on. Beside a merge step
-#: it is dropped from the dispatch block, so the two mergers never race for
-#: one pull request and the step's merges are the ones its retirement gate
-#: counts (docs/merge-step.md "Revised 2026-10-06" §5).
-READY_LABEL = "ready"
-#: Where the drop is recorded, on every task of the workflow, as the label
-#: that was dropped. Written by swarm-api only: a caller's is refused, so the
-#: record never says a label was dropped when none was.
-MERGE_LABEL_DROPPED_KEY = "merge_label_dropped"
-
 
 def resolve_merge_fix_rounds(
     metadata: Mapping[str, Any], *, merge_step: bool
@@ -654,17 +644,6 @@ def resolve_merge_fix_rounds(
             detail={"field": field, "accepted": bounds, "merge_step": False},
         )
     return value
-
-
-def refuse_merge_label_record(metadata: Mapping[str, Any]) -> None:
-    """A caller's `metadata.merge_label_dropped` is refused: only swarm-api writes it."""
-    if MERGE_LABEL_DROPPED_KEY in metadata:
-        field = f"metadata.{MERGE_LABEL_DROPPED_KEY}"
-        raise DispatchOptionError(
-            f"{field} is written by this service when it drops a "
-            f"{READY_LABEL!r} label beside a merge step. Drop the key from metadata.",
-            detail={"field": field},
-        )
 
 
 def merge_repository(repository_url: str | None) -> tuple[str, str] | None:
@@ -1378,9 +1357,7 @@ WORKFLOW_LABEL_KEYS = ("unit", "title")
 WORKFLOW_LABEL_MAX_CHARS = 256
 
 
-def workflow_label(
-    metadata: Mapping[str, Any] | None, *, merge_step: bool = False
-) -> str | None:
+def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
     """The workflow's label as one line of text, or None when it has none.
 
     The first of `WORKFLOW_LABEL_KEYS` that holds a non-blank string, with its
@@ -1389,26 +1366,17 @@ def workflow_label(
     it if it carries a task id or attribution, and neutralises every mention
     before it titles anything, as it does for an agent's `pr-title.txt`.
 
-    With `merge_step`, a label that is `READY_LABEL` (in any case) is None:
-    beside a merge step `auto-merge.yml`'s label is dropped
-    (`ready_label_dropped` says when, for the record).
+    A label of `ready` is a title like any other, merge step or not (owner
+    decision 2026-10-06, #352): it never becomes a GitHub label, so it
+    cannot reach `auto-merge.yml`.
     """
     for key in WORKFLOW_LABEL_KEYS:
         value = (metadata or {}).get(key)
         if isinstance(value, str):
             text = " ".join(value.split())
             if text:
-                if merge_step and text.lower() == READY_LABEL:
-                    return None
                 return text[:WORKFLOW_LABEL_MAX_CHARS]
     return None
-
-
-def ready_label_dropped(metadata: Mapping[str, Any] | None, *, merge_step: bool) -> bool:
-    """Whether `workflow_label` drops the workflow's label as `READY_LABEL`."""
-    return merge_step and workflow_label(metadata) is not None and (
-        workflow_label(metadata, merge_step=True) is None
-    )
 
 
 def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key: str) -> str:

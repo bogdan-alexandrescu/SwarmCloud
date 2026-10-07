@@ -59,7 +59,9 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Repositories')
-    expect(visible(document.querySelector('.c-phead'))).toContain('3 registered')
+    // #138: the count is a note over the first card, never a line in the head.
+    expect(visible(document.querySelector('.c-count-note'))).toContain('3 registered')
+    expect(visible(document.querySelector('.c-phead'))).not.toContain('registered')
     expect(cards().map((c) => visible(c.querySelector('h2')))).toEqual([
       'example-org/example-api',
       'example-org/example-web',

@@ -707,7 +707,6 @@ body {
    Applied to running text ONLY -- never to a table, a grid or a chart, which
    are the things the width was reclaimed for. `ch` rather than px so it tracks
    the font size. */
-.sub,
 .state p,
 .ctl-empty > p,
 .node-why,
@@ -722,18 +721,11 @@ body {
    hardcoded "dev" beside every screen title -- a word nothing in this app had
    measured, repeated on sixteen screens. The environment is drawn once now, by
    Brand.tsx, and only from something that was established. */
-/* `--ctl-s5`, not 24px (TS-21): 24 was one of seven values on this sheet that
-   sat between the scale's steps, and it is the nearest step up. The summary
-   line is the page's own head; what follows it is the first region, and s5 is
-   what a region break is. */
-.sub { color: var(--text-dim); font-size: var(--t-lead); line-height: var(--lh-lead); margin: 0 0 var(--ctl-s5); }
-/* The summary line's "refresh" on all fourteen Screen routes. Its colour, its
-   underline and its hover now come from the `.ctl-link` list in sec 9b (CH-5);
-   what is left here is the reset a <button> needs in order to be a link. */
-.sub button {
-  background: none; border: none;
-  font: inherit; cursor: pointer; padding: 0;
-}
+/* THE 16px SUMMARY LINE UNDER EVERY SCREEN TITLE (`.sub`) IS GONE (#138,
+   owner ruling 2026-10-07, design-system §6.12: title left, actions right, no
+   subtitle). Its refresh is `.c-refresh` in the head's actions, and the
+   screen's count is `.c-count-note` over its first card -- both in the page
+   head block (sec 17c). */
 
 /* ---------------------------------------------------------------------------
    B17 -- AN IDENTIFIER IS NEVER RESTYLED
@@ -2247,7 +2239,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   color: var(--text-faint) !important;
 }
 
-.sub button[disabled] {
+.c-refresh[disabled] {
   opacity: .5;
   cursor: not-allowed;
 }
@@ -4485,7 +4477,6 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    the label's faint ink back, and its hover and focus are branches of the
    hover rule below. */
 .ctl-link,
-.sub button,
 .ctl-dock-tools a,
 .ctl-panel-note a,
 a.ctl-metric .ctl-metric-label,
@@ -4506,7 +4497,6 @@ a.ctl-metric .ctl-metric-label,
   border-radius: var(--ctl-radius-sm);
 }
 .ctl-link:hover,
-.sub button:not(:disabled):hover,
 .ctl-dock-tools a:hover,
 .ctl-panel-note a:hover,
 a.ctl-metric:hover .ctl-metric-label,
@@ -4522,7 +4512,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 .ctl-card-head .ctl-link:hover { text-decoration-color: currentColor; }
 /* The one place sec 1.3 allows the accent on a control state: the focus ring. */
 .ctl-link:focus-visible,
-.sub button:focus-visible,
 .ctl-dock-tools a:focus-visible,
 .ctl-panel-note a:focus-visible,
 .wf-inspect-run:focus-visible {
@@ -5065,8 +5054,9 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 /* -------------------------------------------------------------------------- */
 /* THE WRAPPER FOR THE HEADS `Screen` DOES NOT RENDER (AH-25, design-system
    §6.12): Overview's facts row and the API reads page. Every other page head
-   is `PageHead` in Shell.tsx -- `.head > h1` over one `.sub` line of
-   provenance -- and Help and Platform counts moved onto it from here.
+   is `PageHead` in Shell.tsx -- `.head > h1` left, `.c-acts` right, and no
+   line under the title (#138) -- and Help and Platform counts moved onto it
+   from here.
 
    TITLE LEFT, ACTIONS RIGHT, AND NOTHING ELSE. No subtitle, no description, no
    breadcrumb duplication — the breadcrumb is in `.ctl-head` one region up and
@@ -8590,10 +8580,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    are the controls a keyboard reader reaches first when something has gone
    wrong, and they now ring exactly as every other button does. */
 
-/* `refresh` / `paused 12s`, in the summary line under every screen title. It
-   is on all fifteen routes, which makes it the most-tabbed control in the app
-   after the rail. */
-.sub button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* `⟳ 12 s` / `paused 12 s` / `Paused · resume`, the refresh in every page
+   head's actions (#138). It is on every polled and read-once route, which
+   makes it the most-tabbed control in the app after the rail. */
+.c-refresh:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* THE HELP CARD'S "FULL EXPLANATION" LINK, WHICH IS NOT INSIDE `.app`.
    The card is portalled to `<body>` to escape a stacking context, so every
@@ -9409,16 +9399,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-height: 44px;
   }
 
-  /* `.sub button` is every page head's refresh (Shell's and Overview's,
-     which was `.ov-refresh` until the #503 swap). */
+  /* `.c-refresh` is every page head's refresh (Shell's `RefreshControl`,
+     which Overview and the Timeline draw too, #138). */
   .ctl-q-glyph,
-  .sub button,
+  .c-refresh,
   .ov-link,
   .c-link.is-sm {
     position: relative;
   }
   .ctl-q-glyph::after,
-  .sub button::after,
+  .c-refresh::after,
   .ov-link::after,
   .c-link.is-sm::after {
     content: '';
@@ -10408,24 +10398,35 @@ span.sk-ttile { cursor: default; }
 /* The hidden-tab line: said on return, until the read lands. */
 .app-hidden-line { margin: 0 0 var(--ctl-s2); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--s-warn); }
 
-/* --- the page head: ONE row (#503) ---------------------------------------- */
-/* The title, a mono meta chip, and right-aligned "read · poll · refresh", as
-   the picked frames draw it. `.head` and `.sub` keep their names (and their
-   order: `.head + .sub`) inside the row. */
-/* ONE ROW AT DESKTOP WIDTH (visual QA Q2, 2026-10-02): the meta chip gives
-   way (ellipsis, its full text in its title) before the freshness leaves the
-   title's row. Below 760px the row may wrap the freshness under the title. */
+/* --- 17c. the page head: TITLE LEFT, ACTIONS RIGHT (#138) ---------------- */
+/* §6.12, the owner's ruling of 2026-10-07: the title and its `?` on the left,
+   the head's actions on the right (`.c-acts`), and NOTHING under the title.
+   The 16px summary line and the meta chip that followed it on this row are
+   gone: the count is `.c-count-note` over the first card, and the refresh is
+   `.c-refresh`, a quiet control carrying the screen's ticking age. */
 .c-phead { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); min-width: 0; }
 .c-phead > .head { margin: 0; flex: none; align-items: center; gap: var(--ctl-s2); flex-wrap: nowrap; }
-.c-phead > .sub { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-.c-phead .c-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.c-phead > .c-acts { margin-left: auto; flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: var(--ctl-s2) var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.c-phead > .c-acts:empty { display: none; }
+.c-acts > .ctl-head-age { margin: 0; min-width: 0; font: inherit; color: inherit; white-space: nowrap; }
+/* QUIET: no box, no underline, no accent at rest -- the age is a reading,
+   and the glyph says it is also the way to renew it. Ink on hover, the accent
+   only as the focus ring (sec 1.3). Sans: a relative age is words, not a
+   timestamp (Q1); tabular, so a ticking age does not jitter the row. */
+.c-refresh { background: none; border: 0; padding: 0; margin: 0; border-radius: var(--ctl-radius-sm); font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); white-space: nowrap; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.c-refresh:not(:disabled):hover { color: var(--text); }
+.c-refresh.is-stale { color: var(--warn); }
+.c-refresh.is-paused { color: var(--text); font-weight: 500; }
+/* THE COUNT, OVER THE FIRST CARD (#138): what was read, at the micro step,
+   where it was read -- not a line under the title. */
+.c-count-note { margin: 0 0 var(--ctl-s2); font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* A PLACEHOLDER IS AN INSTRUCTION, NOT A VALUE: sans even in a field whose
    typed value is an id and therefore mono (visual QA Q1, 2026-10-02). */
 .sk-app input::placeholder,
 .sk-app textarea::placeholder { font-family: var(--font); }
 @media (max-width: 759px) {
   .c-phead { flex-wrap: wrap; }
-  .c-phead > .sub { flex-wrap: wrap; }
+  .c-phead > .c-acts { flex-wrap: wrap; }
   /* A `?` NEVER STANDS ALONE (U11a D39, owner QA at 390px, 2026-10-04).
      Where the phone header names the page, a page head whose title steps
      aside (Overview's, overview.css) was left holding a bare `?` that opened
@@ -10434,19 +10435,6 @@ span.sk-ttile { cursor: default; }
      Help section, one tap from the menu. */
   .ov-page > .c-phead > .head > :not(h1) { display: none; }
 }
-/* THE SAME PILL IN BOTH THEMES (U10a D40, owner QA 2026-10-04): the fill
-   is `--surface-2`, which in light (#eef4fa) is all but the page's own
-   `--bg` (#f3f6f9), so the pill showed in dark and vanished in light. A
-   hairline in `--line` draws its edge in both; the padding gives back the
-   pixel the border takes, so the pill is the size it was. */
-.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
-/* The provenance group never splits: "refresh" stays with its age. INLINE
-   TEXT, not a flex box: as `inline-flex` each text run was an anonymous flex
-   item and lost its edge spaces, which drew "just now·refresh" and
-   "nowrefresh" (visual QA Q2, 2026-10-02). Sans: a relative age is words,
-   not a timestamp (Q1). */
-.c-age { margin-left: auto; display: inline-block; font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); white-space: nowrap; }
-.c-age > .ctl-head-age { margin: 0; min-width: 0; font: inherit; color: inherit; }
 
 /* --- collapsed: the spine alone, a flyout per section -------------------- */
 /* Each flyout sits beside its section, which the collapsed spine's tenant tile
@@ -10470,10 +10458,18 @@ span.sk-ttile { cursor: default; }
   /* Sticky as well as first in the column: the page scrolls in `.ctl-scroll`
      beneath it, and nothing can take the menu out of reach (#139). */
   .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
+  /* Eased so the compaction below is not a jump; reduced motion stops it. */
+  .sk-pbar { transition: height 120ms ease-out; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   .sk-pbar .sk-pill:not(.is-prod) { background: #1f5491; color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
+  /* The admin tag in the phone header (#139): a grey hairline on the
+     spine's colour, unfilled, never the accent -- a fact about you, beside
+     the one pill allowed to be loud. Inked in the spine's ink (#bcd6ee,
+     one value in both themes). `flex: none`, so the title gives way
+     and the tag never wraps onto a line of its own (CH-20). */
+  .sk-pbar .sk-adm { flex: none; white-space: nowrap; color: #bcd6ee; border-color: rgba(238, 244, 250, .3); }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }
@@ -10496,6 +10492,14 @@ span.sk-ttile { cursor: default; }
      tenant and the environment all stay; only the padding goes, so §6.15's
      25% chrome budget is spent on the dock and not on an empty band. */
   .sk-app.is-scrolled .sk-pbar { height: 36px; }
+}
+/* The compaction is the phone chrome's only motion, 120ms; under reduced
+   motion the header simply takes its new height. `Top` jumps rather than
+   smooth-scrolling, so it has nothing to stop. */
+@media (max-width: 759px) and (prefers-reduced-motion: reduce) {
+  .sk-pbar { transition: none; }
+}
+@media (max-width: 759px) {
   /* `Top`, at the foot of the scrollport, on a page more than a screen long.
      Sticky inside the page rather than fixed to the viewport, so it sits
      above the dock (a row of the frame) instead of under it. 44px tall: a
