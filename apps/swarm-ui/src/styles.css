@@ -10470,10 +10470,18 @@ span.sk-ttile { cursor: default; }
   /* Sticky as well as first in the column: the page scrolls in `.ctl-scroll`
      beneath it, and nothing can take the menu out of reach (#139). */
   .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
+  /* Eased so the compaction below is not a jump; reduced motion stops it. */
+  .sk-pbar { transition: height 120ms ease-out; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   .sk-pbar .sk-pill:not(.is-prod) { background: #1f5491; color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
+  /* The admin tag in the phone header (#139): a grey hairline on the
+     spine's colour, unfilled, never the accent -- a fact about you, beside
+     the one pill allowed to be loud. Inked in the spine's ink (#bcd6ee,
+     one value in both themes). `flex: none`, so the title gives way
+     and the tag never wraps onto a line of its own (CH-20). */
+  .sk-pbar .sk-adm { flex: none; white-space: nowrap; color: #bcd6ee; border-color: rgba(238, 244, 250, .3); }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }
@@ -10496,6 +10504,14 @@ span.sk-ttile { cursor: default; }
      tenant and the environment all stay; only the padding goes, so §6.15's
      25% chrome budget is spent on the dock and not on an empty band. */
   .sk-app.is-scrolled .sk-pbar { height: 36px; }
+}
+/* The compaction is the phone chrome's only motion, 120ms; under reduced
+   motion the header simply takes its new height. `Top` jumps rather than
+   smooth-scrolling, so it has nothing to stop. */
+@media (max-width: 759px) and (prefers-reduced-motion: reduce) {
+  .sk-pbar { transition: none; }
+}
+@media (max-width: 759px) {
   /* `Top`, at the foot of the scrollport, on a page more than a screen long.
      Sticky inside the page rather than fixed to the viewport, so it sits
      above the dock (a row of the frame) instead of under it. 44px tall: a
