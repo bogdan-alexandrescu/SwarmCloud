@@ -81,6 +81,16 @@ at the old head with `BRANCH_UPDATE_PENDING`. That head's checks are green
 every CI_READ_SECONDS. The tick waits for the head to move instead, and
 the worker's fallback instant covers an update GitHub never makes.
 
+A PULL REQUEST IN ITS BASE'S MERGE QUEUE IS NOT A READING OF ITS CHECKS
+(lane C3H). A worker whose merge GitHub answered "Changes must be made
+through the merge queue" enqueued the pull request and parked MERGE_QUEUED.
+Its checks were green when it did, so reading them would wake it for
+nothing, every CI_READ_SECONDS. The tick reads the pull request and, while
+it is open at the recorded head, one GraphQL query with the same token:
+still in the queue is a wait; out of it, unmerged, wakes the step as
+`dequeued`, and the worker reads GitHub's reason itself and refuses
+`merge_dequeued`. Merged, closed or moved wakes it as for any park.
+
 A READ THAT FAILS IS NOT A READING. GitHub down, a credential without
 `checks: read`, a pull request not visible: nothing is marked, the failure is
 reported by task id and code, and the worker's fallback instant
@@ -109,7 +119,8 @@ from .cifix import BRANCH_PREFIX
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
-from .forgewrite import GitHubWriter, PullSnapshot
+from .forge import GITHUB_API_HOST
+from .forgewrite import PULLS_WRITE, ForgeWriteError, GitHubWriter, PullSnapshot
 from .issueci import (
     CI_READ_SECONDS,
     LOST_ROUND_SECONDS,
@@ -149,6 +160,20 @@ MERGE_FIX_METADATA_KEY = "merge_fix"
 #: The worker's park code after an update-branch whose new head GitHub had
 #: not made yet (`agent_worker.merge.BRANCH_UPDATE_PENDING`).
 BRANCH_UPDATE_PENDING = "branch_update_pending"
+
+#: The worker's park code after it put the pull request in its base's merge
+#: queue (`agent_worker.merge.MERGE_QUEUED`).
+MERGE_QUEUED = "merge_queued"
+#: The wake reason of a queued pull request that left the queue unmerged.
+DEQUEUED = "dequeued"
+
+#: Whether the pull request is still in its base's merge queue. GraphQL,
+#: because REST does not say: `isInMergeQueue` is the pull request's own field.
+_QUEUE_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!) {"
+    " repository(owner: $owner, name: $name) {"
+    " pullRequest(number: $number) { isInMergeQueue } } }"
+)
 
 #: Every wake reason a fix round gives, beside the readings' own.
 FIX_ROUND_ENDED = "fix_round_ended"
@@ -234,12 +259,36 @@ class _Reading:
     checks: CiReading | None = None
 
 
+def in_merge_queue(writer: GitHubWriter, ref: IssueRef, token: str) -> bool:
+    """Whether pull request `ref.number` is in its base's merge queue.
+
+    Through the writer's own request path -- the pinned host, the token in the
+    Authorization header only, its status mapping -- since it has no GraphQL
+    read of its own. GraphQL answers a refusal 200 with `errors`: raised, so
+    it is never read as "not queued".
+    """
+    what = f"the merge queue of {ref.repository}#{int(ref.number)}"
+    data = writer._call(
+        "POST", f"https://{GITHUB_API_HOST}/graphql", token, what, needs=PULLS_WRITE,
+        payload={"query": _QUEUE_QUERY,
+                 "variables": {"owner": ref.owner, "name": ref.repo, "number": int(ref.number)}},
+    )
+    pull = _mapping(_mapping(_mapping(_mapping(data).get("data")).get("repository"))
+                    .get("pullRequest"))
+    queued = pull.get("isInMergeQueue")
+    if _mapping(data).get("errors") or not isinstance(queued, bool):
+        raise ForgeWriteError(f"GitHub's answer for {what} does not say")
+    return queued
+
+
 def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
-          update_pending: bool = False) -> _Reading:
+          update_pending: bool = False, queued: bool = False) -> _Reading:
     """`settled`, keeping what was read: the pull request and, when read, the checks.
 
     `update_pending`: the park waits on an update GitHub has not made yet, so
     an unmoved head is a wait and its checks are not read (module docstring).
+    `queued`: the park waits on the merge queue, which is read in place of
+    the checks.
     """
     pull = writer.read_pull(ref, ref.number, token)
     if pull.merged:
@@ -250,6 +299,8 @@ def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
         return _Reading("head_moved", pull)
     if update_pending:
         return _Reading(None, pull)
+    if queued:
+        return _Reading(None if in_merge_queue(writer, ref, token) else DEQUEUED, pull)
     rules = writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
     reading = evaluate(
         required_status_checks(rules),
@@ -625,7 +676,8 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             patch: dict[str, Any] = {}
             try:
                 read = _read(writer, ref, head, token,
-                             update_pending=wait.get("code") == BRANCH_UPDATE_PENDING)
+                             update_pending=wait.get("code") == BRANCH_UPDATE_PENDING,
+                             queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
                 if reason == "red":
                     kind, reason = _on_red(ctx, db, tenant, doc, ref, head, read, token, now)

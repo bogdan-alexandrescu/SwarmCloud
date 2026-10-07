@@ -27,6 +27,14 @@ on:
       - "scripts/lib/destroy-guard.jq"
       - "scripts/lib/unlabelable-types.json"
       - ".github/workflows/terraform.yml"
+  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Main merges
+  # through a merge queue"). ci-gate is required and waits for this
+  # workflow's run at the entry's commit, so it runs there with NO path
+  # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
+  # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
+  # Never raised while the queue is off.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       environment:
@@ -144,7 +152,9 @@ jobs:
     # than "nothing to report".
     name: plan (not run on a pull request)
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    # A merge queue entry cannot plan either (its ref is not main), so it
+    # says so there too.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
       - name: say what was not checked
         run: |
@@ -165,6 +175,9 @@ jobs:
             echo "**Not checked here:** what the plan would do to the live project."
             echo "That runs on \`main\`, and \`release.yml\` applies it behind an"
             echo "environment approval with the plan attached to read first."
+            echo
+            echo "A merge queue entry's ref, \`gh-readonly-queue/main/...\`, is not main"
+            echo "either: the same holds there."
           } >> "$GITHUB_STEP_SUMMARY"
 
   checkov:
@@ -210,7 +223,11 @@ jobs:
     name: plan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [validate]
-    if: github.event_name != 'pull_request'
+    # Not on a merge queue entry either: its OIDC ref is
+    # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects, and a
+    # red plan would fail ci-gate on every entry (docs/ci.md "Main merges
+    # through a merge queue").
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
