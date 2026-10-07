@@ -85,6 +85,37 @@ def test_live_foreign_pids_survives_an_entry_that_vanishes_mid_scan(tmp_path: Pa
     assert set(survivors) == {8888}, survivors
 
 
+def test_live_foreign_pids_raises_when_proc_cannot_be_listed(tmp_path: Path):
+    """A /proc that cannot be listed is not an empty /proc (#346, #259 review).
+    Returning `()` there told the reap "nothing survives" when it had checked
+    nothing, so a publish went ahead unverified. It raises instead."""
+    with pytest.raises(procman.ProcessTableUnreadable):
+        _live_foreign_pids(proc_root=str(tmp_path / "no-proc-here"), uid=123, self_pid=1)
+
+
+def test_reap_refuses_when_proc_cannot_be_listed(tmp_path: Path):
+    """The reap that cannot check fails closed: it returns a non-empty result,
+    which every caller turns into a refusal to publish, and it logs an error.
+    It never raises -- the teardown path must not crash on it."""
+    unlistable = str(tmp_path / "no-proc-here")
+    kills = {"n": 0}
+
+    def killer() -> None:
+        kills["n"] += 1
+
+    log = _Logger()
+    survivors = reap_foreign_processes(
+        logger=log,
+        killer=killer,
+        lister=lambda: _live_foreign_pids(proc_root=unlistable, uid=123, self_pid=1),
+        delay=0,
+    )
+    assert survivors == (procman.UNVERIFIED_PID,), survivors
+    assert survivors, "an unchecked container must read as NOT clean"
+    assert kills["n"] >= 1, "the kill still runs before the check"
+    assert log.errors and not log.infos, (log.errors, log.infos)
+
+
 # -- orchestration: kill, verify, and refuse when it cannot be cleaned -------
 
 
