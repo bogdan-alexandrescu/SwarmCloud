@@ -1647,7 +1647,8 @@ describe('the tenants table', () => {
       fetchedAt: Date.now(),
     } satisfies Result<{ tenants: Tenant[] }>)
     const { container } = render(<TenantsScreen />)
-    await screen.findByText('eng@saga.xyz')
+    // The tenant's row head: the principal is drawn in pieces since G5-12.
+    await screen.findByRole('rowheader', { name: 'eng' }, { timeout: 5000 })
     const cell = container.querySelector('td[data-label="Credentials"]')!
     expect(cell.querySelectorAll('.tags > .tag'), 'two tags with nothing spacing them').toHaveLength(2)
   })

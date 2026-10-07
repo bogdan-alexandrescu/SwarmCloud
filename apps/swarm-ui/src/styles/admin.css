@@ -132,6 +132,18 @@
   font-variant-numeric: tabular-nums;
 }
 .adm-ceiling.is-unset { color: var(--text-dim); }
+/* THE CONFIGURED HARD LIMIT'S SLOT (G5-21): Pools' `/100` (`.cap-was`, the
+   micro mono of styles.css) after the effective figure. A fixed width that is
+   there in every row, empty or not, so `edit` after it still starts at one x;
+   seven characters hold `/100000`, the route's largest limit. */
+.adm-was {
+  display: inline-block;
+  width: 7ch;
+  margin-inline-end: var(--ctl-s2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+.adm-was > .cap-was { margin-left: 0; }
 .adm-ceiling-cell > .limit-edit { vertical-align: middle; }
 .adm-unset { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .adm-changed-none { color: var(--text-faint); }
@@ -217,14 +229,28 @@
   table.ten-table > colgroup > col.ten-col-credentials { width: 14%; }
   table.ten-table > colgroup > col.ten-col-identity { width: 21%; }
   .ten-ident-row { display: flex; flex-wrap: wrap; }
+  /* CUT IN THE MIDDLE (G5-12, QA 2026-10-07; Activity.tsx `identParts`).
+     Cut at its end, every identity read "swarm-agent-work…" -- the shared
+     prefix -- and lost the tenant's own part. The identity is a row of three
+     pieces: the key (the tenant's part and its `@`) never shrinks; the prefix
+     before it and the domain after it each give way with their own ellipsis,
+     the domain first (it is the same for every row). */
   .ten-ident {
-    display: block;
+    display: flex;
     flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .ten-ident > .ten-ident-head,
+  .ten-ident > .ten-ident-tail {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ten-ident > .ten-ident-tail { flex-shrink: 4; }
+  .ten-ident > .ten-ident-key { flex: none; }
   /* What a copy said takes a line of its own, so `principal copied` never
      squeezes the identity it is about. */
   .ten-copy-said { flex-basis: 100%; }

@@ -20,11 +20,11 @@
 import SHEET from '../styles.css?raw'
 import ADMIN from '../styles/admin.css?raw'
 import { describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { HELP } from '../help'
-import type { Tenant } from '../types'
+import type { Capacity, Pool, Tenant } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 
 // The shell's sheet and the Admin section's own (styles/admin.css), in the
@@ -33,6 +33,7 @@ const STYLES = `${SHEET}\n${ADMIN}`
 
 const api = vi.hoisted(() => ({
   loadTenants: vi.fn(),
+  loadCapacity: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -96,14 +97,42 @@ const ROSTER: Tenant[] = [
   }),
 ]
 
+/**
+ * Each tenant's pool as `/v1/capacity` serves it, its limit the one every
+ * writer of the pool sets: the smaller of the two configured values. Enforced
+ * prints the pool's figure (G5-13), so this is where the figures come from.
+ */
+function tenantPool(t: Tenant): Pool {
+  const limit = Math.min(t.max_active, t.capacity_units)
+  return {
+    name: `tenant:${t.tenant_id}`,
+    hard_limit: limit,
+    adaptive_target: null,
+    quota_derived_limit: null,
+    effective_limit: limit,
+    active: 0,
+    available: limit,
+    enabled: t.enabled,
+    updated_at: '2026-09-24T09:00:00Z',
+  }
+}
+
 async function roster(): Promise<HTMLElement> {
   api.loadTenants.mockResolvedValue({
     status: 'ok',
     data: { tenants: ROSTER },
     fetchedAt: Date.now(),
   } satisfies Result<{ tenants: Tenant[] }>)
+  api.loadCapacity.mockResolvedValue({
+    status: 'ok',
+    data: { pools: ROSTER.map(tenantPool), runner_profiles: {} } as Capacity,
+    fetchedAt: Date.now(),
+  } satisfies Result<Capacity>)
   const { container } = render(<TenantsScreen />)
   await screen.findByText('u-sw-c90291')
+  // Enforced is read beside the roster (G5-13): every tenant here has its
+  // pool, so no cell is still the reading dash once it lands.
+  await waitFor(() => expect(container.querySelector('td[data-label="Enforced"] .ctl-em')).toBeNull())
   return container
 }
 
@@ -153,10 +182,11 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
       expect(value!.textContent).toBe(full)
       // ON HOVER: the full value is the element's title.
       expect(value!.getAttribute('title')).toBe(full)
-      // At 1440, a clipped, one-line box with an ellipsis that gives way to
-      // its column (#503): a flex item allowed to shrink below its text.
-      // MUTATION: drop any of the four, or the shrink.
-      expect(won(value!, 'text-overflow', WIDE)).toBe('ellipsis')
+      // At 1440, a clipped, one-line box that gives way to its column (#503):
+      // a flex item allowed to shrink below its text. The ellipsis is on its
+      // pieces since G5-12, so the cut falls in the middle
+      // (qa.g5.tenants.test.tsx). MUTATION: drop any of these, or the shrink.
+      expect(won(value!.lastElementChild!, 'text-overflow', WIDE)).toBe('ellipsis')
       expect(won(value!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
       expect(won(value!, 'white-space', WIDE)).toBe('nowrap')
       expect(won(value!, 'min-width', WIDE), 'the identity cannot shrink below its text').toBe('0')
@@ -165,7 +195,7 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
       // identity shows WHOLE on its line: a cut identity is a different
       // identity, and a scrolling table has room for it.
       // MUTATION: apply the ellipsis at every width.
-      expect(won(value!, 'text-overflow', PHONE), 'the phone record cuts the identity').toBeNull()
+      expect(won(value!.lastElementChild!, 'text-overflow', PHONE), 'the phone record cuts the identity').toBeNull()
     }
     // A tenant with no service account still says so in words.
     expect(visible(row(c, 'smoke').querySelector('td[data-label="Identity"]'))).toBe('no service account')
@@ -224,7 +254,7 @@ describe('Tenants fits at 1440 and keeps every copy control on screen (#503)', (
 })
 
 describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
-  it('prints Enforced, the smaller of the two configured values, for every tenant', async () => {
+  it('prints Enforced, the tenant pool’s served limit, for every tenant', async () => {
     const c = await roster()
     const enforced = (id: string) => visible(row(c, id).querySelector('td[data-label="Enforced"]'))
     // Equal, max active smaller, units smaller -- each the minimum.

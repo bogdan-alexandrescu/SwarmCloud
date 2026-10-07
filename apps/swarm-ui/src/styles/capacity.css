@@ -258,6 +258,20 @@
 .acct-li-meta .raw { font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; }
 .acct-li-meta .acct-given { display: inline; }
 .acct-li-meta .acct-why { display: inline; margin: 0; }
+/* THE CHOSEN ROW'S MUTED CLAUSES (G5-17, QA 2026-10-07): "5h", "eng:team",
+   "given out 3m ago" were `--text-faint` on `--sk-acs`, 4.33:1 in dark. The
+   token holds 4.5:1 or better on the selection in both themes. Scoped to the
+   chosen row; the projected and unmeasured greys ride along because they are
+   the same faint ink on the same blue. `.acct-unusable` is a mark, not one of
+   these, and keeps its own colour. */
+.acct-li.is-chosen .acct-clears-win,
+.acct-li.is-chosen > .acct-li-meta,
+.acct-li.is-chosen > .acct-li-meta .acct-given,
+.acct-li.is-chosen > .acct-li-meta .acct-why,
+.acct-li.is-chosen .acct-projected,
+.acct-li.is-chosen .acct-unmeasured,
+.acct-li.is-chosen .acct-projected .acct-pct,
+.acct-li.is-chosen .acct-unmeasured .acct-pct { color: var(--text-dim-on-selected); }
 .acct-split > .acct-list > .ctl-facts { padding: 8px 12px 0; }
 .acct-split > .acct-list > .acct-foot { margin: auto 0 0; padding: 8px 12px; font-size: var(--t-micro); }
 
@@ -312,6 +326,10 @@
 .acct-hist th[data-col='held'] { width: 80px; }
 .acct-hist th[data-col='ended'] { width: 104px; }
 .acct-hist th[data-col='when'] { width: 22%; }
+/* HOLDING NOW IS THE SAME TABLE, THREE COLUMNS (G5-16, capacity.html §D):
+   Attempt fits a small number, Since "14:09 (23h 59m)"; Agent takes the rest. */
+.acct-hist th[data-col='attempt'] { width: 72px; }
+.acct-hist th[data-col='since'] { width: 120px; }
 /* A phone keeps the Holder readable: tighter figures, and the When bar --
    a picture of the times beside it -- is not drawn. */
 @media (max-width: 699px) {
