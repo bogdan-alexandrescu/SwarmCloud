@@ -23,6 +23,7 @@ allowed-tools:
   - mcp__swarmcloud__swarm_capacity
   - mcp__swarmcloud__swarm_agents
   - mcp__swarmcloud__swarm_trouble
+  - mcp__swarmcloud__swarm_tenants
   - mcp__plugin_sc_swarmcloud__swarm_profiles
   - mcp__plugin_sc_swarmcloud__swarm_dispatch
   - mcp__plugin_sc_swarmcloud__swarm_workflow
@@ -44,6 +45,7 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_capacity
   - mcp__plugin_sc_swarmcloud__swarm_agents
   - mcp__plugin_sc_swarmcloud__swarm_trouble
+  - mcp__plugin_sc_swarmcloud__swarm_tenants
   - Bash(uv run swarm tail:*)
   - Bash(swarm tail:*)
   - Bash(git status:*)
@@ -215,6 +217,7 @@ succeeded.
 | is there room for this batch | `swarm_capacity` |
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
+| which tenant am I acting as, and which others may I choose | `swarm_tenants` |
 
 `swarm_result` carries `outputs`: each artifact the task wrote by `name` and
 `bytes`, the runner's `runner_summary`, `exit_code`, `duration_s` and the
