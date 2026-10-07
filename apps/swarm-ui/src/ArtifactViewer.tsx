@@ -1464,9 +1464,22 @@ function pickText(row: Record<string, unknown>): string {
   return ''
 }
 
+/** True when `el`'s own vertical overflow scrolls (auto or scroll). */
+function scrollsY(el: HTMLElement): boolean {
+  const y = getComputedStyle(el).overflowY
+  return y === 'auto' || y === 'scroll'
+}
+
 /**
- * Brings `el`'s top to the top of the agent pane that scrolls it, moving only
- * that pane; outside the split it falls back to `scrollIntoView`.
+ * Brings `el`'s top to the top of the agent split's element that scrolls it,
+ * moving only that element; outside the split it falls back to
+ * `scrollIntoView`, which would move every ancestor, the page included.
+ *
+ * At 1440 that is the pane. On a phone (G2-01) the pane is `overflow:
+ * visible` and the whole `.ag-split` column scrolls, so setting the pane's
+ * scrollTop would do nothing and a click on a file would look like nothing
+ * happened (U10a/U11a). There the column moves, less the sticky tab row, so
+ * the viewer's top is not hidden under the tabs.
  */
 export function revealTop(el: HTMLElement): void {
   const pane = el.closest<HTMLElement>('.ag-split-pane')
@@ -1474,6 +1487,19 @@ export function revealTop(el: HTMLElement): void {
     el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
     return
   }
-  const offset = el.getBoundingClientRect().top - pane.getBoundingClientRect().top
-  pane.scrollTop = Math.max(0, pane.scrollTop + offset - 8)
+  const split = pane.parentElement?.closest<HTMLElement>('.ag-split') ?? null
+  // The column only when it is the one that scrolls and the pane is not;
+  // otherwise the pane, as before.
+  const scroller = split !== null && !scrollsY(pane) && scrollsY(split) ? split : pane
+  let covered = 0
+  if (scroller === split) {
+    const edge = Array.from(split.children).find(
+      (c): c is HTMLElement => c instanceof HTMLElement && c.classList.contains('ag-tabs-edge'),
+    )
+    if (edge !== undefined && getComputedStyle(edge).position === 'sticky') {
+      covered = edge.getBoundingClientRect().height
+    }
+  }
+  const offset = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+  scroller.scrollTop = Math.max(0, scroller.scrollTop + offset - covered - 8)
 }

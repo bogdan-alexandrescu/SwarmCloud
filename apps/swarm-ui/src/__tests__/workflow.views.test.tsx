@@ -817,9 +817,13 @@ describe('U3: an edge that carries a file', () => {
   })
 
   it('makes the node tall enough for the longer dependency line it now prints', () => {
-    const plain = layoutOf([step('a', []), step('b', ['a'])])
+    // Two roots, so it is not a linear chain: a chain's nodes are widened to
+    // the column (QA G3-27, `chainNodeW`), and this filename then fits on the
+    // one line the plain list uses -- which is that fix working.
+    const plain = layoutOf([step('a', []), step('c', []), step('b', ['a'])])
     const withFile = layoutOf([
       step('a', []),
+      step('c', []),
       step('b', ['a'], { input_from: { a: 'a-very-long-artifact-name-that-wraps.md' } }),
     ])
     const hOf = (l: typeof plain) => l.nodes.find((n) => n.step.step_id === 'b')!.h
@@ -1199,10 +1203,14 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
   it('WF-22: shows the sample mark in the head row of the table whose figures it qualifies', async () => {
     // Twelve tasks is the attempt read's ceiling; this board asked for more,
     // so the mark has something to say.
+    // QA G3-05: the mark counts THIS workflow's tasks, so the one past the
+    // ceiling is one of wf_new's own (`scan`), and it reads 2 of its 3.
     const { usage } = board()
+    const byTaskId = new Map(usage.byTaskId)
+    byTaskId.delete('t_scan')
     api.loadWorkflowUsage.mockResolvedValue({
       status: 'ok',
-      data: { ...usage, notSampled: new Set(['t_beyond']), tasksRequested: 8 },
+      data: { ...usage, byTaskId, notSampled: new Set(['t_beyond', 't_scan']), tasksRequested: 8 },
       fetchedAt: T0,
     } satisfies Result<WorkflowUsage>)
     // WALKTHROUGH A (owner, 2026-10-03): the mark was a chip in a strip ABOVE
@@ -1212,7 +1220,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     const c = await openPage('wf_new', 'table')
     const mark = () => document.querySelector('.ctl-mark.is-partial')
     // Waiting for it here is also what proves the read has LANDED.
-    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    await waitFor(() => expect(mark()?.textContent).toBe('2/3 sampled'))
     expect(mark()!.closest('.wf-table-head'), 'the mark is not in the table head row').not.toBeNull()
     expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
     expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
@@ -1221,7 +1229,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     expect(mark(), 'a caveat about figures nobody can see').toBeNull()
     // AH-24: the board's one `?` follows the screen's heading, never a value.
     chooseTab(cardOf('wf_new'), 'Table')
-    await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    await waitFor(() => expect(mark()?.textContent).toBe('2/3 sampled'))
     expect(mark()!.parentElement!.querySelector('button[aria-label^="Help: "]'), 'a `?` trails the mark').toBeNull()
     const head = document.querySelector('.head')
     expect(head?.querySelector('h1')?.textContent).toBe('wf_new')
