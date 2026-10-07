@@ -894,6 +894,15 @@ TOOLS: list[dict[str, Any]] = [
                                     "`integrate` or `direct-pr`."
                                 ),
                             },
+                            "allow_empty_diff": {
+                                "type": "boolean",
+                                "description": (
+                                    "The step may end SUCCEEDED with no change "
+                                    "(result_summary.no_change) instead of "
+                                    "failing on an empty diff; dependants that "
+                                    "need its patch are SKIPPED."
+                                ),
+                            },
                             "inputs": _INPUTS_SCHEMA,
                             "stage": {
                                 "type": "string",

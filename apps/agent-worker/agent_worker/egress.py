@@ -21,12 +21,21 @@ What it measured -- `egress_ready_seconds` (process start, the origin
 connect that succeeded) and `probe_attempts` per target -- is written once per
 attempt as the `egress_ready` startup mark, next to `clone_timed`.
 
+WHICH ADDRESS IT REACHED (#721, observer P27): the probe connected 11.7-39.6 s
+after process start, yet git's own connect still stalled in 5 of 7 chunk-3
+clones (7.1-35.6 s). So each target's first successful connect keeps its
+peer, `socket.getpeername()`'s address: `peer(target)`, and `peer` per target
+in the mark. `gitops.PeerPin` compares it with the address git connected to
+and, after a stalled connect to a different one, pins the clone's next try
+to the address the probe proved reachable.
+
 The probe opens a TCP connection and closes it. It sends no byte, so no
 request, header or credential is ever on it.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 import threading
 import time
@@ -143,6 +152,7 @@ class EgressProbe:
         self._attempts = {target: 0 for target in self.targets}
         self._ready_seconds: dict[tuple[str, int], float] = {}
         self._last_error: dict[tuple[str, int], str] = {}
+        self._peers: dict[tuple[str, int], str] = {}
         self._started_at: float | None = None
         self._origin = origin
         self._ended: str | None = None
@@ -231,6 +241,17 @@ class EgressProbe:
             answered.wait(min(left, 0.2))
         return answered.is_set()
 
+    def peer(self, target: tuple[str, int] | None) -> str | None:
+        """The address `target`'s first successful connect reached, or None.
+
+        None when the target never answered, or answered on a connection that
+        could not say its peer. Never raises.
+        """
+        if target is None:
+            return None
+        with self._lock:
+            return self._peers.get(target)
+
     def result(self) -> dict[str, Any]:
         """Numbers only: per target, when it answered and after how many tries."""
         with self._lock:
@@ -242,6 +263,7 @@ class EgressProbe:
                     "ready": (host, port) in self._ready_seconds,
                     "egress_ready_seconds": self._ready_seconds.get((host, port)),
                     "probe_attempts": self._attempts[(host, port)],
+                    "peer": self._peers.get((host, port)),
                 }
                 error = self._last_error.get((host, port))
                 if error and not entry["ready"]:
@@ -309,10 +331,27 @@ class EgressProbe:
             with self._lock:
                 self._last_error[target] = type(exc).__name__
             return
+        peer = _peer_address(conn)
         try:
             conn.close()
         except OSError:
             pass
         with self._lock:
             self._ready_seconds[target] = round(max(0.0, self._clock() - origin), 3)
+            if peer is not None:
+                self._peers[target] = peer
         self._answered[target].set()
+
+
+def _peer_address(conn: Any) -> str | None:
+    """The IP address `conn` is connected to, or None. Never raises.
+
+    Only a well-formed IPv4 or IPv6 address is kept (an IPv6 scope suffix
+    dropped): it is what `gitops.PeerPin` hands curl as a pin.
+    """
+    try:
+        name = conn.getpeername()
+        text = str(name[0] if isinstance(name, (tuple, list)) else name).split("%", 1)[0]
+        return str(ipaddress.ip_address(text))
+    except Exception:  # noqa: BLE001 -- a connection that cannot say still answered
+        return None

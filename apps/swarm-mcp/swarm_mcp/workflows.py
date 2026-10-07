@@ -88,6 +88,9 @@ _STEP_KEYS = frozenset(
         # review's verdict, and start its checkout from an upstream's branch.
         "when",
         "builds_on",
+        # A step that may end SUCCEEDED with no change (#644): the API has taken
+        # it since then; until 2026-10-07 this list refused it at the keyboard.
+        "allow_empty_diff",
     }
 )
 
@@ -288,6 +291,17 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                     "pushed branch this step's checkout starts from"
                 )
             step["builds_on"] = raw["builds_on"]
+        if raw.get("allow_empty_diff") is not None:
+            # A real boolean only: `"true"` or 1 reaching the API as a 422 is a
+            # worse place to learn it. Sent only when set, so every other
+            # step's body reads exactly as it did before the key existed.
+            if not isinstance(raw["allow_empty_diff"], bool):
+                raise SwarmError(
+                    f"{where}: allow_empty_diff must be true or false -- whether "
+                    "this step may end SUCCEEDED having changed nothing"
+                )
+            if raw["allow_empty_diff"]:
+                step["allow_empty_diff"] = True
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)
