@@ -463,6 +463,9 @@ FOLDED_COMMIT_SUBJECT = "Everything the agent changed, as one commit"
 #: title that matches is treated as carrying the task id even when the id in
 #: it is not this task's (an agent that copied another task's old title).
 _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+#: The issue-number title `_title_from_issue_input` writes without an issue
+#: title. Like the retired shape, a worker's default a written title replaces.
+_DEFAULT_ISSUE_TITLE_RE = re.compile(r"^Work on issue #\d+ \(part of #\d+\)$")
 
 #: One path segment of a checkpoint's key, as a manifest's `attempt_id` and
 #: `checkpoint_id` must be before a restore builds a key from them (#347). A
@@ -9452,6 +9455,22 @@ class Worker:
             workflow_id=str((self._task or {}).get("workflow_id") or "") or None,
             enabled=cfg.pr_console_links,
         )
+        # WHAT AN ADOPTED PULL REQUEST GAINS (#807): its body is kept and this
+        # one marked section is appended -- the agent's body, if it wrote one,
+        # then a short provenance block. `body` above is for a pull request
+        # this attempt OPENS; a CI fixer's republish that sent it as a
+        # replacement is what dropped #775's `Closes #N` lines.
+        amendment = pr_body_with_console_links(
+            _neutralise_mentions(
+                self._pull_request_amendment(
+                    agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
+                )
+            ),
+            origin=cfg.console_url,
+            task_id=cfg.task_id,
+            workflow_id=str((self._task or {}).get("workflow_id") or "") or None,
+            enabled=cfg.pr_console_links,
+        )
         out["pull_request_text"] = {
             "title": "agent" if agent_title else "platform",
             "body": "agent" if agent_body else "platform",
@@ -9485,16 +9504,19 @@ class Worker:
                     base=access.default_branch,
                     title=title,
                     body=body,
-                    # A reused pull request takes the agent's text too; generated
-                    # text never overwrites one a human may have edited.
-                    update_existing=bool(agent_title or agent_body),
-                    # An adopted pull request whose title carries the task id --
-                    # the OLD generated `[swarm] <task id>`, from before this
-                    # rule -- is retitled (title only) even when nothing here
-                    # asked for an update: the owner's rule is that a title never
-                    # carries the task id, and that has to reach a pull request
-                    # this attempt only adopts, not just one it opens.
-                    retitle_if=self._title_carries_task_id,
+                    # A reused pull request keeps its body and gains this
+                    # section; nothing it already says is replaced (#807).
+                    amendment=amendment,
+                    # An adopted pull request is retitled only when its title
+                    # carries the task id (the OLD generated `[swarm] <task
+                    # id>`: the owner's rule is that a title never does, and
+                    # that has to reach a pull request this attempt only
+                    # adopts), or when the agent wrote `pr-title.txt` and the
+                    # title is the worker's own default (#807). The
+                    # implementer's title, or a human's, is kept.
+                    retitle_if=lambda current: self._title_carries_task_id(current) or (
+                        agent_title is not None and self._is_default_title(current)
+                    ),
                 ),
                 policy=self._forge_retry(),
                 what="the pull request",
@@ -9521,6 +9543,21 @@ class Worker:
             return out
 
         updated = bool(getattr(pr, "updated", False))
+        retitled = bool(getattr(pr, "retitled", False))
+        appended = bool(getattr(pr, "appended", False))
+        refused_lines = list(getattr(pr, "body_refused", ()) or ())
+        if refused_lines:
+            # Never reached by the worker's own append, which keeps every line;
+            # said out loud if it ever is, since it means a body was withheld.
+            out["pull_request_body_refused"] = (
+                f"{len(refused_lines)} closing-keyword line(s) would have been dropped; "
+                "the body was not sent"
+            )
+            self.log.warning(
+                "an adopted pull request's body was not replaced: it would have "
+                "dropped closing-keyword lines",
+                lines=len(refused_lines),
+            )
         out.update(
             {
                 "published": True,
@@ -9530,20 +9567,15 @@ class Worker:
                     "state": pr.state,
                     "created": pr.created,
                     "updated": updated,
+                    "retitled": retitled,
+                    "appended": appended,
                 },
                 "publish_reason": (
                     "opened"
                     if pr.created
-                    else "an open pull request already existed and was reused"
-                    + (
-                        (
-                            ", with the agent's title and body"
-                            if agent_title or agent_body
-                            else ", retitled because its title carried the task id"
-                        )
-                        if updated
-                        else ""
-                    )
+                    else "an open pull request already existed and was reused, its body kept"
+                    + (", with this attempt's section appended" if appended else "")
+                    + (", retitled" if retitled else "")
                 ),
             }
         )
@@ -9655,6 +9687,63 @@ class Worker:
             lines += verdict_mod.pull_request_lines(self._verdict)
 
         return "\n".join(lines)
+
+    def _pull_request_amendment(
+        self, *, agent_body: str | None, branch: str, head: str
+    ) -> str:
+        """The section an ADOPTED pull request's body gains (#807).
+
+        Headed `## Continuation (attempt N): <task>` when this task continues
+        another's branch (the CI fixer), `## Republished (attempt N): <task>`
+        when it is this task's own branch on a later attempt. The heading is
+        unique per attempt, which is what `forge.appended_body` dedups on.
+        Under it: the agent's `pr-body.md` when it wrote one (already scrubbed
+        and cut by `_agent_pull_request_text`), then a short provenance block
+        -- never the "Opened by SwarmCloud" block, which claims the branch for
+        this task. The review's verdict, when there is one, follows it.
+        """
+        cfg = self.cfg
+        task = self._task or {}
+        try:
+            continued = continuation_mod.continued_task(task.get("metadata"))
+        except WorkerError:
+            continued = None
+        kind = "Continuation" if continued else "Republished"
+        count = task.get("attempt_count")
+        attempt = (
+            f"attempt {int(count)}"
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+            else f"attempt `{cfg.attempt_id}`"
+        )
+        lines = [f"## {kind} ({attempt}): `{cfg.task_id}`", ""]
+        if agent_body:
+            lines += [agent_body, ""]
+        lines += [
+            f"- task: `{cfg.task_id}`",
+            f"- attempt: `{cfg.attempt_id}`",
+            f"- runner profile: `{cfg.profile.name}`",
+            f"- branch: `{branch}`",
+        ]
+        if continued:
+            lines.append(f"- continues: `{continued}`")
+        if head:
+            lines.append(f"- head commit: `{head}`")
+        if self._verdict is not None:
+            lines += verdict_mod.pull_request_lines(self._verdict)
+        return "\n".join(lines)
+
+    def _is_default_title(self, title: str) -> bool:
+        """True when `title` is one the worker writes itself, never a person:
+        this attempt's own default (`_generated_pull_request_title`), the
+        issue-number fallback `Work on issue #N (part of #N)`, or the retired
+        `[swarm] task_...` (#807: a fixer's `pr-title.txt` replaces only these).
+        """
+        text = (title or "").strip()
+        if not text:
+            return False
+        if text == (self._generated_pull_request_title() or "").strip():
+            return True
+        return bool(_DEFAULT_ISSUE_TITLE_RE.match(text) or _RETIRED_TITLE_RE.search(text))
 
     def _worker_commit_message(self, fallback_subject: str, explanation: str) -> str:
         """The message of a commit the worker makes on the published branch.
