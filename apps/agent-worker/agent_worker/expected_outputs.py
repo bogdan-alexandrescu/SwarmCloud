@@ -65,12 +65,17 @@ out). The dependant stages from the attempt that SUCCEEDS, so every expected
 output must be written again by the retry, not only the one that was missing.
 The agent is given the same instructions, which list every name.
 
-An attempt with a missing expected output PUBLISHES NOTHING, the last attempt
-included (#165): the push and the pull request wait until the upload manifest
-has passed this check (`lifecycle._publish_checked`), so an attempt that is
-failed or retried has pushed nothing. A retry's own push would otherwise be
-refused as a non-fast-forward: the final checkpoint is taken before the publish
-step auto-commits the agent's uncommitted changes.
+An attempt with a missing expected output OPENS NO PULL REQUEST, the last
+attempt included (#165): the publish -- its push and its pull request -- waits
+until the upload manifest has passed this check (`lifecycle._publish_checked`).
+Under `carrier: checkpoints`, the default, such an attempt therefore pushes
+nothing. Under `carrier: branches` its COMMITTED work is still pushed to
+`swarm/<task>` by the checkpoints taken once the runner has stopped
+(`lifecycle._push_carrier_branch`): owner decision 2026-10-02, keep the work.
+What it withholds is the publish's own push, which carries the uncommitted
+changes too, and any pull request (#453). A retry's own push would otherwise be refused as a
+non-fast-forward: the final checkpoint is taken before the publish step
+auto-commits the agent's uncommitted changes.
 
 A NAME THE PLATFORM WRITES ITSELF IS NEVER IN THE INSTRUCTIONS
 (`without_platform_names`). A dependant may stage the upstream's
