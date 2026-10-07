@@ -33,11 +33,15 @@ a path or a symbol name.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from swarm_common.models import Tenant
 
@@ -424,18 +428,72 @@ def _staleness(version: dict, fresh: dict) -> dict:
             "behind_by": fresh["behind_by"], "stale": fresh["stale"], "freshness": fresh}
 
 
+#: The layers the module graph reads: every shard of each, fetched at once.
+_DRAWING_LAYERS = ("symbols", "tests", "callees")
+
+
+def _etag_of(body: dict) -> str:
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    return '"' + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32] + '"'
+
+
+def _matches(if_none_match: str | None, etag: str) -> bool:
+    """RFC 9110 §13.1.2: a weak comparison, so `W/"x"` matches `"x"`."""
+    if not if_none_match:
+        return False
+    for candidate in if_none_match.split(","):
+        candidate = candidate.strip()
+        if candidate == "*" or candidate.removeprefix("W/") == etag:
+            return True
+    return False
+
+
 @router.get("/{repo_id}/graph")
 def repository_graph(
     repo_id: str,
+    request: Request,
     sha: str | None = Query(default=None, min_length=40, max_length=40),
     cluster: Literal["module", "package"] = Query(default="module"),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
-) -> dict:
-    """The module dependency graph, aggregated for drawing (§6.1, Graph A)."""
-    _service, version, graph, document, fresh = _graph_read(ctx, tenant_id, repo_id, sha)
-    return {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
-            "graph_digest": graph.digest, **module_graph(graph, document, cluster)}
+) -> Response:
+    """The module dependency graph, aggregated for drawing (§6.1, Graph A).
+
+    QA G4-10 (2026-10-07) measured 11 s for a 24 KB answer: every shard read
+    one after another (~190 for 64 modules, two GCS round trips each), then
+    the 419 KB index document only for its hot spots. Now the manifest is
+    still read and digest-checked on every request (`service.open`, so a
+    rewritten or deleted graph is refused exactly as before), and the drawing
+    is computed once per graph digest, index digest and cluster -- both
+    digests are fixed at promotion, so the drawing cannot change under them.
+    A cold drawing reads its shards and the document concurrently. The ETag
+    is the body's, which carries the freshness, so a moved head is a new tag.
+    """
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    if version is None:
+        raise NoGraph("no index has been promoted for this repository, so it has no graph")
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is None:
+        raise NoGraph(f"the index of commit {version.get('commit_sha')} has no graph")
+
+    def draw() -> dict:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="repo-index") as pool:
+            document = pool.submit(service.index.read_version, tenant_id, version)
+            graph.prefetch(_DRAWING_LAYERS)
+            return module_graph(graph, document.result(), cluster)
+
+    drawing = service.graphs.view(
+        (tenant_id, repo_id, graph.digest, version.get("digest"), "module_graph", cluster), draw)
+    body = {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+            "graph_digest": graph.digest, **drawing}
+    etag = _etag_of(body)
+    # private: the answer is one tenant's. no-cache: a browser keeps it but
+    # asks every time, and the manifest check above runs on that ask.
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if _matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return JSONResponse(body, headers=headers)
 
 
 @router.get("/{repo_id}/symbols")
