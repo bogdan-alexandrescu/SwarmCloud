@@ -1034,8 +1034,9 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
     await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
     choose('Runner')
     await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
-    row(logsSection, 'stdout')
-    row(logsSection, 'stderr')
+    // The runner's own streams, named the runner's (G2-07).
+    row(logsSection, 'runner stdout')
+    row(logsSection, 'runner stderr')
   })
 
   it('says a runner with no agent CLI has no agent stream, which is not a missing one', async () => {
@@ -1514,7 +1515,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     }
     choose('Runner')
     for (const name of ['stdout', 'stderr']) {
-      const head = await waitFor(() => row(logsSection, name).querySelector('th')!)
+      const head = await waitFor(() => row(logsSection, `runner ${name}`).querySelector('th')!)
       expect(head.querySelector('.uri')?.textContent).toContain(`/logs/${name}.log`)
       expect([...head.querySelectorAll('button.copy')].map((b) => b.textContent)).toContain('copy gsutil')
     }

@@ -163,12 +163,26 @@
 }
 /* BELOW 640px THE COLUMNS STACK AND THE STRIP STICKS (agent-details-v3.html,
    small choices: B's idea): the figures stay in view while the stacked cards
-   scroll under them. Sticky against the pane, the detail's one scroller. */
-@container ag-pane (max-width: 639px) {
-  .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+   scroll under them. Sticky against the pane, the detail's one scroller.
+
+   BUT ONLY WHERE THERE IS ROOM FOR IT (G2-01, QA 2026-10-07). At 390x844 the
+   strip is two columns and 282px tall, stuck under a 373px header: about
+   150px of the screen scrolled, and Outcome, Progress and Input slid under
+   the strip. It sticks in a pane 480px and wider on a window 700px and
+   taller; below either, it scrolls away with the rest (and on a phone the
+   header scrolls away too, agents.css). */
+@container ag-pane (min-width: 480px) and (max-width: 639px) {
+  @media (min-height: 700px) {
+    .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+  }
 }
-.dt-phrow { display: grid; grid-template-columns: 70px minmax(0, 1fr) 64px; gap: 8px; align-items: center; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
-.dt-phrow > b { color: var(--text); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+/* THE TOTAL NEVER WRAPS (G2-14, QA 2026-10-07): a fixed 64px column broke
+   `19m 15s+` over two lines. The column takes its figure's width, with a
+   floor so short totals keep the bars of a few attempts nearly aligned. */
+.dt-phrow { display: grid; grid-template-columns: 70px minmax(0, 1fr) minmax(72px, max-content); gap: 8px; align-items: center; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-phrow > b { color: var(--text); font-weight: 500; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The column's head: what the figure under it counts (G2-03). */
+.dt-phrow.is-head > span:last-child { text-align: right; white-space: nowrap; }
 .dt-phb { display: flex; gap: 2px; height: 12px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .dt-phb > i { display: block; height: 100%; flex-basis: 0; }
 .dt-phb > .is-q, .dt-lg .is-q { background: var(--s-neu); opacity: .45; }
@@ -234,6 +248,67 @@
   overflow-wrap: anywhere;
 }
 .dt-prompt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* --- the inspector's other tabs ------------------------------------------- */
+/* A ZERO AND ITS MARK ARE ONE ITEM (G2-07): in a stacked record each child of
+   a cell takes a line of the value column, and `real zero` floated mid-row,
+   apart from the `0 B` it qualifies. RunFiles.tsx `Stream`. */
+.rf-zero { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+/* THE PROMPT IS NOT A SECOND SCROLLER (G2-34, QA 2026-10-07). On the
+   Artifacts tab the Inputs prompt was a 40vh box with its own scroll, and it
+   took the wheel: reaching Outputs needed a scroll outside it. It is twelve
+   lines, clamped, with `Show all` (Artifacts.tsx `PromptText`); opened, it
+   wraps in full. The pane stays the one scroller. */
+.arts-prompt.is-clamped,
+.arts-prompt.is-all { max-height: none; overflow: visible; }
+.arts-prompt.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 12;
+  line-clamp: 12;
+  overflow: hidden;
+}
+
+/* A FILE LIST IS A TABLE WHERE THERE IS ROOM FOR ONE (G2-33, QA 2026-10-07).
+   The inspector's tables stack below an 899px DRAWER (styles.css, AG-26), so
+   at 1440 the Outputs list was one stacked card per file, `Size` and `Get`
+   said on every one. `is-roomy` keeps its rows a table in a pane 480px and
+   wider, and lets the shared stacking take it below that. Each declaration
+   puts back what the stacked block moved, at the `.ctl-table` values. */
+@container ag-pane (min-width: 480px) {
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table { display: table; width: 100%; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > thead {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody { display: table-row-group; width: auto; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr,
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr:first-child { display: table-row; width: auto; height: var(--row-h); padding: 0; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > th,
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td {
+    display: table-cell;
+    width: auto;
+    padding: 4px 10px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > th[scope='row'] {
+    padding: 4px 10px;
+    font-size: var(--t-body);
+    line-height: var(--lh-body);
+    font-weight: 500;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td.is-num { text-align: right; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td[data-label]::before { content: none; }
+}
 
 /* --- the phone, and any pane under 480px ---------------------------------- */
 /* The strip becomes two columns with Cost across the bottom and moves ABOVE

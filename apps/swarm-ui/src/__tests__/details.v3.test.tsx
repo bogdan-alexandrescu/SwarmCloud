@@ -349,14 +349,17 @@ describe('Progress | Resources: two columns from a 640px pane, one below', () =>
     expect(Number(painted(strip, 'order', { width: 1440, container: 700 }) ?? '0')).toBe(0)
   })
 
-  it('below 640px the strip sticks to the top of the pane; at 640 and over it scrolls with the rest', () => {
+  it('from 480 to 639px the strip sticks to the top of the pane; at 640 and over, and under 480, it scrolls with the rest', () => {
     const el = host(runOf())
     const strip = el.querySelector<HTMLElement>('.dt-strip')!
-    for (const container of [380, 600]) {
+    for (const container of [480, 600]) {
       expect(painted(strip, 'position', { width: 1440, container }), `the strip does not stick in a ${container}px pane`).toBe('sticky')
       expect(painted(strip, 'top', { width: 1440, container })).toBe('0')
     }
     expect(painted(strip, 'position', { width: 1440, container: 700 }) ?? 'static').toBe('static')
+    // A phone-narrow pane (G2-01, QA 2026-10-07): stuck there, the two-column
+    // strip left about 150px of a 390x844 screen to scroll.
+    expect(painted(strip, 'position', { width: 1440, container: 380 }) ?? 'static').toBe('static')
   })
 })
 
