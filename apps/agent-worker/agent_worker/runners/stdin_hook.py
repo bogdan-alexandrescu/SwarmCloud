@@ -28,7 +28,12 @@ ends a trailing comment or heredoc terminator.
 LEFT ALONE, passed through with no output:
   * a command that already redirects stdin (`cmd < file`, `0< f`) -- matched
     as the CLI matches it, so a `<` inside quotes also counts; such a command
-    is left exactly as it would have run without the hook;
+    is left exactly as it would have run without the hook. Heredoc BODIES are
+    removed before that test: a `<` in PR text (`<!-- -->`, `<details>`,
+    `a < b`) is data, not a redirect, and counting it would skip exactly the
+    heredoc-then-`cat` shape this hook exists for;
+  * a command with a heredoc that has no terminator line: bash runs it with
+    a warning, but wrapped, the body would swallow the closing `}`;
   * a command ending in a backslash, which would continue onto the `}`;
   * an empty command, and any input that is not a Bash call with a string
     command.
@@ -47,12 +52,39 @@ import sys
 #: the same test to decide not to add its own `< /dev/null`.
 STDIN_REDIRECT = re.compile(r"(?:^|[\s;&|(])\d*<(?![<(])")
 
+#: A heredoc opener, `<<EOF`, `<<-EOF`, `<< 'EOF'`, `<<"EOF"`: the CLI's own
+#: heredoc pattern, with `<<<` (a herestring, which has no body) excluded.
+HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)(\w+)\2")
+
+
+def strip_heredoc_bodies(command):
+    """The command without its heredoc bodies, or None if one is unterminated."""
+    lines = command.split("\n")
+    kept = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        i += 1
+        # Several heredocs on one line take their bodies one after another.
+        for dash, _quote, delimiter in HEREDOC.findall(line):
+            while True:
+                if i >= len(lines):
+                    return None
+                body = lines[i]
+                i += 1
+                if (body.lstrip("\t") if dash else body) == delimiter:
+                    kept.append(body)
+                    break
+    return "\n".join(kept)
+
 
 def rewrite(command):
     """The command with its outer stdin from /dev/null, or None to leave it alone."""
     if not isinstance(command, str) or not command.strip():
         return None
-    if STDIN_REDIRECT.search(command):
+    outer = strip_heredoc_bodies(command)
+    if outer is None or STDIN_REDIRECT.search(outer):
         return None
     trailing = len(command.rstrip("\n")) - len(command.rstrip("\n").rstrip("\\"))
     if trailing % 2 == 1:

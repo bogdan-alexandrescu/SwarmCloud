@@ -18,6 +18,7 @@ never closes, which is exactly what made the original hang.
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -113,7 +114,7 @@ def test_the_headless_settings_register_the_stdin_hook_for_bash(tmp_path):
     assert claude_code.STDIN_HOOK.is_file()
     assert claude_code.STDIN_HOOK.parent == Path(claude_code.__file__).resolve().parent
     assert str(claude_code.STDIN_HOOK) in hook["command"]
-    assert hook["command"].startswith(sys.executable)
+    assert shlex.split(hook["command"])[0] == sys.executable
 
 
 def test_the_background_refusal_stays_registered_beside_it(tmp_path):
@@ -158,6 +159,40 @@ def test_read_after_a_heredoc_sees_end_of_file(tmp_path):
     done = _bash_with_open_stdin(updated["command"], tmp_path)
     assert done.returncode == 0, done.stderr
     assert done.stdout == "body\neof\n"
+
+
+@pytest.mark.skipif(BASH is None, reason="needs bash")
+def test_a_heredoc_body_with_a_less_than_sign_is_still_rewritten(tmp_path):
+    # The issue's measured shape: PR text in a heredoc, then a stray stdin
+    # read. A `<` in the body is data, not a redirect of the command's stdin.
+    # Two heredocs on one line: their bodies follow in turn, and the last wins.
+    command = (
+        "cat <<EOF\n<!-- template -->\n<details>\na < b\nEOF\n"
+        "cat <<-'X' <<\"Y\"\n\t<x>\n\tX\n< y\nY\n"
+        "cat > /dev/null"
+    )
+    updated = _rewritten(command)
+    assert updated is not None
+    done = _bash_with_open_stdin(updated["command"], tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "<!-- template -->\n<details>\na < b\n< y\n"
+
+
+def test_a_stdin_redirect_after_a_heredoc_is_still_left_alone():
+    assert _rewritten("cat <<EOF\nbody\nEOF\ncat < file") is None
+    assert _rewritten("cat <<EOF < file\nbody\nEOF") is None
+
+
+def test_an_unterminated_heredoc_is_left_alone():
+    # Wrapped, the body would take in the closing brace: a syntax error where
+    # bash alone runs it with a warning.
+    assert _rewritten("cat <<EOF\nno terminator") is None
+    assert _rewritten("cat <<EOF\nEOF2") is None
+
+
+def test_a_herestring_is_not_a_heredoc():
+    updated = _rewritten("cat <<< word\ncat > /dev/null")
+    assert updated is not None
 
 
 @pytest.mark.skipif(BASH is None, reason="needs bash")
