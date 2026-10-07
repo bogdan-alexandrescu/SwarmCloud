@@ -54,6 +54,9 @@ and the error text. Do not change the prompt to get round a refusal, and do
 not dispatch again -- `swarm_dispatch` is refused a second time in this
 session for the identical prompt, so retrying it here only wastes a turn.
 
+The reply's `rows` is for a session that dispatched without a row: you ARE
+this task's row, so ignore `rows` and launch nothing.
+
 If the reply's `repository.notes` is non-empty, write one line per note before
 anything else, each prefixed `note: ` — uncommitted changes not visible to the
 remote agent, the branch's upstream, or the checkout path are exactly what a

@@ -847,6 +847,131 @@ def running_workflows(
     return out
 
 
+# Running SINGLE tasks (#830, owner 2026-10-07: "we need to be able to auto
+# attach on single tasks too"). A task sent with `swarm_dispatch` belongs to no
+# workflow, so `GET /v1/workflows` never lists it, and five lanes dispatched
+# that day ran without a row. These are the caller's own unfinished tasks
+# outside any workflow, read through the existing `GET /v1/tasks` filters only:
+# `state` (one value per request) and `submitted_by=me`.
+
+#: Pages of ONE state read before the list says it stopped short. `state` and
+#: `submitted_by` together are filtered after the route takes its cursor
+#: (`Store.list_tasks`), so a page holds only the caller's share of the
+#: tenant's tasks in that state and may come back short with a token: a tenant
+#: whose other members queue hundreds of tasks needs more than one page to
+#: reach the caller's. Unfinished tasks are few; past this many pages the list
+#: says so rather than keep the hook's ten seconds waiting.
+SINGLE_TASK_PAGES = 3
+SINGLE_TASK_PAGE_SIZE = 50
+
+#: How many single tasks the session-start context names one by one.
+SESSION_START_TASKS_NAMED = 10
+
+
+def _task_label(task: dict[str, Any]) -> str | None:
+    """The label the dispatch gave (`swarm_dispatch`'s `label`, stored as
+    `metadata.unit`), or None."""
+    unit = (task.get("metadata") or {}).get("unit") if isinstance(task.get("metadata"), dict) else None
+    if isinstance(unit, str) and " ".join(unit.split()):
+        return " ".join(unit.split())
+    return None
+
+
+def _single_task_entry(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+    from .client import task_id_of
+
+    created = render.parse_time(task.get("created_at"))
+    entry: dict[str, Any] = {
+        "task_id": task_id_of(task),
+        "label": _task_label(task),
+        "state": task.get("state"),
+        "runner_profile": task.get("runner_profile"),
+        "created_at": task.get("created_at"),
+        "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+    }
+    if task.get("park_reason"):
+        entry["park_reason"] = task["park_reason"]
+    return with_console(entry, task)
+
+
+def _callers_tasks_in(client: SwarmClient, state: str, pages: int) -> tuple[list[dict[str, Any]], str | None, bool]:
+    """The caller's own tasks in one state: `(tasks, tenant_id, complete)`."""
+    found: list[dict[str, Any]] = []
+    tenant: str | None = None
+    token: str | None = None
+    for _ in range(max(1, pages)):
+        params = [("state", state), ("submitted_by", "me"), ("limit", str(SINGLE_TASK_PAGE_SIZE))]
+        if token:
+            params.append(("page_token", token))
+        data = _tasks_page(client, params)
+        found += [t for t in data["tasks"] if isinstance(t, dict)]
+        tenant = tenant or data.get("tenant_id")
+        token = data.get("next_page_token") or None
+        if token is None:
+            break
+    return found, tenant, token is None
+
+
+def running_tasks(
+    client: SwarmClient,
+    *,
+    now: datetime | None = None,
+    pages: int = SINGLE_TASK_PAGES,
+) -> dict[str, Any]:
+    """The caller's running SINGLE tasks, newest first: not finished, in no
+    workflow, and submitted by the caller.
+
+    One `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state
+    (`_live_states`, read from the frozen contract), in parallel. The route
+    answers for the caller's own tenant and resolves `me` to the caller's
+    verified email; nothing here names either. Every row is checked AGAIN --
+    unfinished, no `workflow_id` -- because a task can move state between two
+    of the reads, and an older route that ignored a filter would otherwise
+    hand a workflow's step or a finished task a row. A task a PARENT TASK
+    submitted (`parent_task_id`) is left out: it was not dispatched from a
+    session, and its parent's row is where it shows. Raises `SwarmError` when
+    any read fails: "could not ask" is never an empty list.
+    """
+    now = now or datetime.now(timezone.utc)
+    states = _live_states()
+    with ThreadPoolExecutor(max_workers=len(states)) as pool:
+        walks = list(pool.map(lambda state: _callers_tasks_in(client, state, pages), states))
+    tenant: str | None = None
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    short: list[str] = []
+    for state, (tasks, page_tenant, complete) in zip(states, walks):
+        tenant = tenant or page_tenant
+        if not complete:
+            short.append(state)
+        for task in tasks:
+            entry = _single_task_entry(task, now)
+            task_id = entry["task_id"]
+            if (
+                not task_id
+                or task_id in seen
+                or task.get("workflow_id")
+                or task.get("parent_task_id")
+                or task.get("state") in _TERMINAL_VALUES
+            ):
+                continue
+            seen.add(task_id)
+            found.append(entry)
+    found.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+    out: dict[str, Any] = {
+        "tenant_id": tenant,
+        "count": len(found),
+        "complete": not short,
+        "tasks": found,
+    }
+    if short:
+        out["incomplete_because"] = (
+            f"stopped after {pages} pages of {SINGLE_TASK_PAGE_SIZE} {', '.join(short)} tasks; "
+            "older running tasks of yours, if any, are not listed"
+        )
+    return out
+
+
 def _age_text(seconds: Any) -> str:
     if not isinstance(seconds, int):
         return "age unknown"
@@ -868,35 +993,72 @@ def _steps_text(entry: dict[str, Any]) -> str:
     return ", ".join(f"{s.get('step_id')} {s.get('state') or 'state not read'}" for s in steps)
 
 
-def session_start_context(listing: dict[str, Any]) -> str | None:
+def session_start_context(
+    listing: dict[str, Any] | None,
+    tasks: dict[str, Any] | None = None,
+) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
-    A hook cannot start a Workflow; the context makes the session's first
-    action the attach, and says how to turn this off.
+    `listing` is `running_workflows`, `tasks` is `running_tasks` (#830); either
+    may be None when it could not be read, and the other is still named. A
+    hook cannot start a Workflow; the context makes the session's first action
+    the attach, and says how to turn this off.
     """
-    running = listing.get("workflows") or []
-    if not running:
+    running = (listing or {}).get("workflows") or []
+    singles = (tasks or {}).get("tasks") or []
+    if not running and not singles:
         return None
-    count = len(running)
-    noun = "workflow is" if count == 1 else "workflows are"
-    named = []
-    for entry in running[:SESSION_START_NAMED]:
-        label = f' "{entry["label"]}"' if entry.get("label") else ""
-        named.append(
-            f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
-            f"{_age_text(entry.get('age_seconds'))})"
+    tenant_id = (listing or {}).get("tenant_id") or (tasks or {}).get("tenant_id")
+    tenant = f" for tenant {tenant_id}" if tenant_id else ""
+    parts = []
+    if running:
+        count = len(running)
+        noun = "workflow is" if count == 1 else "workflows are"
+        named = []
+        for entry in running[:SESSION_START_NAMED]:
+            label = f' "{entry["label"]}"' if entry.get("label") else ""
+            named.append(
+                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_age_text(entry.get('age_seconds'))})"
+            )
+        if count > SESSION_START_NAMED:
+            named.append(f"and {count - SESSION_START_NAMED} more")
+        parts.append(
+            f"{count} SwarmCloud {noun} running{tenant} and not shown in this session: "
+            + "; ".join(named)
+            + "."
         )
-    if count > SESSION_START_NAMED:
-        named.append(f"and {count - SESSION_START_NAMED} more")
-    tenant = f" for tenant {listing['tenant_id']}" if listing.get("tenant_id") else ""
+    if singles:
+        count = len(singles)
+        noun = "single task you dispatched is" if count == 1 else "single tasks you dispatched are"
+        named = []
+        for entry in singles[:SESSION_START_TASKS_NAMED]:
+            label = f' "{entry["label"]}"' if entry.get("label") else ""
+            named.append(
+                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_age_text(entry.get('age_seconds'))})"
+            )
+        if count > SESSION_START_TASKS_NAMED:
+            named.append(f"and {count - SESSION_START_TASKS_NAMED} more")
+        parts.append(
+            f"{count} SwarmCloud {noun} running{tenant}, in no workflow, and not shown "
+            "in this session: " + "; ".join(named) + "."
+        )
     return (
-        f"{count} SwarmCloud {noun} running{tenant} and not shown in this session: "
-        + "; ".join(named)
-        + ". Before anything else, run `/sc attach --all` to show them as live "
+        " ".join(parts)
+        + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
-        "step and follows at most 10 workflows. (This notice comes from the sc "
-        "plugin's SessionStart hook; turn off its `auto_attach` option to stop it.)"
+        "workflow step and one per single task, and follows at most 10 workflows "
+        "and 10 single tasks. (This notice comes from the sc plugin's SessionStart "
+        "hook; turn off its `auto_attach` option to stop it.)"
     )
+
+
+def _quietly(read: Callable[[], dict[str, Any]]) -> dict[str, Any] | None:
+    try:
+        return read()
+    except Exception:  # noqa: BLE001 - the hook's mode is silent on any failure
+        return None
 
 
 def cmd_workflows(client: SwarmClient, args, out) -> int:
@@ -905,8 +1067,13 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         # session must start the same whether or not SwarmCloud answered, so a
         # failure prints nothing and exits 0 -- the hook script discards
         # stderr anyway, and this keeps the CLI from relying on that.
+        # The two reads at once, inside the hook's ten seconds; each fails
+        # alone, so a deployment that answers one still gets that one named.
         try:
-            context = session_start_context(running_workflows(client))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
+                tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
+                context = session_start_context(workflows_read.result(), tasks_read.result())
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
         if context:
@@ -924,12 +1091,17 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         return EXIT_OK
 
     listing, failure = _attempt(lambda: running_workflows(client))
+    # The caller's running single tasks beside them (#830): `/sc attach --all`
+    # gives each a row too, so the list names what it would follow.
+    singles, singles_failure = _attempt(lambda: running_tasks(client))
     if args.json:
-        out.write(
-            json.dumps(listing if listing is not None else {"error": str(failure)}, indent=2, default=str)
-            + "\n"
-        )
-        return EXIT_OK if listing is not None else EXIT_FAIL
+        payload = dict(listing) if listing is not None else {"error": str(failure)}
+        if singles is not None:
+            payload["single_tasks"] = singles
+        else:
+            payload["single_tasks_error"] = str(singles_failure)
+        out.write(json.dumps(payload, indent=2, default=str) + "\n")
+        return EXIT_OK if listing is not None and singles is not None else EXIT_FAIL
     style = style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
     if listing is None:
         _emit([render.section("workflows", "", style), f"  could not be read: {failure}"], out)
@@ -958,10 +1130,27 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
     if not listing.get("complete"):
         lines.append(f"  {listing.get('incomplete_because')}")
-    if running:
+    if singles is None:
+        lines.append(render.section("single tasks", "", style))
+        lines.append(f"  could not be read: {singles_failure}")
+    else:
+        mine = singles["tasks"]
+        lines.append(render.section("single tasks", f"{len(mine)} of yours running, in no workflow", style))
+        if not mine:
+            lines.append("  none running")
+        for entry in mine:
+            label = f"  {entry['label']}" if entry.get("label") else ""
+            link = f"  console: {entry['console']}" if entry.get("console") else ""
+            lines.append(
+                f"  {entry.get('task_id')}{label}  {entry.get('state')}  "
+                f"{_age_text(entry.get('age_seconds'))}{link}"
+            )
+        if not singles.get("complete"):
+            lines.append(f"  {singles.get('incomplete_because')}")
+    if running or (singles and singles["tasks"]):
         lines.append("  show them as live rows in Claude Code: /sc attach --all")
     _emit(lines, out)
-    return EXIT_OK
+    return EXIT_OK if singles is not None else EXIT_FAIL
 
 
 def _dump(snap: Snapshot, out) -> None:
@@ -2199,7 +2388,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_trouble)
 
     wf = sub.add_parser(
-        "workflows", help="your tenant's running workflows: label, current steps, age, console"
+        "workflows",
+        help="your tenant's running workflows and your running single tasks: label, state, age, console",
     )
     _common(wf, root=False)
     wf.add_argument(

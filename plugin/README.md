@@ -756,10 +756,10 @@ is a different step.
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
 
-All four agents run on **haiku at low effort** (`model` and `effort` in their
+All five agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
-spec file, submit and read — and only through the sc plugin's own server (above).
+need — `sc:remote` dispatch and follow, `sc:step` and `sc:task` follow,
+`sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
 Bash, because a workflow script has no timer of its own. A session that asks
@@ -797,8 +797,10 @@ pieces do it, and none of them submits anything.
   On a new or resumed session where the plugin is configured, it runs the
   plugin's own bridge — the same `${SWARM_MCP_FROM:-<pin>}` the MCP server
   runs, read out of `plugin.json` — as `sc workflows --session-start`, and when
-  workflows are running it hands the session `additionalContext` naming them
-  and telling it to run `/sc attach --all` first. A hook cannot start a
+  workflows or single tasks of the caller are running it hands the session
+  `additionalContext` naming them and telling it to run `/sc attach --all`
+  first. The two reads run at once and fail alone: a deployment that answers
+  one still gets that one named. A hook cannot start a
   workflow itself; this makes the attach the session's first action. It is
   read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
   silent and exits 0 when none run, when the bridge or the API fails, and when
@@ -806,6 +808,53 @@ pieces do it, and none of them submits anything.
   sc@swarmcloud`; on by default). The first session after a new plugin version
   may get no notice while uv fetches the new bridge; `/sc attach --all` works
   by hand at any time.
+
+### Every running single task, shown too (#830)
+
+Owner, 2026-10-07: "we need to be able to auto attach on single tasks too". A
+task sent with `swarm_dispatch` belongs to no workflow, so `GET /v1/workflows`
+never lists it: five lanes dispatched that day ran with no row at all. So:
+
+* **The list.** `sc workflows`, `swarm_workflows` and the SessionStart hook
+  also read the caller's **running single tasks**: not finished, in no
+  workflow (`workflow_id` null), submitted by the caller. It is one
+  `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state — both
+  existing filters, nothing new in the API — and the bridge checks every row
+  again, because a task can move state between two reads. A task a parent
+  task submitted (`parent_task_id`) is left out: it was never dispatched from
+  a session, and its parent's row is where it shows. `state` and
+  `submitted_by` together are filtered after the route's cursor, so a page
+  can come back short; past 3 pages of one state the list says it stopped
+  short (`incomplete_because`) rather than spend the hook's ten seconds.
+* **`sc:task`, the row for a task in no workflow.** `sc:step` always passes
+  its `step_id`, and the bridge stops a step row whose task is not that step —
+  for a single task it now says `task … is a single task, not workflow step
+  …: follow it WITHOUT step_id`. `sc:task` is `sc:step` without the step: it
+  calls `swarm_follow` with `format: "progress"` and no `step_id` or
+  `parents`, writes one line per state change ending with the console link,
+  and answers with the same `{state, result}`.
+* **`/sc attach --all`** launches one more run beside the workflows' —
+  `/sc:swarmcloud` with `{attach_tasks: [{task_id, title, console}]}`, written
+  by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
+  row per running single task, titled from the task's label (else its id), at
+  most **10**, the same row cap as workflows for the same reason. Launched by
+  name with `{attach: "all"}`, the run returns those args as `task_call`.
+* **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
+  `tasks`) carries `rows`: a titled copy of the run script whose args are
+  `{attach_tasks: [...]}` for exactly the ids just sent, and `start_now`,
+  which tells the session to launch it with the Workflow tool at once. The
+  `delegate` skill does so, so a dispatched task gets a row without anyone
+  asking. A bridge started outside the plugin has no run.js to copy: `rows`
+  then carries `error` and `/sc attach --all`. The dispatch itself never fails
+  over it — the task is already in SwarmCloud.
+* **A plugin reload does not re-check, because nothing fires on it.** Claude
+  Code exposes no hook event for `/reload-plugins` (its hooks reference,
+  read 2026-10-07: `SessionStart` matches `startup`, `resume`, `clear`,
+  `compact` and `fork`; `ConfigChange` fires on settings and skill files only,
+  and can block a change but cannot add context). So after
+  `/reload-plugins`, or for a task started outside this session mid-way, run
+  **`/sc attach --all`**: it covers workflows and single tasks alike. A task
+  this session dispatches needs nothing — its reply starts the row.
 
 ### What a row shows, and what it costs
 
