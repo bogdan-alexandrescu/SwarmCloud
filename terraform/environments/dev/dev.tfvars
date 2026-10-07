@@ -440,13 +440,15 @@ frontend_hostname = "swarm.saga.xyz"
 # enable_github_app declares the App's two empty secret slots, which swarm-api
 # alone reads (github_app.tf). The three settings below are the App's PUBLIC
 # ones, copied from its settings page after the owner registers it (runbook
-# step 3) and empty until then. The client SECRET and the private key are
+# step 3): registered 2026-10-07 on bogdan-alexandrescu as "SwarmCloud Saga"
+# ("SwarmCloud" is reserved for the @swarmcloud account), installable on any
+# account. The client SECRET and the private key are
 # never written here -- the repository is public -- they go to Secret Manager
 # by `scripts/create-secrets.sh --github-app <slot> --stdin` (runbook step 4).
 enable_github_app    = true
-github_app_id        = ""
-github_app_client_id = ""
-github_app_slug      = ""
+github_app_id        = "5229127"
+github_app_client_id = "Iv23lipzgYrbQvuJdmZg"
+github_app_slug      = "swarmcloud-saga"
 
 # The 15-minute user-token refresh sweep, swarm-forge-refresh. Off until
 # swarm-api serves POST /v1/admin/forge/refresh (lane OB3; runbook step 7).
