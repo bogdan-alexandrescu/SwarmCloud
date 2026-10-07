@@ -827,6 +827,13 @@ class ForgeApp:
             "rotated_at": now,
             "secret_version": version or None,
             "state": TokenState.ACTIVE.value,
+            # The exchange's `GET /user` is §2.2's probe for
+            # `github_connected`: without this evidence the onboarding
+            # checklist reads the step it just completed as stale.
+            "verified_at": now,
+            "probe_attempted_at": now,
+            "probe_complete": True,
+            "probe_error": None,
         })
 
         conn_id = connection_id_for(caller.tenant_id, caller.key)
@@ -1007,9 +1014,11 @@ class ForgeApp:
         })
         token_id = current.get("token_id")
         if token_id:
+            # A refresh GitHub accepted is fresh evidence the authorisation
+            # is live, so `github_connected` stays done between connections.
             self._update_record(tenant_id, token_id, {
                 "expires_at": tokens.access_expires_at, "rotated_at": now,
-                "secret_version": version or None})
+                "secret_version": version or None, "verified_at": now})
         report.refreshed += 1
         log.info("forge token refreshed tenant=%s connection=%s", tenant_id, conn_id)
 

@@ -522,6 +522,36 @@ def test_the_sweep_refreshes_a_connection_near_expiry_and_leaves_the_rest(
     _assert_no_value_anywhere(db, [answer.text, caplog.text], github.issued + [app_secret.value])
 
 
+def _checklist(api: TestClient, user: str = "alice") -> dict[str, Any]:
+    answer = api.get("/v1/onboarding", headers=auth_header(user))
+    assert answer.status_code == 200, answer.text
+    return answer.json()
+
+
+def _step_state(view: dict[str, Any], name: str) -> str:
+    return next(s for s in view["steps"] if s["step"] == name)["state"]
+
+
+def test_a_connection_through_the_app_completes_the_github_connected_step(api, github):
+    assert _step_state(_checklist(api), "github_connected") != "done"
+    _connect(api, github)
+    view = _checklist(api)
+    assert _step_state(view, "github_connected") == "done"
+    assert view["next_step"] != "github_connected"
+
+
+def test_a_refresh_keeps_github_connected_done_past_the_stale_interval(api, github, clock):
+    from swarm_api.onboarding import STALE_AFTER
+
+    _connect(api, github)
+    clock.at = T0 + STALE_AFTER + timedelta(hours=1)
+    answer = api.post(REFRESH, headers=auth_header("root"))
+    assert answer.status_code == 200 and answer.json()["refreshed"] == 1, answer.text
+    view = _checklist(api)
+    assert _step_state(view, "github_connected") == "done"
+    assert view["next_step"] != "github_connected"
+
+
 def test_a_refused_refresh_marks_the_connection_failed_with_the_recovery_copy(
         api, github, db, clock):
     _connect(api, github)
