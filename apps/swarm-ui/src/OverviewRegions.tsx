@@ -21,6 +21,7 @@ import type { Result } from './fetch'
 import { Dash } from './components/Chip'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
+import { staleFoot } from './Shell'
 import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -120,12 +121,17 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                 ))}
               </div>
             )}
-            {/* PROVENANCE, ALWAYS (OV-16): the counts are on their own
-                sixty-second read, so their age is part of the figure; the
-                page's figure says it is the page's. */}
-            {c.source === 'stats' && (stats.status === 'ok' || stats.status === 'stale') && (
-              <span className="ov-lc-foot">counted {timeAgo(stats.fetchedAt)}</span>
-            )}
+            {/* PROVENANCE ONLY WHEN STALE (#98, owner ruling 2026-10-07,
+                which narrows OV-16's "always"): the counts are on their own
+                sixty-second read, and once that read is stale -- a failed
+                refresh, or older than `AGED_AFTER_MS` -- the tile says how
+                old they are. While fresh it is silent; the head's refresh
+                control carries the screen's age. The page's figure still
+                says it is the page's. */}
+            {c.source === 'stats' && (stats.status === 'ok' || stats.status === 'stale') &&
+              staleFoot(stats.fetchedAt, Date.now(), stats.status === 'stale') !== null && (
+                <span className="ov-lc-foot">counted {staleFoot(stats.fetchedAt, Date.now(), stats.status === 'stale')}</span>
+              )}
             {c.source === 'page' && page !== null && <span className="ov-lc-foot">of the {page.length} newest read</span>}
           </div>
         )

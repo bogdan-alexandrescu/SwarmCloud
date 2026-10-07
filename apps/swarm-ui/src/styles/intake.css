@@ -195,9 +195,9 @@
 .rn-run .c-phead { flex-wrap: wrap; }
 .rn-run .c-phead > div.head { display: contents; }
 .rn-run .c-phead > div.head > h1 { flex: 1 0 100%; }
-/* THE META TAKES WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
-   with its title, and never wider than the column. */
-.rn-run .c-phead > .sub { flex: 1 1 0; min-width: 0; max-width: 100%; }
+/* THE ACTIONS TAKE WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
+   with their title, and never wider than the column. */
+.rn-run .c-phead > .c-acts { flex: 1 1 0; min-width: 0; max-width: 100%; }
 /* The chip is a button that opens it whole on a tap (owner QA F): drawn as
    the chip's own text until it is open. */
 .rn-meta {

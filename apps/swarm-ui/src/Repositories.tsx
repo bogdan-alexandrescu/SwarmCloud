@@ -6,7 +6,7 @@ import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRegion, rep
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
-import { PageHead } from './Shell'
+import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 
@@ -49,9 +49,12 @@ export function RepositoriesScreen({ view, go }: { view: string | null; go: (to:
   return (
     <RepositoryList go={go}>
       {(meta, actions) => (
-        <PageHead title="Repositories" meta={meta}>
-          {actions}
-        </PageHead>
+        <>
+          <PageHead title="Repositories">
+            {actions}
+          </PageHead>
+          <CountNote>{meta}</CountNote>
+        </>
       )}
     </RepositoryList>
   )

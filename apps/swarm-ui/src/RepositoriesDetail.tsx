@@ -129,7 +129,8 @@ function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: I
 
   return (
     <>
-      <PageHead title={repoName(r)} action={<UrFreshPill f={f} />}>
+      <PageHead title={repoName(r)}>
+        <UrFreshPill f={f} />
         {inFlight !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={inFlight} />
         ) : (

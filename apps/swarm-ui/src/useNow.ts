@@ -15,7 +15,7 @@ import { useCallback, useSyncExternalStore } from 'react'
  *
  * SHARED, NOT MERELY REUSED. Every caller asking for the same cadence reads
  * the same instant from one interval, so the head, the dock and a screen's
- * sub-line all move on the same tick and cannot contradict each other. A
+ * refresh control all move on the same tick and cannot contradict each other. A
  * hundred rows on a 1s clock are one interval, not a hundred.
  *
  * WHAT IT IS NOT. It re-renders; it does not re-read. A ticking age over data
@@ -75,13 +75,13 @@ function subscribe(intervalMs: number, onTick: () => void): () => void {
 }
 
 /**
- * The tick every AGE in the frame moves on: every screen's sub-line, the
+ * The tick every AGE in the frame moves on: every screen's refresh control, the
  * head's `newest read`, the dock and the API reads page.
  *
  * ONE CONSTANT, NAMED BY EVERY CALLER. Clocks are shared per cadence, so two
  * callers share an instant only while they pass the same number. Shell.tsx
  * held `AGE_TICK_MS = 5_000` while the head, the API reads page and the dock
- * each passed their own `5000`: change the constant alone and the sub-line and
+ * each passed their own `5000`: change the constant alone and a screen's age and
  * the head would move onto different clocks without a line of either
  * changing, which is CH-1 back. So the number lives here, beside the clock it
  * selects, and the age callers import it.
