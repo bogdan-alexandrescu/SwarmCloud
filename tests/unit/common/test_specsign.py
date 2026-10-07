@@ -319,7 +319,7 @@ def test_a_missing_key_reads_as_null_and_a_missing_metadata_as_empty():
 
 
 # ---------------------------------------------------------------------------
-# Format 3: the forge credential and access (contract request 52, request E)
+# Format 3: the forge credential and access (contract request 54, request E)
 # ---------------------------------------------------------------------------
 
 #: SHA-256 of format 1's and format 2's canonical bytes, computed by the code

@@ -247,13 +247,13 @@ def test_the_worker_credential_section_carries_the_accepted_contract_request():
     for part in ("What is true today", "The requested change", "What it would break if accepted",
                  "If it is declined", "Invariants"):
         assert part in draft, part
-    # Accepted by the owner 2026-10-07 and filed as request 52: the section
+    # Accepted by the owner 2026-10-07 and filed as request 54: the section
     # must point at the record, and must not still call itself unfiled.
     flat = _flat(draft)
-    assert "accepted" in flat.lower() and "request 52" in flat, "the record is request 52"
+    assert "accepted" in flat.lower() and "request 54" in flat, "the record is request 54"
     assert "**not filed**" not in draft and "(not filed)" not in draft
     requests = (DESIGN.parent / "contract-change-requests.md").read_text()
-    assert "\n## 52. " in requests, "request 52 is in contract-change-requests.md"
+    assert "\n## 54. " in requests, "request 54 is in contract-change-requests.md"
 
 
 def test_the_terraform_list_goes_through_the_dev_iam_review_and_labels():

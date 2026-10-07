@@ -252,8 +252,10 @@ describe('Git tokens are cards by scope (pick B)', () => {
   it('no tokens is an empty state that points at the command line', async () => {
     serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: { git_tokens: [] } } : null))
     await mount('page=tokens')
-    await waitFor(() => expect(document.querySelector('.c-emp')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('.c-emp'))).toContain('No git tokens registered')
+    // The token region's empty state, not the first on the page: the Connect
+    // GitHub card above it (#780) draws its own when its route is not served.
+    const empties = () => Array.from(document.querySelectorAll('.c-emp')).map(visible)
+    await waitFor(() => expect(empties().some((t) => t.includes('No git tokens registered'))).toBe(true), WAIT)
   })
 })
 

@@ -172,11 +172,11 @@ spec:
             requests:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
             limits:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
           env:
             # Identifiers only. The worker reads WHAT to run from the frozen
             # catalogue keyed by RUNNER_PROFILE, so a doctored environment

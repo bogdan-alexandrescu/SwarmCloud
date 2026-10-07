@@ -26,6 +26,7 @@ import pytest
 import yaml
 
 from quota_broker.accounts import AccountError, validate_label
+from scheduler.dispatch import gke_ephemeral_storage_gib
 from scheduler.dispatch import sanitize_name as dispatcher_sanitize_name
 from swarm_common.identity import _TENANT_SAFE
 from swarm_common.models import Tenant, utcnow
@@ -849,7 +850,15 @@ def test_a_rendered_job_sets_requests_equal_to_limits(profile):
     # ...and the numbers come from the frozen catalogue, not from this file.
     assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
     assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
-    assert container["resources"]["limits"]["ephemeral-storage"] == f"{rc.disk_gib}Gi"
+    # The pod's whole local disk -- workspace, /tmp and HOME -- is the
+    # dispatcher's number, not disk_gib (contract request 53).
+    assert container["resources"]["limits"]["ephemeral-storage"] == (
+        f"{gke_ephemeral_storage_gib(rc)}Gi"
+    )
+    workspace = next(
+        v for v in job["spec"]["template"]["spec"]["volumes"] if v["name"] == "workspace"
+    )
+    assert workspace["emptyDir"]["sizeLimit"] == f"{rc.disk_gib}Gi"
 
 
 @pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])

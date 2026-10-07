@@ -57,6 +57,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets as _secrets
 import time as _time
 import urllib.error
@@ -146,6 +147,14 @@ _USER_AGENT = "swarmcloud-swarm-api"
 
 #: The App's client secret slot (terraform/modules/secret_manager, `github_app`).
 CLIENT_SECRET_SLOT = "swarm-github-app-client-secret"
+#: The App's private key slot, the same module. Read only by the admin
+#: self-check (`ForgeApp.check_app_key`), which signs an App JWT with it.
+PRIVATE_KEY_SLOT = "swarm-github-app-private-key"
+APP_URL = "https://api.github.com/app"
+#: GitHub refuses an App JWT whose lifetime exceeds ten minutes; it is issued
+#: 60 s in the past to absorb clock drift, and lives nine minutes from now.
+JWT_BACKDATE_SECONDS = 60
+JWT_LIFETIME_SECONDS = 540
 RUNBOOK = "docs/runbooks/github-app.md"
 #: Where a person revokes the authorisation themselves: a GitHub page.
 AUTHORIZATIONS_PAGE = "https://github.com/settings/apps/authorizations"
@@ -262,11 +271,14 @@ class AppConfig:
 class AppSecrets(Protocol):
     def client_secret(self) -> str: ...
 
+    def private_key(self) -> str: ...
+
 
 class SecretManagerAppSecrets:
-    """Reads `swarm-github-app-client-secret`'s latest version, at request
-    time, and only that. swarm-api is its one accessor (github_app_accessor).
-    The client is built on first use, never at construction."""
+    """Reads `swarm-github-app-client-secret`'s and `swarm-github-app-private-key`'s
+    latest version, at request time, and only those. swarm-api is their one
+    accessor (github_app_accessor). The client is built on first use, never
+    at construction."""
 
     def __init__(self, project_id: str, *, client: Any | None = None) -> None:
         self._project_id = project_id
@@ -279,26 +291,32 @@ class SecretManagerAppSecrets:
             self._client = secretmanager.SecretManagerServiceClient()
         return self._client
 
-    def client_secret(self) -> str:
+    def _latest(self, slot: str) -> str:
         from google.api_core import exceptions as gexc
 
-        name = f"projects/{self._project_id}/secrets/{CLIENT_SECRET_SLOT}/versions/latest"
+        name = f"projects/{self._project_id}/secrets/{slot}/versions/latest"
         try:
             version = self._secret_client().access_secret_version(request={"name": name})
         except (gexc.NotFound, gexc.FailedPrecondition):
-            raise AppNotConfigured(f"{CLIENT_SECRET_SLOT} has no enabled version") from None
+            raise AppNotConfigured(f"{slot} has no enabled version") from None
         except gexc.PermissionDenied:
-            raise AppNotConfigured(f"swarm-api may not read {CLIENT_SECRET_SLOT}") from None
+            raise AppNotConfigured(f"swarm-api may not read {slot}") from None
         except Exception as exc:
             raise AppNotConfigured(
-                f"{CLIENT_SECRET_SLOT} could not be read ({type(exc).__name__})") from None
+                f"{slot} could not be read ({type(exc).__name__})") from None
         try:
             value = bytes(version.payload.data).decode("utf-8").strip()
         except Exception:
             value = ""
         if not value:
-            raise AppNotConfigured(f"{CLIENT_SECRET_SLOT} is empty")
+            raise AppNotConfigured(f"{slot} is empty")
         return value
+
+    def client_secret(self) -> str:
+        return self._latest(CLIENT_SECRET_SLOT)
+
+    def private_key(self) -> str:
+        return self._latest(PRIVATE_KEY_SLOT)
 
 
 # --------------------------------------------------------------------------
@@ -478,8 +496,9 @@ def _basic(client_id: str, client_secret: str) -> str:
 
 
 class _GitHub:
-    """The four calls the flow makes. Every value it is handed or receives
-    is already registered with the redaction filter by its caller."""
+    """The calls the flow and the key self-check make. Every value it is
+    handed or receives is already registered with the redaction filter by
+    its caller."""
 
     def __init__(self, send: HttpSend, timeout: float = TIMEOUT_SECONDS) -> None:
         self._send = send
@@ -556,6 +575,55 @@ class _GitHub:
         if answer.status in (404, 422):
             return False
         raise _Refused(f"revoke_http_{answer.status}")
+
+
+    def app(self, jwt: str) -> HttpAnswer:
+        """`GET /app` as the App itself: the one call an App JWT answers."""
+        headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {jwt}",
+                   "User-Agent": _USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"}
+        return self._call("GET", APP_URL, headers, None)
+
+
+def _b64url(data: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+class _KeyUnusable(Exception):
+    """The private key is not an RSA PEM this can sign with. Constant text:
+    the cryptography error may quote the key's bytes."""
+
+
+def app_jwt(app_id: str, private_key_pem: str, now: datetime) -> str:
+    """A GitHub App JWT: RS256, `iss` the App id, `iat` a minute back, `exp`
+    nine minutes on. Signed with `cryptography` (already swarm-api's, for
+    childkey), so no JWT library is added for one header and one claim set."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    try:
+        key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+    except Exception:
+        raise _KeyUnusable() from None
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise _KeyUnusable()
+    issued = int(now.timestamp())
+    header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"},
+                                separators=(",", ":")).encode("utf-8"))
+    claims = _b64url(json.dumps({"iat": issued - JWT_BACKDATE_SECONDS,
+                                 "exp": issued + JWT_LIFETIME_SECONDS, "iss": app_id},
+                                separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header}.{claims}".encode("ascii")
+    try:
+        signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    except Exception:
+        raise _KeyUnusable() from None
+    return f"{header}.{claims}.{_b64url(signature)}"
+
+
+#: A slug GitHub could have given an App: echoed back only when it looks like one.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 
 
 def _seconds(value: Any, default: timedelta) -> timedelta:
@@ -1164,6 +1232,55 @@ class ForgeApp:
             snap.reference.delete()
             count += 1
         return count
+
+    # -- the private key's self-check (admin) ------------------------------
+
+    def check_app_key(self) -> dict[str, Any]:
+        """Prove the stored private key end to end: read it, sign an App JWT,
+        and ask GitHub which App that is. Answers `{ok, app_id, slug, reason}`
+        and nothing else; `reason` is one of a fixed set of words, never
+        GitHub's body, the JWT or any of the key. `app_id` and `slug` are what
+        GitHub answered, and only when it answered 200."""
+        app_id, slug = self.config.app_id, self.config.slug
+        if not (app_id.isascii() and app_id.isdigit()):
+            return self._checked(False, reason="app_id_not_configured")
+        if not slug:
+            return self._checked(False, reason="app_slug_not_configured")
+        try:
+            pem = self._secrets.private_key()
+        except AppNotConfigured:
+            return self._checked(False, reason="private_key_missing")
+        with ExitStack() as held:
+            held.enter_context(redaction_literal(pem))
+            try:
+                jwt = app_jwt(app_id, pem, self._now())
+            except _KeyUnusable:
+                return self._checked(False, reason="private_key_malformed")
+            held.enter_context(redaction_literal(jwt))
+            try:
+                answer = self._github.app(jwt)
+            except _Unanswered:
+                return self._checked(False, reason="github_unreachable")
+        if answer.status == 401:
+            return self._checked(False, reason="key_rejected")
+        data = answer.json()
+        if answer.status != 200 or not isinstance(data, dict):
+            return self._checked(False, reason="github_refused")
+        got_id = data.get("id") if isinstance(data.get("id"), int) else None
+        got_slug = data.get("slug") if isinstance(data.get("slug"), str) \
+            and _SLUG.match(data["slug"]) else None
+        if got_id != int(app_id):
+            return self._checked(False, app_id=got_id, slug=got_slug, reason="app_id_mismatch")
+        if got_slug != slug:
+            return self._checked(False, app_id=got_id, slug=got_slug, reason="app_slug_mismatch")
+        return self._checked(True, app_id=got_id, slug=got_slug)
+
+    @staticmethod
+    def _checked(ok: bool, *, app_id: int | None = None, slug: str | None = None,
+                 reason: str | None = None) -> dict[str, Any]:
+        log.info("github app key self-check ok=%s reason=%s", ok, reason)
+        return {"ok": ok, "app_id": app_id, "slug": slug, "reason": reason}
+
 
 
 def _due(doc: dict[str, Any], now: datetime) -> bool:

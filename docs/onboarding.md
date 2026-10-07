@@ -393,7 +393,7 @@ The suffix must come from somewhere the worker can trust. Two ways:
 
 * **With request E (recommended; ACCEPTED by the owner 2026-10-07, filed
   and applied as
-  [contract request 52](contract-change-requests.md#52-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write))**:
+  [contract request 54](contract-change-requests.md#54-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write))**:
   a `forge_credential` and a `forge_access` field on `Task`, written by
   swarm-api only, covered by the spec signature through a new projection in
   `canonical_step_spec`
@@ -408,11 +408,11 @@ The suffix must come from somewhere the worker can trust. Two ways:
   does for the shell), and it cannot express "this task uses the tenant
   token", so D4's fallback would be impossible.
 
-#### Contract request E (accepted by the owner 2026-10-07, filed as request 52)
+#### Contract request E (accepted by the owner 2026-10-07, filed as request 54)
 
 This was written as a draft for the owner. **The owner accepted it on
 2026-10-07**; it is filed and applied as
-[request 52 in contract-change-requests.md](contract-change-requests.md#52-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write),
+[request 54 in contract-change-requests.md](contract-change-requests.md#54-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write),
 which is now the record, and is no longer a draft that is not filed. It
 supersedes request (E) as git-tokens.md §8 sketched it, by adding the mode and
 the signature. The summary below is kept as the design's statement of it.

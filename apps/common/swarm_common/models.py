@@ -291,7 +291,7 @@ class EndCause(str, Enum):
 #: The shape of `Task.forge_credential`: a provider suffix for
 #: `Tenant.secret_name`, never a secret name or a value. Anchored by
 #: `fullmatch`, so it can name no other tenant's secret and no `-refresh` twin.
-#: Contract request 52.
+#: Contract request 54.
 FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")
 
 #: The values of `Task.forge_access`. None on a task means "write".
@@ -364,7 +364,7 @@ class Task:
     #: The forge secret this task's worker reads, as the provider suffix
     #: `Tenant.secret_name` places under the task's OWN tenant: "git" (the
     #: tenant token), "git-r-<16 hex>" (a repository token) or "git-u-<16 hex>"
-    #: (a user's slot). Shape: `FORGE_CREDENTIAL`. Contract request 52 (request
+    #: (a user's slot). Shape: `FORGE_CREDENTIAL`. Contract request 54 (request
     #: E, docs/onboarding.md §3.3), accepted by the owner 2026-10-07: WRITTEN BY
     #: swarm-api ONLY, at submission, from its resolution of the task's
     #: repository and `submitted_by` against the grants; never accepted from a
@@ -379,7 +379,7 @@ class Task:
     forge_access: str | None = None
 
     def __post_init__(self) -> None:
-        # Only the two fields of request 52: a document decoded before them is
+        # Only the two fields of request 54: a document decoded before them is
         # never refused here, and a writer cannot construct a malformed one.
         if self.forge_credential is not None and not (
             isinstance(self.forge_credential, str)

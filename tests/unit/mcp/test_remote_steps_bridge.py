@@ -1042,6 +1042,36 @@ def test_a_task_that_is_another_step_is_not_followed(swarm, world, progress):
     assert right["stop"] is True and right["tasks"][0]["outcome"]["state"] == "SUCCEEDED"
 
 
+def test_a_single_task_handed_to_a_step_row_says_to_follow_it_without_step_id(swarm, world, progress):
+    """#830: a task in no workflow handed to an `sc:step` row read `task ...
+    is workflow step None`. It is still stopped -- the row was handed the
+    wrong kind of task -- but the reason now names the row that follows it."""
+    world.task("task_a", state="RUNNING")
+    assert world.db.docs["tasks/task_a"].get("step_id") is None
+
+    got = progress.watch(swarm, ["task_a"], step_id="scan-03")
+
+    row = got["tasks"][0]
+    assert got["stop"] is True and row["abandoned"] is True
+    assert "is a single task" in row["abandoned_because"]
+    assert "WITHOUT `step_id`" in row["abandoned_because"] and "sc:task" in row["abandoned_because"]
+    assert "step None" not in row["abandoned_because"]
+
+    # Without step_id the same task is followed, which is what sc:task does.
+    plain = progress.watch(swarm, ["task_a"])
+    assert plain["stop"] is False and "abandoned" not in plain["tasks"][0]
+
+
+def test_the_progress_format_says_the_same_of_a_single_task(swarm, world):
+    from swarm_mcp import compact
+
+    world.task("task_a", state="RUNNING")
+    got = compact.watch_progress(swarm, ["task_a"], step_id="scan-03")
+    reason = got["tasks"][0]["abandoned_because"]
+    assert "is a single task" in reason and "step None" not in reason
+    assert got["stop"] is True
+
+
 def test_step_id_goes_through_the_tool_and_is_refused_where_it_cannot_be_checked(swarm, world):
     world.task("task_a", state="QUEUED")
     world.db.docs["tasks/task_a"]["step_id"] = "scan-07"

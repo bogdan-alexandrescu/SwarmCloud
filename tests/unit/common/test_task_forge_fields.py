@@ -1,4 +1,4 @@
-"""`Task.forge_credential` and `Task.forge_access` (contract request 52, request E).
+"""`Task.forge_credential` and `Task.forge_access` (contract request 54, request E).
 
 Two optional fields, written by swarm-api only, that name the forge secret a
 task's worker reads and whether it may write with it. Held here to: the shape

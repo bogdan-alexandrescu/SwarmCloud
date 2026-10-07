@@ -189,7 +189,7 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 14. Absent on every task that is not a child.
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
-        # Contract request 52. Read back so a task this service decodes and
+        # Contract request 54. Read back so a task this service decodes and
         # writes again keeps the signed fields it was submitted with.
         forge_credential=_forge_credential(data.get("forge_credential")),
         forge_access=_forge_access(data.get("forge_access")),

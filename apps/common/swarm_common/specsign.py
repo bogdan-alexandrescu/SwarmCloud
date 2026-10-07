@@ -32,7 +32,7 @@ from typing import Any, Mapping
 #: SPEC_FORMAT; a worker verifies every format in SPEC_FORMATS, each under its
 #: own projection, so a document signed at format 1 keeps verifying.
 #:
-#: 3 is contract request 52 (request E of docs/onboarding.md §3.3), accepted by
+#: 3 is contract request 54 (request E of docs/onboarding.md §3.3), accepted by
 #: the owner 2026-10-07: format 2's fields plus `forge_credential` and
 #: `forge_access`, so a task whose forge secret or access mode was rewritten
 #: fails its worker's check.

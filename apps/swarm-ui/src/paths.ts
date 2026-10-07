@@ -25,6 +25,16 @@ import { HELP, HELP_GROUPS, HELP_ROUTE, type TopicId } from './help'
 export const SUBMIT_ADDRESS = 'submit'
 export const REFERENCE_ADDRESS = 'reference'
 
+/**
+ * THE GITHUB APP'S CALLBACK (#780, OB3): the URL registered on the App,
+ * https://swarm.saga.xyz/onboarding/github/callback. Not a section and not in
+ * FIXED -- nothing links to it, and the not-found page must never offer it.
+ * ITS QUERY IS NEVER PART OF THE ADDRESS: GitHub's `code` and `state` ride on
+ * it, and an address is what the router writes back into the bar.
+ */
+export const GITHUB_CALLBACK_ADDRESS = 'onboarding/github/callback'
+export const GITHUB_CALLBACK_PATH = '/onboarding/github/callback'
+
 /** Address -> path for the panes that are one fixed path each. */
 /** Exported for the not-found page, which offers the nearest of these (NotFound.tsx). */
 export const FIXED: Readonly<Record<string, string>> = {
@@ -200,6 +210,7 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     // An unknown topic keeps its name, so the page can say which was asked for.
     return group === null ? `/help/${tail}` : `/help/${group}#${tail}`
   }
+  if (bare === GITHUB_CALLBACK_ADDRESS) return GITHUB_CALLBACK_PATH
   const fixed = FIXED[bare]
   if (fixed !== undefined) return query === '' ? fixed : `${fixed}?${query}`
   return '/overview'
@@ -287,6 +298,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     // `/help/<group>#<topic>` names the topic; `/help/<group>` the page.
     return plain(topic !== '' ? `${HELP_ROUTE}/${topic}` : `${HELP_ROUTE}/${seg.slice(1).join('/')}`)
   }
+
+  // The callback's query (`code`, `state`, `error`) is dropped HERE, so the
+  // route never holds it and the router's normalise writes a bare path.
+  if (path === GITHUB_CALLBACK_PATH) return plain(GITHUB_CALLBACK_ADDRESS)
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null
