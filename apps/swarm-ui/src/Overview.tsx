@@ -1157,11 +1157,13 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       ) : (
         <span title={pool.sub}>
-          {/* THE AGE IS PART OF THE FIGURE: a percentage with nothing saying
-              whether it was read a minute or four days ago is a claim without
-              provenance. */}
+          {/* THE AGE IS PART OF THE FIGURE WHEN IT IS OLD: a percentage read
+              four days ago is a claim without provenance, so a reading older
+              than `AGED_AFTER_MS` says `from 7 min ago`. A fresh one is silent
+              (#98, owner ruling 2026-10-07: a tile states freshness only when
+              stale); the whole sentence, age included, is the line's title. */}
           best {pool.best.label} at <span className="ov-num">{Math.round(pool.pct)}%</span> of its {pool.best.window} window
-          {' · '}read {timeAgo(pool.best.observedAt)}
+          {staleFoot(Date.parse(pool.best.observedAt), Date.now()) !== null && ` · ${staleFoot(Date.parse(pool.best.observedAt), Date.now())}`}
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
