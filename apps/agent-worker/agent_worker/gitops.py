@@ -2231,13 +2231,33 @@ def _worker_idents(run: Any, g: list[str]) -> tuple[tuple[str, str], tuple[str, 
     return idents[0], idents[1]
 
 
-def _foreign(commit: _Commit, author: tuple[str, str], committer: tuple[str, str]) -> list[str]:
-    """Every reason `commit` is not one the worker wrote. Empty when it is."""
+def _foreign(
+    commit: _Commit,
+    author: tuple[str, str],
+    committer: tuple[str, str],
+    *,
+    also: Sequence[tuple[tuple[str, str], tuple[str, str]]] = (),
+) -> list[str]:
+    """Every reason `commit` is not one the worker wrote. Empty when it is.
+
+    `also` is any other (author, committer) pair the worker writes as, each
+    asked of git by `_worker_idents` (#765: the task's person, with the bot
+    kept for a branch an earlier attempt pushed). A commit must carry ONE of
+    the pairs whole: the worker never writes one identity's author with
+    another's committer, so a mixed pair is not its.
+    """
     problems = []
-    if commit.author != author:
-        problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
-    if commit.committer != committer:
-        problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+    own = [(author, committer), *also]
+    if (commit.author, commit.committer) not in own:
+        if all(commit.author != mine for mine, _ in own):
+            problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
+        if all(commit.committer != mine for _, mine in own):
+            problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+        if not problems:
+            problems.append(
+                f"authored by {commit.author[0]} <{commit.author[1]}> but committed by "
+                f"{commit.committer[0]} <{commit.committer[1]}>, a pair the worker never writes"
+            )
     if commit.signed:
         # The worker never signs (`commit.gpgSign=false` on every call), so a
         # signature is text from a program the worker did not choose.
@@ -2260,6 +2280,7 @@ def verify_worker_authorship(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    also_own: Sequence[tuple[str, str]] = (),
 ) -> int:
     """Refuse a push that would add a commit the worker did not write.
 
@@ -2280,6 +2301,15 @@ def verify_worker_authorship(
     the contributor commits those merges bring in are their second parents,
     and each was checked by its own worker when it pushed. A contributor branch
     pushed before this check existed is therefore not re-checked here.
+
+    WHO THE WORKER IS (#765, owner decision 2026-10-07). `author_name` and
+    `author_email` are the identity this publish writes as -- the task's
+    person when it has one -- and `also_own` every other identity the worker
+    has written this branch as: the bot, `WorkerConfig.git_author_*`, for a
+    branch an earlier attempt pushed before its person was known. Nobody else
+    joins the set; a third identity's commit is refused as before. A
+    contributor's person on its own branch is never asked about here: those
+    commits are an integrator's second parents.
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
@@ -2317,8 +2347,13 @@ def verify_worker_authorship(
         return 0
 
     author, committer = _worker_idents(run, g)
+    also = [
+        _worker_idents(run, [git_binary, *_NO_HOOKS, *_worker_identity(name, email)])
+        for name, email in also_own
+        if (name, email) != (author_name, author_email)
+    ]
     for sha in shas:
-        problems = _foreign(_read_commit(run, g, sha), author, committer)
+        problems = _foreign(_read_commit(run, g, sha), author, committer, also=also)
         if problems:
             raise GitError(
                 f"refusing to push commit {sha[:12]}: {'; '.join(problems)}. The "

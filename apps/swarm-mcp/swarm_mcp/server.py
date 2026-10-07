@@ -46,7 +46,16 @@ from swarm_common.profiles import RESOURCE_CLASSES
 from . import checkout, compact, config, progress
 from . import profiles as catalogue
 from . import workflows
-from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of, task_payload
+from .client import (
+    TERMINAL,
+    SwarmClient,
+    SwarmError,
+    chosen_tenant,
+    outputs_of,
+    task_id_of,
+    task_payload,
+    tenant_listing,
+)
 from .follow import (
     DEFAULT_EVENT_PAGE,
     DEFAULT_LOG_BUDGET,
@@ -311,6 +320,21 @@ TOOLS: list[dict[str, Any]] = [
             "command and the resource spec follow from the name; they are not "
             "part of the vocabulary a caller has, so this tool does not put "
             "them in front of one. Nothing in this plugin can supply them."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_tenants",
+        "description": (
+            "The tenants you may act as (GET /v1/tenants/mine: tenant_id and "
+            "display_name, the group's email), each marked `current` when it is "
+            "the one this bridge acts as. `current` is the API's own answer; "
+            "`chosen` is the bridge's `tenant` setting, null when none is set and "
+            "the API picks your first matching tenant. The setting is "
+            "SWARM_TENANT in the bridge's environment, read once at start, and "
+            "applies to every call this session makes; there is no per-call "
+            "tenant. An empty list means your tenant is personal and there is "
+            "nothing to choose. Read-only."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -2437,6 +2461,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # nothing else does.
         return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
 
+    if name == "swarm_tenants":
+        # Two GETs. A `tenant` setting the caller is not a member of comes back
+        # as the API's 403, unchanged, through `_tool_error_text`.
+        return json.dumps(tenant_listing(client), indent=2)
+
     if name == "swarm_result":
         task = client.task(args["task_id"])
         return json.dumps(_result_of(client, args["task_id"], task), indent=2)
@@ -2908,11 +2937,16 @@ def serve(stdin=None, stdout=None) -> int:
     # once, under a lock, by whichever call needs it first.
     held: dict[str, SwarmClient] = {}
     building = threading.Lock()
+    # THE `tenant` SETTING, READ ONCE, HERE (#447). Every call this session
+    # makes acts as the same tenant: read per call, an edit to the variable
+    # mid-session would move half a workflow's reads to another tenant. None
+    # sends no X-Swarm-Tenant at all, and the API picks as it always did.
+    tenant = chosen_tenant(None)
 
     def _client() -> SwarmClient:
         with building:
             if "client" not in held:
-                held["client"] = SwarmClient()
+                held["client"] = SwarmClient(tenant=tenant)
             return held["client"]
 
     def _answer(message_id: Any, params: dict[str, Any]) -> None:

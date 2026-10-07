@@ -43,6 +43,9 @@ _DEPLOYMENT_VARS = (
     "SWARM_PLUGIN_OAUTH_CLIENT_ID",
     "SWARM_PLUGIN_OAUTH_CLIENT_SECRET",
     "SWARM_PLUGIN_DEFAULT_TARGET",
+    # Which of the caller's tenants to act as (#447): set on the machine, it
+    # would put X-Swarm-Tenant on every request a test makes.
+    "SWARM_TENANT",
     "XDG_CONFIG_HOME",
 )
 

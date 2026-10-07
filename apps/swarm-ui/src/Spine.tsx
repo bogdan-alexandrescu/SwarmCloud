@@ -1049,6 +1049,10 @@ export function SkyShell({
             <span className="sk-tn">{who.tenant.display_name ?? who.tenant.tenant_id}</span>
           ))}
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
+        {/* AN ADMIN IS MARKED ON THE PHONE TOO (#139, CH-20): the same grey
+            hairline tag as the panel's foot, last in the one row, after the
+            environment it sits beside. */}
+        {admin && <span className="sk-adm">admin</span>}
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
       <div className="sk-side" ref={sideRef}>
