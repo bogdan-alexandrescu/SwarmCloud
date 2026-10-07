@@ -11,7 +11,7 @@
  *
  * `stateWord` spells every task state exactly as the state chip does
  * (components/StatePill.tsx `stateWord`, which takes a `TaskState` only;
- * words.test.ts holds the two together), and takes a run's states too.
+ * __tests__/qa.g2.words.test.tsx holds the two together), and takes a run's states too.
  */
 
 import { PARK_WORD } from './components/StatePill'
