@@ -24,8 +24,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from agent_worker import egress, gitops, lifecycle
 from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger

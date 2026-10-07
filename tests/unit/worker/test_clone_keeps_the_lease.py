@@ -375,9 +375,12 @@ def test_retry_clone_records_a_failed_try_then_the_one_that_landed(tmp_path):
     )
 
     assert result is landed
+    # No peers on these tries' phases (#721, P27): None, None, unpinned.
+    none = {"probe_peer": None, "git_peer": None, "peer_pinned": False}
     assert record == [
-        {"connect_seconds": None, "ok": False, "error_class": "GitTransient", "seconds": 134.0},
-        {"connect_seconds": 0.042, "ok": True, "error_class": None, "seconds": 56.0},
+        {"connect_seconds": None, "ok": False, "error_class": "GitTransient", "seconds": 134.0,
+         **none},
+        {"connect_seconds": 0.042, "ok": True, "error_class": None, "seconds": 56.0, **none},
     ]
 
 
