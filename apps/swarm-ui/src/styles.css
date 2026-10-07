@@ -3620,9 +3620,15 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    `ov-projected` for a stale or reset reading beside its `~`, `is-bad` only
    for a live window at 100%, and the baseline tick for a measured 0%.
 
-   A FIXED 40px, INLINE BESIDE THE FIGURE. The base track is `display: flex`,
-   a block that would take a line of its own under the figure, so the scoped
-   rule makes it an inline box. It sits inside a `@media (min-width: 561px)`
+   THE TILE'S WIDTH, UNDER THE FIGURE, AND NOT THE TILE'S COLOUR (G5-07, QA
+   2026-10-07). It was a fixed 40px inline box beside the figure, painted the
+   base `--surface-2` -- which is the tile's own `--sk-hv` in both themes --
+   so in a 122px tile all that showed was a lone 6-8px fill nobody could read
+   as a share. Full width on `--surface` with a `--line` hairline, its extent
+   reads in both themes; `.ctl-util-track.is-zero`, later in this sheet at the
+   same specificity, still draws a measured 0%'s own hairline. (Only the tiles
+   draw a track: the list item's `em.acct-window` is the figure alone.) The
+   `display` sits inside a `@media (min-width: 561px)`
    ON PURPOSE: at 560px and below the phone block's `.ctl-util-track
    { display: none }` hides every track but a pool tile's, and a scoped
    `display` at (0,2,0) would out-rank it. The phone keeps the rule every
@@ -3631,9 +3637,10 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    exception is added. `.acct-unmeasured` still draws no track at all, which
    is the distinction this column exists to protect (§8.7.2). */
 .acct-window > .ctl-util-track {
-  width: 40px;
-  margin-left: 7px;
-  vertical-align: middle;
+  width: 100%;
+  margin: 4px 0 0;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 @media (min-width: 561px) {
   .acct-window > .ctl-util-track { display: inline-flex; }
@@ -10210,6 +10217,12 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
   --sk-prod: #c81e1e;
   --sk-ac: #7cc8f8;
   --sk-acs: #10294a;
+  /* MUTED TEXT ON A CHOSEN ROW (G5-17, QA 2026-10-07): `--text-faint` on
+     `--sk-acs` is 4.33:1 in dark, under the 4.5:1 floor for 12px text. This
+     is 5.7:1 there; light keeps `--text-faint`'s #606a77, already 4.85:1 on
+     its #e5f3fc. Still quieter than `--text-dim`, so the clauses stay below
+     the figures they qualify. */
+  --text-dim-on-selected: #97a3b3;
   --sk-acl: #1f4a7a;
   /* The Navigation mock-up's --f-ln: the nav chrome's structural hairlines
      (panel edge, tenant block, page-kids rule, footer rule, admin tag, theme
@@ -10233,6 +10246,7 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
   :root:not([data-theme='dark']) {
     --sk-ac: #0369a1;
     --sk-acs: #e5f3fc;
+    --text-dim-on-selected: #606a77;
     --sk-acl: #b6daf2;
     --sk-ln: #dde5ee;
     --sk-hv: #eef4fa;
@@ -10254,6 +10268,7 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
 :root[data-theme='light'] {
   --sk-ac: #0369a1;
   --sk-acs: #e5f3fc;
+  --text-dim-on-selected: #606a77;
   --sk-acl: #b6daf2;
   --sk-ln: #dde5ee;
   --sk-hv: #eef4fa;
@@ -10603,6 +10618,14 @@ span.sk-ttile { cursor: default; }
 .wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
 .wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
+/* AT A PHONE EACH PICK TAKES ITS OWN ROW AND SHRINKS TO IT (QA G3-14): the
+   owner select was 424px in a 354px column and pushed `.app` to 440px in a
+   386px viewport. The options print the name before the @, so the widest is
+   short; this holds whatever an option says. */
+@media (max-width: 560px) {
+  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+}
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
 .wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -10626,7 +10649,7 @@ span.sk-ttile { cursor: default; }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-.wfl-started { color: var(--text-dim); white-space: nowrap; }
+.wfl-submitted { color: var(--text-dim); white-space: nowrap; }
 .wfl-dur { white-space: nowrap; }
 .wfl-dur.is-absent { color: var(--text-faint); }
 .wfl-filters select:disabled,

@@ -154,7 +154,13 @@ function Topology({ data }: { data: RuntimeTopology }) {
 
         <div className="ctl-cards">
           {runtimes.map((r) => (
-            <RuntimeCard key={r.name} runtime={r} all={runtimes} pools={poolsOf(data, r.name)} />
+            <RuntimeCard
+              key={r.name}
+              runtime={r}
+              all={runtimes}
+              pools={poolsOf(data, r.name)}
+              uncapped={uncappedOf(data, r.name)}
+            />
           ))}
         </div>
       </div>
@@ -534,6 +540,14 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
  * Never rebuilt from a naming rule here -- that would be a second copy of the
  * contract's pool naming, which is how drift starts.
  */
+/** The title of a pool chip whose pool has no document (QA G5-04). */
+const PHANTOM_POOL = 'no such pool configured: admission treats it as uncapped'
+
+/** See `RuntimeCard`'s `uncapped`: empty when the read carries no admission block. */
+function uncappedOf(data: RuntimeTopology, name: string): string[] {
+  return data.profileUncapped?.[name] ?? []
+}
+
 function poolsOf(data: RuntimeTopology, name: string): string[] | null | undefined {
   if (data.profilePools === undefined) return undefined
   if (data.profilePools === null) return null
@@ -544,11 +558,14 @@ function RuntimeCard({
   runtime,
   all,
   pools,
+  uncapped = [],
 }: {
   runtime: Runtime
   all: Runtime[]
   /** See `poolsOf`. */
   pools: string[] | null | undefined
+  /** Of `pools`, the ones the read says have no document (`admission.uncapped`). */
+  uncapped?: readonly string[]
 }) {
   const facts = distinguishing(runtime, all)
   // A profile that let the platform choose is the case this exists for: the
@@ -684,11 +701,21 @@ function RuntimeCard({
               <span className="ctl-mark is-unread" title="The capacity read failed, so the pools this runtime clears are not known.">not read</span>
             ) : (
               <span className="rt-pool-chips">
-                {pools.map((p) => (
-                  <Chip key={p} href="#capacity/pools" title={p}>
-                    {p}
-                  </Chip>
-                ))}
+                {pools.map((p) =>
+                  uncapped.includes(p) ? (
+                    /* A POOL NOBODY CREATED (QA G5-04): the profile names it
+                       because the pool naming does, but Pools does not list
+                       it and admission skips it as unlimited. Dashed, so the
+                       link is not read as a pool that exists. */
+                    <Chip key={p} href="#capacity/pools" title={PHANTOM_POOL} className="is-phantom">
+                      {p}
+                    </Chip>
+                  ) : (
+                    <Chip key={p} href="#capacity/pools" title={p}>
+                      {p}
+                    </Chip>
+                  ),
+                )}
               </span>
             )}
           </div>
@@ -705,8 +732,9 @@ function RuntimeCard({
           {facts.length === 0 ? (
             /* A MEASURED "nothing", not a blank. The comparison ran and found
                no difference; a blank here would read as a comparison nobody
-               made. */
-            <span className="ctl-mark is-zero">real zero</span>
+               made. In words, muted (QA G5-10): `real zero` is the console's
+               own honesty term, and as a chip it read as a status. */
+            <span className="rt-apart-none">nothing: same as the others</span>
           ) : (
             <ul className="ctl-facts is-rows rt-apart-facts">
               {facts.map((f) => (
@@ -752,11 +780,14 @@ export function Credential({ runtime }: { runtime: Runtime }) {
   if (runtime.secrets.length === 0) {
     return (
       <span className="rt-cred">
-        <span className="mono">{runtime.provider}</span>{' '}
-        {/* THE MARK STAYS. An empty credential cell beside a named provider is
-            exactly what a failed read would look like, and this is not one --
-            so it is marked as a measurement rather than left blank. */}
-        <span className="ctl-mark is-zero">real zero</span>
+        <span className="mono">{runtime.provider}</span> ·{' '}
+        {/* SAID, NOT MARKED (QA G5-10). An empty credential cell beside a
+            named provider is what a failed read would look like, so it is not
+            left blank; but `real zero` there read as "needs no credential",
+            and a runtime can name a provider whose credential the worker reads
+            at run time without the catalogue mounting any secret. What is
+            measured is exactly that the catalogue declares none. */}
+        <span className="rt-cred-none">no secret declared in the catalogue</span>
       </span>
     )
   }

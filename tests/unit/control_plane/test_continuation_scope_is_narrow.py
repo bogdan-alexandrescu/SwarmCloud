@@ -406,6 +406,26 @@ def test_the_listed_account_cannot_submit_a_merge_only_continuation(fixer_client
     assert accepted.status_code == 201, accepted.text
 
 
+def test_the_listed_account_cannot_name_a_pull_request_to_merge(fixer_client):
+    """`merge_pr` (#352, owner decision 2026-10-07) merges a pull request no
+    workflow opened: a member's power, as the merge-only continuation is.
+    Alone it is new work, refused by scope before any forge read; beside a
+    `continues_task` it is refused for naming two pull requests."""
+    merge_pr = {"number": 41, "head_sha": "c" * 40}
+    alone = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json={
+        "steps": [{"step_id": "merge", "runner_profile": "merge"}],
+        "strategy": "direct-pr", "merge_pr": merge_pr,
+    })
+    assert _scope_refusal(alone), alone.text
+    original = _submit_direct_pr_task(fixer_client, ALICE)
+    beside = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json={
+        "steps": [{"step_id": "merge", "runner_profile": "merge"}],
+        "strategy": "direct-pr", "merge_pr": merge_pr, "continues_task": original,
+    })
+    assert beside.status_code in (403, 422), beside.text
+    assert "merge_pr" in beside.json()["message"]
+
+
 def _submit_integrate_workflow(fixer_client, headers: dict[str, str]) -> dict[str, str]:
     response = fixer_client.post(
         "/v1/workflows",

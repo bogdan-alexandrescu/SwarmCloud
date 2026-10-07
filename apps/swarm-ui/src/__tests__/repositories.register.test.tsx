@@ -5,7 +5,8 @@
 // WHAT EACH CASE HOLDS:
 //   * step 1 lists GET /v1/repositories/readable, names the secret it was read
 //     with BY NAME, marks a registered repository and does not let it be
-//     picked, and filters by name; nothing is typed as owner/repo;
+//     picked, and filters by name; a repository not listed is typed as
+//     owner/repo (OB0, repositories.register.paging.test.tsx);
 //   * step 2 sets the re-index interval, the change trigger, the runner
 //     profiles (by name, from the catalogue) and the first index;
 //   * Register POSTs exactly the registration's fields, then the first index
@@ -60,8 +61,8 @@ describe('Register repository picks from what the token can read (pick C)', () =
     expect(web.getAttribute('aria-disabled')).toBe('true')
     expect(visible(picks()[0]!)).toContain('private · pushed 18m ago')
     expect(visible(picks()[3]!)).toContain('gh-pages')
-    // No owner/repo text box: the repository is picked, never typed.
-    expect(document.querySelector('input[type="text"]')).toBeNull()
+    // One owner/repo text box, for a repository the list does not carry (OB0).
+    expect(screen.getByRole('textbox', { name: 'Not listed? Type owner/repo' })).toBeTruthy()
   })
 
   it('filters the list by name', async () => {

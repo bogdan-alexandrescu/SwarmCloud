@@ -695,8 +695,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // twice: the help link under the table (AH-12's, for the columns) and the
   // budget note's `Why →` (AH-21's). The short form answers the column first.
   //
-  // Enforced is min(max_active, capacity_units) because that is what every
-  // writer of the tenant pool writes as its hard limit: swarm_api/store.py
+  // Enforced is the tenant pool's `effective_limit` as /v1/capacity serves it
+  // (G5-13, QA 2026-10-07; it was min(max_active, capacity_units) computed in
+  // the browser). The pool's hard limit is min(max_active, capacity_units)
+  // because that is what every writer of the tenant pool writes: swarm_api/store.py
   // `set_tenant_limits` whenever either changes, `ensure_tenant` on a first
   // sign-in, scripts/register-tenant.sh, and terraform/infra/locals.tf
   // `pool_tenants` when Terraform creates the pool. The last two wrote a
@@ -727,11 +729,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What each Tenants column means',
     short:
-      'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
+      'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
       'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
