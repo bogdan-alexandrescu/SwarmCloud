@@ -1140,9 +1140,11 @@ describe('the eight cards', () => {
     const root = await timeline()
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    // A LIVE READ CARRIES ITS AGE: the stats were generated 40 s before the
-    // page asked, and "now" would have said so for as long as the page stayed open.
-    expect(c.querySelector('.ctl-card-note')!.textContent).toMatch(/^read (\d+s ago|just now) · span not applied$/)
+    // A FRESH READ IS SILENT ABOUT ITS AGE (#98, owner ruling 2026-10-07): the
+    // stats were generated 40 s before the page asked, which is fresh, so the
+    // note says only what it does not apply; the head's refresh carries the age.
+    // MUTATION: print `read 40s ago` here again.
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('span not applied')
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('3 parked · 3 running · 2 queued · 1 ready')
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
