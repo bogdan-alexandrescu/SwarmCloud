@@ -73,10 +73,15 @@ exit 0
 """
 
 # The bucket exists and is versioned, so the script creates nothing and the
-# only branch that differs between these cases is the bootstrap layer.
+# only branch that differs between these cases is the bootstrap layer. The
+# recorder's `state list` prints nothing, so the bootstrap state reads as empty;
+# the deployer answers NOT_FOUND, which is the one case in which the empty-state
+# guard (#827, tests/unit/scripts/test_bootstrap_remote_state.py) lets a plan
+# through.
 FAKE_GCLOUD = f"""#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  *"iam service-accounts describe"*) echo "ERROR: NOT_FOUND: Unknown service account" >&2; exit 1 ;;
   *versioning.enabled*) echo "True" ;;
   *"storage buckets describe"*) echo "{BUCKET}" ;;
   *) : ;;
