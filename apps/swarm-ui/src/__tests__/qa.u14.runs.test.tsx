@@ -253,9 +253,9 @@ describe('3: Progress interleaves the steps\' changes with the run\'s', () => {
     await waitFor(() => expect(visible(history)).toContain('impl started'), WAIT)
     const rows = [...history.querySelectorAll('li')].map(visible)
     const at = (needle: string) => rows.findIndex((r) => r.includes(needle))
-    expect(at('from APPROVED')).toBeGreaterThan(-1)
+    expect(at('from approved')).toBeGreaterThan(-1)
     // RUNNING at 20:10, impl started 20:11, docs parked 20:12.
-    expect(at('impl started')).toBeGreaterThan(at('from APPROVED'))
+    expect(at('impl started')).toBeGreaterThan(at('from approved'))
     expect(at('docs parked')).toBeGreaterThan(at('impl started'))
     expect(at('docs parked')).toBe(rows.length - 1)
     // Not the Steps card again: no agent links in Progress.

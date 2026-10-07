@@ -9,6 +9,8 @@
  * came from.
  */
 
+import type { TranscriptStep } from './types'
+
 /** The mask the server writes in place of a credential (swarm_redaction/rules.py). */
 export const MASK = '********'
 
@@ -221,4 +223,42 @@ export function gapSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+/**
+ * A TRANSCRIPT STEP THAT SAYS ONLY THAT THE AGENT IS STILL GOING (QA G2-26,
+ * 2026-10-07): Claude Code's `tool_progress` (served as an `other` step with
+ * `meta.raw_type`) and its `thinking_tokens` system notices. On the running
+ * task the QA read they were most of the transcript, and the newest of them
+ * made the Details tab's last log line the bare word `other`. They are
+ * skipped when choosing that line and folded where they run together; never
+ * dropped, because a reader looking for them must still find them.
+ */
+export function isProgressStep(s: Pick<TranscriptStep, 'kind' | 'meta'>): boolean {
+  const m = s.meta ?? {}
+  return (s.kind === 'other' && m['raw_type'] === 'tool_progress') || (s.kind === 'system' && m['subtype'] === 'thinking_tokens')
+}
+
+/** A run of steps as drawn: one step, or two or more progress steps in a row folded into one. */
+export type StepRun<S> = { kind: 'step'; step: S } | { kind: 'fold'; steps: S[] }
+
+/** Fold every run of two or more consecutive progress steps; a lone one stays a step of its own. */
+export function foldProgress<S extends Pick<TranscriptStep, 'kind' | 'meta'>>(steps: readonly S[]): StepRun<S>[] {
+  const out: StepRun<S>[] = []
+  let run: S[] = []
+  const flush = () => {
+    if (run.length === 1) out.push({ kind: 'step', step: run[0]! })
+    else if (run.length > 1) out.push({ kind: 'fold', steps: run })
+    run = []
+  }
+  for (const s of steps) {
+    if (isProgressStep(s)) {
+      run.push(s)
+      continue
+    }
+    flush()
+    out.push({ kind: 'step', step: s })
+  }
+  flush()
+  return out
 }

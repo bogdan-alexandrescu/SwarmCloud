@@ -14,6 +14,7 @@ import {
 } from './RunSteps'
 import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
+import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import './styles/intake.css'
 import './styles/runs.css'
@@ -634,7 +635,9 @@ function RunPage({ run: served, reread, go, onHeading }: {
         </div>
 
         {run.error !== null && (
-          <p className="rn-error" role="alert"><b>Why:</b> {run.error}</p>
+          // `ended FAILED` is the API's sentence, stored on the run, so its
+          // state tokens are worded at read (QA G2-25, `proseWords`).
+          <p className="rn-error" role="alert"><b>Why:</b> {proseWords(run.error)}</p>
         )}
         {prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} />}
         <StepsCard run={run} read={read} go={go} now={now} />
@@ -757,7 +760,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             {progress.map((h, i) => h.kind === 'step' ? <StepProgress key={h.key} e={h} prev={previousAt(progress, i)} now={now} /> : (
               <li key={h.key}>
                 <RunStateMark state={h.to} />
-                <span>{h.from === null ? 'created' : `from ${h.from}`} · by {h.by || '—'}</span>
+                <span>{h.from === null ? 'created' : `from ${stateWord(h.from)}`} · by {h.by || '—'}</span>
                 <ProgressTime at={h.at} prev={previousAt(progress, i)} now={now} />
               </li>
             ))}
