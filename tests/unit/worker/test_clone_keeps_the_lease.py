@@ -430,7 +430,13 @@ def test_a_failed_then_ok_clone_records_two_tries_in_clone_timed(
     assert [(t["ok"], t["error_class"]) for t in log] == [
         (False, "GitTransient"), (True, None),
     ], log
-    assert all(set(t) == {"connect_seconds", "ok", "error_class", "seconds"} for t in log)
+    assert all(
+        set(t) == {
+            "connect_seconds", "ok", "error_class", "seconds",
+            "probe_peer", "git_peer", "peer_pinned",
+        }
+        for t in log
+    )
     assert all(isinstance(t["seconds"], float) and t["seconds"] >= 0 for t in log)
     # The summary fields every earlier reader reads, unchanged in meaning.
     assert clone["tries"] == 2 and clone["ok"] is True and clone["pinned"] is False

@@ -135,6 +135,8 @@ def test_the_parser_times_every_phase_from_gits_own_timestamps():
         "connections": 1,
         "http_requests": 2,
         "git_version": "2.39.5",
+        # The address curl said it connected to (P27).
+        "git_peer": "140.82.112.3",
     }
     assert auth not in json.dumps(phases)
 
