@@ -377,7 +377,7 @@ describe('Lanes: refresh', () => {
     const asked = (id: string) => api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === id && (c[1] as { order?: string }).order === 'desc' && !(c[1] as { pageToken?: string }).pageToken).length
     expect(asked('task_plan')).toBe(1)
     expect(asked('task_solo')).toBe(1)
-    fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
+    fireEvent.click(screen.getByRole('button', { name: /^refresh/i }))
     await waitFor(() => expect(asked('task_plan')).toBe(2))
     await waitFor(() => expect(asked('task_solo')).toBe(2))
     expect(asked('task_test')).toBe(2)
@@ -397,7 +397,7 @@ describe('Lanes: refresh', () => {
     )
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(release).not.toBeNull())
-    fireEvent.click(await screen.findByRole('button', { name: 'refresh' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^refresh/i }))
     await waitFor(() => expect(api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === 'task_plan').length).toBe(2))
     release!()
     await new Promise((r) => setTimeout(r, 20))

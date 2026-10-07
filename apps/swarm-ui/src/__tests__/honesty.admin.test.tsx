@@ -472,12 +472,15 @@ function quota(over: Partial<QuotaState>): QuotaState {
   } as QuotaState
 }
 
+// The counts are the screen's count note over its first card since #138
+// (owner ruling 2026-10-07), where they were the line under the title.
+// MUTATION: pluralise unconditionally (`1 documents`), or drop the summary.
 describe('Provider quota counts in English (CP-22)', () => {
   it('says 1 document, 1 provider, 1 tenant', async () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota({})] }))
     render(<QuotaDetailScreen />)
     await screen.findByRole('rowheader', { name: 'eng' }, WAIT)
-    const summary = document.querySelector('p.sub')!.textContent ?? ''
+    const summary = document.querySelector('p.c-count-note')!.textContent ?? ''
     expect(summary).toContain('1 document')
     expect(summary).toContain('1 provider')
     expect(summary).toContain('1 tenant')
@@ -490,7 +493,7 @@ describe('Provider quota counts in English (CP-22)', () => {
     )
     render(<QuotaDetailScreen />)
     await screen.findAllByRole('rowheader', { name: 'eng' }, WAIT)
-    const summary = document.querySelector('p.sub')!.textContent ?? ''
+    const summary = document.querySelector('p.c-count-note')!.textContent ?? ''
     expect(summary).toContain('3 documents')
     expect(summary).toContain('2 providers')
     expect(summary).toContain('2 tenants')

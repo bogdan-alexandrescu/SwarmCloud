@@ -11,7 +11,7 @@ import {
 } from './api'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
-import { ACCOUNTS_POLL_MS } from './capacityPoll'
+import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
@@ -246,10 +246,10 @@ export function AccountsScreen() {
       key={nonce}
       title="Accounts"
       load={load}
-      // Decided 2026-10-01 (#117): every 60s, paused while the tab is hidden
+      // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
       // never remounts the screen under a sign-in in progress.
-      pollMs={ACCOUNTS_POLL_MS}
+      pollMs={capacityPoll(ACCOUNTS_POLL_MS)}
       summary={(b) => <SummaryLine board={b} />}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its

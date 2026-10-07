@@ -9,7 +9,8 @@
  *        and every value is cut with its whole text in its title.
  *   D11  A run heading that is a reference was cut at 323px with room to
  *        spare beside it; the Runs list cut the Run id and the Issue
- *        reference. The heading takes the row before the meta does, and the
+ *        reference. The heading takes the row before the head's actions do
+ *        (the meta itself is the count note since #138), and the
  *        two columns fit what they hold.
  *   N15  A Done run whose workflow opened PR #545 said "Pull request: none yet
  *        · the workflow opens it", and drew no CI card. The PR is read from the
@@ -20,8 +21,8 @@
  *   D35  The run page's side cards scrolled away with the page; they stick at
  *        the same top offset as the Submit send card.
  *
- * MUTATIONS: drop the track rule, let a label shrink, give the meta the
- * heading's room again, put Run back to 17%, stop reading the workflow's
+ * MUTATIONS: drop the track rule, let a label shrink, give the head's
+ * actions the heading's room again, put Run back to 17%, stop reading the workflow's
  * result, drop the finished-run CI note, print backticks, or add a second
  * ellipsis -- each turns a case red.
  */
@@ -146,12 +147,15 @@ describe('D3: the Linked card cuts values, never labels', () => {
 })
 
 describe('D11: a reference heading and the list\'s columns fit', () => {
-  it('gives a reference heading the row before the meta', async () => {
+  it('gives a reference heading the row before the head\'s actions', async () => {
     const { container } = await mount(run({ issue_read: null }))
-    const sub = container.querySelector('.rn-run.is-ref .c-phead > .sub')!
-    expect(sub).not.toBeNull()
-    const flex = painted(sub, ['flex', 'flex-basis'], WIDE) ?? ''
-    expect(flex, 'the meta keeps a basis as wide as its text').toMatch(/(^|\s)0(px|%)?$/)
+    // #138: the meta left the head for the count note; what shares the
+    // heading's row now is the head's actions (the refresh).
+    expect(container.querySelector('.rn-run.is-ref .c-phead > .sub'), 'a sub-line is back in the head').toBeNull()
+    const acts = container.querySelector('.rn-run.is-ref .c-phead > .c-acts')!
+    expect(acts).not.toBeNull()
+    const flex = painted(acts, ['flex', 'flex-basis'], WIDE) ?? ''
+    expect(flex, 'the actions keep a basis as wide as their text').toMatch(/(^|\s)0(px|%)?$/)
   })
 
   it('fits the Run id and the Issue reference whole in a 1056px list', async () => {
