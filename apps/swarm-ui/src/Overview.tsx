@@ -24,6 +24,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
+import { disabledSentence } from './ProfileMatrix'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
@@ -1043,7 +1044,7 @@ export function ProfileTile({
   if (profile.available === false) {
     const reason = profile.disabled_reason || 'refused by the platform'
     return (
-      <div className="ov-hp is-off" title={`${name} is disabled: ${reason}. Nothing can start on it, whatever the pools hold.`}>
+      <div className="ov-hp is-off" title={`${disabledSentence(name, profile.disabled_reason)} Nothing can start on it, whatever the pools hold.`}>
         <span className="ov-idc" title={name}>{name}</span>
         <b className="ov-hp-off">disabled</b>
         <small title={reason}>{reason}</small>

@@ -31,12 +31,16 @@
    the widths. They add to 100%, so no column takes room from its neighbour,
    and Use gets the widest figure column: the old quarter-and-eighths left it
    narrower than its own track, and the figure painted over the State chip. */
-.cap-c-pool { width: 23%; }
+/* POOL TAKES THE SHARE ITS KEY NEEDS (QA G5-11, 2026-10-07): at 23% the key
+   `provider:mock-provider:tenant:eng` was cut beside a 190px Use cell whose
+   bar alone was 147px. Use loses bar, never figure (below), and Set by is a
+   dot on most rows now (G5-19), so they give Pool the room. */
+.cap-c-pool { width: 30%; }
 .cap-c-num { width: 11%; }
-.cap-c-use { width: 18%; }
+.cap-c-use { width: 14%; }
 .cap-c-state { width: 13%; }
-.cap-c-by { width: 11%; }
-.cap-c-links { width: 13%; }
+.cap-c-by { width: 9%; }
+.cap-c-links { width: 12%; }
 /* A head is one line: "Leased (units)" fits its eleventh at 1440 with the nav
    open, and at a narrower desktop it ellipsizes (its title says it whole)
    rather than wrapping to two lines or painting into its neighbour. */
@@ -54,6 +58,14 @@
 .cap-pools tbody th[scope='row'] > .ctl-link:hover { text-decoration: underline; }
 .cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cap-pools .cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
+/* THE SCOPE GIVES WAY BEFORE THE KEY (QA G5-11, 2026-10-07). One line still,
+   but as two flex items: the scope shrinks a thousand times faster, so a
+   narrow column cuts `· tenant sm…` and leaves the key whole -- the key is
+   what gets pasted into pool-limit.sh -- and only a key wider than the whole
+   column is cut itself. */
+.cap-pools .cap-sub { display: flex; }
+.cap-pools .cap-sub > .ctl-sub { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cap-pools .cap-sub > .cap-sub-scope { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .cap-scope { color: var(--text-faint); }
 
 /* THE USE CELL: the bar shrinks, the figure does not. The figure's track is
@@ -113,6 +125,20 @@
    resolves to a class, and a nowrap list ran past the card's right edge. It
    is the one prose-shaped column in the table, so it wraps. */
 .rt-sizing td[data-label="Resolves from"] { white-space: normal; overflow-wrap: anywhere; }
+/* ON A PHONE IT HOLDS ONE LINE (QA G5-09, 2026-10-07). At 390 the column is
+   off-screen in the scrolling table, and wrapping every runtime name into its
+   narrow cell made a row about 200px tall with its visible cells floating in
+   blank space. The table scrolls, so the list can be as long as it is. */
+@media (max-width: 699px) {
+  .rt-sizing td[data-label="Resolves from"] { white-space: nowrap; overflow-wrap: normal; }
+}
+/* A POOL NOBODY CREATED (QA G5-04): the chip's outline is dashed, so a pool
+   the profile names but Pools does not list reads as absent, not as a link to
+   a row. Its title says admission treats it as uncapped. */
+.rt-pool-chips > .c-chip.is-phantom { border: 1px dashed var(--text-faint); background: transparent; }
+/* "Sets it apart: nothing" and "cred: no secret declared" are words, muted
+   (QA G5-10), not the `real zero` chip. */
+.rt-apart-none, .rt-cred-none { color: var(--text-dim); font-size: var(--t-meta); }
 
 /* Holders: the table first, its All / per-tenant filter in its head; the
    drift callout above it when a counter disagrees; drift per pool below. */

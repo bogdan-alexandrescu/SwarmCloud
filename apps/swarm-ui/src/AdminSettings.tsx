@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
@@ -575,11 +575,37 @@ export function unitsWord(n: number): string {
  * WHAT SET A POOL'S CEILING, NEVER A BLANK CELL (browser QA D32, 2026-10-04).
  * #132 left the configured case empty so the column would not restate the
  * Ceiling, and every row then read as a cell nobody filled in. The configured
- * case is the word, faint; AIMD and provider quota stand out in ink.
+ * case is a faint dot (G5-19), named for a screen reader; AIMD and provider
+ * quota stand out in ink.
  */
 export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
-  return by.term === 'configured' ? <span className="adm-setby-cfg">configured</span> : <>{by.term}</>
+  // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
+  // nearly every row hid the rows where something else set the ceiling.
+  return by.term === 'configured' ? (
+    <span className="adm-setby-cfg" role="img" aria-label="configured">·</span>
+  ) : (
+    <>{by.term}</>
+  )
+}
+
+/**
+ * A pool key that breaks only after a colon (QA G5-11): the family tables
+ * wrap anywhere, and `provider:anthropic:tenant:smok / e` is not a key anyone
+ * can read or paste. The text is unchanged; `<wbr>` only offers the break.
+ */
+export function keyBreaks(name: string): ReactNode {
+  const parts = name.split(':')
+  return parts.map((part, i) =>
+    i < parts.length - 1 ? (
+      <Fragment key={i}>
+        {`${part}:`}
+        <wbr />
+      </Fragment>
+    ) : (
+      <Fragment key={i}>{part}</Fragment>
+    ),
+  )
 }
 
 /** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
@@ -884,7 +910,7 @@ function PoolRow({
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
-        <span className="ctl-sub">{pool.name}</span>
+        <span className="ctl-sub">{keyBreaks(pool.name)}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="adm-ceiling-cell">
