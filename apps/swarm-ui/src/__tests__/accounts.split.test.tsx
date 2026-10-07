@@ -169,9 +169,12 @@ describe('the list is A1’s compact list, with Add account in its header (#503)
     ])
     const a = item('alpha').querySelector('.acct-window')!
     expect(a.classList.contains('acct-unmeasured')).toBe(true)
-    expect(a.textContent).toBe('—')
+    // The figure, then the window it is (QA G5-23: `— 5h`, `~64% 5h`).
+    expect(a.querySelector('.acct-pct')!.textContent).toBe('—')
+    expect(a.querySelector('.acct-pct-win')!.textContent).toBe(' 5h')
     const b = item('bravo').querySelector('.acct-window')!
-    expect(b.textContent).toBe('~64%')
+    expect(b.querySelector('.acct-pct')!.textContent).toBe('~64%')
+    expect(b.textContent).toBe('~64% 5h')
     expect(b.querySelector('.acct-tilde')).not.toBeNull()
   })
 })

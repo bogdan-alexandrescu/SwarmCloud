@@ -663,10 +663,13 @@ function RuntimeCard({
             {/* THE WORKSPACE IS A SLICE OF THE MEMORY BESIDE IT, not storage
                 on top of it -- the workspace is a memory-backed tmpfs because
                 the Terraform google provider cannot express Cloud Run's
-                disk-backed empty_dir. `of mem` is what stops the two being
-                added together, in two characters rather than a clause. */}
-            <b>ws of mem</b>
-            {spec.disk_gib} GiB
+                disk-backed empty_dir. `of mem`, after the figure, is what
+                stops the two being added together. The KEY is the word
+                `workspace` (QA G5-23): `ws of mem` was an abbreviation a
+                reader had to decode, as the table's `Workspace (of memory)`
+                head is not. */}
+            <b>workspace</b>
+            {spec.disk_gib} GiB of mem
           </li>
           <li className="ctl-fact">
             <b>weight</b>
@@ -905,8 +908,8 @@ function Sizing({
                 <th role="columnheader" scope="col" className="is-num">Workspace (of memory)</th>
                 {/* `(units)`, because a bare "Weight" is a number with no
                     dimension and the `?` that supplied the dimension is gone
-                    (B7.4). The cells read `2u`, so the unit is on the figure
-                    too; what the header adds is that the unit is what the POOLS
+                    (B7.4). The cells are bare figures, as Pools' are under
+                    `Leased (units)`; what the header adds is that the unit is what the POOLS
                     count, so two agents of different classes can cost the same
                     and two of the same class can cost double one of another.
                     NO CLASS IS NAMED IN THIS COMMENT, and that is not style:
@@ -930,7 +933,9 @@ function Sizing({
                     <td role="cell" data-label="vCPU" className="is-num">{spec.cpu}</td>
                     <td role="cell" data-label="Memory" className="is-num">{spec.memory_gib} GiB</td>
                     <td role="cell" data-label="Workspace (of memory)" className="is-num">{spec.disk_gib} GiB</td>
-                    <td role="cell" data-label="Weight (units)" className="is-num">{spec.units}u</td>
+                    {/* A BARE FIGURE (QA G5-23): the head says `(units)`,
+                        and `1u` under it said the unit twice. */}
+                    <td role="cell" data-label="Weight (units)" className="is-num">{spec.units}</td>
                     <td role="cell" data-label="Resolves from">
                       {users.length === 0 ? (
                         /* CONFIGURED AND UNREACHABLE is a fact, not a fault:

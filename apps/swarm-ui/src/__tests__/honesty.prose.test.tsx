@@ -675,7 +675,7 @@ describe('Accounts, with every help card closed', () => {
     const item = chooseAccount('eng:never')
     const onItem = item.querySelector('.acct-window')!
     expect(onItem.classList.contains('acct-unmeasured')).toBe(true)
-    expect(textOf(onItem)).toBe('—')
+    expect(textOf(onItem.querySelector('.acct-pct'))).toBe('—')
 
     // The 5h and 7d tiles of the account nobody has polled.
     const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]

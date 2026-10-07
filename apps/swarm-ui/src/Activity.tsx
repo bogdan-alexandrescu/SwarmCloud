@@ -70,6 +70,7 @@ import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useId
 import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
+import { tableMode, usePhoneTables } from './capacityPoll'
 import { AGE_TICK_MS, useNow } from './useNow'
 import type { Pool, Tenant } from './types'
 import './styles/admin.css'
@@ -1442,6 +1443,8 @@ function WithTenantPools({ roster, children }: { roster: unknown; children: (poo
 }
 
 export function TenantsScreen() {
+  // A record per tenant on a phone (QA G5-08): the roster below.
+  const phone = usePhoneTables()
   return (
     <Screen
       title="Tenants"
@@ -1484,8 +1487,16 @@ export function TenantsScreen() {
                   anything is the first thing this roster is read for, so it
                   cannot be the column that falls off, and at 390 it is the first
                   column past the held name. The identities are shortened on the
-                  wide table instead (`.ten-ident`, styles/admin.css). */}
-              <div className="table-wrap is-scroll">
+                  wide table instead (`.ten-ident`, styles/admin.css).
+
+                  AND BELOW 560px A RECORD PER TENANT (QA G5-08, 2026-10-07).
+                  At 390 the scrolled roster was 1,785px in a 356px box, and
+                  its rows were uneven because credential tags wrapped off
+                  screen. On a phone it is the `data-label` record every other
+                  capacity and admin table now draws (capacityPoll
+                  `tableMode`); the held-column scroll stays from 561 to
+                  899px. */}
+              <div className={`table-wrap ${tableMode(phone)}`}>
                 {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
                     roster out fixed above 900px with these widths, so it is the
                     panel's width and never wider: with the 84+236px nav it ran
