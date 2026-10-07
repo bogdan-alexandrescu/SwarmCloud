@@ -182,3 +182,35 @@ variable "refresher_member" {
     error_message = "enable_subscription_refresh needs a refresher_member; otherwise the refresh secrets would be created with nobody able to read them."
   }
 }
+
+variable "github_app_secrets_enabled" {
+  description = <<-EOT
+    Declare the SwarmCloud GitHub App's two platform secret slots, the client
+    secret and the private key (docs/runbooks/github-app.md). A bool rather
+    than "readers is non-empty", because the reader is a service account email
+    another module produces, unknown until apply, and a for_each key set
+    cannot depend on it.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "github_app_secret_readers" {
+  description = <<-EOT
+    The COMPLETE list of identities that read the App's client secret and
+    private key: swarm-api alone (docs/onboarding.md §3.4 item 2). An
+    authoritative binding on each of the two secrets.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for m in var.github_app_secret_readers : startswith(m, "serviceAccount:")])
+    error_message = "a GitHub App secret reader must be a service account."
+  }
+
+  validation {
+    condition     = !var.github_app_secrets_enabled || length(var.github_app_secret_readers) > 0
+    error_message = "github_app_secrets_enabled needs a reader (swarm-api); otherwise the App's secrets would be created with nobody able to read them."
+  }
+}
