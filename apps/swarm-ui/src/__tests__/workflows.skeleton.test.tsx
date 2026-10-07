@@ -259,3 +259,83 @@ describe('#113: the shared card skeleton’s bars are visible in both themes', (
     }
   })
 })
+
+/**
+ * #113, WHAT #740 LEFT: every other `.ctl-pending` loading bar. The artifact,
+ * log, child, split and checkpoint panes draw `.art-loading-bar` and the
+ * Activity ledger draws `.ol-pending`, each on `.ctl-pending`'s `--surface-2`
+ * fill under an opaque `--ctl-pending` sweep of that same surface -- 1.21:1
+ * in dark. They take the card bar's step, in one shared rule.
+ */
+const SOURCES = import.meta.glob<string>('../*.tsx', { query: '?raw', import: 'default', eager: true })
+
+/** Every class drawn beside `ctl-pending` in a literal `className`, with the files that draw it. */
+function pendingBars(): Map<string, string[]> {
+  const found = new Map<string, string[]>()
+  for (const [path, text] of Object.entries(SOURCES)) {
+    for (const m of text.matchAll(/className="([^"]*)"/g)) {
+      const classes = m[1].split(/\s+/)
+      if (!classes.includes('ctl-pending')) continue
+      for (const c of classes.filter((c) => c && c !== 'ctl-pending')) {
+        const files = found.get(c) ?? []
+        if (!files.includes(path)) files.push(path)
+        found.set(c, files)
+      }
+    }
+  }
+  return found
+}
+
+/** Each loading bar, drawn in the parent it sits in on screen. */
+const BARS: Readonly<Record<string, () => JSX.Element>> = {
+  'art-loading-bar': () => (
+    <p className="art-loading">
+      <span className="ctl-pending art-loading-bar" />
+    </p>
+  ),
+  'ol-pending': () => (
+    <div className="ol-body">
+      <div className="ctl-pending ol-pending" aria-hidden="true" />
+    </div>
+  ),
+}
+
+describe('#113: every `.ctl-pending` loading bar is visible in both themes', () => {
+  it('the scan finds every loading bar the screens draw, and each one is measured below', () => {
+    const found = pendingBars()
+    expect([...found.keys()].sort()).toEqual(Object.keys(BARS).sort())
+    expect(found.get('art-loading-bar')!.map((p) => p.replace('../', '')).sort()).toEqual([
+      'AgentChildren.tsx',
+      'AgentLogs.tsx',
+      'AgentSplit.tsx',
+      'ArtifactViewer.tsx',
+      'Artifacts.tsx',
+      'CheckpointBrowser.tsx',
+    ])
+    expect(found.get('ol-pending')).toEqual(['../Activity.tsx'])
+  })
+
+  it.each(Object.keys(BARS))('a `.%s` clears 1.5:1 against the page and the card, and sweeps the shared band', (name) => {
+    render(
+      <>
+        {BARS[name]()}
+        <div className="skeleton ctl-skeleton-row" />
+      </>,
+    )
+    const bar = document.querySelector(`.${name}`)!
+    const shared = document.querySelector('.skeleton')!
+    for (const theme of THEMES) {
+      const fill = colour(at(bar, 'background-color', theme) ?? '')
+      expect(fill, `the ${name} bar has no resolvable fill in ${theme}`).not.toBeNull()
+      for (const ground of ['--bg', '--surface'] as const) {
+        const ratio = contrast(fill!, varColour(ground, theme))
+        expect(ratio, `${theme}: the ${name} bar against ${ground} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(1.5)
+      }
+      expect(at(bar, 'background-image', theme), `${theme}: the ${name} bar does not sweep the shared band`).toBe(
+        at(shared, 'background-image', theme),
+      )
+      expect(at(bar, 'animation', theme)).toMatch(/ctl-sweep/)
+      expect(at(bar, 'animation', theme, true)).toBe('none')
+    }
+  })
+})
