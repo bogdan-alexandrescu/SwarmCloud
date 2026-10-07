@@ -25,6 +25,7 @@ import {
 } from '../capacityPoll'
 import { OVERVIEW_POLL_MS } from '../Overview'
 import { AGED_AFTER_MS, IDLE_STOP_MS, PageHead, Screen, staleFoot } from '../Shell'
+import { UrRefresh, type UrRead } from '../RepositoriesParts'
 import { TIMELINE_POLL_MS } from '../TimelineLanes'
 import type { Result } from '../fetch'
 
@@ -116,6 +117,35 @@ describe('#138: one head shape -- title left, actions right, no sub-line', () =>
     await advance(12_000)
     expect(control().textContent, 'the age did not tick').toBe('⟳ 10 s')
     expect(control().getAttribute('aria-label')).toMatch(/^Refresh · read 10 s ago/)
+  })
+})
+
+describe('#98: a page that is not a `Screen` still carries its age on its refresh', () => {
+  it('ticks the newest of its reads, re-runs every one on a press, and says `not refreshed` once old', async () => {
+    // The Repositories and Git tokens pages read through `useUrRead`.
+    // MUTATION: take the oldest read's age, reload only the first read, or
+    // drop the AGED_AFTER_MS check from `UrRefresh`.
+    fake()
+    const t0 = Date.now()
+    const reload = [vi.fn(), vi.fn()]
+    const reads: UrRead<unknown>[] = [
+      { state: { status: 'ok', data: [], fetchedAt: t0 - 20_000 }, reload: reload[0]! },
+      { state: { status: 'empty', fetchedAt: t0 - 5_000 }, reload: reload[1]! },
+    ]
+    render(
+      <PageHead title="Git tokens">
+        <UrRefresh reads={reads} />
+      </PageHead>,
+    )
+    const control = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>('.c-phead > .c-acts > .c-refresh')!
+    expect(control().textContent).toBe('⟳ 5 s')
+    await advance(10_000)
+    expect(control().textContent, 'the age did not tick').toBe('⟳ 15 s')
+    fireEvent.click(control())
+    expect(reload[0]).toHaveBeenCalledTimes(1)
+    expect(reload[1]).toHaveBeenCalledTimes(1)
+    await advance(AGED_AFTER_MS)
+    expect(control().textContent).toMatch(/^⟳ not refreshed · read 5 min ago$/)
   })
 })
 

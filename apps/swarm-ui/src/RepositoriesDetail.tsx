@@ -7,7 +7,8 @@ import {
   type IndexDoc, type IndexRun, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
 import {
-  LIST, GT_PAGE, TestsMapped, UrCapRow, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRegion, repoAddress,
+  LIST, GT_PAGE, TestsMapped, UrCapRow, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRefresh, UrRegion, repoAddress,
+  type UrRead,
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -73,7 +74,9 @@ export function RepositoryDetail({ repoId, tab, go, pr = null }: { repoId: strin
     return (
       <div className="ur-page ur-detail">
         {crumb}
-        <PageHead title={title}>{null}</PageHead>
+        <PageHead title={title}>
+          <UrRefresh reads={[detail, index]} />
+        </PageHead>
         <UrRegion
           state={detail.state}
           route="GET /v1/repositories/{repo_id}"
@@ -97,14 +100,31 @@ export function RepositoryDetail({ repoId, tab, go, pr = null }: { repoId: strin
   return (
     <div className="ur-page ur-detail">
       {crumb}
-      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} pr={pr} />
+      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} pr={pr} reads={[detail, index]} />
     </div>
   )
 }
 
 type IndexRead = ReturnType<typeof useUrRead<IndexDoc | null>>
 
-function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: IndexRead; tab: TabKey; go: (to: string) => void; onRead: () => void; pr: string | null }) {
+function DetailBody({
+  d,
+  index,
+  tab,
+  go,
+  onRead,
+  pr,
+  reads,
+}: {
+  d: RepoDetail
+  index: IndexRead
+  tab: TabKey
+  go: (to: string) => void
+  onRead: () => void
+  pr: string | null
+  /** The page's head reads, for its refresh and its one age (#98). */
+  reads: readonly UrRead<unknown>[]
+}) {
   const r = d.repository
   const f = freshness(r.index)
   const [busy, setBusy] = useState(false)
@@ -130,6 +150,7 @@ function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: I
   return (
     <>
       <PageHead title={repoName(r)}>
+        <UrRefresh reads={reads} />
         <UrFreshPill f={f} />
         {inFlight !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={inFlight} />

@@ -133,9 +133,10 @@ const AN_AGE = /\d+ (s|min|h|d)\b/
 // ONE AGE PER SCREEN (#98, owner ruling 2026-10-07). On a `Screen` route the
 // screen's age is its head's refresh control (`.c-refresh`), and the screen
 // claims the page age, so the frame's `.ctl-head-age` is not drawn there at
-// all. The frame still draws it on a page head with no age of its own -- the
-// Repositories pages -- and there it must still be THAT screen's reads, never
-// the frame's identity read: CH-2's defect, kept pinned below.
+// all. The Repositories pages read through `useUrRead`, not `Screen`, and
+// carry the same control (`UrRefresh`); there too the age must be THAT
+// screen's reads, never the frame's identity read: CH-2's defect, kept pinned
+// below. The frame's span is left only on heads that read nothing.
 describe("CH-2: the head's read age is the screen's own", () => {
   it('says "reading…" while its screen loads, even after the frame\'s own read has landed', async () => {
     // THE DEFECT: the head's age was the newest success of ANY route in the
@@ -156,18 +157,20 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 
-  it('says "reading…" on a head with no age of its own until that screen\'s read lands', async () => {
-    // The frame's age, where it is still drawn (a PageHead with no refresh
-    // control of its own: the Repositories list), is the screen's own reads.
-    // MUTATION: read the age off the tab-wide registry again.
+  it('says "reading…" on the Repositories list\'s own refresh until its read lands', async () => {
+    // The Repositories list is not a `Screen`, and its age is still on the
+    // control that renews it (#98): `UrRefresh`, over the list's own read.
+    // MUTATION: give `UrRefresh` the tab-wide newest read, or stop it
+    // claiming the page age (the frame's span comes back beside it).
     const { release } = await liveApp('#work/repositories', '/v1/repositories')
-    await waitFor(() => expect(document.querySelector('.c-phead .c-acts .ctl-head-age'), 'the frame age left the head').not.toBeNull())
-    expect(headAge(), 'the head claims an age for a screen that has read nothing').toMatch(/reading…/)
-    expect(headAge()).not.toMatch(/newest read/)
+    await waitFor(() => expect(pageRefresh(), 'the Repositories list has no refresh control').not.toBeNull())
+    expect(refreshSays(), 'the head claims an age for a screen that has read nothing').toBe('⟳ reading…')
+    expect(document.querySelector('.ctl-head-age'), 'the frame prints a second age on the Repositories list').toBeNull()
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ repositories: [] }))
-    await waitFor(() => expect(headAge()).toMatch(/newest read/))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ \d+ s$/))
+    expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 
   it('says "not read" when its screen\'s read failed, and never shows the frame\'s age', async () => {
@@ -181,12 +184,13 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(dockLine(), 'the dock is the tab-wide view').toMatch(/newest/)
   })
 
-  it('says "not read" on a head with no age of its own when that screen\'s read failed', async () => {
+  it('says "not read" on the Repositories list\'s own refresh when its read failed', async () => {
     // MUTATION: fall back to the tab-wide age when the screen has none.
     const { release } = await liveApp('#work/repositories', '/v1/repositories')
     await release(json({ message: 'A service the API depends on did not answer.' }, 503))
-    await waitFor(() => expect(headAge()).toMatch(/not read/))
-    expect(headAge()).not.toMatch(/newest read|\d/)
+    await waitFor(() => expect(pageRefresh()?.getAttribute('aria-label')).toBe('Refresh · not read'))
+    expect(refreshSays()).toBe('⟳ refresh')
+    expect(document.querySelector('.ctl-head-age'), 'the frame prints its age beside a failed screen').toBeNull()
     expect(dockLine(), 'the dock is the tab-wide view').toMatch(/newest/)
   })
 

@@ -155,8 +155,9 @@ const note = (): string => document.querySelector('.c-count-note')?.textContent 
 // head's refresh control (`⟳ 12 s`), in or out of the frame, and the screen
 // claims the page age so the frame's `.ctl-head-age` is not drawn beside it.
 // The count moved off the head to a note over the first card (#138) and says
-// no age at all. A head with no age of its own (API reads, Help, the
-// Repositories pages) still takes the frame's.
+// no age at all. A head with no age of its own (API reads, Help, the Submit
+// chooser) still takes the frame's; the Repositories pages carry their own
+// refresh control (`UrRefresh`).
 describe('#98: one read age per screen', () => {
   it("prints a fresh read's age once: on the head's refresh control, not again on the count", async () => {
     // MUTATION: put a `read …` age on the count note, or a second age in the

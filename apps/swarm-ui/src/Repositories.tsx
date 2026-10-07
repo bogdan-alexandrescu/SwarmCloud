@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadRepositories, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -89,6 +89,8 @@ function RepositoryList({
       {children(
         count === null ? undefined : `${count} registered`,
         <span className="ur-acts">
+          {/* The list's age, on the control that renews it (#98). */}
+          <UrRefresh reads={[{ state, reload }]} />
           <UrNavButton to={GT_PAGE} go={go} size="sm">
             Git tokens
           </UrNavButton>

@@ -5,7 +5,7 @@ import {
   CAPABILITIES, SCOPE_WORD, createSecretsCommand, daysUntil, expiryWords, kindWords, normToken, repoName,
   type GitToken, type PermissionRow, type RepoRecord, type TokenScope,
 } from './RepositoriesData'
-import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 
@@ -75,6 +75,8 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
       {/* TITLE LEFT, ACTIONS RIGHT (#138): the scope filter is an action of
           the page, and the count is the note over its first card. */}
       <PageHead title="Git tokens">
+        {/* The page's one age, on the control that renews it (#98). */}
+        <UrRefresh reads={[tokens, repos]} />
         <UrRadio<ScopeFilter>
           label="Scope"
           value={scope}
@@ -347,6 +349,7 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
     <div className="ur-page ur-perms">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens', to: GT_PAGE }, { label: 'Permissions' }]} go={go} />
       <PageHead title="Permissions">
+        <UrRefresh reads={[perms]} />
         {data?.order != null && <Chip>{`order ${data.order}`}</Chip>}
         <span className="ur-acts">
           <Button size="sm" busy={busy} disabled={tokenIds.length === 0} onClick={() => void verifyAll()}>
