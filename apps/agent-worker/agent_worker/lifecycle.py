@@ -552,6 +552,29 @@ def _skip_cause(reason: str) -> str:
     return expected_mod.CAUSE_REFUSED
 
 
+def published_nothing(summary: Any) -> bool:
+    """True when a SUCCEEDED contributor's `result_summary` says it had no
+    branch to push (#760): its harvest ran (no `error`), recorded
+    `published: false`, and found no commit and no uncommitted path.
+
+    A review step under `integrate` -- one that writes only `verdict.json`
+    and leaves its clone as cloned -- ends exactly so. Every condition is
+    read, none defaulted: a contributor that committed, left work
+    uncommitted, or whose harvest failed could have pushed, and its absent
+    branch is "missing" on the pull request as before.
+    """
+    if not isinstance(summary, dict):
+        return False
+    git = summary.get("git")
+    if not isinstance(git, dict) or git.get("error"):
+        return False
+    return (
+        git.get("published") is False
+        and git.get("commit_count") == 0
+        and git.get("dirty_count", 0) == 0
+    )
+
+
 @dataclass
 class Outcome:
     exit_code: int
@@ -697,6 +720,10 @@ class Worker:
         # The contributors this integrator left out of its merge because they
         # changed nothing (`_integrates_with_changes`, 2026-10-05).
         self._no_change_contributors: list[str] = []
+        # The contributors it left out because they SUCCEEDED having
+        # published nothing by design -- a review that writes only a verdict
+        # (`_integrates_with_changes`, #760).
+        self._read_only_contributors: list[str] = []
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -4409,6 +4436,11 @@ class Worker:
         on to meet the refusal where it always did (staging, the clone, the
         merge's "missing"), with the words those give.
         """
+        return expected_mod.left_nothing(self._succeeded_upstream_summary(task_id))
+
+    def _succeeded_upstream_summary(self, task_id: str) -> Any:
+        """One upstream's `result_summary`, read through the tenant-checked
+        upstream read; None for one that did not SUCCEED or cannot be read."""
         try:
             upstream = inputs_mod.fetch_upstream_task(
                 self.db,
@@ -4420,7 +4452,7 @@ class Worker:
             return None
         if upstream.get("state") != TaskState.SUCCEEDED.value:
             return None
-        return expected_mod.left_nothing(upstream.get("result_summary"))
+        return upstream.get("result_summary")
 
     def _nothing_to_work_on(self, task: dict[str, Any]) -> list[str]:
         """The upstream task ids whose missing change leaves this step nothing
@@ -4496,17 +4528,30 @@ class Worker:
         one that ended with nothing to change (`no_change`, or skipped). Those
         pushed no branch, so merging them would name them "missing" on the
         pull request, as an incomplete integration they are not. They are
-        recorded in `_no_change_contributors`, and the publish says so."""
+        recorded in `_no_change_contributors`, and the publish says so.
+
+        Left out too, into `_read_only_contributors` (#760): one that
+        SUCCEEDED having published nothing (`published_nothing`) -- under
+        `integrate` a review step is a contributor, and one that writes only
+        `verdict.json` never had a branch to push. "missing" means a step
+        that should have pushed and did not; a FAILED contributor, or one
+        that says it published, is still merged and still named missing when
+        its branch is absent."""
         kept: list[str] = []
         self._no_change_contributors = []
+        self._read_only_contributors = []
         for task_id in self._dispatch_integrates():
             # One that cannot be read is merged as before, and the merge
             # names a branch it cannot find.
-            left = self._upstream_left(task_id) if _TASK_ID_RE.match(task_id) else None
-            if left is None:
-                kept.append(task_id)
-            else:
+            summary = (
+                self._succeeded_upstream_summary(task_id) if _TASK_ID_RE.match(task_id) else None
+            )
+            if expected_mod.left_nothing(summary) is not None:
                 self._no_change_contributors.append(task_id)
+            elif published_nothing(summary):
+                self._read_only_contributors.append(task_id)
+            else:
+                kept.append(task_id)
         return kept
 
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
@@ -8996,6 +9041,12 @@ class Worker:
                     out.setdefault("integrated", {})["no_change"] = [
                         f"{cfg.git_branch_prefix}{tid}" for tid in self._no_change_contributors
                     ]
+                if self._read_only_contributors:
+                    # Not merged, and not missing: they SUCCEEDED having
+                    # published nothing by design (#760).
+                    out.setdefault("integrated", {})["read_only"] = [
+                        f"{cfg.git_branch_prefix}{tid}" for tid in self._read_only_contributors
+                    ]
 
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
@@ -9283,6 +9334,15 @@ class Worker:
         if merge is not None:
             lines += ["", f"Integrates {len(merge.merged)} contributor branch(es):"]
             lines += [f"- merged: `{b}`" for b in merge.merged] or ["- none"]
+            if self._read_only_contributors:
+                # A neutral line, never under a NOT included heading: these
+                # steps finished having published nothing by design (#760),
+                # and a reviewer reading "missing" would re-run them for a
+                # branch they were never to push.
+                read_only = ", ".join(
+                    f"`{cfg.git_branch_prefix}{tid}`" for tid in self._read_only_contributors
+                )
+                lines += ["", f"read-only, nothing to merge: {read_only}"]
             if merge.conflicted:
                 lines += [
                     "",
