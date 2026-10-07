@@ -40,6 +40,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { revealTop } from '../ArtifactViewer'
 import { HELP } from '../help'
 import type { AgentRun, ResourceClasses } from '../api'
 import type { Result } from '../fetch'
@@ -219,6 +220,46 @@ describe('G2-01: on a phone the inspector scrolls, and the strip sticks only whe
     const el = await split('logs', running())
     expect(el.classList.contains('on-logs')).toBe(true)
     expect(painted(el, ['overflow-y', 'overflow'], PHONE)).toBe('hidden')
+  })
+})
+
+describe('G2-01: a file opened on a phone is brought into view by the column that scrolls', () => {
+  // The phone column scrolls and the pane is `overflow: visible`: moving the
+  // pane's scrollTop would do nothing, and the viewer would open below the fold.
+  function column(paneOverflow: string): { split: HTMLElement; pane: HTMLElement; tabs: HTMLElement; viewer: HTMLElement } {
+    const { container } = render(
+      <div className="ag-split" style={{ overflowY: 'auto' }}>
+        <div className="ag-tabs-edge" style={{ position: 'sticky' }} />
+        <div className="ag-split-pane" style={{ overflowY: paneOverflow as 'auto' }}>
+          <div className="art-viewer" />
+        </div>
+      </div>,
+    )
+    const split = container.querySelector<HTMLElement>('.ag-split')!
+    const pane = container.querySelector<HTMLElement>('.ag-split-pane')!
+    const tabs = container.querySelector<HTMLElement>('.ag-tabs-edge')!
+    const viewer = container.querySelector<HTMLElement>('.art-viewer')!
+    split.getBoundingClientRect = () => ({ top: 0 }) as DOMRect
+    pane.getBoundingClientRect = () => ({ top: 400 }) as DOMRect
+    tabs.getBoundingClientRect = () => ({ top: 0, height: 88 }) as DOMRect
+    viewer.getBoundingClientRect = () => ({ top: 900 }) as DOMRect
+    split.scrollTop = 0
+    pane.scrollTop = 0
+    return { split, pane, tabs, viewer }
+  }
+
+  it('scrolls the column, less the sticky tabs, when the pane does not scroll', () => {
+    const { split, pane, viewer } = column('visible')
+    revealTop(viewer)
+    expect(split.scrollTop, 'the phone column was not scrolled to the viewer').toBe(900 - 0 - 88 - 8)
+    expect(pane.scrollTop).toBe(0)
+  })
+
+  it('still scrolls only the pane where the pane is the scroller', () => {
+    const { split, pane, viewer } = column('auto')
+    revealTop(viewer)
+    expect(pane.scrollTop).toBe(900 - 400 - 8)
+    expect(split.scrollTop, 'the column moved under a pane that scrolls').toBe(0)
   })
 })
 
