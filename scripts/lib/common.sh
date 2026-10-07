@@ -1829,7 +1829,15 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Continuation lines are joined and comment lines dropped, as Docker does, and
 # a RUN heredoc's body is skipped so a line inside it cannot read as an
 # instruction.
-DOCKERFILE_COPY_AWK="$(cat <<'AWK'
+#
+# THE HEREDOC IS IN A FUNCTION, NOT IN $( ) (#825). bash 3.2 -- macOS's
+# /bin/bash -- scans a heredoc body written inside $( ) for quotes, and the
+# lone apostrophe in the `["']` classes below opened a quote that swallowed
+# the rest of this file: every script sourcing it failed to parse, reported
+# hundreds of lines later inside redact(). The program text is unchanged; the
+# function prints it and $( ) strips its trailing newline exactly as before.
+_dockerfile_copy_awk_program() {
+  cat <<'AWK'
 function refuse(msg) {
   printf "%s:%d: %s\n", FILENAME, start, msg > "/dev/stderr"
   bad = 1
@@ -1891,7 +1899,9 @@ function refuse(msg) {
 }
 END { exit bad }
 AWK
-)"
+}
+DOCKERFILE_COPY_AWK="$(_dockerfile_copy_awk_program)"
+unset -f _dockerfile_copy_awk_program
 
 dockerfile_copy_sources() {
   awk "${DOCKERFILE_COPY_AWK}" "$1"
