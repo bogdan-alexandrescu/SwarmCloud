@@ -244,7 +244,8 @@ describe('the spine tenant block', () => {
     const list = picker()!
     expect(list.getAttribute('aria-label')).toBe('Act as')
     expect(list.textContent).toContain('Act as · 2 tenants you are a member of')
-    expect(rowFor('eng@example.com')?.getAttribute('aria-current')).toBe('true')
+    // The current tenant is named as the panel names it (QA G1-06), not by its group email.
+    expect(rowFor('Engineering')?.getAttribute('aria-current')).toBe('true')
     expect(rowFor('research@example.com')?.getAttribute('aria-current')).toBeNull()
     const readsBefore = screenReads
     const callsBefore = f.mock.calls.length
