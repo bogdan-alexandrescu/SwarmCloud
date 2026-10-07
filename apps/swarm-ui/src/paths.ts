@@ -119,8 +119,12 @@ export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
 
 /** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
 export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
-/** The one query a repository tab carries in the bar: the pull request the Impact tab opens on. */
-const REPO_TAB_QUERY: readonly string[] = ['pr']
+/**
+ * The query a repository tab carries in the bar: the pull request the Impact
+ * tab opens on, and the Graph view and symbol search a Test map row opens
+ * (`view=tests&q=<directory>`, QA G4-09).
+ */
+const REPO_TAB_QUERY: readonly string[] = ['pr', 'view', 'q']
 
 /**
  * The path for an address. `agentTab` is the list an open agent sits in

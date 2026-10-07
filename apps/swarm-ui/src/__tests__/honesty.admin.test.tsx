@@ -415,8 +415,11 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     const global = document.querySelector('.adm-family')!
     expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).toContain('Set by')
     const cell = editorRow('global').querySelector('td[data-label="Set by"]')!
-    expect(cell.textContent).toBe('configured')
+    // A faint dot named `configured` since QA G5-19 (capacity.html §G): never
+    // blank, never the word on every row.
+    expect(cell.textContent).toBe('·')
     expect(cell.querySelector('.adm-setby-cfg'), 'configured is drawn as loud as an override').not.toBeNull()
+    expect(cell.querySelector('.adm-setby-cfg')?.getAttribute('aria-label')).toBe('configured')
   })
 })
 

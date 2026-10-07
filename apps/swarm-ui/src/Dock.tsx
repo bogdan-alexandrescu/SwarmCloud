@@ -12,7 +12,7 @@ import { probeSnapshot, subscribeProbes } from './fetch'
 import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
-import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
+import { DOCK, DOCK_COLLAPSED, clampPane, fmtLatency, readPane, summariseProbes, writePane } from './panes'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -279,7 +279,7 @@ export function Dock() {
           </span>
           {/* An em dash, never a 0: no sample is not a fast response. */}
           <span className="ctl-dock-fact is-wide">
-            {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${s.p95Ms}ms`}
+            {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${fmtLatency(s.p95Ms)}`}
             {' · '}
           </span>
           <span className={`ctl-dock-fact${s.failed > 0 ? ' ctl-dock-bad' : ''}`}>

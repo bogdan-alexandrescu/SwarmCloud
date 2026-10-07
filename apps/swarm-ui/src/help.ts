@@ -62,6 +62,7 @@ import {
   TERMINAL_STATES,
   type TaskState,
 } from './types'
+import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
 
 /**
  * Every topic. Adding a member here without adding an entry to `TOPICS` is a
@@ -100,6 +101,7 @@ export type TopicId =
   | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
+  | 'keyboard'
   | 'lease-and-pool-are-two-records'
   | 'lending'
   | 'lending-narrows-isolation'
@@ -174,6 +176,7 @@ export type HelpGroupId =
   | 'the-catalogue'
   | 'submitting-work'
   | 'an-account'
+  | 'using-the-console'
 
 export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'reading-a-figure', title: 'Reading a figure' },
@@ -182,6 +185,8 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'the-catalogue', title: 'The runtime catalogue' },
   { id: 'submitting-work', title: 'Submitting work' },
   { id: 'an-account', title: 'Running the account pool' },
+  // G1-21: the keyboard had no topic, and belongs to none of the above.
+  { id: 'using-the-console', title: 'Using the console' },
 ]
 
 /**
@@ -260,7 +265,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'api-reads': {
     group: 'the-platform',
-    title: 'The reads behind a screen',
+    title: 'The dock: routes, failures and the newest payload’s age',
     short:
       'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
     long: [
@@ -396,7 +401,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   capacity: {
     group: 'the-platform',
-    title: 'What reserves capacity',
+    title: 'Only work holding a slot costs capacity',
     short:
       'Only these states create infrastructure demand. Capacity for a task is reserved all-or-nothing across every pool it needs, in one transaction, and is counted from the moment it is held rather than from the moment an agent starts.',
     long: [
@@ -653,7 +658,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // pool_names_for in apps/common/swarm_common), said without its names.
   'what-a-pool-is': {
     group: 'the-platform',
-    title: 'What a pool is',
+    title: 'A ceiling, a count of what holds it, and a pause switch',
     short:
       'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every task needs several at the same moment, and it starts only when all of them have room.',
     long: [
@@ -695,8 +700,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // twice: the help link under the table (AH-12's, for the columns) and the
   // budget note's `Why →` (AH-21's). The short form answers the column first.
   //
-  // Enforced is min(max_active, capacity_units) because that is what every
-  // writer of the tenant pool writes as its hard limit: swarm_api/store.py
+  // Enforced is the tenant pool's `effective_limit` as /v1/capacity serves it
+  // (G5-13, QA 2026-10-07; it was min(max_active, capacity_units) computed in
+  // the browser). The pool's hard limit is min(max_active, capacity_units)
+  // because that is what every writer of the tenant pool writes: swarm_api/store.py
   // `set_tenant_limits` whenever either changes, `ensure_tenant` on a first
   // sign-in, scripts/register-tenant.sh, and terraform/infra/locals.tf
   // `pool_tenants` when Terraform creates the pool. The last two wrote a
@@ -727,11 +734,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What each Tenants column means',
     short:
-      'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
+      'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
       'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
@@ -770,7 +777,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'tenant-scope': {
     group: 'the-platform',
-    title: 'Whose figures these are',
+    title: 'Capacity is your tenant’s, never the platform’s',
     short:
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
     // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
@@ -974,6 +981,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // G1-21 (QA pass 2026-10-07). GENERATED FROM `SHORTCUTS` (shortcuts.ts), the
+  // table the handlers read: the list is that table, and the claim's two keys
+  // are its rows, so a rebound key cannot leave this topic naming the old one.
+  keyboard: {
+    group: 'using-the-console',
+    title: `${shortcut('anywhere', 'n').label} opens Submit and ${shortcut('anywhere', '?').label} opens the list of keys`,
+    short: `${shortcut('anywhere', 'n').label} opens Submit from any page, and ${shortcut('anywhere', '?').label} opens the full list of keys. A key acts only where the list says it is listened for, and a letter never acts while you are typing in a field.`,
+    long: [
+      'Each key is listed once, with where it is listened for. A letter or a symbol does nothing while focus is in a text field, a select or an editable area, where it is a character; nothing while Ctrl, Alt or Cmd is held, so the browser’s and the system’s own shortcuts are left alone; and nothing while a dialog or a side editor is open over the page, which owns the keyboard until it closes.',
+      'A key listened for inside one view is taken by that view first. In a diff, the key that opens Submit everywhere else opens the next file instead.',
+    ],
+    values: () => SHORTCUTS.map((k) => ({ term: k.label, note: `${k.does}, ${SCOPE_WORDS[k.scope]}` })),
+  },
   'workflow-stages': {
     group: 'submitting-work',
     title: 'How a workflow runs its steps',
@@ -1282,7 +1302,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'lent-account': {
     group: 'an-account',
-    title: 'An account lent to you',
+    title: 'A lent account runs your agents and has no controls',
     short:
       'Your agents can run on it. Pausing, draining, re-lending, refreshing and signing in again stay with its owner, and those routes answer here as though no such account existed — the same answer a label that does not exist gets, so asking cannot confirm somebody else’s account names.',
     long: [
@@ -1651,7 +1671,9 @@ export interface HelpAct {
  * `subject` is the topic's NAME, two to six words -- what the Help index and
  * every footer index (`HelpLinks`) print. The `title` stays the claim, word for
  * word, because the `?` card beside a figure opens with it and renaming it is
- * the owner's choice rather than this record's.
+ * the owner's choice rather than this record's. The two never match: the
+ * owner's QA pass of 2026-10-07 (G1-16) found five topics whose "You see" row
+ * repeated the name above it, and gave them claims of their own.
  *
  * Kept as its own `Record<TopicId, ...>` rather than inside each spec so a new
  * topic without one is a type error in one place, and so the claims and
@@ -1890,6 +1912,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'input-is-opaque': {
     subject: 'The task input',
     act: { say: 'Write the input for the agent; check it yourself, because nothing else will.', at: 'submit' },
+  },
+  keyboard: {
+    subject: 'Keyboard shortcuts',
+    act: { say: 'Press the key where its row says it is listened for, with focus outside any field.', at: 'submit' },
   },
   'workflow-stages': {
     subject: 'Workflow stages',

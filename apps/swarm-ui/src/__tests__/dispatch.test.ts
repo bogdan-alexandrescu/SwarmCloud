@@ -12,7 +12,7 @@ import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 
-import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused } from '../Dispatch'
+import { CARRIER_FIXED_NOTE, DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused } from '../Dispatch'
 import * as TYPES from '../types'
 import {
   CARRIER_NOTE,
@@ -373,10 +373,10 @@ describe('TS-6: the carrier is a workflow question, asked once, and its caveat i
     expect(container.textContent).not.toContain('not acted on')
   })
 
-  it('names each carrier once on the workflow form', () => {
+  it('names the carrier once on the workflow form, fixed (QA G4-28)', () => {
     const { container } = control('workflow')
     const options = [...container.querySelectorAll('#dsp-carrier option')].map((o) => o.textContent)
-    expect(options, '"checkpoints — Checkpoints"').toEqual(['checkpoints', 'branches'])
+    expect(options, '"checkpoints — Checkpoints"').toEqual(['checkpoints (fixed)'])
   })
 
   it('says "not acted on yet" in plain ink with a help link, and keeps the full sentence as its name', () => {
@@ -389,7 +389,9 @@ describe('TS-6: the carrier is a workflow question, asked once, and its caveat i
     const note = [...container.querySelectorAll('.ctl-panel-note')].find((p) => (p.textContent ?? '').includes('not acted on yet'))
     expect(note, 'the "not acted on" fact left the surface').toBeTruthy()
     expect(note!.querySelector('a[href="#help/dispatch-carrier"]')).not.toBeNull()
-    expect(note!.getAttribute('aria-label')).toBe(CARRIER_NOTE)
+    // The form's own sentence: CARRIER_NOTE speaks of choosing `branches`,
+    // which this form no longer offers (QA G4-28).
+    expect(note!.getAttribute('aria-label')).toBe(CARRIER_FIXED_NOTE)
     expect(container.querySelector('#dsp-carrier')!.getAttribute('aria-describedby')).toBe(note!.id)
   })
 })

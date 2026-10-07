@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { loadGitTokens, loadRepositories, loadTokenPermissions, registerTokenSlot, verifyGitToken } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, ToneMark } from './components'
 import {
@@ -65,6 +65,13 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
   const repos = useUrRead(loadRepositories, 'repos')
   const [scope, setScope] = useState<ScopeFilter>('all')
   const [slot, setSlot] = useState<GitToken | null>(null)
+  // G4-22: ONE entry point to registering. The card stays folded behind the
+  // header's "Register token" button, and Rotate opens it on its slot; an
+  // always-open card next to a button that scrolls to it was two ways in.
+  const [regOpen, setRegOpen] = useState(false)
+  useEffect(() => {
+    if (regOpen) document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })
+  }, [regOpen, slot?.token_id])
   const regs = repos.state.status === 'ok' || repos.state.status === 'stale' ? repos.state.data : []
   const n = tokens.state.status === 'ok' || tokens.state.status === 'stale' ? tokens.state.data.length : tokens.state.status === 'empty' ? 0 : null
   const now = Date.now()
@@ -92,7 +99,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           <UrNavButton to={PERMISSIONS} go={go} size="sm">
             Permissions
           </UrNavButton>
-          <Button kind="primary" size="sm" onClick={() => document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })}>
+          <Button kind="primary" size="sm" aria-expanded={regOpen} aria-controls="ur-reg" onClick={() => setRegOpen((o) => !o)}>
             Register token
           </Button>
         </span>
@@ -105,7 +112,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
         onRetry={tokens.reload}
         empty={
           <EmptyState kind="empty" heading="No git tokens registered">
-            Register a slot below, then store its value from your terminal with the command it shows.
+            Register a slot with Register token, then store its value from your terminal with the command it shows.
           </EmptyState>
         }
       >
@@ -118,7 +125,13 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
                   <div className="ur-tok-h">
                     <Chip>{SCOPE_WORD[t.scope]}</Chip>
                     <h2>{tokenTitle(t, regs)}</h2>
-                    <Button size="sm" onClick={() => setSlot(t)}>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSlot(t)
+                        setRegOpen(true)
+                      }}
+                    >
                       Rotate
                     </Button>
                   </div>
@@ -148,7 +161,17 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           )
         }}
       </UrRegion>
-      <RegisterSlot slot={slot} onSlot={(t) => { setSlot(t); tokens.reload() }} onClear={() => setSlot(null)} repos={regs} />
+      {regOpen && (
+        <RegisterSlot
+          slot={slot}
+          onSlot={(t) => {
+            setSlot(t)
+            tokens.reload()
+          }}
+          onClear={() => setSlot(null)}
+          repos={regs}
+        />
+      )}
     </div>
   )
 }
@@ -395,10 +418,16 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
                     <tr>
                       <th className="is-l">Token</th>
                       {CAPABILITIES.map((c) => (
-                        <th key={c.key}>{c.label}</th>
+                        <th key={c.key} className="is-cap">
+                          {c.label}
+                        </th>
                       ))}
                       <th className="is-l">Expires in</th>
-                      <th className="is-l">Last verified</th>
+                      {/* G4-17: "Last verified" on one line was the head clipped
+                          to "Last verifi" at 1440; the title keeps the full words. */}
+                      <th className="is-l" title="Last verified">
+                        Verified
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

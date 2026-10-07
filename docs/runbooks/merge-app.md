@@ -124,6 +124,40 @@ job of application.yml and waits for terraform's run at its head, so only
 application's (that is, ci-gate's) and security's completions can be the last
 one on a head; those are the two it listens to now.
 
+### Only a required check holds the merge (#815)
+
+On 2026-10-07 #811 got `ready` while code scanning's **Trivy** check was still
+running. Trivy is not one of the five checks ruleset `main-protection`
+(24160219) requires, and no application or security run reports it, so the
+gate waited on it and nothing looked again when it finished: the merge queue
+stalled 10:30-15:40Z until an operator ran `gh workflow run auto-merge.yml -f
+pr=811`. Two changes since:
+
+* **The gate waits only for a required check still running** — the names it
+  already reads for its "no required checks" refusal: the branch's effective
+  rules plus any classic protection. Anything else still running does not
+  hold it; native auto-merge waits for every required check anyway. A check
+  that already **failed** still refuses, required or not. With every required
+  check green and a non-required one still running, GitHub reports the pull
+  request `UNSTABLE` and will not *enable* auto-merge on it, so the workflow
+  merges it directly (or enqueues it on a merge-queue base), as it does on
+  `CLEAN`; the ruleset still decides.
+* **`check_suite: completed` is a second trigger** of the `requeue` job, which
+  dispatches the re-evaluation for each open `ready` pull request at the
+  suite's head. GitHub runs no workflow on `check_suite` for a suite GitHub
+  Actions created, so it fires only for another App's suite (code scanning's,
+  for one); `workflow_run` stays the way in for application and security.
+  Whether GitHub raises it for a code-scanning suite created by an upload the
+  workflow's own token made has not been observed here; the narrowed wait
+  above does not depend on it.
+
+To check it: label a pull request while a non-required check runs and its
+required ones are green. The label run's `queue for auto-merge` job should
+arm or merge it, not comment "waiting". A pull request still waiting on a
+required check names only required checks in its comment. If one ever sits
+labelled with every required check green, `gh workflow run auto-merge.yml
+--repo bogdan-alexandrescu/SwarmCloud -f pr=<number>` makes it look again.
+
 ## 1. Create the App
 
 Open <https://github.com/settings/apps/new> (as the user that owns the

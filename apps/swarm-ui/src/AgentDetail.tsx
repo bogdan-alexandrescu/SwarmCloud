@@ -23,6 +23,7 @@ import { DecisionCard } from './DecisionCard'
 import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
+import { backendWord, eventWord, parkWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
@@ -1038,13 +1039,18 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     })
   } else if (mem.kind === 'pending') {
     cells.push({ label: 'Peak memory', value: 'at exit', tone: 'reading', bar: null, sub: `${ofLimit} · no heartbeat reading yet`, help: 'peak-memory' })
+  } else if (latest === null) {
+    // ONE CAUSE, ONE WORD (QA G2-28): with no attempt, Peak memory, CPU and
+    // Cost each say `no attempt`. They said `not recorded`, `no attempt yet`
+    // and `nothing ran yet` for the same fact, and `yet` on a cancelled task.
+    cells.push({ label: 'Peak memory', value: '— no attempt', tone: 'absent', bar: null, help: 'peak-memory' })
   } else {
     cells.push({
       label: 'Peak memory',
       value: '— not recorded',
       tone: 'absent',
       bar: null,
-      sub: latest === null ? 'no attempt yet' : 'no attempt wrote one',
+      sub: 'no attempt wrote one',
       help: 'peak-memory',
     })
   }
@@ -1075,12 +1081,14 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost' })
   } else if (cost === null && open !== null) {
     cells.push({ label: 'Cost', value: 'at exit', tone: 'reading', sub: tokenLine ?? 'with tokens, when the attempt ends', help: 'token-cost' })
+  } else if (cost === null && latest === null) {
+    cells.push({ label: 'Cost', value: '— no attempt', tone: 'absent', ...(tokenLine === null ? {} : { sub: tokenLine }), help: 'token-cost' })
   } else if (cost === null) {
     cells.push({
       label: 'Cost',
       value: '— not reported',
       tone: 'absent',
-      sub: tokenLine ?? (latest === null ? 'nothing ran yet' : 'tokens not reported'),
+      sub: tokenLine ?? 'tokens not reported',
       help: 'token-cost',
     })
   } else {
@@ -1130,7 +1138,7 @@ function DtStripView({ cells }: { cells: DtCell[] }) {
 
 /** The CPU cell: the newest attempt's peak against its limit, its mean in the sub-line. */
 function cpuCell(latest: AttemptRow | null, open: boolean, events: TaskEvent[] | null, cls: ResourceClassSpec | null): DtCell {
-  if (latest === null) return { label: 'CPU', value: '— no attempt yet', tone: 'absent', bar: null }
+  if (latest === null) return { label: 'CPU', value: '— no attempt', tone: 'absent', bar: null }
   const from = cpuOf(latest, events)
   if (from.kind === 'not_served') {
     return { label: 'CPU', value: '— not served', tone: 'absent', bar: null, sub: 'this API sends no CPU fields', help: 'cpu-figures' }
@@ -1185,7 +1193,7 @@ function DtEventRow({ e, prev, owner }: { e: TaskEvent; prev: TaskEvent | undefi
         {hhmm(e.at)}
       </time>
       <span>
-        <span className="dt-ev-k">{kind.replace(/_/g, ' ')}</span>
+        <span className="dt-ev-k">{eventWord(e)}</span>
         {at !== null && before !== null && <small> {gapText(at - before)}</small>}
         {owner !== null && <small> · {owner}</small>}
       </span>
@@ -1237,15 +1245,26 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
             <span>The attempt documents are missing, not absent.</span>
           </p>
         ) : (
+          // SAID BY THE TASK'S STATE (QA G2-28, 2026-10-07): "while it waits"
+          // and "yet" were printed on a cancelled task, which waits for nothing
+          // and will never have an attempt.
           <p className="dt-empty">
             <b>
               <Mark
                 kind="zero"
-                say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
+                say={
+                  TERMINAL_STATES.has(task.state)
+                    ? 'The attempt query succeeded and returned nothing. This task ended before anything was admitted, so this is a real zero rather than a failed read.'
+                    : 'The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read.'
+                }
               />{' '}
-              no attempt yet · {stateWord(task.state)}
+              {TERMINAL_STATES.has(task.state) ? 'no attempt' : 'no attempt yet'} · {stateWord(task.state)}
             </b>
-            <span>Nothing has been admitted, so there is no phase to draw. It holds no capacity while it waits.</span>
+            <span>
+              {TERMINAL_STATES.has(task.state)
+                ? 'It ended before anything was admitted, so there is no phase to draw. It held no capacity.'
+                : 'Nothing has been admitted, so there is no phase to draw. It holds no capacity while it waits.'}
+            </span>
           </p>
         )
       ) : (
@@ -1307,7 +1326,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               />{' '}
               {newest[0] === undefined
                 ? 'the end of this history is not on this page'
-                : `the page ends at ${eventKind(newest[0])}, ${timeAgo(newest[0].at, now)}`}
+                : `the page ends at ${eventWord(newest[0])}, ${timeAgo(newest[0].at, now)}`}
             </p>
           ) : (
             <p
@@ -1388,7 +1407,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
   } else {
     rows.push(
       mem.bytes === null
-        ? { name: 'Memory', value: '—', note: mem.kind === 'pending' ? 'written at exit' : 'not recorded', pct: null }
+        ? { name: 'Memory', value: '—', note: latest === null ? 'no attempt' : mem.kind === 'pending' ? 'written at exit' : 'not recorded', pct: null }
         : {
             name: 'Memory',
             value: bytesLabel(mem.bytes),
@@ -1402,7 +1421,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
     const disk = latest?.peak_disk_bytes ?? null
     rows.push(
       disk === null
-        ? { name: 'Workspace', value: '—', note: latest === null ? 'no attempt yet' : open ? 'written at exit' : 'never written', pct: null }
+        ? { name: 'Workspace', value: '—', note: latest === null ? 'no attempt' : open ? 'written at exit' : 'never written', pct: null }
         : {
             name: 'Workspace',
             value: bytesLabel(disk),
@@ -1423,7 +1442,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
               name,
               value: '—',
               note:
-                from === null ? 'no attempt yet' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured',
+                from === null ? 'no attempt' : from.kind === 'not_served' ? 'not served' : from.kind === 'unread' ? 'events unread' : open ? 'written at exit' : 'not measured',
               pct: null,
             }
           : { name, value: cores(v), note: limit === null ? unknownLimit : `of ${cores(limit)} cores`, pct: limit === null ? null : pctOf(v, limit) },
@@ -1434,7 +1453,9 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
     attempts === null
       ? 'The attempt read failed, so no figure is drawn.'
       : latest === null
-        ? 'Nothing has been admitted yet, so nothing has been measured.'
+        ? TERMINAL_STATES.has(task.state)
+          ? 'It ended before anything was admitted, so nothing was measured.'
+          : 'Nothing has been admitted yet, so nothing has been measured.'
         : open
           ? 'Live readings from the attempt record. Final figures are written when the attempt ends.'
           : mem.kind === 'last'
@@ -1641,19 +1662,6 @@ function usd(v: number | null | undefined): ReactNode {
 function tokens(v: number | null | undefined): ReactNode {
   if (typeof v !== 'number' || !Number.isFinite(v)) return <Em />
   return v.toLocaleString()
-}
-
-/**
- * A state as the chip beside it reads it (AG-28).
- *
- * `.ctl-chip` lowercases the API's `CANCELLED` with `text-transform`, which is
- * the one direction §13.2 of design-system.md allows. A heading or a sentence
- * that interpolates the same state has no stylesheet to do that for it, so
- * `no attempt yet · CANCELLED` stood in capitals two inches from a chip that
- * said `cancelled`: one fact, two spellings, on one line.
- */
-function stateWord(state: string): string {
-  return state.toLowerCase()
 }
 
 /**
@@ -1939,12 +1947,15 @@ function Alerts({ task }: { task: Task }) {
           been -- so it is `#help/park-on-missing-credential` and the rest of
           the help index now, and the banner carries the enum the platform
           recorded plus the one figure that varies: when it is eligible again.
-          `reasonText` remains the fallback for a reason this screen does not
+          The enum is the title's tooltip and the pill's words are its text
+          (QA G2-25, 2026-10-07): `DEPENDENCY_INCOMPLETE` in capitals was a
+          machine token used as a heading, beside a pill that said `waiting
+          on a step`. `reasonText` remains the fallback for a reason this screen does not
           recognise, because "we have no copy for that" is a fact about THIS
           SCREEN and cannot live in a help topic keyed on the reason. */}
       {task.park_reason && (
         <div className="bar amber">
-          <strong>{task.park_reason}</strong>
+          <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
           {task.next_eligible_at && (
             <> · eligible {new Date(task.next_eligible_at).toLocaleString()}</>
           )}
@@ -2413,8 +2424,10 @@ function AttemptCard({
             machine tokens of the same kind, on the same line, in two different
             cases. §13.2 of design-system.md allows `text-transform` for
             exactly this and allows it in exactly this direction: quieter, and
-            only on a string we did not author. */}
-        <span className="ctl-card-note att-backend">{a.backend}</span>
+            only on a string we did not author. The words are the runner
+            picker's (`backendWord`), so this card and the Attempts tab's say
+            `Cloud Run` alike (QA G2-25). */}
+        <span className="ctl-card-note att-backend">{backendWord(a.backend)}</span>
       </div>
 
       <div className="ctl-card-body">

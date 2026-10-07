@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { helpAnchor, type TopicId } from './help'
 import {
   CARRIER_NOTE,
-  DISPATCH_CARRIERS,
+  DEFAULT_CARRIER,
   DISPATCH_STRATEGIES,
   TERMINAL_STATES,
   consequenceOf,
@@ -108,6 +108,28 @@ export function repositorySchemeRefused(url: string): boolean {
   return sent !== '' && !REPOSITORY_SCHEMES.some((p) => sent.startsWith(p))
 }
 
+/**
+ * The fixed carrier's accessible name. `CARRIER_NOTE` (types.ts) says what
+ * choosing `branches` would change, which is true of a recorded task's carrier
+ * and not of this form, where there is no choosing any more (QA G4-28).
+ */
+export const CARRIER_FIXED_NOTE =
+  'Recorded on the task and returned by the API, but no worker code reads it yet, ' +
+  `so this form sends the default, ${DEFAULT_CARRIER}, and does not offer another.`
+
+/**
+ * A validation fragment as a line of its own: a capital first, a stop last
+ * (QA G4-31). The fragments themselves stay lowercase, because the send panel
+ * and the refusal list print them after a step's name ("review — no runner
+ * chosen"); a fragment drawn ALONE, as a form's warning, is a sentence.
+ */
+export function asSentence(fragment: string): string {
+  const t = fragment.trim()
+  if (t === '') return t
+  const capped = t[0]!.toUpperCase() + t.slice(1)
+  return /[.!?]$/.test(capped) ? capped : `${capped}.`
+}
+
 /** Where the carrier's caveat is argued. Typed, so a renamed topic fails to build. */
 const CARRIER_HELP: TopicId = 'dispatch-carrier'
 
@@ -153,7 +175,7 @@ export function DispatchChoice({
           current choice requires it. The carrier's `not acted on yet` is the one
           thing no label could carry -- that the control records a preference
           nothing acts on -- and it is printed as a plain line with a link to
-          `#help/dispatch-carrier`, with `CARRIER_NOTE` as its accessible name. */}
+          `#help/dispatch-carrier`, with `CARRIER_FIXED_NOTE` as its accessible name. */}
       <legend className="t-label">how this work gets merged</legend>
 
       <div className="dsp-options" role="radiogroup" aria-label="dispatch strategy">
@@ -210,29 +232,25 @@ export function DispatchChoice({
           <label className="t-label dsp-label" htmlFor="dsp-carrier">
             what carries work between steps
           </label>
-          <select
-            id="dsp-carrier"
-            className="mono"
-            value={draft.carrier}
-            aria-describedby="dsp-carrier-note"
-            onChange={(e) => set({ carrier: e.target.value as DispatchCarrier })}
-          >
-            {/* THE VALUE, ONCE (TS-6). It read `checkpoints — Checkpoints`:
-                the token and a capitalised copy of the token. */}
-            {DISPATCH_CARRIERS.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+          {/* SHOWN FIXED, NOT OFFERED (QA G4-28, 2026-10-07). It was a live
+              select for a value the platform does not act on, so choosing
+              `branches` changed nothing but whether a repository was demanded.
+              Disabled, it still says what the form sends -- the default, as
+              the task form always has -- and a caller cannot spend a choice on
+              it. `onChange` is gone with the choice: nothing here can move the
+              draft's carrier off the default. */}
+          <select id="dsp-carrier" className="mono" value={DEFAULT_CARRIER} disabled
+            aria-describedby="dsp-carrier-note">
+            <option value={DEFAULT_CARRIER}>{DEFAULT_CARRIER} (fixed)</option>
           </select>
           {/* THE FACT STAYS ON THE SURFACE, AS ONE PLAIN LINE (TS-6). Said on
-              every carrier, not only on `branches`: the control records a
-              preference the platform does not act on yet, and a caller is
-              entitled to know that before they choose one. It was a permanent
+              every workflow: the value is recorded and the platform does not
+              act on it yet, which is why it is fixed, and a caller is
+              entitled to know that on the value itself. It was a permanent
               two-sentence `--warn` paragraph -- a warning on a choice nothing
               is wrong with. The two sentences are this line's accessible name
               and the select's description; the argument is the help topic. */}
-          <p id="dsp-carrier-note" className="ctl-panel-note" aria-label={CARRIER_NOTE}>
+          <p id="dsp-carrier-note" className="ctl-panel-note" aria-label={CARRIER_FIXED_NOTE}>
             not acted on yet <a href={`#${helpAnchor(CARRIER_HELP)}`}>Why &rarr;</a>
           </p>
         </>
@@ -270,9 +288,11 @@ export function DispatchChoice({
         // copy exists so the refusal is not a surprise, and if it ever drifts
         // it shows a wrong caution rather than stopping a valid submission.
         <p className="warn-text" role="alert">
+          {/* SENTENCES (QA G4-31): these opened lowercase beside the scheme
+              warning's capital. */}
           {draft.strategy === 'collect'
-            ? `carrier ${draft.carrier} has to push, so the API will refuse this without a repository URL.`
-            : `strategy ${draft.strategy} ends in a pull request, so the API will refuse this without a repository URL.`}
+            ? `Carrier ${draft.carrier} has to push, so the API will refuse this without a repository URL.`
+            : `Strategy ${draft.strategy} ends in a pull request, so the API will refuse this without a repository URL.`}
         </p>
       )}
       {errors?.repository_url && <p className="warn-text" role="alert">{errors.repository_url}</p>}
