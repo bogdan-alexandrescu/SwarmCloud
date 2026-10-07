@@ -55,13 +55,13 @@ import {
   type Stat,
 } from './outcomes'
 import { Absent, Mark } from './primitives'
+import { staleFoot } from './Shell'
 import { OpenLink } from './TimelineRows'
 import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
   pluralise,
-  timeAgo,
   type Stats,
   type TaskPage,
 } from './types'
@@ -1166,11 +1166,18 @@ export function OpenWorkCard({
   const itself = [...reasons.entries()].filter(([r]) => !PARK_NEEDS_A_PERSON.has(r))
   const more = open.parked?.status === 'ok' && open.parked.data.next_page_token !== null && open.parked.data.next_page_token !== undefined
   return (
-    // THE AGE OF THE READ ON SCREEN, never "now": this card is re-read on its
-    // own, and the head's age is the ledger's.
+    // THE AGE OF THE READ ON SCREEN, never "now", AND ONLY WHEN STALE (#98,
+    // owner ruling 2026-10-07): this card is re-read on its own, so once its
+    // read is older than `AGED_AFTER_MS` it says `from 6 min ago`; while fresh
+    // it is silent, and the head's refresh control carries the page's age.
     <Card
       title="Not finished yet"
-      note={`${s === null ? 'reading' : s.status === 'ok' ? `read ${timeAgo(s.data.generated_at, now)}` : 'not read'} · span not applied`}
+      note={[
+        s === null ? 'reading' : s.status === 'ok' ? staleFoot(Date.parse(s.data.generated_at), now) : 'not read',
+        'span not applied',
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ')}
       className="ol-open"
     >
       {s === null ? (

@@ -4,7 +4,7 @@ import { Segmented, ToneMark } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
 import { Mark } from './primitives'
-import { HOLDERS_POLL_MS, useLinkedPool } from './capacityPoll'
+import { HOLDERS_POLL_MS, capacityPoll, useLinkedPool } from './capacityPoll'
 import { Screen } from './Shell'
 import './styles/capacity.css'
 import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
@@ -144,7 +144,7 @@ export function HoldersScreen() {
       title="Holders"
       load={loadHolders}
       // Decided 2026-10-01 (#117): every 30s, paused while the tab is hidden.
-      pollMs={HOLDERS_POLL_MS}
+      pollMs={capacityPoll(HOLDERS_POLL_MS)}
       summary={(b) => {
         const coverage = leaseCoverage(b.page)
         const rows = b.page.leases.length

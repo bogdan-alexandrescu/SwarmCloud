@@ -10,6 +10,7 @@ import {
   ageSpan,
   bytesLabel,
   CONCURRENCY_STATES,
+  TERMINAL_STATES,
   timeAgo,
   type AttemptRow,
   type CheckpointFile,
@@ -346,7 +347,7 @@ function CheckpointsView({ task, listing, now }: { task: Task; listing: Checkpoi
         <PointerFact page={page} />
       </ul>
 
-      <PointerFinding page={page} />
+      <PointerFinding page={page} finished={TERMINAL_STATES.has(task.state)} />
 
       {lost.length > 0 && <Lost lost={lost} />}
 
@@ -631,7 +632,7 @@ function restoreFallback(page: CheckpointsPage): {
  * in the bucket; ...") and was appended after a full stop, so the panel
  * carried a sentence that began with a lowercase word.
  */
-function PointerFinding({ page }: { page: CheckpointsPage }) {
+function PointerFinding({ page, finished }: { page: CheckpointsPage; finished: boolean }) {
   const p = page.latest_checkpoint
   const tail = p.detail ? <> — {p.detail.replace(/\.$/, '')}.</> : '.'
   switch (p.status) {
@@ -639,6 +640,21 @@ function PointerFinding({ page }: { page: CheckpointsPage }) {
     case 'present':
       return null
     case 'missing':
+      // AFTER THE TASK FINISHED THIS IS RETENTION, NOT A FAULT (G2-12, QA
+      // 2026-10-07): on a succeeded review the tab warned in amber that the
+      // pointer named a checkpoint no longer in the bucket. The reconciler
+      // deletes a finished task's checkpoints once nothing can resume from
+      // them (reconciler/checkpoints.py), so for a finished task the line is
+      // neutral and says so. A task still able to run keeps the amber line:
+      // a retry would not find what the pointer names.
+      if (finished) {
+        return (
+          <p className="rollup" data-pointer="reclaimed">
+            The task points at <code>{p.pointer}</code> and the listing did not find it{tail} Reclaimed after the task
+            finished.
+          </p>
+        )
+      }
       return (
         <p className="rollup untrusted">
           The task points at <code>{p.pointer}</code> and the listing did not find it{tail}
@@ -945,6 +961,18 @@ export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): str
 }
 
 /**
+ * A STREAM'S NAME AS A READER TELLS THEM APART (G2-07, QA 2026-10-07). The
+ * runner's own two streams are served as `stdout` and `stderr`, and the Logs
+ * tab printed them so -- `stdout 0 B · real zero` beside an `Agent stdout`
+ * sub-tab and a 152 KiB `claude-code.stdout.log`, all called stdout. They
+ * are the platform runner's, not the agent's, and are named so; the agent's
+ * streams keep their served names.
+ */
+export function streamLabel(name: string): string {
+  return name === 'stdout' || name === 'stderr' ? `runner ${name}` : name
+}
+
+/**
  * ONE STREAM, AS A ROW: name, size, age.
  *
  * THE FOUR ANSWERS THE ROUTE CAN GIVE ARE FOUR ENCODINGS IN THE SIZE CELL,
@@ -1024,7 +1052,7 @@ export function Stream({
   return (
     <tr role="row">
       <th role="rowheader" scope="row">
-        <span className="mono">{stream.stream}</span>
+        <span className="mono">{streamLabel(stream.stream)}</span>
         {stream.uri !== null && (
           <>
             {/* CH-13's long value (#87 follow-up, 2026-09-25). Stacked, the
@@ -1073,13 +1101,17 @@ export function Stream({
           </>
         )}
         {stream.status === 'ok' && stream.content === '' && (
-          <>
+          // ONE ITEM, SO THE MARK STAYS BESIDE ITS VALUE (G2-07): in a
+          // stacked record every child of the cell is placed in the value
+          // column on a line of its own, and `real zero` floated mid-row,
+          // apart from the `0 B` it qualifies.
+          <span className="rf-zero">
             {bytesLabel(0)}{' '}
             <Mark
               kind="zero"
-              say={`This object exists and is empty: ${writerOf(stream.stream)} wrote nothing to ${stream.stream}. A measured empty stream, not a failed read.`}
+              say={`This object exists and is empty: ${writerOf(stream.stream)} wrote nothing to ${streamLabel(stream.stream)}. A measured empty stream, not a failed read.`}
             />
-          </>
+          </span>
         )}
         {stream.status === 'not_applicable' && (
           <>

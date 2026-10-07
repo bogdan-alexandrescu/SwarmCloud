@@ -337,6 +337,7 @@ export function WorkflowTimeline({
 }) {
   return (
     <div className="wf-timeline" role="group" aria-label="When each step waited and ran">
+      <TimelineKey />
       <span className="wf-tl-corner" aria-hidden />
       <div className="wf-tl-scale" aria-hidden>
         {axis !== null && <Ticks axis={axis} />}
@@ -360,6 +361,34 @@ export function WorkflowTimeline({
         </Fragment>
       ))}
     </div>
+  )
+}
+
+/**
+ * WHAT EACH KIND OF BAR IS, IN ONE LINE ABOVE THE AXIS (QA G3-13). A wait, a
+ * run, the time on parents and a park were told apart only by a hover; each
+ * swatch here is drawn by the same classes the spans are, so the key cannot
+ * describe a bar the track does not draw. `parked` and `skipped` are the
+ * hatches the Graph's node uses for those states.
+ */
+export const TIMELINE_KEY: readonly { kind: string; word: string; title: string }[] = [
+  { kind: 'parents', word: 'on parents', title: 'Waiting for a parent step to finish: the step could not start any sooner.' },
+  { kind: 'waited', word: 'waited', title: 'Queued, ready, leased or dispatched: time waited, never time run.' },
+  { kind: 'parked', word: 'parked', title: 'Parked and holding nothing: the step is waiting on a provider window or capacity, and will resume.' },
+  { kind: 'ran', word: 'ran', title: 'From the latest start to the recorded finish, in the step’s state colour.' },
+  { kind: 'skipped', word: 'skipped by verdict', title: 'The verdict gate kept the step’s agent from running; the attempt only published the reviewed work.' },
+]
+
+function TimelineKey() {
+  return (
+    <ul className="wf-tl-key" aria-label="Timeline key">
+      {TIMELINE_KEY.map((k) => (
+        <li key={k.kind} className="wf-tl-key-item" title={k.title}>
+          <i className={`wf-tl-swatch is-${k.kind}`} aria-hidden />
+          {k.word}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -434,10 +463,16 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
         // the mock-up draws every wait neutral, for the reason above.
         const tint = s.kind === 'ran' || s.kind === 'running' ? ` ${tintClass(row.look)}` : ''
         const cut = d.clampedMs !== null ? ' is-clamped' : ''
+        // A VERDICT-SKIPPED RUN IS THE NODE'S SKIP HATCH, and a step parked
+        // now draws its open wait in the node's parked hatch (QA G3-02,
+        // G3-13): an outline on the track read as an empty row for a step
+        // parked 1h 37m.
+        const skip = s.kind === 'ran' && row.look.mark === 'skipped' ? ' is-skipped' : ''
+        const parked = s.kind === 'waiting' && row.look.mark === 'parked' ? ' is-parked' : ''
         return (
           <Fragment key={i}>
             <i
-              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}`}
+              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}${skip}${parked}`}
               style={{ left: `${left}%`, width: `${width}%` }}
             />
             {d.clampedMs !== null &&
@@ -550,7 +585,7 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'ran', label: 'Ran', sort: 'ran', num: true },
   { col: 'attempts', label: 'Attempts', sort: 'attempts', num: true },
   { col: 'cost', label: 'Cost', sort: 'cost', num: true },
-  { col: 'tokens', label: 'Tokens', sort: null, num: true },
+  { col: 'tokens', label: 'Tokens', sort: 'tokens', num: true },
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
@@ -721,8 +756,10 @@ function inputsRowId(stepId: string): string {
  *
  * `.ctl-table`, the shared table primitive, so the rhythm, the head and the row
  * tones are the ones every other table in this console already draws. The
- * head is NOT sticky (WF-21): the wrapper scrolls sideways only, so a sticky
- * head never stuck. The faint seams this table showed at fractional column
+ * head IS sticky now (QA G3-12), on `thead`: it never stuck while the wrapper
+ * was `overflow-x: auto` (WF-21), and the wrapper clips instead, because at a
+ * width where the table is drawn as a table it never needs to scroll
+ * sideways (styles/workflows.css). The faint seams this table showed at fractional column
  * edges were first put down to that stickiness, then to each head cell
  * painting its own fill; they survived both fixes, because Chrome paints a
  * row group's background into each cell's rect too. `thead` now also paints
@@ -843,7 +880,9 @@ export function WorkflowTable({
                 </span>
               </td>
               {columns.length === COLUMNS.length && (
-                <td data-col="why" data-label="Why">
+                // A ROW WITH NO WHY PRINTS NO `Why` LABEL (QA G3-32): stacked,
+                // the label is the cell's `::before`, and it stood alone.
+                <td data-col="why" data-label={r.why === null ? undefined : 'Why'}>
                   <WhyCell why={r.why} />
                 </td>
               )}
@@ -1302,6 +1341,9 @@ export function StepInspector({
                 // attempt of a finished task (WF-5). Any other attempt keeps
                 // its own absences.
                 at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.result : null,
+                // ONE DURATION FOR ONE RUN (QA G3-26): the newest attempt of a
+                // finished task is the run the Graph and the Table time.
+                at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.times.ranMs : null,
               )}
             />
           </>

@@ -948,9 +948,18 @@ describe('B19: the console uses the glass it is given', () => {
   })
 
   it('clamps a sentence even though the page is no longer clamped', () => {
+    // The sentence asked about was the 16px summary line (`.sub`) until #138
+    // deleted it (owner ruling 2026-10-07: no line under any title). The
+    // running text the measure still holds is the empty state's one sentence
+    // (§6.9), the prose on every screen that has nothing to list.
+    // BREAK IT: drop `.ctl-empty > p` from the measure rule, or the rule.
     const style = withStyles()
-    const { container } = render(<p className="sub">a line of prose</p>)
-    expect(getComputedStyle(container.querySelector('.sub')!).maxWidth).toBe('var(--measure)')
+    const { container } = render(
+      <div className="ctl-empty">
+        <p>a line of prose</p>
+      </div>,
+    )
+    expect(getComputedStyle(container.querySelector('.ctl-empty > p')!).maxWidth).toBe('var(--measure)')
     expect(
       getComputedStyle(document.documentElement).getPropertyValue('--measure').trim(),
     ).toMatch(/ch$/)

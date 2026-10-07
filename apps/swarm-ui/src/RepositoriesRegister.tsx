@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { loadReadableRepositories, loadRunnerProfiles, registerRepository, runRepositoryIndex, type RegisterRepositoryBody } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { normRepo, type Readable } from './RepositoriesData'
-import { LIST, UrCrumb, UrNavButton, UrRadio, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 
@@ -45,7 +45,10 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
   return (
     <div className="ur-page ur-register">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Register repository' }]} go={go} />
-      <PageHead title="Register repository">{null}</PageHead>
+      <PageHead title="Register repository">
+        {/* The readable list's age, on the control that renews it (#98). */}
+        <UrRefresh reads={[readable]} />
+      </PageHead>
       <div className="ur-steps" aria-label="Steps">
         {step === 1 ? (
           <b>

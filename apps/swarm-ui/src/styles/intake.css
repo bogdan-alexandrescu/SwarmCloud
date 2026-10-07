@@ -180,6 +180,15 @@
 .rn-table th[data-col='by'] { width: 160px; }
 .rn-cut { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rn-issue-ref { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* THE LIST'S CHIPS AND SEARCH (QA G2-18): one row, the search taking the rest. */
+.rn-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.rn-search {
+  flex: 1 1 200px; min-width: 0; min-height: 32px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.rn-none { margin: 0; }
 /* The run page wraps its frame (`.rn-run`) only to say whether its heading is
    a reference: it draws nothing of its own. */
 .rn-run { display: contents; }
@@ -189,15 +198,16 @@
    pushed them past the column (.ctl-scroll 1322 wide in 1120; 'newest read ·
    refresh' at x=1589). The head's title block steps out of the way
    (`display: contents`), the title takes the whole first row -- two lines,
-   then cut, whole in its title (names.css) -- and the `?`, the meta and the
-   freshness share the second. On a phone the `?` beside the reference cost
+   then cut, whole in its title (names.css) -- and the `?` and the head's
+   actions share the second; the meta is the count note under the head
+   (#138). On a phone the `?` beside the reference cost
    it '54' of '#454' (D11); alone on its row the reference fits. */
 .rn-run .c-phead { flex-wrap: wrap; }
 .rn-run .c-phead > div.head { display: contents; }
 .rn-run .c-phead > div.head > h1 { flex: 1 0 100%; }
-/* THE META TAKES WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
-   with its title, and never wider than the column. */
-.rn-run .c-phead > .sub { flex: 1 1 0; min-width: 0; max-width: 100%; }
+/* THE ACTIONS TAKE WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
+   with their title, and never wider than the column. */
+.rn-run .c-phead > .c-acts { flex: 1 1 0; min-width: 0; max-width: 100%; }
 /* The chip is a button that opens it whole on a tap (owner QA F): drawn as
    the chip's own text until it is open. */
 .rn-meta {
@@ -273,6 +283,11 @@
    insides are laid out here. Found overlaps take the warn edge: the issue's
    acceptance test is that the plan names them, so they are not quiet. */
 .rn-overlaps.is-found { border-color: var(--warn-ink); }
+/* FOLDED, ITS HEADING IS STILL THE CARD'S TITLE (QA G2-32, 2026-10-07): it
+   sits in the fold's summary, outside `.c-card-h`, so it fell to the
+   browser's own h3 -- larger, with a ~1em top margin. Same token as
+   `.c-card-h > h3` (components.css). */
+.rn-overlaps > .rn-fold > summary > h3 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 /* ONE COMPACT ROW EACH (owner QA E, 2026-10-04): the link, its kind and the
    verdict on a 32px row; the planner's reasoning opens under it. */
 .rn-overlap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
@@ -313,7 +328,11 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
 
-.rn-side { display: grid; gap: 12px; min-width: 0; }
+/* EACH CARD ITS OWN HEIGHT (QA G2-02, 2026-10-07): the rail's rows are
+   sized to their content and packed at the top, so a rail taller than the
+   window overflows and its own `overflow-y: auto` scrolls -- it never shares
+   the window's height out among the cards. */
+.rn-side { display: grid; gap: 12px; min-width: 0; grid-auto-rows: max-content; align-content: start; }
 /* THE SIDE STAYS IN VIEW, BELOW THE TOP EDGE (browser QA D35, 2026-10-04):
    the same offset as the Submit send card (styles.css `.sbf-send`), and its
    own scroll when it is taller than the window. */
@@ -322,8 +341,12 @@
 }
 /* A CARD SHRINKS TO ITS TRACK (browser QA D3, 2026-10-04): a grid item's
    min-width is its content's, so one nowrap id widened the card past the
-   300px column (x1448 in a card ending at 1408). */
-.rn-side > .rn-card { min-width: 0; overflow: hidden; }
+   300px column (x1448 in a card ending at 1408). CLIPPED SIDEWAYS ONLY
+   (QA G2-02, 2026-10-07): `overflow: hidden` made each card a scroll
+   container, whose automatic minimum height is 0, so the sticky rail shrank
+   all three to ~260px and hid Workflow, Pull request, the issue's body and
+   the cost, with nothing to scroll to. `clip` is not a scroll container. */
+.rn-side > .rn-card { min-width: 0; overflow-x: clip; }
 .rn-card .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
 /* EACH LABEL ABOVE ITS VALUE (owner QA A, 2026-10-04). A 300px card cannot
    hold a label|value row: the values sat at x>=1409 past the card's edge at
@@ -361,11 +384,18 @@
 /* The three steps stack (the `.sbf` grid already does), the summary becomes
    the button's own line, and every target is 44px. */
 @media (max-width: 560px) {
-  .in-ref, .in-rounds, .in-seg-o, .rn-row > td { min-height: 44px; }
+  .in-ref, .in-rounds, .in-seg-o, .rn-search, .rn-row > td { min-height: 44px; }
   .in-choice { flex-direction: column; gap: 6px; }
   .rn-table thead { display: none; }
   .rn-table, .rn-table tbody, .rn-row, .rn-row > td { display: block; width: 100%; }
   .rn-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
   .rn-row > td { height: auto; min-height: 0; padding: 2px 0; border-bottom: 0; white-space: normal; }
-  .rn-row > td::before { content: attr(data-label) ' · '; color: var(--text-dim); font-size: var(--t-micro); }
+  /* THE LABEL ON ITS OWN LINE, NO SEPARATOR (QA G2-19, 2026-10-07): a cell
+     whose value is a block (Issue, Workflow, By) put the label alone on a
+     line ending in a dangling " · ". Every label is now a micro line above
+     its value, the same in every cell. */
+  .rn-row > td::before {
+    content: attr(data-label); display: block;
+    color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  }
 }

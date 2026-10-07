@@ -1,5 +1,5 @@
 import { loadAdminQuota } from './api'
-import { poolHref } from './capacityPoll'
+import { QUOTA_POLL_MS, capacityPoll, poolHref } from './capacityPoll'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { WarnMark } from './marks'
@@ -58,6 +58,7 @@ export function QuotaDetailScreen() {
     <Screen
       title="Provider quota"
       load={loadAdminQuota}
+      pollMs={capacityPoll(QUOTA_POLL_MS)}
       summary={(d) => {
         const providers = new Set(d.quota.map((q) => q.provider)).size
         const tenants = new Set(d.quota.map((q) => q.tenant_id)).size

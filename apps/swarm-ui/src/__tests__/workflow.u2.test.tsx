@@ -392,7 +392,10 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     await page()
     await waitFor(() => expect(document.querySelector('h1')!.textContent).toBe('refactor-broker'))
     expect(document.querySelector('.wfp-label'), 'the name is drawn twice').toBeNull()
-    const sub = document.querySelector('.sub')!.textContent ?? ''
+    // The meta line is the Screen's count note now (#138: no sub-line under the title).
+    expect(document.querySelector('.sub'), 'a sub-line is back under the title').toBeNull()
+    const note = document.querySelector<HTMLElement>('.c-count-note')!
+    const sub = note.textContent ?? ''
     expect(sub.trim().startsWith('·'), `the meta line opens on a dot: "${sub}"`).toBe(false)
     expect(sub).toContain('4 steps · 1 → 2 → 1')
     // The id is still on the page, whole, as the head's chip.
@@ -532,7 +535,10 @@ describe('the steps Table fits its width (#503)', () => {
     // and that minimum fits the step card's column at 1440 (1440 less the
     // 84px spine, the 236px panel and the page and card gutters), so at 1440
     // there is still no sideways scroll.
-    expect(at(t.parentElement!, 'overflow-x')).toBe('auto')
+    // `clip`, not `auto` (QA G3-12): below its minimum the box stacks the
+    // rows rather than scrolling, so the wrapper never needs to scroll
+    // sideways, and an `auto` wrapper kept the sticky head from sticking.
+    expect(at(t.parentElement!, 'overflow-x')).toBe('clip')
     expect(parseFloat(at(t, 'min-width') ?? '0')).toBeLessThanOrEqual(1000)
   })
 })

@@ -46,6 +46,8 @@ import {
   totalCostCell,
   stepDuration,
   workflowSpend,
+  dueSteps,
+  noAgentSpend,
   CANVAS_COLUMN,
   PANEL_COLUMN,
   DECLARED_WORDS,
@@ -60,6 +62,7 @@ import {
   type EdgeKind,
   type EdgeProvenance,
   type MixPart,
+  type NoSpend,
   type StageCensus,
   type StageMix,
   type StepDuration,
@@ -101,6 +104,7 @@ import {
   stepTimes,
   stepWhy,
   tokenKindsCell,
+  tokenKindsTotal,
   workflowLabel,
   workflowPullRequest,
   mergeCardOf,
@@ -361,8 +365,9 @@ export function WorkflowsScreen({
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
           pollMs={workflowPoll}
-          // THE META LINE UNDER THE TITLE (workflows.html B). Without it the
-          // shell's line opened on a stray "·" before the read's age.
+          // THE PAGE'S CENSUS, AS THE NOTE OVER THE FIRST CARD (workflows.html
+          // B; #138, owner ruling 2026-10-07: no line under the title). The
+          // screen's age is the head's refresh control's, not this note's.
           summary={(d) => pageSummary(d, id)}
           // THE PAGE'S OWN SKELETON (#113): its head row with the actions
           // disabled, its view tabs and a body card, so the board lands under
@@ -411,7 +416,7 @@ function useRecentName(id: string | null): string | null {
   return name
 }
 
-/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's meta line. */
+/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's count note (#138). */
 function pageSummary(d: WorkflowBoard, id: string): string {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
@@ -438,7 +443,7 @@ export function startedPhrase(started: { text: string; kind: 'never' | 'unread' 
   return `started ${started.text}`
 }
 
-/** `2 running · 31 finished · 1 failed`, the list's sub-line. */
+/** `2 running · 31 finished · 1 failed`, the list's count note over its first card (#138). */
 function listSummary(workflows: readonly Workflow[]): string {
   const c = bucketCounts(workflows)
   return `${c.running} running · ${c.finished} finished · ${c.failed} failed`
@@ -1130,10 +1135,15 @@ export function WorkflowCard({
   const view: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
-  const pickStep = (stepId: string) =>
-    onPick !== undefined
+  // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
+  // own pick on arrival is not one, so its card is not scrolled to.
+  const readerPicked = useRef(false)
+  const pickStep = (stepId: string) => {
+    readerPicked.current = true
+    return onPick !== undefined
       ? onPick(workflow.workflow_id, stepId)
       : setLocalPick((p) => (p === stepId ? null : stepId))
+  }
 
   // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
   // keyboard reader is where they were rather than at the top of the page. The
@@ -1175,9 +1185,9 @@ export function WorkflowCard({
       <div className="wf-body">
         {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
             instant and age in each hover. */}
-        {/* ON A WORKFLOW'S PAGE THE META LINE UNDER THE TITLE SAYS BOTH: the
-            census and when it started (`pageSummary`), so the body card does
-            not say them a second time. */}
+        {/* ON A WORKFLOW'S PAGE THE COUNT NOTE OVER THE FIRST CARD SAYS BOTH
+            (#138): the census and when it started (`pageSummary`), so the
+            body card does not say them a second time. */}
         {!page && (
           <ul className="ctl-facts wf-times">
             <li className="ctl-fact" title={started.title}>
@@ -1240,6 +1250,7 @@ export function WorkflowCard({
               <StepPanel
                 key={`${workflow.workflow_id}/${picked}`}
                 onClose={() => closePanel(picked)}
+                bring={readerPicked.current || !page}
               >
                 {inspector(picked, () => closePanel(picked))}
               </StepPanel>
@@ -1286,7 +1297,7 @@ export function WorkflowCard({
               />
             </div>
             {picked !== null && !narrow && (
-              <StepPanel key={`${workflow.workflow_id}/${picked}`} onClose={() => closePanel(picked)}>
+              <StepPanel key={`${workflow.workflow_id}/${picked}`} onClose={() => closePanel(picked)} bring={readerPicked.current || !page}>
                 {inspector(picked, () => closePanel(picked))}
               </StepPanel>
             )}
@@ -1327,7 +1338,7 @@ function useNarrow(): boolean {
  * the inspector already took it, which is what a same-step scrub does on
  * arrival -- and `onClose` is the caller's, which puts focus back on the node.
  */
-function StepPanel({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+function StepPanel({ onClose, children, bring = true }: { onClose: () => void; children: ReactNode; bring?: boolean }) {
   const ref = useRef<HTMLElement | null>(null)
   useEffect(() => {
     const el = ref.current
@@ -1336,7 +1347,12 @@ function StepPanel({ onClose, children }: { onClose: () => void; children: React
     // THE CARD IS BROUGHT TO THE READER (browser QA, 2026-10-04): on a page
     // it opens under every node, a screen below the node that was clicked.
     // `nearest` moves the page only as far as the card needs.
-    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // ONLY WHEN A READER OPENED IT (QA G3-28). The page picks the first
+    // failure on arrival, and bringing that card into view opened a failed
+    // workflow's page ~920px down, past its head and its tabs.
+    if (bring && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // On mount only: this is about how the card ARRIVED.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return (
     <aside
@@ -1538,7 +1554,13 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
       </span>
     )
   }
-  const partial = spend.covered < spend.steps
+  // THE DENOMINATOR IS THE STEPS THAT COULD HAVE SPENT (QA G3-02, G3-03): a
+  // step skipped by its verdict gate, or one that never had an attempt, is a
+  // known $0, so it is neither covered nor a gap. Every successful
+  // review-gated workflow read `2/3` -- a floor -- over a step whose agent
+  // was never started.
+  const due = dueSteps(spend)
+  const partial = spend.covered < due
   // WHICH RECORD THE FIGURES CAME FROM (WF-5). The total is the sum of the
   // figures the steps themselves show, and some of those are a result's rather
   // than the attempts' -- which the steps mark `from result`, so the total
@@ -1547,7 +1569,12 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
     spend.fromResult > 0
       ? ` (${spend.fromResult} from the step’s result summary, where no attempt telemetry read here had one)`
       : ''
-  const note = `${spend.covered} of ${spend.steps} steps reported a cost${sources}.${
+  const known = [
+    spend.skipped > 0 ? `${spend.skipped} ${SKIPPED_WORD}` : null,
+    spend.noAttempt > 0 ? `${spend.noAttempt} with no attempt` : null,
+  ].filter((w): w is string => w !== null)
+  const none = known.length > 0 ? ` ${known.join(' and ')} spent nothing on an agent, a known $0 rather than a gap.` : ''
+  const note = `${spend.covered} of ${due} step${due === 1 ? '' : 's'} that ran reported a cost${sources}.${none}${
     partial ? ' The rest have not reported one, so this is a floor rather than the total.' : ''
   }`
   return (
@@ -1555,7 +1582,7 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
       {money(spend.usd)}
       {partial && (
         <span className="wf-spend-cov">
-          {spend.covered}/{spend.steps}
+          {spend.covered}/{due}
         </span>
       )}
     </span>
@@ -1570,6 +1597,14 @@ function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean
  */
 function money(v: number): string {
   return usd(v)
+}
+
+/** A task id cut to its kind and its last five characters: `task_…18680`. */
+export function integratorShort(id: string): string {
+  const m = /^([A-Za-z]+_)(.*)$/.exec(id)
+  const prefix = m === null ? '' : m[1]!
+  const rest = m === null ? id : m[2]!
+  return rest.length <= 6 ? id : `${prefix}…${rest.slice(-5)}`
 }
 
 /**
@@ -1687,10 +1722,20 @@ function WorkflowDispatch({
           <b>opens</b>
           {c.opens}
         </li>
+        {/* THE INTEGRATOR, NAMED AS A TASK AND LINKED TO ITS AGENT (QA G3-25):
+            `via 4fb18680` -- eight hex characters and no link -- read as a
+            commit SHA. */}
         {dispatch.strategy === 'integrate' && integratorTaskId !== null && (
           <li className="ctl-fact">
-            <b>via</b>
-            <code>{integratorTaskId.slice(-8)}</code>
+            <b>integrator</b>
+            <a
+              className="ctl-link wf-integrator"
+              href={`#work/task/${encodeURIComponent(integratorTaskId)}`}
+              title={integratorTaskId}
+              aria-label={`Open the integrator task ${integratorTaskId}`}
+            >
+              {integratorShort(integratorTaskId)}
+            </a>
           </li>
         )}
         {/* THE SAME PULL REQUEST THE ROW NAMES (#330), here too because the
@@ -1802,7 +1847,7 @@ function stepRows(
   return workflow.steps
     .map((step) => {
       const state = stepState(step, taskById)
-      const f = figuresFor(state, usage, now)
+      const f = stepFigures(state, usage, now)
       // THE WAIT SPLITS WHERE THE LAST PARENT FINISHED (#107), read from the
       // same task read as the step's own state.
       const times = stepTimes(state, now, parentsDoneOf(step, workflow.steps, taskById))
@@ -1818,6 +1863,7 @@ function stepRows(
           ? usage.usage.byTaskId.get(state.task.id)
           : undefined
       const spent = state.kind === 'state' && usage.kind !== 'reading' ? stepCostOf(state.task, u) : null
+      const nothing = state.kind === 'state' && usage.kind !== 'reading' ? noAgentSpend(state.task, u) : null
       const row: StepRowModel = {
         step,
         taskId,
@@ -1845,7 +1891,22 @@ function stepRows(
           waitedMs: times.waitedMs,
           ranMs: times.ranMs,
           attempts: state.kind === 'state' ? state.task.attempt_count : null,
-          costUsd: spent === null ? null : spent.usd,
+          // A KNOWN $0 RANKS AS ZERO (`noAgentSpend`): the cell says `none`.
+          costUsd: spent !== null ? spent.usd : nothing !== null ? 0 : null,
+          // THE TOKENS COLUMN SORTS ON WHAT IT PRINTS (QA G3-33), by the cell's
+          // own rule: the attempts' total where they reported one, else the
+          // finished result's, else nothing -- an absence, which sorts last.
+          tokens:
+            state.kind !== 'state' || usage.kind === 'reading'
+              ? null
+              : ((u !== undefined && u.attempts > 0
+                  ? tokenKindsTotal({ input: u.inputTokens, output: u.outputTokens, cacheRead: u.cacheReadTokens, cacheWrite: u.cacheCreationTokens })
+                  : null) ??
+                (() => {
+                  const r = finishedResultOf(state.task)
+                  return r === null ? null : tokenKindsTotal(resultTokenKinds(r))
+                })() ??
+                (nothing !== null ? 0 : null)),
         },
       }
       return row
@@ -1927,7 +1988,7 @@ function WorkflowSteps({
           // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
           // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
           // chip in a strip above the card, floating apart from what it qualifies.
-          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} /> : null}
+          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} workflow={workflow} /> : null}
         />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -2075,8 +2136,10 @@ function StepCardExtras({
       {verdict !== null && <VerdictCard verdict={verdict} />}
       {reviewed && (
         <p className="wf-verdict is-pending">
-          <b>Review verdict</b> <span className="wf-cell is-absent">not read yet</span>: no step that gates on this review has
-          run, and the review's verdict file is read only by them.
+          {/* ONE SENTENCE, THE MARK INLINE (QA G3-19): a colon after the
+              dashed mark started the next line as `: no step that…`. */}
+          <b>Review verdict</b> <span className="wf-cell is-absent">not read yet</span> — no step that gates on this review
+          has run, and the review's verdict file is read only by them.
         </p>
       )}
       {mergeCard !== null && <MergeStepCard card={mergeCard} now={now} />}
@@ -3469,7 +3532,7 @@ function StepNode({
   // second for a canvas that is not drawing them is work done to be thrown
   // away, and on a 30-step run that is 120 cells a second.
   const showFigures = tier === 'figures'
-  const f = showFigures ? figuresFor(state, usage, now) : null
+  const f = showFigures ? stepFigures(state, usage, now) : null
   // A read still IN FLIGHT is not an absence. "not reported" is a claim about
   // the platform; a request that has not landed has made no claim at all, so
   // the cell draws a moving placeholder instead of a sentence.
@@ -4006,6 +4069,39 @@ const RUNNING_NOW: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUN
  * board read (`boardResultNote`): outside the sample, or where the read failed,
  * the board read no attempt document, so it may not say what one carries.
  */
+function stepFigures(state: StepState, usage: UsageRead, now: number): StepFigures {
+  const f = figuresFor(state, usage, now)
+  if (state.kind !== 'state' || usage.kind === 'reading') return f
+  // A KNOWN $0 IS NOT AN ABSENCE (QA G3-02, G3-03, G3-10). A step whose
+  // verdict gate skipped its agent, or that never had an attempt, spent
+  // nothing -- the same rule the row's total leaves out of its coverage
+  // (`noAgentSpend`) -- so its cost and tokens say `none`, never `not
+  // reported` or a clipped `no attempt …`. A figure either record DID carry
+  // is kept: this only replaces an absence.
+  const none = noAgentSpend(state.task, telemetryOf(usage)?.get(state.task.id))
+  if (none === null) return f
+  const cell = noSpendCell(none, state.task)
+  return {
+    ...f,
+    cost: f.cost.kind === 'absent' ? cell : f.cost,
+    tokens: f.tokens.kind === 'absent' ? cell : f.tokens,
+  }
+}
+
+/** The cost and tokens cell of a step that spent nothing on an agent. */
+function noSpendCell(none: NoSpend, task: Task): Cell {
+  if (none === 'skipped') {
+    return measuredCell(
+      'none',
+      `${SKIPPED_WORD}: the verdict gate kept this step’s agent from running, so it spent nothing on an agent. A known $0, not a missing figure.`,
+    )
+  }
+  if (TERMINAL_STATES.has(task.state)) {
+    return measuredCell('none', 'This step ended without any attempt running its agent, so it spent nothing. A known $0, not a missing figure.')
+  }
+  return measuredCell('none yet', 'No attempt has run under this step yet, so it has spent nothing so far.')
+}
+
 function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigures {
   const allAbsent = (a: Absence): StepFigures => ({
     ran: absentCell(a),
@@ -4226,9 +4322,16 @@ function NodeSource({ f, pending }: { f: StepFigures; pending: boolean }) {
  * component exists and it does not get to become implicit just because it
  * stopped being visible ink.
  */
-function SampleNote({ usage }: { usage: WorkflowUsage }) {
-  const uncovered = usage.notSampled.size
-  const failed = usage.failed.size
+function SampleNote({ usage, workflow }: { usage: WorkflowUsage; workflow: Workflow }) {
+  // THIS WORKFLOW'S TASKS ONLY (QA G3-05). The read is the board's -- every
+  // workflow's tasks, this one's first under the ceiling -- and the mark
+  // printed `12/296 sampled` over a three-step table whose three steps all
+  // had figures. It qualifies THESE figures, so it counts these tasks, and it
+  // is silent when every one of them was read.
+  const ids = [...new Set(workflow.steps.flatMap((st) => (st.task_id ? [st.task_id] : [])))]
+  const sampled = ids.filter((id) => usage.byTaskId.has(id)).length
+  const uncovered = ids.filter((id) => usage.notSampled.has(id)).length
+  const failed = ids.filter((id) => usage.failed.has(id)).length
   if (uncovered === 0 && failed === 0) return null
   const ceiling =
     uncovered > 0
@@ -4239,9 +4342,9 @@ function SampleNote({ usage }: { usage: WorkflowUsage }) {
     <span className="wf-caveat" role="status">
       <span
         className="ctl-mark is-partial"
-        aria-label={`Step figures cover ${usage.byTaskId.size} of ${usage.tasksRequested} tasks on this board.${ceiling}${unread}`}
+        aria-label={`Step figures cover ${sampled} of this workflow’s ${ids.length} tasks.${ceiling}${unread}`}
       >
-        {usage.byTaskId.size}/{usage.tasksRequested} sampled
+        {sampled}/{ids.length} sampled
       </span>
     </span>
   )
@@ -4877,7 +4980,8 @@ function WorkflowHead({
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
-  // and its meta line are the shell's head above (`pageSummary`); this row
+  // is the shell's head above, and its meta line the count note over this
+  // row (`pageSummary`, #138); this row
   // carries what is not a sentence -- the state, the pull request, the failure
   // policy, the cost, the id when the title is the name -- and Copy link and
   // Cancel workflow, centred on the row so nothing leaves blank space under them.
