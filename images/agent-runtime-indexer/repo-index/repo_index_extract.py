@@ -132,7 +132,12 @@ MAX_INDEX_BYTES = 512 * 1024
 # §2.2: the summary carries the 100 most-called symbols.
 MOST_CALLED = 100
 EXTRACTOR_NAME = "swarm-repo-index"
-EXTRACTOR_VERSION = "1"
+# "2" (QA G4-04/05): test-side classification under a test_layout root, the
+# name-unique method fallback and the evidence ranking change what an edge
+# means. An incremental run carries an unchanged file's edges verbatim, so a
+# base extracted by "1" would keep the old edges until some full run; the
+# version check below refuses it instead.
+EXTRACTOR_VERSION = "2"
 
 # §2.5's confidences, by evidence.
 AST_UNIQUE = 0.6

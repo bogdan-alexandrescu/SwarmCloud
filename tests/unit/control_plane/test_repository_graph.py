@@ -93,7 +93,8 @@ def graph_doc(commit: str) -> dict:
     return {
         "schema": "swarm.repo-graph/v1", "kind": "full", "commit_sha": commit,
         "branch": "main", "base_sha": None, "languages": [], "truncated": [],
-        "extractor": {"name": "swarm-repo-index", "version": "1"},
+        "extractor": {"name": "swarm-repo-index",
+                      "version": repoindex.INDEXER_EXTRACTOR_VERSION},
         "symbols": [sym("src/api/users.py", "get_user"), sym("src/api/users.py", "load_user"),
                     sym("src/store/db.py", "fetch"),
                     sym("tests/api/test_users.py", "test_get_user")],
@@ -162,7 +163,8 @@ def test_promotion_records_the_graph_manifest_and_its_digest(
     # Lane IX2 review: what the next run's `choose_kind` reads. This graph's
     # files carry no blob id (it is shaped like one promoted before IX2), so
     # the next run is submitted full, with the full timeout.
-    assert version["graph_extractor"] == {"version": "1", "blob_ids": False,
+    assert version["graph_extractor"] == {"version": repoindex.INDEXER_EXTRACTOR_VERSION,
+                                          "blob_ids": False,
                                           "files_not_listed": 0, "truncated": []}
     assert "blob id" in repoindex.graph_carry_refusal(version["graph_extractor"])
     run = db.docs[f"repo_index_runs/{task_id}"]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -420,3 +421,46 @@ def test_over_its_bound_the_index_map_goes_to_directories_and_the_graph_keeps_fi
     assert pairs[("pkg/**", "tests/test_m00.py")]["evidence"] == "naming"
     # The graph's count is the file level, whole.
     assert index["graph"]["test_map"] == len(facts["test_map"]) == 13
+
+
+def test_an_incremental_run_over_a_version_1_base_goes_full_and_resolves_the_unique_method(
+    tool: Any, shards: Any, tmp_path: Path
+) -> None:
+    """A base of the extractor before G4-05 carries no name-unique edges.
+
+    An incremental run copies an unchanged file's edges from the base
+    verbatim, so carrying a version-1 base would keep `_admit_one` at
+    "0 tests reach it" for the unchanged test until some full run.
+    """
+    repo = fx.build_repo(tmp_path / "repo", ADMIT)
+    first = tool.extract(repo, tool.Budget())
+    test_file = "tests/unit/control_plane/test_admission.py"
+    target = "apps/scheduler/scheduler/loop.py#Scheduler._admit_one"
+    store = shards.LocalStore(str(tmp_path / "store"))
+    written = shards.write_graph(tool.graph_document(first), store, tenant_id="tenant",
+                                 repo_id="repo_" + "0" * 16)
+    graph = shards.read_graph(store, tenant_id="tenant", repo_id="repo_" + "0" * 16,
+                              commit_sha=first["commit_sha"],
+                              manifest_digest=written["manifest_digest"])
+    # What version 1 extracted: no edge reaches the method from the test.
+    graph["extractor"]["version"] = "1"
+    graph["call_edges"] = [e for e in graph["call_edges"] if e["to"] != target]
+    graph["symbol_test_map"] = [m for m in graph.get("symbol_test_map") or []
+                                if m["symbol"] != target]
+    base = tool.Base(sha=first["commit_sha"], graph=graph,
+                     index=tool.index_document(first))
+    env = fx.git_env(tmp_path / "repo-home")
+    fx.write_files(repo, {"apps/scheduler/scheduler/other.py":
+                          "class Other:\n    def run(self):\n        return 3\n"})
+    stamp = "@1780086400 +0000"
+    for args in (["add", "-A"], ["commit", "-q", "-m", "change"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True,
+                       env={**env, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+
+    facts = tool.extract(repo, tool.Budget(), base=base)
+
+    assert facts["kind"] == "full"
+    assert "version '1'" in facts["extractor"]["incremental"]["reason"]
+    found = [e for e in facts["call_edges"]
+             if e["from"] == f"{test_file}#test_admits" and e["to"] == target]
+    assert len(found) == 1
