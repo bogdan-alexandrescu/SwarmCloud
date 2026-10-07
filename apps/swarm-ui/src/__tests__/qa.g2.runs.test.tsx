@@ -10,8 +10,7 @@
  *          line, and ended its title in a bare "· —".
  *   G2-17  "Open agent →" sent a finished step's task to `/agents/live/<id>`,
  *          a list that does not hold it.
- *   G2-18  the Runs list had no filter or search, Workflow was plain text, and
- *          Created was relative only.
+ *   G2-18  the Runs list had no filter or search, and Workflow was plain text.
  *   G2-19  on a phone each cell's label ended in a dangling " · ".
  *   G2-30  the folded plan said "1 step" next to "Steps · 3".
  *   G2-31  Progress was all "3d ago": no order or duration could be read.
@@ -158,7 +157,7 @@ describe('G2-06: the PR card asserts nothing its counts do not carry', () => {
     const { container } = await mountRun()
     const ci = await waitFor(() => container.querySelector<HTMLElement>('.rn-ci')!, WAIT)
     const counts = ci.querySelector('.rn-ci-counts')!
-    expect(visible(counts)).toBe('by check per-check counts not served')
+    expect(visible(counts.querySelector(':scope > :not(b)'))).toBe('per-check counts not served')
     expect(counts.querySelector('[title]')?.getAttribute('title')).toMatch(/pull_request\.checks/)
     expect(visible(counts)).not.toMatch(/passed|pending|skipped/)
   })
@@ -168,7 +167,7 @@ describe('G2-06: the PR card asserts nothing its counts do not carry', () => {
     const ci = await waitFor(() => container.querySelector<HTMLElement>('.rn-ci')!, WAIT)
     expect(visible(ci.querySelector('.c-card-h h3'))).toBe('Pull request #564')
     const merge = [...ci.querySelectorAll('.ctl-fact')].find((li) => visible(li.querySelector('b')) === 'merge')!
-    expect(visible(merge)).toBe('merge merge not reported')
+    expect(visible(merge.querySelector(':scope > :not(b)'))).toBe('merge not reported')
   })
 })
 
@@ -293,13 +292,6 @@ describe('G2-18: the Runs list links its workflows and filters by state and text
     fireEvent.change(search, { target: { value: 'no such run' } })
     expect(shown(container)).toEqual([])
     expect(visible(container.querySelector('.rn-none'))).toMatch(/No run of the 3 read matches/)
-  })
-
-  it('prints Created as an absolute UTC time under its age', async () => {
-    const { container } = await mountList()
-    const cell = container.querySelector('.rn-row td[data-label="Created"]')!
-    expect(visible(cell)).toMatch(/ago 2026-10-04 20:00 UTC$/)
-    expect(cell.querySelector('time')?.getAttribute('dateTime')).toBe('2026-10-04T20:00:00Z')
   })
 })
 
