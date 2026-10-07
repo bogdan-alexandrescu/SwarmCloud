@@ -1,6 +1,6 @@
 import './styles/overview.css'
 import './styles/names.css'
-import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, waitGroups } from './OverviewRegions'
+import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, rowLabel, useRowTitles, waitGroups } from './OverviewRegions'
 import { addressToPath } from './paths'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
@@ -15,7 +15,7 @@ import {
   TASK_PAGE_LIMIT,
   type SpendRollup,
 } from './api'
-import { PHONE_PAGE_LIMIT, agentName } from './agentlist'
+import { PHONE_PAGE_LIMIT } from './agentlist'
 import { totalCostCell, totalCostOf } from './dag'
 import { usd } from './measure'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
@@ -61,7 +61,7 @@ import {
  *      title, a line and the link out. No figure over a bar and no list.
  *   2. The lifecycle band -- Waiting / Holding capacity / Finished today, each
  *      broken down by state under its own mark (marks.tsx).
- *   3. Running now beside Cost so far.
+ *   3. Running now beside Recent token cost.
  *   4. Waiting, and why (grouped by reason) beside Headroom.
  *   5. Recent failures, each ending in its age and an Open link.
  *
@@ -79,7 +79,7 @@ import {
  * WHAT THIS SCREEN DOES NOT DRAW, and why it is not a placeholder:
  *   - a task's cost so far. `/v1/tasks` serves no cost; it lives on the
  *     attempts, one read per task. The Running card's last column is an em
- *     dash that says so, and Cost so far sums a named sample on refresh.
+ *     dash that says so, and Recent token cost sums a named sample on refresh.
  *   - infrastructure cost in dollars. No billing integration records Cloud
  *     Run, Firestore or GCS spend, and the cost card's foot names the scope.
  *   - an alert inbox. Nothing stores, routes or acknowledges an alert. The
@@ -173,6 +173,7 @@ export function OverviewScreen() {
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
   const failures = page === null ? null : failuresOf(page, Date.now())
+  const spent = dataOf(spend)
 
   return (
     // THE HEAD'S CLOCK IS EVERY FOOT'S (#98): a stale foot below and the
@@ -240,7 +241,7 @@ export function OverviewScreen() {
           card, and the shorter one's column was blank beside it: ~157px
           beside Cost so far and ~388px beside Headroom. Each column now
           stacks its own cards at their own heights -- Running now, Waiting
-          and Recent failures on the left, Cost so far and Headroom on the
+          and Recent failures on the left, Recent token cost and Headroom on the
           right -- so a short card is followed by the next card in its
           column, not by blank. The pools stay a full-width row under both
           (N17). On a narrower screen it is one column in O1's order. */}
@@ -262,7 +263,10 @@ export function OverviewScreen() {
             <CardHead
               title="Recent failures"
               note={failures === null ? undefined : failures.note}
-              href="/agents/recent?state=failed"
+              // THE WHOLE RECENT TAB (QA G1-10, 2026-10-07): the card lists
+              // failed, dead-lettered and cancelled rows, and `?state=` takes
+              // one state, so the failed filter dropped half of what it listed.
+              href="/agents/recent"
               cta="All recent"
             />
             <RecentFailures tasks={tasks} />
@@ -270,7 +274,17 @@ export function OverviewScreen() {
         </div>
         <div className="ov-col">
           <section className="ctl-card ov-card ov-spend" id="ov-spend">
-            <CardHead title="Cost so far" href="/timeline" cta="Timeline" explain="token-cost" />
+            {/* A ROLLING SAMPLE IS NOT "SO FAR" (QA G1-03, 2026-10-07): the
+                figure sums the newest attempts, so it fell $8.78 -> $7.99 in
+                ten minutes under a title that read as cumulative. No route
+                sums today's attempts; the note says which window this is. */}
+            <CardHead
+              title="Recent token cost"
+              note={spent === null ? undefined : `last ${countOf(spent.attempts, 'attempt')}`}
+              href="/timeline"
+              cta="Timeline"
+              explain="token-cost"
+            />
             <SpendBody state={spend} tasks={tasks} />
           </section>
           <section className="ctl-card ov-card ov-headroom" id="ov-headroom">
@@ -1197,7 +1211,7 @@ const RUNNING_ROWS = 8
  * `GET /v1/tasks` carried no cost.
  */
 const COST_NOT_SERVED =
-  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Cost so far card sums a sample on refresh instead.'
+  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Recent token cost card sums a sample on refresh instead.'
 
 /** Why the column is a dash when the API read the attempts and none reported. */
 const COST_NOT_YET =
@@ -1265,6 +1279,7 @@ function RunningCard({
           .filter((t) => CONCURRENCY_STATES.has(t.state))
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
+  const titleOf = useRowTitles(running)
   const head = (
     <CardHead
       title="Running now"
@@ -1379,7 +1394,7 @@ function RunningCard({
           </thead>
           <tbody>
             {shown.map((t) => (
-              <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
+              <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
             ))}
           </tbody>
         </table>
@@ -1389,7 +1404,7 @@ function RunningCard({
             <table className="ov-tbl">
               <tbody>
                 {running.slice(RUNNING_ROWS).map((t) => (
-                  <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
+                  <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
                 ))}
               </tbody>
             </table>
@@ -1402,8 +1417,8 @@ function RunningCard({
         {running.map((t) => (
           <li key={t.id}>
             <StateMark state={t.state} />
-            <a className="ov-prun-n" href={agentPath(t)} title={`${agentName(t)} · ${t.id}`}>
-              {agentName(t)}
+            <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
+              {rowLabel(t, titleOf(t))}
             </a>
             <em>
               <Runtime task={t} leasedAt={leased.get(t.id)} />
@@ -1424,10 +1439,13 @@ function RunningCard({
  */
 export function RunningRow({
   task,
+  title = null,
   silentFor,
   leasedAt,
 }: {
   task: Task
+  /** Its workflow's title (`useRowTitles`), or null: the step alone. */
+  title?: string | null
   silentFor?: number | undefined
   /** When the lease this attempt holds was granted (`leasedAtByTask`). */
   leasedAt?: string | undefined
@@ -1438,9 +1456,10 @@ export function RunningRow({
         <StateMark state={task.state} />
       </td>
       <th scope="row">
-        {/* NAMED BY ITS STEP (#94), else its id; the profile under it. */}
-        <a className="ov-name" href={agentPath(task)} title={`${agentName(task)} · ${task.id}`}>
-          {agentName(task)}
+        {/* NAMED BY ITS TITLE, THEN ITS STEP (QA G1-09; #94 named the step),
+            else its id; the profile under it. */}
+        <a className="ov-name" href={agentPath(task)} title={`${rowLabel(task, title)} · ${task.id}`}>
+          {rowLabel(task, title)}
         </a>
         {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}
         {silentFor !== undefined && (
@@ -1484,7 +1503,10 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   const page = dataOf(leases)
   if (page === null) return out
   for (const l of page.leases) {
-    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+    // `starting` is a worker that has not beaten yet inside its dispatch
+    // deadline (G5-01): booting, not silent, so it is not one of the item's.
+    const { kind } = leaseLiveliness(l, page.thresholds)
+    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
   }
   return out
 }

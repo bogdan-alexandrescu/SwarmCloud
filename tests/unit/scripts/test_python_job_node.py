@@ -26,7 +26,10 @@ APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 
 def _python_steps() -> list[dict]:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python"]["steps"]
+    # The job that runs the step. Since 2026-10-07 `python` (`format / unit
+    # tests`) only reads the results of `python-checks` and the `python-unit`
+    # shards.
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python-unit"]["steps"]
 
 
 def _index(steps: list[dict], predicate) -> list[int]:
@@ -37,7 +40,8 @@ def test_the_python_job_sets_up_node_before_the_unit_tests():
     steps = _python_steps()
     setup = _index(steps, lambda s: str(s.get("uses", "")).startswith("actions/setup-node@"))
     assert len(setup) == 1, f"expected one setup-node step in the python job, found {len(setup)}"
-    unit = _index(steps, lambda s: "pytest tests/unit" in str(s.get("run", "")))
+    # Each shard runs `uv run pytest ... "${files[@]}"` over its part of tests/unit.
+    unit = _index(steps, lambda s: "uv run pytest" in str(s.get("run", "")))
     assert unit, "the python job no longer runs the unit suite; this test reads nothing"
     assert setup[0] < min(unit), "setup-node runs after the unit tests it is meant to serve"
 

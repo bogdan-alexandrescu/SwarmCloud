@@ -1095,6 +1095,14 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
         {pickedBucket === null && figureLink !== undefined && !cov.none && (
           // THE SPAN'S FIGURES OPEN THEIR ROWS TOO: "Failed 21" in the readout
           // is one click from those 21 tasks (#116).
+          //
+          // A LINK PRINTS THE COUNT OF THE ROWS IT OPENS, or none (QA G3-01,
+          // 2026-10-07). The list reads every task that ended in the span; a
+          // partial readout sums only the buckets built so far. Over a 30d
+          // span built 6 days in, "173 failed in the span" opened a list
+          // titled "291 failed". So on a partial span the link carries no
+          // count -- the list prints its own total -- and is offered whether or
+          // not the built days hold one, since the unbuilt ones may.
           <p className="ol-span-drill">
             {(
               [
@@ -1102,10 +1110,22 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
                 ['cancelled', shown.cancelled],
               ] as const
             )
-              .filter(([, n]) => n > 0)
+              .filter(([, n]) => n > 0 || !cov.complete)
               .map(([outcome, n]) => (
                 <OpenLink key={outcome} className="ctl-link ol-drill" link={figureLink(outcome, null)}>
-                  {n} {outcome} in the span →{' '}
+                  {cov.complete ? (
+                    <>
+                      {n} {outcome} in the span →{' '}
+                    </>
+                  ) : (
+                    <>
+                      <Mark
+                        kind="partial"
+                        say={`The readout counts ${n} ${outcome} over the ${cov.read} of ${cov.of} ${cov.unit} built so far; the list reads the whole span and prints its own total.`}
+                      />{' '}
+                      every {outcome} task in the whole span →{' '}
+                    </>
+                  )}
                   <span className="ol-q">list them</span>
                 </OpenLink>
               ))}

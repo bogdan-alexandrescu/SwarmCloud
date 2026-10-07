@@ -162,6 +162,8 @@
 /* Holders narrowed to the pool a Pools link named (#125), with the way back. */
 .hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
 .hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
+/* A pool filter no lease matches (G5-14): one row that says so. */
+.hold-all tr.hold-empty td { color: var(--text-dim); font-size: var(--t-meta); }
 .hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 
 /* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
@@ -184,6 +186,12 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The fed pool's ceiling, under its name (G5-02). The ` · ` is for text and
+   screen readers; the line break already separates the two on screen. */
+.quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quota-ceiling .quota-sep { display: none; }
+/* `(at last report)` on a stale document's 429 count (G5-03). */
+.quota-basis { font-size: var(--t-meta); color: var(--text-dim); }
 .quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
 @media (max-width: 899px) {
   .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }

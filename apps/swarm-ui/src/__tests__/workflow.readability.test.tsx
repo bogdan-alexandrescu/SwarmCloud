@@ -413,17 +413,18 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     expect(wl.workflowDuration(done!, noEnd, T0)).toMatchObject({ ms: null, text: 'not recorded' })
   })
 
-  it('draws Started and Duration columns, and one choice re-sorts the rows', async () => {
+  it('draws Submitted and Duration columns, and one choice re-sorts the rows', async () => {
     const onView = vi.fn()
     render(<Routed initial="" onView={onView} />)
     await waitFor(() => expect(rowIds()).toHaveLength(4))
     const heads = [...document.querySelectorAll('.wfl-table thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Started')
+    // Submitted since QA G3-20 (2026-10-07): the column every order sorts by.
+    expect(heads).toContain('Submitted')
     expect(heads).toContain('Duration')
     expect(heads).not.toContain('Age')
     const row = document.querySelector<HTMLElement>('tr[data-workflow="wf_one"]')!
     expect(row.querySelector('.wfl-dur')!.textContent).toBe('20m 0s')
-    expect(row.querySelector('.wfl-started')!.getAttribute('title')).toMatch(/submitted/)
+    expect(row.querySelector('.wfl-submitted')!.getAttribute('title')).toMatch(/submitted/)
     expect(document.querySelector('tr[data-workflow="wf_new"] .wfl-dur')!.textContent).toBe('10m 0s so far')
 
     fireEvent.change(screen.getByRole('combobox', { name: /sort/ }), { target: { value: 'failed' } })

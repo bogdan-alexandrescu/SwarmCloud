@@ -75,14 +75,19 @@ def known_providers() -> tuple[str, ...]:
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
 
-    EXCEPT A WORKER ACTION'S PROVIDER (`APP_CREDENTIAL_PROVIDERS`). Both
+    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). Both
     credential routes accept exactly this set (`routes/tenants.py`,
-    `routes/admin.py`), and a credential registered through them is granted to
-    the tenant's ORDINARY worker account (`credentials._grant_accessor`), whose
-    token any agent of the tenant can mint. `git-merge` and `git-review` are
-    GitHub App keys that only the merge and post-verdict Jobs' own service
-    accounts may read (contract request 33's #364 amendment, accepted
-    2026-10-01), so neither may ever enter through that path.
+    `routes/admin.py` `_check_provider`), and a credential registered through
+    them is granted to the tenant's ORDINARY worker account
+    (`credentials._grant_accessor`), whose token any agent of the tenant can
+    mint. `git-merge` and `git-review` were GitHub App keys meant for the
+    merge and post-verdict Jobs' own accounts (contract request 33's #364
+    amendment). Those accounts are retired (owner decision MS0-Q4,
+    2026-10-06): nothing reads either key any more, so neither is registrable,
+    listed (`service.providers`) or accepted by the quota broker
+    (`quota_broker.main._known_provider`) anywhere. The frozen catalogue still
+    names `git-review` on its disabled post-verdict entry until contract
+    request 50 is decided, which is why the exclusion is still needed.
 
     AND THE FORGE TOKEN, `git`, which the `merge` profile names since contract
     request 47 (2026-10-04). It is the tenant's own forge token, registered
@@ -110,18 +115,16 @@ FORGE_PROVIDER = "git"
 #: 47 moved the merge onto the tenant's `-git` token. Derived from the
 #: catalogue rather than named, so a third worker action is left out of
 #: `known_providers()` the day it is added rather than the day someone
-#: remembers this line. An App key is read by its own Job's service account at
-#: action time and is never registered against the worker account.
-#: `scripts/register-tenant.sh` reads this set to refuse binding one to the
-#: worker; the forge token is the one worker-action provider the worker DOES
-#: read, so it is not in it.
+#: remembers this line. The forge token is the one worker-action provider the
+#: worker DOES read, so it is not in it.
 #:
-#: `git-merge` STAYS IN THE SET after contract request 47 retired it from the
-#: catalogue (`RETIRED_APP_CREDENTIAL_PROVIDERS`). A `-git-merge` secret that
-#: exists holds a GitHub App key; dropping the name here would let
-#: `register-tenant.sh` grant the tenant's worker account read on it, which is
-#: the one thing that secret's design forbids. It goes when the merge account
-#: leaves `terraform/modules/service_account_ids`.
+#: BOTH ARE RETIRED (owner decision MS0-Q4, 2026-10-06): the merge,
+#: post-verdict and review accounts that alone were to read them are gone from
+#: terraform, so no account reads either key. The set stays, as the refusal:
+#: `scripts/register-tenant.sh` reads it to refuse either provider on every
+#: path, and a `-git-merge` or `-git-review` secret that exists still holds an
+#: App key no worker may be granted. `git-merge` is named
+#: (`RETIRED_APP_CREDENTIAL_PROVIDERS`) because the catalogue no longer is.
 RETIRED_APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({"git-merge"})
 APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
     p.provider for p in RUNNER_PROFILES.values()
@@ -1214,7 +1217,9 @@ class DispatchOptions:
     #: whose pull request it merges, and -- when the workflow has a review --
     #: `review`, that review's task id, and `verdict_file`, the file it stages
     #: from it. Inside the dispatch block, so the spec signature covers it.
-    merge_target: tuple[tuple[str, str], ...] = ()
+    #: For a `merge_pr` workflow (#352) it names no task: `number` and
+    #: `head_sha`, the pull request and the head the caller named, instead.
+    merge_target: tuple[tuple[str, Any], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -1278,10 +1283,12 @@ class DispatchOptions:
     def with_merge_target(
         self,
         *,
-        pull_request: str,
+        pull_request: str | None = None,
         review: str | None = None,
         verdict_file: str | None = None,
         base: str | None = None,
+        number: int | None = None,
+        head_sha: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1289,7 +1296,19 @@ class DispatchOptions:
         `base` is the default branch the tenant registered the repository
         with, absent when it registered none (lane MS1): the worker refuses a
         pull request on any other base `base_not_default` from this, inside
-        the signed block, without reading the registry itself."""
+        the signed block, without reading the registry itself.
+
+        A `merge_pr` workflow (#352) names the pull request by `number` and
+        the `head_sha` the caller named instead of by the task that opened
+        it, because no task did; it has no review."""
+        target: list[tuple[str, Any]]
+        if pull_request is None:
+            if number is None or head_sha is None:
+                raise ValueError("a merge target names a task, or a number and a head sha")
+            target = [("number", number), ("head_sha", head_sha)]
+            if base:
+                target.append(("base", base))
+            return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
@@ -2083,9 +2102,12 @@ class MergeSources:
     #: step): `pull_request` is then the continued TASK, which pushed the
     #: head to pin in an earlier workflow, and the step depends on nothing.
     continued: bool = False
+    #: True for a `merge_pr` workflow (#352): no task opened the pull
+    #: request, `pull_request` is "", and the step depends on nothing.
+    named: bool = False
 
     def depends_on(self) -> list[str]:
-        if self.continued:
+        if self.continued or self.named:
             return []
         return [self.pull_request] + ([self.review] if self.review else [])
 
@@ -2100,7 +2122,8 @@ class MergePlan:
 
 
 def merge_sources(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -2118,8 +2141,14 @@ def merge_sources(
     with NO agent step merges that task's pull request at the head that task
     pushed: how an issue run merges once its CI is green and its keyword
     block is written (`issueci`), after the workflow that opened it ended.
+
+    `named_pull` is True for a workflow with `merge_pr` (#352), as
+    `continuation.resolve_merge_pr` checked it: with NO agent step it merges
+    the pull request the caller named, which no task opened.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if named_pull:
+        return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
         return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
@@ -2138,7 +2167,8 @@ def merge_sources(
 
 
 def merge_step_for(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
@@ -2147,7 +2177,7 @@ def merge_step_for(
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         return None
     taken = {step.step_id for step in steps}
@@ -2164,7 +2194,8 @@ def merge_step_for(
 
 
 def plan_merge(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -2211,7 +2242,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "

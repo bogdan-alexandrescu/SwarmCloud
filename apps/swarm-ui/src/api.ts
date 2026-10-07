@@ -11,7 +11,7 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
   type ResolvedToken, type TokenScope,
 } from './RepositoriesData'
@@ -5233,14 +5233,14 @@ export async function queryRepositoryImpact(repoId: string, change: { pull_reque
   return r
 }
 
-/** Languages per repository (not served): per language, grammar, server and status. */
-export async function loadRepositoryLanguages(_repoId: string): Promise<Result<LanguageRow[]>> {
-  // NOT SERVED: the API has no per-language route, so nothing is fetched and
-  // the Languages region draws its "not served yet" state.
-  return {
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The API serves no per-language route for a repository.' },
-  }
+/**
+ * `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server
+ * and status (routes/repositories.py `repository_languages`). An API that
+ * does not serve it answers 404/501, and Settings then draws the index
+ * document's own `languages` rows instead (QA G4-13).
+ */
+export async function loadRepositoryLanguages(repoId: string): Promise<Result<LanguageRow[]>> {
+  return readAs(route('/v1/repositories/{repo_id}/languages', { repo_id: repoId }), normLanguages, (rows) => rows.length === 0)
 }
 
 /** The token that resolves here and its capability row, derived from `GET /v1/git-tokens` (R2); no per-repository token route exists. */

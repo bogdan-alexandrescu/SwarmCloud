@@ -26,6 +26,7 @@ import {
 } from './api'
 import { ArtifactViewer, Markdown } from './ArtifactViewer'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
+import { SkippedArtifactsNote } from './DecisionCard'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import { GapNotice, LogText, NO_MARKS, stepMarks, useLogMarks } from './logMarks'
@@ -679,6 +680,10 @@ function Outputs({ v }: { v: ArtifactsView }) {
   return (
     <section className="section arts-outputs">
       <h2>Outputs</h2>
+      {/* A step its review's verdict kept from running holds only the PR text
+          the worker copied to title its pull request; say so rather than
+          look empty (owner request 2026-10-07). */}
+      <SkippedArtifactsNote task={v.task} tasks={ok(v.workflow) ? v.workflow.data.tasks : []} />
       <Answer v={v} />
       <Files v={v} />
       <OverCap v={v} />
