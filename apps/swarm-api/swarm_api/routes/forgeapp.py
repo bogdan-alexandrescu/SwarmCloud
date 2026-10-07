@@ -9,6 +9,9 @@ lane OB3). The flow is `swarm_api.forgeapp`'s.
     POST   /v1/admin/forge/refresh          the refresh sweep (D2): the Cloud Scheduler
                                             job swarm-forge-refresh, as the rollup
                                             sweeper, or an admin
+    GET    /v1/admin/forge/app              the private key's self-check: signs an App
+                                            JWT and reads the App back from GitHub;
+                                            {ok, app_id, slug, reason}, admins only
 
 NO ROUTE RETURNS A VALUE: not the user access token, the refresh token, the
 App's client secret, the `code`, or the `state` after `authorize` issued it.
@@ -94,3 +97,11 @@ def refresh_sweep(
     service: TokenRefresher = Depends(get_forge_app),
 ) -> dict:
     return service.sweep().to_api()
+
+
+@router.get("/v1/admin/forge/app")
+def app_key_check(
+    _auth: AuthContext = Depends(admin_auth),
+    service: ForgeApp = Depends(get_forge_app),
+) -> dict:
+    return service.check_app_key()

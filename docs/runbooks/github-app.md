@@ -199,6 +199,36 @@ Manager reference. That wiring lands with OB3 and **after** step 4, because a
 Cloud Run revision that references a secret with no version fails to start
 (`terraform/infra/child_tasks.tf` records the same order).
 
+## Prove the key
+
+Nothing in the user flow signs with the private key, so a key pasted into the
+wrong slot, truncated, or deleted at GitHub would otherwise go unnoticed until
+the first code that needs it. Once swarm-api's environment carries
+`GITHUB_APP_ID` and `GITHUB_APP_SLUG` and the key has a version (step 4), ask
+it, as a platform admin (`scripts/api.sh` keeps the ID token out of argv,
+[security.md](../security.md)):
+
+```bash
+scripts/api.sh GET /admin/forge/app
+```
+
+swarm-api reads `swarm-github-app-private-key`'s latest version, signs an App
+JWT with it (RS256, `iss` the App id, nine minutes), and calls GitHub's
+`GET /app`. The answer is exactly `{ok, app_id, slug, reason}`:
+
+| answer | means | do |
+|---|---|---|
+| `ok: true` | GitHub accepted the key and named the App configured here | nothing |
+| `private_key_missing` | the slot has no enabled version, or swarm-api may not read it | step 4, then step 1's IAM check |
+| `private_key_malformed` | the version is not an RSA PEM | store the downloaded `.pem` again (step 4) |
+| `key_rejected` | GitHub answered 401: the key is not one of this App's, or was deleted there | generate a new key at GitHub and store it |
+| `app_id_mismatch`, `app_slug_mismatch` | the key belongs to another App, or tfvars name another one | compare `app_id`/`slug` in the answer with step 5's values |
+| `app_id_not_configured`, `app_slug_not_configured` | swarm-api's environment lacks the setting | step 5's release |
+| `github_unreachable`, `github_refused` | GitHub did not answer, or answered something else | run it again; it reads nothing else |
+
+The answer never carries GitHub's body, the JWT or any of the key, and
+swarm-api logs only `ok` and `reason`. Run it again after every rotation.
+
 ## Step 7: switch the refresh sweep on
 
 Once OB3's release serves `POST /v1/admin/forge/refresh` and admits the
