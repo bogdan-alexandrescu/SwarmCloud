@@ -1951,6 +1951,32 @@ const NO_NOTES: ReadonlySet<string> = new Set<string>()
  * level holding one noted node is that much taller, like a level holding one
  * long dependency list.
  */
+/**
+ * HOW WIDE A LINEAR CHAIN'S NODES MAY GROW (QA G3-27): twice the full tier's
+ * card. A chain -- one step per level -- drew its 248px cards down the middle
+ * of a ~1,000px column, and wrapped its dependency line mid-filename
+ * (`(swarm-` / `work.patch)`) in a card a quarter of the width it sat in.
+ * Nothing sits beside a chain's node, so the room is free; the cap keeps a
+ * short chain from turning into full-width bars.
+ */
+export const CHAIN_NODE_W = NODE_W * 2
+
+/**
+ * The node width for these levels: `base`, or -- when every level holds one
+ * step -- as wide as `CHAIN_NODE_W` and the column allow. Width is all it
+ * changes: `heightOf` is handed the same width, so a dependency list that
+ * now fits on fewer lines is measured on fewer lines.
+ */
+export function chainNodeW(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
+  if (levels.length === 0 || levels.some((l) => l.length !== 1)) return base
+  return Math.max(base, Math.min(CHAIN_NODE_W, column - PAD * 2))
+}
+
+/** How much wider than `base` a chain's nodes are drawn: `chainNodeW` less `base`. */
+function chainRoom(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
+  return chainNodeW(levels, base, column) - base
+}
+
 export function layoutOf(
   steps: readonly WorkflowStep[],
   expandedStages: ReadonlySet<number> = NO_STAGES_OPEN,
@@ -1964,7 +1990,9 @@ export function layoutOf(
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
   // below is in terms of it rather than of NODE_W, which is now only the full
   // tier's value.
-  const nodeW = nodeWidthAt(tier, steps)
+  // A LINEAR CHAIN'S NODES TAKE THE ROOM BESIDE THEM (QA G3-27, `chainNodeW`):
+  // zero for any other shape.
+  const nodeW = nodeWidthAt(tier, steps) + chainRoom(levels, nodeWidthAt(tier, steps), column)
   if (levels.length === 0) {
     return {
       nodes: [],
@@ -2818,6 +2846,52 @@ export interface WorkflowSpend {
   /** Steps whose task was joined at all -- the most that could have reported. */
   readonly joined: number
   readonly steps: number
+  /**
+   * STEPS KNOWN TO HAVE SPENT NOTHING ON AN AGENT (QA G3-02, G3-03): a step
+   * whose verdict gate kept its agent from running, and a step with no
+   * attempt -- no task yet, an attempt read that came back empty, or a task
+   * that ended without ever starting. Each is a known $0, not a step that has
+   * not reported, so it is OUT of the coverage denominator (`dueSteps`). A
+   * step that did report a figure is `covered`, never counted here.
+   */
+  readonly skipped: number
+  readonly noAttempt: number
+}
+
+/** The steps a cost could have come from: every step less the known $0s. */
+export function dueSteps(spend: WorkflowSpend): number {
+  return spend.steps - spend.skipped - spend.noAttempt
+}
+
+/**
+ * WHY A STEP SPENT NOTHING ON AN AGENT, or null when it may have (QA G3-02,
+ * G3-03). ONE RULE for the row's coverage, the Table's cost and tokens cells
+ * and the node, so a step drawn `none` is the same step the total leaves out
+ * of its denominator.
+ *
+ *   skipped     SUCCEEDED with `verdict_gate.agent_ran === false`: the worker
+ *               published the reviewed work and never started the agent.
+ *   no-attempt  the step has no task, the board's attempt read for it came
+ *               back empty, the task has used no attempt, or it ended without
+ *               succeeding and with no start time (cancelled while it queued
+ *               -- `never started`).
+ *
+ * `task` is null for a step with no task yet. A step whose task was NOT IN
+ * THE READ is not passed here at all: unread is unknown, never a $0.
+ */
+export type NoSpend = 'skipped' | 'no-attempt'
+
+export function noAgentSpend(task: Task | null, telemetry: StepUsage | undefined): NoSpend | null {
+  if (task === null) return 'no-attempt'
+  if (task.state === 'SUCCEEDED' && skippedByVerdict(task)) return 'skipped'
+  if (telemetry !== undefined && telemetry.attempts === 0) return 'no-attempt'
+  if (task.attempt_count === 0) return 'no-attempt'
+  // ENDED WITHOUT EVER STARTING: cancelled, failed or dead-lettered with no
+  // start time. Not SUCCEEDED -- a success with no start recorded is a record
+  // that lost a timestamp, which is unknown, not a known $0.
+  const started = task.started_at ? Date.parse(task.started_at) : NaN
+  if (task.state !== 'SUCCEEDED' && TERMINAL_STATES.has(task.state) && !Number.isFinite(started)) return 'no-attempt'
+  return null
 }
 
 /**
@@ -2991,19 +3065,36 @@ export function workflowSpend(
   let covered = 0
   let fromResult = 0
   let joined = 0
+  let skipped = 0
+  let noAttempt = 0
 
   for (const step of steps) {
-    const task = step.task_id ? (taskById?.get(step.task_id) ?? null) : null
+    if (!step.task_id) {
+      // NO TASK YET: nothing has run under this step, so it has spent nothing.
+      noAttempt += 1
+      continue
+    }
+    const task = taskById?.get(step.task_id) ?? null
+    // Not in the read: unknown, so it stays in the denominator as a gap.
     if (!task) continue
     joined += 1
     const cost = stepCostOf(task, telemetry?.get(task.id))
-    if (cost === null) continue
+    if (cost === null) {
+      const none = noAgentSpend(task, telemetry?.get(task.id))
+      if (none === 'skipped') skipped += 1
+      else if (none === 'no-attempt') noAttempt += 1
+      continue
+    }
     covered += 1
     if (cost.from === 'result') fromResult += 1
     usd = (usd ?? 0) + cost.usd
   }
 
-  return { usd, covered, fromResult, joined, steps: steps.length }
+  // EVERY STEP IS A KNOWN $0 (nothing ran, or every agent was skipped): the
+  // spend is measured, and it is zero. Only when no step is left unaccounted.
+  if (usd === null && steps.length > 0 && skipped + noAttempt === steps.length) usd = 0
+
+  return { usd, covered, fromResult, joined, steps: steps.length, skipped, noAttempt }
 }
 
 // ---------------------------------------------------------------------------
