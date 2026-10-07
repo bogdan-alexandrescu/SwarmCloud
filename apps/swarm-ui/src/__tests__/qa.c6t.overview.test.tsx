@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
 
 import type { Result } from '../fetch'
-import type { Account, AccountsPage, Capacity, Stats, Task, TaskPage } from '../types'
+import type { Account, AccountsPage, Capacity, Stats, TaskPage } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { task } from './runfixture'
