@@ -16,7 +16,8 @@ it never inherits a retransmit backoff. The clone (`gitops.shallow_clone`,
 then clones; if the probe failed or ran out, the clone runs exactly as it did
 before the probe existed. Nothing else at startup waits for it.
 
-What it measured -- `egress_ready_seconds` (process start to the first
+What it measured -- `egress_ready_seconds` (process start, the origin
+`agent_started` reads from and the worker hands `EgressProbe`, to the first
 connect that succeeded) and `probe_attempts` per target -- is written once per
 attempt as the `egress_ready` startup mark, next to `clone_timed`.
 
@@ -116,7 +117,18 @@ class EgressProbe:
         connect_timeout_seconds: float = EGRESS_CONNECT_TIMEOUT_SECONDS,
         connect: Connect | None = None,
         clock: Callable[[], float] = time.monotonic,
+        origin: float | None = None,
     ) -> None:
+        """`origin`: the `clock` reading `egress_ready_seconds` counts from.
+
+        The worker passes PROCESS START (`Worker._start_egress_probe`), the
+        origin `agent_started`'s `seconds_since_process_start` reads from, so
+        the egress, clone and agent marks sit on one timeline. Counted from
+        the probe's own start instead, the figure read 1.6-4.0 s low
+        (observer P28, 2026-10-06): the probe starts only once the worker's
+        configuration and clients are built. None counts from the probe's
+        start. The cap is still counted from the probe's start.
+        """
         self.targets: list[tuple[str, int]] = list(dict.fromkeys(targets))
         self.cap_seconds = cap_seconds
         self.interval_seconds = interval_seconds
@@ -132,6 +144,7 @@ class EgressProbe:
         self._ready_seconds: dict[tuple[str, int], float] = {}
         self._last_error: dict[tuple[str, int], str] = {}
         self._started_at: float | None = None
+        self._origin = origin
         self._ended: str | None = None
         self._thread: threading.Thread | None = None
 
@@ -249,6 +262,7 @@ class EgressProbe:
     def _run(self) -> None:
         assert self._started_at is not None
         start = self._started_at
+        origin = self._origin if self._origin is not None else start
         connect = self._connect or socket.create_connection
         try:
             while not self._stop.is_set():
@@ -266,7 +280,7 @@ class EgressProbe:
                 for target in pending:
                     if self._stop.is_set():
                         break
-                    self._try(connect, target, start)
+                    self._try(connect, target, origin)
                 left = self.interval_seconds - (self._clock() - round_start)
                 with self._lock:
                     waiting = any(not self._answered[t].is_set() for t in self.targets)
@@ -286,7 +300,7 @@ class EgressProbe:
         with self._lock:
             self._ended = reason
 
-    def _try(self, connect: Connect, target: tuple[str, int], start: float) -> None:
+    def _try(self, connect: Connect, target: tuple[str, int], origin: float) -> None:
         with self._lock:
             self._attempts[target] += 1
         try:
@@ -300,5 +314,5 @@ class EgressProbe:
         except OSError:
             pass
         with self._lock:
-            self._ready_seconds[target] = round(max(0.0, self._clock() - start), 3)
+            self._ready_seconds[target] = round(max(0.0, self._clock() - origin), 3)
         self._answered[target].set()
