@@ -849,6 +849,8 @@ export interface DispatchConsequence {
 export function consequenceOf(
   strategy: DispatchStrategy,
   steps: number,
+  /** The form it is said on (QA G4-29): a lone task has no steps to count. */
+  scale: 'task' | 'workflow' = 'workflow',
 ): DispatchConsequence {
   const n = Math.max(1, steps)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
@@ -876,6 +878,23 @@ export function consequenceOf(
         'no pull request and pushes nothing',
       )
     case 'direct-pr':
+      // ONE TASK, ONE BRANCH (QA G4-29): the task form read "Up to 1 pull
+      // request — one per step." on a form that has no steps. Still a ceiling:
+      // an agent that changed nothing opens none.
+      if (scale === 'task') {
+        return withOpens(
+          {
+            pullRequests: 1,
+            atMost: true,
+            pushes: true,
+            headline: 'One pull request, from this task’s branch — none if it changed nothing.',
+            detail:
+              'The task pushes its own branch and opens one pull request from it. An agent that ' +
+              'changed nothing opens none, which is why this is a ceiling and not a count.',
+          },
+          '1 pull request, from this task’s branch',
+        )
+      }
       return withOpens(
         {
           pullRequests: n,
@@ -917,6 +936,16 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   collect: 'Collect',
   'direct-pr': 'A PR per step',
   integrate: 'One PR for all steps',
+}
+
+/**
+ * A strategy's label on the form it is offered on (QA G4-29). On the task
+ * form `direct-pr` is one pull request, so "A PR per step" named steps the
+ * form does not have; everywhere else -- a workflow, a task's read-back --
+ * the label is `STRATEGY_LABEL`'s.
+ */
+export function strategyLabel(strategy: DispatchStrategy, scale: 'task' | 'workflow'): string {
+  return scale === 'task' && strategy === 'direct-pr' ? 'Open a pull request' : STRATEGY_LABEL[strategy]
 }
 
 /**
@@ -1484,13 +1513,36 @@ export interface LeasePage {
   examined: number
 }
 
-/** How a lease row reads, given the thresholds the API just sent. */
-export type Liveliness = 'alive' | 'silent' | 'presumed-dead'
+/**
+ * How a lease row reads, given the thresholds the API just sent. `starting`
+ * is a lease whose worker has not beaten yet and is still inside its dispatch
+ * deadline: booting, not silent, and not a reason for anyone to act.
+ */
+export type Liveliness = 'alive' | 'starting' | 'silent' | 'presumed-dead'
 
 export function leaseLiveliness(
   row: LeaseRow,
   thresholds: LeasePage['thresholds'],
 ): { kind: Liveliness; copy: string } {
+  // A BOOTING AGENT IS NOT A SILENT ONE (G5-01, QA 2026-10-07). Before the
+  // first beat the reconciler judges the lease by `dispatch_overdue` alone, as
+  // `LeaseHeartbeat` below says. Checking `expired` first drew two Cloud Run
+  // cold starts red "presumed dead" at 2m 38s: their 120 s TTL had run out,
+  // their 8-minute dispatch deadline had not, and both were RUNNING by the
+  // next read. A never-beaten lease is never `silent` either -- its
+  // `silent_seconds` counts from creation, not from a beat that went quiet.
+  if (!row.heartbeat_ever) {
+    if (row.dispatch_overdue) {
+      return {
+        kind: 'presumed-dead',
+        copy: 'Never beat, and its dispatch deadline has passed. The reconciler will reclaim this lease on its next pass.',
+      }
+    }
+    return {
+      kind: 'starting',
+      copy: 'No heartbeat yet: the worker is still starting. Until the first beat the reconciler judges this lease by its dispatch deadline alone.',
+    }
+  }
   // Past expires_at is a SECOND, INDEPENDENT signal, not a later stage of the
   // first: the lease TTL has run out as well as the heartbeat going quiet.
   if (row.expired) {
@@ -2125,6 +2177,14 @@ export interface QuotaState {
   success_count: number
   rate_limit_count: number
   effective_limit: number
+  /**
+   * The pool this row's cap feeds, `provider:<provider>:tenant:<tenant>`, as
+   * `/v1/capacity` serves it, read in the same request (G5-02). Its
+   * `effective_limit` is what admission enforces; this row's own
+   * `effective_limit` is one input to it. null: no such pool document exists.
+   * Absent: an API older than the one that serves it -- not the same as null.
+   */
+  feeds_pool?: Pool | null
 }
 
 /**

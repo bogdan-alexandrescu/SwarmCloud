@@ -9713,7 +9713,28 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   gap: var(--ctl-s2);
   margin: var(--ctl-s2) 0 0;
 }
+/* THE SPAN'S TWO DRILL LINKS ARE TWO LINKS (QA G3-16, 2026-10-07): inline,
+   they ran together as `… → list them203 cancelled …`. The bucket's row
+   (`.ol-actions`) already wraps with a gap; the span's now does too. */
+.ol-span-drill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s3);
+  margin: var(--ctl-s2) 0 0;
+}
 .ol-pending { height: 420px; margin-top: var(--ctl-s3); }
+/* A PERSON'S CELL IS CAPPED (QA G3-17): the local part of the address, the
+   whole address in its title, and never wider than 220px, so the table's
+   last columns stay inside the card at 1440. */
+.ol-who {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
 
 /* ---- the cards ---- */
 /* DENSE (#503): "Reliability" and "Workflows that failed" span the row, so in
@@ -10589,6 +10610,14 @@ span.sk-ttile { cursor: default; }
 .wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
 .wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
+/* AT A PHONE EACH PICK TAKES ITS OWN ROW AND SHRINKS TO IT (QA G3-14): the
+   owner select was 424px in a 354px column and pushed `.app` to 440px in a
+   386px viewport. The options print the name before the @, so the widest is
+   short; this holds whatever an option says. */
+@media (max-width: 560px) {
+  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+}
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
 .wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -10612,7 +10641,7 @@ span.sk-ttile { cursor: default; }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-.wfl-started { color: var(--text-dim); white-space: nowrap; }
+.wfl-submitted { color: var(--text-dim); white-space: nowrap; }
 .wfl-dur { white-space: nowrap; }
 .wfl-dur.is-absent { color: var(--text-faint); }
 .wfl-filters select:disabled,

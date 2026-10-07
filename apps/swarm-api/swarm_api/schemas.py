@@ -142,6 +142,20 @@ class WorkflowStepCreate(StrictModel):
     merges: dict[str, str] | None = Field(default=None, max_length=5)
 
 
+class MergePullRequest(StrictModel):
+    """The pull request a merge-only workflow merges, when no workflow opened it.
+
+    Owner decision 2026-10-07 (#352, MS0 question 2). A NUMBER and the HEAD
+    SHA the caller means, never a branch or a repository: the repository is
+    the tenant's registered one (`continuation.resolve_merge_pr`), and the
+    sha is what the merge step pins -- it merges only at that head, with the
+    required checks green there.
+    """
+
+    number: StrictInt = Field(ge=1, le=10**9)
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
     priority: int = Field(default=0, ge=-100, le=100)
@@ -174,6 +188,11 @@ class WorkflowCreate(StrictModel):
     #: same tenant, `direct-pr`, one step, no ref -- are in
     #: `continuation.resolve_continuation`.
     continues_task: str | None = Field(default=None, max_length=64)
+    #: A pull request NO workflow opened, merged by this workflow's one
+    #: `merge` step at the head sha named here (#352). The rules -- one merge
+    #: step, `direct-pr`, the tenant's registered repository, open, not from
+    #: a fork, at that head now -- are in `continuation.resolve_merge_pr`.
+    merge_pr: MergePullRequest | None = None
 
     @field_validator("repository_url")
     @classmethod

@@ -57,6 +57,11 @@ def _worker(worker_factory, monkeypatch, origin: Path, *, task_id: str, dispatch
         task_id=task_id, attempt_id=f"att-{task_id}", lease_id=f"lease-{task_id}",
         repository_url=f"file://{origin}",
     )
+    if f"tasks/{task_id}" not in worker.db.documents:
+        # The attempt owns its task: the carrier push re-checks that right
+        # before it pushes (#453), as the checkpoint's pointer write does.
+        seed_attempt(worker.db, task_id=task_id, attempt_id=f"att-{task_id}",
+                     lease_id=f"lease-{task_id}")
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": task_id, "metadata": {"dispatch": dispatch},
                     "depends_on": list(depends_on or [])}
