@@ -216,12 +216,54 @@ export function shortReason(reason: string | null | undefined): string {
   return instead === null ? why : `${why}. Use ${instead[1]}`
 }
 
+/**
+ * A refused runner's line, as every list draws it: the card's reason, the held
+ * list's, and a workflow option's after its name (QA G4-30). The option used
+ * to lowercase it -- "not enabled yet. use claude-code" beside a card reading
+ * "Not enabled yet. Use claude-code" -- which also lowercased the runner it
+ * names. One helper, so the two shapes cannot word one runner two ways.
+ */
+export function offLine(profile: RunnerProfile): string {
+  return shortReason(profile.disabled_reason)
+}
+
+/**
+ * Why a list holds its other runners back, as its disclosure says it. The
+ * default is the platform's refusal; the issue form passes its own reason,
+ * because the runners it holds back are refused for ISSUE RUNS, not by the
+ * platform -- `browser` or `mock` can start now, and "8 unavailable" said
+ * otherwise (QA G4-30).
+ */
+export function heldSummary(count: number, heldAs = 'unavailable'): string {
+  return heldAs === 'unavailable' ? `Other runners (${count} unavailable)` : `Other runners (${count}, ${heldAs})`
+}
+
+/**
+ * THE PLATFORM'S OWN RUNNERS (QA G4-33). Each is a catalogue entry a caller
+ * may still name (invariant 10 is untouched: these are names, not specs), but
+ * the platform submits them for itself -- `merge` lands a workflow's pull
+ * request, `post-verdict` and `claude-code-review` are the review chain's
+ * steps, `indexer` is swarm-api's repository-index run
+ * (`swarm_api.repoindex.INDEXER_PROFILE`), and `mock` is the smoke tests' --
+ * so the task form marks them "platform" and lists them after the runners
+ * people submit, rather than beside `claude-code` as if they were peers.
+ *
+ * A LIST OF NAMES HERE because the API serves no such flag: the frozen
+ * `RunnerProfile` has no audience field. A name missing from this list is
+ * drawn as an ordinary runner, which is the old behaviour, never a hidden one.
+ */
+const PLATFORM_RUNNERS: ReadonlySet<string> = new Set(['claude-code-review', 'indexer', 'merge', 'mock', 'post-verdict'])
+
+export function isPlatformRunner(name: string): boolean {
+  return PLATFORM_RUNNERS.has(name)
+}
+
 /** The runners a list holds back, behind a disclosure, each with its reason. */
-function HeldRunners({ held }: { held: ReadonlyArray<readonly [string, RunnerProfile]> }) {
+function HeldRunners({ held, heldAs }: { held: ReadonlyArray<readonly [string, RunnerProfile]>; heldAs?: string }) {
   if (held.length === 0) return null
   return (
     <details className="sbf-runners-more">
-      <summary>Other runners ({held.length} unavailable)</summary>
+      <summary>{heldSummary(held.length, heldAs)}</summary>
       {/* THE WHY IS ONE CLICK AWAY, in Help (walkthrough E). A link, not a
           `?`: the console's glyphs are rationed (tests/help.test.ts, B7.4),
           and this list is drawn on two forms. */}
@@ -232,7 +274,7 @@ function HeldRunners({ held }: { held: ReadonlyArray<readonly [string, RunnerPro
         {held.map(([n, p]) => (
           <li key={n} title={p.disabled_reason || undefined}>
             <span className="sbf-runner-name mono">{n}</span>
-            <span className="sbf-runner-why">{shortReason(p.disabled_reason)}</span>
+            <span className="sbf-runner-why">{offLine(p)}</span>
           </li>
         ))}
       </ul>
@@ -246,7 +288,7 @@ function HeldRunners({ held }: { held: ReadonlyArray<readonly [string, RunnerPro
  * it needs, then how many can start now -- or, for a disabled runner, the
  * platform's reason in that line's place.
  */
-export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onlyUsable = false }: {
+export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onlyUsable = false, heldAs }: {
   /** The radio group's name. Unique per picker on the page. */
   group: string
   /** The group's accessible name. */
@@ -258,8 +300,14 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
   onPick: (name: string) => void
   /** Show only the usable runners however few are held back (the issue form, which decides the runner itself). */
   onlyUsable?: boolean
+  /** Why the held-back runners are held back, when it is not the platform's refusal. */
+  heldAs?: string
 }) {
-  const { shown, held } = runnerSplit(profiles, chosen, onlyUsable)
+  const split = runnerSplit(profiles, chosen, onlyUsable)
+  // The runners people submit first, the platform's own after them (G4-33).
+  // A stable partition, so each half keeps the catalogue's order.
+  const shown = [...split.shown.filter(([n]) => !isPlatformRunner(n)), ...split.shown.filter(([n]) => isPlatformRunner(n))]
+  const held = split.held
   return (
     <>
     <ul className="sbf-runners is-cards" role="radiogroup" aria-label={label}>
@@ -271,13 +319,16 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
               <input type="radio" name={group} value={n} checked={chosen === n} disabled={off} onChange={() => onPick(n)} />
               <span className="sb-runner-body">
                 <span className="sbf-runner-name mono">{n}</span>
+                {isPlatformRunner(n) && (
+                  <span className="sb-runner-platform" title="The platform submits this runner for its own steps; it is not one people usually choose.">platform</span>
+                )}
                 <span className="sbf-runner-facts">
                   <span className="sb-runner-size">{sizeOf(p)}</span>
                   {' · '}
                   <span className="sbf-runner-key"><KeyFact provider={p.provider} keys={keys} /></span>
                 </span>
                 {off
-                  ? <span className="sbf-runner-off" title={p.disabled_reason || undefined}>{shortReason(p.disabled_reason)}</span>
+                  ? <span className="sbf-runner-off" title={p.disabled_reason || undefined}>{offLine(p)}</span>
                   : <span className="sbf-runner-room"><CanStartFact profile={p} /></span>}
               </span>
             </label>
@@ -285,7 +336,7 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onl
         )
       })}
     </ul>
-    <HeldRunners held={held} />
+    <HeldRunners held={held} heldAs={heldAs} />
     </>
   )
 }
@@ -310,17 +361,17 @@ export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
       <option value="" disabled>choose a runner</option>
       {runnerSplit(profiles, chosen).shown.map(([n, p]) => (
         <option key={n} value={n} disabled={isOff(p)} title={isOff(p) ? p.disabled_reason || undefined : undefined}>
-          {isOff(p) ? `${n} · ${shortReason(p.disabled_reason).toLowerCase()}` : `${n} · ${canStartText(p)}`}
+          {isOff(p) ? `${n} · ${offLine(p)}` : `${n} · ${canStartText(p)}`}
         </option>
       ))}
       {/* The held runners, in a group of their own: a select has no disclosure. */}
       {(() => {
         const { held } = runnerSplit(profiles, chosen)
         return held.length === 0 ? null : (
-          <optgroup label={`Other runners (${held.length} unavailable)`}>
+          <optgroup label={heldSummary(held.length)}>
             {held.map(([n, p]) => (
               <option key={n} value={n} disabled title={p.disabled_reason || undefined}>
-                {`${n} · ${shortReason(p.disabled_reason).toLowerCase()}`}
+                {`${n} · ${offLine(p)}`}
               </option>
             ))}
           </optgroup>

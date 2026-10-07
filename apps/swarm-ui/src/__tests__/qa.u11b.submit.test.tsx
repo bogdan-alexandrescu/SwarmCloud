@@ -146,7 +146,7 @@ describe('N18 / N20: the preview\'s title and meta line', () => {
     expect([...h3.querySelectorAll('code')].map((c) => c.textContent)).toEqual(['Closes #N', 'apps/swarm-api'])
   })
 
-  it('never opens a line on a separator, and prints the read time on the 24-hour clock', async () => {
+  it('never opens a line on a separator, and prints the read time as an age', async () => {
     const { container } = await mountRead()
     const meta = container.querySelector('.in-meta')!
     for (const item of meta.children) {
@@ -155,7 +155,10 @@ describe('N18 / N20: the preview\'s title and meta line', () => {
     // The read time is its own line since U12 R15 (no dangling dot).
     const read = container.querySelector('.in-read-at')!
     expect(visible(read)).not.toMatch(/\b(AM|PM)\b/i)
-    expect(visible(read)).toMatch(/read \d{2}:\d{2}:\d{2} /)
+    // An age since QA G4-34 (2026-10-07): the bare local clock had no date
+    // and no zone; the absolute instant, in UTC, is the title.
+    expect(visible(read)).toMatch(/^read just now /)
+    expect(read.getAttribute('title')).toMatch(/ UTC$/)
   })
 })
 

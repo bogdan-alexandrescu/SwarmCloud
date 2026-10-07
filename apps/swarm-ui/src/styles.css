@@ -6535,6 +6535,10 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   border: 1px solid var(--ctl-bd); border-radius: 6px; padding: 6px 8px;
 }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE FIXED CARRIER (QA G4-28). A disabled select takes the UA's grey text,
+   which is below contrast in both themes; it is set in the muted token at
+   full strength, and the arrow cursor's "not allowed" says it cannot move. */
+.dsp select:disabled { color: var(--text-dim); opacity: 1; cursor: not-allowed; }
 
 .dsp-facts { margin: 0; }
 /* The gap above each of the dispatch control's two labelled fields. It was an

@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, asSentence, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
@@ -381,6 +381,38 @@ const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: st
     say: "Only the failed step's dependents are cancelled; other branches keep starting." },
 ]
 
+/**
+ * "If a step fails", DRAWN AS THE DISPATCH CONTROL'S CARD (QA G4-35,
+ * 2026-10-07). One form drew two radio groups two ways: the strategy as a
+ * `.dsp-option` (box, bold title, the selected card's ink rule down its
+ * leading edge) and this group as a small `.sb-option` with the accent's soft
+ * fill. It takes the strategy's card -- the box, the title, the selected
+ * card's edge -- and keeps its explanation in the muted token, since unlike a
+ * strategy's pull-request count it is not the decision itself.
+ */
+export function OnFailureChoice({ value, onChange }: {
+  value: 'fail_workflow' | 'continue'
+  onChange: (next: 'fail_workflow' | 'continue') => void
+}) {
+  return (
+    <>
+      <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
+      <div className="dsp-options" role="radiogroup" aria-labelledby="wf-on-failure">
+        {ON_FAILURE.map((o) => (
+          <label key={o.value} className={`dsp-option${value === o.value ? ' is-on' : ''}`}>
+            <input type="radio" name="on-step-failure" value={o.value} checked={value === o.value}
+              onChange={() => onChange(o.value)} />
+            <span className="dsp-option-body">
+              <span className="dsp-option-head"><b>{o.label}</b></span>
+              <span className="dsp-option-say">{o.say}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </>
+  )
+}
+
 function Form({ sources }: { sources: FormSources }) {
   // A tenant switch made with this form open keeps it, and its button then
   // names the tenant it will submit as (intake-tenants.html 2A).
@@ -605,16 +637,7 @@ function Form({ sources }: { sources: FormSources }) {
               2026-10-01) rather than beside the button. Both are
               schemas.WorkflowCreate fields, sent only when they differ from
               the API's own defaults. */}
-          <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
-          <div className="sb-options" role="radiogroup" aria-labelledby="wf-on-failure">
-            {ON_FAILURE.map((o) => (
-              <label key={o.value} className={`sb-option${onFailure === o.value ? ' is-on' : ''}`}>
-                <input type="radio" name="on-step-failure" value={o.value} checked={onFailure === o.value}
-                  onChange={() => setOnFailure(o.value)} />
-                <span><b>{o.label}</b><small>{o.say}</small></span>
-              </label>
-            ))}
-          </div>
+          <OnFailureChoice value={onFailure} onChange={setOnFailure} />
           <label className="sb-sub" htmlFor="wf-priority">Priority</label>
           <div className="sb-prio">
             <input id="wf-priority" type="number" min={-100} max={100} step={1} value={priority}
@@ -763,8 +786,10 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
       )}
 
-      {nameProblem !== null && <p className="warn-text" role="alert">{nameProblem}</p>}
-      {!built.ok && <p className="warn-text" role="alert">{built.message}</p>}
+      {/* SENTENCES (QA G4-31): the fragments are written to follow a step's
+          name in the send panel; drawn alone here, each is a line of its own. */}
+      {nameProblem !== null && <p className="warn-text" role="alert">{asSentence(nameProblem)}</p>}
+      {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
 
       {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
           Both used to be open rows saying "— no other named step yet" and "—
