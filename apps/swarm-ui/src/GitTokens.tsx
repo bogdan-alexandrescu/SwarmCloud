@@ -7,6 +7,7 @@ import {
 } from './RepositoriesData'
 import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
 import { CountNote, PageHead } from './Shell'
+import { GitHubConnectCard } from './GitHubConnect'
 import { timeAgo } from './types'
 
 /**
@@ -104,6 +105,10 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           </Button>
         </span>
       </PageHead>
+      {/* CONNECT GITHUB (#780, OB3): a person's own account through the App,
+          first, because it is the way in that needs no terminal. A disconnect
+          changes the records below, so it re-reads them. */}
+      <GitHubConnectCard onChange={tokens.reload} />
       <CountNote>{n === null ? null : `${n} token${n === 1 ? '' : 's'}`}</CountNote>
       <UrRegion
         state={tokens.state}
