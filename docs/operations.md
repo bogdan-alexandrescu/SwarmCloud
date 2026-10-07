@@ -10,7 +10,7 @@ laptop and from CI.
 
 ```bash
 make prerequisites      # tools, credentials, APIs, shared-project guards
-make bootstrap          # state bucket, .env, terraform init
+make bootstrap          # state bucket, .env, bootstrap layer (state in the bucket), terraform init
 make tf-plan            # READ THIS. It is a shared project.
 make tf-apply
 make build              # Cloud Build, never the local Docker daemon
@@ -91,6 +91,72 @@ kubernetes/apply.sh --tenant eng             # dry run, prints a diff
 kubernetes/apply.sh --tenant eng --confirm
 kubernetes/apply.sh --policies --confirm     # cluster-scoped admission policies
 ```
+
+### The bootstrap layer's state
+
+`make bootstrap` applies `terraform/bootstrap`, the root the owner applies: the
+state bucket, the WIF pool, the deployer service account
+(`swarm-tf-deployer`) and every grant it holds. **Its state lives in the state
+bucket, at `gs://swarm-tfstate-<project>/bootstrap`** (#827), next to
+`infra/<env>`. `terraform/bootstrap/backend.tf` fixes the prefix;
+`scripts/bootstrap.sh` passes the bucket with `-backend-config`, as it does for
+`terraform/infra`.
+
+**Why it moved.** Until 2026-10 the root had only `backend.tf.example`, so its
+one state was a local `terraform/bootstrap/terraform.tfstate` in one laptop
+checkout (serial 118, 86 resource instances, last written 2026-10-04). Every
+other checkout planned against nothing. On 2026-10-07 `scripts/bootstrap.sh`
+run from a git worktree of `main` planned **9 to import, 91 to add**: the live
+deployer, every WIF binding and every deployer role. Only the typed `apply`
+stood between that plan and an attempt to re-create the identity every release
+runs as. One local file is also one disk: losing it means re-importing the
+layer by hand. In the bucket, the state is versioned and soft-deleted like the
+environments' ([disaster recovery](disaster-recovery.md#5-terraform-state-loss)).
+
+**The guard.** `scripts/bootstrap.sh` lists the bootstrap state before it plans.
+If the state is empty, it refuses to plan when either:
+
+* the checkout still holds a local `terraform.tfstate` with resources in it; or
+* `swarm-tf-deployer@<project>` exists (`gcloud iam service-accounts
+  describe`). This root is the only thing that creates it, so an empty state
+  next to a live deployer means the state is somewhere else.
+
+Either way it says to migrate first. It plans from an empty state only when
+gcloud answers NOT_FOUND for the deployer: a project that has never been
+bootstrapped. If gcloud cannot answer (an expired session, a permission, the
+network), it refuses rather than guess. A bare `terraform -chdir=terraform/bootstrap plan`
+skips the guard, so go through the script.
+
+**The one-time migration**, run once by the owner **from the checkout that
+holds `terraform/bootstrap/terraform.tfstate`** (the main checkout on the
+owner's laptop), before any other `make bootstrap`:
+
+```bash
+cd <the checkout holding terraform/bootstrap/terraform.tfstate>
+git pull --ff-only                    # main, with this change
+scripts/bootstrap.sh --migrate-state  # type "migrate" at the prompt
+```
+
+What it does, in order. It refuses when there is no local
+`terraform.tfstate` or the file holds no resources. It refuses when
+`gs://<bucket>/bootstrap/default.tfstate` already exists, because the migration
+has been done and the local file is older than the bucket's copy. It refuses
+when it cannot tell whether that object exists. It copies the local file to
+`build/bootstrap-local-<UTC time>.tfstate`. It asks for the typed word
+`migrate`, which **`--yes` and `SWARM_ASSUME_YES` never skip**, and which
+needs a terminal. It runs `terraform init -migrate-state -force-copy` against
+the bucket. It checks that `terraform state list` on the bucket's copy has as
+many instances as the local file had. Then it stops: no plan, no apply.
+
+After it:
+
+1. Run `scripts/bootstrap.sh --environment dev` from any checkout, a worktree
+   included. The plan must show **no create of `google_service_account.deployer`**
+   and no bulk of creates. Anything else is a stop-and-ask.
+2. Once that plan is clean, move `terraform/bootstrap/terraform.tfstate` and
+   `terraform.tfstate.backup` out of the main checkout. Terraform no longer
+   reads them. While they stay, the script warns that they are a stale copy.
+   The copy in `build/` is the rollback.
 
 ---
 

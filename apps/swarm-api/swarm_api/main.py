@@ -19,10 +19,12 @@ from fastapi.responses import JSONResponse
 from swarm_common.identity import AuthError
 from swarm_common.states import InvalidTransition
 
+from .access import AccessService, build_access
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
 from .routes import (
+    access,
     accounts,
     admin,
     attempts,
@@ -71,7 +73,8 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
     )
 
 
-def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None) -> FastAPI:
+def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None,
+               access_service: AccessService | None = None) -> FastAPI:
     # FIRST, before anything else can log. Nothing configured the root logger
     # previously, so every log.info() in this package was discarded and an
     # operator debugging a refused request saw the request and not the reason.
@@ -90,6 +93,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # exist. A test injects one over forge fakes.
     app.state.forge_app = forge_app if forge_app is not None else build_forge_app(
         app.state.ctx.db, app.state.ctx.settings.project_id, now=app.state.ctx.now)
+    # The access API (docs/onboarding.md §3.2, lane OB4), over the connection
+    # above: it acts as the caller through their own refreshed token.
+    app.state.access = access_service if access_service is not None else build_access(
+        app.state.ctx.db, app.state.forge_app, now=app.state.ctx.now)
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -125,6 +132,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
     app.include_router(forgeapp.router)
+    # The access API (lane OB4): owners, repositories, grants, verify. Acts
+    # as the caller through their own connection; no route returns a token.
+    app.include_router(access.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

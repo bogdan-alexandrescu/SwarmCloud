@@ -46,7 +46,7 @@ from swarm_common.states import (
 )
 
 from . import children as children_mod
-from .credentials import AccountPool, CredentialSource, credential_for
+from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
@@ -274,6 +274,7 @@ class Scheduler:
         now: Callable[[], datetime] = utcnow,
         monotonic: Callable[[], float] = time.monotonic,
         pool: AccountPool | None = None,
+        forge: ForgeConnections | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -291,6 +292,11 @@ class Scheduler:
         self._pool = pool if pool is not None else AccountPool.for_deployment(
             settings, store.db
         )
+        # The submitters' GitHub grants and connections, which admission and
+        # the credential sweep ask about and the dispatcher never does
+        # (credentials.py, docs/onboarding.md §3.3 step 2). Forgotten at the
+        # top of each run, like the pool.
+        self._forge = forge if forge is not None else ForgeConnections(store.db)
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -354,6 +360,8 @@ class Scheduler:
         self._ended = []
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
+        # A reconnect, or a refresh that failed, since the last drain likewise.
+        self._forge.forget()
 
     def drain(self) -> DrainReport:
         started = self._monotonic()
@@ -777,7 +785,13 @@ class Scheduler:
         # means a container that can only park or fail, holding a slot while
         # it does, so it parks here, before any lease. The detail names what
         # the account pool answered, so the park says what would clear it.
-        credential = credential_for(profile, tenant, self._pool)
+        # The submitter's GitHub connection is part of the same question: a
+        # task that runs on their user slot while the refresh sweep says
+        # `refresh_failed`, or with no connection at all, would clone with a
+        # token GitHub refuses (docs/onboarding.md §3.3 step 2, OB6). Parked
+        # here it holds nothing (invariant 1), and nothing was reserved, so
+        # the all-or-nothing reservation below is never half-made (2).
+        credential = credential_for(profile, tenant, self._pool, task=task, forge=self._forge)
         if not credential.runnable:
             self._park(
                 task,
@@ -1255,6 +1269,14 @@ class Scheduler:
         ahead, the task waits for it. Admission's own parks set no instant and
         are unaffected. A key registered meanwhile makes the answer TENANT_KEY,
         which promotes at once: the wait never delays a fix an admin made.
+
+        A GITHUB CONNECTION IS PART OF THE ANSWER (OB6). A task admission
+        parked because its submitter's connection was `refresh_failed`, or
+        missing while a grant names them, stays parked until the connection is
+        `active` again -- the person reconnected -- and is then promoted like
+        any other. If the person instead disconnected, swarm-api deleted their
+        grants, the task no longer needs the user slot, and it is promoted to
+        run as it would have before onboarding.
         """
         promoted = 0
         now = self._now()
@@ -1269,7 +1291,9 @@ class Scheduler:
             profile = RUNNER_PROFILES.get(task.runner_profile)
             if profile is None:
                 continue
-            credential = credential_for(profile, tenant, self._pool)
+            credential = credential_for(
+                profile, tenant, self._pool, task=task, forge=self._forge
+            )
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
                 and task.next_eligible_at is not None

@@ -1119,14 +1119,20 @@ that does not exist yet. So for a **new tenant**:
    git fetch origin && git switch main && git pull --ff-only
    git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars
    grep -n '<<' /tmp/pr-dev.tfvars          # expect nothing inside the tenants block
-   terraform -chdir=terraform/bootstrap init
+   terraform -chdir=terraform/bootstrap init -reconfigure \
+     -backend-config="bucket=swarm-tfstate-saga-agents-staging"
    terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars
    ```
 
    `terraform init` is needed before any bootstrap plan or targeted apply: this
    root reads `modules/service_account_ids` and `modules/custom_role_ids`, and a
    checkout that has not initialised them since they were added fails with
-   "Module not installed".
+   "Module not installed". The `-backend-config` is the state bucket: since #827
+   bootstrap's state lives at `gs://<bucket>/bootstrap`, and a checkout with no
+   state refuses to plan through `scripts/bootstrap.sh` but not through a bare
+   `terraform plan` — check `terraform -chdir=terraform/bootstrap state list` is
+   not empty before reading this plan
+   ([operations](operations.md#the-bootstrap-layers-state)).
 
    **Check the untargeted plan before applying anything**, and stop if any of
    these does not hold:
