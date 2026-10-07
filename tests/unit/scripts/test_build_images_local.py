@@ -53,7 +53,7 @@ import pytest
 import yaml
 
 from .test_build_images_pr_check import _env, _sandbox
-from .test_ci_gate import app_jobs, run as gate_run, wait as gate_wait
+from .test_ci_gate import judge
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
@@ -341,7 +341,10 @@ def _step(job: dict, step_id: str) -> dict:
 def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere():
     job = _job()
     text = json.dumps(job)
-    assert job.get("if") == "github.event_name == 'pull_request'", job.get("if")
+    # Pull requests only, and only those the `changes` job says reach this
+    # workflow -- the gate that was application.yml's path filter.
+    assert job.get("if") == "github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'", job.get("if")
+    assert job.get("needs") == "changes", job.get("needs")
     assert job.get("permissions") == {"contents": "read"}, job.get("permissions")
     assert "build-images.sh --build-only --local" in text, "the job builds on the runner"
     for banned in ("secrets.", "id-token", "google-github-actions/", "docker/login-action",
@@ -448,19 +451,17 @@ def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expe
 
 
 def test_ci_gate_fails_when_the_build_check_failed(tmp_path):
-    """ci-gate judges every job of application.yml's run, so a red image build
-    holds the pull request -- including a run GitHub reported as success."""
-    name = _job()["name"]
-    jobs = app_jobs(**{name: "failure"})
-    assert any(j["name"] == name for j in jobs), "the job runs on a pull request, so the gate sees it"
-    for conclusion in ("failure", "success"):
-        sub = tmp_path / conclusion
-        sub.mkdir()
-        proc, _ = gate_wait(sub, {"runs": [gate_run(1, conclusion=conclusion, jobs=jobs)]}, ["images/swarm-ui/nginx.conf"])
-        assert proc.returncode != 0, proc.stderr
-        assert name in proc.stderr, proc.stderr
-    # The control: the same run with the job green passes.
-    ok = tmp_path / "ok"
-    ok.mkdir()
-    proc, _ = gate_wait(ok, {"runs": [gate_run(1)]}, ["images/swarm-ui/nginx.conf"])
-    assert proc.returncode == 0, proc.stderr
+    """ci-gate needs every job of application.yml and judges their results,
+    so a red image build holds the pull request."""
+    job_id = JOB
+    needs = yaml.safe_load(WORKFLOW.read_text())["jobs"]["ci-gate"]["needs"]
+    assert job_id in needs, "the gate does not wait for the image build"
+    results = {name: "success" for name in needs}
+    results[job_id] = "failure"
+    proc = judge(tmp_path, "ci-gate", results)
+    assert proc.returncode != 0, proc.stdout
+    assert f"{job_id} (failure)" in proc.stdout, proc.stdout
+    # The control: the same results with the build green pass.
+    results[job_id] = "success"
+    proc = judge(tmp_path, "ci-gate", results)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -8,7 +8,7 @@ rather than by the tool) -- therefore passed CI and failed later, on the first
 `uv sync` that was not frozen (#76).
 
 `uv lock --check` re-resolves and fails if the lock would change. It runs once,
-in the `python` job, before that job's sync: one place is enough, because the
+in the `python-checks` job, before that job's sync: one place is enough, because the
 lock is one file and every job reads the same one.
 """
 
@@ -23,7 +23,10 @@ APPLICATION = REPO / ".github" / "workflows" / "application.yml"
 
 
 def _python_steps() -> list[dict]:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python"]["steps"]
+    # The job that runs the step. Since 2026-10-07 `python` (`format / unit
+    # tests`) only reads the results of `python-checks` and the `python-unit`
+    # shards.
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]["python-checks"]["steps"]
 
 
 def _index(steps: list[dict], needle: str) -> list[int]:
