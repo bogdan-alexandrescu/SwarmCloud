@@ -1052,14 +1052,21 @@ export function App() {
     list: lastList.current,
   })
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const title =
-    at.sectionId === SUBMIT
+  // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
+  // a page that is not Overview, because the spine lights the nearest section.
+  const title = at.missing
+    ? NOT_FOUND_TITLE
+    : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
           : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : openObjectOf(at)
+  useEffect(() => {
+    document.title = documentTitleOf(title, object)
+  }, [title, object])
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1073,6 +1080,7 @@ export function App() {
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
+          missing={Boolean(at.missing)}
           go={go}
           helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
@@ -1400,6 +1408,22 @@ export function crumbsOf({
   }
   if (object !== null) out.push({ key: 'object', label: at.taskId !== null && named !== null ? named : object, to: null })
   return out
+}
+
+/** The title of a path this console has no page for: the phone header's and the tab's. */
+export const NOT_FOUND_TITLE = 'Not found'
+
+/**
+ * THE TAB'S TITLE (QA G1-12, 2026-10-07): the page, then the console, and
+ * inside an open object its id first -- the part that tells two tabs apart.
+ * Every page was "SwarmCloud", so a row of tabs, the history menu and a
+ * bookmark could not say which was which. Set here, once, from the title the
+ * phone header draws, rather than in each `PageHead`: the 404 and an open
+ * agent draw no head of their own, and a page with an inspector draws two.
+ */
+export function documentTitleOf(title: string, object: string | null): string {
+  const page = title === 'SwarmCloud' ? 'SwarmCloud' : `${title} · SwarmCloud`
+  return object === null ? page : `${object} · ${page}`
 }
 
 /**

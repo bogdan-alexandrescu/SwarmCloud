@@ -4467,11 +4467,13 @@ function WorkflowList({
 
   // RECENT (5) BEFORE ANYTHING WAS OPENED (#503): the list read's five newest,
   // by name, with the state this read derived, fill the panel's switcher
-  // behind the workflows opened in this browser. No read of its own.
+  // behind the workflows opened in this browser. The WHOLE read is offered, so
+  // an opened workflow outside the newest five is refreshed too (QA G3-04).
+  // No read of its own.
   useEffect(() => {
     const newest = [...board.workflows].sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0))
     offerNewestWorkflows(
-      newest.slice(0, 5).map((w) => ({ id: w.workflow_id, state: derivedStateOf(w), name: labels.get(w.workflow_id) ?? null })),
+      newest.map((w) => ({ id: w.workflow_id, state: derivedStateOf(w), name: labels.get(w.workflow_id) ?? null })),
     )
   }, [board.workflows, labels])
 
