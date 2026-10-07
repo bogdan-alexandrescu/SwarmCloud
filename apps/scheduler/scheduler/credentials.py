@@ -76,17 +76,49 @@ the pool first and falls back to the key, so a keyed tenant may still run on an
 account. Nothing here depends on which one it uses. The answer decides only
 whether the task may run and which secret a Cloud Run Job may name, and a keyed
 tenant's own secret is always safe to name.
+
+THE GITHUB CONNECTION (docs/onboarding.md §3.3 step 2; #780, lane OB6). A
+task that works a repository as its submitter reads that person's user slot
+`git-u-<hex>`, kept fresh by swarm-api's refresh sweep. When the sweep could
+not refresh it, the connection document says `refresh_failed`, and a worker
+started on it holds a slot to clone with a token GitHub no longer takes. So
+`credential_for`, given the task and a `ForgeConnections`, also answers "no"
+when the task needs a user slot and the submitter's connection is not
+`active`: `refresh_failed`, `revoked`, missing, or a state this module does
+not know. Admission parks it CREDENTIAL_MISSING before any lease, and the
+credential sweep asks the same question and returns it to READY once the
+connection is `active` again.
+
+Only admission and the sweep pass the task. The Cloud Run Job's secret mount
+does not: it runs after the lease is reserved, and nothing about the forge is
+decided in dispatch.py. It names the provider's secret, never the git one.
+
+WHICH TASK NEEDS A USER SLOT is `needs_user_slot`, and only there. Until the
+task carries the credential it uses (contract request E, drafted in
+docs/onboarding.md §3.3, "With request E"), it is derived the "Without it"
+way: from the signed `submitted_by` and the submitter's grant for the task's
+repository. A grant means the worker reads the user slot; no grant means the
+task runs as it did before onboarding, on the tenant's token, and the
+connection is not asked about. When `Task.forge_credential` exists, that
+function reads it instead, and nothing else here changes.
+
+The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
+and never written. The id recipes are RESTATED below because the scheduler's
+image does not carry swarm-api; tests/unit/control_plane/
+test_forge_connection_admission.py holds them to swarm-api's own functions.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from quota_broker.accounts import Account, Unavailable, accounts_serving
 from quota_broker.accountstore import AccountStore
-from swarm_common.models import Tenant
+from swarm_common.models import Task, Tenant
 from swarm_common.profiles import RunnerProfile
 
 #: The variable a pool account's token fills.
@@ -131,33 +163,69 @@ class PoolAnswer(str, Enum):
     NO_ACCOUNTS_REGISTERED = Unavailable.NO_ACCOUNTS_REGISTERED.value
 
 
+class ForgeAnswer(str, Enum):
+    """What the submitter's GitHub connection said, for a task that was asked about it."""
+
+    #: Not asked: the caller passed no task (the Job's secret mount), or the
+    #: provider answer had already said no.
+    NOT_ASKED = "not_asked"
+    #: The task needs no user slot (`needs_user_slot`): it has no GitHub
+    #: repository, or its submitter holds no grant for it.
+    NO_USER_SLOT = "no_user_slot"
+    #: The connection is `active`: the refresh sweep keeps its token fresh.
+    ACTIVE = "active"
+    #: swarm-api's sweep could not refresh the token. The person reconnects.
+    REFRESH_FAILED = "refresh_failed"
+    #: The person disconnected.
+    REVOKED = "revoked"
+    #: A grant names the submitter, and no connection of theirs exists in the
+    #: tenant.
+    CONNECTION_MISSING = "connection_missing"
+    #: The document's `state` is none of OB3's three. Not runnable: a state
+    #: nobody here knows is not evidence of a token that works.
+    UNRECOGNISED = "unrecognised"
+
+
+#: The only connection answers that let a task run.
+_FORGE_RUNNABLE = frozenset({ForgeAnswer.NOT_ASKED, ForgeAnswer.NO_USER_SLOT, ForgeAnswer.ACTIVE})
+
+
 @dataclass(frozen=True)
 class CredentialAnswer:
     provider: str | None
     source: CredentialSource
     pool: PoolAnswer
+    forge: ForgeAnswer = ForgeAnswer.NOT_ASKED
 
     @property
     def runnable(self) -> bool:
         """THE PREDICATE: may this task be admitted at all."""
-        return self.source is not CredentialSource.MISSING
+        return self.source is not CredentialSource.MISSING and self.forge in _FORGE_RUNNABLE
 
     def park_detail(self) -> dict[str, Any]:
         """What a CREDENTIAL_MISSING park records in its `parked` event.
 
         `account_pool` is what scripts/prove-gke-dispatch.sh reads to say what
         would unpark the task: a key, a loan, or -- for a profile no account
-        can run -- a key and nothing else.
+        can run -- a key and nothing else. `forge_connection`, present only
+        when the connection was asked about, names the GitHub half: a person
+        who must reconnect.
         """
-        return {"provider": self.provider, "account_pool": self.pool.value}
+        detail: dict[str, Any] = {"provider": self.provider, "account_pool": self.pool.value}
+        if self.forge is not ForgeAnswer.NOT_ASKED:
+            detail["forge_connection"] = self.forge.value
+        return detail
 
     def promote_detail(self) -> dict[str, Any]:
         """What the credential sweep records when it returns a park to READY."""
-        return {
+        detail: dict[str, Any] = {
             "reason": "credential_available",
             "provider": self.provider,
             "credential": self.source.value,
         }
+        if self.forge is not ForgeAnswer.NOT_ASKED:
+            detail["forge_connection"] = self.forge.value
+        return detail
 
 
 def _accounts_not_wired() -> Sequence[Account]:
@@ -236,8 +304,168 @@ class AccountPool:
         return bool(accounts_serving(self._accounts, tenant_id, provider))
 
 
-def credential_for(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:
-    """THE RULE. See the module docstring for where each condition comes from."""
+# --------------------------------------------------------------------------
+# The GitHub connection (OB6)
+# --------------------------------------------------------------------------
+
+#: `swarm_api.forgeapp.CONNECTIONS` and `GRANTS`, and OB3's connection states
+#: (`ACTIVE`, `REFRESH_FAILED`, `REVOKED`). Restated: see the module docstring.
+CONNECTIONS = "forge_connections"
+GRANTS = "forge_grants"
+_STATES = {
+    "active": ForgeAnswer.ACTIVE,
+    "refresh_failed": ForgeAnswer.REFRESH_FAILED,
+    "revoked": ForgeAnswer.REVOKED,
+}
+#: `swarm_api.gittokens.FORGE` and `swarm_api.repositories.FORGE_HOST`.
+_FORGE = "github"
+_FORGE_HOST = "github.com"
+#: `swarm_api.validation.MERGE_FORGE_HOSTS`: the hosts whose repositories
+#: the API names by `owner/repo` and registers under a `repo_id`.
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def _hex16(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _user_key(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def user_hash(email: str) -> str:
+    """`swarm_api.forgeapp.user_hash`: 16 hex of sha256 of the lower-cased email."""
+    return _hex16(_user_key(email))
+
+
+def connection_id_for(tenant_id: str, email: str) -> str:
+    """`swarm_api.forgeapp.connection_id_for`: `conn_` + 16 hex of tenant + user + forge."""
+    return "conn_" + _hex16(tenant_id + _user_key(email) + _FORGE)
+
+
+def repo_id_for(tenant_id: str, owner: str, repo: str) -> str:
+    """`swarm_api.repositories.repo_id_for`: tenant + `github.com/` + lower-cased owner/repo."""
+    return "repo_" + _hex16(f"{tenant_id}{_FORGE_HOST}/{f'{owner}/{repo}'.lower()}")
+
+
+def github_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a GitHub repository URL, else None.
+
+    `swarm_api.validation.merge_repository`'s reading: https or scp-style ssh,
+    a GitHub host with no port, exactly two path parts, `.git` dropped.
+    """
+    text = (repository_url or "").strip()
+    if text.startswith("git@"):
+        text = "ssh://" + text.replace(":", "/", 1)
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return None
+    if host not in _GITHUB_HOSTS or port is not None:
+        return None
+    path = [part for part in parts.path.strip("/").split("/") if part]
+    if len(path) != 2:
+        return None
+    owner, repo = path
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
+
+
+def grant_id_for(tenant_id: str, email: str, repo_id: str) -> str:
+    """§3.1: `forge_grants/{tenant_id}__{user_hash}__{repo_id}`."""
+    return f"{tenant_id}__{user_hash(email)}__{repo_id}"
+
+
+class ForgeConnections:
+    """The submitter's grant and connection, read by id, at most once per drain each.
+
+    Read lazily: a task with no GitHub repository reads nothing, and a
+    submitter with no grant reads no connection. `forget()` is called at the
+    top of every run, as `AccountPool.forget` is, so a reconnect made between
+    two drains is seen by the second.
+
+    TENANT-SCOPED (invariant 9). Both ids already contain the tenant, and a
+    document is still taken only when its own `tenant_id` is the task's: a
+    document that says otherwise is not this tenant's grant or connection.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self._docs: dict[tuple[str, str], dict[str, Any] | None] = {}
+
+    def forget(self) -> None:
+        self._docs = {}
+
+    def _read(self, collection: str, doc_id: str, tenant_id: str) -> dict[str, Any] | None:
+        key = (collection, doc_id)
+        if key not in self._docs:
+            snap = self._db.collection(collection).document(doc_id).get()
+            data = snap.to_dict() if snap.exists else None
+            self._docs[key] = data if data and data.get("tenant_id") == tenant_id else None
+        return self._docs[key]
+
+    def grant(self, task: Task, repo_id: str) -> dict[str, Any] | None:
+        """The submitter's grant for this repository in the task's tenant, or None."""
+        return self._read(
+            GRANTS, grant_id_for(task.tenant_id, task.submitted_by, repo_id), task.tenant_id
+        )
+
+    def connection_state(self, task: Task) -> ForgeAnswer:
+        """The submitter's connection in the task's tenant, as a `ForgeAnswer`."""
+        doc = self._read(
+            CONNECTIONS, connection_id_for(task.tenant_id, task.submitted_by), task.tenant_id
+        )
+        if doc is None or _user_key(str(doc.get("user") or "")) != _user_key(task.submitted_by):
+            return ForgeAnswer.CONNECTION_MISSING
+        return _STATES.get(str(doc.get("state") or ""), ForgeAnswer.UNRECOGNISED)
+
+
+def needs_user_slot(task: Task, forge: ForgeConnections) -> bool:
+    """THE ONE PLACE that decides whether a task runs on its submitter's user slot.
+
+    The "Without it" path of docs/onboarding.md §3.3: the signed
+    `submitted_by` (covered by `canonical_step_spec`) and that person's grant
+    for the task's GitHub repository. When contract request E puts
+    `forge_credential` on `Task`, this reads it instead -- a `git-u-` suffix
+    needs the slot, `git` or None does not -- and no caller changes.
+    """
+    named = github_repository(task.repository_url)
+    if named is None:
+        return False
+    return forge.grant(task, repo_id_for(task.tenant_id, *named)) is not None
+
+
+def forge_answer(task: Task, forge: ForgeConnections) -> ForgeAnswer:
+    """What the task's GitHub credential says about running it now."""
+    if not needs_user_slot(task, forge):
+        return ForgeAnswer.NO_USER_SLOT
+    return forge.connection_state(task)
+
+
+def credential_for(
+    profile: RunnerProfile,
+    tenant: Tenant,
+    pool: AccountPool,
+    *,
+    task: Task | None = None,
+    forge: ForgeConnections | None = None,
+) -> CredentialAnswer:
+    """THE RULE. See the module docstring for where each condition comes from.
+
+    `task` and `forge` are passed by admission and the credential sweep, and
+    by nobody else: the GitHub connection is asked about only when both are
+    given, and only once the provider half has said yes.
+    """
+    answer = _provider_answer(profile, tenant, pool)
+    if task is None or forge is None or not answer.runnable:
+        return answer
+    return CredentialAnswer(answer.provider, answer.source, answer.pool, forge_answer(task, forge))
+
+
+def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:
     provider = profile.provider
     if not provider:
         return CredentialAnswer(None, CredentialSource.NOT_NEEDED, PoolAnswer.NOT_ASKED)
@@ -265,6 +493,10 @@ __all__ = [
     "AccountPool",
     "CredentialAnswer",
     "CredentialSource",
+    "ForgeAnswer",
+    "ForgeConnections",
     "PoolAnswer",
     "credential_for",
+    "forge_answer",
+    "needs_user_slot",
 ]
