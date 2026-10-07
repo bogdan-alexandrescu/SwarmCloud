@@ -75,7 +75,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
 
 from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable
-from .forge import MAX_RESPONSE_BYTES
+from .forge import MAX_RESPONSE_BYTES, _OPENER
 from .gittokens import (
     COLLECTION as TOKENS_COLLECTION,
     FORGE,
@@ -417,14 +417,6 @@ class HttpAnswer:
 #: `(method, url, headers, body, timeout) -> HttpAnswer`; raises on a
 #: transport failure. Injected by the tests; `urllib_send` in production.
 HttpSend = Callable[[str, str, dict[str, str], "bytes | None", float], HttpAnswer]
-
-
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirects)
 
 
 class HostRefused(Exception):
