@@ -117,6 +117,8 @@ def test_every_store_command_in_the_runbook_reads_stdin() -> None:
         "enable_forge_refresh",
         "swarm-forge-refresh",
         "swarmForgeSlotCreator",
+        "swarmForgeSlotVersionManager",
+        "google_project_iam_member.forge_slot_version_manager",
     ],
 )
 def test_the_runbook_states_each_fixed_setting(phrase: str) -> None:

@@ -472,7 +472,13 @@ does).
 5. **The refresher** (swarm-api in phase 2, decision D2) gets
    `secretAccessor` and `secretVersionAdder` on the `-refresh` twins and
    `secretVersionAdder` on the base slots, never accessor on a base slot, the
-   same split the subscription refresher has today.
+   same split the subscription refresher has today. For "Disconnect GitHub"
+   (owner decision 2026-10-07, OB3), swarm-api also holds a custom role,
+   `swarmForgeSlotVersionManager`, with exactly
+   `secretmanager.versions.disable` and `secretmanager.versions.enable` (no
+   destroy, no access), on the same per-tenant prefix condition as its
+   `secretVersionAdder`: a disconnect disables the user's versions so no
+   usable token is left, and a reconnect enables them.
 6. **A Cloud Scheduler job, `swarm-forge-refresh`, every 15 minutes**, calling
    swarm-api's refresh sweep with an OIDC token; description
    `managed-by=swarm-terraform; refreshes GitHub user access tokens before they

@@ -1,6 +1,7 @@
 # The ids of the platform's custom roles, spelled once for both roots: the
 # eight terraform/bootstrap/platform_roles.tf defines, and swarmForgeSlotCreator
-# (terraform/bootstrap/forge_user_slots.tf, #780).
+# and swarmForgeSlotVersionManager (terraform/bootstrap/forge_user_slots.tf,
+# #780).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -49,6 +50,7 @@ locals {
     image_puller           = "swarmImagePuller${local.role_suffix}"
     # Granted by terraform/bootstrap itself, never by terraform/infra: see
     # forge_user_slots.tf there.
-    forge_slot_creator = "swarmForgeSlotCreator${local.role_suffix}"
+    forge_slot_creator         = "swarmForgeSlotCreator${local.role_suffix}"
+    forge_slot_version_manager = "swarmForgeSlotVersionManager${local.role_suffix}"
   }
 }

@@ -15,7 +15,12 @@
 #   D2  swarm-api refreshes: it reads the -refresh twins and writes both, and
 #       never reads a base slot -- the split the quota broker has today.
 #
-# Four grants make that, and every one is narrowed to one tenant's prefix in
+# Owner decision 2026-10-07 (OB3, PR #821): "Disconnect GitHub" disables the
+# user's secret versions, so a disconnected user leaves no usable token behind,
+# and a reconnect re-enables them.
+#
+# These grants make that, and every one but the create is narrowed to one
+# tenant's prefix in
 # the FULL resource-name form IAM evaluates for Secret Manager,
 # `projects/<NUMBER>/secrets/<id>` -- the project number, because the project
 # ID "can't be substituted" there (docs.cloud.google.com/iam/docs/
@@ -33,6 +38,17 @@
 #   google_project_iam_member.forge_slot_version_adder  swarm-api,
 #       secretVersionAdder, on `<prefix>` (base slots and their twins): it
 #       publishes the user's token at onboarding and on every refresh.
+#   google_project_iam_custom_role.forge_slot_version_manager
+#                                                       swarmForgeSlotVersionManager:
+#       secretmanager.versions.disable and secretmanager.versions.enable and
+#       nothing else. No versions.destroy (a disconnect is reversible, and a
+#       destroyed version is not), no versions.access (swarm-api never reads a
+#       base slot, D2). There is no predefined role that disables without
+#       also destroying or reading: secretVersionManager carries destroy.
+#   google_project_iam_member.forge_slot_version_manager
+#                                                       swarm-api, that role,
+#       on `<prefix>` -- the version adder's own condition, so it reaches
+#       exactly the slots swarm-api already writes, base and twin alike.
 #   google_project_iam_member.forge_refresh_reader      swarm-api,
 #       secretAccessor, on `<prefix>` AND a -refresh twin: the refresh token,
 #       which the sweep spends.
@@ -63,8 +79,8 @@
 # and "" for the secret itself, and `resource.name.endsWith(...)` covers the
 # secret itself.
 #
-# NOT VERIFIED LIVE: that IAM evaluates resource.name for versions.access and
-# versions.add in exactly these forms, and that extract() answers as above for
+# NOT VERIFIED LIVE: that IAM evaluates resource.name for versions.access,
+# versions.add, versions.disable and versions.enable in exactly these forms, and that extract() answers as above for
 # Secret Manager names. The mock-provider tests hold the expressions' text,
 # not IAM's answer. The proof is the runbook's last step
 # (docs/runbooks/github-app.md, step 8): a worker reading a base slot
@@ -77,10 +93,12 @@
 
 variable "enable_forge_user_slots" {
   description = <<-EOT
-    Define swarmForgeSlotCreator and make the four per-tenant user-slot
-    grants (forge_user_slots.tf): swarm-api creates GitHub user slots at
-    onboarding and refreshes them; each tenant's worker reads its own tenant's
-    base slots. Owner decisions D2, D3 and D7 on #780. The accounts must
+    Define swarmForgeSlotCreator and swarmForgeSlotVersionManager and make
+    the user-slot grants (forge_user_slots.tf): swarm-api creates GitHub user
+    slots at onboarding, refreshes them, and disables and re-enables their
+    versions on disconnect and reconnect; each tenant's worker reads its own
+    tenant's base slots. Owner decisions D2, D3 and D7 on #780, and OB3's
+    disable of 2026-10-07. The accounts must
     exist (terraform/infra creates swarm-api, register-tenant.sh each worker).
   EOT
   type        = bool
@@ -171,6 +189,39 @@ resource "google_project_iam_member" "forge_slot_version_adder" {
   condition {
     title       = "swarm forge user slots ${each.key}"
     description = "managed-by=swarm-terraform; swarm-api publishes tenant ${each.key}'s GitHub user tokens and refresh tokens (#780 D2, D3)."
+    expression  = local.forge_slot_conditions[each.key].any
+  }
+}
+
+resource "google_project_iam_custom_role" "forge_slot_version_manager" {
+  count = local.forge_user_slots_on
+
+  project     = var.project_id
+  role_id     = module.custom_role_ids.ids["forge_slot_version_manager"]
+  title       = "Swarm Forge Slot Version Manager"
+  description = "managed-by=swarm-terraform; disable a GitHub user slot's versions on disconnect and enable them on reconnect (#780 OB3). No destroy, no access."
+  stage       = "GA"
+
+  # Not roles/secretmanager.secretVersionManager, which also destroys
+  # versions. Disable and enable alone: a disconnect leaves no usable token
+  # and can be undone.
+  permissions = [
+    "secretmanager.versions.disable",
+    "secretmanager.versions.enable",
+  ]
+}
+
+resource "google_project_iam_member" "forge_slot_version_manager" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.forge_slot_version_manager[0].role_id}"
+  member = local.forge_api_member
+
+  condition {
+    title       = "swarm forge user slot versions ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api disables tenant ${each.key}'s GitHub user tokens on disconnect and enables them on reconnect (#780 OB3)."
     expression  = local.forge_slot_conditions[each.key].any
   }
 }
