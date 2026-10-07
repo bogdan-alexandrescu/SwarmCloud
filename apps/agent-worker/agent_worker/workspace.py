@@ -59,33 +59,31 @@ from typing import Iterator
 
 from .errors import WorkspaceError
 
-#: How many folders deep `walk_tree` descends below its root. Past this a
-#: folder is listed but not entered. Every tree the worker walks is in the
-#: agent's reach, and on Python 3.11 `os.walk` and `Path.rglob` RECURSE, one
-#: frame per level: an agent that made a tree 1,000 folders deep raised
-#: `RecursionError` out of the disk check, the output scan and the restore
-#: count (#259 review). 2,048 is past where one-character names reach Linux's
-#: 4,096-byte PATH_MAX, so no tree a path can name is cut short by it; it
-#: bounds the walk's memory, not its reach.
-MAX_WALK_DEPTH = 2048
-
-
-def walk_tree(
-    root: Path, *, max_depth: int = MAX_WALK_DEPTH
-) -> Iterator[tuple[Path, list[str], list[str]]]:
+def walk_tree(root: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
     """`os.walk(root, followlinks=False)`, top-down, WITHOUT recursion.
 
     Yields `(dirpath, dirnames, filenames)` exactly as `os.walk` does -- a
     link to a folder is listed in `dirnames` and never entered, a caller
     prunes by editing `dirnames` in place -- from an explicit stack, so a deep
-    tree costs a list entry per level, not a Python frame. No descriptor is
-    held between yields: each folder is listed whole and closed. A folder that
-    cannot be listed is skipped, as `os.walk` skips it; a folder at
-    `max_depth` levels below `root` is yielded but not entered.
+    tree costs a list entry per level, not a Python frame. Every tree the
+    worker walks is in the agent's reach, and on Python 3.11 `os.walk` and
+    `Path.rglob` RECURSE, one frame per level: an agent that made a tree 1,000
+    folders deep raised `RecursionError` out of the disk check, the output scan
+    and the restore count (#259 review). No descriptor is held between yields:
+    each folder is listed whole and closed. A folder that cannot be listed is
+    skipped, as `os.walk` skips it.
+
+    NO DEPTH BOUND. This used to stop entering folders 2,048 levels down, so a
+    deeper tree was silently cut short (#346). The stack grows by the folders
+    not yet entered, which the tree itself bounds. A walk BY PATH still cannot
+    list a folder whose full path is past PATH_MAX (4,096 bytes): the kernel
+    refuses the name, and it is skipped like any folder that cannot be listed.
+    A count that must reach the bottom of any tree walks by descriptor instead
+    (`tree_bytes`, which `Workspace.disk_bytes` uses).
     """
-    stack: list[tuple[Path, int]] = [(Path(root), 0)]
+    stack: list[Path] = [Path(root)]
     while stack:
-        here, depth = stack.pop()
+        here = stack.pop()
         dirnames: list[str] = []
         filenames: list[str] = []
         links: set[str] = set()
@@ -108,12 +106,10 @@ def walk_tree(
         except OSError:
             continue
         yield here, dirnames, filenames
-        if depth >= max_depth:
-            continue
         # Reversed onto the stack, so they come off in the order listed.
         for name in reversed(dirnames):
             if name not in links:
-                stack.append((here / name, depth + 1))
+                stack.append(here / name)
 
 
 #: The repository checkout's directory inside `work/`. Defined here, beside the
@@ -245,19 +241,12 @@ class Workspace:
     def disk_bytes(self) -> int:
         """Bytes on disk under the workspace, symlinks not followed.
 
-        `walk_tree`, not `os.walk`: the tree is the agent's, and a deep one
-        must not raise `RecursionError` out of the disk check.
+        `tree_bytes`, not `os.walk` and not `walk_tree`: the tree is the
+        agent's, a deep one must not raise `RecursionError` out of the disk
+        check, and a folder past PATH_MAX -- which a walk by path cannot list
+        -- must still be counted (#346).
         """
-        total = 0
-        for dirpath, dirnames, filenames in walk_tree(self.root):
-            for name in filenames:
-                path = dirpath / name
-                try:
-                    stat = path.lstat()
-                except OSError:
-                    continue
-                total += stat.st_size
-        return total
+        return tree_bytes(self.root)
 
     def child_env(self, base: dict[str, str] | None = None) -> dict[str, str]:
         """The environment a runner child sees, minus anything inherited by luck.
@@ -464,6 +453,83 @@ def _remove_tree(root: Path) -> None:
         os.rmdir(root)
     except OSError:
         pass
+
+
+def tree_bytes(root: Path) -> int:
+    """The `st_size` of every entry under `root` that is not a folder -- a
+    file, or a link, whose own size is counted and whose target never is --
+    at ANY depth, without recursion.
+
+    Walked by descriptor, as `_remove_tree` walks (its docstring says why):
+    one descriptor at a time, every name opened relative to its parent's
+    descriptor so no path is longer than one name, and the climb back up is
+    `..` checked to be the very folder descended from. A tree deeper than
+    PATH_MAX, which `walk_tree` cannot list by path, is counted to the bottom
+    (#346). If `..` no longer leads back -- something moved a folder out of
+    the tree mid-walk -- the walk stops there and returns what it counted
+    rather than count wherever it now leads. Anything that cannot be opened
+    or stat'ed is not counted, and no `OSError` escapes."""
+    try:
+        fd = os.open(root, _REMOVE_OPEN_FLAGS)
+    except OSError:
+        return 0
+    total = 0
+    try:
+        here = os.fstat(fd)
+        size, folders = _folder_bytes(fd)
+        total += size
+        # ((st_dev, st_ino), sub-folders still to enter), one per level.
+        stack: list[tuple[tuple[int, int], list[str]]] = [((here.st_dev, here.st_ino), folders)]
+        while stack:
+            pending = stack[-1][1]
+            if pending:
+                child = pending.pop()
+                try:
+                    child_fd = os.open(child, _REMOVE_OPEN_FLAGS, dir_fd=fd)
+                except OSError:
+                    continue  # gone, unreadable, or swapped for a link since it was listed
+                os.close(fd)
+                fd = child_fd
+                here = os.fstat(fd)
+                size, folders = _folder_bytes(fd)
+                total += size
+                stack.append(((here.st_dev, here.st_ino), folders))
+                continue
+            stack.pop()
+            if not stack:
+                break
+            parent_fd = os.open("..", _REMOVE_OPEN_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = parent_fd
+            parent = os.fstat(fd)
+            if (parent.st_dev, parent.st_ino) != stack[-1][0]:
+                break
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    return total
+
+
+def _folder_bytes(fd: int) -> tuple[int, list[str]]:
+    """The summed `st_size` of every entry of the folder open at `fd` that is
+    not a real folder (links are not followed), and the names of the real
+    folders in it."""
+    total = 0
+    folders: list[str] = []
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        folders.append(entry.name)
+                        continue
+                    total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total, folders
 
 
 def is_empty(path: Path) -> bool:

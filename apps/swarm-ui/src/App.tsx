@@ -1065,14 +1065,21 @@ export function App() {
     list: lastList.current,
   })
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const title =
-    at.sectionId === SUBMIT
+  // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
+  // a page that is not Overview, because the spine lights the nearest section.
+  const title = at.missing
+    ? NOT_FOUND_TITLE
+    : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
           : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : openObjectOf(at)
+  useEffect(() => {
+    document.title = documentTitleOf(title, object)
+  }, [title, object])
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1086,6 +1093,7 @@ export function App() {
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
+          missing={Boolean(at.missing)}
           go={go}
           helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
@@ -1415,6 +1423,22 @@ export function crumbsOf({
   return out
 }
 
+/** The title of a path this console has no page for: the phone header's and the tab's. */
+export const NOT_FOUND_TITLE = 'Not found'
+
+/**
+ * THE TAB'S TITLE (QA G1-12, 2026-10-07): the page, then the console, and
+ * inside an open object its id first -- the part that tells two tabs apart.
+ * Every page was "SwarmCloud", so a row of tabs, the history menu and a
+ * bookmark could not say which was which. Set here, once, from the title the
+ * phone header draws, rather than in each `PageHead`: the 404 and an open
+ * agent draw no head of their own, and a page with an inspector draws two.
+ */
+export function documentTitleOf(title: string, object: string | null): string {
+  const page = title === 'SwarmCloud' ? 'SwarmCloud' : `${title} · SwarmCloud`
+  return object === null ? page : `${object} · ${page}`
+}
+
 /**
  * THE OBJECT AN ADDRESS HAS OPEN, if any (#503, Q2): an agent (`taskId`), a
  * workflow (`/workflows/<id>`, `wf=<id>` on the list's query) or an issue run
@@ -1438,9 +1462,11 @@ export function openObjectOf(at: Route): string | null {
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help, API reads and the Submit chooser draw from nothing they fetch, so
-  // there is no age -- and no "reading…" that never resolves (#503).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
+  // Help and API reads draw from nothing they fetch, so there is no age --
+  // and no "reading…" that never resolves (#503). The Submit chooser is not
+  // one of them: it reads your recent submissions and carries that read's age
+  // on its own refresh (QA G1-05/G4-23).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the

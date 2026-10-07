@@ -333,7 +333,7 @@
 
 /* ---- empty, partial, failed, loading: four different things ------------ */
 .c-emp { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.c-emp > h3 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.c-emp > h3, .c-emp > h1 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--t-lead); line-height: var(--lh-lead); }
 .c-emp > p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .c-emp.is-partial { border-color: color-mix(in srgb, var(--s-warn) 40%, transparent); }
 .c-emp.is-failed { border-color: color-mix(in srgb, var(--s-bad) 40%, transparent); background: var(--s-badb); }

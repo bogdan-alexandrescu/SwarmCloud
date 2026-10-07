@@ -121,7 +121,7 @@ export const RoutedPage = createContext(false)
 /**
  * True inside the app frame, whose head (`Head` in App.tsx) can time the
  * CURRENT screen's own reads (CH-2). A `PageHead` that has no read age of its
- * own to show -- Help, API reads, the Submit chooser -- draws that age in
+ * own to show -- Help, API reads -- draws that age in
  * its actions; a `Screen` never needs it, because its refresh control carries
  * its own (#98, owner ruling 2026-10-07: one age per screen, and it lives in
  * that control). The dock keeps the tab-wide age.
@@ -901,10 +901,10 @@ export function Screen<T>({
  * topic's short form. Passed as `help="<id>"` so `tests/help.test.ts` counts
  * it against the ration on the screen that asked for it.
  *
- * A HEAD WITH NO AGE OF ITS OWN -- Help, API reads, the Submit chooser, which
- * read nothing -- draws the frame's age of the current screen's reads
+ * A HEAD WITH NO AGE OF ITS OWN -- Help and API reads, which read nothing --
+ * draws the frame's age of the current screen's reads
  * (`HeadAge`) at the start of its actions. A `Screen`, Overview, the Timeline
- * and the Repositories and Git tokens pages (`UrRefresh`) carry their own on
+ * the Submit chooser and the Repositories and Git tokens pages (`UrRefresh`) carry their own on
  * their refresh control and claim the age (`useClaimPageAge`), so the frame's
  * is null under them: one age per screen (#98).
  */

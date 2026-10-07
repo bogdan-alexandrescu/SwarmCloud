@@ -362,3 +362,69 @@ resource "google_cloud_scheduler_job" "merge_wake" {
     retry_count = 0
   }
 }
+
+# --- The GitHub user-token refresher (docs/onboarding.md §3.4 item 6, D2) ----
+#
+# POST /v1/admin/forge/refresh on swarm-api refreshes every connected user's
+# GitHub user access token that is near expiry, with the App's client secret
+# and the user's refresh token (its `-refresh` twin slot), and publishes the
+# new access token as a version of the user's slot, so the worker's read at
+# runtime always finds one at least two hours from expiry (§3.3 step 3).
+# Owner decision D2 (2026-10-07): swarm-api does this on a Cloud Scheduler
+# sweep, behind an interface a dedicated broker can take over later -- which
+# would change this job's endpoint and identity, and nothing else here.
+#
+# ONE JOB, NOT ONE PER TENANT. The sweep walks the forge_connections due for a
+# refresh across tenants and takes each one's `refresh_lease`, so one
+# refresher at a time spends a refresh token that works once. A per-tenant
+# job would only multiply the walk.
+#
+# SAME IDENTITY as the per-tenant jobs above: the rollup-sweeper account,
+# whose one grant is run.invoker on swarm-api (terraform/infra main.tf,
+# rollup_sweeper_invokes_api), so this job adds no IAM member. swarm-api must
+# admit it to this one route (swarm_api.auth.ROLLUP_SWEEPER_ROUTES), which the
+# route's own lane (OB3) does.
+#
+# OFF UNTIL enable_forge_refresh, because the route ships with OB3: a job
+# calling a route swarm-api does not serve answers 404 every 15 minutes and
+# refreshes nothing. Turning it on is one tfvars line once OB3 is deployed
+# (docs/runbooks/github-app.md, step 7). A bool, never `api_endpoint != ""`:
+# the endpoint is unknown until apply, and a count cannot depend on it.
+
+resource "google_cloud_scheduler_job" "forge_refresh" {
+  count = var.enable_forge_refresh ? 1 : 0
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-forge-refresh"
+
+  description = "managed-by=swarm-terraform; refreshes GitHub user access tokens before they expire"
+  schedule    = var.forge_refresh_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # A user access token lives 8 hours and the sweep refreshes it with at least
+  # two left, so a sweep that runs out of time leaves the rest to the next
+  # tick, 15 minutes on. Each refresh is one GitHub POST and two Secret
+  # Manager writes.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}${var.forge_refresh_path}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry. A refresh token works once and is rotated by its use: a retry
+  # racing the attempt it retries could spend the new token before the first
+  # attempt had persisted it. The refresh_lease guards against that inside
+  # swarm-api; not retrying keeps the scheduler from testing it every time.
+  # The next tick IS the retry.
+  retry_config {
+    retry_count = 0
+  }
+}

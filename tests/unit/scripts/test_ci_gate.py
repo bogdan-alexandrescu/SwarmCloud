@@ -1,5 +1,12 @@
 """`ci-gate` is the one check that stands for application.yml and terraform.yml.
 
+SINCE 2026-10-07 IT IS THE LAST JOB OF application.yml, not a workflow of its
+own (owner request: ci-gate.yml held a runner for the whole of CI while it
+polled). It `needs:` every other job there and judges their results itself
+(test_unit_shards.py runs that step), then runs scripts/ci-gate.sh for
+terraform.yml alone -- `CI_GATE_WORKFLOWS`, read below from the workflow, so
+the script is tested here in the configuration CI runs it in.
+
 WHY IT EXISTS. Owner decision, 2026-09-29: main's ruleset (main-protection,
 id 24160219) requires only security.yml's four checks, because application.yml
 and terraform.yml carry a `pull_request` path filter, and GitHub treats a
@@ -52,10 +59,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .application_paths import app_paths, reaches
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 SCRIPT = REPO / "scripts" / "ci-gate.sh"
-GATE_WORKFLOW = WORKFLOWS / "ci-gate.yml"
+GATE_WORKFLOW = WORKFLOWS / "application.yml"
 CI_DOC = REPO / "docs" / "ci.md"
 OWNER_REPO = "owner/swarm"
 SHA = "c0ffee" * 6 + "abcd"
@@ -75,6 +84,23 @@ def _workflow(path: Path) -> dict:
     return data
 
 
+def gate_job() -> dict:
+    """application.yml's `ci-gate` job."""
+    return _workflow(GATE_WORKFLOW)["jobs"]["ci-gate"]
+
+
+def wait_step() -> dict:
+    (step,) = [s for s in gate_job()["steps"] if "ci-gate.sh wait" in str(s.get("run", ""))]
+    return step
+
+
+def gated_in_ci() -> str:
+    """The CI_GATE_WORKFLOWS the gate job hands the script."""
+    value = str((wait_step().get("env") or {}).get("CI_GATE_WORKFLOWS") or "")
+    assert value.split(), "the gate job does not say which workflows the script waits on"
+    return value
+
+
 def _base_env(tmp_path: Path) -> dict:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
@@ -84,6 +110,8 @@ def _base_env(tmp_path: Path) -> dict:
         "SWARM_ENV_FILE": str(tmp_path / "no-such.env"),
         "NO_COLOR": "1",
         "GITHUB_REPOSITORY": OWNER_REPO,
+        # As the gate job runs it.
+        "CI_GATE_WORKFLOWS": gated_in_ci(),
     }
     # This suite runs INSIDE GitHub Actions in CI; nothing here may annotate or
     # write to the real job's summary, or reach the real API with its token.
@@ -130,7 +158,11 @@ def test_the_script_reads_each_workflows_paths_exactly_as_yaml_does(tmp_path, na
 
 def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
     """A new path-filtered workflow must come under the gate, or its failures
-    hold nothing. security.yml is required directly and is not gated."""
+    hold nothing. security.yml is required directly and is not gated, and
+    application.yml -- which carries the gate and runs on every pull request --
+    is judged by the gate job's `needs`, never waited on (it would wait for
+    itself). MUTATION: put application.yml back in CI_GATE_WORKFLOWS, or give
+    application.yml's pull_request trigger a path filter again."""
     proc = gate(tmp_path, "workflows")
     assert proc.returncode == 0, proc.stderr
     gated = set(proc.stdout.split())
@@ -140,10 +172,10 @@ def test_every_path_filtered_workflow_is_gated_and_security_is_not(tmp_path):
         if isinstance(trigger, dict) and isinstance(trigger.get("pull_request"), dict):
             if "paths" in trigger["pull_request"] or "paths-ignore" in trigger["pull_request"]:
                 filtered.add(path.name)
-    assert filtered == {"application.yml", "terraform.yml"}, filtered  # the control
+    assert filtered == {"terraform.yml"}, filtered  # the control
     assert gated == filtered, gated
     assert "security.yml" not in gated
-    assert "ci-gate.yml" not in gated
+    assert "application.yml" not in gated
 
 
 @pytest.mark.parametrize(
@@ -171,22 +203,27 @@ def test_a_trigger_shape_the_script_does_not_model_is_refused_not_guessed(tmp_pa
 @pytest.mark.parametrize(
     "changed, expected",
     [
-        (["docs/ci.md"], {"application.yml"}),
+        # application.yml is not this script's: it carries the gate, which
+        # judges its jobs through `needs`.
+        (["docs/ci.md"], set()),
+        (["apps/README.md"], set()),
         (["terraform/infra/main.tf"], {"terraform.yml"}),
-        # Named in BOTH lists.
-        (["terraform/modules/monitoring/alerts.tf"], {"application.yml", "terraform.yml"}),
-        (["scripts/lib/plan-guard.sh"], {"application.yml", "terraform.yml"}),
-        (["README.md"], {"application.yml"}),
+        (["terraform/modules/monitoring/alerts.tf"], {"terraform.yml"}),
+        (["scripts/lib/plan-guard.sh"], {"terraform.yml"}),
+        (["scripts/lib/plan-guard.sh.orig"], set()),
+        (["scripts/lib/other.sh"], set()),
         # A root-level pattern matches only at the root.
-        (["docs/sub/README.md", ".github/workflows/security.yml"], {"application.yml"}),
-        (["apps/README.md"], {"application.yml"}),
-        # `apps/**` needs something under apps/; a file called `apps` is not.
-        (["apps"], set()),
-        (["appsx/y.py"], set()),
-        (["tests/terraform/main.tftest.hcl"], {"application.yml", "terraform.yml"}),
+        (["docs/.github/workflows/terraform.yml"], set()),
+        # `terraform/**` needs something under terraform/; a file called
+        # `terraform` is not, and neither is a sibling sharing the prefix.
+        (["terraform"], set()),
+        (["terraformx/y.tf"], set()),
+        # `**` crosses directories.
+        (["tests/terraform/a/b/main.tftest.hcl"], {"terraform.yml"}),
         (["LICENSE"], set()),
         ([".github/workflows/security.yml"], set()),
         ([".github/workflows/terraform.yml"], {"terraform.yml"}),
+        (["README.md", "terraform/infra/main.tf"], {"terraform.yml"}),
         ([], set()),
     ],
 )
@@ -198,13 +235,13 @@ def test_the_changed_paths_decide_which_workflows_are_expected(tmp_path, changed
     assert set(proc.stdout.split()) == expected, proc.stdout
 
 
-def test_on_push_to_main_both_workflows_are_expected_whatever_changed(tmp_path):
-    """Both run on every push to main (no `push` path filter)."""
+def test_on_push_to_main_terraform_is_expected_whatever_changed(tmp_path):
+    """terraform.yml runs on every push to main (no `push` path filter)."""
     listing = tmp_path / "changed.txt"
     listing.write_text("LICENSE\n")
     proc = gate(tmp_path, "expected", "--event", "push", "--changed", str(listing))
     assert proc.returncode == 0, proc.stderr
-    assert set(proc.stdout.split()) == {"application.yml", "terraform.yml"}, proc.stdout
+    assert set(proc.stdout.split()) == {"terraform.yml"}, proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -290,22 +327,26 @@ sys.exit(2)
 '''
 
 
-def app_jobs(**override: str) -> list[dict]:
-    """application.yml's jobs as a pull request runs them: `build images` is
-    skipped by its own `if:` and its stand-in reports instead."""
+def workflow_jobs(name: str, **override: str) -> list[dict]:
+    """A workflow's jobs as a pull request runs them: a job whose `if:` refuses
+    pull_request (terraform.yml's `plan`) is skipped by it."""
     jobs = []
-    for job_id, job in _workflow(WORKFLOWS / "application.yml")["jobs"].items():
-        name = str(job.get("name") or job_id)
+    for job_id, job in _workflow(WORKFLOWS / name)["jobs"].items():
+        label = str(job.get("name") or job_id)
         condition = str(job.get("if") or "")
         conclusion = "skipped" if "!= 'pull_request'" in condition else "success"
-        jobs.append({"name": name, "conclusion": override.get(name, conclusion)})
+        jobs.append({"name": label, "conclusion": override.get(label, conclusion)})
     assert any(j["conclusion"] == "skipped" for j in jobs), "the control: a pull request skips a job by its if:"
     return jobs
 
 
-def run(run_id: int, workflow: str = "application.yml", **extra) -> dict:
+def tf_jobs(**override: str) -> list[dict]:
+    return workflow_jobs("terraform.yml", **override)
+
+
+def run(run_id: int, workflow: str = "terraform.yml", **extra) -> dict:
     return {"id": run_id, "workflow": workflow, "head_sha": SHA, "event": "pull_request",
-            "jobs": app_jobs() if workflow == "application.yml" else [{"name": "terraform test"}], **extra}
+            "jobs": tf_jobs() if workflow == "terraform.yml" else [{"name": "x"}], **extra}
 
 
 def wait(tmp_path: Path, world: dict, changed: list[str], *, event: str = "pull_request", **knobs: str):
@@ -343,17 +384,17 @@ def _last_line(proc: subprocess.CompletedProcess) -> str:
 
 
 def test_every_expected_workflow_passing_with_if_skipped_jobs_passes(tmp_path):
-    world = {"runs": [run(1), run(2, "terraform.yml")]}
-    proc, events = wait(tmp_path, world, ["terraform/modules/monitoring/alerts.tf"])
+    world = {"runs": [run(2)]}
+    proc, events = wait(tmp_path, world, ["terraform/infra/main.tf"])
     assert proc.returncode == 0, proc.stderr
     looked = [e for e in events if e["event"] == "runs"]
     assert looked and all(e["query"].get("head_sha") == SHA and e["query"].get("event") == "pull_request"
                           for e in looked), looked
-    assert {e["run"] for e in events if e["event"] == "jobs"} == {1, 2}, "every run's jobs are judged"
+    assert {e["run"] for e in events if e["event"] == "jobs"} == {2}, "every run's jobs are judged"
 
 
 def test_a_workflow_the_paths_did_not_trigger_counts_as_passed(tmp_path):
-    proc, _ = wait(tmp_path, {"runs": [run(1)]}, ["docs/ci.md"])
+    proc, _ = wait(tmp_path, {"runs": []}, ["docs/ci.md"])
     assert proc.returncode == 0, proc.stderr
     assert "terraform.yml" in proc.stderr and "not triggered" in proc.stderr.lower(), proc.stderr
 
@@ -363,44 +404,54 @@ def test_nothing_triggered_passes(tmp_path):
     assert proc.returncode == 0, proc.stderr
 
 
+def test_application_yml_runs_are_not_this_scripts_to_judge(tmp_path):
+    """The gate job judges application.yml's jobs through `needs`; its run is
+    still in progress while the gate runs, and waiting for it would wait for
+    the gate itself. MUTATION: put application.yml back in CI_GATE_WORKFLOWS."""
+    world = {"runs": [run(1, "application.yml", status="in_progress", conclusion=None), run(2)]}
+    proc, events = wait(tmp_path, world, ["terraform/infra/main.tf", "apps/api/x.py"], CI_GATE_WAIT="2")
+    assert proc.returncode == 0, proc.stderr
+    assert {e["run"] for e in events if e["event"] == "jobs"} == {2}, events
+
+
 def test_a_run_still_in_progress_is_waited_for(tmp_path):
     """MUTATION: pass on the first look, or treat in_progress as passed."""
-    proc, events = wait(tmp_path, {"runs": [run(1, pending_polls=4)]}, ["docs/ci.md"])
+    proc, events = wait(tmp_path, {"runs": [run(2, pending_polls=4)]}, ["terraform/infra/main.tf"])
     assert proc.returncode == 0, proc.stderr
     assert len([e for e in events if e["event"] == "runs"]) >= 5, events
 
 
 def test_an_expected_run_not_created_yet_is_waited_for(tmp_path):
-    """The race at the start of every pull request: ci-gate starts before
-    application.yml's run exists. MUTATION: read "no run" as "not triggered"."""
-    proc, events = wait(tmp_path, {"runs": [run(1, appears_after=4)]}, ["apps/api/x.py"])
+    """"No run yet" and "not triggered" look alike in the API, so a predicted
+    run is waited for. MUTATION: read "no run" as "not triggered"."""
+    proc, events = wait(tmp_path, {"runs": [run(2, appears_after=4)]}, ["terraform/infra/main.tf"])
     assert proc.returncode == 0, proc.stderr
     assert len([e for e in events if e["event"] == "runs"]) >= 5, events
 
 
 def test_an_expected_run_that_never_appears_fails_by_name(tmp_path):
-    proc, _ = wait(tmp_path, {"runs": []}, ["apps/api/x.py"], CI_GATE_APPEAR="1")
+    proc, _ = wait(tmp_path, {"runs": []}, ["terraform/infra/main.tf"], CI_GATE_APPEAR="1")
     assert proc.returncode != 0, proc.stderr
-    assert "application.yml" in _last_line(proc), proc.stderr
+    assert "terraform.yml" in _last_line(proc), proc.stderr
 
 
 def test_a_failed_job_fails_the_gate_naming_it_and_its_url(tmp_path):
-    jobs = app_jobs(**{"format / unit tests": "failure"})
-    proc, _ = wait(tmp_path, {"runs": [run(1, conclusion="failure", jobs=jobs)]}, ["apps/api/x.py"])
+    jobs = tf_jobs(**{"terraform test": "failure"})
+    proc, _ = wait(tmp_path, {"runs": [run(2, conclusion="failure", jobs=jobs)]}, ["terraform/infra/main.tf"])
     assert proc.returncode != 0
-    assert "format / unit tests" in proc.stderr and "/actions/runs/1/job/" in proc.stderr, proc.stderr
+    assert "terraform test" in proc.stderr and "/actions/runs/2/job/" in proc.stderr, proc.stderr
 
 
 @pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "action_required"])
 def test_a_run_that_did_not_succeed_fails_the_gate(tmp_path, conclusion):
-    proc, _ = wait(tmp_path, {"runs": [run(1, conclusion=conclusion)]}, ["apps/api/x.py"])
+    proc, _ = wait(tmp_path, {"runs": [run(2, conclusion=conclusion)]}, ["terraform/infra/main.tf"])
     assert proc.returncode != 0, proc.stderr
     assert conclusion in proc.stderr, proc.stderr
 
 
 def test_a_run_that_failed_to_start_fails_the_gate(tmp_path):
     """No jobs, conclusion startup_failure: nothing ran, so nothing passed."""
-    proc, _ = wait(tmp_path, {"runs": [run(1, conclusion="startup_failure", jobs=[])]}, ["apps/api/x.py"])
+    proc, _ = wait(tmp_path, {"runs": [run(2, conclusion="startup_failure", jobs=[])]}, ["terraform/infra/main.tf"])
     assert proc.returncode != 0, proc.stderr
     assert "failed to start" in proc.stderr.lower(), proc.stderr
 
@@ -408,15 +459,14 @@ def test_a_run_that_failed_to_start_fails_the_gate(tmp_path):
 def test_skipped_jobs_do_not_pass_inside_a_run_that_did_not_succeed(tmp_path):
     """Every job skipped and the run a failure: a workflow that never really
     started. MUTATION: judge jobs alone, counting `skipped` as passed."""
-    jobs = [{"name": j["name"], "conclusion": "skipped"} for j in app_jobs()]
-    proc, _ = wait(tmp_path, {"runs": [run(1, conclusion="failure", jobs=jobs)]}, ["apps/api/x.py"])
+    jobs = [{"name": j["name"], "conclusion": "skipped"} for j in tf_jobs()]
+    proc, _ = wait(tmp_path, {"runs": [run(2, conclusion="failure", jobs=jobs)]}, ["terraform/infra/main.tf"])
     assert proc.returncode != 0, proc.stderr
 
 
 def test_a_run_the_paths_did_not_predict_still_counts_when_it_fails(tmp_path):
     """terraform.yml ran although the paths said it would not, and failed."""
-    world = {"runs": [run(1), run(2, "terraform.yml", conclusion="failure",
-                                  jobs=[{"name": "terraform test", "conclusion": "failure"}])]}
+    world = {"runs": [run(2, conclusion="failure", jobs=tf_jobs(**{"terraform test": "failure"}))]}
     proc, _ = wait(tmp_path, world, ["docs/ci.md"])
     assert proc.returncode != 0, proc.stderr
     assert "terraform.yml" in proc.stderr, proc.stderr
@@ -424,82 +474,97 @@ def test_a_run_the_paths_did_not_predict_still_counts_when_it_fails(tmp_path):
 
 def test_a_late_unpredicted_failing_run_is_caught_inside_the_settle_window(tmp_path):
     """Nothing expected, so without a settle window the gate would pass on its
-    first look. MUTATION: set the settle window to zero."""
-    world = {"runs": [run(2, "terraform.yml", appears_after=3, conclusion="failure",
-                          jobs=[{"name": "terraform test", "conclusion": "failure"}])]}
+    first look. The gate job sets the window to zero because it starts after
+    the event's runs exist (test_unit_shards.py holds that reason); the
+    script's window still works when asked for. MUTATION: ignore CI_GATE_SETTLE."""
+    world = {"runs": [run(2, appears_after=3, conclusion="failure",
+                          jobs=tf_jobs(**{"terraform test": "failure"}))]}
     proc, _ = wait(tmp_path, world, ["LICENSE"], CI_GATE_SETTLE="2")
     assert proc.returncode != 0, proc.stderr
 
 
 def test_runs_of_another_event_at_the_same_commit_are_not_judged(tmp_path):
     """A failing push run at this sha is main's business, not this pull request's."""
-    world = {"runs": [run(1), run(9, conclusion="failure", event="push",
-                                  jobs=[{"name": "shellcheck", "conclusion": "failure"}])]}
-    proc, _ = wait(tmp_path, world, ["docs/ci.md"])
+    world = {"runs": [run(2), run(9, conclusion="failure", event="push",
+                                  jobs=[{"name": "terraform test", "conclusion": "failure"}])]}
+    proc, _ = wait(tmp_path, world, ["terraform/infra/main.tf"])
     assert proc.returncode == 0, proc.stderr
 
 
 def test_the_newest_run_of_a_workflow_decides(tmp_path):
     world = {"runs": [
         run(1, conclusion="failure", created_at="2026-09-29T00:00:00Z",
-            jobs=app_jobs(**{"shellcheck": "failure"})),
+            jobs=tf_jobs(**{"checkov": "failure"})),
         run(5, created_at="2026-09-29T01:00:00Z"),
     ]}
-    proc, _ = wait(tmp_path, world, ["docs/ci.md"])
+    proc, _ = wait(tmp_path, world, ["terraform/infra/main.tf"])
     assert proc.returncode == 0, proc.stderr
 
 
 def test_an_unreadable_api_is_never_a_pass(tmp_path):
-    proc, _ = wait(tmp_path, {"runs": [run(1)]}, ["docs/ci.md"], FAKE_GH_FAIL="always")
+    proc, _ = wait(tmp_path, {"runs": [run(2)]}, ["terraform/infra/main.tf"], FAKE_GH_FAIL="always")
     assert proc.returncode != 0, proc.stderr
     assert "could not read" in _last_line(proc).lower(), proc.stderr
 
 
 def test_a_run_still_going_past_the_wait_fails(tmp_path):
-    proc, _ = wait(tmp_path, {"runs": [run(1, pending_polls=10_000)]}, ["docs/ci.md"], CI_GATE_WAIT="1")
+    proc, _ = wait(tmp_path, {"runs": [run(2, pending_polls=10_000)]}, ["terraform/infra/main.tf"], CI_GATE_WAIT="1")
     assert proc.returncode != 0, proc.stderr
-    assert "application.yml" in _last_line(proc), proc.stderr
+    assert "terraform.yml" in _last_line(proc), proc.stderr
 
 
 # ---------------------------------------------------------------------------
 # The workflow's shape.
 # ---------------------------------------------------------------------------
 def test_the_gate_job_is_named_ci_gate_and_always_runs():
+    """The required context is the job's name, and the job must report on
+    every pull request, push to main and queue entry.
+    MUTATION: rename the job, give application.yml's pull_request trigger a
+    path filter again, drop `if: always()`, or leave ci-gate.yml beside it."""
     wf = _workflow(GATE_WORKFLOW)
     on = wf["on"]
-    # Every pull request, with no filter of its own: a filtered gate is the
-    # problem it exists to solve.
+    # Every pull request, with no filter: a filtered gate is the problem it
+    # exists to solve.
     assert "pull_request" in on and not (on["pull_request"] or {}), on
     assert on["push"] == {"branches": ["main"]}, on
-    jobs = wf["jobs"]
-    assert list(jobs) == ["ci-gate"], jobs
-    job = jobs["ci-gate"]
+    job = gate_job()
     assert job.get("name") == "ci-gate", job
-    assert "if" not in job, "a job-level if: would let the required check go missing"
-    assert not any("if" in step for step in job["steps"]), "every step runs"
-    # No other workflow reports a check of the same name.
-    for path in WORKFLOWS.glob("*.yml"):
-        if path == GATE_WORKFLOW:
-            continue
-        for job_id, other in (_workflow(path).get("jobs") or {}).items():
-            assert str(other.get("name") or job_id) != "ci-gate", path.name
+    # Skipped would read as passed; always() runs it when something it needs
+    # failed, so it can say so.
+    assert job.get("if") == "always()", job.get("if")
+    # Exactly one producer of the context, so two checks of one name never
+    # disagree. ci-gate.yml is gone.
+    assert not (WORKFLOWS / "ci-gate.yml").exists()
+    producers = [
+        (path.name, job_id)
+        for path in WORKFLOWS.glob("*.yml")
+        for job_id, other in (_workflow(path).get("jobs") or {}).items()
+        if str(other.get("name") or job_id) == "ci-gate"
+    ]
+    assert producers == [("application.yml", "ci-gate")], producers
+
+
+def test_the_gate_needs_every_other_job_of_its_workflow():
+    """A job left out of `needs` is one the gate passes without waiting for.
+    MUTATION: drop any job from the gate's `needs`, e.g. `build-check`."""
+    jobs = _workflow(GATE_WORKFLOW)["jobs"]
+    needs = gate_job()["needs"]
+    assert isinstance(needs, list), needs
+    assert set(needs) == set(jobs) - {"ci-gate"}, set(jobs) - {"ci-gate"} ^ set(needs)
+    assert len(needs) == len(set(needs)), needs
 
 
 def test_the_gate_holds_read_permissions_only():
-    wf = _workflow(GATE_WORKFLOW)
-    allowed = {"actions", "checks", "contents"}
-    for scope in [wf.get("permissions")] + [j.get("permissions") for j in wf["jobs"].values()]:
-        if scope is None:
-            continue
-        assert isinstance(scope, dict), scope
-        assert set(scope) <= allowed and set(scope.values()) == {"read"}, scope
-    assert wf.get("permissions"), "the workflow must declare its permissions, not inherit the default"
+    job = gate_job()
+    scope = job.get("permissions")
+    assert isinstance(scope, dict), "the gate job must declare its permissions, not inherit the workflow's"
+    assert set(scope) <= {"actions", "checks", "contents"} and set(scope.values()) == {"read"}, scope
+    assert scope.get("actions") == "read", "the script lists terraform.yml's runs"
 
 
 def test_no_expression_is_interpolated_into_a_run_block():
     """Values reach the shell through env:, never through `${{ }}` in run:."""
-    wf = _workflow(GATE_WORKFLOW)
-    steps = [s for j in wf["jobs"].values() for s in j["steps"]]
+    steps = gate_job()["steps"]
     runs = [s["run"] for s in steps if "run" in s]
     assert any("scripts/ci-gate.sh wait" in r for r in runs), runs
     for r in runs:
@@ -508,6 +573,81 @@ def test_no_expression_is_interpolated_into_a_run_block():
     # The changed files come from `git diff base...head`; a shallow clone has neither.
     assert (checkout.get("with") or {}).get("fetch-depth") == 0, checkout
     assert (checkout.get("with") or {}).get("persist-credentials") is False, checkout
+
+
+def test_the_gate_waits_without_a_settle_window_only_because_it_starts_late():
+    """CI_GATE_SETTLE is zero in the gate job: it starts only after `changes`
+    -- a job of a run the same event created -- has finished, so terraform.yml's
+    run already exists. That holds only while the gate needs `changes`.
+    MUTATION: drop `changes` from the gate's needs while keeping the zero."""
+    env = wait_step().get("env") or {}
+    if str(env.get("CI_GATE_SETTLE", "60")) == "0":
+        assert "changes" in gate_job()["needs"]
+
+
+# ---------------------------------------------------------------------------
+# The gate's own judgement of application.yml's jobs, run as the runner runs it.
+# ---------------------------------------------------------------------------
+def judge_step(job_id: str) -> dict:
+    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
+    steps = [s for s in job["steps"] if "NEEDS" in (s.get("env") or {})]
+    assert len(steps) == 1, f"{job_id} has no single step reading `needs`"
+    assert steps[0]["env"]["NEEDS"].replace(" ", "") == "${{toJSON(needs)}}", steps[0]["env"]
+    return steps[0]
+
+
+def judge(tmp_path: Path, job_id: str, results: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run `job_id`'s needs-reading step with `needs.<job>.result` = results."""
+    body = tmp_path / f"judge-{job_id}.sh"
+    body.write_text(str(judge_step(job_id)["run"]))
+    needs = {name: {"result": result, "outputs": {}} for name, result in results.items()}
+    env = {**_base_env(tmp_path), "NEEDS": json.dumps(needs)}
+    return subprocess.run(["bash", "-e", str(body)], env=env, capture_output=True, text=True, timeout=60, check=False)
+
+
+def _all_needs(job_id: str) -> dict[str, str]:
+    """Every job `job_id` needs, each concluded `success`."""
+    needs = _workflow(GATE_WORKFLOW)["jobs"][job_id]["needs"]
+    needs = [needs] if isinstance(needs, str) else needs
+    return {name: "success" for name in needs}
+
+
+@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
+def test_every_need_passing_or_skipped_by_its_if_passes(tmp_path, job_id):
+    proc = judge(tmp_path, job_id, _all_needs(job_id))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # A docs-only pull request: everything but `changes` skipped.
+    skipped = {name: ("success" if name == "changes" else "skipped") for name in _all_needs(job_id)}
+    proc = judge(tmp_path, job_id, skipped)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
+@pytest.mark.parametrize("result", ["failure", "cancelled"])
+def test_any_need_failed_or_cancelled_fails_by_name(tmp_path, job_id, result):
+    """MUTATION: count only `failure`, or read `cancelled` as passed."""
+    needs = _all_needs(job_id)
+    victim = sorted(n for n in needs if n != "changes")[-1]
+    needs[victim] = result
+    proc = judge(tmp_path, job_id, needs)
+    assert proc.returncode != 0, proc.stdout
+    assert f"{victim} ({result})" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize("job_id", ["ci-gate", "python", "ui"])
+def test_a_skip_under_a_changes_job_that_did_not_succeed_fails(tmp_path, job_id):
+    """Everything skipped because `changes` never ran is not a pass.
+    MUTATION: drop the `changes` check from the step."""
+    needs = {name: "skipped" for name in _all_needs(job_id)}
+    proc = judge(tmp_path, job_id, needs)
+    assert proc.returncode != 0, proc.stdout
+    assert "changes" in proc.stdout
+
+
+def test_the_three_judgements_are_one_text():
+    """Three copies of one rule are kept identical, so one is never fixed alone."""
+    runs = {job_id: judge_step(job_id)["run"] for job_id in ("ci-gate", "python", "ui")}
+    assert len(set(runs.values())) == 1, runs
 
 
 def test_the_script_follows_the_house_rules():
@@ -564,16 +704,16 @@ def test_docs_carry_the_ruleset_put_that_adds_ci_gate():
 
 
 def test_a_pull_request_touching_only_the_gate_runs_its_tests_and_actionlint():
-    """Owner decision, 2026-09-29: application.yml's pull_request paths name
-    the gate's workflow and script, and its actionlint step lints the workflow.
-    MUTATION: drop either path, or the file from the actionlint list."""
+    """Owner decision, 2026-09-29: a pull request changing only the gate runs
+    its tests and lints its workflow. The gate is application.yml's own job
+    now, so actionlint reads it with application.yml, and the script is under
+    scripts/**. MUTATION: drop either path, or application.yml from actionlint."""
     application = _workflow(WORKFLOWS / "application.yml")
-    paths = application["on"]["pull_request"]["paths"]
-    assert ".github/workflows/ci-gate.yml" in paths, paths
-    assert "scripts/ci-gate.sh" in paths, paths
+    assert reaches("scripts/ci-gate.sh"), app_paths()
+    assert reaches(".github/workflows/application.yml"), app_paths()
     lint = [
         step.get("run") or ""
         for step in application["jobs"]["workflows"]["steps"]
         if "actionlint" in (step.get("run") or "")
     ]
-    assert any(".github/workflows/ci-gate.yml" in run for run in lint), lint
+    assert any(".github/workflows/application.yml" in run for run in lint), lint

@@ -92,9 +92,68 @@ export interface RepoIndexState {
   behind_by: number | null
   stale: boolean | null
   in_flight_task_id: string | null
-  /** Source files with at least one test edge ÷ source files, 0-1. Edges, not executed coverage. */
-  coverage: number | null
+  /** The test map's reach in the index's own units (QA G4-03); null when not served. */
+  coverage: TestCoverage | null
   next_run_at: string | null
+}
+
+/**
+ * `index.coverage` AS THE API SERVES IT: counts, not a ratio
+ * (`swarm_api/repoindex.py` `coverage()`, repo-index.md §6.2). The unit is
+ * the index's MODULES -- directories -- with at least one test-map edge, not
+ * source files: an edge's source is a glob, so a per-file share is not
+ * something the index can say. Edges, not executed coverage. Each figure is
+ * null when its key was not served; a 0-1 number (the shape first designed,
+ * never served) is not read as one of these, so it is unknown.
+ */
+export interface TestCoverage {
+  modules: number | null
+  modules_with_tests: number | null
+  test_map_edges: number | null
+  always_tests: number | null
+}
+
+function count(v: unknown): number | null {
+  const n = num(v)
+  return n !== null && Number.isInteger(n) && n >= 0 ? n : null
+}
+
+function normCoverage(v: unknown): TestCoverage | null {
+  if (!isRec(v)) return null
+  const c = {
+    modules: count(v.modules),
+    modules_with_tests: count(v.modules_with_tests),
+    test_map_edges: count(v.test_map_edges),
+    always_tests: count(v.always_tests),
+  }
+  return Object.values(c).every((x) => x === null) ? null : c
+}
+
+/** Modules with a test edge ÷ modules, 0-1: the bar's fill. Null when either is unknown, or there are no modules. */
+export function coverageRatio(c: TestCoverage | null): number | null {
+  if (c === null || c.modules === null || c.modules_with_tests === null || c.modules === 0) return null
+  return c.modules_with_tests > c.modules ? null : c.modules_with_tests / c.modules
+}
+
+/** "20 of 83 modules"; null when either count is unknown. */
+export function coverageWords(c: TestCoverage | null): string | null {
+  if (c === null || c.modules === null || c.modules_with_tests === null) return null
+  return `${thousands(c.modules_with_tests)} of ${thousands(c.modules)} module${c.modules === 1 ? '' : 's'}`
+}
+
+/** "1,339 edges · 7 always-run": what stands behind the modules figure, each part only when served. */
+export function coverageDetail(c: TestCoverage | null): string | null {
+  if (c === null) return null
+  const parts = [
+    c.test_map_edges === null ? null : `${thousands(c.test_map_edges)} edge${c.test_map_edges === 1 ? '' : 's'}`,
+    c.always_tests === null ? null : `${thousands(c.always_tests)} always-run`,
+  ].filter((x): x is string => x !== null)
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
+/** A count with thousands separators, the same in every locale. */
+export function thousands(n: number): string {
+  return n.toLocaleString('en-US')
 }
 
 export interface IndexRun {
@@ -165,7 +224,7 @@ export function normIndexRun(v: unknown): IndexRun | null {
   }
 }
 
-/** A coverage the API served as a ratio; a value outside 0-1 is not one, so it is unknown. */
+/** A share the API served as a ratio; a value outside 0-1 is not one, so it is unknown. */
 function ratio(v: unknown): number | null {
   const n = num(v)
   return n !== null && n >= 0 && n <= 1 ? n : null
@@ -202,7 +261,7 @@ export function normRepo(v: unknown): RepoRecord | null {
       behind_by: num(ix.behind_by),
       stale: bool(ix.stale),
       in_flight_task_id: str(ix.in_flight_task_id),
-      coverage: ratio(ix.coverage),
+      coverage: normCoverage(ix.coverage),
       next_run_at: str(ix.next_run_at),
     },
     last_run: normIndexRun(v.last_run),
@@ -367,10 +426,18 @@ export interface CoChange {
   b: string
   times: number | null
 }
+/** One test-map edge: one source glob, ONE test (repoindex.py `TestEdge`), with how it was found and its command. */
 export interface TestEdge {
   source: string
-  tests: string[]
+  /** Null for a source the index listed with no test. */
+  test: string | null
   evidence: string | null
+  command: string | null
+}
+/** The edges of one source, for the Test map's rows: many edges share a source (227 on swarmcloud). */
+export interface TestMapRow {
+  source: string
+  tests: { test: string; evidence: string | null; command: string | null }[]
 }
 export interface IndexDoc {
   commit_sha: string | null
@@ -383,12 +450,20 @@ export interface IndexDoc {
   co_changes: CoChange[]
   test_map: TestEdge[]
   unmapped: string[]
+  /** The document's `languages` rows; null when the document carries no such array. */
+  languages: LanguageRow[] | null
 }
 
 export function normIndexDoc(v: unknown): IndexDoc | null {
   if (!isRec(v)) return null
-  // `?format=json` may answer the document itself or `{index: …, bytes}`.
-  const d = isRec(v.index) ? v.index : v
+  // THE LIVE ANSWER IS `{index, document, freshness, produced_by, …}`
+  // (routes/repositories.py `get_index`): `index` is the version's METADATA
+  // (commit, digest, bytes, truncated, extractor) and `document` the index
+  // itself. Reading `index` as the document drew "Modules 0" over an index
+  // of 83 (QA G4-01). An envelope whose document is absent has no index yet.
+  if ('document' in v && !isRec(v.document)) return null
+  const meta: Rec = isRec(v.index) ? v.index : {}
+  const d: Rec = isRec(v.document) ? v.document : Array.isArray(meta.modules) ? meta : v
   const modules = recs(d.modules)
     .map((m) => {
       const path = str(m.path)
@@ -404,32 +479,59 @@ export function normIndexDoc(v: unknown): IndexDoc | null {
       return path === null ? null : { path, changes: num(h.changes) ?? num(h.count) }
     })
     .filter((h): h is HotSpot => h !== null)
-  const co = recs(d.co_changes ?? (isRec(d.hot_spots_meta) ? d.hot_spots_meta.co_changes : undefined))
-    .map((c) => {
-      const p = strs(c.paths)
-      const a = str(c.a) ?? p[0] ?? null
-      const b = str(c.b) ?? p[1] ?? null
-      return a === null || b === null ? null : { a, b, times: num(c.times) ?? num(c.count) }
-    })
-    .filter((c): c is CoChange => c !== null)
-  const tm = recs(d.test_map)
-    .map((t) => {
-      const source = str(t.source) ?? str(t.path) ?? str(t.glob)
-      return source === null ? null : { source, tests: strs(t.tests), evidence: str(t.evidence) }
-    })
-    .filter((t): t is TestEdge => t !== null)
+  const served = d.co_changes ?? (isRec(d.hot_spots_meta) ? d.hot_spots_meta.co_changes : undefined)
+  const co = Array.isArray(served)
+    ? recs(served)
+        .map((c) => {
+          const p = strs(c.paths)
+          const a = str(c.a) ?? p[0] ?? null
+          const b = str(c.b) ?? p[1] ?? null
+          return a === null || b === null ? null : { a, b, times: num(c.times) ?? num(c.count) }
+        })
+        .filter((c): c is CoChange => c !== null)
+    : // The document's own shape: each hot-spot names what changed with it (repoindex.py `HotSpot.co_changed`), with no count.
+      recs(d.hot_spots).flatMap((h) => {
+        const a = str(h.path)
+        return a === null ? [] : strs(h.co_changed).map((b) => ({ a, b, times: null }))
+      })
+  // An edge is `{source, test, evidence, command}`, one test each; a list
+  // under `tests` is read too, one edge per test, so no shape loses a test.
+  const tm = recs(d.test_map).flatMap((t): TestEdge[] => {
+    const source = str(t.source) ?? str(t.path) ?? str(t.glob)
+    if (source === null) return []
+    const evidence = str(t.evidence)
+    const command = str(t.command)
+    const one = str(t.test)
+    const tests = one !== null ? [one] : strs(t.tests)
+    return tests.length === 0 ? [{ source, test: null, evidence, command }] : tests.map((test) => ({ source, test, evidence, command }))
+  })
   return {
-    commit_sha: str(d.commit_sha),
-    built_at: str(d.built_at),
-    bytes: num(v.bytes) ?? num(d.bytes),
-    truncated: strs(d.truncated),
+    commit_sha: str(d.commit_sha) ?? str(meta.commit_sha),
+    built_at: str(d.built_at) ?? str(meta.built_at),
+    bytes: num(v.bytes) ?? num(meta.bytes) ?? num(d.bytes),
+    truncated: Array.isArray(d.truncated) ? strs(d.truncated) : strs(meta.truncated),
     modules,
     entry_points: entry,
     hot_spots: hot,
     co_changes: co,
     test_map: tm,
     unmapped: strs(d.unmapped),
+    languages: Array.isArray(d.languages) ? normLanguages(d.languages) : null,
   }
+}
+
+/** The edges grouped by source, in the order the index lists them; a test listed twice under one source is drawn once. */
+export function testMapRows(edges: readonly TestEdge[]): TestMapRow[] {
+  const rows = new Map<string, TestMapRow>()
+  for (const e of edges) {
+    let row = rows.get(e.source)
+    if (row === undefined) {
+      row = { source: e.source, tests: [] }
+      rows.set(e.source, row)
+    }
+    if (e.test !== null && !row.tests.some((t) => t.test === e.test)) row.tests.push({ test: e.test, evidence: e.evidence, command: e.command })
+  }
+  return [...rows.values()]
 }
 
 // ---------------------------------------------------------------------------
@@ -470,13 +572,27 @@ export function normLanguages(v: unknown): LanguageRow[] {
 // Readable repositories (Register C)
 // ---------------------------------------------------------------------------
 
+export type Visibility = 'public' | 'private' | 'internal'
+
 export interface Readable {
   owner: string
   repo: string
   default_branch: string | null
-  private: boolean | null
+  /**
+   * As the API serves it (`forge.py::_visibility`): public, private or
+   * internal; null when it answered `unknown` or nothing. An older answer
+   * that carried only `private` is read from that (QA G4-16).
+   */
+  visibility: Visibility | null
+  archived: boolean | null
   pushed_at: string | null
   registered: boolean
+}
+
+/** A page after the first that did not come back: the list holds the pages before it. */
+export interface ReadableGap {
+  page: number
+  message: string
 }
 
 export interface ReadableList {
@@ -484,10 +600,31 @@ export interface ReadableList {
   secret_name: string | null
   total: number | null
   repositories: Readable[]
+  /** The page the API offers next; null once it offers none. */
+  next_page: number | null
+  /** The API reached its page cap with a full page: the token may read more than is listed. */
+  capped: boolean
+  /** The API's page cap and page size, when it said them. */
+  max_pages: number | null
+  per_page: number | null
+  /** How many pages this list was read from. */
+  pages: number
+  /** A later page that failed, so the list is short; null when every page came back. */
+  gap: ReadableGap | null
 }
 
+function visibilityOf(r: Record<string, unknown>): Visibility | null {
+  const v = str(r.visibility)
+  if (v === 'public' || v === 'private' || v === 'internal') return v
+  const p = bool(r.private)
+  return p === null ? null : p ? 'private' : 'public'
+}
+
+/** One page of `GET /v1/repositories/readable` (`swarm_api/repositories.py::readable`). */
 export function normReadable(v: unknown): ReadableList {
-  if (!isRec(v)) return { secret_name: null, total: null, repositories: [] }
+  if (!isRec(v)) {
+    return { secret_name: null, total: null, repositories: [], next_page: null, capped: false, max_pages: null, per_page: null, pages: 0, gap: null }
+  }
   const repositories = recs(v.repositories)
     .map((r) => {
       let owner = str(r.owner)
@@ -501,13 +638,45 @@ export function normReadable(v: unknown): ReadableList {
         owner,
         repo,
         default_branch: str(r.default_branch),
-        private: bool(r.private),
+        visibility: visibilityOf(r),
+        archived: bool(r.archived),
         pushed_at: str(r.pushed_at),
         registered: r.registered === true,
       }
     })
     .filter((r): r is Readable => r !== null)
-  return { secret_name: str(v.secret_name), total: num(v.total), repositories }
+  const next = num(v.next_page)
+  return {
+    secret_name: str(v.secret_name),
+    total: num(v.total),
+    repositories,
+    next_page: next !== null && Number.isInteger(next) && next > 1 ? next : null,
+    capped: v.capped === true,
+    max_pages: num(v.max_pages),
+    per_page: num(v.per_page),
+    pages: 1,
+    gap: null,
+  }
+}
+
+/**
+ * The list so far with one more page appended. The later page decides where
+ * paging stands (`next_page`, `capped`); a repository already listed is not
+ * listed twice, in case the forge's order shifted between two pages.
+ */
+export function appendReadable(sofar: ReadableList, more: ReadableList): ReadableList {
+  const seen = new Set(sofar.repositories.map((r) => `${r.owner}/${r.repo}`.toLowerCase()))
+  const added = more.repositories.filter((r) => !seen.has(`${r.owner}/${r.repo}`.toLowerCase()))
+  return {
+    ...more,
+    secret_name: sofar.secret_name ?? more.secret_name,
+    total: sofar.total ?? more.total,
+    max_pages: more.max_pages ?? sofar.max_pages,
+    per_page: more.per_page ?? sofar.per_page,
+    repositories: [...sofar.repositories, ...added],
+    pages: sofar.pages + more.pages,
+    gap: null,
+  }
 }
 
 // ---------------------------------------------------------------------------

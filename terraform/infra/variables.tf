@@ -292,23 +292,26 @@ variable "tenants" {
     # (contract request 30). Bare emails of user-managed accounts in this
     # project; never a human, never an admin, never under two tenants.
     service_accounts = optional(list(string), [])
-    # The forge the #295 merge and post-verdict Jobs talk to: host, owner,
-    # repo and the review App's ids, rendered into those Jobs' environment
-    # (docs/merge-step.md §2.1b). Required once a tenant registers git-merge or
-    # git-review; modules/tenancy validates it. Never a credential.
-    forge = optional(object({
-      host              = optional(string, "api.github.com")
-      owner             = string
-      repo              = string
-      review_app_id     = optional(number)
-      review_app_bot_id = optional(number)
-    }))
   }))
   default = {}
 
   validation {
     condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
     error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
+
+  # THE RETIRED #295 APP KEYS (#453 box 118; owner decision MS0-Q4,
+  # 2026-10-06). git-merge and git-review were GitHub App keys read only by
+  # the per-tenant merge and post-verdict accounts, which are gone. Listed
+  # here, either would now get a secret whose reader is the tenant's worker
+  # account -- an App key any agent of the tenant could mint a token for --
+  # so it is refused at plan. swarm-api, the quota broker and
+  # scripts/register-tenant.sh refuse the same two.
+  validation {
+    condition = alltrue([
+      for t, v in var.tenants : !contains(v.providers, "git-merge") && !contains(v.providers, "git-review")
+    ])
+    error_message = "a tenant may not register git-merge or git-review: the #295 App keys are retired, and nothing but the tenant's worker would read one."
   }
 
   # The same expression as swarm_common.identity.SERVICE_ACCOUNT_EMAIL, held

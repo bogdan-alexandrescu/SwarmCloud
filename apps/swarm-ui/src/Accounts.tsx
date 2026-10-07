@@ -3,12 +3,14 @@ import {
   beginAccountSignIn,
   finishAccountSignIn,
   loadAccountsBoard,
+  loadTask,
   refreshAccount,
   removeAccount,
   setAccountLending,
   setAccountState,
   type AccountsBoard,
 } from './api'
+import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
@@ -1198,7 +1200,17 @@ function Detail({
               </span>
             </b>
           ) : (
-            <b>{timeAgo(account.last_assigned_at as string)}</b>
+            // THE CLOCK, THEN THE AGE (G5-16, QA 2026-10-07; capacity.html §D
+            // draws `14:09`). The age alone made a reader do the subtraction
+            // to line the hand-out up against Holding now's Since column,
+            // which is a clock. The mock-up's `to eng` is not drawn: the
+            // broker records when an account was last handed out, not to whom.
+            <>
+              <b title={new Date(account.last_assigned_at as string).toLocaleString()}>
+                {givenAt(account.last_assigned_at as string, now)}
+              </b>
+              <i>{timeAgo(account.last_assigned_at as string, now)}</i>
+            </>
           )}
         </div>
       </div>
@@ -1404,6 +1416,19 @@ function clockOf(iso: string): string {
 }
 
 /**
+ * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` within the
+ * last day, and the date before it beyond that -- a bare `22:30` from three
+ * days ago reads as tonight's. An unreadable instant is the em dash.
+ */
+function givenAt(iso: string, now: number): string {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return '—'
+  if (now - t < 86_400_000) return clockOf(iso)
+  const day = new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
+  return `${day} ${clockOf(iso)}`
+}
+
+/**
  * What a hold was running, in the three cases that must not read alike:
  * a task the hold's tenant owns (a link), a task it named and does NOT own
  * (`unverified`, no id), and no task named at all (`task not recorded`).
@@ -1495,35 +1520,74 @@ function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
   const b = res.data
   return (
     <div className="acct-holders">
-      <h4>Holding now ({b.total})</h4>
-      {b.total === 0 ? (
-        <p className="muted small">Nobody holds it.</p>
-      ) : (
-        <ul className="acct-holder-list">
-          {b.holders.map((h, i) => (
-            <li key={i}>
-              {h.tenant !== undefined && <span className="mono">{h.tenant} </span>}
-              <HoldWork h={h} />
-              {h.since ? (
-                <span className="muted">
-                  {' '}since {clockOf(h.since)} ({heldFor(now - Date.parse(h.since))})
-                </span>
-              ) : (
-                <span className="muted"> since an unrecorded time</span>
-              )}
-            </li>
-          ))}
+      <h4>Holding now · {b.total}</h4>
+      {b.holders.length > 0 && (
+        // THE MOCK-UP'S TABLE (G5-16, QA 2026-10-07; capacity.html §D): Agent ·
+        // Attempt · Since. It was a bulleted list of `task_…` ids, the one
+        // thing on the row that says nothing about what the agent is doing.
+        // The agent is named the way every other screen names it (`agentName`),
+        // from the task read; until that read lands, or if it fails, the id is
+        // the name, and the whole id is always the link's title.
+        <table className="acct-hist acct-holding-now">
+          <thead>
+            <tr>
+              <th scope="col" data-col="holder">Agent</th>
+              <th scope="col" data-col="attempt" className="is-num">Attempt</th>
+              <th scope="col" data-col="since">Since</th>
+            </tr>
+          </thead>
+          <tbody>
+            {b.holders.map((h, i) => (
+              <tr key={i}>
+                <td className="acct-hist-who" title={[h.task_id, h.tenant].filter(Boolean).join(' · ') || undefined}>
+                  <span className="acct-hist-whoin">
+                    {h.tenant !== undefined && <span className="mono">{h.tenant}</span>}
+                    {h.task_id ? <HolderAgent taskId={h.task_id} verified={h.verified} /> : <HoldWork h={h} />}
+                  </span>
+                </td>
+                <td className="is-num">{typeof h.attempt === 'number' ? h.attempt : '—'}</td>
+                <td>
+                  {h.since ? (
+                    `${clockOf(h.since)} (${heldFor(now - Date.parse(h.since))})`
+                  ) : (
+                    <span className="muted">not recorded</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {b.total === 0 && <p className="muted small">Nobody holds it.</p>}
+      {(b.by_tenant ?? []).length > 0 && (
+        <ul className="acct-holder-tenants">
           {(b.by_tenant ?? []).map((t) => (
             <li key={`t:${t.tenant}`}>
               {pluralise(t.n, 'agent')} · <span className="mono">{t.tenant}</span>
             </li>
           ))}
-          {b.others > 0 && b.by_tenant === undefined && (
-            <li className="muted">+{b.others} held by other tenants</li>
-          )}
         </ul>
       )}
+      {b.others > 0 && b.by_tenant === undefined && <p className="muted small">+{b.others} held by other tenants</p>}
     </div>
+  )
+}
+
+/**
+ * One holder's agent, by name (G5-16). The task read is the one the agent's
+ * own page makes; the link is the task id's, so a failed read still leaves a
+ * working link with the id as its text.
+ */
+function HolderAgent({ taskId, verified }: { taskId: string; verified?: boolean }) {
+  const [res] = useLoad(() => loadTask(taskId), taskId)
+  const name = res.status === 'ok' || res.status === 'stale' ? agentName(res.data) : taskId
+  return (
+    <>
+      <a className={`ctl-link${name === taskId ? ' mono' : ''}`} href={`#work/task/${encodeURIComponent(taskId)}`} title={taskId}>
+        {name}
+      </a>
+      {verified === false && <span className="ctl-mark is-partial">unverified</span>}
+    </>
   )
 }
 
