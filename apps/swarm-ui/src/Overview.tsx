@@ -1502,7 +1502,10 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   const page = dataOf(leases)
   if (page === null) return out
   for (const l of page.leases) {
-    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+    // `starting` is a worker that has not beaten yet inside its dispatch
+    // deadline (G5-01): booting, not silent, so it is not one of the item's.
+    const { kind } = leaseLiveliness(l, page.thresholds)
+    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
   }
   return out
 }
