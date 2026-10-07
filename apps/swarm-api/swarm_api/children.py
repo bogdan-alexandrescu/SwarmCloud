@@ -55,6 +55,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from . import gitidentity
 from .auth import bearer_tokens
 from .childkey import (
     CHILD_KEYS,
@@ -609,6 +610,12 @@ class ChildService:
             tenant=tenant,
             ctx=None,
             submitted_by=parent.submitted_by,
+            # The person the parent's commits name, so a child's commits do
+            # too (P37); its bare submitter, or the bot, when it records none.
+            git_identity=(
+                gitidentity.from_task(parent.metadata, parent.submitted_by)
+                or dict(gitidentity.BOT_IDENTITY)
+            ),
             now=self._now(),
             dispatch=resolve_dispatch_options(
                 strategy=create.strategy,
