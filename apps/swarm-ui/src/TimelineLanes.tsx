@@ -68,7 +68,7 @@ import {
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
-import { PageHead, timeAgo } from './Shell'
+import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
@@ -246,6 +246,16 @@ const isData = <T,>(r: Result<T>): r is Extract<Result<T>, { data: T }> => r.sta
 // The screen
 // ---------------------------------------------------------------------------
 
+/**
+ * How often both Timeline pages (Lanes and Outcomes) re-read while open:
+ * every 60 seconds (#117, owner ruling 2026-10-07). Slower than the capacity
+ * screens' 30 because a timeline is read for its shape over hours, and one
+ * minute is a sliver of the narrowest span it offers. It polls through
+ * `usePoll` (Shell.tsx): nothing while the tab is hidden, and nothing after
+ * `IDLE_STOP_MS` without input, behind the head's `Paused · resume`.
+ */
+export const TIMELINE_POLL_MS = 60_000
+
 export function TimelineLanesScreen({
   view: hashView = null,
   onView,
@@ -286,6 +296,13 @@ export function TimelineLanesScreen({
     setAnchor(Date.now())
     setNonce((n) => n + 1)
   }
+  // THE CADENCE (#117) and THE ONE AGE (#98): a re-read every
+  // `TIMELINE_POLL_MS` re-anchors the span at the read, as a refresh does,
+  // and the head's refresh control carries the age, so the frame's head
+  // prints none.
+  const { idle, resume } = useIdleStop(true)
+  usePoll(TIMELINE_POLL_MS, refresh, idle)
+  useClaimPageAge(true)
 
   // ---- the attempts ------------------------------------------------------
   const [att, setAtt] = useState<AttemptsRead>({ key: readKey, status: 'loading' })
@@ -568,14 +585,29 @@ export function TimelineLanesScreen({
 
   return (
     <div className="tl-page">
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
+          age and the cadence, is the head's one action; the span and the
+          lane count are the note over the first card. */}
       <PageHead title="Timeline">
-        {rangeWords(win.since, win.until)} · {shown === null ? 'reading…' : `${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'} read ${timeAgo(new Date(shown.fetchedAt).toISOString(), now)}`}{' '}
-        <button type="button" onClick={refresh} disabled={att.status === 'loading'}>
-          {att.status === 'loading' ? 'reading…' : 'refresh'}
-        </button>
+        <RefreshControl
+          readAt={shown === null ? null : shown.fetchedAt}
+          now={now}
+          cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
+          reading={att.status === 'loading'}
+          idle={idle}
+          onRefresh={refresh}
+          onResume={() => {
+            resume()
+            refresh()
+          }}
+        />
       </PageHead>
 
       <TimelinePages at="lanes" />
+
+      <CountNote>
+        {rangeWords(win.since, win.until)} · {shown === null ? 'reading…' : `${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'}`}
+      </CountNote>
 
       {madeOnOutcomes(query) && (
         <p className="tl-note">

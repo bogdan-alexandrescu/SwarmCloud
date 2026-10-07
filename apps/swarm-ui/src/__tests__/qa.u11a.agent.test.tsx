@@ -12,14 +12,17 @@
  *   +    the artifact viewer opened at y 763-971, under the log strip.
  *   N9   a row on the Recent tab opened `/agents/live/<id>` and lit `Live 0`.
  *   N10  the list head's `refresh` was clipped inside `.c-age`; the meta pill
- *        cut its words with no title.
+ *        cut its words with no title. Since #138 the refresh is one button
+ *        carrying its age (cut whole in its title) and the meta is the count
+ *        note, whole in its title.
  *   N12  `/agents/waiting` headed a step waiting on an earlier step `No room`.
  *
  * MUTATIONS: drop the span's title; draw the Checkpoints pane only on its
  * tab, or say `in bucket` again; drop the strip's sticky head or its hidden
  * breadcrumb; drop the phone `?` rule or the tabs' wrap; scroll the viewer
- * with `scrollIntoView` inside the pane; drop `openRow`'s report; put the
- * button back inside the ellipsis or drop the meta title; file a park under
+ * with `scrollIntoView` inside the pane; drop `openRow`'s report; split the
+ * refresh's age from its press, drop its title, let the title block shrink,
+ * or drop the count note's title; file a park under
  * `No room`. Each turns a case red.
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -293,7 +296,7 @@ describe('N9: a row opens under the tab it came from', () => {
 })
 
 describe('N10: the list head fits its control beside an open agent', () => {
-  it('keeps `refresh` out of the ellipsis and titles both the age and the meta pill', async () => {
+  it('keeps the press and its age one button, whole in its title, and titles the count note', async () => {
     const { container } = render(
       <div className="app has-inspector">
         <main className="work">
@@ -303,25 +306,32 @@ describe('N10: the list head fits its control beside an open agent', () => {
         </main>
       </div>,
     )
-    const age = await waitFor(() => {
-      const a = container.querySelector<HTMLElement>('.c-age')
-      expect(a?.querySelector('button')).toBeTruthy()
-      return a!
+    // #138: the head is title left, actions right; the refresh carries the
+    // screen's age, so cutting its words can never cut the press off its age.
+    const button = await waitFor(() => {
+      const b = container.querySelector<HTMLButtonElement>('.c-phead > .c-acts > button.c-refresh')
+      expect(b?.getAttribute('title')).toBeTruthy()
+      return b!
     })
-    const say = age.querySelector<HTMLElement>(':scope > .c-age-say')
-    expect(say, 'the provenance words are not their own span').not.toBeNull()
-    const button = age.querySelector('button')!
-    expect(say!.contains(button), 'refresh is inside the part that ellipses').toBe(false)
-    expect(say!.getAttribute('title')).toMatch(/^read /)
-    expect(painted(say!, 'text-overflow', WIDE)).toBe('ellipsis')
-    expect(painted(say!, 'min-width', WIDE)).toBe('0')
-    expect(painted(button, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
-    expect(painted(age, ['overflow-x', 'overflow'], WIDE) ?? 'visible', 'the age box clips its control').toBe('visible')
-    expect(painted(age, ['flex', 'flex-shrink'], WIDE)).toMatch(/^1 0\b/)
-    // The text a reader hears is unchanged.
-    expect(age.textContent).toMatch(/· refresh$/)
-    const meta = container.querySelector('.c-meta')!
-    expect(meta.getAttribute('title')).toBe('200 loaded · 0 live · eng')
+    const acts = button.parentElement!
+    expect(acts.querySelectorAll('.c-refresh').length, 'the age and the press are split again').toBe(1)
+    expect(container.querySelector('.c-age, .c-age-say, .c-meta'), 'the old age line or meta pill is back').toBeNull()
+    // Whole in its title and its accessible name, as the words the reader sees.
+    const said = button.getAttribute('title')!
+    expect(said).toMatch(/^\d+ s$/)
+    expect(button.textContent).toBe(`⟳ ${said}`)
+    expect(button.getAttribute('aria-label')).toBe(`Refresh · read ${said} ago`)
+    // It is what gives way, with an ellipsis; the title keeps its width.
+    expect(painted(button, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(painted(button, 'min-width', WIDE)).toBe('0')
+    expect(painted(acts, ['overflow-x', 'overflow'], WIDE)).toBe('hidden')
+    expect(painted(acts, 'min-width', WIDE)).toBe('0')
+    const head = container.querySelector('.c-phead > .head')!
+    expect(painted(head, ['flex', 'flex-shrink'], WIDE), 'the title shrinks for the actions').toMatch(/^(none|0)\b/)
+    // The count is a note over the first card, out of the head, whole in its title.
+    const note = container.querySelector('.c-count-note')!
+    expect(note.closest('.c-phead'), 'the count is back in the head').toBeNull()
+    expect(note.getAttribute('title')).toBe('200 loaded · 0 live · eng')
   })
 })
 

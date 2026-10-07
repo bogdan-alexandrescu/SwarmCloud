@@ -41,7 +41,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
+import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
@@ -1126,8 +1126,9 @@ export function App() {
             </div>
           }
         >
-          {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
-              inside it prints none of its own while its read is fresh. */}
+          {/* THE FRAME'S HEAD CAN TIME THE SCREEN'S READS (CH-2), for a page
+              head with no age of its own; a `Screen` carries its own on its
+              refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
           <HeadAgeProvider at={at}>
@@ -1147,9 +1148,9 @@ export function App() {
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
                 // agent is open beside it (`RoutedPage` in Shell.tsx). And so
                 // does its AGE (#98): with an agent open the head times the
-                // inspector (`shownBy` in fetch.ts), so the list under it
-                // keeps its own `read Ns ago` -- otherwise it would be shown
-                // nowhere but the dock's tab-wide age.
+                // inspector (`shownBy` in fetch.ts), so a page head under it
+                // does not take the frame's age; a `Screen` there carries its
+                // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
                   {at.missing ? <NotFound path={at.missing} go={go} /> : <SectionBody
@@ -1243,9 +1244,11 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
  *      admin only          every read it made met the admin gate
  *
  *    Help and API reads issue no reads of their own and say so. A screen
- *    that prints its own data's age claims it (`useClaimPageAge`, #98) and
- *    the head prints none; a `Screen` defers its fresh age to this one
- *    (`FrameAge` in Shell.tsx). One age per screen.
+ *    that prints its own age claims it (`useClaimPageAge`, #98) and the head
+ *    prints none: every `Screen`, Overview and the Timeline carry theirs on
+ *    their head's refresh control (#98, owner ruling 2026-10-07), and
+ *    Platform counts prints the count's. One age per screen; the dock keeps
+ *    the tab-wide one.
  *
  *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
  *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
@@ -1354,8 +1357,8 @@ function HeadAgeProvider({ at, children }: { at: Route; children: ReactNode }) {
   const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
   // The age is the point, so it moves on its own rather than only when a
   // fetch happens to land -- on the SHARED clock, the one every screen's
-  // sub-line and the dock read, so the head and the provenance line under a
-  // screen title can no longer disagree by up to a tick (CH-1).
+  // refresh control and the dock read, so the head and a screen's own age
+  // can no longer disagree by up to a tick (CH-1).
   const now = useNow(AGE_TICK_MS)
   // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
   // claimed it, and the head prints none: one age per screen.
@@ -1741,15 +1744,18 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
           belongs to the thing it qualifies -- the page's own title -- so it is
           a `.ctl-card-note` beside it, in the slot §8.4.2 reserves for exactly
           this, and the argument is one click away in `#help/api-reads`.
+          The head is title left, actions right (#138), so the caveat is the
+          note over the page's first card (`CountNote`).
 
           `ctl-link` (CH-5): this anchor carried no class, so it fell back to
           the browser's own blue -- visited purple once followed -- in a
           product whose links are ink plus an underline. */}
-      <PageHead title={REFERENCE_LABEL} meta="this tab only · not the API surface">
+      <PageHead title={REFERENCE_LABEL}>
         <a className="ctl-link" href={`#${HELP}/api-reads`}>
           What these mean &rarr;
         </a>
       </PageHead>
+      <CountNote>this tab only · not the API surface</CountNote>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by

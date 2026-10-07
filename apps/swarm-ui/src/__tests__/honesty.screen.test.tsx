@@ -72,10 +72,15 @@ describe('ok', () => {
   it('renders the rows and says when they were read', async () => {
     renderScreen({ status: 'ok', data: ROWS, fetchedAt: Date.now(), serverAt: new Date().toISOString() })
     expect(await screen.findByText('alpha')).toBeTruthy()
-    // The sub-line is assembled from several text nodes, so it is read off the
-    // element rather than matched as one string.
-    expect(document.querySelector('.sub')?.textContent).toContain('2 rows')
-    expect(screen.getByRole('button', { name: 'refresh' })).toBeTruthy()
+    // #138: the count is a note over the first card, not a line under the
+    // title, and WHEN it was read is on the head's refresh control, which is
+    // also the way to read again. Both are assembled from several text nodes,
+    // so they are read off the element rather than matched as one string.
+    expect(document.querySelector('.c-count-note')?.textContent).toBe('2 rows')
+    expect(document.querySelector('.c-phead .c-acts .c-refresh')?.textContent).toBe('⟳ 0 s')
+    expect(screen.getByRole('button', { name: 'Refresh · read 0 s ago' })).toBeTruthy()
+    // One shape (§6.12): title left, actions right, no line under the title.
+    expect(document.querySelector('.sub'), 'the sub-line under the title is back').toBeNull()
   })
 
   it('renders a MEASURED zero as 0, never as an em dash', async () => {
@@ -98,10 +103,12 @@ describe('empty', () => {
     renderScreen({ status: 'empty', fetchedAt: Date.now() })
     expect(await screen.findByText('No agents are running')).toBeTruthy()
     expect(screen.queryByText('alpha')).toBeNull()
-    expect(body().textContent).toContain('Nothing to show')
-    // WHEN IT WAS CHECKED is still on screen -- in the sub-line, which is where
-    // every other state of this component puts its age.
-    expect(document.querySelector('.sub')?.textContent).toContain('read just now')
+    // An empty read draws no count note: there is no card for it to sit on,
+    // and the panel already says what was found.
+    expect(document.querySelector('.c-count-note')).toBeNull()
+    // WHEN IT WAS CHECKED is still on screen -- on the head's refresh control,
+    // which is where every other state of this component puts its age (#98).
+    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ 0 s')
   })
 
   /**
@@ -110,17 +117,17 @@ describe('empty', () => {
    * It was a `.state` div with an h3, a paragraph and a `Checked just now.` --
    * no mark, so a real zero and a failed read differed by colour alone.
    *
-   * RE-POINTED (CH-1/CH-10 settlement on #87, 2026-09-25). This asserted the
-   * age appeared ONCE, because #145 deleted the panel's `Checked …` line. The
-   * box asked for that line to TICK, not to go: the owner's settlement brings
-   * it back on the shared clock. So the panel carries it again -- as the
-   * primitive's foot, at the micro step, not as a `.state p` -- and it says
-   * exactly what the sub-line says, because both read one instant.
+   * RE-POINTED AGAIN (#98, owner ruling 2026-10-07). The CH-1/CH-10
+   * settlement on #87 brought the panel's `Checked …` foot back, ticking. The
+   * ruling makes a panel state freshness ONLY WHEN IT IS STALE: the head's
+   * refresh control carries the age of a fresh read, so the foot is silent
+   * while fresh and says `from 6 min ago` once stale (the next describe).
    *
    * MUTATION: put the `.state` box back. The panel is not `.ctl-empty` and
-   * carries no `real zero` mark. MUTATION: delete the foot. No `Checked` line.
+   * carries no `real zero` mark. MUTATION: draw the foot while fresh (the old
+   * `Checked just now.`, or any age). The panel has a `.ctl-empty-foot`.
    */
-  it('draws through the shared empty state: a mark, the heading, and a Checked line', async () => {
+  it('draws through the shared empty state: a mark and the heading, and no foot while fresh', async () => {
     renderScreen({ status: 'empty', fetchedAt: Date.now() })
     const heading = await screen.findByText('No agents are running')
     const panel = heading.closest('.ctl-empty')
@@ -128,9 +135,11 @@ describe('empty', () => {
     expect(panel!.className, 'a real zero drew a failure or partial variant').toBe('ctl-empty')
     expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('real zero')
     expect(document.querySelector('.state'), 'the hand-built .state box is back').toBeNull()
-    expect(panel!.querySelector('.ctl-empty-foot')?.textContent, 'the empty state says nothing about when it was checked').toBe(
-      'Checked just now.',
-    )
+    expect(
+      panel!.querySelector('.ctl-empty-foot'),
+      'a fresh empty state repeats the age the refresh control already carries',
+    ).toBeNull()
+    expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ 0 s')
   })
 
   /**
@@ -171,7 +180,10 @@ describe('empty', () => {
         {children}
       </Screen>,
     )
-    await waitFor(() => expect(body().textContent).toContain('Nothing to show'))
+    // The read has settled when the control carries an age; until then it
+    // says `reading…`. No `empty` prop, so nothing else is drawn for it.
+    await waitFor(() => expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ 0 s'))
+    expect(body().textContent).not.toContain('rows')
     expect(children).not.toHaveBeenCalled()
   })
 })
@@ -211,10 +223,14 @@ describe('a failed read', () => {
     expect(body().textContent).toMatch(/says nothing about what is running|belongs to another tenant/)
   })
 
-  it('offers a retry, and the sub-line does not pretend a number is available', async () => {
+  it('offers a retry, and the head does not pretend a read or a number is available', async () => {
     renderScreen({ status: 'error', error: err('server_error') })
     expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy()
-    expect(body().textContent).toContain('Could not read.')
+    // Nothing was read, so the head's control carries no age and no count:
+    // `⟳ refresh`, named as not read.
+    const ctl = screen.getByRole('button', { name: 'Refresh · not read' })
+    expect(ctl.textContent).toBe('⟳ refresh')
+    expect(document.querySelector('.c-count-note')).toBeNull()
   })
 
   it('a rate limit gets a countdown and NO retry button', async () => {
@@ -256,7 +272,9 @@ describe('admin_required', () => {
     // The reassurance for a real failure would be a lie here.
     expect(body().textContent).not.toContain('This is a failure to read the platform')
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
-    expect(body().textContent).toContain('Admin only.')
+    // An admin gate is not a read to renew: the head carries no refresh
+    // control at all, and the panel says `admin only` (#138).
+    expect(document.querySelector('.c-refresh'), 'a refresh was offered on an admin gate').toBeNull()
   })
 })
 
@@ -285,8 +303,11 @@ describe('stale', () => {
   it('never renders a stale payload as though it had just been read', async () => {
     renderScreen({ status: 'stale', data: ROWS, fetchedAt: Date.now() - 60_000, error: err('unreachable', { httpStatus: null }) })
     await screen.findByText('alpha')
-    // "read <age>" is the ok/empty wording. A stale screen must not use it.
-    expect(body().textContent).not.toMatch(/\brows · read\b/)
+    // A bare age is the ok/empty wording. A stale screen must say `not
+    // refreshed` before its age, and carry the stale class.
+    const ctl = document.querySelector('.c-refresh')
+    expect(ctl?.textContent).toBe('⟳ not refreshed · read 1 min ago')
+    expect(ctl?.className).toBe('c-refresh is-stale')
   })
 
   it('a failed refresh after a good read becomes stale, not a blank screen', async () => {
@@ -307,7 +328,7 @@ describe('stale', () => {
       </Screen>,
     )
 
-    const refresh = await screen.findByRole('button', { name: 'refresh' })
+    const refresh = await screen.findByRole('button', { name: /^Refresh · read / })
     refresh.click()
 
     await waitFor(() => expect(body().textContent).toContain('The second read failed.'))
@@ -339,7 +360,7 @@ describe('stale', () => {
       </Screen>,
     )
 
-    const refresh = await screen.findByRole('button', { name: 'refresh' })
+    const refresh = await screen.findByRole('button', { name: /^Refresh · read / })
     refresh.click()
     await waitFor(() => expect(screen.queryByText('alpha')).toBeNull())
     expect(screen.getByText('No agents are running')).toBeTruthy()
@@ -359,7 +380,8 @@ describe('loading', () => {
         {(d) => <span>{d.rows.length}</span>}
       </Screen>,
     )
-    await waitFor(() => expect(body().textContent).toContain('Reading…'))
+    await waitFor(() => expect(document.querySelector('.c-refresh')?.textContent).toBe('⟳ reading…'))
+    expect(screen.getByRole('button', { name: 'Reading' }).hasAttribute('disabled')).toBe(true)
     expectNoFigures(body())
     expect(document.querySelectorAll('.skeleton').length).toBeGreaterThan(0)
   })
@@ -384,7 +406,8 @@ async function advance(ms: number): Promise<void> {
   })
 }
 
-const sub = (): string => document.querySelector('.sub')?.textContent ?? ''
+/** The head's refresh control, which carries the screen's one ticking age (#138, #98). */
+const sub = (): string => document.querySelector('.c-refresh')?.textContent ?? ''
 
 function rowsOf(d: Rows) {
   return (
@@ -402,26 +425,27 @@ const okNow = (): Result<Rows> => ({ status: 'ok', data: ROWS, fetchedAt: Date.n
 // CH-1 -- the age moves on its own
 // ---------------------------------------------------------------------------
 
-describe('the age under the title moves on its own (CH-1)', () => {
+describe('the age on the head’s refresh control moves on its own (CH-1, #98)', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
 
   /**
    * It was computed once, at render, and nothing re-rendered it: a screen left
-   * open overnight still said `read just now` beside a head that said 9h.
+   * open overnight still said `read just now` beside a head that said 9h. The
+   * age lives on the refresh control now (#138), and the rule is the same.
    *
-   * MUTATION: compute the sub-line's age from `Date.now()` at render with no
-   * clock driving a re-render. A minute later it still says `just now`.
+   * MUTATION: compute the control's age from `Date.now()` at render with no
+   * clock driving a re-render. A minute later it still says `0 s`.
    */
-  it('ticks the sub-line age without a new read', async () => {
+  it('ticks the refresh control’s age without a new read', async () => {
     fakeClock()
     renderScreen(okNow())
     await advance(0)
-    expect(sub()).toContain('read just now')
+    expect(sub()).toBe('⟳ 0 s')
     await advance(60_000)
-    expect(sub()).toContain('read 1m ago')
-    expect(sub()).not.toContain('just now')
+    expect(sub()).toBe('⟳ 1 min')
+    expect(screen.getByRole('button', { name: 'Refresh · read 1 min ago' })).toBeTruthy()
   })
 
   /**
@@ -430,7 +454,7 @@ describe('the age under the title moves on its own (CH-1)', () => {
    * `not refreshed` -- which is what a reader notices without doing arithmetic.
    *
    * MUTATION: tick the age but never switch treatment. `.stale-body` never
-   * appears and the sub-line never says `not refreshed`.
+   * appears and the refresh control never says `not refreshed`.
    */
   it('switches to the stale treatment once the read is older than the screen trusts', async () => {
     fakeClock()
@@ -440,13 +464,14 @@ describe('the age under the title moves on its own (CH-1)', () => {
     expect(sub()).not.toContain('not refreshed')
     // Past the five minutes a read is trusted for (Shell.tsx), by one tick.
     await advance(AGED_AFTER_MS + 5_000)
-    expect(sub()).toContain('not refreshed')
+    expect(sub()).toBe('⟳ not refreshed · read 5 min ago')
+    expect(document.querySelector('.c-refresh')?.className).toBe('c-refresh is-stale')
     expect(document.querySelector('.stale-body')?.textContent).toContain('alpha')
   })
 
   /**
-   * ONE CLOCK, NOT ONE PER COMPONENT. The head, the dock and every sub-line
-   * read `useNow(5000)`, and two readers of one cadence get one instant --
+   * ONE CLOCK, NOT ONE PER COMPONENT. The head, the dock and every refresh
+   * control read `useNow(5000)`, and two readers of one cadence get one instant --
    * which is what stops "22s" beside "just now" (CH-1). AG-2's inspector reads
    * the same hook.
    *
@@ -473,29 +498,36 @@ describe('the age under the title moves on its own (CH-1)', () => {
   })
 
   /**
-   * CH-1 AND CH-10, THE EMPTY STATE'S LINE (settled on #87, 2026-09-25). The
-   * box named two ages that never ticked: the sub-line's and the empty
-   * state's `Checked …`. #145 made the first tick and deleted the second;
-   * the settlement brings the second back, ticking on the same shared clock
-   * (`useNow`, `AGE_TICK_MS`), so the two can never disagree.
+   * CH-1 AND CH-10, THE EMPTY STATE'S FOOT, RE-POINTED (#98, owner ruling
+   * 2026-10-07). The settlement on #87 had the foot tick `Checked …` on the
+   * shared clock. The ruling makes a panel's foot state freshness ONLY WHEN
+   * STALE: silent while fresh (the head's control carries that age), and
+   * `from 6 min ago` once the read is older than `AGED_AFTER_MS`. It still
+   * ticks on the same shared clock (`useNow`, `AGE_TICK_MS`) as the control,
+   * so the two can never disagree.
    *
-   * MUTATION: compute the line from `Date.now()` at render, or from a clock of
-   * its own. A minute later it still says `just now`, or says a different age
-   * from the sub-line above it.
+   * MUTATION: draw the foot at any age (it is there while fresh). MUTATION:
+   * never draw it (an hour-old empty read is silent). MUTATION: compute it from
+   * `Date.now()` at render, or from a clock of its own (it never appears, or
+   * says a different age from the control above it).
    */
-  it('ticks the empty state’s Checked line on the shared clock', async () => {
+  it('keeps the empty state’s foot silent while fresh and ticks it once stale', async () => {
     fakeClock()
     renderScreen({ status: 'empty', fetchedAt: Date.now() })
     await advance(0)
-    const checked = (): string | null => document.querySelector('.ctl-empty .ctl-empty-foot')?.textContent ?? null
-    expect(checked(), 'the empty state has no Checked line').toBe('Checked just now.')
+    const foot = (): string | null => document.querySelector('.ctl-empty .ctl-empty-foot')?.textContent ?? null
+    expect(foot(), 'a fresh empty state repeats the control’s age').toBeNull()
     await advance(60_000)
-    expect(checked()).toBe('Checked 1m ago.')
-    expect(sub()).toContain('read 1m ago')
-    // An hour on, still the same instant as the sub-line's.
+    expect(foot(), 'a one-minute-old empty read is not stale').toBeNull()
+    expect(sub()).toBe('⟳ 1 min')
+    // Past the five minutes a read is trusted for: the foot speaks.
+    await advance(AGED_AFTER_MS)
+    expect(foot()).toBe('from 6 min ago')
+    expect(sub()).toBe('⟳ not refreshed · read 6 min ago')
+    // An hour on, still the same instant as the control's.
     await advance(60 * 60_000)
-    expect(checked()).toBe('Checked 1h ago.')
-    expect(sub()).toContain('read 1h ago')
+    expect(foot()).toBe('from 1 h ago')
+    expect(sub()).toBe('⟳ not refreshed · read 1 h ago')
   })
 
   /** MUTATION: leave StaleBanner reading its age once. It stays at `4m ago`. */
@@ -749,7 +781,8 @@ describe('a screen that polls (AG-1)', () => {
       </Screen>,
     )
     await advance(0)
-    expect(sub()).toContain('every 5s')
+    expect(sub()).toBe('⟳ every 5 s · read 0 s ago')
+    expect(screen.getByRole('button', { name: 'Refresh · read 0 s ago · re-reads every 5 s' })).toBeTruthy()
   })
 
   /**
@@ -798,6 +831,8 @@ describe('a screen that polls (AG-1)', () => {
     await advance(0)
     await advance(10 * 60_000)
     expect(load).toHaveBeenCalledTimes(1)
+    // Read once and never again: the control says its age and no cadence.
+    expect(sub()).toMatch(/^⟳ (not refreshed · read )?\d+ (s|min)( ago)?$/)
     expect(sub()).not.toContain('every')
   })
 })

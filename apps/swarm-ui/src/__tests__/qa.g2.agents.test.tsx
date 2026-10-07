@@ -198,7 +198,7 @@ describe('G2-05: a count over a capped page says it is a lower bound', () => {
 })
 
 describe('G2-21: beside an open agent the read status keeps its row', () => {
-  it('drops the meta chip to its own line and gives the age the head row', async () => {
+  it('has no sub-line to cut: the age is the refresh control, the count a card note', async () => {
     const { container } = render(
       <div className="app has-inspector">
         <main className="work">
@@ -208,25 +208,14 @@ describe('G2-21: beside an open agent the read status keeps its row', () => {
         </main>
       </div>,
     )
-    const age = await waitFor(() => {
-      const a = container.querySelector<HTMLElement>('.c-age')
-      expect(a?.querySelector('button')).toBeTruthy()
-      return a!
+    const refresh = await waitFor(() => {
+      const b = container.querySelector<HTMLElement>('.c-phead > .c-acts > .c-refresh')
+      expect(b).toBeTruthy()
+      return b!
     })
-    const sub = container.querySelector('.c-phead > .sub')!
-    const meta = container.querySelector('.c-meta')!
-    expect(painted(sub, 'flex-wrap', WIDE), 'the chip and the age still share one line').toBe('wrap')
-    expect(painted(age, ['flex', 'flex-basis'], WIDE)).toMatch(/\b100%$/)
-    expect(Number(painted(meta, 'order', WIDE) ?? '0')).toBeGreaterThan(Number(painted(age, 'order', WIDE) ?? '0'))
-    // Outside the split the head is one row as before.
-    const plain = document.createElement('div')
-    plain.innerHTML = '<div class="c-phead"><div class="head"><h1>Agents</h1></div><p class="sub"><span class="c-meta">x</span><span class="c-age">y</span></p></div>'
-    document.body.appendChild(plain)
-    try {
-      expect(painted(plain.querySelector('.sub')!, 'flex-wrap', WIDE)).toBe('nowrap')
-    } finally {
-      plain.remove()
-    }
+    expect(container.querySelector('.c-phead > .sub, .c-age, .c-meta'), 'a second line or chip in the head').toBeNull()
+    expect(container.querySelector('.c-count-note')?.textContent).toMatch(/200 loaded/)
+    expect(refresh.closest('.c-acts'), 'the age is in the refresh control, in the actions').toBeTruthy()
   })
 })
 

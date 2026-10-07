@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type Ref } from 'react'
 import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type HelpGroupId, type TopicId } from './help'
 import { addressToPath } from './paths'
 import { Absent } from './primitives'
-import { PageHead } from './Shell'
+import { CountNote, PageHead } from './Shell'
 
 /**
  * THE HELP SECTION (docs/web-ui/ui-audit-and-build-prompt.md §B7.3).
@@ -84,8 +84,10 @@ export function HelpScreen({ topic }: { topic: string }) {
   return (
     <>
       {/* THE ONE PAGE HEAD (AH-25), `PageHead`, titled with the group the page
-          is (H1) -- or Help while a search spans every group. */}
-      <PageHead title={q === '' ? group.title : 'Help'}>{line}</PageHead>
+          is (H1) -- or Help while a search spans every group. Its line is
+          the note over the topics, not a line under the title (#138). */}
+      <PageHead title={q === '' ? group.title : 'Help'} />
+      <CountNote>{line}</CountNote>
 
       {/* THE WHOLE COLUMN'S WIDTH (H1), because it searches every group. */}
       <label className="help-search">

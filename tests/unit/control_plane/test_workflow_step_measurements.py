@@ -625,7 +625,9 @@ def test_widening_the_page_did_not_widen_the_prose():
     assert "--measure:" in css, "there is no measure token"
     measure_rule = re.search(r"((?:^\.[\w.\- >,\n]+)\{ max-width: var\(--measure\); \})", css, re.M)
     assert measure_rule is not None, "nothing is constrained to the measure"
-    for selector in (".sub", ".state p"):
+    # `.sub`, the 16px summary line under every screen title, is gone (#138,
+    # owner ruling 2026-10-07): the paragraphs left to protect are the panels'.
+    for selector in (".state p", ".ctl-empty > p"):
         assert selector in measure_rule.group(0), f"{selector} has no measure"
 
 
