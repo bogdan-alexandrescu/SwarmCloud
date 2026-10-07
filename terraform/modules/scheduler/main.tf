@@ -97,6 +97,56 @@ resource "google_pubsub_subscription" "wake" {
   }
 }
 
+# The same `task_finished` wakes, to swarm-api (#748). For a finished task's
+# gated integrator whose review said MERGE, swarm-api opens the pull request
+# itself and ends the step without a worker (apps/swarm-api/swarm_api/
+# verdictpublish.py); the scheduler, receiving the same message on the
+# subscription above, holds that step PARKED meanwhile
+# (CONTROL_PUBLISH_HOLD_SECONDS). Only `task_finished`: every other wake is
+# the scheduler's alone.
+#
+# The rollup sweeper's identity, which swarm-api admits to this one push route
+# beside its four ticks (auth.ROLLUP_SWEEPER_ROUTES) and which already holds
+# run.invoker on swarm-api (infra main.tf, rollup_sweeper_invokes_api).
+#
+# No dead-letter topic and a short retry: a lost push costs only the hold, at
+# the end of which the scheduler promotes the step to its worker as before.
+resource "google_pubsub_subscription" "api_task_finished" {
+  count = var.api_endpoint == "" ? 0 : 1
+
+  project = var.project_id
+  name    = "${local.wake_topic_name}-api-task-finished"
+  topic   = google_pubsub_topic.wake.id
+
+  filter = "attributes.reason = \"task_finished\""
+
+  ack_deadline_seconds = var.ack_deadline_seconds
+
+  expiration_policy {
+    ttl = ""
+  }
+
+  message_retention_duration = "600s"
+  retain_acked_messages      = false
+  enable_message_ordering    = false
+
+  push_config {
+    push_endpoint = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/tasks/finished"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "60s"
+  }
+
+  labels = var.labels
+}
+
 # A dead letter nobody can read is just a deletion with extra steps.
 resource "google_pubsub_subscription" "dead_letter" {
   project = var.project_id

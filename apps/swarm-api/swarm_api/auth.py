@@ -801,6 +801,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # §1, lane MS2): reads the named tenant's CI_PENDING parks with that
         # tenant's token and writes only the wake marker on them.
         ("POST", "/v1/admin/merges/wake"),
+        # The `task_finished` push (#748): the scheduler's wake topic's second
+        # subscription. It opens a MERGE verdict's pull request with the
+        # finished task's own tenant's token, for that tenant's gated
+        # integrator, and moves only a step it claimed (`verdictpublish`).
+        ("POST", "/v1/admin/tasks/finished"),
     }
 )
 

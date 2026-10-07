@@ -59,6 +59,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
+| 51 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | open |
 
 ---
 
@@ -8882,3 +8883,84 @@ rows for values nothing writes.
 - **Invariant 9.** The per-tenant review, post-verdict and merge service
   accounts are the Terraform half of the same cleanup (decision 4), decided
   at dev-iam, not here.
+
+---
+
+## 51. `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED
+
+**Status:** open. Filed 2026-10-07 with #748 (a MERGE verdict starts a
+container only to open the pull request). The code that needs it ships
+switched off by this request: `swarm_api.verdictpublish.contract_allows` and
+the scheduler's hold (`scheduler.loop.Scheduler._held_for_control_publish`)
+both read `swarm_common.states.can_transition(PARKED, SUCCEEDED)`, so until
+this line is applied neither does anything and every MERGE workflow publishes
+through a worker exactly as before.
+
+### What is true today
+
+`_ALLOWED` lets a task reach SUCCEEDED only from RUNNING. Every success
+therefore passes through a lease, a dispatch and a worker, including the one
+success that needs none of them: the gated integrator of an implement ->
+review -> fix workflow whose review said MERGE. That step runs no agent
+(docs/workflows.md, "What a MERGE verdict publishes"), yet it holds a lease,
+starts a Cloud Run execution and clones the repository only to create a
+branch and open a pull request. Measured on 2026-10-06 (#748, three MERGE
+workflows): 116 s from the review's end to the pull request, about 57 s of it
+container start and 35 s egress wait and clone.
+
+swarm-api can open that pull request itself in a few seconds: the
+implementer's branch is already pushed and was already scanned by the
+implementer's worker before its push, and the integrator, cloned from it with
+`builds_on`, would push exactly its tip. What it cannot do is record the step
+as ended: the step is PARKED on `DEPENDENCY_INCOMPLETE` and was never leased,
+and PARKED -> SUCCEEDED is not a transition.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, the PARKED row of `_ALLOWED`:
+
+```python
+    # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
+    # (#748, contract request 51). It held no lease, so there is nothing to
+    # release; only swarm-api writes it, guarded on its own claim.
+    TaskState.PARKED: frozenset(
+        {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+    ),
+```
+
+### What it would break if accepted
+
+Nothing that exists writes the transition until this is applied. Once it is:
+
+* a SUCCEEDED task with no attempt and no lease exists. The readers that
+  count attempts (the UI's attempt list, the outcome ledger, the MCP
+  observer) show none, which is true; `result_summary.published_by:
+  "control_plane"` says why;
+* `scripts/lib/check-contract-parity.sh` has no restatement of `_ALLOWED`
+  to update (it holds the state names, not the edges);
+* the reconciler repairs leases and live states; a terminal task with no
+  lease is outside every repair it makes.
+
+### If it is declined
+
+The swarm-api half and the scheduler hold stay switched off by the check
+above and cost nothing, and a MERGE workflow keeps starting a worker to open
+its pull request. The other way to reach SUCCEEDED, a lease taken by swarm-api
+so that the step passes through LEASED/DISPATCHED/STARTING/RUNNING, would
+book capacity for work that needs none and would put a second admission
+writer beside the scheduler, which invariant 2 exists to prevent.
+
+### Invariants
+
+- **Invariant 1.** The step goes from PARKED to SUCCEEDED and is never
+  LEASED, DISPATCHED, STARTING or RUNNING, so it never creates demand. That
+  is the point of the request.
+- **Invariants 2 and 3.** No pool is reserved or released: nothing was
+  reserved.
+- **Invariant 5.** No attempt exists, so there is no generation to fence.
+  swarm-api's write is guarded on its own claim on the task, taken in a
+  transaction on the same PARKED state, and the scheduler does not promote a
+  claimed step until the claim is older than its timeout.
+- **Invariant 9.** The pull request is opened with the step's own tenant's
+  `-git` token, on the step's own repository, from the branch of the
+  step's own upstream task in the same tenant and workflow.

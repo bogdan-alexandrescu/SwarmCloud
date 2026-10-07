@@ -109,7 +109,7 @@ variable "quota_broker_path" {
 }
 
 variable "api_endpoint" {
-  description = "HTTPS base URL of the swarm-api service, which the workflow-rollup jobs call. Unused when rollup_tenant_ids is empty."
+  description = "HTTPS base URL of the swarm-api service, which the workflow-rollup jobs call and the task_finished push subscription (#748) pushes to. Empty creates no push subscription; the rollup jobs are made per rollup_tenant_ids."
   type        = string
   default     = ""
 

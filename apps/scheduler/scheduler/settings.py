@@ -228,6 +228,15 @@ class SchedulerSettings:
     #: per run. Bounded for the same reason as the candidate batch.
     dependency_sweep_size: int = 200
 
+    #: How long a MERGE verdict's integrator waits PARKED after its last parent
+    #: ended, for swarm-api to open its pull request without a worker (#748,
+    #: `swarm_api.verdictpublish`). 0, the default, holds nothing: the hold
+    #: only pays when swarm-api's `task_finished` push subscription exists,
+    #: and terraform sets this in the same apply that creates it. A held step
+    #: holds no capacity (invariant 1); if swarm-api never decides, it is
+    #: promoted when the hold ends, as it was before.
+    control_publish_hold_seconds: float = 0.0
+
     #: Prewarm: PARKED tasks whose cooldown expires within the lead window are
     #: promoted to READY early, so they are queued the instant capacity appears.
     #: READY costs nothing (invariant 1), so this is a latency win with no spend.
@@ -381,6 +390,7 @@ class SchedulerSettings:
             aging_step=_int("AGING_STEP", 1),
             aging_max_bonus=_int("AGING_MAX_BONUS", 50),
             dependency_sweep_size=_int("DEPENDENCY_SWEEP_SIZE", 200),
+            control_publish_hold_seconds=_float("CONTROL_PUBLISH_HOLD_SECONDS", 0.0),
             enable_prewarm=_bool("ENABLE_QUOTA_PREWARM", core.enable_quota_prewarm),
             on_step_failure_enforced_since=parse_enforced_since(
                 os.environ.get("ON_STEP_FAILURE_ENFORCED_SINCE")

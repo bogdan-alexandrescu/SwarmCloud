@@ -43,9 +43,11 @@ from swarm_common.states import (
     EventType,
     ParkReason,
     TaskState,
+    can_transition,
 )
 
 from . import children as children_mod
+from .codec import as_datetime
 from .credentials import AccountPool, CredentialSource, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -63,6 +65,26 @@ log = logging.getLogger(__name__)
 #: tests/unit/worker/test_merge_action.py.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 MERGE_WAKE_MARKER = "wake_requested_at"
+
+#: A MERGE verdict's integrator, published by swarm-api without a worker
+#: (#748, `swarm_api.verdictpublish`): the marker it writes on the step, its
+#: `claimed` state, and how long a claim is honoured. Restated because the
+#: scheduler image does not carry swarm-api; held equal by
+#: tests/unit/control_plane/test_verdict_publish.py.
+CONTROL_PUBLISH_METADATA_KEY = "control_publish"
+CONTROL_PUBLISH_CLAIMED = "claimed"
+CONTROL_PUBLISH_CLAIM_SECONDS = 300
+
+
+def held_for_control_publish(metadata: Any) -> bool:
+    """`swarm_api.verdictpublish.held_by_scheduler`, restated: `integrate`'s gated integrator."""
+    block = (metadata or {}).get("dispatch") if isinstance(metadata, dict) else None
+    return (
+        isinstance(block, dict)
+        and block.get("strategy") == "integrate"
+        and block.get("role") == "integrator"
+        and isinstance(block.get("verdict_gate"), dict)
+    )
 
 #: Park reasons that a provider pool's `quota_derived_limit` already guards, so
 #: promoting them early is safe: admission still refuses until quota returns.
@@ -224,6 +246,8 @@ class DrainReport:
     skipped: int = 0
     dispatch_failures: int = 0
     promoted_dependencies: int = 0
+    #: Dependants left PARKED for swarm-api's publish of a MERGE verdict (#748).
+    held_dependencies: int = 0
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
@@ -1219,6 +1243,9 @@ class Scheduler:
             )
             return False
         if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
+            if self._held_for_control_publish(task, parents):
+                report.held_dependencies += 1
+                return False
             return self._promote(
                 task,
                 kind="dependency",
@@ -1226,6 +1253,53 @@ class Scheduler:
                 report=report,
             )
         return False
+
+    def _held_for_control_publish(self, task: Task, parents: dict[str, ParentEnd]) -> bool:
+        """Leave a MERGE verdict's integrator PARKED while swarm-api may publish it (#748).
+
+        swarm-api receives the same `task_finished` wake and, for `integrate`'s
+        gated integrator whose review said MERGE, opens the pull request itself
+        and ends the step without a worker (`swarm_api.verdictpublish`).
+        Promoting it here first would start the container that path saves.
+        So the step stays PARKED -- no lease, no pool count, no execution
+        (invariant 1) -- until one of:
+
+          * swarm-api DECLINES it (`metadata.control_publish.state` is
+            anything but `claimed`) and rings this parent's wake again: it is
+            promoted on that wake, as before;
+          * swarm-api's CLAIM is older than `CONTROL_PUBLISH_CLAIM_SECONDS`
+            (its holder died mid-publish), or is dated in the future (the
+            document is tenant-writable): promoted;
+          * there is NO marker and `control_publish_hold_seconds` have passed
+            since the last parent ended: swarm-api never got the wake, so the
+            next drain promotes it as before.
+
+        Nothing is held while the hold is 0 (the default) or while the frozen
+        contract does not let a step end SUCCEEDED from PARKED (contract
+        request 51): then swarm-api publishes nothing, and holding would only
+        delay the worker. A SUCCEEDED step is not PARKED and never reaches
+        this.
+        """
+        hold = self._settings.control_publish_hold_seconds
+        if hold <= 0 or not held_for_control_publish(task.metadata):
+            return False
+        if not can_transition(TaskState.PARKED, TaskState.SUCCEEDED):
+            return False
+        now = self._now()
+        marker = (task.metadata or {}).get(CONTROL_PUBLISH_METADATA_KEY)
+        if marker is not None:
+            if not isinstance(marker, dict) or marker.get("state") != CONTROL_PUBLISH_CLAIMED:
+                return False
+            claimed_at = as_datetime(marker.get("claimed_at"))
+            return (
+                claimed_at is not None
+                and claimed_at <= now
+                and now - claimed_at < timedelta(seconds=CONTROL_PUBLISH_CLAIM_SECONDS)
+            )
+        ended = [end.completed_at for end in parents.values() if end.completed_at is not None]
+        if not ended:
+            return False
+        return now - max(ended) < timedelta(seconds=hold)
 
     def _promote_credentials(self, report: DrainReport) -> int:
         """Re-ready tasks that admission would now let run.

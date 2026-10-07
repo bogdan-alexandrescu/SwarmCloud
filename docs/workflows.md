@@ -764,6 +764,58 @@ refused on attribution or a task id, every mention neutralised.
 label -- nothing is generated, and the missing title fails the attempt as it
 always has; a step given an `issue` input is titled from the issue instead.
 
+#### When swarm-api opens it without a worker (#748, behind contract request 51)
+
+Starting a worker only to open that pull request cost 116 s from the review's
+end, and one execution and one lease, on the three MERGE workflows measured on
+2026-10-06 (57 s of it container start, 35 s egress wait and clone). With one
+contributor, the integrator is cloned from the implementer's pushed branch,
+merges that same branch (nothing to merge) and pushes it unchanged. The
+implementer's own worker already scanned every byte of it before its push.
+So swarm-api can open the pull request itself
+(`apps/swarm-api/swarm_api/verdictpublish.py::on_task_finished`):
+
+1. The scheduler's wake topic has a second push subscription,
+   `api_task_finished`, which carries only `task_finished` to
+   `POST /v1/admin/tasks/finished` as the rollup sweeper. Meanwhile the
+   scheduler leaves `integrate`'s gated integrator PARKED, holding nothing,
+   for up to `CONTROL_PUBLISH_HOLD_SECONDS` (60 s in the root) after its last
+   parent ended (`apps/scheduler/scheduler/loop.py::Scheduler._held_for_control_publish`).
+2. swarm-api claims the step in `metadata.control_publish`, in a transaction
+   on its PARKED state, and checks every condition below. If they all hold, it
+   creates `swarm/<fix task>` at the commit the implementer recorded it pushed
+   (refused if the remote branch has moved since). It then opens the pull
+   request, with the implementer's `pr-title.txt` and `pr-body.md` and the
+   tenant's `-git` token read at that moment. Finally it ends the step
+   SUCCEEDED, in the same `result_summary.git` shape a worker writes, plus
+   `published_by: "control_plane"` and `verdict_gate.agent_ran: false`. The
+   step's `task_finished` wake then releases its own dependants (the merge
+   step).
+3. In every other case it **declines**. It records why in
+   `metadata.control_publish.code` and rings the parent's wake, and the
+   scheduler promotes the step to its worker at once, exactly as before.
+
+Declined, and so the worker's: several contributors, `continues`, an `issue`
+input, a verdict that runs the agent (NOT_YET), a verdict file that does not
+read as a verdict (the worker then refuses it by name), a finding marked minor
+(the worker files those on the wave epic), an implementer that changed nothing
+or pushed nothing, a missing title, or one the worker would refuse (two lines,
+a control character, attribution, a task id). Also declined: anything in the
+title or body that swarm-api's redaction masks or that holds the token, an
+unreadable token, and any refusal from GitHub. The body keeps the worker's
+rules: attribution lines removed (#735), mentions neutralised, 60 KiB at most.
+
+If swarm-api never decides (a lost push, or swarm-api down), the hold ends and
+the step goes to its worker. A claim older than 300 s is ignored too. A worker
+that then finds the pull request already open adopts it.
+
+**Off until contract request 51 is applied.** The frozen state machine has no
+PARKED -> SUCCEEDED edge (`swarm_common.states._ALLOWED`), and a step that
+never had a lease cannot honestly pass through RUNNING. Until the owner
+accepts the request, both swarm-api and the scheduler's hold read
+`can_transition(PARKED, SUCCEEDED)` as false and do nothing, and every MERGE
+workflow publishes through its worker.
+
 ### What is refused at submission
 
 Every refusal is a 422 before anything is created, naming the step.
@@ -1077,7 +1129,11 @@ the job before the application saw it. swarm-api admits that one address (`ROLLU
 set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup`, to
 the issue-run tick `POST /v1/admin/runs/advance` (#454, below), and to nothing
 else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
-`tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an admin
+`tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`), which also
+lists the repository poll, the merge wake and, since #748, the
+`task_finished` push that opens a MERGE verdict's pull request without a
+worker (`POST /v1/admin/tasks/finished`, "When swarm-api opens it without a
+worker" above). It is not an admin
 because admin is one boolean that opens every `/v1/admin` route, including the
 one that disables a tenant.
 

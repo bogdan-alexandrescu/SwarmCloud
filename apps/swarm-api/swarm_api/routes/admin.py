@@ -16,9 +16,12 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from typing import Any, Mapping
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 
 from swarm_common.identity import Principal
 from swarm_common.models import ProviderState
@@ -39,6 +42,8 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..verdictpublish import on_task_finished
+from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
 from ..schemas import (
     DrainRequest,
@@ -922,6 +927,61 @@ def poll_repositories(
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
     }
+
+
+def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
+    """`reason`, `task_id` and `tenant_id` from a Pub/Sub push envelope.
+
+    The attributes first, then the JSON `data`: both the worker
+    (`agent_worker.finishwake`) and `waker.PubSubWaker` put the same fields in
+    each. Anything unreadable is simply absent.
+    """
+    message = envelope.get("message") if isinstance(envelope, Mapping) else None
+    message = message if isinstance(message, Mapping) else {}
+    fields: dict[str, Any] = {}
+    data = message.get("data")
+    if isinstance(data, str) and data:
+        try:
+            decoded = json.loads(base64.b64decode(data, validate=True).decode("utf-8"))
+        except (ValueError, binascii.Error):
+            decoded = None
+        if isinstance(decoded, Mapping):
+            fields.update(decoded)
+    attributes = message.get("attributes")
+    if isinstance(attributes, Mapping):
+        fields.update(attributes)
+    return {k: str(fields[k]) for k in ("reason", "task_id", "tenant_id")
+            if isinstance(fields.get(k), str) and fields[k]}
+
+
+@router.post("/tasks/finished")
+def task_finished_push(
+    envelope: dict[str, Any] = Body(default_factory=dict),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """A `task_finished` wake, pushed by the scheduler wake topic's second subscription (#748).
+
+    The subscription (`api_task_finished`, terraform/modules/scheduler/main.tf)
+    carries only `reason = "task_finished"` and presents the rollup sweeper's
+    identity, admitted to this route by `auth.ROLLUP_SWEEPER_ROUTES`. For the
+    finished task's gated integrators that need no worker, swarm-api opens
+    the pull request itself and ends the step (`verdictpublish`); every other
+    dependant is left to the scheduler, which receives the same message.
+
+    ALWAYS 200 to a well-formed push. A wake is a doorbell: this route reads
+    everything again, and anything it cannot do is the worker's, after the
+    scheduler's hold ends. Redelivering a push would only ring again.
+    """
+    if not auth.is_rollup_sweeper and not auth.is_admin:
+        raise Forbidden("POST /v1/admin/tasks/finished is the wake topic's push subscription's")
+    fields = _push_fields(envelope)
+    task_id = fields.get("task_id", "")
+    if fields.get("reason") != TASK_FINISHED or not task_id:
+        return {"handled": False, "reason": fields.get("reason")}
+    report = on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
+    ctx.metrics.admin_actions.labels(action="task_finished_push").inc()
+    return {"handled": True, "report": report.to_api()}
 
 
 @router.post("/outcomes/rollup")

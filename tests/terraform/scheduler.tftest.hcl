@@ -604,3 +604,55 @@ run "the_task_identities_may_ring_the_wake_topic_and_nothing_else" {
     error_message = "the task identities are granted apart from the platform services, which are unchanged"
   }
 }
+
+# #748: swarm-api hears `task_finished` too, so it can open a MERGE verdict's
+# pull request without a worker while the scheduler holds the step.
+run "swarm_api_gets_only_task_finished_as_the_rollup_sweeper" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    api_endpoint = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.api_task_finished[0].push_config[0].push_endpoint == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/tasks/finished"
+    error_message = "the push must reach POST /v1/admin/tasks/finished, the route swarm_api/routes/admin.py serves"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.api_task_finished[0].filter == "attributes.reason = \"task_finished\""
+    error_message = "only task_finished: every other wake is the scheduler's alone"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.api_task_finished[0].push_config[0].oidc_token[0].service_account_email == local.rollup_sweeper_email
+    error_message = "the push presents the rollup sweeper, the one identity auth.ROLLUP_SWEEPER_ROUTES admits to the route"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.api_task_finished[0].push_config[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    error_message = "the audience is swarm-api's, as the rollup jobs mint it"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.api_task_finished[0].expiration_policy[0].ttl == ""
+    error_message = "an idle swarm must not reap the subscription"
+  }
+}
+
+run "no_api_endpoint_no_task_finished_push" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  assert {
+    condition     = length(google_pubsub_subscription.api_task_finished) == 0
+    error_message = "with no swarm-api endpoint there is nothing to push to"
+  }
+}

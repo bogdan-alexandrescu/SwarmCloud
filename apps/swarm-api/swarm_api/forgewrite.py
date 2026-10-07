@@ -46,6 +46,11 @@ the check run's own output is still the excerpt.
 Since #646 it also CLOSES an issue (`close_issue`, `issues: write`): an
 issue run whose build found every planned requirement already met on main.
 
+Since #748 it also OPENS a pull request from a branch that is already pushed
+(`create_branch`, `open_pull`, `contents: write` and `pull_requests: write`):
+a MERGE verdict's integrator, published by swarm-api without a worker
+(`verdictpublish`).
+
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
 """
@@ -117,6 +122,8 @@ class ChecksForbidden(ForgeWriteForbidden):
 #: What each write needs, named in the 403's sentence.
 ISSUES_WRITE = "issues: write"
 PULLS_WRITE = "pull_requests: write"
+#: Creating a branch (#748): the same permission an agent's push needs.
+CONTENTS_WRITE = "contents: write"
 #: What each CI read needs.
 CHECKS_READ = "checks: read"
 STATUSES_READ = "statuses: read"
@@ -242,6 +249,29 @@ def _comment(data: Any, what: str) -> CommentRef:
         id=int(data["id"]),
         url=url if isinstance(url, str) else "",
         login=login if isinstance(login, str) else None,
+    )
+
+
+def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
+    if not isinstance(data, dict) or _int(data.get("number")) is None:
+        raise ForgeWriteError(f"GitHub's answer for {what} is not a pull request")
+    number = int(data["number"])
+    head = data.get("head") if isinstance(data.get("head"), dict) else {}
+    base = data.get("base") if isinstance(data.get("base"), dict) else {}
+    url = data.get("html_url")
+    body = data.get("body")
+    title = data.get("title")
+    state = data.get("state")
+    return PullSnapshot(
+        number=number,
+        url=url if isinstance(url, str) else f"{ref.repository_url}/pull/{number}",
+        head_sha=str(head.get("sha") or ""),
+        head_ref=str(head.get("ref") or ""),
+        body=body if isinstance(body, str) else "",
+        state=state if state in ("open", "closed") else "open",
+        merged=data.get("merged") is True,
+        base_ref=str(base.get("ref") or ""),
+        title=title if isinstance(title, str) else "",
     )
 
 
@@ -402,25 +432,96 @@ class GitHubWriter:
         data = self._call(
             "GET", self._url(ref, f"pulls/{int(number)}"), token, what, needs=PULLS_WRITE,
         )
-        if not isinstance(data, dict) or _int(data.get("number")) is None:
-            raise ForgeWriteError(f"GitHub's answer for {what} is not a pull request")
-        head = data.get("head") if isinstance(data.get("head"), dict) else {}
-        base = data.get("base") if isinstance(data.get("base"), dict) else {}
-        url = data.get("html_url")
-        body = data.get("body")
-        title = data.get("title")
-        state = data.get("state")
-        return PullSnapshot(
-            number=int(data["number"]),
-            url=url if isinstance(url, str) else f"{ref.repository_url}/pull/{int(number)}",
-            head_sha=str(head.get("sha") or ""),
-            head_ref=str(head.get("ref") or ""),
-            body=body if isinstance(body, str) else "",
-            state=state if state in ("open", "closed") else "open",
-            merged=data.get("merged") is True,
-            base_ref=str(base.get("ref") or ""),
-            title=title if isinstance(title, str) else "",
+        return _pull(ref, data, what)
+
+    # -- opening a pull request from a pushed branch (#748) ---------------------
+
+    def default_branch(self, ref: IssueRef, token: str) -> str:
+        """The repository's default branch, which the pull request merges into."""
+        what = f"the repository {ref.repository}"
+        data = self._call(
+            "GET",
+            f"https://{GITHUB_API_HOST}/repos/{quote(ref.owner, safe='')}/{quote(ref.repo, safe='')}",
+            token, what, needs=PULLS_WRITE,
         )
+        branch = data.get("default_branch") if isinstance(data, dict) else None
+        if not isinstance(branch, str) or not branch:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no default branch")
+        return branch
+
+    def branch_head(self, ref: IssueRef, branch: str, token: str) -> str | None:
+        """The commit `branch` points at, or None when there is no such branch."""
+        what = f"the branch {branch} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"git/ref/heads/{quote(branch, safe='/')}"), token, what,
+                needs=PULLS_WRITE,
+            )
+        except ForgeWriteNotFound:
+            return None
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
+        return sha
+
+    def create_branch(self, ref: IssueRef, branch: str, sha: str, token: str) -> bool:
+        """Point a new `branch` at `sha`. True when made, False when it was
+        already there at `sha`; any other branch of that name is refused."""
+        what = f"the branch {branch} of {ref.repository}"
+        try:
+            self._call(
+                "POST", self._url(ref, "git/refs"), token, what, needs=CONTENTS_WRITE,
+                payload={"ref": f"refs/heads/{branch}", "sha": sha}, ok=(201,),
+            )
+            return True
+        except (ForgeWriteForbidden, ForgeWriteUnauthorized):
+            raise
+        except ForgeWriteError:
+            # 422 when it exists. Read it: at the same commit it is ours, from
+            # a run that lost its answer; at any other it is not ours to move.
+            if self.branch_head(ref, branch, token) == sha:
+                return False
+            raise ForgeWriteError(
+                f"{what} already exists at another commit; it was not moved"
+            ) from None
+
+    def find_open_pull(self, ref: IssueRef, head: str, token: str) -> PullSnapshot | None:
+        """The open pull request from `head` (a branch of this repository), if any."""
+        what = f"the open pull requests from {head} in {ref.repository}"
+        query = f"head={quote(ref.owner, safe='')}:{quote(head, safe='/')}&state=open&per_page=1"
+        entries = self._call(
+            "GET", f"{self._url(ref, 'pulls')}?{query}", token, what, needs=PULLS_WRITE,
+        )
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return _pull(ref, entries[0], what) if entries else None
+
+    def open_pull(
+        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str
+    ) -> tuple[PullSnapshot, bool]:
+        """Open a pull request from `head` into `base`: `(it, True)`, or
+        `(the open one already there, False)` when GitHub refuses a second.
+
+        An existing one is adopted as it stands, never edited: whoever opened
+        it wrote its title and body.
+        """
+        what = f"a pull request from {head} in {ref.repository}"
+        try:
+            data = self._call(
+                "POST", self._url(ref, "pulls"), token, what, needs=PULLS_WRITE,
+                payload={"title": title, "head": head, "base": base, "body": body,
+                         "draft": False},
+                ok=(201,),
+            )
+        except (ForgeWriteForbidden, ForgeWriteUnauthorized):
+            raise
+        except ForgeWriteError:
+            existing = self.find_open_pull(ref, head, token)
+            if existing is None:
+                raise
+            return existing, False
+        return _pull(ref, data, what), True
 
     def edit_pull_body(
         self, ref: IssueRef, number: int, body: str, token: str, *, title: str | None = None
