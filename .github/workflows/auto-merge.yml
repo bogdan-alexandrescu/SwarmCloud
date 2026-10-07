@@ -107,16 +107,16 @@ on:
   # Every workflow whose completion can be the LAST on a pull request's head,
   # by `name:`. One left out is a check whose completion never re-evaluates:
   # if it finishes last, the pull request sits, which is #697 again. That is
-  # ci-gate and every `pull_request` workflow ci-gate does not wait for --
-  # today security. application and terraform are not here (#795): ci-gate
-  # (scripts/ci-gate.sh, GATED_WORKFLOWS) completes only after every run of
-  # theirs at its head has, so their completions were never the last one
-  # and each started a run of this workflow for nothing -- 294+ runs in one
-  # night. If ci-gate gives up before them it is a failing check, which
-  # refuses on any re-evaluation anyway. The test derives this list from the
-  # workflow files and ci-gate.sh.
+  # application (ci-gate is its last job, since 2026-10-07 not a workflow of
+  # its own) and every `pull_request` workflow ci-gate does not wait for --
+  # today security. terraform is not here (#795): application's ci-gate job
+  # waits for terraform's run at its head (CI_GATE_WORKFLOWS=terraform.yml),
+  # so terraform's completion was never the last one and each started a run
+  # of this workflow for nothing -- 294+ runs in one night. If ci-gate gives
+  # up before it it is a failing check, which refuses on any re-evaluation
+  # anyway. The test derives this list from the workflow files.
   workflow_run:
-    workflows: [ci-gate, security]
+    workflows: [application, security]
     types: [completed]
   # Sent by `requeue` below; an operator may send it too, to make this look at
   # a `ready` pull request again. It is a request to look, not a `ready`: the
@@ -398,7 +398,7 @@ jobs:
             {
               echo "**Queued for auto-merge, waiting for checks still running on the head commit:** ${unfinished}."
               echo
-              echo "It is re-evaluated each time a ci-gate or security run finishes on this head (ci-gate finishes after application and terraform), and merged once every check that ran is green. A push drops \`ready\` unless it only merges the base branch in."
+              echo "It is re-evaluated each time an application or security run finishes on this head (application's last job, ci-gate, waits for terraform), and merged once every check that ran is green. A push drops \`ready\` unless it only merges the base branch in."
               echo "(.github/workflows/auto-merge.yml)"
             } >"${body}"
             if [[ "${reevaluation}" != "true" ]]; then

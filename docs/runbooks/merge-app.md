@@ -119,10 +119,10 @@ base merge of the head it was labelled at.
 
 `auto-merge.yml` re-evaluates `ready` pull requests when a CI run completes.
 It used to listen to application, ci-gate, security and terraform, which
-started 294+ runs of it in one night, nearly all skipped. ci-gate completes
-only after every application and terraform run at its head has, so only
-ci-gate's and security's completions can be the last one on a head; those are
-the two it listens to now.
+started 294+ runs of it in one night, nearly all skipped. ci-gate is the last
+job of application.yml and waits for terraform's run at its head, so only
+application's (that is, ci-gate's) and security's completions can be the last
+one on a head; those are the two it listens to now.
 
 ## 1. Create the App
 

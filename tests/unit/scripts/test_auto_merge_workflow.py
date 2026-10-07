@@ -37,6 +37,8 @@ from typing import Any
 import pytest
 import yaml
 
+from .application_paths import app_paths, reaches
+
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
@@ -955,8 +957,7 @@ def test_the_workflow_is_linted_on_every_pull_request_that_touches_it():
     """It runs only on pull_request_target, from main, so a broken expression
     would first show on the first `ready` label after merge."""
     application = _workflow(WORKFLOWS / "application.yml")
-    paths = application["on"]["pull_request"]["paths"]
-    assert ".github/workflows/auto-merge.yml" in paths, paths
+    assert reaches(".github/workflows/auto-merge.yml"), app_paths()
     lint = [
         step.get("run") or ""
         for step in application["jobs"]["workflows"]["steps"]
@@ -1266,6 +1267,11 @@ def _pull_request_workflow_names() -> set[str]:
     return names
 
 
+#: Workflow names auto-merge.yml may still list after the workflow was folded
+#: into another (ci-gate.yml into application.yml, 2026-10-07).
+RETIRED_WORKFLOW_NAMES = {"ci-gate"}
+
+
 def test_it_re_evaluates_when_any_pull_request_workflow_completes(workflow: dict):
     """A check whose completion can be the LAST one on a head must re-evaluate:
     if it is left out, the pull request sits, which is #697 again. Since #795
@@ -1275,10 +1281,15 @@ def test_it_re_evaluates_when_any_pull_request_workflow_completes(workflow: dict
     MUTATION: drop `ci-gate` or `security` from `workflows:`, or listen to
     `requested` instead of `completed`."""
     names = _pull_request_workflow_names()
-    assert {"application", "terraform", "security", "ci-gate"} <= names, names  # the control
+    assert {"application", "terraform", "security"} <= names, names  # the control
     workflow_run = workflow["on"]["workflow_run"]
     assert workflow_run["types"] == ["completed"], workflow_run
-    assert {"ci-gate", "security"} <= set(workflow_run["workflows"]) <= names, workflow_run
+    # `ci-gate` is a job of application.yml since 2026-10-07, not a workflow:
+    # application's completion is ci-gate's. Anything listed that no workflow
+    # carries is a typo, or a name that never fires.
+    listened = set(workflow_run["workflows"])
+    assert {"application", "security"} <= listened, workflow_run
+    assert listened - names <= RETIRED_WORKFLOW_NAMES, workflow_run
 
 
 def test_check_suite_is_not_the_completion_event(workflow: dict):

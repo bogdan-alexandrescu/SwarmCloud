@@ -65,7 +65,17 @@ _OUTPUT_REF = re.compile(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-
 
 # The steps that PROVE something about the UI on the Node the job runs. The
 # Node check has to come before all of them, or it proves nothing about them.
-_PROOFS = ("npm run typecheck", "npm test", "npm run build")
+_PROOFS = ("npm run typecheck", "npm run test:node", "npm run test:components", "npm run build")
+
+#: The jobs that install the UI and prove something on its Node. Since
+#: 2026-10-07 the old `ui` job is split: `ui-build` (typecheck, node:test, the
+#: production build) and the `ui-tests` vitest shards. `ui` keeps the check
+#: name and only reads their results.
+UI_JOBS = ("ui-build", "ui-tests")
+
+
+def _is_proof(step: dict) -> bool:
+    return str(step.get("run", "")).strip().startswith(_PROOFS)
 
 
 def _node_pins() -> dict[str, list[str]]:
@@ -104,8 +114,8 @@ def test_every_image_that_installs_node_uses_one_line_pinned_by_digest():
     )
 
 
-def _ui_steps() -> list[dict]:
-    return yaml.safe_load(APPLICATION.read_text())["jobs"]["ui"]["steps"]
+def _ui_steps(job: str = "ui-build") -> list[dict]:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"][job]["steps"]
 
 
 def _setup_node(steps: list[dict]) -> tuple[int, str, re.Match[str] | None]:
@@ -135,13 +145,13 @@ def _run_step(script: str, cwd: Path, scratch: Path, env: dict[str, str]) -> sub
 
 
 def _run_producer(
-    tmp_path: Path, dockerfile: str | None
+    tmp_path: Path, dockerfile: str | None, job: str = "ui-build"
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
     """Run the step setup-node takes its version from, in a scratch tree that
     holds `images/swarm-ui/Dockerfile` and nothing else -- so whatever it writes
     can only have come from that file. Returns (result, the `name=value` lines
     it wrote to GITHUB_OUTPUT, the output name setup-node reads)."""
-    steps = _ui_steps()
+    steps = _ui_steps(job)
     setup_i, version, ref = _setup_node(steps)
     assert ref, f"setup-node's node-version {version!r} does not read a step output"
     producers = [s for s in steps if s.get("id") == ref.group(1)]
@@ -169,9 +179,10 @@ def _with_major(dockerfile: str, major: str) -> str:
     return re.sub(r"(?m)^ARG NODE_IMAGE=node:\d+", f"ARG NODE_IMAGE=node:{major}", dockerfile)
 
 
-def test_the_ui_job_reads_its_node_from_the_ui_image():
-    """MUTATION: put a literal back, e.g. `node-version: "20"`, in the ui job."""
-    _, version, ref = _setup_node(_ui_steps())
+@pytest.mark.parametrize("job", UI_JOBS)
+def test_the_ui_job_reads_its_node_from_the_ui_image(job):
+    """MUTATION: put a literal back, e.g. `node-version: "20"`, in a ui job."""
+    _, version, ref = _setup_node(_ui_steps(job))
     assert ref, (
         f"the ui job pins node-version {version!r} itself. That is a second statement "
         f"of the Node {UI_DOCKERFILE.relative_to(REPO)} builds the bundle with, and "
@@ -180,8 +191,9 @@ def test_the_ui_job_reads_its_node_from_the_ui_image():
     )
 
 
+@pytest.mark.parametrize("job", UI_JOBS)
 @pytest.mark.parametrize("bump", [0, 75], ids=["the-real-dockerfile", "a-dockerfile-on-another-major"])
-def test_the_node_step_hands_setup_node_the_major_of_the_dockerfile_it_reads(tmp_path, bump):
+def test_the_node_step_hands_setup_node_the_major_of_the_dockerfile_it_reads(tmp_path, bump, job):
     """The property is "setup-node receives the major the Dockerfile names",
     so the step is run and its output read back under the name setup-node
     asks for. The second case moves the Dockerfile to a major nobody has
@@ -197,7 +209,7 @@ def test_the_node_step_hands_setup_node_the_major_of_the_dockerfile_it_reads(tmp
     dockerfile = _with_major(real, want)
     assert _dockerfile_major(dockerfile) == want
 
-    result, written, name = _run_producer(tmp_path, dockerfile)
+    result, written, name = _run_producer(tmp_path, dockerfile, job)
     assert result.returncode == 0, f"the Node step failed on a valid Dockerfile:\n{result.stdout}{result.stderr}"
     assert written.get(name) == want, (
         f"setup-node reads output {name!r}, but the step wrote {written!r} for a Dockerfile "
@@ -206,8 +218,9 @@ def test_the_node_step_hands_setup_node_the_major_of_the_dockerfile_it_reads(tmp
     )
 
 
+@pytest.mark.parametrize("job", UI_JOBS)
 @pytest.mark.parametrize("case", ["no-dockerfile", "no-node-image-line", "two-node-image-lines"])
-def test_the_node_step_stops_the_job_rather_than_hand_setup_node_nothing(tmp_path, case):
+def test_the_node_step_stops_the_job_rather_than_hand_setup_node_nothing(tmp_path, case, job):
     """An empty or ambiguous major must stop the job BEFORE setup-node, which
     would otherwise accept '' and install nothing. MUTATION: drop the step's
     exactly-one-line guard, or its `set -e`."""
@@ -223,7 +236,7 @@ def test_the_node_step_stops_the_job_rather_than_hand_setup_node_nothing(tmp_pat
             "the fixture did not change what it names"
         )
 
-    result, written, _ = _run_producer(tmp_path, dockerfile)
+    result, written, _ = _run_producer(tmp_path, dockerfile, job)
     assert result.returncode != 0, (
         f"the Node step exited 0 on {case} and wrote {written!r}; the job would go on to "
         "setup-node with no usable version"
@@ -241,7 +254,8 @@ esac
 """
 
 
-def test_the_ui_job_fails_when_the_node_that_runs_is_not_the_images(tmp_path):
+@pytest.mark.parametrize("job", UI_JOBS)
+def test_the_ui_job_fails_when_the_node_that_runs_is_not_the_images(tmp_path, job):
     """setup-node can be handed the right expression and still not install
     that Node -- the output empty, the name drifted -- and it says nothing: it
     carries on with the runner's preinstalled Node. So some step between
@@ -255,12 +269,16 @@ def test_the_ui_job_fails_when_the_node_that_runs_is_not_the_images(tmp_path):
 
     MUTATION: delete that step, point it at a different output than
     setup-node reads, or have it print the version without comparing it."""
-    steps = _ui_steps()
+    steps = _ui_steps(job)
     setup_i, version, ref = _setup_node(steps)
     assert ref, f"setup-node's node-version {version!r} does not read a step output"
     key = (ref.group(1), ref.group(2))
-    proofs = [i for i, s in enumerate(steps) if str(s.get("run", "")).strip() in _PROOFS]
-    assert len(proofs) == len(_PROOFS), f"expected the ui job to run each of {_PROOFS}"
+    proofs = [i for i, s in enumerate(steps) if _is_proof(s)]
+    assert proofs, f"the {job} job runs none of {_PROOFS}"
+    if job == UI_JOBS[0]:
+        # The control: every proof runs in one of the two jobs.
+        ran = {str(s.get("run", "")).strip().split(" --", 1)[0] for j in UI_JOBS for s in _ui_steps(j) if _is_proof(s)}
+        assert ran == set(_PROOFS), ran
     assert setup_i < min(proofs), "setup-node runs after the steps it is meant to set up"
 
     def reads_the_output(step: dict) -> bool:
@@ -309,7 +327,7 @@ def test_the_ui_job_runs_the_production_build():
     """The typecheck is `tsc -b --noEmit`; the image runs `npm run build`, which
     is vite's bundler and plugins on top. A Node bump is proven by the half that
     emits. MUTATION: delete the build step from the ui job."""
-    steps = yaml.safe_load(APPLICATION.read_text())["jobs"]["ui"]["steps"]
+    steps = _ui_steps("ui-build")
     builds = [
         s
         for s in steps

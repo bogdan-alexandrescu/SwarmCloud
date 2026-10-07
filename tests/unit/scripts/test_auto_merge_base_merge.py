@@ -676,24 +676,25 @@ def _gated_workflow_files() -> set[str]:
 
 
 def test_completions_ci_gate_waits_for_do_not_start_a_run(workflow: dict):
-    """ci-gate completes only after every application and terraform run at its
-    head has completed, so their own completions can never be the last one:
-    each started an auto-merge run for nothing (294+ runs in one night, #795).
-    What is left is ci-gate itself and every pull-request workflow it does not
-    gate. MUTATION: add `application` or `terraform` back, or drop `security`."""
-    gated = _gated_workflow_files()
-    assert gated == {"application.yml", "terraform.yml"}, gated  # the control
+    """ci-gate is the last job of application.yml and waits for terraform.yml's
+    run at its head (CI_GATE_WORKFLOWS=terraform.yml), so terraform's own
+    completion can never be the last one: it started an auto-merge run for
+    nothing (294+ runs in one night, #795). What is left is application (whose
+    completion is ci-gate's) and every pull-request workflow ci-gate does not
+    gate. MUTATION: add `terraform` back, or drop `application` or `security`."""
     pull_request_names: dict[str, str] = {}
     for path in sorted(WORKFLOWS.glob("*.yml")):
         data = _workflow(path)
         on = data.get("on") or {}
         if "pull_request" in (on if isinstance(on, (dict, list)) else {on}):
             pull_request_names[path.name] = data["name"]
-    expected = {name for file, name in pull_request_names.items() if file not in gated}
-    assert "ci-gate" in expected and "security" in expected, expected
+    expected = {name for file, name in pull_request_names.items() if file != "terraform.yml"}
+    assert "application" in expected and "security" in expected, expected  # the control
     listened = set(workflow["on"]["workflow_run"]["workflows"])
     assert listened == expected, listened
     assert workflow["on"]["workflow_run"]["types"] == ["completed"]
+    gate = next(job for job in _workflow(WORKFLOWS / "application.yml")["jobs"].values() if job.get("name") == "ci-gate")
+    assert "CI_GATE_WORKFLOWS" in str(gate) and "terraform.yml" in str(gate), gate  # what ci-gate waits for
 
 
 def test_the_runbook_says_why_the_app_turns_auto_merge_off():
