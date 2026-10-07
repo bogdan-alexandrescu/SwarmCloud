@@ -37,7 +37,7 @@ vi.mock('../api', async (importOriginal) => {
 
 const { AgentsScreen } = await import('../Agents')
 const { Screen } = await import('../Shell')
-const { addressToPath, pathToAddress } = await import('../paths')
+const { addressToPath, agentListSearch, pathToAddress } = await import('../paths')
 const { backLabel, parseAgentList } = await import('../agentlist')
 const { resetListSnap } = await import('../listSnap')
 
@@ -249,13 +249,41 @@ describe('G2-22: the list’s filters are in the address', () => {
   })
 
   it('keeps them under an open agent, so a reload lands on the same filtered list', () => {
-    const list = { tab: 'recent' as const, state: 'failed' as const, grouped: true }
-    const path = addressToPath('work/task/task_0123456789abcdef0123', list)
+    const list = { tab: 'recent' as const, state: 'failed' as const, grouped: true as const }
+    const path = `${addressToPath('work/task/task_0123456789abcdef0123', 'recent')}?${agentListSearch(list)}`
     expect(path).toBe('/agents/recent/task_0123456789abcdef0123?state=failed&group=wf')
     const back = pathToAddress('/agents/recent/task_0123456789abcdef0123', '?state=failed&group=wf')
     expect(back?.address).toBe('work/task/task_0123456789abcdef0123')
     expect(back?.agentTab).toBe('recent')
     expect(back?.list).toEqual(list)
+  })
+
+  it('reads the list back from an open agent’s path, and keeps a filtered list path as written', async () => {
+    const { App, fromLocation } = await import('../App')
+    window.history.replaceState(null, '', '/agents/recent/task_0123456789abcdef0123?state=failed&group=wf')
+    expect(fromLocation().list).toEqual({ tab: 'recent', state: 'failed', grouped: true })
+    api.loadTasks.mockResolvedValue(ok({ tasks: [task('task_bbbbbbbb00000000000b', 'FAILED', { workflow_id: 'wf_one' })] }))
+    window.history.replaceState(null, '', '/agents/recent?state=failed&group=wf&first=failed')
+    try {
+      render(<App />)
+      const group = await waitFor(() => screen.getByRole('checkbox', { name: 'Group by workflow' }) as HTMLInputElement)
+      await act(async () => {})
+      expect(group.checked).toBe(true)
+      expect((screen.getByRole('checkbox', { name: 'Failed first' }) as HTMLInputElement).checked).toBe(true)
+      // The router's normalise pass wrote the same path back, not a bare `/agents/recent`.
+      expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=failed&group=wf&first=failed')
+      fireEvent.click(group)
+      await act(async () => {})
+      expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=failed&first=failed')
+      // Opening an agent keeps the list it came from in its path.
+      fireEvent.click(document.querySelector<HTMLElement>('[data-task-id="task_bbbbbbbb00000000000b"]')!)
+      await act(async () => {})
+      expect(window.location.pathname + window.location.search).toBe(
+        '/agents/recent/task_bbbbbbbb00000000000b?state=failed&first=failed',
+      )
+    } finally {
+      window.history.replaceState(null, '', '/')
+    }
   })
 
   it('draws the toggles from the address, and reports a toggle as an address', async () => {

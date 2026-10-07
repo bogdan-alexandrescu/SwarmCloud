@@ -842,7 +842,13 @@
   -webkit-line-clamp: none;
   line-clamp: none;
 }
-.app.has-inspector > .work .c-phead > .sub { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+/* THE READ STATUS KEEPS THE HEAD ROW; THE META CHIP TAKES THE NEXT (G2-21,
+   dev QA 2026-10-07). On one line beside the title the two shared ~250px and
+   the status was what got cut -- `read 1m ago ·…`, `not refreshe…` -- when
+   whether the list is stale is the thing it exists to say. The line wraps:
+   the age is a full line first, the chip (`200 loaded · 5 live · eng`, whole
+   in its title) under it. */
+.app.has-inspector > .work .c-phead > .sub { flex: 1 1 0; min-width: 0; flex-wrap: wrap; overflow: hidden; }
 
 /* AT THE 64px STRIP THE PAGE HEAD IS NOT DRAWN (D28): its fragments --
    `? 2 read just` -- stayed in the strip and the `?` lay over the meta. It
@@ -869,7 +875,8 @@
   display: flex;
   align-items: baseline;
   gap: 0 4px;
-  flex: 1 0 auto;
+  flex: 1 0 100%;
+  order: 0;
   justify-content: flex-end;
   overflow: visible;
 }
@@ -883,7 +890,18 @@
   white-space: nowrap;
   text-align: right;
 }
-.app.has-inspector > .work .c-phead .c-meta { flex: 0 1 auto; }
+.app.has-inspector > .work .c-phead .c-meta { flex: 0 1 auto; order: 1; max-width: 100%; }
 
 /* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
 .cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+
+/* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
+   above's, in the same workflow, says so in place of a blank. Muted and at
+   the 12px floor -- it is a pointer to the line above, not a reason -- and
+   on the reason's own line, where the reader looks for one. */
+.row.is-compact > .why.is-same {
+  margin-top: 2px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
