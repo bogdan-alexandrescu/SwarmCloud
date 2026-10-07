@@ -226,7 +226,14 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "WHERE IT GOES is `target`: this call's, else the session default. "
             "`local` sends nothing; `hybrid` sends nothing when `needs_local` "
-            "names anything. The reply's `target` says which applied and why."
+            "names anything. The reply's `target` says which applied and why.\n"
+            "\n"
+            "THE REPLY STARTS ITS OWN ROWS: `rows` is a titled /sc:swarmcloud "
+            "script that shows each task just sent as one live [SwarmCloud] row. "
+            "Launch it at once with the Workflow tool, {scriptPath: "
+            "<rows.script_path>, args: <rows.args>}, as `rows.start_now` says; "
+            "`rows.error` means it could not be written, and `/sc attach --all` "
+            "gives the task its row instead."
         ),
         "inputSchema": {
             "type": "object",
@@ -1129,7 +1136,13 @@ TOOLS: list[dict[str, Any]] = [
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10."
+            "{attach: \"all\"}), which follows at most 10.\n"
+            "\n"
+            "`single_tasks` lists YOUR running single tasks beside them: not "
+            "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
+            "with its task_id, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most 10. "
+            "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -1638,6 +1651,40 @@ def _batch_limit(client: Any) -> tuple[int | None, str | None]:
     return None, "the API's /v1/stats carried no limits.max_batch_size; the API checks it itself"
 
 
+#: What a dispatch reply's `rows` tells the session to do with it (#830).
+ROWS_START_NOW = (
+    "Start the live [SwarmCloud] row of what you just dispatched NOW, without being "
+    "asked: call the Workflow tool once with {scriptPath: <rows.script_path>, args: "
+    "<rows.args>}. It starts one sc:task row per task, titled from its label, follows "
+    "it until it finishes, and submits nothing. Skip it only when you are already that "
+    "task's row (sc:remote follows the task it dispatched itself)"
+)
+
+
+def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
+    """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
+    reply hands it back so a dispatched task gets a row without anyone asking
+    for one. `sent` is `(task_id, label, task)` per task.
+
+    Never a reason for the dispatch to fail: the tasks are already in
+    SwarmCloud, so a copy that cannot be written -- a bridge started outside
+    the plugin has no run.js to copy -- comes back as `error` with
+    `/sc attach --all`, which lists the caller's running single tasks and
+    gives each a row."""
+    from . import launch
+
+    entries = []
+    for task_id, label, task in sent:
+        entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        entries.append(with_console(entry, task))
+    try:
+        rows = launch.for_tasks(entries)
+    except (SwarmError, OSError) as exc:
+        return {"error": str(exc), "attach_with": "/sc attach --all"}
+    rows["start_now"] = ROWS_START_NOW
+    return rows
+
+
 def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -> str:
     """`swarm_dispatch` with `tasks`: every task checked, then ONE request (S7).
 
@@ -1738,6 +1785,11 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         "collect_with": "swarm_collect",
         "follow_with": "swarm_follow",
         "follow_live_with": follow_command(ids),
+        # A row per task, started by the session from this reply (#830).
+        "rows": _dispatch_rows([
+            (task_id, (item.get("label") if isinstance(item, dict) else None) or None, task)
+            for task_id, task, item in zip(ids, created, tasks)
+        ]),
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
@@ -2405,8 +2457,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # transport failure) never marks its signature, so retrying it after
         # fixing the problem is never refused as a repeat.
         _remember_dispatch(client, signature)
-        return json.dumps(
-            with_console({
+        reply = with_console({
                 "task_id": task_id,
                 "state": task.get("state"),
                 "strategy": _accepted_strategy(task, strategy),
@@ -2422,9 +2473,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "follow_live_with": follow_command([task_id]),
                 # Which target applied, and which layer chose it (S8).
                 "target": placed,
-            }, task),
-            indent=2,
-        )
+            }, task)
+        # Its live row, started by the session from this reply (#830).
+        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        return json.dumps(reply, indent=2)
 
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress"):
         raise SwarmError(
@@ -2786,9 +2838,22 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(reported, indent=2)
 
     if name == "swarm_workflows":
-        from .sc import running_workflows
+        from .sc import running_tasks, running_workflows
 
         listing = running_workflows(client)
+        # The caller's running SINGLE tasks beside them (#830), so the LIST
+        # row of `/sc attach --all` can give each a row. A failed read is said,
+        # never an empty list.
+        try:
+            singles = running_tasks(client)
+        except SwarmError as exc:
+            listing["single_tasks"] = []
+            listing["single_tasks_error"] = str(exc)
+        else:
+            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks_count"] = singles["count"]
+            if not singles["complete"]:
+                listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")
         listing["attach_all_with"] = (
             "/sc attach --all -- or the /sc:swarmcloud workflow with {attach: \"all\"}"
         )

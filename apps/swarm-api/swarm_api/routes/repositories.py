@@ -6,7 +6,10 @@ tenant's `repo_id` is a 404 indistinguishable from a missing one.
 
 `GET /v1/repositories/readable` is the Register C picker's list (PICKS.md,
 2026-10-05): what the tenant's git token can read, one GitHub page per call,
-capped at `repositories.MAX_READABLE_PAGES`. Everything about the token is
+capped at `repositories.MAX_READABLE_PAGES`. Since lane OB4 (#780) both it
+and `POST /v1/repositories` read with the CALLER's own GitHub connection
+when they have an active one (`access.AccessService.credential_for`), and
+with the tenant's token otherwise. Everything about the token is
 `swarm_api.forge`'s and `swarm_api.repositories`'s; these routes log the
 outcome's code -- never the token, never the forge's text.
 
@@ -48,6 +51,8 @@ from swarm_common.models import Tenant
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..forgeapp import Caller
+from .access import get_access
 from ..errors import ValidationFailed
 from ..forge import ForgeReadError
 from ..impact import (
@@ -117,15 +122,19 @@ def _tenant(ctx: AppContext, tenant_id: str, auth: AuthContext) -> Tenant:
 def create_repository(
     body: RepositoryCreate,
     response: Response,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id, auth)
+    # The caller's own GitHub connection when they have one (lane OB4).
+    credential = get_access(request).credential_for(
+        Caller(email=auth.email, tenant_id=tenant_id), tenant, ctx.forge_tokens)
     try:
         record, created = register(
             body, tenant, created_by=auth.email, store=_store(ctx),
-            tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+            tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now, credential=credential,
         )
     except ForgeReadError as refused:
         log.info("repository register tenant=%s outcome=%s", tenant_id, refused.code)
@@ -159,15 +168,19 @@ def list_repositories(
 # Declared before `/{repo_id}`, which would otherwise match "readable".
 @router.get("/readable")
 def readable_repositories(
+    request: Request,
     page: int = Query(default=1, ge=1, le=MAX_READABLE_PAGES),
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id, auth)
+    credential = get_access(request).credential_for(
+        Caller(email=auth.email, tenant_id=tenant_id), tenant, ctx.forge_tokens)
     try:
         body = readable(
-            tenant, page, store=_store(ctx), tokens=ctx.forge_tokens, forge=ctx.forge
+            tenant, page, store=_store(ctx), tokens=ctx.forge_tokens, forge=ctx.forge,
+            credential=credential,
         )
     except ForgeReadError as refused:
         log.info("repository readable tenant=%s page=%d outcome=%s", tenant_id, page, refused.code)

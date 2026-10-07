@@ -179,6 +179,11 @@ load_env() {
   # teardown depend on their retention policy.
   TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
   TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
+  # terraform/bootstrap's state, in the same bucket (#827). Not overridable and
+  # not per-environment: there is one bootstrap layer per project, and its
+  # prefix is written in terraform/bootstrap/backend.tf, which this must equal
+  # (tests/unit/scripts/test_bootstrap_remote_state.py holds them together).
+  TF_BOOTSTRAP_STATE_PREFIX="bootstrap"
 
   # The swarm's own Autopilot cluster. agents-staging belongs to another team and
   # is deny-listed below; nothing here may ever target it.
@@ -210,7 +215,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 

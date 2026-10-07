@@ -562,7 +562,14 @@ def watch_progress(
         if link is not None:
             row["console"] = link
         abandoned = None
-        if step_id is not None and task["read"] == "ok" and task.get("step_id") != step_id:
+        if step_id is not None and task["read"] == "ok" and task.get("step_id") is None:
+            # A single task handed to a step row (#830).
+            abandoned = (
+                f"task {task_id} is a single task, not workflow step {step_id!r}: it "
+                "belongs to no workflow. Follow it WITHOUT `step_id` -- the sc:task row "
+                "does. Nothing was cancelled"
+            )
+        elif step_id is not None and task["read"] == "ok" and task.get("step_id") != step_id:
             abandoned = (
                 f"task {task_id} is workflow step {task.get('step_id')!r}, not {step_id!r}: this "
                 "row was handed another step's task id. Nothing was cancelled"
