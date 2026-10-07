@@ -202,6 +202,57 @@ def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
             assert profile_extra(profile) == {}, profile
 
 
+def _profile_extra_run(profile: str, **overrides: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("SWARM_ENV_FILE", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    env.update(overrides)
+    script = (
+        f'source "{ROOT}/scripts/lib/common.sh"; '
+        f'source "{ROOT}/scripts/lib/testlib.sh"; '
+        f'profile_extra "$1"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "profile-extra", profile],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+def test_an_overridden_generic_fixture_is_echoed_with_where_it_came_from():
+    """#346 (#345 review): SWARM_SMOKE_FIXTURE_REPOSITORY and _REF were followed
+    without a word, so an override left in an operator's shell made the smoke
+    clone a stale fork or branch and nobody reading the run could tell. The
+    fixture is echoed on stderr -- stdout stays the JSON the caller merges --
+    naming each value and that it came from the environment."""
+    fork = "https://github.com/example/SwarmCloud-fork.git"
+    result = _profile_extra_run(
+        "generic",
+        SWARM_SMOKE_FIXTURE_REPOSITORY=fork,
+        SWARM_SMOKE_FIXTURE_REF="stale-branch",
+    )
+    assert json.loads(result.stdout) == {"repository_url": fork, "repository_ref": "stale-branch"}
+    assert fork in result.stderr, result.stderr
+    assert "stale-branch" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE_REPOSITORY" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE_REF" in result.stderr, result.stderr
+
+
+def test_the_default_generic_fixture_is_echoed_as_the_default():
+    """The control: with no override the echo names the default repository and
+    `main`, and says no override is set, so the two cases read differently."""
+    result = _profile_extra_run("generic")
+    assert FIXTURE_REPOSITORY in result.stderr, result.stderr
+    assert "main" in result.stderr, result.stderr
+    assert "default" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE" not in result.stderr, result.stderr
+    # Every other profile clones nothing, so says nothing.
+    assert _profile_extra_run("mock").stderr == "", "a profile with no fixture echoed one"
+
+
 def test_the_smoke_asserts_the_generic_command_exited_zero():
     """SUCCEEDED alone is the worker's reading; the row names the command and
     its exit code from the runner's own result, so a pass is pytest's."""
