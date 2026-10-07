@@ -375,9 +375,12 @@ def test_retry_clone_records_a_failed_try_then_the_one_that_landed(tmp_path):
     )
 
     assert result is landed
+    # No peers on these tries' phases (#721, P27): None, None, unpinned.
+    none = {"probe_peer": None, "git_peer": None, "peer_pinned": False}
     assert record == [
-        {"connect_seconds": None, "ok": False, "error_class": "GitTransient", "seconds": 134.0},
-        {"connect_seconds": 0.042, "ok": True, "error_class": None, "seconds": 56.0},
+        {"connect_seconds": None, "ok": False, "error_class": "GitTransient", "seconds": 134.0,
+         **none},
+        {"connect_seconds": 0.042, "ok": True, "error_class": None, "seconds": 56.0, **none},
     ]
 
 
@@ -430,7 +433,13 @@ def test_a_failed_then_ok_clone_records_two_tries_in_clone_timed(
     assert [(t["ok"], t["error_class"]) for t in log] == [
         (False, "GitTransient"), (True, None),
     ], log
-    assert all(set(t) == {"connect_seconds", "ok", "error_class", "seconds"} for t in log)
+    assert all(
+        set(t) == {
+            "connect_seconds", "ok", "error_class", "seconds",
+            "probe_peer", "git_peer", "peer_pinned",
+        }
+        for t in log
+    )
     assert all(isinstance(t["seconds"], float) and t["seconds"] >= 0 for t in log)
     # The summary fields every earlier reader reads, unchanged in meaning.
     assert clone["tries"] == 2 and clone["ok"] is True and clone["pinned"] is False

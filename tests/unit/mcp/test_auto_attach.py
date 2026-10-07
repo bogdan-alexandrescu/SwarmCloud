@@ -530,7 +530,13 @@ def test_the_hook_kills_what_the_bridge_spawned_when_it_hangs(tmp_path):
         time.sleep(0.1)
     alive = _alive(pid)
     if alive:
-        os.kill(pid, 9)
+        # The child can exit between _alive() and the kill (#692): a process
+        # that is already gone needs no killing, and the assert below still
+        # reports that it outlived the deadline.
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
     assert not alive, "the bridge's child outlived the hook"
 
 

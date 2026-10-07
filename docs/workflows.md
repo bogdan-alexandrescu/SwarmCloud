@@ -602,7 +602,9 @@ upstream's change when it:
 * integrates it, and every step it integrates changed nothing or was skipped.
   An integrator with at least one contributor that changed something runs, and
   merges only those; the others are listed under `git.integrated.no_change`,
-  not as `missing`.
+  not as `missing`. A contributor that SUCCEEDED having published nothing (a
+  read-only review) is left out the same way, under
+  `git.integrated.read_only`; see the review shape below.
 
 **A skip is transitive**: a step that stages anything from a SKIPPED step is
 skipped too, because a skipped step wrote nothing. A step that stages only the
@@ -731,6 +733,24 @@ What each step does, and why each field is there:
   integrator would otherwise report it "not found" on the PR as an incomplete
   integration. If it did edit the repository, those edits are unreviewed
   work, which is what the gate keeps out.
+* **A contributor that published nothing by design is not "missing"**
+  (#760). A review with no `when` gate reading it -- the implement -> review
+  -> fix chain in `scripts/acceptance/groups/workflow.sh` -- stays in the
+  integrator's `integrates`. If it ends SUCCEEDED with
+  `result_summary.git.published: false`, `commit_count: 0` and nothing left
+  uncommitted (it wrote only `verdict.json`), the integrator does not fetch
+  it and the pull request does not list it under "NOT included". The worker
+  decides this (`Worker._integrates_with_changes`), not swarm-api, because
+  only the worker reads the contributor's finished result: the `integrates`
+  list is fixed when the workflow is submitted, before any step has run. The
+  pull request names such a step on its own neutral line,
+  `read-only, nothing to merge: ...`, under the merged list, and the run
+  result lists it under `git.integrated.read_only`. `- missing:` keeps its
+  meaning, a step that should have pushed and did not: a FAILED contributor,
+  one whose result cannot be read, and one that says it published but whose
+  branch is not on the remote are still merged, and still listed missing
+  when the branch is absent. Release acceptance fails on any `- missing:`
+  line, so the distinction is what lets that check stay strict.
 
 ### What a MERGE verdict publishes
 

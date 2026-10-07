@@ -89,7 +89,7 @@ class _Wire:
 def _serve_one_call(monkeypatch, world, arguments: dict, *, token=None) -> tuple[float, _Wire]:
     """Serve ONE `swarm_follow` call the way Claude Code sends it. Returns the
     time the request went in and what came out."""
-    monkeypatch.setattr(server, "SwarmClient", lambda: world)
+    monkeypatch.setattr(server, "SwarmClient", lambda **_: world)
     params: dict = {"name": "swarm_follow", "arguments": arguments}
     if token is not None:
         params["_meta"] = {"progressToken": token}

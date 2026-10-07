@@ -118,6 +118,10 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
     const head = await waitFor(() => {
       const h = document.querySelector<HTMLElement>('.ag-head')
       expect(h?.querySelector('.ag-head-title')?.textContent).toBe('fix-heartbeat')
+      // The class chip fills in when the resource-class fetch resolves, after
+      // the title (#692): wait for it here rather than read it once below.
+      const facts = [...(h?.querySelectorAll('.ag-head-facts > li') ?? [])].map((li) => li.textContent)
+      expect(facts.slice(0, 2)).toEqual(['claude-code', 'standard'])
       return h!
     })
     expect(head.querySelector('.sk-st')?.textContent).toMatch(/running/i)
@@ -126,8 +130,6 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
     // of the meta line. Units and gen are the Attempts tab's.
     expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(ID)
     expect(head.querySelector<HTMLElement>('.ag-head-id .tid-copy')?.title).toBe(`${ID} (click to copy)`)
-    const meta = [...head.querySelectorAll('.ag-head-facts > li')].map((li) => li.textContent)
-    expect(meta.slice(0, 2)).toEqual(['claude-code', 'standard'])
     // Stop is in the header, once.
     expect(within(head).getByRole('button', { name: 'stop' })).toBeTruthy()
   })

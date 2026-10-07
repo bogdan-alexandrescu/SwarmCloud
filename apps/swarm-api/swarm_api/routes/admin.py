@@ -686,10 +686,15 @@ def list_quota(
     platform computed them (docs/audits/2026-09-20/data-gaps-found-by-fanout.md
     section 2). Each row's own `updated_at` is a different fact -- when the
     broker last wrote that document -- and is not a substitute.
+
+    `truncated` says the store's window (500 documents, in document-id
+    order) left matching documents out. Without it a cut set and the whole
+    set were the same response (#76).
     """
-    states = ctx.store.list_quota(tenant_id)
+    scan = ctx.store.scan_quota(tenant_id)
     return {
-        "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
+        "quota": [quota_to_api(q) for q in sorted(scan.states, key=lambda q: (q.provider, q.tenant_id))],
+        "truncated": scan.truncated,
         "tenant_id": tenant_id,
         "generated_at": ctx.now(),
     }
