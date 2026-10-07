@@ -42,7 +42,7 @@ function catalogue(p: RunnerProfile, offNames: readonly string[], all: readonly 
 const KEYS = { kind: 'read', registered: new Map<string, boolean>() } as const
 
 describe('D: the issue form shows the one runner it can use', () => {
-  it('draws claude-code alone, and the others behind "Other runners (N unavailable)" with a one-line reason each', async () => {
+  it('draws claude-code alone, and the others behind "Other runners (N, not used for issue runs)" with a one-line reason each', async () => {
     window.history.replaceState(null, '', '/submit/issue')
     render(<App />)
     const group = await waitFor(() => {
@@ -57,7 +57,8 @@ describe('D: the issue form shows the one runner it can use', () => {
     expect(more, 'no disclosure for the unavailable runners').not.toBeNull()
     expect(more!.open, 'the unavailable runners open by default').toBe(false)
     const items = [...more!.querySelectorAll('li')]
-    expect(more!.querySelector('summary')!.textContent).toBe(`Other runners (${items.length} unavailable)`)
+    // Not "unavailable" (QA G4-30): browser or mock can start now; issue runs do not use them.
+    expect(more!.querySelector('summary')!.textContent).toBe(`Other runners (${items.length}, not used for issue runs)`)
     expect(items.length).toBeGreaterThan(0)
     // One short line each: the issue form's own reason, or a platform reason
     // shortened (a runner the platform disables keeps its reason, as a tooltip).
