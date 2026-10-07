@@ -244,8 +244,12 @@ def secret_name(owner_tenant: str, label: str) -> str:
     (`validate_label` does not forbid a repeated dash, and an earlier draft of
     this comment claimed it did.)
 
-    Changed at the only moment it was free: no account had yet been registered
-    anywhere, so there was nothing to migrate.
+    The change was not free: accounts were already registered under the
+    single-dash name, and it orphaned three of them, each deriving a secret
+    name that did not exist. That is why an account records its `secret_ref`
+    and why the recorded name wins over the one derived here
+    (`Account.secret`, `AccountStore.secret_for`). Another rename orphans
+    every account that has no `secret_ref` recorded, so it needs a migration.
     """
     validate_label(label)
     if not owner_tenant:

@@ -142,6 +142,7 @@ from . import children as children_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
+from . import gitops as gitops_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import questions as questions_mod
@@ -206,6 +207,7 @@ from .gitops import (
     GitError,
     GitTransient,
     MergeOutcome,
+    PeerPin,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -234,6 +236,7 @@ from .gitops import (
     _git_text_full,
     _worker_identity,
 )
+from .gitidentity import BOT_GIT_IDENTITY, commit_identity, git_identity_env
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -460,6 +463,25 @@ _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
 _KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
 
 
+def _issue_title_from(path: Path, number: int) -> str | None:
+    """The issue's title from the header `issue.render` writes, or None.
+
+    `# Issue #<number>: <title>` is the file's first line, with the title
+    already scrubbed of every registered secret and folded onto one line;
+    `(no title)` is what an untitled issue reads as, and is no title.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first = handle.readline().rstrip("\n")
+    except OSError:
+        return None
+    prefix = f"# Issue #{number}: "
+    if not first.startswith(prefix):
+        return None
+    title = first[len(prefix):].strip()
+    return title if title and title != "(no title)" else None
+
+
 def _as_issue_number(value: Any) -> int | None:
     """A GitHub issue number from whatever `input.issue` turns out to hold.
 
@@ -548,6 +570,29 @@ def _skip_cause(reason: str) -> str:
     if reason in (standalone_mod.UPLOAD_FAILED, standalone_mod.UNREADABLE):
         return expected_mod.CAUSE_UPLOAD_ERROR
     return expected_mod.CAUSE_REFUSED
+
+
+def published_nothing(summary: Any) -> bool:
+    """True when a SUCCEEDED contributor's `result_summary` says it had no
+    branch to push (#760): its harvest ran (no `error`), recorded
+    `published: false`, and found no commit and no uncommitted path.
+
+    A review step under `integrate` -- one that writes only `verdict.json`
+    and leaves its clone as cloned -- ends exactly so. Every condition is
+    read, none defaulted: a contributor that committed, left work
+    uncommitted, or whose harvest failed could have pushed, and its absent
+    branch is "missing" on the pull request as before.
+    """
+    if not isinstance(summary, dict):
+        return False
+    git = summary.get("git")
+    if not isinstance(git, dict) or git.get("error"):
+        return False
+    return (
+        git.get("published") is False
+        and git.get("commit_count") == 0
+        and git.get("dirty_count", 0) == 0
+    )
 
 
 @dataclass
@@ -656,6 +701,13 @@ class Worker:
         #: `_title_from_issue_input` names the work by the issue number,
         #: always as "part of #N", never "Fixes #N".
         self._issue_title: str | None = None
+        #: The issue fetch started beside the clone (#721, P29,
+        #: `_start_issue_prefetch`), joined at STEP 6b. None when the task
+        #: asks for no issue, or nothing let it start early.
+        self._issue_prefetch: issue_mod.IssuePrefetch | None = None
+        #: When the issue fetch started and ended, seconds since process
+        #: start, for `agent_started`. None until a fetch has been joined.
+        self._issue_fetch_timing: dict[str, Any] | None = None
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -688,6 +740,10 @@ class Worker:
         # The contributors this integrator left out of its merge because they
         # changed nothing (`_integrates_with_changes`, 2026-10-05).
         self._no_change_contributors: list[str] = []
+        # The contributors it left out because they SUCCEEDED having
+        # published nothing by design -- a review that writes only a verdict
+        # (`_integrates_with_changes`, #760).
+        self._read_only_contributors: list[str] = []
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -2213,6 +2269,9 @@ class Worker:
         self._heartbeat()
 
         # ---- STEP 5: optional shallow clone -----------------------------
+        # The issue fetch starts first, in a thread, and runs beside the
+        # clone (#721, P29): it needs only the token and the issue number.
+        self._start_issue_prefetch(task)
         self.phases.enter("clone")
         try:
             repo_info = self._clone_keeping_lease(task)
@@ -2376,20 +2435,39 @@ class Worker:
         # A forge that did not answer is retried in-process (`_forge_retry`),
         # and if it stays down the ATTEMPT fails retryably -- never
         # INPUTS_UNAVAILABLE, which is for a forge that answered "no" (F1).
+        #
+        # BESIDE THE CLONE (#721, P29): the network read started before the
+        # clone (`_start_issue_prefetch`) and is joined here; the scrub and
+        # the write still happen here, after the credentials. A fetch that
+        # cannot be used -- none started, or for another repository URL than
+        # the clone settled on -- is made here as it always was. Either way
+        # a failure is raised from `stage_issue` exactly as before.
         issue_number = issue_mod.requested(task.get("input"), cfg.profile)
         if issue_number is not None:
             self.phases.enter("fetch_issue")
+            prefetch = self._issue_prefetch
+            if prefetch is not None and (
+                prefetch.number != issue_number or prefetch.repository_url != self._repo_url
+            ):
+                prefetch = None
+            if prefetch is not None and prefetch.running:
+                # Still reading after the clone: the lease is beaten while
+                # this waits, as it was while the clone ran.
+                with self._heartbeat_meanwhile("fetch_issue"):
+                    prefetch.wait()
+            fetch_started = float(self.phases.seconds_since_start())
             try:
-                issue_mod.stage_issue(
+                staged = issue_mod.stage_issue(
                     number=issue_number,
                     repository_url=self._repo_url,
-                    token=self._git_token(),
+                    token=prefetch.token if prefetch is not None else self._git_token(),
                     refusal=self._git_token_refusal(),
                     work_dir=ws.work,
                     scrub=self._scrub,
                     logger=self.log,
                     on_request=self._heartbeat,
                     retry=self._forge_retry(),
+                    prefetched=prefetch,
                 )
             except forge_mod.ForgeUnavailable as exc:
                 return functools.partial(
@@ -2399,6 +2477,20 @@ class Worker:
                     exc.retry_after_seconds,
                     exc.tries,
                 )
+            # The pull request's title names the issue by its title (#453):
+            # read back from the file just written -- scrubbed, one line --
+            # here, before the agent starts and can write that file.
+            self._issue_title = _issue_title_from(staged, issue_number)
+            self._issue_fetch_timing = (
+                {**prefetch.timing(), "beside_clone": True}
+                if prefetch is not None
+                else {
+                    "started_seconds": round(fetch_started, 3),
+                    "ended_seconds": float(self.phases.seconds_since_start()),
+                    "ok": True,
+                    "beside_clone": False,
+                }
+            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -3849,6 +3941,48 @@ class Worker:
             return None
         return record
 
+    def _start_issue_prefetch(self, task: dict[str, Any]) -> None:
+        """Start the issue fetch in a thread, beside the clone (#721, P29). Never raises.
+
+        Owner decision 2026-10-06 (chunk-3 observer P29): the fetch needs only
+        the token and the issue number, and both are known here, before the
+        clone. Started only when the task asks for an issue and names a
+        repository the clone will accept; in every other case nothing starts
+        and STEP 6b fetches, or refuses, exactly as it always did -- so a
+        refusal that never needed the forge (no repository, an input the
+        profile refuses) is still raised there and nowhere else.
+
+        The token is read here, by the same `_git_token` the fetch always
+        used, and only when an issue is asked for: a task without one reads
+        no extra secret. The URL is the one `_maybe_clone` settles on
+        (`validate_repository_url` of the same field it reads), so the join
+        uses this fetch; a different one is dropped there.
+        """
+        try:
+            number = issue_mod.requested(task.get("input"), self.cfg.profile)
+            raw = self.cfg.repository_url or task.get("repository_url")
+            if number is None or not raw:
+                return
+            try:
+                url = gitops_mod.validate_repository_url(raw)
+            except GitError:
+                return
+            self.phases.enter("issue_prefetch", issue=number)
+            prefetch = issue_mod.IssuePrefetch(
+                number=number,
+                repository_url=url,
+                token=self._git_token(),
+                retry=self._forge_retry(),
+                clock=self.phases.seconds_since_start,
+            )
+            prefetch.start()
+            self._issue_prefetch = prefetch
+        except Exception as exc:  # noqa: BLE001 -- STEP 6b fetches as before
+            self.log.warning(
+                "the issue fetch could not start beside the clone; fetching it later",
+                error=type(exc).__name__,
+            )
+
     def _clone_keeping_lease(self, task: dict[str, Any]) -> dict[str, Any] | None:
         """`_maybe_clone`, with the lease heartbeated from a thread meanwhile (#742).
 
@@ -3967,6 +4101,11 @@ class Worker:
         # Every try recorded, the pinned fetch's and the failed ones included
         # (#742): the clone's mark (`_mark_clone_timed`) lists them in order.
         tries: list[dict[str, Any]] = []
+        # Which address git and the egress probe each reached, per try, and
+        # the pin to the probe's after a stalled connect elsewhere (#721, P27;
+        # `gitops.PeerPin`). One for the whole clone, so a pin decided on the
+        # base pin's fetch carries to the branch-tip clone of the same host.
+        peers = PeerPin(self._egress, url)
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
             return retry_clone(
@@ -3997,6 +4136,7 @@ class Worker:
                     logger=self.log,
                     token=None if refusal else self._git_token(),
                     egress=self._egress,
+                    peers=peers,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
@@ -4031,6 +4171,7 @@ class Worker:
                 logger=self.log,
                 token=None if refusal else self._git_token(),
                 egress=self._egress,
+                peers=peers,
             ))
         except GitTransient as exc:
             self._mark_clone_timed(None, tries=tries, pinned=False)
@@ -4319,6 +4460,11 @@ class Worker:
         on to meet the refusal where it always did (staging, the clone, the
         merge's "missing"), with the words those give.
         """
+        return expected_mod.left_nothing(self._succeeded_upstream_summary(task_id))
+
+    def _succeeded_upstream_summary(self, task_id: str) -> Any:
+        """One upstream's `result_summary`, read through the tenant-checked
+        upstream read; None for one that did not SUCCEED or cannot be read."""
         try:
             upstream = inputs_mod.fetch_upstream_task(
                 self.db,
@@ -4330,7 +4476,7 @@ class Worker:
             return None
         if upstream.get("state") != TaskState.SUCCEEDED.value:
             return None
-        return expected_mod.left_nothing(upstream.get("result_summary"))
+        return upstream.get("result_summary")
 
     def _nothing_to_work_on(self, task: dict[str, Any]) -> list[str]:
         """The upstream task ids whose missing change leaves this step nothing
@@ -4406,17 +4552,30 @@ class Worker:
         one that ended with nothing to change (`no_change`, or skipped). Those
         pushed no branch, so merging them would name them "missing" on the
         pull request, as an incomplete integration they are not. They are
-        recorded in `_no_change_contributors`, and the publish says so."""
+        recorded in `_no_change_contributors`, and the publish says so.
+
+        Left out too, into `_read_only_contributors` (#760): one that
+        SUCCEEDED having published nothing (`published_nothing`) -- under
+        `integrate` a review step is a contributor, and one that writes only
+        `verdict.json` never had a branch to push. "missing" means a step
+        that should have pushed and did not; a FAILED contributor, or one
+        that says it published, is still merged and still named missing when
+        its branch is absent."""
         kept: list[str] = []
         self._no_change_contributors = []
+        self._read_only_contributors = []
         for task_id in self._dispatch_integrates():
             # One that cannot be read is merged as before, and the merge
             # names a branch it cannot find.
-            left = self._upstream_left(task_id) if _TASK_ID_RE.match(task_id) else None
-            if left is None:
-                kept.append(task_id)
-            else:
+            summary = (
+                self._succeeded_upstream_summary(task_id) if _TASK_ID_RE.match(task_id) else None
+            )
+            if expected_mod.left_nothing(summary) is not None:
                 self._no_change_contributors.append(task_id)
+            elif published_nothing(summary):
+                self._read_only_contributors.append(task_id)
+            else:
+                kept.append(task_id)
         return kept
 
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
@@ -5783,6 +5942,10 @@ class Worker:
                 base[passthrough] = value
         if self.cfg.model:
             base["MODEL"] = self.cfg.model
+        # WHO THE AGENT'S COMMITS NAME (P37): the person who dispatched the
+        # task, from its document as swarm-api recorded it at submission --
+        # never from `input` (invariant 10). See `gitidentity`.
+        base.update(git_identity_env(self._task))
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -6495,6 +6658,12 @@ class Worker:
         reader of the fields before this one. A clone that never landed --
         the forge never answered, or refused -- is marked too, `ok: False`,
         with `seconds` the tries' wall time summed and no phase numbers.
+
+        WHICH ADDRESS EACH SIDE REACHED (#721, P27): every `try_log` entry
+        also carries `probe_peer`, `git_peer` and `peer_pinned`
+        (`gitops.PeerPin`), and the top level the last try's two peers and
+        `peer_pinned`, true when any try ran pinned to the probe's address.
+        Distinct from `pinned`, which is the workflow BASE pin.
         """
         if self._clone_marked:
             return
@@ -6511,6 +6680,10 @@ class Worker:
             "try_log": log,
             **(clone.phases if clone is not None else {}),
         }
+        last = log[-1] if log else {}
+        timings.setdefault("probe_peer", last.get("probe_peer"))
+        timings.setdefault("git_peer", last.get("git_peer"))
+        timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
         # Set before the write, so a failed write is not tried again later.
         self._clone_marked = True
         self._emit_startup_mark("clone_timed", {"clone": timings})
@@ -6527,17 +6700,22 @@ class Worker:
         once, never an in-place restart. `seconds_since_process_start` is the
         worker's own clock from its first line; `cloned` says whether this
         attempt made a clone (a checkpoint can bring one back instead).
+
+        `issue_fetch` (#721, P29), when the step was pointed at an issue:
+        `started_seconds` and `ended_seconds` of the fetch on the same clock,
+        `ok`, and `beside_clone` -- true when it ran in its thread beside the
+        clone (`_start_issue_prefetch`), false when it was made at STEP 6b.
         """
         if self._agent_start_marked:
             return
         self._agent_start_marked = True
-        self._emit_startup_mark(
-            "agent_started",
-            {
-                "seconds_since_process_start": float(self.phases.seconds_since_start()),
-                "cloned": self._clone_marked,
-            },
-        )
+        detail: dict[str, Any] = {
+            "seconds_since_process_start": float(self.phases.seconds_since_start()),
+            "cloned": self._clone_marked,
+        }
+        if self._issue_fetch_timing is not None:
+            detail["issue_fetch"] = dict(self._issue_fetch_timing)
+        self._emit_startup_mark("agent_started", detail)
 
     def _release_account(self) -> None:
         """Give the account back, on whatever path this attempt is leaving by.
@@ -7326,6 +7504,107 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _scan_floor(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The commit the publish scans read from when it is not the clone base, or None.
+
+        A LANE THAT MERGED THE DEFAULT BRANCH (#453). The scans read what the
+        push adds as a diff from the clone base, so a lane that merged a newer
+        `main` carried every line `main` gained since the clone into it, and a
+        credential-shaped fixture on `main` refused the lane. Those lines are
+        published already: they are on the repository's default branch.
+
+        So when HEAD's first-parent line since the base holds a merge, the
+        default branch's tip is fetched from the FORGE into the worker's
+        publish repository (`fetch_branch_tip`, the token-bearing fetch the
+        carrier uses), and the floor is the newest commit HEAD and that tip
+        share -- where the lane merged, as the forge's own pull-request diff
+        reads it. Every line the floor's tree holds is on the default branch,
+        so reading from it hides nothing unpublished. Proven against the
+        forge, never the agent's clone: a side branch the agent made and
+        merged is no ancestor of the tip, the floor stays the base, and its
+        lines are scanned as before.
+
+        No merge, no default branch, a fetch that fails, or a floor that is
+        the base itself: None, and the scans read from the clone base.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        base = (self._publish_base or "").strip()
+        if not default_branch or not _SHA_RE.match(base):
+            return None
+        g = ["git", *_NO_HOOKS]
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                argv,
+                repo=Path(publish_repo),
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                slug=slug,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+
+        code, merges = run(
+            [*g, "rev-list", "--first-parent", "--merges", f"{base}..HEAD"], "publish-floor-merges"
+        )
+        if code != 0 or not merges.split():
+            return None
+        try:
+            tip = fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch; scanning from the clone base",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+        if not tip:
+            return None
+        code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
+        floor = found.strip()
+        if code != 0 or not _SHA_RE.match(floor) or floor == base:
+            return None
+        self.log.info(
+            "the lane merged the default branch; the publish scans read from where it merged",
+            floor=floor,
+            base=base,
+        )
+        return floor
+
+    def _publish_identity(self) -> tuple[str, str]:
+        """(name, email) every commit the worker pushes is written as.
+
+        THE PERSON WHO DISPATCHED THE WORK, as author AND committer (#765,
+        owner decision 2026-10-07: publish fully as the person). Read through
+        `gitidentity.commit_identity` -- the one reader of the
+        `metadata.dispatch.git_identity` record #764 writes at submission,
+        from the verified task document and never from `input` (invariant
+        10) -- so the agent's commits and the worker's name the same person.
+
+        When it names nobody (a service account's task with no usable
+        record, or no submitter) it answers `BOT_GIT_IDENTITY`, and the
+        worker keeps today's identity, `WorkerConfig.git_author_*`: the
+        bot every SwarmCloud branch was published as before.
+        """
+        person = commit_identity(self._task)
+        if person == BOT_GIT_IDENTITY:
+            return self.cfg.git_author_name, self.cfg.git_author_email
+        return person
+
     def _carrier_fold_onto_tip(
         self, publish_repo: Path, *, url: str, token: str, branch: str, message: str
     ) -> str | None:
@@ -7363,12 +7642,13 @@ class Worker:
                 "the repository was empty when it was cloned and the branch does "
                 "not exist yet; there is no commit to push the work onto"
             )
+        author_name, author_email = self._publish_identity()
         return commit_tree_onto(
             repo=publish_repo,
             parent=parent,
             message=message,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -7398,6 +7678,10 @@ class Worker:
             timeout_seconds=cfg.git_harvest_timeout_seconds,
             logger=self.log,
             overlap=self._scan_overlap(),
+            floor=self._scan_floor(
+                publish_repo, url=url, token=token,
+                default_branch=protected[0] if protected else None,
+            ),
         )
         if leak is not None:
             raise GitError(f"refusing to push: {self._scrub(leak)}")
@@ -7407,11 +7691,13 @@ class Worker:
         if made is None:
             self.log.info("carrier: the branch already holds this work", branch=branch)
             return
+        author_name, author_email = self._publish_identity()
         verify_worker_authorship(
             repo=publish_repo,
             base=self._publish_base,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8731,6 +9017,16 @@ class Worker:
             # object-checked fetch.
             if publish_repo is None:
                 publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
+            # EVERY COMMIT BELOW IS WRITTEN AS THE PERSON WHO DISPATCHED THE
+            # WORK (#765, owner decision 2026-10-07): the auto-commit, the
+            # replay or the fold, the integrator's merges. The bot only when
+            # the task names nobody. See `_publish_identity`.
+            author_name, author_email = self._publish_identity()
+            # Read before the replay or the fold rewrites the agent's merges
+            # away. See `_scan_floor`.
+            scan_floor = self._scan_floor(
+                publish_repo, url=url, token=token, default_branch=access.default_branch
+            )
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -8739,8 +9035,8 @@ class Worker:
                     "the agent edited but did not commit is not lost between the "
                     "workspace and this branch.",
                 ),
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8772,8 +9068,8 @@ class Worker:
                     keep=new_sha,
                     task_id=cfg.task_id,
                     scrub=lambda text: str(self._scrub(text)),
-                    author_name=cfg.git_author_name,
-                    author_email=cfg.git_author_email,
+                    author_name=author_name,
+                    author_email=author_email,
                     private_dir=ws.private,
                     logs_dir=ws.logs,
                     timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8788,6 +9084,7 @@ class Worker:
                     # file ADDS, `+` removed, in overlapping windows.
                     leaks=self._leaks_in_added_text,
                     overlap=self._scan_overlap(),
+                    upstream=scan_floor or "",
                 )
                 if replayed is not None:
                     kept = replayed
@@ -8804,8 +9101,8 @@ class Worker:
                             "every commit it pushes, so no author, trailer or footer "
                             "added inside the agent's container reaches this branch.",
                         ),
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8833,6 +9130,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 overlap=self._scan_overlap(),
+                floor=scan_floor,
             )
             if leak is not None:
                 reason = str(self._scrub(leak))
@@ -8875,8 +9173,8 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_clone_timeout_seconds,
                         logger=self.log,
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         branch_prefix=cfg.git_branch_prefix,
                     )
                     out["integrated"] = {
@@ -8891,6 +9189,12 @@ class Worker:
                     out.setdefault("integrated", {})["no_change"] = [
                         f"{cfg.git_branch_prefix}{tid}" for tid in self._no_change_contributors
                     ]
+                if self._read_only_contributors:
+                    # Not merged, and not missing: they SUCCEEDED having
+                    # published nothing by design (#760).
+                    out.setdefault("integrated", {})["read_only"] = [
+                        f"{cfg.git_branch_prefix}{tid}" for tid in self._read_only_contributors
+                    ]
 
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
@@ -8901,8 +9205,9 @@ class Worker:
             verify_worker_authorship(
                 repo=publish_repo,
                 base=self._publish_base,
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
+                also_own=((cfg.git_author_name, cfg.git_author_email),),
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -9178,6 +9483,15 @@ class Worker:
         if merge is not None:
             lines += ["", f"Integrates {len(merge.merged)} contributor branch(es):"]
             lines += [f"- merged: `{b}`" for b in merge.merged] or ["- none"]
+            if self._read_only_contributors:
+                # A neutral line, never under a NOT included heading: these
+                # steps finished having published nothing by design (#760),
+                # and a reviewer reading "missing" would re-run them for a
+                # branch they were never to push.
+                read_only = ", ".join(
+                    f"`{cfg.git_branch_prefix}{tid}`" for tid in self._read_only_contributors
+                )
+                lines += ["", f"read-only, nothing to merge: {read_only}"]
             if merge.conflicted:
                 lines += [
                     "",
@@ -9420,8 +9734,9 @@ class Worker:
         integer or a numeric string, also tolerating a mapping with a
         `number`/`issue_number` key in case the shape changes before it
         lands -- and returns None, not a guess, when there is no number at
-        all. `self._issue_title` is the hook the fetch fills in once it
-        exists; until then it is always None and the number names the work.
+        all. `self._issue_title` is the fetched issue's title, set in
+        `_prepare` when the fetch lands (`_issue_title_from`); without one --
+        no fetch, or an untitled issue -- the number names the work.
         """
         payload = task.get("input")
         issue = payload.get("issue") if isinstance(payload, dict) else None
@@ -11297,6 +11612,7 @@ def _first_leaking_commit(
     logger: Any,
     overlap: int = SCAN_OVERLAP_CHARS,
     floor: str = "",
+    upstream: str = "",
 ) -> int | None:
     """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
 
@@ -11313,6 +11629,13 @@ def _first_leaking_commit(
     what each file ADDS, `+` removed: a removed line was in the parent's tree
     already. The worker's own `keep` commit is skipped here; its tree is the
     final tree, which `final_tree_leak` scans before any push.
+
+    `upstream` is the default-branch commit the lane merged, proven on the
+    forge (`Worker._scan_floor`, #453), or "". A merge whose second parent is
+    that commit or one of its ancestors is diffed against its second parent:
+    what it adds over a published tree, so `main`'s own lines never fold the
+    lane's history. Every other commit, a merge of anything else included,
+    is diffed against its first parent as before.
     """
 
     def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
@@ -11352,6 +11675,13 @@ def _first_leaking_commit(
             continue
         if expected is not None:
             before = expected
+            if upstream and len(parents) == 2:
+                code, _, _ = run(
+                    [*git, "merge-base", "--is-ancestor", parents[1], upstream],
+                    "publish-scan-upstream",
+                )
+                if code == 0:
+                    before = parents[1]
         else:
             if empty_tree is None:
                 code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
@@ -11397,6 +11727,7 @@ def final_tree_leak(
     logger: Any,
     git_binary: str = "git",
     overlap: int = SCAN_OVERLAP_CHARS,
+    floor: str | None = None,
 ) -> str | None:
     """Why the branch about to be pushed must not be, or None when it may.
 
@@ -11426,6 +11757,11 @@ def final_tree_leak(
     `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
     of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
     `core.quotePath=false`, stay as a second belt.
+
+    `floor`, when given, is read from instead of `base`: a commit of the
+    repository's default branch the lane merged, proven on the forge
+    (`Worker._scan_floor`, #453). Every line its tree holds is published
+    already, so only what the branch adds over it is asked about.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -11455,6 +11791,8 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
+    if floor and _SHA_RE.match(floor.strip()):
+        before = floor.strip()
     code, hit = _scan_diff_stream(
         [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
@@ -11491,6 +11829,7 @@ def replay_agent_commits(
     git_binary: str = "git",
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
+    upstream: str = "",
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -11597,6 +11936,7 @@ def replay_agent_commits(
             logs_dir=logs_dir,
             timeout_seconds=timeout_seconds,
             logger=logger,
+            upstream=upstream,
         )
         if index is not None:
             logger.warning(

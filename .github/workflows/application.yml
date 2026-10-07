@@ -435,6 +435,13 @@ jobs:
         with:
           node-version: ${{ steps.node.outputs.major }}
 
+      - name: the lock agrees with every pyproject.toml
+        # `uv sync --frozen` installs what uv.lock says without checking it
+        # against the pyproject files, so a stale or hand-edited lock passed
+        # every job here (#76). One check is enough: every job reads this one
+        # lock. tests/unit/scripts/test_uv_lock_check_step.py holds it here.
+        run: uv lock --check
+
       - name: sync
         run: uv sync --frozen --all-extras --dev
 

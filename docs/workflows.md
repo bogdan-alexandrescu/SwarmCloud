@@ -602,7 +602,9 @@ upstream's change when it:
 * integrates it, and every step it integrates changed nothing or was skipped.
   An integrator with at least one contributor that changed something runs, and
   merges only those; the others are listed under `git.integrated.no_change`,
-  not as `missing`.
+  not as `missing`. A contributor that SUCCEEDED having published nothing (a
+  read-only review) is left out the same way, under
+  `git.integrated.read_only`; see the review shape below.
 
 **A skip is transitive**: a step that stages anything from a SKIPPED step is
 skipped too, because a skipped step wrote nothing. A step that stages only the
@@ -731,6 +733,24 @@ What each step does, and why each field is there:
   integrator would otherwise report it "not found" on the PR as an incomplete
   integration. If it did edit the repository, those edits are unreviewed
   work, which is what the gate keeps out.
+* **A contributor that published nothing by design is not "missing"**
+  (#760). A review with no `when` gate reading it -- the implement -> review
+  -> fix chain in `scripts/acceptance/groups/workflow.sh` -- stays in the
+  integrator's `integrates`. If it ends SUCCEEDED with
+  `result_summary.git.published: false`, `commit_count: 0` and nothing left
+  uncommitted (it wrote only `verdict.json`), the integrator does not fetch
+  it and the pull request does not list it under "NOT included". The worker
+  decides this (`Worker._integrates_with_changes`), not swarm-api, because
+  only the worker reads the contributor's finished result: the `integrates`
+  list is fixed when the workflow is submitted, before any step has run. The
+  pull request names such a step on its own neutral line,
+  `read-only, nothing to merge: ...`, under the merged list, and the run
+  result lists it under `git.integrated.read_only`. `- missing:` keeps its
+  meaning, a step that should have pushed and did not: a FAILED contributor,
+  one whose result cannot be read, and one that says it published but whose
+  branch is not on the remote are still merged, and still listed missing
+  when the branch is absent. Release acceptance fails on any `- missing:`
+  line, so the distinction is what lets that check stay strict.
 
 ### What a MERGE verdict publishes
 
@@ -1238,17 +1258,17 @@ submission, from the workflow's own `metadata`:
   spend are a request that would silently not happen, as `metadata.merge`
   `"on"` there is refused. It is stored as written; lane MS7 spends it, and
   until then it is accepted and changes nothing.
-* **A `ready` label is dropped beside a merge step.** `ready` is the label
-  `.github/workflows/auto-merge.yml` merges on. When the workflow's label
-  (`metadata.unit`, else `metadata.title`) is `ready`, in any case, and the
-  workflow has a merge step, swarm-api leaves it out of the dispatch block's
-  `pr_label` and records `metadata.merge_label_dropped: "ready"` on every
-  task, so the two mergers never race for one pull request and the step's
-  merges are the ones `auto-merge.yml`'s retirement gate counts
-  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
-  §5). Any other label, and a `ready` label on a workflow with no merge step,
-  is kept as before. `metadata.merge_label_dropped` is written by swarm-api
-  only: a caller's is a 422.
+* **The workflow's label is its pull request's fallback title, merge step
+  or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
+  the dispatch block's `pr_label`, which the worker uses only as title and
+  body text when no agent wrote `pr-title.txt`; it never becomes a GitHub
+  label. So a label that reads `ready` is kept as written beside a merge step
+  too. Lane MS1 had dropped it there, recording
+  `metadata.merge_label_dropped`; the owner reverted that on 2026-10-06
+  (#352) because it was aimed at the wrong thing: what races the merge step
+  is the GitHub `ready` label `auto-merge.yml` merges on, which an operator's
+  watcher or brief adds, not this title. `metadata.merge_label_dropped` is
+  no longer reserved or written.
 
 What the merge step checks, in order, and refuses with a plain reason
 (`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is

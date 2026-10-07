@@ -114,6 +114,7 @@ from swarm_common.states import ParkReason, TaskState
 from swarm_common.identity import Principal
 from swarm_common.states import TERMINAL_STATES
 
+from . import gitidentity
 from .auth import AuthContext
 from .cifix import BRANCH_PREFIX
 from .continuation import TASK_ID_RE
@@ -405,6 +406,7 @@ def _submitter(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> AuthContext:
             f"the merge step's submitter {email or '(not recorded)'} is no longer a member "
             f"of tenant {tenant.tenant_id!r}, so no CI fix round is submitted on their behalf"
         )
+    named = gitidentity.recorded(doc.get("metadata"))
     return AuthContext(
         principal=Principal(
             email=email,
@@ -416,6 +418,9 @@ def _submitter(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> AuthContext:
         tenant_id=tenant.tenant_id,
         is_admin=False,
         tenant_principal=tenant.principal,
+        # The name the merge step recorded for this person (P37), so a fix
+        # round's commits name them as the step's did.
+        display_name=named["name"] if named and named["email"] == email.lower() else "",
     )
 
 

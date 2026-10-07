@@ -903,6 +903,26 @@ jobs:
         # proven by the next step, which runs the smoke suite INSIDE the VPC.
         run: ./scripts/lib/deploy.sh --verify-only --no-health --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
 
+      - name: warm each Cloud Run worker job once on its new digest
+        # #363, measured 2026-10-07: the first execution of each Cloud Run job
+        # after a new image digest spends 30-59 s importing the image; every
+        # later start pays 1-3 s. One `--self-test` execution per per-tenant
+        # worker job pays that import here, before the smoke test and before
+        # acceptance, instead of in the first tenant task. The worker exits 0
+        # on that flag before reading its configuration: no lease, no Firestore,
+        # no task state (agent_worker.__main__.self_test).
+        #
+        # ONLY AFTER the verify step proved every job runs the promoted digest:
+        # warming the old digest would warm nothing. A failed warm run is a
+        # slower first task, not a broken release, so the script warns and
+        # exits 0; continue-on-error keeps even a refused name (the only
+        # non-zero exit) from failing the release. !cancelled(), not always():
+        # it executes jobs in the environment, and a cancel stops it.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 30
+        run: ./scripts/warm-jobs.sh
+
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
