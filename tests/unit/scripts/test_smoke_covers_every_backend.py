@@ -165,10 +165,13 @@ def test_every_backend_a_profile_resolves_to_gets_a_row():
     assert "AUTO" not in {backend for backend, _, _ in rows}
 
     # THE MUTATION THIS CATCHES: a program that keeps only the backends it found
-    # an AVAILABLE profile for. Disable browser and GKE_AUTOPILOT must still be
-    # listed -- with `-` -- rather than simply stop being mentioned.
+    # an AVAILABLE profile for. Disable every GKE profile -- browser, and
+    # contract request 54's temporary claude-code-gke -- and GKE_AUTOPILOT must
+    # still be listed -- with `-` -- rather than simply stop being mentioned.
     disabled = copy.deepcopy(served)
-    disabled["runtimes"]["browser"]["available"] = False
+    for entry in disabled["runtimes"].values():
+        if entry["resolved_backend"] == "GKE_AUTOPILOT":
+            entry["available"] = False
     rows = {backend: (profile, rc) for backend, profile, rc in _matrix(disabled)}
     assert rows["GKE_AUTOPILOT"] == ("-", "-"), rows
 

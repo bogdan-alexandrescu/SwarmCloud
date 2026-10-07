@@ -56,6 +56,7 @@ disabled for every tenant; no Job exists for them yet):
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `indexer` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`) |
+| `claude-code-gke` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 54, accepted by the owner 2026-10-07; TEMPORARY: claude-code on GKE Autopilot, the canary for contract request 53, removed when claude-code itself moves) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`

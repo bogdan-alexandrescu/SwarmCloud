@@ -1684,7 +1684,8 @@ function anythingRan(task: Task, attempts: AttemptRow[] | null): boolean {
  * two cannot disagree about whether a figure is coming.
  */
 function reportsSpend(profile: string): boolean {
-  return profile === 'claude-code' || profile === 'codex'
+  // claude-code-gke is claude-code on GKE (contract request 54, temporary).
+  return profile === 'claude-code' || profile === 'claude-code-gke' || profile === 'codex'
 }
 
 /**

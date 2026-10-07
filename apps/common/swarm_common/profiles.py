@@ -1287,6 +1287,17 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     ),
 }
 
+# TEMPORARY. CONTRACT REQUEST 54, accepted by the owner 2026-10-07: the canary
+# for contract request 53. claude-code on GKE Autopilot, IDENTICAL to
+# claude-code in every field but its name and its backend -- built from that
+# entry, not restated, so the two cannot drift. A caller picks it by name like
+# any other (invariant 10). Removed in the same change that switches
+# claude-code itself to GKE_AUTOPILOT. Terraform's text parser of this file
+# (tests/terraform/catalogue_mirror) reads this exact call shape.
+RUNNER_PROFILES["claude-code-gke"] = replace(
+    RUNNER_PROFILES["claude-code"], name="claude-code-gke", backend=Backend.GKE_AUTOPILOT
+)
+
 
 def resolve_backend(profile: RunnerProfile) -> Backend:
     """Resolve AUTO to a concrete backend.

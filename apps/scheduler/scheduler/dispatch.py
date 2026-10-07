@@ -557,6 +557,19 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
 GKE_METADATA_SERVER_IP = "169.254.169.254"
 
 
+def worker_model(settings: Any, profile: RunnerProfile) -> str | None:
+    """The model `profile`'s agent runs, from WORKER_MODELS, or None (#226).
+
+    ONE LOOKUP FOR BOTH BACKENDS, keyed by the profile's name. Terraform writes
+    WORKER_MODELS from `local.runner_models`, which names claude-code-gke
+    (contract request 54) with claude-code's model, so the GKE canary runs the
+    agent it is measuring against, not the CLI's default.
+    """
+    models = getattr(settings, "worker_models", None) or {}
+    value = models.get(profile.name)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def gke_worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """`worker_env`, plus what only a GKE worker pod needs: the metadata server BY ADDRESS.
 
@@ -765,9 +778,7 @@ class CloudRunJobDispatcher:
 
     def _model_for(self, profile: RunnerProfile) -> str | None:
         """The model this profile's agent runs, from WORKER_MODELS, or None."""
-        models = getattr(self._settings, "worker_models", None) or {}
-        value = models.get(profile.name)
-        return value.strip() if isinstance(value, str) and value.strip() else None
+        return worker_model(self._settings, profile)
 
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
@@ -1508,6 +1519,16 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
+        # THE PROFILE'S MODEL (#226; contract request 53, follow-up 1). A Cloud
+        # Run Job carries MODEL from Terraform or from `_build_job`; a GKE pod
+        # has no Job to carry it, so without this a claude-code pod -- the
+        # claude-code-gke canary of contract request 54 -- ran the CLI's default
+        # model. From the scheduler's own WORKER_MODELS, never from the task:
+        # a caller does not choose the model (invariant 10). A profile with no
+        # pinned model (browser) gets no MODEL, as before.
+        model = worker_model(self._settings, profile)
+        if model:
+            env.append({"name": "MODEL", "value": model})
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
