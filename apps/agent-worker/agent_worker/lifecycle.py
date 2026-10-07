@@ -236,7 +236,7 @@ from .gitops import (
     _git_text_full,
     _worker_identity,
 )
-from .gitidentity import git_identity_env
+from .gitidentity import BOT_GIT_IDENTITY, commit_identity, git_identity_env
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -461,6 +461,25 @@ _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
 #: manifest is bucket data: an id carrying `/` or `..` would name a key that
 #: starts with this task's prefix and leaves it.
 _KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
+
+
+def _issue_title_from(path: Path, number: int) -> str | None:
+    """The issue's title from the header `issue.render` writes, or None.
+
+    `# Issue #<number>: <title>` is the file's first line, with the title
+    already scrubbed of every registered secret and folded onto one line;
+    `(no title)` is what an untitled issue reads as, and is no title.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first = handle.readline().rstrip("\n")
+    except OSError:
+        return None
+    prefix = f"# Issue #{number}: "
+    if not first.startswith(prefix):
+        return None
+    title = first[len(prefix):].strip()
+    return title if title and title != "(no title)" else None
 
 
 def _as_issue_number(value: Any) -> int | None:
@@ -2438,7 +2457,7 @@ class Worker:
                     prefetch.wait()
             fetch_started = float(self.phases.seconds_since_start())
             try:
-                issue_mod.stage_issue(
+                staged = issue_mod.stage_issue(
                     number=issue_number,
                     repository_url=self._repo_url,
                     token=prefetch.token if prefetch is not None else self._git_token(),
@@ -2458,6 +2477,10 @@ class Worker:
                     exc.retry_after_seconds,
                     exc.tries,
                 )
+            # The pull request's title names the issue by its title (#453):
+            # read back from the file just written -- scrubbed, one line --
+            # here, before the agent starts and can write that file.
+            self._issue_title = _issue_title_from(staged, issue_number)
             self._issue_fetch_timing = (
                 {**prefetch.timing(), "beside_clone": True}
                 if prefetch is not None
@@ -7481,6 +7504,107 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _scan_floor(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The commit the publish scans read from when it is not the clone base, or None.
+
+        A LANE THAT MERGED THE DEFAULT BRANCH (#453). The scans read what the
+        push adds as a diff from the clone base, so a lane that merged a newer
+        `main` carried every line `main` gained since the clone into it, and a
+        credential-shaped fixture on `main` refused the lane. Those lines are
+        published already: they are on the repository's default branch.
+
+        So when HEAD's first-parent line since the base holds a merge, the
+        default branch's tip is fetched from the FORGE into the worker's
+        publish repository (`fetch_branch_tip`, the token-bearing fetch the
+        carrier uses), and the floor is the newest commit HEAD and that tip
+        share -- where the lane merged, as the forge's own pull-request diff
+        reads it. Every line the floor's tree holds is on the default branch,
+        so reading from it hides nothing unpublished. Proven against the
+        forge, never the agent's clone: a side branch the agent made and
+        merged is no ancestor of the tip, the floor stays the base, and its
+        lines are scanned as before.
+
+        No merge, no default branch, a fetch that fails, or a floor that is
+        the base itself: None, and the scans read from the clone base.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        base = (self._publish_base or "").strip()
+        if not default_branch or not _SHA_RE.match(base):
+            return None
+        g = ["git", *_NO_HOOKS]
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                argv,
+                repo=Path(publish_repo),
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                slug=slug,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+
+        code, merges = run(
+            [*g, "rev-list", "--first-parent", "--merges", f"{base}..HEAD"], "publish-floor-merges"
+        )
+        if code != 0 or not merges.split():
+            return None
+        try:
+            tip = fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch; scanning from the clone base",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+        if not tip:
+            return None
+        code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
+        floor = found.strip()
+        if code != 0 or not _SHA_RE.match(floor) or floor == base:
+            return None
+        self.log.info(
+            "the lane merged the default branch; the publish scans read from where it merged",
+            floor=floor,
+            base=base,
+        )
+        return floor
+
+    def _publish_identity(self) -> tuple[str, str]:
+        """(name, email) every commit the worker pushes is written as.
+
+        THE PERSON WHO DISPATCHED THE WORK, as author AND committer (#765,
+        owner decision 2026-10-07: publish fully as the person). Read through
+        `gitidentity.commit_identity` -- the one reader of the
+        `metadata.dispatch.git_identity` record #764 writes at submission,
+        from the verified task document and never from `input` (invariant
+        10) -- so the agent's commits and the worker's name the same person.
+
+        When it names nobody (a service account's task with no usable
+        record, or no submitter) it answers `BOT_GIT_IDENTITY`, and the
+        worker keeps today's identity, `WorkerConfig.git_author_*`: the
+        bot every SwarmCloud branch was published as before.
+        """
+        person = commit_identity(self._task)
+        if person == BOT_GIT_IDENTITY:
+            return self.cfg.git_author_name, self.cfg.git_author_email
+        return person
+
     def _carrier_fold_onto_tip(
         self, publish_repo: Path, *, url: str, token: str, branch: str, message: str
     ) -> str | None:
@@ -7518,12 +7642,13 @@ class Worker:
                 "the repository was empty when it was cloned and the branch does "
                 "not exist yet; there is no commit to push the work onto"
             )
+        author_name, author_email = self._publish_identity()
         return commit_tree_onto(
             repo=publish_repo,
             parent=parent,
             message=message,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -7553,6 +7678,10 @@ class Worker:
             timeout_seconds=cfg.git_harvest_timeout_seconds,
             logger=self.log,
             overlap=self._scan_overlap(),
+            floor=self._scan_floor(
+                publish_repo, url=url, token=token,
+                default_branch=protected[0] if protected else None,
+            ),
         )
         if leak is not None:
             raise GitError(f"refusing to push: {self._scrub(leak)}")
@@ -7562,11 +7691,13 @@ class Worker:
         if made is None:
             self.log.info("carrier: the branch already holds this work", branch=branch)
             return
+        author_name, author_email = self._publish_identity()
         verify_worker_authorship(
             repo=publish_repo,
             base=self._publish_base,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8886,6 +9017,16 @@ class Worker:
             # object-checked fetch.
             if publish_repo is None:
                 publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
+            # EVERY COMMIT BELOW IS WRITTEN AS THE PERSON WHO DISPATCHED THE
+            # WORK (#765, owner decision 2026-10-07): the auto-commit, the
+            # replay or the fold, the integrator's merges. The bot only when
+            # the task names nobody. See `_publish_identity`.
+            author_name, author_email = self._publish_identity()
+            # Read before the replay or the fold rewrites the agent's merges
+            # away. See `_scan_floor`.
+            scan_floor = self._scan_floor(
+                publish_repo, url=url, token=token, default_branch=access.default_branch
+            )
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -8894,8 +9035,8 @@ class Worker:
                     "the agent edited but did not commit is not lost between the "
                     "workspace and this branch.",
                 ),
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8927,8 +9068,8 @@ class Worker:
                     keep=new_sha,
                     task_id=cfg.task_id,
                     scrub=lambda text: str(self._scrub(text)),
-                    author_name=cfg.git_author_name,
-                    author_email=cfg.git_author_email,
+                    author_name=author_name,
+                    author_email=author_email,
                     private_dir=ws.private,
                     logs_dir=ws.logs,
                     timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8943,6 +9084,7 @@ class Worker:
                     # file ADDS, `+` removed, in overlapping windows.
                     leaks=self._leaks_in_added_text,
                     overlap=self._scan_overlap(),
+                    upstream=scan_floor or "",
                 )
                 if replayed is not None:
                     kept = replayed
@@ -8959,8 +9101,8 @@ class Worker:
                             "every commit it pushes, so no author, trailer or footer "
                             "added inside the agent's container reaches this branch.",
                         ),
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8988,6 +9130,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 overlap=self._scan_overlap(),
+                floor=scan_floor,
             )
             if leak is not None:
                 reason = str(self._scrub(leak))
@@ -9030,8 +9173,8 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_clone_timeout_seconds,
                         logger=self.log,
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         branch_prefix=cfg.git_branch_prefix,
                     )
                     out["integrated"] = {
@@ -9062,8 +9205,9 @@ class Worker:
             verify_worker_authorship(
                 repo=publish_repo,
                 base=self._publish_base,
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
+                also_own=((cfg.git_author_name, cfg.git_author_email),),
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -9590,8 +9734,9 @@ class Worker:
         integer or a numeric string, also tolerating a mapping with a
         `number`/`issue_number` key in case the shape changes before it
         lands -- and returns None, not a guess, when there is no number at
-        all. `self._issue_title` is the hook the fetch fills in once it
-        exists; until then it is always None and the number names the work.
+        all. `self._issue_title` is the fetched issue's title, set in
+        `_prepare` when the fetch lands (`_issue_title_from`); without one --
+        no fetch, or an untitled issue -- the number names the work.
         """
         payload = task.get("input")
         issue = payload.get("issue") if isinstance(payload, dict) else None
@@ -11467,6 +11612,7 @@ def _first_leaking_commit(
     logger: Any,
     overlap: int = SCAN_OVERLAP_CHARS,
     floor: str = "",
+    upstream: str = "",
 ) -> int | None:
     """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
 
@@ -11483,6 +11629,13 @@ def _first_leaking_commit(
     what each file ADDS, `+` removed: a removed line was in the parent's tree
     already. The worker's own `keep` commit is skipped here; its tree is the
     final tree, which `final_tree_leak` scans before any push.
+
+    `upstream` is the default-branch commit the lane merged, proven on the
+    forge (`Worker._scan_floor`, #453), or "". A merge whose second parent is
+    that commit or one of its ancestors is diffed against its second parent:
+    what it adds over a published tree, so `main`'s own lines never fold the
+    lane's history. Every other commit, a merge of anything else included,
+    is diffed against its first parent as before.
     """
 
     def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
@@ -11522,6 +11675,13 @@ def _first_leaking_commit(
             continue
         if expected is not None:
             before = expected
+            if upstream and len(parents) == 2:
+                code, _, _ = run(
+                    [*git, "merge-base", "--is-ancestor", parents[1], upstream],
+                    "publish-scan-upstream",
+                )
+                if code == 0:
+                    before = parents[1]
         else:
             if empty_tree is None:
                 code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
@@ -11567,6 +11727,7 @@ def final_tree_leak(
     logger: Any,
     git_binary: str = "git",
     overlap: int = SCAN_OVERLAP_CHARS,
+    floor: str | None = None,
 ) -> str | None:
     """Why the branch about to be pushed must not be, or None when it may.
 
@@ -11596,6 +11757,11 @@ def final_tree_leak(
     `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
     of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
     `core.quotePath=false`, stay as a second belt.
+
+    `floor`, when given, is read from instead of `base`: a commit of the
+    repository's default branch the lane merged, proven on the forge
+    (`Worker._scan_floor`, #453). Every line its tree holds is published
+    already, so only what the branch adds over it is asked about.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -11625,6 +11791,8 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
+    if floor and _SHA_RE.match(floor.strip()):
+        before = floor.strip()
     code, hit = _scan_diff_stream(
         [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
@@ -11661,6 +11829,7 @@ def replay_agent_commits(
     git_binary: str = "git",
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
+    upstream: str = "",
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -11767,6 +11936,7 @@ def replay_agent_commits(
             logs_dir=logs_dir,
             timeout_seconds=timeout_seconds,
             logger=logger,
+            upstream=upstream,
         )
         if index is not None:
             logger.warning(

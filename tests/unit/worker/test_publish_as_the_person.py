@@ -270,6 +270,8 @@ def _logger():
 
 def _verify(repo: Path, base: str, tmp_path: Path, *, author: tuple[str, str],
             also_own: tuple[tuple[str, str], ...] = ()) -> int:
+    for name in ("private", "logs"):
+        (tmp_path / name).mkdir(exist_ok=True)
     return verify_worker_authorship(
         repo=repo, base=base, author_name=author[0], author_email=author[1],
         also_own=also_own,

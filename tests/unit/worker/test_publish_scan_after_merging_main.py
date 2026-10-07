@@ -116,6 +116,10 @@ def test_a_lane_that_merged_main_is_not_refused_on_mains_lines(
 
     assert out["published"] is True, out.get("publish_reason")
     assert "final_tree_leak" not in out, out
+    # The per-commit pass read the merge from `main`'s side too: the lane's
+    # commits are kept one by one, not folded for `main`'s fixture.
+    assert "agent_commits_folded" not in out, out
+    assert out.get("agent_commits_kept") == 2, out
     branch = f"{config.git_branch_prefix}t-merged-main"
     assert {"lane.txt", "after.txt", "src/fixture_settings.py"} <= tree_at(origin, branch)
 
