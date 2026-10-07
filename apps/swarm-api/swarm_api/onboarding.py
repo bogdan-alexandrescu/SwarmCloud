@@ -102,12 +102,12 @@ ACCESS_VERIFIED = "access_verified"
 READY = "ready"
 STEPS = (SIGNED_IN, GITHUB_CONNECTED, ORGS_ENABLED, REPOS_CHOSEN, ACCESS_VERIFIED, READY)
 
-TODO = "todo"
+NOT_STARTED = "todo"
 IN_PROGRESS = "in_progress"
 DONE = "done"
 FAILED = "failed"
 STALE = "stale"
-STATES = (TODO, IN_PROGRESS, DONE, FAILED, STALE)
+STATES = (NOT_STARTED, IN_PROGRESS, DONE, FAILED, STALE)
 
 #: When `done` becomes `stale`. The daily pass (`GitTokens.reverify`, inside
 #: the five-minute repository poll) re-probes a pair once it is a day old,
@@ -237,7 +237,7 @@ def _step(name: str, state: str, *, evidence: dict[str, Any], issues: list[dict]
 
 
 def _waiting(name: str, on: str) -> dict[str, Any]:
-    return _step(name, TODO, evidence={"waiting_for": on})
+    return _step(name, NOT_STARTED, evidence={"waiting_for": on})
 
 
 # --------------------------------------------------------------------------
@@ -275,7 +275,7 @@ def _connected_step(caller: Caller, record: GitTokenRecord | None, via: str | No
                     now: datetime) -> dict[str, Any]:
     suffix = _user_suffix(caller)
     if record is None:
-        return _step(GITHUB_CONNECTED, TODO, evidence={
+        return _step(GITHUB_CONNECTED, NOT_STARTED, evidence={
             "via": None,
             # Today's route to a token of your own: the stdin store, then
             # `POST /v1/git-tokens` {"scope": "user"}. The App's Connect
@@ -415,7 +415,7 @@ def _repos_step(caller: Caller, record: GitTokenRecord, regs: list[dict[str, Any
             for reg in regs]
     evidence = {"repositories": rows, "capped": capped}
     if not rows:
-        return _step(REPOS_CHOSEN, TODO, evidence=evidence, checked_at=now)
+        return _step(REPOS_CHOSEN, NOT_STARTED, evidence=evidence, checked_at=now)
     issues = []
     for row in rows:
         if row["archived"] and row["mode"] == "write":
@@ -541,7 +541,7 @@ def derive(
         steps.append(_orgs_step(caller, record, via, regs, now))
         chosen = _repos_step(caller, record, regs, registrations_capped, now)
         steps.append(chosen)
-        steps.append(_waiting(ACCESS_VERIFIED, REPOS_CHOSEN) if chosen["state"] == TODO
+        steps.append(_waiting(ACCESS_VERIFIED, REPOS_CHOSEN) if chosen["state"] == NOT_STARTED
                      else _verified_step(record, regs, pair_docs, now))
     before = next((s["step"] for s in steps if s["state"] != DONE), None)
     if before is None:
