@@ -299,9 +299,12 @@ class RunnerContext:
 def run_runner(body: Callable[[RunnerContext], dict[str, Any]], *, name: str) -> int:
     """Shared entrypoint wrapper. Every runner's `__main__` calls this.
 
-    It guarantees the two things the worker depends on: a result.json always
-    exists after the child exits, and a quota signal always reaches disk before
-    the exit code that announces it.
+    Once the context is built, it guarantees the two things the worker depends
+    on: a result.json exists after the child exits, and a quota signal always
+    reaches disk before the exit code that announces it. Before that there is
+    nowhere to write one: if `RunnerContext.from_env()` fails, it exits
+    EXIT_FAILED (or raises) with no result.json, and the worker falls back to
+    the exit code and the stderr tail.
     """
     try:
         ctx = RunnerContext.from_env()

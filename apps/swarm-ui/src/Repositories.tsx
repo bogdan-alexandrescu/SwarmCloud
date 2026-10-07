@@ -41,7 +41,7 @@ export function RepositoriesScreen({ view, go }: { view: string | null; go: (to:
   if (page === 'register') return <RegisterRepository go={go} />
   if (page === 'tokens') return <GitTokensPage go={go} />
   if (page === 'permissions') return <PermissionsPage go={go} />
-  if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} />
+  if (repo !== null && repo !== '') return <RepositoryDetail key={repo} repoId={repo} tab={q.get('tab')} go={go} pr={q.get('pr')} graph={{ view: q.get('view'), q: q.get('q') }} />
   // The list's heading is written HERE, as a literal, because
   // tests/unit/control_plane/test_nav_headings_agree.py reads the tab's
   // heading out of this function's source: the tab says Repositories, so the

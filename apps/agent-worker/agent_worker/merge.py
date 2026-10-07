@@ -21,6 +21,14 @@ written under the tenant identity, so the live pull request is then checked
 to be that task's own branch, from no fork, at exactly that head. Nothing is
 read from a pointer the signed spec does not name.
 
+A PULL REQUEST NO WORKFLOW OPENED (#352, owner decision 2026-10-07): a
+`merge_pr` workflow's signed `merge_target` names no task but the pull
+request's `number` and the `head_sha` the caller named, which swarm-api
+checked was its head at submission (`continuation.resolve_merge_pr`). The
+sha is pinned exactly as a pushed head is, and every check after it is the
+same gate -- open, no fork, the base, the head, every required check green
+there -- except the branch name, which no SwarmCloud task chose.
+
 THE ORDER IS #219's (docs/merge-step.md §2.2): the reap and every check that
 needs no credential first; then the token; then the forge's facts; then the
 merge, pinned to the head; then the record and the issues. A refusal ends the
@@ -749,8 +757,8 @@ def mergeable_repository(repository_url: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class MergeTarget:
-    #: The task that opened the pull request.
-    pull_request: str
+    #: The task that opened the pull request; None for a named one.
+    pull_request: str | None
     #: The review whose verdict file this step staged, when there is one.
     review: str | None = None
     verdict_file: str | None = None
@@ -758,6 +766,10 @@ class MergeTarget:
     #: by swarm-api at submission (lane MS1); None when it registered none.
     #: The `base_not_default` refusal reads it first, GitHub's own second.
     base: str | None = None
+    #: A `merge_pr` pull request (#352): its number and the head to pin,
+    #: both set, and `pull_request` None.
+    number: int | None = None
+    head_sha: str | None = None
 
 
 class TargetInvalid(ValueError):
@@ -772,16 +784,19 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
             "task that opened the pull request"
         )
     unknown = sorted(
-        str(k) for k in raw if k not in ("pull_request", "review", "verdict_file", "base")
+        str(k) for k in raw
+        if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha")
     )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
-    pull_request = _task_id(raw.get("pull_request"))
-    if pull_request is None:
-        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request is not a task id")
     base = raw.get("base")
     if "base" in raw and (not isinstance(base, str) or not base):
         raise TargetInvalid(f"{MERGE_TARGET_FIELD}.base is not a branch name")
+    if "number" in raw or "head_sha" in raw:
+        return _named_target(raw, base)
+    pull_request = _task_id(raw.get("pull_request"))
+    if pull_request is None:
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request is not a task id")
     review = raw.get("review")
     verdict_file = raw.get("verdict_file")
     if review is None and verdict_file is None:
@@ -791,6 +806,22 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
             f"{MERGE_TARGET_FIELD} names a review without its verdict file, or one without a review"
         )
     return MergeTarget(pull_request, review, verdict_file, base=base)
+
+
+def _named_target(raw: Mapping[str, Any], base: Any) -> MergeTarget:
+    """A `merge_pr` target: a number and a head sha, and nothing a task names."""
+    beside = sorted(k for k in ("pull_request", "review", "verdict_file") if k in raw)
+    if beside:
+        raise TargetInvalid(
+            f"{MERGE_TARGET_FIELD} names a pull request by number and also {', '.join(beside)}"
+        )
+    number = _int(raw.get("number"))
+    head = raw.get("head_sha")
+    if number is None or number < 1:
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.number is not a pull request number")
+    if not isinstance(head, str) or not _SHA.fullmatch(head):
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.head_sha is not a full commit sha")
+    return MergeTarget(None, base=base, number=number, head_sha=head)
 
 
 def _pushed_head(doc: Mapping[str, Any]) -> str | None:
@@ -859,6 +890,8 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         target = parse_merge_target(ctx.dispatch)
     except TargetInvalid as exc:
         return run.refuse("merge_target_invalid", str(exc))
+    if target.pull_request is None:
+        return _merge_named(run, target)
     summary["pull_request_task"] = target.pull_request
     if target.review is not None:
         summary["review_task"] = target.review
@@ -908,6 +941,34 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     # task-store reads that need no credential, so before the token.
     own = _own_doc(ctx)
     fix_heads = _fix_round_heads(ctx, own, opener, target.pull_request)
+    return _merge_with_token(
+        run, number=number, pinned=pinned,
+        branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
+        own=own, fix_heads=fix_heads,
+    )
+
+
+def _merge_named(run: _Run, target: MergeTarget) -> ActionOutcome:
+    """A `merge_pr` target (#352): no opener to read, so straight to the token.
+
+    The pinned head is the sha the caller named, signed; no CI-fix round can
+    exist (swarm-api refuses `merge_fix_rounds` beside `merge_pr`), and the
+    branch is whatever the pull request's author called it."""
+    number, pinned = target.number, target.head_sha
+    if number is None or pinned is None:
+        return run.refuse("merge_target_invalid",
+                          f"{MERGE_TARGET_FIELD} names neither a task nor a pull request")
+    run.summary["pull_request"] = number
+    run.summary["pinned"] = pinned
+    return _merge_with_token(run, number=number, pinned=pinned,
+                             branch=None, own=_own_doc(run.ctx), fix_heads=[])
+
+
+def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None,
+                      own: Mapping[str, Any], fix_heads: list[tuple[str, str]]) -> ActionOutcome:
+    """§2.2 6-10: read the token, build the merger, and act with it. `branch`
+    None skips the branch-name check, and only that, for a named pull request."""
+    ctx, summary = run.ctx, run.summary
     repository = mergeable_repository(ctx.repository_url)
     if repository is None:
         return run.refuse("forge_unsupported",
@@ -939,8 +1000,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         del token
     try:
         return _with_forge(run, merger, number=number, pinned=pinned,
-                           branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
-                           own=own, fix_heads=fix_heads)
+                           branch=branch, own=own, fix_heads=fix_heads)
     except forge_mod.ForgeRedirectRefused as exc:
         cause = EndCause.MERGE_FAILED if summary.get("merge_called") else EndCause.MERGE_REFUSED
         return refusal(summary, cause, exc.code, str(exc))
@@ -964,7 +1024,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
 
 
 def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
-                branch: str, own: Mapping[str, Any] | None = None,
+                branch: str | None, own: Mapping[str, Any] | None = None,
                 fix_heads: list[tuple[str, str]] | None = None) -> ActionOutcome:
     """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors.
 
@@ -1023,7 +1083,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("from_fork",
                           f"pull request #{number} comes from {pr.head_repo or 'an unknown fork'}, "
                           f"not {merger.full_name}")
-    belongs = pull_request_belongs(
+    belongs = branch is None or pull_request_belongs(
         {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
          "base": {"repo": {"full_name": pr.base_repo}}},
         author_branch=branch,

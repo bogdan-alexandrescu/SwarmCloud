@@ -48,7 +48,8 @@
      (168px at 1056), cut with its title. */
   .wfl .wfl-table th[data-col="cost"] { width: 100px; }
   .wfl .wfl-table th[data-col="owner"] { width: 116px; }
-  .wfl .wfl-table th[data-col="started"] { width: 88px; }
+  /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20). */
+  .wfl .wfl-table th[data-col="submitted"] { width: 96px; }
   .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
   .wfl .wfl-table td[data-col="state"],
@@ -68,6 +69,24 @@
   .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
   .wfl .wfl-name { min-width: 0; }
   .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* THE ID IS ONE LINE, CUT (QA G3-09): it broke across two and three lines
+     (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title. */
+  .wfl .wfl-name > .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }
+}
+/* THE NAME GETS ITS ROOM BELOW 1680 (QA G3-09, 2026-10-07). At 1440 the nine
+   columns left the name 166px of a 1054px table: titles cut at ~20
+   characters and the Shape cell at `1 → 1 →…`. Shape repeats what Steps done
+   says and Runners moves to the name's second line (`.wfl-mix`), so the name
+   holds about 390px. 1680 is where the table is wide enough (~1290px) for all
+   nine with the name still over 280px. */
+.wfl .wfl-name > .wfl-mix { display: none; }
+@media (min-width: 900px) and (max-width: 1679px) {
+  .wfl .wfl-table th[data-col="shape"],
+  .wfl .wfl-table td[data-col="shape"],
+  .wfl .wfl-table th[data-col="runners"],
+  .wfl .wfl-table td[data-col="runners"] { display: none; }
+  .wfl .wfl-name > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 .wfl-shape { white-space: nowrap; }

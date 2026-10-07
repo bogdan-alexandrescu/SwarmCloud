@@ -15,3 +15,8 @@ output "secret_names" {
   description = "Fully qualified secret names."
   value       = { for k, s in google_secret_manager_secret.this : k => s.name }
 }
+
+output "github_app_secret_ids" {
+  description = "The GitHub App's platform secret ids (docs/runbooks/github-app.md). Empty while github_app_secrets_enabled is false. Names only; never a value."
+  value       = sort([for k, s in google_secret_manager_secret.github_app : s.secret_id])
+}

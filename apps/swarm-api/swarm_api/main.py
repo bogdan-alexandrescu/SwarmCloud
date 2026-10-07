@@ -31,6 +31,7 @@ from .routes import (
     health,
     issues,
     leases,
+    onboarding,
     outcomes,
     platform,
     repositories,
@@ -109,6 +110,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # The git token registry (docs/git-tokens.md, lane GT1): slot records,
     # never values. Tenant-scoped; the document is `gittokens`'s own.
     app.include_router(gittokens.router)
+    # The onboarding checklist (docs/onboarding.md §2, lane OB1): derived on
+    # each read from the records above, read-only, the caller's own tenant.
+    app.include_router(onboarding.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

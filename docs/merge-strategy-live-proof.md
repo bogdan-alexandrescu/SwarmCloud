@@ -290,7 +290,12 @@ all run in the clean repository, and none of that state reaches them:
   the agent's `.git/shallow`. Anything the agent's store or config does there
   can only make the fetch fail, which publishes nothing;
 * **every worker git runs with `core.commitGraph=false`, `GIT_GRAFT_FILE=/dev/null`
-  and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt.
+  and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt. The graft file stays
+  `/dev/null`, and its deprecation advice is switched off with
+  `advice.graftFileDeprecated=false` (#808). The upload side is the exception:
+  upload-pack never reads `advice.*`, so its graft file is
+  `/dev/null/no-grafts`, a path that cannot open. git skips a missing graft
+  file silently, and grafts are off just the same.
 
 What the agent left uncommitted is committed in the publish repository too
 (#259 M1, owner decision 2026-09-28). `git add` in the clone read the clone's

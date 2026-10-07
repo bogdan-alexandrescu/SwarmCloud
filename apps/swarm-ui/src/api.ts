@@ -11,9 +11,9 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
-  type ResolvedToken, type TokenScope,
+  type ResolvedToken, type TestSelection, type TokenScope,
 } from './RepositoriesData'
 import {
   normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
@@ -1658,6 +1658,12 @@ export interface RuntimeTopology {
    * that read failed -- never rebuilt here from a naming rule.
    */
   profilePools?: Record<string, string[]> | null
+  /**
+   * Of those, the pools with no document, by runner-profile name: the same
+   * read's `admission.uncapped`, which admission skips as unlimited (QA
+   * G5-04). Absent or null when that read failed or served no admission block.
+   */
+  profileUncapped?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1688,6 +1694,13 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
       profilePools: poolsOk
         ? Object.fromEntries(
             Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
+      profileUncapped: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).flatMap(([name, p]) =>
+              p.admission === undefined ? [] : [[name, p.admission.uncapped]],
+            ),
           )
         : null,
       poolsDetail: poolsOk
@@ -5221,6 +5234,20 @@ export async function queryRepositoryImpact(repoId: string, change: { pull_reque
 }
 
 /**
+ * `POST /v1/repositories/{repo_id}/tests:select`: changed paths -> the tests
+ * that cover them, the always-run tests, the paths no edge covers and the
+ * suite to run for those (repo-index.md §4.3). A query, not a change: the
+ * route reads the promoted index and stores nothing. The body is the paths,
+ * as data, and nothing else (the route's `extra="forbid"`: invariant 10).
+ */
+export async function selectRepositoryTests(repoId: string, paths: readonly string[]): Promise<Result<TestSelection | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/tests:select', { repo_id: repoId }), 'POST', { paths })
+  if (r.status === 'ok') return { ...r, data: normTestSelection(r.data) }
+  if (r.status === 'stale') return { ...r, data: normTestSelection(r.data) }
+  return r
+}
+
+/**
  * `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server
  * and status (routes/repositories.py `repository_languages`). An API that
  * does not serve it answers 404/501, and Settings then draws the index
@@ -5235,9 +5262,43 @@ export async function loadResolvedToken(repoId: string): Promise<Result<Resolved
   return readAs(route('/v1/git-tokens'), (raw) => normResolvedFromTokens(raw, repoId))
 }
 
-/** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
+/**
+ * Pages read at most, whatever `next_page` says: the API caps the list at
+ * `MAX_READABLE_PAGES` (10, repositories.py) and says `capped`, so this is
+ * only a backstop against an answer that never stops offering a next page.
+ */
+const READABLE_PAGE_BACKSTOP = 50
+
+/**
+ * `GET /v1/repositories/readable`, EVERY page: what the tenant's git token can
+ * read, for Register C (OB0, docs/onboarding.md §5). Page 1 is asked for with
+ * no `page`, then `?page=N` for each `next_page` the API offers, until it
+ * offers none. `capped` arrives on the last page and is kept, so the picker
+ * can say the token reads more than is listed.
+ *
+ * A failure on page 1 is the read's failure. A failure on a later page is
+ * not: the pages already read are served, with `gap` naming the page that did
+ * not come back, so the picker says the list is short instead of passing it
+ * off as everything.
+ */
 export async function loadReadableRepositories(): Promise<Result<ReadableList>> {
-  return readAs(route('/v1/repositories/readable'), normReadable, (d) => d.repositories.length === 0)
+  const first = await readAs(route('/v1/repositories/readable'), normReadable)
+  if (first.status !== 'ok') return first
+  let list = first.data
+  let asked = 1
+  while (list.next_page !== null && list.next_page > asked && asked < READABLE_PAGE_BACKSTOP) {
+    asked = list.next_page
+    const more = await readAs(route('/v1/repositories/readable', {}, new URLSearchParams({ page: String(asked) })), normReadable)
+    if (more.status === 'ok') {
+      list = appendReadable(list, more.data)
+      continue
+    }
+    const message = more.status === 'error' || more.status === 'stale' ? more.error.message : 'the page was not read'
+    list = { ...list, next_page: null, gap: { page: asked, message } }
+    break
+  }
+  if (list.repositories.length === 0 && list.gap === null) return { status: 'empty', fetchedAt: first.fetchedAt, serverAt: first.serverAt }
+  return { ...first, data: list }
 }
 
 export interface RegisterRepositoryBody {
