@@ -535,7 +535,10 @@ describe('the steps Table fits its width (#503)', () => {
     // and that minimum fits the step card's column at 1440 (1440 less the
     // 84px spine, the 236px panel and the page and card gutters), so at 1440
     // there is still no sideways scroll.
-    expect(at(t.parentElement!, 'overflow-x')).toBe('auto')
+    // `clip`, not `auto` (QA G3-12): below its minimum the box stacks the
+    // rows rather than scrolling, so the wrapper never needs to scroll
+    // sideways, and an `auto` wrapper kept the sticky head from sticking.
+    expect(at(t.parentElement!, 'overflow-x')).toBe('clip')
     expect(parseFloat(at(t, 'min-width') ?? '0')).toBeLessThanOrEqual(1000)
   })
 })

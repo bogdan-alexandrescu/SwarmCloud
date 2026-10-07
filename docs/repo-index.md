@@ -1131,7 +1131,7 @@ indistinguishable from a missing one.
 | route | does |
 |---|---|
 | `POST /v1/repositories` | register: `{"repository": "owner/repo", "default_branch"?: "...", "allowed_profiles"?: [...], "index"?: {...}}`; reads the forge once (§1); idempotent on `repo_id` |
-| `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage |
+| `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage (counts of modules, §6.2) |
 | `GET /v1/repositories/{repo_id}` | one registration, with its last 20 index runs and the runs and workflows that used its index |
 | `PATCH /v1/repositories/{repo_id}` | schedule, trigger, `allowed_profiles`, `default_branch`, `paused` |
 | `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console. The task artifacts are left to the artifact lifecycle; since IX3 nothing deletes the registration's `repos/<repo_id>/` objects (index copies, graph), because the lifecycle never matches `repos/` and no index run sweeps an unregistered repository -- they stay until deleted by hand (§2.3) |
@@ -1195,6 +1195,23 @@ repository page lists a repository's index runs, and a query over all tasks by
 a metadata key is a composite index on a collection every other lane writes.
 Indexes: `repositories (tenant_id, owner, repo)` and
 `repo_index_runs (tenant_id, repo_id, queued_at desc)`.
+
+`index.coverage` is **counts, not a ratio** (decided 2026-10-07, QA G4-03):
+`{modules, modules_with_tests, test_map_edges, always_tests}`, written by
+`coverage()` in `swarm_api/repoindex.py` when a version is promoted. The
+console draws it as "20 of 83 modules", the bar filled to that share, with
+"1,339 edges · 7 always-run" under it. The unit is the index's *modules*
+because that is what the index can count: a `test_map` edge's source is a
+glob (`apps/common/swarm_common/**`), so the share of *source files* with a
+test edge, which the first mock-up drew as a percentage, is not something
+the index knows. The console and its mock-up had expected a 0-1 ratio the API
+never served, so every card drew "Tests mapped —" with a tooltip saying the
+index had not reported it; a percentage of modules relabelled as source
+files would be the same mistake in a quieter form. The module count also
+differs from the graph's: the index lists every module its indexer named,
+docs and config included, while a graph node is a directory holding at
+least one parsed code symbol (`module_graph` in `impact.py`), and the Graph
+tab says so beside both numbers.
 
 ### 6.3 The frozen contract
 

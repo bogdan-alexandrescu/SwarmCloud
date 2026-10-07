@@ -9706,7 +9706,28 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   gap: var(--ctl-s2);
   margin: var(--ctl-s2) 0 0;
 }
+/* THE SPAN'S TWO DRILL LINKS ARE TWO LINKS (QA G3-16, 2026-10-07): inline,
+   they ran together as `… → list them203 cancelled …`. The bucket's row
+   (`.ol-actions`) already wraps with a gap; the span's now does too. */
+.ol-span-drill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ctl-s3);
+  margin: var(--ctl-s2) 0 0;
+}
 .ol-pending { height: 420px; margin-top: var(--ctl-s3); }
+/* A PERSON'S CELL IS CAPPED (QA G3-17): the local part of the address, the
+   whole address in its title, and never wider than 220px, so the table's
+   last columns stay inside the card at 1440. */
+.ol-who {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
 
 /* ---- the cards ---- */
 /* DENSE (#503): "Reliability" and "Workflows that failed" span the row, so in

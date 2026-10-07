@@ -161,7 +161,8 @@ describe('D21: the Checkpoints tab counts from the read its pane draws, from the
     api.loadCheckpoints.mockResolvedValue(ok(listing([])))
     render(<Routed start="detail" />)
     // On Details, before Checkpoints has ever been opened: a count, not a dash.
-    await waitFor(() => expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0'))
+    // Kept of written (G2-12): a bare `0` read as none ever written.
+    await waitFor(() => expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1'))
     expect(tab('Details').getAttribute('aria-selected')).toBe('true')
     expect(tab('Checkpoints').querySelector('em')?.getAttribute('title')).toMatch(/^1 written, 0 kept/)
     // One read: the badge and the pane are the same answer.
@@ -175,7 +176,7 @@ describe('D21: the Checkpoints tab counts from the read its pane draws, from the
     expect(sum.textContent).toBe('1 written, 0 kept')
     expect(sum.closest('[hidden]')).toBeNull()
     expect(api.loadCheckpoints.mock.calls.length, 'opening the tab read the listing again').toBe(reads)
-    expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0')
+    expect(tab('Checkpoints').querySelector('em')?.textContent).toBe('0 of 1')
   })
 
   it('keeps a dash with its reason while the listing has not answered', async () => {
