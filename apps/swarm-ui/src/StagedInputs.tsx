@@ -42,7 +42,10 @@ export function StagedInputs({ task }: { task: Task }) {
               <tr role="row">
                 <th role="columnheader" scope="col">File</th>
                 <th role="columnheader" scope="col">From</th>
-                <th role="columnheader" scope="col" className="is-num">Arrived</th>
+                {/* `Size`, as the Artifacts tab heads the same column (G2-09,
+                    QA 2026-10-07): it read `Arrived 17 KiB`. A file not
+                    arrived yet says which not-yet in the cell. */}
+                <th role="columnheader" scope="col" className="is-num">Size</th>
               </tr>
             </thead>
             <tbody role="rowgroup">
@@ -54,7 +57,7 @@ export function StagedInputs({ task }: { task: Task }) {
                   <td role="cell" data-label="From">
                     <From row={r} />
                   </td>
-                  <td role="cell" data-label="Arrived" className="is-num">
+                  <td role="cell" data-label="Size" className="is-num">
                     <Arrived row={r} />
                   </td>
                 </tr>

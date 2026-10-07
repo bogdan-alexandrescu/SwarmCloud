@@ -44,7 +44,9 @@ function table(): HTMLElement {
 describe('Q3: the Steps table has real column widths', () => {
   it('scrolls inside its card only below a minimum width', () => {
     const h = table()
-    expect(painted(h.querySelector('.wf-table')!, ['overflow-x', 'overflow'], WIDE)).toBe('auto')
+    // `clip` (QA G3-12): below the minimum the rows stack, so the wrapper
+    // never scrolls sideways, and `auto` kept the sticky head from sticking.
+    expect(painted(h.querySelector('.wf-table')!, ['overflow-x', 'overflow'], WIDE)).toBe('clip')
     const min = painted(h.querySelector('table')!, 'min-width', WIDE) ?? ''
     expect(min, 'the table has no minimum width').toMatch(/^\d+(?:\.\d+)?(?:px|rem)$/)
     expect(painted(h.querySelector('table')!, 'table-layout', WIDE)).toBe('fixed')
