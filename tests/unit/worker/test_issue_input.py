@@ -602,7 +602,9 @@ def _worker(worker_factory, monkeypatch, url: str, fetch):
     worker.log.register_secret(TOKEN)
     monkeypatch.setattr(
         worker, "_git_token",
-        lambda: TOKEN if worker.phases.current == "fetch_issue" else None,
+        # Read where the fetch starts, beside the clone (P29), and never by
+        # the clone itself.
+        lambda: TOKEN if worker.phases.current in ("issue_prefetch", "fetch_issue") else None,
     )
     monkeypatch.setattr(issue_mod, "fetch_issue", fetch)
     return worker
