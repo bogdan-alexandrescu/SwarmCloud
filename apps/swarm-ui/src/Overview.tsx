@@ -24,6 +24,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
+import { disabledSentence } from './ProfileMatrix'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
@@ -1043,7 +1044,7 @@ export function ProfileTile({
   if (profile.available === false) {
     const reason = profile.disabled_reason || 'refused by the platform'
     return (
-      <div className="ov-hp is-off" title={`${name} is disabled: ${reason}. Nothing can start on it, whatever the pools hold.`}>
+      <div className="ov-hp is-off" title={`${disabledSentence(name, profile.disabled_reason)} Nothing can start on it, whatever the pools hold.`}>
         <span className="ov-idc" title={name}>{name}</span>
         <b className="ov-hp-off">disabled</b>
         <small title={reason}>{reason}</small>
@@ -1502,7 +1503,10 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   const page = dataOf(leases)
   if (page === null) return out
   for (const l of page.leases) {
-    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+    // `starting` is a worker that has not beaten yet inside its dispatch
+    // deadline (G5-01): booting, not silent, so it is not one of the item's.
+    const { kind } = leaseLiveliness(l, page.thresholds)
+    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
   }
   return out
 }
