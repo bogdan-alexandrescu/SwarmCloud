@@ -127,7 +127,7 @@ describe('the Context card (screen 5, pick B)', () => {
     await waitFor(() => expect(visible(line('index'))).toContain('3 modules'), WAIT)
     const text = visible(line('index'))
     expect(text).toContain('index now at a1b2c3d')
-    expect(text).toContain('test map 86%')
+    expect(text).toContain('test map 20 of 83 modules')
     expect(line('index').querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('current')
     const given = line('index').querySelector('.c-dash')!
     expect(given.getAttribute('title')).toMatch(/index_sha/)

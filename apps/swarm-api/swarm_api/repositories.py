@@ -71,6 +71,7 @@ from .forge import (
     RepositoryRead,
     repository_from,
 )
+from .gittokens import GitTokenRecord, GitTokens, refusal_cause
 from .validation import _ISSUE_OWNER, _ISSUE_REPO, check_repository_url
 
 log = logging.getLogger(__name__)
@@ -387,6 +388,18 @@ class Repositories:
             return None
         return data
 
+    def token_evidence(self, tenant_id: str) -> GitTokenRecord | None:
+        """The tenant token's record, for what its last probe read of the
+        token's reach (#780): a refused registration names its likely cause
+        from it. None when there is no record, or it cannot be read now --
+        the refusal still stands, it just names no cause beyond the plain one."""
+        try:
+            return GitTokens(self._db, now=self._now).tenant_default(tenant_id)
+        except Exception as exc:
+            log.warning("repository register tenant=%s token evidence unreadable (%s)",
+                        tenant_id, type(exc).__name__)
+            return None
+
     def get(self, tenant_id: str, repo_id: str) -> dict[str, Any]:
         data = self.find(tenant_id, repo_id)
         if data is None:
@@ -513,14 +526,39 @@ def _no_access(secret_name: str, what: str) -> RepositoryNoAccess:
     )
 
 
+def _refused(secret_name: str, owner: str, repo: str,
+             evidence: Callable[[], GitTokenRecord | None] | None) -> RepositoryNoAccess:
+    """A 404/403 on `owner/repo`, naming its likely cause (docs/onboarding.md
+    §2.3; #780): SSO not authorised for the org, the org refusing classic
+    tokens, or the token's account not seeing the repository -- from what the
+    token's last probe read (`gittokens.refusal_cause`). Additive: the code
+    stays `no_access` and `detail` gains `cause`, `org` and `evidence_at`."""
+    record = evidence() if evidence is not None else None
+    cause = refusal_cause(owner, repo, record)
+    message = f"the tenant's forge credential {secret_name} cannot read {owner}/{repo}. "
+    message += cause["message"]
+    if cause["code"] == "ACCOUNT_CANNOT_SEE":
+        message += (" Grant it read access to the repository, or store a token that has it "
+                    "with scripts/create-secrets.sh --stdin")
+    return RepositoryNoAccess(message, detail={
+        "secret_name": secret_name,
+        "cause": cause["code"],
+        "org": cause["org"],
+        "evidence_at": cause["evidence_at"],
+    })
+
+
 def read_repository(
-    owner: str, repo: str, tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues
+    owner: str, repo: str, tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues,
+    evidence: Callable[[], GitTokenRecord | None] | None = None,
 ) -> RepositoryRead:
     """The registration's one forge read: `GET /repos/{owner}/{repo}`.
 
     A 404 is `no_access`, not `not_found`: GitHub answers 404 for a private
     repository the token cannot see, so all a 404 proves is that this token
-    cannot read it -- which is the refusal registration makes.
+    cannot read it -- which is the refusal registration makes. A 404 or 403
+    names its likely cause from `evidence`, the tenant token's record, read
+    only on a refusal.
     """
     secret_name = tenant.secret_name(GIT_PROVIDER)
     what = f"{owner}/{repo}"
@@ -528,7 +566,7 @@ def read_repository(
     try:
         read = forge.repository(owner, repo, token)
     except (IssueNotFound, IssueNoAccess):
-        raise _no_access(secret_name, what) from None
+        raise _refused(secret_name, owner, repo, evidence) from None
     finally:
         token = ""
     if not read.can_read:
@@ -556,7 +594,8 @@ def register(
     existing = store.find(tenant.tenant_id, repo_id)
     if existing is not None:
         return existing, False
-    read = read_repository(owner, repo, tenant, tokens=tokens, forge=forge)
+    read = read_repository(owner, repo, tenant, tokens=tokens, forge=forge,
+                           evidence=lambda: store.token_evidence(tenant.tenant_id))
     # GitHub's own spelling of the name; equal to the request's but for case.
     owner, repo = read.owner, read.repo
     try:
