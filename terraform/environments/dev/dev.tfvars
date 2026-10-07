@@ -450,9 +450,10 @@ github_app_id        = "5229127"
 github_app_client_id = "Iv23lipzgYrbQvuJdmZg"
 github_app_slug      = "swarmcloud-saga"
 
-# The 15-minute user-token refresh sweep, swarm-forge-refresh. Off until
-# swarm-api serves POST /v1/admin/forge/refresh (lane OB3; runbook step 7).
-enable_forge_refresh = false
+# The 15-minute user-token refresh sweep, swarm-forge-refresh. ON since
+# 2026-10-07: swarm-api serves POST /v1/admin/forge/refresh from OB3's release
+# (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
+enable_forge_refresh = true
 
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
