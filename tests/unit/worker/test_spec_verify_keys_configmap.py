@@ -16,7 +16,9 @@ What matters about RBAC is the ABSENCE of a write grant, not a read grant: the
 kubelet fetches a volume with the node's credentials and these pods have no
 token at all. So this file holds that nothing in a tenant namespace, and
 nothing cluster-wide, lets the tenant's KSA or GSA -- by email or by uniqueId
--- update, patch or delete a ConfigMap.
+-- update, patch or delete a ConfigMap: neither Kubernetes RBAC nor, since
+GKE allows what either one allows, IAM (no `container.configMaps.*` in any
+custom role, no ConfigMap-reaching predefined role on the tenant GSA; #346).
 
 Same loading and rendering style as test_kubernetes_manifests.py; a file of
 its own so #353's edits to that file and these do not collide.
@@ -294,3 +296,63 @@ def test_nothing_in_kubernetes_is_a_cluster_role_or_cluster_role_binding():
     assert files, "the control: kubernetes/ holds manifests"
     found = [str(p.relative_to(REPO)) for p in files if cluster_scoped.search(p.read_text())]
     assert found == []
+
+
+# ---------------------------------------------------------------------------
+# ...and nothing in IAM grants it either (#346, #354 review)
+# ---------------------------------------------------------------------------
+#
+# Kubernetes RBAC is half of what GKE authorises a Google identity by: a
+# request is allowed when RBAC OR IAM allows it. A custom role carrying a
+# `container.configMaps.*` permission, or a predefined role like
+# roles/container.developer granted to the tenant's GSA, would let the tenant
+# rewrite the keys its own pod verifies against, whatever the Roles above say.
+
+TERRAFORM = REPO / "terraform"
+TENANCY = TERRAFORM / "modules" / "tenancy"
+
+_PERMISSION = re.compile(r'"(container\.[A-Za-z]+\.[A-Za-z]+)"')
+_ROLE = re.compile(r'\brole\s*=\s*"(roles/[^"]+)"')
+
+#: Predefined roles that reach ConfigMaps in a cluster (container.configMaps.*
+#: is in each of them).
+_CONFIGMAP_WRITING_ROLES = re.compile(r"^roles/(container\.(developer|admin)|editor|owner)$")
+
+
+def _tf_files(root: Path) -> list[Path]:
+    return sorted(p for p in root.rglob("*.tf") if ".terraform" not in p.parts)
+
+
+def _configmap_permissions(text: str) -> list[str]:
+    return [p for p in _PERMISSION.findall(text) if p.startswith("container.configMaps.")]
+
+
+def test_the_iam_scan_catches_a_configmap_permission():
+    """The control for the scan below: a role written the way platform_roles.tf
+    writes them, holding a configMaps permission, is caught."""
+    role = 'permissions = [\n  "container.jobs.create",\n  "container.' + 'configMaps.update",\n]\n'
+    assert _configmap_permissions(role) == ["container.configMaps.update"]
+
+
+def test_no_custom_role_in_terraform_carries_a_configmap_permission():
+    files = _tf_files(TERRAFORM)
+    assert files, "the control: terraform/ holds .tf files"
+    every = {p for f in files for p in _PERMISSION.findall(f.read_text())}
+    assert "container.jobs.create" in every, (
+        "the control: the GKE dispatcher's container.* permissions are where the scan looks"
+    )
+    found = {
+        str(f.relative_to(REPO)): _configmap_permissions(f.read_text())
+        for f in files
+        if _configmap_permissions(f.read_text())
+    }
+    assert found == {}
+
+
+def test_the_tenant_gsa_is_granted_no_role_that_reaches_configmaps():
+    files = _tf_files(TENANCY)
+    roles = {r for f in files for r in _ROLE.findall(f.read_text())}
+    assert "roles/storage.objectUser" in roles, (
+        "the control: the tenancy module's grants are where the scan looks"
+    )
+    assert sorted(r for r in roles if _CONFIGMAP_WRITING_ROLES.match(r)) == []
