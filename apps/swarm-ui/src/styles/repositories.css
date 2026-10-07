@@ -116,7 +116,14 @@
 .ur-tmap { display: flex; flex-direction: column; gap: 10px; }
 .ur-tmap .ur-search { max-width: 360px; }
 /* A row is a source with every test reaching it; each test carries its own evidence (QA G4-02). */
-.ur-tmap-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+.ur-tmap-row { display: grid; grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1.6fr); gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+.ur-tmap-src { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ur-tmap-sym { font-size: var(--t-micro); }
+.ur-tmap-n { display: flex; flex-direction: column; gap: 2px; color: var(--text); }
+.ur-tmap-n small { color: var(--text-dim); font-size: var(--t-micro); }
+/* A glob drawn as a glob (QA G4-08): the directory in mono, its `/**` dimmed. */
+.ur-glob { font-family: var(--mono); overflow-wrap: anywhere; }
+.ur-glob-tail { opacity: .55; }
 .ur-tmap-row:first-child { border-top: 0; }
 .ur-tmap-row code, .ur-unmapped code { overflow-wrap: anywhere; }
 .ur-tests { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -124,6 +131,30 @@
 .ur-test > code { min-width: 0; }
 .ur-hint.is-warn { color: var(--s-warn); }
 .ur-unmapped { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-micro); }
+.ur-always-row, .ur-suite-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+.ur-always-row:first-child, .ur-suite-row:first-child { border-top: 0; }
+.ur-always-row code, .ur-suite-row code { overflow-wrap: anywhere; }
+.ur-always-row small { color: var(--text-dim); font-size: var(--t-micro); }
+.ur-cmd { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.ur-cmd > code { min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); }
+.ur-copy { flex: none; }
+
+/* "Which tests cover these paths?" (Detail B's lookup, QA G4-08). */
+.ur-lookup-form { display: flex; gap: 8px; align-items: flex-start; }
+.ur-paths { flex: 1 1 auto; min-width: 0; min-height: var(--h-ctl); border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); padding: 6px 10px; font: var(--t-meta)/var(--lh-meta) var(--mono); resize: vertical; }
+.ur-sel { width: 100%; border-collapse: collapse; font-size: var(--t-micro); margin-top: 8px; }
+.ur-sel th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+.ur-sel td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line-soft); vertical-align: baseline; }
+.ur-sel td code { overflow-wrap: anywhere; }
+.ur-sel td .ur-copy { margin-left: 6px; }
+.ur-sel-why { display: block; color: var(--text-dim); font-size: var(--t-micro); }
+.c-chip.ur-chip-warn { color: var(--s-warn); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+
+/* The tab strip scrolls at 390 (QA G4-19): the edge with tabs behind it
+   fades, and RepositoriesDetail.tsx scrolls the open tab into view. */
+.ur-tabs[data-fade='end'] { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.ur-tabs[data-fade='start'] { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); }
+.ur-tabs[data-fade='both'] { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
 
 /* ---- screen 11, Settings A ------------------------------------------------- */
 .ur-locked { margin: 0; }
@@ -187,7 +218,8 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-lang { grid-template-columns: minmax(0, 1fr) auto; }
   .ur-run { grid-template-columns: 18px 70px minmax(0, 1fr) auto; }
   .ur-run small { display: none; }
-  .ur-tmap-row { grid-template-columns: minmax(0, 1fr); }
+  .ur-tmap-row, .ur-always-row, .ur-suite-row { grid-template-columns: minmax(0, 1fr); }
+  .ur-lookup-form { flex-direction: column; align-items: stretch; }
   .ur-acts { margin-left: 0; }
   /* The grid needs the full width (screen 13's risk): a phone reads perms-b's cards. */
   .ur-mx-wide { display: none; }

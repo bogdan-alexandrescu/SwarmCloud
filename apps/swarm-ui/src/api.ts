@@ -11,9 +11,9 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
-  type ResolvedToken, type TokenScope,
+  type ResolvedToken, type TestSelection, type TokenScope,
 } from './RepositoriesData'
 import {
   normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
@@ -5217,6 +5217,20 @@ export async function queryRepositoryImpact(repoId: string, change: { pull_reque
   const r = await writeTo(route('/v1/repositories/{repo_id}/impact', { repo_id: repoId }), 'POST', change)
   if (r.status === 'ok') return { ...r, data: normImpact(r.data) }
   if (r.status === 'stale') return { ...r, data: normImpact(r.data) }
+  return r
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/tests:select`: changed paths -> the tests
+ * that cover them, the always-run tests, the paths no edge covers and the
+ * suite to run for those (repo-index.md §4.3). A query, not a change: the
+ * route reads the promoted index and stores nothing. The body is the paths,
+ * as data, and nothing else (the route's `extra="forbid"`: invariant 10).
+ */
+export async function selectRepositoryTests(repoId: string, paths: readonly string[]): Promise<Result<TestSelection | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/tests:select', { repo_id: repoId }), 'POST', { paths })
+  if (r.status === 'ok') return { ...r, data: normTestSelection(r.data) }
+  if (r.status === 'stale') return { ...r, data: normTestSelection(r.data) }
   return r
 }
 
