@@ -38,8 +38,10 @@
 .ur-cmeta > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ur-cmeta > span + span::before { content: "·"; margin-right: 3px; }
 .ur-cmeta b { color: var(--text); font-weight: 550; }
-.ur-tm { display: grid; grid-template-columns: auto minmax(0, 1fr) 44px; gap: 8px; align-items: center; font-size: var(--t-micro); }
-.ur-tm > b { text-align: right; font-family: var(--mono); font-weight: 500; }
+.ur-tm { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: var(--t-micro); }
+.ur-tm > b { text-align: right; font-family: var(--mono); font-weight: 500; white-space: nowrap; }
+/* What stands behind the modules figure: edges and always-run tests (QA G4-03). */
+.ur-tm-sub { grid-column: 1 / -1; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ur-bar { display: flex; height: 6px; min-width: 60px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .ur-bar > i { display: block; height: 100%; background: var(--s-live); }
 .ur-bar.is-warn > i { background: var(--s-warn); }
@@ -113,10 +115,14 @@
 .ur-used small { color: var(--text-dim); font-size: var(--t-micro); }
 .ur-tmap { display: flex; flex-direction: column; gap: 10px; }
 .ur-tmap .ur-search { max-width: 360px; }
-.ur-tmap-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+/* A row is a source with every test reaching it; each test carries its own evidence (QA G4-02). */
+.ur-tmap-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
 .ur-tmap-row:first-child { border-top: 0; }
 .ur-tmap-row code, .ur-unmapped code { overflow-wrap: anywhere; }
 .ur-tests { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ur-test { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; min-width: 0; }
+.ur-test > code { min-width: 0; }
+.ur-hint.is-warn { color: var(--s-warn); }
 .ur-unmapped { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-micro); }
 
 /* ---- screen 11, Settings A ------------------------------------------------- */
