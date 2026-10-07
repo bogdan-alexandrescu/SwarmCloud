@@ -59,7 +59,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
-| 51 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | open |
+| 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | open |
 
 ---
 
@@ -8886,7 +8886,7 @@ rows for values nothing writes.
 
 ---
 
-## 51. `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED
+## 52. `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED
 
 **Status:** open. Filed 2026-10-07 with #748 (a MERGE verdict starts a
 container only to open the pull request). The code that needs it ships
@@ -8921,7 +8921,7 @@ In `apps/common/swarm_common/states.py`, the PARKED row of `_ALLOWED`:
 
 ```python
     # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
-    # (#748, contract request 51). It held no lease, so there is nothing to
+    # (#748, contract request 52). It held no lease, so there is nothing to
     # release; only swarm-api writes it, guarded on its own claim.
     TaskState.PARKED: frozenset(
         {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}

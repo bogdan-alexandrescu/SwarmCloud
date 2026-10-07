@@ -14,7 +14,7 @@ What these tests hold:
   1. The restated rules are the worker's and the scheduler's: file names,
      bounds, attribution markers and stripping, the verdict lines, the
      marker key, the claim timeout, and which steps are held.
-  2. Off until contract request 51: with no PARKED -> SUCCEEDED edge,
+  2. Off until contract request 52: with no PARKED -> SUCCEEDED edge,
      nothing is read, claimed or written.
   3. MERGE with one contributor: one branch at the implementer's pushed
      commit, one pull request titled and described by the implementer, the
@@ -87,7 +87,7 @@ class RecordingWaker:
 
 @pytest.fixture
 def contract(monkeypatch):
-    """Contract request 51 applied, for this test only."""
+    """Contract request 52 applied, for this test only."""
     monkeypatch.setattr(verdictpublish, "contract_allows", lambda: True)
 
 
@@ -260,10 +260,10 @@ def test_title_refusal_is_the_workers_list(title, why):
 
 
 # --------------------------------------------------------------------------
-# 2. off until contract request 51
+# 2. off until contract request 52
 # --------------------------------------------------------------------------
 
-def test_off_until_contract_request_51(db, objects, client, github, waker, monkeypatch):
+def test_off_until_contract_request_52(db, objects, client, github, waker, monkeypatch):
     monkeypatch.setattr(verdictpublish, "contract_allows", lambda: False)
     _workflow(db, objects)
     before = json.dumps(_fix(db), default=str, sort_keys=True)
@@ -271,7 +271,7 @@ def test_off_until_contract_request_51(db, objects, client, github, waker, monke
     response = _push(client)
 
     assert response.status_code == 200, response.text
-    assert response.json()["report"]["skipped"] == "contract_request_51"
+    assert response.json()["report"]["skipped"] == "contract_request_52"
     assert github.calls == []
     assert waker.rung == []
     assert json.dumps(_fix(db), default=str, sort_keys=True) == before

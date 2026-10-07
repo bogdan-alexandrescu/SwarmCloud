@@ -504,6 +504,9 @@ module "scheduler" {
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
+  # #748: known at plan time, unlike api_endpoint, so it can gate a count.
+  enable_task_finished_push = true
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {

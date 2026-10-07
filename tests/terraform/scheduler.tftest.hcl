@@ -615,7 +615,8 @@ run "swarm_api_gets_only_task_finished_as_the_rollup_sweeper" {
   }
 
   variables {
-    api_endpoint = "https://swarm-api-abcdef-uc.a.run.app/"
+    api_endpoint              = "https://swarm-api-abcdef-uc.a.run.app/"
+    enable_task_finished_push = true
   }
 
   assert {
@@ -653,6 +654,6 @@ run "no_api_endpoint_no_task_finished_push" {
 
   assert {
     condition     = length(google_pubsub_subscription.api_task_finished) == 0
-    error_message = "with no swarm-api endpoint there is nothing to push to"
+    error_message = "the push subscription is off unless the root enables it"
   }
 }

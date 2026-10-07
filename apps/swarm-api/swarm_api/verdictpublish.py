@@ -75,7 +75,7 @@ before. The worker then finds the pull request this module may already have
 opened and adopts it (`forge.open_pull_request`'s 422 path).
 
 INVARIANT 1. The step goes PARKED -> SUCCEEDED and never holds a lease, a
-pool count or an execution. That transition is CONTRACT REQUEST 51
+pool count or an execution. That transition is CONTRACT REQUEST 52
 (docs/contract-change-requests.md): `swarm_common.states` does not allow it
 today, so `contract_allows()` is false and both this module and the
 scheduler's hold do nothing until it is applied. Nothing is changed in
@@ -183,7 +183,7 @@ _GITHUB_REPOSITORY = re.compile(
 def contract_allows() -> bool:
     """Whether the frozen state machine lets a step end SUCCEEDED from PARKED.
 
-    Contract request 51. False until it is applied, and then this module and
+    Contract request 52. False until it is applied, and then this module and
     the scheduler's hold (which asks the same question) start together.
     """
     return can_transition(TaskState.PARKED, TaskState.SUCCEEDED)
@@ -470,7 +470,7 @@ def _decline(db: Any, tenant_id: str, task_id: str, claim_id: str, now: datetime
 
 def _succeed(db: Any, tenant_id: str, task_id: str, claim_id: str, now: datetime,
              summary: dict[str, Any]) -> bool:
-    """End the claimed step SUCCEEDED (contract request 51's PARKED -> SUCCEEDED)."""
+    """End the claimed step SUCCEEDED (contract request 52's PARKED -> SUCCEEDED)."""
     ref = db.collection(TASKS).document(task_id)
     transaction = db.transaction()
 
@@ -780,7 +780,7 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
     """
     report = FinishReport(task_id=task_id)
     if not contract_allows():
-        report.skipped = "contract_request_51"
+        report.skipped = "contract_request_52"
         return report
     db = ctx.store.db
     snap = db.collection(TASKS).document(task_id).get()

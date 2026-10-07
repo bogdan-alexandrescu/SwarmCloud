@@ -722,7 +722,7 @@ locals {
       # to open its pull request without a worker, after its last parent
       # ended. swarm-api hears the same wake through modules/scheduler's
       # `api_task_finished` subscription and decides in a few seconds; 60 s
-      # bounds what a lost push costs. Inert until contract request 51 lets a
+      # bounds what a lost push costs. Inert until contract request 52 lets a
       # step end SUCCEEDED from PARKED (scheduler/loop.py checks it).
       CONTROL_PUBLISH_HOLD_SECONDS = "60"
 

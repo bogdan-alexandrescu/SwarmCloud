@@ -1276,7 +1276,7 @@ class Scheduler:
 
         Nothing is held while the hold is 0 (the default) or while the frozen
         contract does not let a step end SUCCEEDED from PARKED (contract
-        request 51): then swarm-api publishes nothing, and holding would only
+        request 52): then swarm-api publishes nothing, and holding would only
         delay the worker. A SUCCEEDED step is not PARKED and never reaches
         this.
         """

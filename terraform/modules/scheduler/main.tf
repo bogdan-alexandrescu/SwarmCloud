@@ -112,7 +112,7 @@ resource "google_pubsub_subscription" "wake" {
 # No dead-letter topic and a short retry: a lost push costs only the hold, at
 # the end of which the scheduler promotes the step to its worker as before.
 resource "google_pubsub_subscription" "api_task_finished" {
-  count = var.api_endpoint == "" ? 0 : 1
+  count = var.enable_task_finished_push ? 1 : 0
 
   project = var.project_id
   name    = "${local.wake_topic_name}-api-task-finished"

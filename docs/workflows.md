@@ -764,7 +764,7 @@ refused on attribution or a task id, every mention neutralised.
 label -- nothing is generated, and the missing title fails the attempt as it
 always has; a step given an `issue` input is titled from the issue instead.
 
-#### When swarm-api opens it without a worker (#748, behind contract request 51)
+#### When swarm-api opens it without a worker (#748, behind contract request 52)
 
 Starting a worker only to open that pull request cost 116 s from the review's
 end, and one execution and one lease, on the three MERGE workflows measured on
@@ -809,7 +809,7 @@ If swarm-api never decides (a lost push, or swarm-api down), the hold ends and
 the step goes to its worker. A claim older than 300 s is ignored too. A worker
 that then finds the pull request already open adopts it.
 
-**Off until contract request 51 is applied.** The frozen state machine has no
+**Off until contract request 52 is applied.** The frozen state machine has no
 PARKED -> SUCCEEDED edge (`swarm_common.states._ALLOWED`), and a step that
 never had a lease cannot honestly pass through RUNNING. Until the owner
 accepts the request, both swarm-api and the scheduler's hold read
