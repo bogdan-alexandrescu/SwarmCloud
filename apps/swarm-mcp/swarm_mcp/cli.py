@@ -1059,6 +1059,45 @@ def cmd_workflow(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+def cmd_merge(client: SwarmClient, args) -> int:
+    """Merge a pull request no workflow opened, at the head sha named (#352).
+
+    `swarm merge 41 --sha <head>`, or `owner/repo#41`, or the pull request's
+    URL. A workflow of the one `merge` step: swarm-api checks the pull request
+    is in the tenant's registered repository, open, not a fork, and at that
+    head now, and the step merges only once every required check is green
+    there. `--sha` is required because it is the caller's statement of WHICH
+    head they mean -- a sha read here would merge whatever was pushed last.
+    """
+    named, number = workflows.parse_pull_request(args.pull_request)
+    repo = getattr(args, "repo", None) or None
+    if named and repo and repo.rstrip("/").removesuffix(".git").lower() != named.lower():
+        raise SwarmError(
+            f"{args.pull_request} is in {named} and --repo names {repo}: two repositories. "
+            "Name one. Nothing was sent"
+        )
+    # $SWARM_REPO only when nothing named one, so it never contradicts a URL.
+    envelope = workflows.submit_merge_pr(
+        client, number=number, head_sha=args.sha,
+        repository_url=named or repo or os.environ.get("SWARM_REPO") or None,
+        title=workflows.check_title(getattr(args, "title", None), where="--title"),
+    )
+    workflow = envelope["workflow"]
+    workflow_id = workflow.get("workflow_id")
+    if not workflow_id:
+        raise SwarmError(f"the API accepted the merge but named no id: {sorted(workflow)}")
+    if args.json:
+        print(json.dumps(envelope, indent=2))
+        return EXIT_OK
+    print(workflow_id)
+    task_ids = [step.get("task_id") for step in workflow.get("steps") or [] if step.get("task_id")]
+    for step in workflow.get("steps") or []:
+        print(f"  {step.get('step_id')}  {step.get('task_id') or '—'}")
+    if task_ids:
+        print(f"  follow: {follow_command(task_ids)}")
+    return EXIT_OK
+
+
 def cmd_workflow_status(client: SwarmClient, args) -> int:
     """Per-step state, and the DERIVED workflow state -- never the stored one.
 
@@ -1863,6 +1902,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_workflow)
+
+    mg = sub.add_parser(
+        "merge",
+        help="merge a pull request no workflow opened, at the head sha you name",
+        description=(
+            "Submit a workflow of one merge step for an existing pull request. The API "
+            "takes the repository from your tenant's registered ones (the one named, or "
+            "your only one), refuses a pull request that is closed, merged, from a fork, "
+            "or whose head is not --sha now, and the step merges only once every "
+            "required check is green at that head."
+        ),
+    )
+    mg.add_argument("pull_request", help="41, owner/repo#41, or the pull request's URL")
+    mg.add_argument("--sha", required=True,
+                    help="the full head sha you mean to merge (40 lowercase hex characters)")
+    mg.add_argument("--repo", default=None,
+                    help="a registered repository's URL, when the pull request names none "
+                    "and your tenant registered several (default: $SWARM_REPO, else the "
+                    "tenant's only registered repository)")
+    mg.add_argument("--title", default=None, help="the workflow's short name")
+    mg.add_argument("--json", action="store_true")
+    mg.set_defaults(func=cmd_merge)
 
     ws = sub.add_parser(
         "workflow-status", help="per-step state, and the DERIVED workflow state"

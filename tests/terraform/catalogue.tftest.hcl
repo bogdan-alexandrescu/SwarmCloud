@@ -236,19 +236,18 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "5 Cloud-Run profiles for eng (mock, generic, claude-code, codex, indexer) plus 2 credential-free ones for smoke"
   }
 
-  # #295: post-verdict and claude-code-review each run as their own
-  # per-tenant account, which exists only for a tenant registering
-  # git-review. eng holds anthropic and not it, so it gets no
-  # claude-code-review Job: one keyed on anthropic alone would run as exactly
-  # the worker identity that profile exists to avoid. merge (contract request
-  # 47) is keyed on `git`, the tenant's forge token, which eng does not list
-  # here either (merge_step_iam.tftest.hcl holds a tenant that registers all).
+  # #295: post-verdict and claude-code-review are retired (owner decision
+  # MS0-Q4, 2026-10-06) but still in the frozen catalogue, so neither gets a
+  # Job for any tenant (`profiles_without_a_job`): eng holds anthropic, and a
+  # claude-code-review Job keyed on it would run as the worker account. merge
+  # (contract request 47) is keyed on `git`, the tenant's forge token, which
+  # eng does not list here (merge_step_iam.tftest.hcl holds one that does).
   assert {
     condition = !anytrue([
       for name in output.job_names :
       endswith(name, "-merge") || endswith(name, "-post-verdict") || endswith(name, "-claude-code-review")
     ])
-    error_message = "a #295 profile got a Cloud Run Job for a tenant that registers no App provider, so it has no account of its own to run as"
+    error_message = "a retired #295 profile, or merge for a tenant without git, got a Cloud Run Job"
   }
 
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
