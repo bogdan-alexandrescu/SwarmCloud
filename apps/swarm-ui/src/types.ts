@@ -4858,3 +4858,145 @@ export interface RunCreateBody {
   auto_merge: boolean
   fix_rounds: number
 }
+
+// ---------------------------------------------------------------------------
+// Connect GitHub: the SwarmCloud GitHub App's user authorisation (#780, OB3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/forgeapp.py and
+// `forgeapp.connection_to_api`. NO FIELD HERE HOLDS A VALUE: the server never
+// answers the user access token, the refresh token, the `code` or the `state`
+// after `authorize` issued it, so there is nothing to declare for any of them.
+
+/** Where the authorisation was started from (`forgeapp.SURFACES`). */
+export type GitHubAuthorizeSurface = 'console' | 'plugin'
+
+/** `POST /v1/onboarding/github/authorize`. The `state` rides inside the URL and is never read here. */
+export interface GitHubAuthorization {
+  /** github.com's authorise page, carrying the App's client id and a single-use state. */
+  authorize_url: string
+  /** How long the state lasts (ten minutes, `forgeapp.STATE_TTL`). */
+  expires_in_seconds: number
+}
+
+/** `forgeapp.ExchangeBody`: the callback's `state` with its `code`, or with GitHub's `error`. */
+export type GitHubExchangeBody = { state: string; code: string } | { state: string; error: string } | { state: string }
+
+/** `forgeapp.connection_to_api`: names, times and states. */
+export interface GitHubConnection {
+  connection_id: string | null
+  forge: string | null
+  /** `app_user` for a connection made through the App. */
+  method: string | null
+  forge_login: string | null
+  forge_user_id: number | null
+  token_id: string | null
+  secret_name: string | null
+  /** `active`, `refresh_failed` or `revoked` (`forgeapp.ACTIVE`, `REFRESH_FAILED`, `REVOKED`). */
+  state: string | null
+  failure: string | null
+  access_expires_at: string | null
+  refresh_expires_at: string | null
+  refreshed_at: string | null
+  refreshing: boolean
+  created_at: string | null
+  connected_at: string | null
+  revoked_at: string | null
+}
+
+/** `POST /v1/onboarding/github/exchange`. */
+export interface GitHubExchangeResponse {
+  connection: GitHubConnection
+}
+
+/** `DELETE /v1/onboarding/github`. */
+export interface GitHubDisconnectResponse {
+  connection: GitHubConnection
+  /** Whether GitHub confirmed the authorisation ended; the local half disconnects either way. */
+  github_revoked: boolean
+  /** What GitHub said, in a sentence, with the page to revoke it by hand when it did not answer. */
+  github: string
+  /** Secret name -> versions disabled, or a sentence when they were not. */
+  slot_versions_disabled: Record<string, number | string>
+  grants_deleted: number
+}
+
+/** The `detail` of a refused exchange (`forgeapp.AuthorisationRefused`): a §2.3 code and its copy. */
+export interface GitHubRefusalDetail {
+  failure_code: string
+  recovery: string
+}
+
+// The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
+// `derive`): six steps, each derived on every read, never set.
+
+export type OnboardingStepName = 'signed_in' | 'github_connected' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+
+export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
+
+/** One §2.3 problem a step found, with its copy word for word. */
+export interface OnboardingIssue {
+  code: string
+  copy: string
+  owner?: string
+  repository?: string
+  url?: string
+  store_command?: string
+}
+
+export interface OnboardingStep {
+  step: OnboardingStepName
+  state: OnboardingStepState
+  code: string | null
+  copy: string | null
+  checked_at: string | null
+  /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
+  evidence: Record<string, unknown>
+  issues: OnboardingIssue[]
+}
+
+/** `github_connected`'s evidence: the record the caller acts through, or none. */
+export interface GitHubConnectedEvidence {
+  /** `user` is the caller's own slot, `tenant` the tenant token, null neither. */
+  via: 'user' | 'tenant' | null
+  token_id?: string | null
+  secret_name?: string | null
+  /** `app_user` for the App's connection; a PAT kind for a stored token. */
+  kind?: string | null
+  forge_login?: string | null
+  token_state?: string | null
+  verified_at?: string | null
+  probe_attempted_at?: string | null
+  probe_complete?: boolean | null
+  probe_error?: string | null
+  expires_at?: string | null
+}
+
+/** One owner `orgs_enabled` found: the account, an org it reads, or one that refused it. */
+export interface OnboardingOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  source: 'account' | 'orgs' | 'refusal' | 'registration'
+  reach: 'reachable' | 'sso_required' | 'classic_blocked'
+  registered: number
+}
+
+export interface OrgsEnabledEvidence {
+  owners: OnboardingOwner[]
+  orgs_read: boolean
+  orgs_capped: boolean
+  sso_hidden_orgs: number
+  read_at: string | null
+}
+
+/** `GET /v1/onboarding`. */
+export interface OnboardingDoc {
+  tenant_id: string
+  user: string
+  user_hash: string
+  derived_at: string
+  steps: OnboardingStep[]
+  next_step: OnboardingStepName | null
+  complete: boolean
+  source: string
+}

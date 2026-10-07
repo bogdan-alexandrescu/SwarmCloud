@@ -30,6 +30,7 @@ import type {
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
+  GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -5337,4 +5338,38 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
 /** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
   return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
+}
+
+// ---------------------------------------------------------------------------
+// Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
+//
+// The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE
+// ANSWERS A VALUE -- no token, no code, no state after `authorize` minted it
+// -- and nothing here logs or keeps what it posts. The fixture build answers
+// each as not served, like the git-token routes above.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/onboarding`: the caller's six steps, derived on this read. */
+export async function loadOnboarding(): Promise<Result<OnboardingDoc>> {
+  return readAs(route('/v1/onboarding'), (raw) => raw as OnboardingDoc)
+}
+
+/** `POST /v1/onboarding/github/authorize`: a single-use, ten-minute authorise URL for this person. */
+export async function authorizeGitHub(surface: GitHubAuthorizeSurface = 'console'): Promise<Result<GitHubAuthorization>> {
+  return writeTo(route('/v1/onboarding/github/authorize'), 'POST', { surface }) as Promise<Result<GitHubAuthorization>>
+}
+
+/**
+ * `POST /v1/onboarding/github/exchange`: the callback's `state` and `code`
+ * (or GitHub's `error`). The server spends the state first, so a second post
+ * of the same pair is refused `AUTHORISATION_EXPIRED` -- the callback page
+ * posts once.
+ */
+export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<GitHubExchangeResponse>> {
+  return writeTo(route('/v1/onboarding/github/exchange'), 'POST', body) as Promise<Result<GitHubExchangeResponse>>
+}
+
+/** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
+export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
+  return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
 }

@@ -30,7 +30,8 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { GitHubCallbackScreen } from './GitHubConnect'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -451,6 +452,13 @@ const REFERENCE = 'reference'
 const SUBMIT = SUBMIT_ADDRESS
 
 /**
+ * The GitHub App's callback page (`/onboarding/github/callback`, #780 OB3).
+ * Not a section and not a tab -- GitHub sends the browser here, nothing in the
+ * nav does -- so no nav tab, and no issue-form "Where" entry, follows it.
+ */
+const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
+
+/**
  * The utility button's label AND the heading of the screen it opens. One
  * constant, used in both places, because they are two renderings of one name.
  *
@@ -760,6 +768,7 @@ export function fromAddress(full: string): Route {
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+  if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
   if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
@@ -897,6 +906,7 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
+  if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
@@ -1089,7 +1099,9 @@ export function App() {
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
-          : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+          : at.sectionId === GITHUB_CALLBACK
+            ? 'Connect GitHub'
+            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : openObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
@@ -1164,6 +1176,8 @@ export function App() {
                   <HelpScreen topic={at.tab} />
                 ) : at.sectionId === SUBMIT ? (
                   <SubmitChooser go={go} />
+                ) : at.sectionId === GITHUB_CALLBACK ? (
+                  <GitHubCallbackScreen go={go} />
                 ) : (
                   <ReferenceScreen failuresOnly={apiFailuresOnly} />
                 )
@@ -1235,6 +1249,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'help'
     case REFERENCE:
       return 'api'
+    case GITHUB_CALLBACK:
+      return 'work'
     default:
       return null
   }
