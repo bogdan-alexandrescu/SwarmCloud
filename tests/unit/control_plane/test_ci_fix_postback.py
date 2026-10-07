@@ -44,8 +44,10 @@ from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
+from swarm_common.identity import TenantMember
+
 from . import forge_fakes
-from .conftest import api_settings, auth_header, seed_task, seed_tenant
+from .conftest import ENG_GROUP, PROJECT, api_settings, auth_header, seed_task, seed_tenant
 
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
@@ -56,6 +58,10 @@ HEAD = "a" * 40
 PUSHED = "c" * 40
 PR = 77
 RUN_ID = 4242
+#: The CI fixer's account, listed under eng and so continuation-scoped
+#: (contract request 30), as test_continuation_scope_is_narrow.py lists it.
+FIXER = f"swarm-ci-fix@{PROJECT}.iam.gserviceaccount.com"
+FIXER_UID = "104857600000000000001"
 
 
 class Clock:
@@ -87,8 +93,14 @@ def fix_client(db, tokens, group_map, objects, github, tenant_tokens, clock) -> 
     seed_tenant(db, "research")
     tokens = dict(tokens)
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
+    tokens["token-fixer"] = {"email": FIXER, "email_verified": True, "sub": FIXER_UID}
     context = build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,), console_url=CONSOLE),
+        settings=api_settings(
+            rollup_sweeper_users=(SWEEPER,), console_url=CONSOLE,
+            tenant_service_accounts=(
+                TenantMember(email=FIXER, kind="group", principal=ENG_GROUP, uid=FIXER_UID),
+            ),
+        ),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -314,6 +326,49 @@ def test_a_ci_fix_record_on_a_step_is_refused(fix_client, db):
 # --------------------------------------------------------------------------
 # 5. where it posts, with what, and when a write fails
 # --------------------------------------------------------------------------
+
+def _integrator(client: TestClient, user: str = "alice") -> str:
+    """An `integrate` workflow's integrator: the task that opens a lane's pull
+    request from `swarm/<its own id>`."""
+    response = client.post("/v1/workflows", headers=auth_header(user), json={
+        "steps": [
+            {"step_id": "build", "runner_profile": "mock"},
+            {"step_id": "publish", "runner_profile": "mock", "depends_on": ["build"]},
+        ],
+        "strategy": "integrate",
+        "repository_url": REPO_URL,
+    })
+    assert response.status_code == 201, response.text
+    return {s["step_id"]: s["task_id"] for s in response.json()["workflow"]["steps"]}["publish"]
+
+
+def test_the_fixers_integrator_fix_is_posted_back_on_the_integrators_pull_request(
+    fix_client, db, github
+):
+    """PR #740's case, end to end (owner decision 2026-10-06): the listed
+    fixer continues an integrator's red pull request, the fix is stamped and
+    counted, and its outcome lands on the pull request of `swarm/<integrator>`."""
+    integrator = _integrator(fix_client)
+    github.open_pull(PR, HEAD, ref=f"swarm/{integrator}")
+
+    response = fix_client.post(
+        "/v1/workflows", headers={"Authorization": "Bearer token-fixer"},
+        json=_red_run_payload(integrator),
+    )
+    assert response.status_code == 201, response.text
+    task = _fix_task(db, response)
+    assert task["submitted_by"] == FIXER
+    assert task["metadata"]["dispatch"]["continues"] == integrator
+    assert task["metadata"]["ci_fix"]["postback"] == cifix.PENDING
+
+    _finish(task, result_summary={"git": {"pushed_head": PUSHED}})
+    tick = _tick(fix_client)
+    assert tick.status_code == 200, tick.text
+    assert tick.json()["ci_fix"]["posted"] == 1
+    (body,) = _posted(github)
+    assert body.startswith(cifix.outcome_marker(task["id"]))
+    assert PUSHED[:12] in body
+
 
 def test_a_pull_request_on_another_branch_gets_no_comment(fix_client, db, github):
     original = _original(fix_client)

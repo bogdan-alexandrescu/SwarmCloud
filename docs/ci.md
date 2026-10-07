@@ -1356,11 +1356,33 @@ Since #454's CI loop a tenant MEMBER may also continue an `integrate`
 workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
 `publish_branch` a `direct-pr` task does, and opens the workflow's one pull
 request from it, so an issue run's fix round lands on the run's pull request.
-A contributor is still refused (its branch has no pull request). The CI
-fixer's continuation-scoped account is NOT given this: its reach was reviewed
-as `direct-pr` tasks only (contract request 30), so it is refused an
-integrator, directly or through a member's continuation of one, and a red
-integrate pull request is fixed by its issue run, not by `ci-fix.yml`. The rules are in
+A contributor is still refused (its branch has no pull request).
+
+**What the CI fixer may continue** (owner decision 2026-10-06). Its
+continuation-scoped account reaches exactly the tasks that opened a pull
+request from their own branch, in its own tenant:
+
+* a `direct-pr` task -- the reach contract request 30 reviewed;
+* an `integrate` workflow's **integrator**. Every SwarmCloud lane pull
+  request is opened by one (the workflow's final fix step), so a fixer
+  limited to `direct-pr` tasks could fix none of them: its first real run,
+  on PR #740, was refused `422 invalid_dispatch`. The fix pushes to the same
+  `swarm/<integrator task>` branch, so that pull request updates, and the
+  per-pull-request cap and the post-back above work unchanged, both keyed on
+  the integrator as the continued task. The integrator is recognised by the
+  `role` the API recorded in its dispatch block when the workflow was
+  submitted -- a reserved key no caller can write -- never by anything the
+  fixer sends.
+
+Still refused to it, each as `422 invalid_dispatch`: any other step of a
+workflow (a contributor's branch has no pull request of its own, so a fix
+there reaches nobody), any task of another tenant (read exactly like a
+missing one), a chain of continuations whose root is neither of the two, and
+a merge-only continuation (a merge is a member's power, not a push). Widening
+the reach to integrators lets a stolen fixer token push to every lane pull
+request of its tenant as well as every `direct-pr` one; it still cannot
+merge, start new work, read what it did not submit, or reach another tenant.
+The rules are in
 [`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
 block it writes is recorded under request #6 in
 [`contract-change-requests.md`](contract-change-requests.md).
@@ -1509,7 +1531,8 @@ derived from its group's address by the frozen
 of `eng`'s pull requests -- every fix would be refused as "not a task in your
 tenant". A group member is also a full member of its tenant, able to submit
 any work, where the listing above makes the account continuation-scoped (it
-may only continue a `direct-pr` task; contract request 30). The listing
+may only continue a `direct-pr` task or an integrator; contract request 30
+and the 2026-10-06 decision above). The listing
 already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
 `eng` is a frozen-contract change, and whether to make it is the owner's
 question, not this document's: until it is answered, the listing is the
