@@ -274,7 +274,7 @@ function pendingBars(): Map<string, string[]> {
   const found = new Map<string, string[]>()
   for (const [path, text] of Object.entries(SOURCES)) {
     for (const m of text.matchAll(/className="([^"]*)"/g)) {
-      const classes = m[1].split(/\s+/)
+      const classes = (m[1] ?? '').split(/\s+/)
       if (!classes.includes('ctl-pending')) continue
       for (const c of classes.filter((c) => c && c !== 'ctl-pending')) {
         const files = found.get(c) ?? []
@@ -287,7 +287,7 @@ function pendingBars(): Map<string, string[]> {
 }
 
 /** Each loading bar, drawn in the parent it sits in on screen. */
-const BARS: Readonly<Record<string, () => JSX.Element>> = {
+const BARS = {
   'art-loading-bar': () => (
     <p className="art-loading">
       <span className="ctl-pending art-loading-bar" />
@@ -298,7 +298,8 @@ const BARS: Readonly<Record<string, () => JSX.Element>> = {
       <div className="ctl-pending ol-pending" aria-hidden="true" />
     </div>
   ),
-}
+} as const satisfies Readonly<Record<string, () => JSX.Element>>
+type Bar = keyof typeof BARS
 
 describe('#113: every `.ctl-pending` loading bar is visible in both themes', () => {
   it('the scan finds every loading bar the screens draw, and each one is measured below', () => {
@@ -315,7 +316,7 @@ describe('#113: every `.ctl-pending` loading bar is visible in both themes', () 
     expect(found.get('ol-pending')).toEqual(['../Activity.tsx'])
   })
 
-  it.each(Object.keys(BARS))('a `.%s` clears 1.5:1 against the page and the card, and sweeps the shared band', (name) => {
+  it.each(Object.keys(BARS) as Bar[])('a `.%s` clears 1.5:1 against the page and the card, and sweeps the shared band', (name) => {
     render(
       <>
         {BARS[name]()}
