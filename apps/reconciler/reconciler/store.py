@@ -1420,9 +1420,12 @@ class ControlStore:
         Persisting it is what makes an operator screen, or an alert on "no
         successful pass in N minutes", possible at all.
 
-        Returns None rather than raising: a pass that repaired real damage must
-        not be reported as a failure because its bookkeeping write failed. The
-        error is logged by the caller.
+        Raises on a failed write; it never returns None. The caller
+        (`Reconciler.run_once`) catches the exception, logs it and appends
+        `record_pass: ...` to `report.errors`, so a pass that repaired real
+        damage is not aborted by its bookkeeping. That error still counts: the
+        scheduler's HTTP path answers ok with it in the report, and
+        `python -m reconciler --once` exits 1. A new caller must catch it too.
         """
         from datetime import timedelta
 

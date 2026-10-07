@@ -11,8 +11,10 @@ around it -- run it against a deployed environment with
 
 after `set -a; . ./.env; set +a`, which is what supplies PROJECT_ID and the rest
 of `swarm_common.config.Settings`. The exit code is 0 when the pass completed
-with no errors and 1 when any repair failed, so it is usable from a shell
-condition.
+with no errors and 1 when `report.errors` is non-empty: any repair, read,
+listing, garbage-collection or pass-persistence failure, including the ones
+the HTTP path treats as not fatal. It is usable from a shell condition, but an
+exit 1 does not by itself mean a repair failed; read the report's `errors`.
 """
 
 from __future__ import annotations
