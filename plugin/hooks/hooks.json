@@ -1,5 +1,5 @@
 {
-  "description": "sc: at session start, name the SwarmCloud workflows still running for your tenant so the session's first action is /sc attach --all. Read-only, silent when none run or anything fails; off when the plugin's auto_attach option is off.",
+  "description": "sc: at session start, name the SwarmCloud workflows still running for your tenant, and your running single tasks (in no workflow), so the session's first action is /sc attach --all. Read-only, silent when none run or anything fails; off when the plugin's auto_attach option is off. Claude Code has no hook event for /reload-plugins, so after a reload run /sc attach --all by hand.",
   "hooks": {
     "SessionStart": [
       {

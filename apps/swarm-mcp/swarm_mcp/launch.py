@@ -20,6 +20,13 @@ tool` install of `apps/swarm-mcp` and has no plugin directory of its own.
 script cannot start a separate run -- `workflow()` nests the child inside the
 caller's run, sharing its agent counter -- so the bridge writes one copy per
 running workflow and the session launches each.
+
+SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
+belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
+whose args are `{attach_tasks: [...]}`: run.js starts one `sc:task` row per
+task in it, titled from the task's label. `for_all` adds that copy for the
+caller's running single tasks, and `swarm_dispatch` hands one back for the
+task ids it just sent, so a dispatched task gets a row without anyone asking.
 """
 
 from __future__ import annotations
@@ -51,6 +58,12 @@ DESCRIPTION_CHARS = 300
 #: every unfinished step is a live row, and past 10 workflows /workflows is
 #: no longer readable. The rest are listed with the call that attaches each.
 MAX_ATTACHED_WORKFLOWS = 10
+
+#: The cap on single-task rows in one copy: each is an agent of its own in
+#: the session for as long as its task runs, like a step row, and run.js
+#: holds the same number (MAX_ATTACHED_TASKS). The rest are listed with the
+#: command that shows them.
+MAX_ATTACHED_TASKS = 10
 
 #: Where the copies go: the system's temporary directory, one file per run.
 RUN_DIR = "sc-swarmcloud-runs"
@@ -164,10 +177,63 @@ def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     return out
 
 
+def _task_name(entry: dict[str, Any]) -> str:
+    return workflows.title_name(stored=entry.get("label") or entry.get("title"), workflow_id=entry.get("task_id"))
+
+
+def tasks_title(entries: list[dict[str, Any]]) -> str:
+    """`SC · <label> · task` for one task, `SC · <first label> +N · N tasks`
+    for several, at most workflows.TITLE_CHARS: the name is cut, never the
+    count."""
+    count = len(entries)
+    name = _task_name(entries[0]) if entries else "tasks"
+    if count > 1:
+        name = f"{name} +{count - 1}"
+    title = workflows.workflow_title(name, count)
+    # workflow_title ends in ` · N step(s)`; a single task is a task.
+    head, _, _ = title.rpartition(" · ")
+    return head + (" · task" if count == 1 else f" · {count} tasks")
+
+
+def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """ONE titled copy that starts an `sc:task` row per task in `entries` --
+    each `{task_id, label?, console?}` -- up to MAX_ATTACHED_TASKS. The rest
+    come back in `not_followed`. Reads nothing and submits nothing."""
+    wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
+    follow = wanted[:MAX_ATTACHED_TASKS]
+    rows = []
+    for entry in follow:
+        row: dict[str, Any] = {"task_id": str(entry["task_id"]), "title": _task_name(entry)}
+        if isinstance(entry.get("console"), str) and entry["console"].strip():
+            row["console"] = entry["console"].strip()
+        rows.append(row)
+    title = tasks_title(follow)
+    description = (
+        f"{title}: each SwarmCloud single task is shown here as one [SwarmCloud] row, "
+        "titled from its label, with its console link. Nothing is submitted"
+    )
+    out = _launch(title, description, {"attach_tasks": rows})
+    out["task_ids"] = [row["task_id"] for row in rows]
+    out["not_followed"] = [
+        {"task_id": str(e["task_id"]), "label": e.get("label"), "follow_with": "swarm_follow"}
+        for e in wanted[MAX_ATTACHED_TASKS:]
+    ]
+    out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    return out
+
+
 def for_all(client: SwarmClient) -> dict[str, Any]:
-    """One titled copy per running workflow, newest first, up to the cap."""
+    """One titled copy per running workflow, newest first, up to the cap, and
+    one more for the caller's running single tasks (#830)."""
     from . import sc
 
+    # The single tasks first, and on their own: a failure to read them is
+    # reported beside the workflows, never instead of them.
+    try:
+        singles: dict[str, Any] | None = sc.running_tasks(client)
+        singles_error = None
+    except SwarmError as exc:
+        singles, singles_error = None, str(exc)
     listing = sc.running_workflows(client)
     entries = [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")]
     launches = []
@@ -192,4 +258,20 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     if listing.get("complete") is False:
         out["complete"] = False
         out["incomplete_because"] = listing.get("incomplete_because")
+    if singles_error is not None:
+        out["single_tasks_error"] = singles_error
+    elif singles and singles["tasks"]:
+        task_launch = for_tasks(singles["tasks"])
+        launches.append(task_launch)
+        out["single_tasks"] = len(singles["tasks"])
+        not_followed.extend(task_launch.pop("not_followed"))
+        if singles.get("complete") is False:
+            out["single_tasks_incomplete_because"] = singles.get("incomplete_because")
+    else:
+        out["single_tasks"] = 0
+    out["launch_with"] = (
+        "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: "
+        "<args>}: one Claude Code run per SwarmCloud workflow, and one for your running "
+        "single tasks (args `attach_tasks`), with a row per task"
+    )
     return out
