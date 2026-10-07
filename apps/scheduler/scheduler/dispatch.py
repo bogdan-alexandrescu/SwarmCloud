@@ -146,7 +146,8 @@ WORKER_HOME = "/home/swarm"
 #: INSIDE THE WORKSPACE VOLUME rather than in a volume of its own, for the same
 #: reason the lifecycle puts its own there: a dedicated emptyDir would need a
 #: `sizeLimit`, a second disk number to invent and keep in step, when
-#: `workspace` already takes its limit from the resource class's disk.
+#: `workspace` already has a limit of its own (the class's on Cloud Run,
+#: `GkeDisk.workspace_gib` on GKE).
 WORKSPACE_MOUNT = "/workspace"
 WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 
@@ -180,45 +181,90 @@ def workspace_size_gib(rc: Any) -> int:
     return max(1, min(rc.disk_gib, math.floor(rc.memory_gib * WORKSPACE_MEMORY_FRACTION)))
 
 
-#: THE GKE POD'S DISK-BACKED SCRATCH VOLUMES other than the workspace, in GiB.
-#: `readOnlyRootFilesystem` makes these the only other places the worker and its
-#: toolchain can write: /tmp (where `checkpoint.py` builds its archive, up to
-#: `max_checkpoint_bytes`, 2 GiB) and HOME (npm, uv and git caches).
-GKE_TMP_GIB = 2
-GKE_HOME_GIB = 4
-
 #: AUTOPILOT'S CEILING on a pod's total ephemeral-storage request in the
 #: general-purpose class (every class but Performance and accelerator pods):
 #: "between 10 MiB and 10 GiB" (GKE docs, "Resource requests in Autopilot",
 #: read 2026-10-07). A pod that asks for more is refused at admission.
 AUTOPILOT_MAX_EPHEMERAL_GIB = 10
 
-#: A GKE pod's ephemeral-storage (requests == limits, invariant 7), per resource
-#: class, where it is NOT the class's `disk_gib`.
+
+@dataclass(frozen=True)
+class GkeDisk:
+    """A GKE worker pod's disk-backed scratch volumes, in GiB, for one resource class.
+
+    `readOnlyRootFilesystem` makes these the only places the worker and its
+    toolchain can write: the workspace, /tmp (where `checkpoint.py` builds its
+    archive, up to `max_checkpoint_bytes`, 2 GiB) and HOME (npm, uv and git
+    caches). kubelet sums every disk-backed emptyDir against the pod's ONE
+    ephemeral-storage limit and evicts the pod -- no checkpoint, no park -- when
+    the sum passes it, so the pod's limit IS the sum (`ephemeral_gib`): each
+    volume's own sizeLimit binds first, and never the pod's. requests == limits
+    on that number (invariant 7). The memory-medium /dev/shm is not in here: it
+    is charged to the memory limit, not to ephemeral-storage.
+    """
+
+    workspace_gib: int
+    tmp_gib: int
+    home_gib: int
+
+    @property
+    def ephemeral_gib(self) -> int:
+        return self.workspace_gib + self.tmp_gib + self.home_gib
+
+
+#: Per resource class, because one formula cannot fit them all under
+#: Autopilot's 10 GiB. tests/unit/control_plane/test_gke_workspace_fits.py
+#: renders the GKE manifest for every class and holds sum(sizeLimits) <=
+#: ephemeral-storage <= AUTOPILOT_MAX_EPHEMERAL_GIB.
 #:
-#: standard: 10 GiB, not 4 (contract request 53, follow-up "the workspace is
+#: standard: 4 + 2 + 4 = 10 (contract request 53, follow-up "the workspace is
 #: sized for the 4Gi disk emptyDir"). On Cloud Run claude-code's 4 GiB workspace
 #: is a tmpfs (`workspace_size_gib`) and /tmp and HOME sit OUTSIDE it, in the
 #: container's in-memory writable layer, bounded only by the 8 GiB memory limit.
-#: On GKE all three are disk `emptyDir`s and kubelet sums them against this ONE
-#: number, evicting the pod -- no checkpoint, no park -- when the sum passes it.
-#: At 4 GiB a full workspace left no room for the checkpoint archive the worker
-#: writes to /tmp, so a run that fits on Cloud Run would be evicted on GKE the
-#: first time it checkpointed. 10 = workspace 4 + /tmp 2 + HOME 4, the volumes'
-#: own sizeLimits, so each volume's limit binds before the pod's -- as the
-#: workspace limit binds on Cloud Run -- and it is also Autopilot's maximum.
-#: The WORKSPACE stays at the class's 4 GiB, the size it has on Cloud Run.
+#: On GKE all three are disk, and at a 4 GiB pod limit a full workspace left no
+#: room for the checkpoint archive in /tmp: a run that fits on Cloud Run would be
+#: evicted on GKE the first time it checkpointed. The workspace stays at the
+#: class's 4 GiB, the size it has on Cloud Run; 10 is Autopilot's maximum.
 #:
-#: Not the same formula for every class: browser's 8 + 2 + 4 = 14 GiB is above
-#: Autopilot's ceiling, and moving browser is not request 53's change.
-GKE_EPHEMERAL_STORAGE_GIB = {
-    "standard": RESOURCE_CLASSES["standard"].disk_gib + GKE_TMP_GIB + GKE_HOME_GIB,
+#: browser: 4 + 2 + 2 = 8, the class's disk_gib and the pod limit it always had.
+#: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
+#: HOME 4 = 14 GiB of sizeLimits against an 8 GiB pod limit, so the pod could be
+#: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
+#: the checkpoint cap. /tmp must hold the worker's largest checkpoint archive
+#: (agent_worker/config.py max_checkpoint_bytes = 2 GiB), so /tmp is 2 and the
+#: workspace gives up the GiB: 4 + 2 + 2.
+#:
+#: large: 4 + 2 + 4 = 10, standard's layout. No GKE profile can reach it --
+#: none is `large`, and a step's resource_class override may only shrink
+#: (swarm_api.validation.validate_resource_class_override) -- but the manifest
+#: renders any class it is given, and its disk_gib of 16 alone is past what
+#: Autopilot admits, so a pod sized from it would never start.
+GKE_DISK: dict[str, GkeDisk] = {
+    "standard": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
+    "browser": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=2),
+    "large": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
 }
+
+
+def gke_disk(rc: Any) -> GkeDisk:
+    """The scratch volumes of a GKE worker pod of this resource class.
+
+    A class added to the frozen catalogue without a row here is refused at
+    dispatch, loudly, rather than sized by a guess that may not fit Autopilot.
+    """
+    try:
+        return GKE_DISK[rc.name]
+    except KeyError:
+        raise ValueError(
+            f"resource class {rc.name!r} has no GKE disk layout in GKE_DISK "
+            "(apps/scheduler/scheduler/dispatch.py); add one whose sum fits "
+            f"AUTOPILOT_MAX_EPHEMERAL_GIB ({AUTOPILOT_MAX_EPHEMERAL_GIB})"
+        ) from None
 
 
 def gke_ephemeral_storage_gib(rc: Any) -> int:
     """The ephemeral-storage a GKE worker pod of this resource class requests and is limited to."""
-    return GKE_EPHEMERAL_STORAGE_GIB.get(rc.name, rc.disk_gib)
+    return gke_disk(rc).ephemeral_gib
 
 
 def profile_model(settings: Any, profile: RunnerProfile) -> str | None:
@@ -1548,6 +1594,7 @@ class GkeJobDispatcher:
                   tenant: Tenant) -> dict[str, Any]:
         assert_tenant_identity(tenant)
         rc = RESOURCE_CLASSES[resource_class_for(task, profile)]
+        disk = gke_disk(rc)
         # Identifiers only. No provider key is injected: there is no Kubernetes
         # Secret to project from, and the worker fetches its tenant's key from
         # Secret Manager itself under the identity this pod's KSA assumes.
@@ -1572,8 +1619,8 @@ class GkeJobDispatcher:
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
-            # The whole pod's local disk, not the workspace's: see
-            # GKE_EPHEMERAL_STORAGE_GIB. The workspace volume keeps disk_gib.
+            # The whole pod's local disk -- the sum of the scratch volumes'
+            # sizeLimits below, not the workspace's: see GkeDisk.
             "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
         labels = {
@@ -1683,14 +1730,14 @@ class GkeJobDispatcher:
                         ],
                         "volumes": [
                             {"name": "workspace", "emptyDir": {
-                                "sizeLimit": f"{rc.disk_gib}Gi"}},
+                                "sizeLimit": f"{disk.workspace_gib}Gi"}},
                             # Chromium's shared memory. The 64 MiB default is
                             # what makes headless Chrome crash under load, and
                             # is the reason browser work is on GKE at all.
                             {"name": "dshm", "emptyDir": {
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
-                            {"name": "tmp", "emptyDir": {"sizeLimit": f"{GKE_TMP_GIB}Gi"}},
-                            {"name": "home", "emptyDir": {"sizeLimit": f"{GKE_HOME_GIB}Gi"}},
+                            {"name": "tmp", "emptyDir": {"sizeLimit": f"{disk.tmp_gib}Gi"}},
+                            {"name": "home", "emptyDir": {"sizeLimit": f"{disk.home_gib}Gi"}},
                             # `optional`: a namespace whose ConfigMap has not
                             # been applied yet still starts its pod, and the
                             # worker then exits CANNOT_START for every task,
