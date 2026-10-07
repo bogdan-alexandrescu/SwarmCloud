@@ -17,7 +17,7 @@ registration is by hand. Everything around it is code:
 |---|---|---|
 | the App's public settings (id, client id, slug) | `terraform/environments/dev/dev.tfvars`: `github_app_id`, `github_app_client_id`, `github_app_slug` | the release |
 | two empty secret slots, `swarm-github-app-client-secret` and `swarm-github-app-private-key`, swarm-api their one reader | `terraform/modules/secret_manager` (`github_app`, `github_app_accessor`), switched on by `enable_github_app` | the release, held at `dev-iam` |
-| the user slots' IAM: `swarmForgeSlotCreator` for swarm-api, and per tenant swarm-api's version-add and `-refresh` read, the worker's base-slot read | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
+| the user slots' IAM: `swarmForgeSlotCreator` and `swarmForgeSlotVersionManager` for swarm-api, and per tenant swarm-api's version-add, version disable/enable and `-refresh` read, the worker's base-slot read | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
 | the refresh sweep, `swarm-forge-refresh`, every 15 minutes | `terraform/modules/scheduler/jobs.tf` (`forge_refresh`), switched on by `enable_forge_refresh` | the release, once lane OB3 ships |
 | the `forge_grants` and `forge_orgs` indexes on (`tenant_id`, `user_hash`) | `terraform/modules/firestore/indexes.tf` | the release |
 | the values of the client secret and the private key | Secret Manager only, by `scripts/create-secrets.sh --github-app <slot> --stdin` | the owner, from a terminal |
@@ -73,6 +73,14 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
 * `google_project_iam_member.forge_slot_version_adder["<t>"]` -- swarm-api,
   `roles/secretmanager.secretVersionAdder`, condition
   `resource.name.startsWith("projects/<n>/secrets/swarm-tenant-<t>-git-u-")`;
+* `google_project_iam_custom_role.forge_slot_version_manager[0]` --
+  **swarmForgeSlotVersionManager**, permissions exactly
+  `secretmanager.versions.disable` and `secretmanager.versions.enable` (no
+  destroy, no access): "Disconnect GitHub" disables the user's versions so
+  no usable token is left, and a reconnect enables them (OB3);
+* `google_project_iam_member.forge_slot_version_manager["<t>"]` -- swarm-api,
+  that role, with exactly the version adder's condition,
+  `resource.name.startsWith("projects/<n>/secrets/swarm-tenant-<t>-git-u-")`;
 * `google_project_iam_member.forge_refresh_reader["<t>"]` -- swarm-api,
   `roles/secretmanager.secretAccessor`, on that prefix **and** a `-refresh`
   twin;
@@ -86,7 +94,7 @@ grantable list, and that list limits which roles CI grants, never to whom --
 CI could then grant itself read of every secret in `saga-agents-staging`, the
 other team's included. `terraform/bootstrap/forge_user_slots.tf` has the full
 reasoning, and why the `-refresh` test reads both the secret's and the
-version's resource name. A tenant added later gets its three per-tenant
+version's resource name. A tenant added later gets its four per-tenant
 grants from the same bootstrap apply that grants the deployer on its worker
 account ([docs/ci.md](../ci.md), "A new account exists before the release that
 adds it").

@@ -7,11 +7,14 @@
 #     exist with no version, carry managed-by=swarm-terraform, and are readable
 #     by swarm-api alone, through an authoritative per-secret binding;
 #   * the user slots swarm-api creates at onboarding (D3) are reachable through
-#     exactly four owner-applied grants in terraform/bootstrap, each scoped to
+#     owner-applied grants in terraform/bootstrap, each but the create scoped to
 #     one tenant's `swarm-tenant-<t>-git-u-` prefix in its full
 #     `projects/<number>/secrets/` form: swarm-api creates (a custom role with
-#     secrets.create and nothing else), adds versions, and reads only the
-#     `-refresh` twins; the tenant's worker reads only the base slots (D7, U1);
+#     secrets.create and nothing else), adds versions, disables and re-enables
+#     them (a custom role with versions.disable and versions.enable and
+#     nothing else, so Disconnect leaves no usable token, OB3), and reads only
+#     the `-refresh` twins; the tenant's worker reads only the base slots (D7,
+#     U1);
 #   * a tenant id whose user-slot prefix would start with another tenant's is
 #     refused, because a prefix condition would hand that tenant's slots over;
 #   * the refresher job (D2) is `swarm-forge-refresh`, every 15 minutes, OIDC,
@@ -201,6 +204,45 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     error_message = "swarm-api adds versions to user slots and their -refresh twins, one tenant's prefix per binding, by the project NUMBER"
   }
 
+  # Disconnect disables the user's versions and reconnect re-enables them
+  # (OB3). The role does exactly that: no destroy, which would lose the slot's
+  # history, and no access, which would let swarm-api read a base slot.
+  assert {
+    condition     = google_project_iam_custom_role.forge_slot_version_manager[0].permissions == toset(["secretmanager.versions.disable", "secretmanager.versions.enable"])
+    error_message = "swarmForgeSlotVersionManager must carry secretmanager.versions.disable and secretmanager.versions.enable and nothing else: no destroy, no access"
+  }
+
+  assert {
+    condition     = google_project_iam_custom_role.forge_slot_version_manager[0].role_id == "swarmForgeSlotVersionManager"
+    error_message = "the role id is the one terraform/modules/custom_role_ids spells"
+  }
+
+  # One binding per tenant, on exactly the prefix the version adder has.
+  assert {
+    condition = alltrue([
+      for t, m in google_project_iam_member.forge_slot_version_manager :
+      m.role == "projects/saga-agents-staging/roles/swarmForgeSlotVersionManager" &&
+      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com" &&
+      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\")" &&
+      m.condition[0].expression == google_project_iam_member.forge_slot_version_adder[t].condition[0].expression
+    ]) && length(google_project_iam_member.forge_slot_version_manager) > 0
+    error_message = "swarm-api disables and enables versions of user slots and their -refresh twins, one tenant's prefix per binding, the version adder's own condition"
+  }
+
+  # Only the create grant is unconditioned; every per-tenant grant carries
+  # exactly one condition.
+  assert {
+    condition = alltrue(flatten([
+      for grants in [
+        google_project_iam_member.forge_slot_version_adder,
+        google_project_iam_member.forge_slot_version_manager,
+        google_project_iam_member.forge_refresh_reader,
+        google_project_iam_member.forge_slot_reader,
+      ] : [for m in values(grants) : length(m.condition) == 1]
+    ]))
+    error_message = "a per-tenant user-slot grant without its prefix condition would reach every secret in the project, the other team's included"
+  }
+
   # The worker reads base slots and never a -refresh twin, in either the
   # secret's or the version's resource-name form.
   assert {
@@ -234,8 +276,9 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
       toset(keys(google_project_iam_member.forge_slot_reader)) == toset(local.infra_tenant_ids),
       toset(keys(google_project_iam_member.forge_slot_version_adder)) == toset(local.infra_tenant_ids),
       toset(keys(google_project_iam_member.forge_refresh_reader)) == toset(local.infra_tenant_ids),
+      toset(keys(google_project_iam_member.forge_slot_version_manager)) == toset(local.infra_tenant_ids),
     ])
-    error_message = "every tenant the release applies gets the three per-tenant user-slot grants, and no other key does"
+    error_message = "every tenant the release applies gets the four per-tenant user-slot grants, and no other key does"
   }
 
   # Nothing here names the other team's secrets: every prefix is ours.
@@ -265,6 +308,8 @@ run "user_slot_grants_are_absent_until_switched_on" {
       length(google_project_iam_member.forge_slot_version_adder) == 0,
       length(google_project_iam_member.forge_slot_reader) == 0,
       length(google_project_iam_member.forge_refresh_reader) == 0,
+      length(google_project_iam_custom_role.forge_slot_version_manager) == 0,
+      length(google_project_iam_member.forge_slot_version_manager) == 0,
     ])
     error_message = "enable_forge_user_slots = false must grant nothing"
   }
