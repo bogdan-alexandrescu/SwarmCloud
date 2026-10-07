@@ -2190,6 +2190,50 @@ before, and the merge step never sees the merge-queue `405`. A pull request
 still in the queue at the rollback is taken out by GitHub; label it `ready`
 again.
 
+## The release warms each Cloud Run worker job once on its new digest
+
+`deploy and smoke` runs `scripts/warm-jobs.sh` right after it has verified that
+every job runs the promoted digest, and before the smoke test and the
+`acceptance (dev)` job. The script executes each per-tenant worker job once
+with `--args=--self-test`.
+
+**Why.** The measurement of 2026-10-07 on #363 (874 claude-code attempts from
+09-30 to 10-07, 497 of them with Cloud Run execution conditions): the first
+execution of each Cloud Run job after a new image digest spends **30-59 s
+importing the image** (ContainerReady "Imported container image in Xs"), and
+every later start pays 1-3 s. That is about 3 % of starts. Without a warm run,
+each job's first tenant task after a release pays the import on top of Cloud
+Run's own 70-200 s provisioning. The owner decided the same day that one
+post-deploy run per job absorbs it. This is a different thing from the warm
+capacity the owner declined on 2026-09-30 (invariant 1): nothing is left
+running. Each execution exits as soon as Cloud Run starts it.
+
+**What one execution does.** `--args` replaces the job's arguments, and the
+image's ENTRYPOINT stays `python -m agent_worker`. On `--self-test` the worker
+prints one line and exits 0 before it reads its configuration
+(`agent_worker.__main__.self_test`). It takes no lease, builds no Firestore
+client and touches no task state. The execution carries no `TASK_ID` or
+`ATTEMPT_ID`, so the reconciler leaves it alone. It logs it once
+(`CloudRunBackend.list_executions`) and has no authority over it.
+
+**Which jobs.** The script warms only jobs that are terraform-managed
+(`managed-by=swarm-terraform`), carry a `swarm-tenant` label, and are named
+`swarm-job-*`. That leaves out `swarm-verify` and any job something else
+created. A name on the shared deny-list (`scripts/lib/common.sh`) is never
+executed. If it was listed, the script warns and skips it. If it was named on
+the command line, the script refuses it and exits non-zero after warming the
+rest. `WARM_PARALLELISM` executions run at once (default 4), because each one
+occupies a whole worker shape in the region while it starts.
+
+**It never fails the release.** If a warm execution fails, or the listing
+fails, the script prints a warning and exits 0. The cost is one slower first
+task. The step also sets `continue-on-error`. It runs only when the verify step
+succeeded, because warming the previous digest would warm nothing, and only
+under `!cancelled()`, because it executes jobs in the environment. That puts it
+under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
+`tests/unit/scripts/test_warm_jobs.py` and
+`tests/unit/worker/test_worker_self_test.py` hold all of this.
+
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
 The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
