@@ -384,7 +384,7 @@ describe('Recent (5) shows on the list page, by name (#503)', () => {
 
 async function page(view = 'wf=wf_broker'): Promise<void> {
   render(<Routed initial={view} />)
-  await waitFor(() => expect(document.querySelector('.wfp-head')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
 describe('the workflow page head (#503, workflows.html frame B)', () => {
@@ -408,8 +408,9 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker" onView={onView} />)
     const tabs = await waitFor(() => {
-      // The canonical underline tabs (components.html A): a link per view.
-      const t = document.querySelector<HTMLElement>('nav.c-tabs[aria-label="Views of this workflow"]')
+      // The canonical underline tabs (components.html A): a link per view --
+      // the loaded page's, since its skeleton draws them too, uncounted (#113).
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > nav.c-tabs[aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })

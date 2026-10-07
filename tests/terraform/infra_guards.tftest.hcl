@@ -476,6 +476,27 @@ run "the_reconciler_can_reach_the_broker_to_release_fenced_holds" {
   }
 }
 
+# #636: the reconciler rings `task_finished` for a task a repair ended.
+# `PubSubFinishAnnouncer.from_env` reads DISPATCH_TOPIC; without it the
+# announcer is None and every wake is silently skipped, leaving the
+# dependants to the safety tick.
+run "the_reconciler_can_ring_the_finish_wake" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {}
+  }
+
+  assert {
+    condition     = lookup(local.service_env["swarm-reconciler"], "DISPATCH_TOPIC", "") == local.wake_topic
+    error_message = "swarm-reconciler has no DISPATCH_TOPIC naming the wake topic, so a task the reconciler ends rings no task_finished wake (#636)"
+  }
+}
+
 # D17: the workflow-rollup jobs call swarm-api directly, so Cloud Run's edge
 # must let the sweeper through or the app's ROLLUP_SWEEPER_ROUTES check is never
 # reached. Planned with prod's shape of api_invokers -- tenant groups only, no

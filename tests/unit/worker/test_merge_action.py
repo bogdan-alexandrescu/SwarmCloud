@@ -897,3 +897,199 @@ def test_the_step_closes_what_close_merged_issues_sh_closes(tmp_path, case, node
     # The script fails the run past a page; the step records it, never silently.
     assert (proc.returncode != 0) is ("issues_beyond_page" in outcome.summary), (case, proc.stderr)
     assert proc.returncode == (1 if total else 0), proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# A base that merges only through a merge queue (lane C3H, owner decision
+# 2026-10-06, observer P26). GitHub answers the REST merge 405 "Changes must
+# be made through the merge queue"; the step enqueues through GraphQL
+# `enqueuePullRequest` with the same tenant token, records the entry, and
+# parks CI_PENDING exactly as MS2's waits do. The wake reads the pull request
+# again: merged is success, still queued parks again, removed from the queue
+# is a refusal carrying GitHub's reason.
+# ---------------------------------------------------------------------------
+
+#: GitHub's answer to `PUT .../pulls/{n}/merge` when a `merge_queue` rule applies.
+QUEUE_REFUSAL = (405, {}, {"message": "Changes must be made through the merge queue"})
+PR_NODE = "PR_kwDOwidget41"
+ENTRY = {"id": "MQE_kwDOwidget7", "position": 2, "state": "QUEUED",
+         "enqueuedAt": "2026-10-06T20:01:00Z"}
+DEQUEUED = "The merge group failed a required status check"
+
+
+def _queued(world: MergeWorld, *, in_queue: bool = False, removed: str | None = None,
+            enqueue: Any = None) -> dict[str, Any]:
+    """Serve the queue's GraphQL beside the closing references the world serves."""
+    world.pr["node_id"] = PR_NODE
+    world.merge_answer = QUEUE_REFUSAL
+    state: dict[str, Any] = {"in_queue": in_queue}
+    closing = world.github.routes[("POST", "/graphql")]
+
+    def graphql(seen):
+        query = seen.body["query"]
+        if "enqueuePullRequest" in query:
+            if enqueue is not None:
+                return enqueue
+            state["in_queue"] = True
+            return 200, {}, {"data": {"enqueuePullRequest": {"mergeQueueEntry": dict(ENTRY)}}}
+        if "isInMergeQueue" in query:
+            removals = [{"reason": removed, "createdAt": "2026-10-06T20:30:00Z"}] if removed else []
+            return 200, {}, {"data": {"repository": {"pullRequest": {
+                "isInMergeQueue": state["in_queue"],
+                "mergeQueueEntry": dict(ENTRY) if state["in_queue"] else None,
+                "timelineItems": {"nodes": removals}}}}}
+        return closing(seen)
+
+    world.github.route("POST", "/graphql", graphql)
+    return state
+
+
+def _graphql(world: MergeWorld, word: str) -> list[Any]:
+    return [s for s in world.github.calls("POST", "/graphql") if word in s.body["query"]]
+
+
+def _parked_in_queue(world: MergeWorld) -> None:
+    """The step's own record after an attempt that enqueued (the fenced park's shape)."""
+    world.docs[TASK]["metadata"] = {control_mod.MERGE_WAIT_METADATA_KEY: {
+        "code": merge.MERGE_QUEUED, "head": PINNED, "pull_request": NUMBER, "pending": [],
+        "wakes": 1, "updates": 0, "first_parked_at": utcnow() - timedelta(minutes=10)}}
+
+
+def test_a_merge_queue_answer_enqueues_with_the_tenant_token_and_parks_ci_pending(tmp_path):
+    """MUTATION: drop the merge-queue branch, and this is `protection_refused`."""
+    world = MergeWorld(tmp_path)
+    _queued(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.exit_code == ExitCode.PARKED
+    assert outcome.end_cause is None and outcome.retryable is False
+    assert "refusal" not in outcome.summary
+    assert outcome.ci_wait == {"code": merge.MERGE_QUEUED, "head": PINNED,
+                               "pull_request": NUMBER, "pending": []}
+    assert outcome.summary["merge_queued"] == {
+        "entry": ENTRY["id"], "position": ENTRY["position"], "state": ENTRY["state"],
+        "enqueued_at": ENTRY["enqueuedAt"], "head": PINNED}
+    assert outcome.summary["merged_by_this_task"] is False
+    assert "merge_called" not in outcome.summary, "an answered 405 merged nothing"
+    # One merge call (answered 405), then the enqueue, pinned to the same head.
+    assert len(world.merge_calls()) == 1
+    (enqueue,) = _graphql(world, "enqueuePullRequest")
+    assert enqueue.body["variables"] == {"pullRequestId": PR_NODE, "expectedHeadOid": PINNED}
+    assert enqueue.url == "https://api.github.com/graphql"
+    assert [k for k, v in enqueue.headers.items() if world.token in str(v)] == ["Authorization"]
+    # Nothing is merged yet: no record of a merge, no issue closed.
+    assert world.github.calls("POST", f"{API}/issues/{NUMBER}/comments") == []
+    assert world.closed_issues() == []
+    assert ENTRY["id"] in outcome.message
+
+
+def test_the_enqueue_waits_behind_the_fencing_recheck(tmp_path):
+    """Invariant 5: a worker superseded after the 405 enqueues nothing."""
+    from agent_worker.errors import FencedError
+
+    world = MergeWorld(tmp_path)
+    _queued(world)
+    world.stale_after = 2
+    with pytest.raises(FencedError):
+        merge.run_merge(world.context())
+    assert len(world.merge_calls()) == 1
+    assert _graphql(world, "enqueuePullRequest") == []
+
+
+def test_the_wake_of_a_queued_merge_github_merged_succeeds_and_closes_its_issues(tmp_path):
+    world = MergeWorld(tmp_path)
+    _queued(world)
+    _parked_in_queue(world)
+    world.pr.update(merged=True, state="closed", merge_commit_sha=MERGED)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["merged_by_this_task"] is True
+    assert outcome.summary["merged_through_queue"] is True
+    assert outcome.summary["merge_commit"] == MERGED
+    assert world.merge_calls() == [] and _graphql(world, "enqueuePullRequest") == []
+    assert world.closed_issues() == [7]
+    (record,) = world.github.calls("POST", f"{API}/issues/{NUMBER}/comments")
+    assert f"Merged by SwarmCloud task {TASK}" in record.body["body"]
+    assert "merge queue" in record.body["body"]
+
+
+def test_the_wake_of_a_queued_merge_still_in_the_queue_parks_again(tmp_path):
+    world = MergeWorld(tmp_path)
+    _queued(world, in_queue=True)
+    _parked_in_queue(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == merge.MERGE_QUEUED
+    assert outcome.summary["merge_queued"]["entry"] == ENTRY["id"]
+    assert world.merge_calls() == [] and _graphql(world, "enqueuePullRequest") == []
+
+
+def test_the_wake_of_a_dequeued_merge_is_a_refusal_with_githubs_reason(tmp_path):
+    """MUTATION: re-enqueue a dequeued pull request instead, which would loop
+    on a merge group that keeps failing."""
+    world = MergeWorld(tmp_path)
+    _queued(world, removed=DEQUEUED)
+    _parked_in_queue(world)
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.FAILED
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "merge_dequeued"
+    assert DEQUEUED in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == [] and _graphql(world, "enqueuePullRequest") == []
+    assert world.closed_issues() == []
+
+
+def test_an_enqueue_github_refuses_is_a_refusal_with_its_reason(tmp_path):
+    world = MergeWorld(tmp_path)
+    _queued(world, enqueue=(200, {}, {"data": {"enqueuePullRequest": None},
+                                      "errors": [{"message": "Pull request is not mergeable"}]}))
+    outcome = merge.run_merge(world.context())
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "merge_queue_refused"
+    assert "Pull request is not mergeable" in outcome.summary["refusal"]["message"]
+
+
+def test_an_enqueue_refused_because_it_is_already_queued_parks(tmp_path):
+    """A lost enqueue answer, an operator, or auto-merge queued it first."""
+    world = MergeWorld(tmp_path)
+    _queued(world, in_queue=True, enqueue=(200, {}, {
+        "data": {"enqueuePullRequest": None},
+        "errors": [{"message": "Pull request is already in the merge queue"}]}))
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == merge.MERGE_QUEUED
+    assert outcome.summary["merge_queued"]["entry"] == ENTRY["id"]
+
+
+def test_without_a_merge_queue_nothing_is_enqueued_or_read_from_one(tmp_path):
+    """The control: the non-queue path is unchanged -- the merge, then the
+    record and the closing references, and no queue call of any kind."""
+    world = MergeWorld(tmp_path)
+    world.pr["node_id"] = PR_NODE
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert "merge_queued" not in outcome.summary and "merged_through_queue" not in outcome.summary
+    queries = [s.body["query"] for s in world.github.calls("POST", "/graphql")]
+    assert queries and all("closingIssuesReferences" in q for q in queries), queries
+    # Another 405 is still protection's, with no enqueue.
+    refused = MergeWorld(tmp_path / "refused")
+    refused.merge_answer = (405, {}, {"message": "Required status check is expected"})
+    outcome = merge.run_merge(refused.context())
+    assert outcome.summary["refusal"]["code"] == "protection_refused"
+    assert refused.github.calls("POST", "/graphql") == []
+
+
+def test_a_forged_queue_record_on_an_unqueued_pull_request_only_refuses(tmp_path):
+    """The step's own document is tenant-writable. A forged `merge_queued`
+    record makes the step read the queue, find nothing, and refuse: nothing
+    on the forge changes."""
+    world = MergeWorld(tmp_path)
+    _queued(world)
+    _parked_in_queue(world)
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "merge_dequeued"
+    assert world.merge_calls() == [] and _graphql(world, "enqueuePullRequest") == []

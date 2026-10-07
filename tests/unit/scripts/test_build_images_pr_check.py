@@ -434,7 +434,9 @@ def test_a_pull_request_job_maps_the_change_and_builds_without_pushing():
 
 def test_mains_build_and_push_is_unchanged():
     build = _jobs()["build"]
-    assert build["if"] == "github.event_name != 'pull_request'"
+    # ...and not on a merge queue entry, whose ref the pool rejects as it
+    # rejects a pull request's (test_merge_queue_workflows.py).
+    assert build["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
     runs = [str(s.get("run", "")).strip() for s in build["steps"] if s.get("run")]
     assert "./scripts/build-images.sh" in runs, runs
     assert "build-not-run" not in _jobs(), "the 'not built' notice outlived the pull-request build"

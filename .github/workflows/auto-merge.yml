@@ -71,6 +71,17 @@
 # the two events that token still starts. Nothing here waits or polls: the
 # last run to finish on the head is what merges it.
 #
+# A BASE THAT REQUIRES A MERGE QUEUE IS ENQUEUED, NEVER MERGED DIRECTLY
+# (owner decision 2026-10-06, docs/ci.md "Main merges through a merge queue").
+# The gate reads whether `main`'s effective rules carry a `merge_queue` rule
+# from the same read as its item 3, and says `queue`. Then `gh pr merge
+# --auto` arms auto-merge, which on a queued base enqueues the pull request
+# once its required checks pass; the queue's own merge method decides how it
+# lands, so no `--squash` and no `--subject` there. The already-green
+# fallback enqueues through GraphQL `enqueuePullRequest`, pinned to the head
+# like every merge here -- never a direct merge, which would be the queue
+# bypassed. Without the rule, everything below is exactly what it was.
+#
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue and disable jobs' shells against a fake `gh`;
 # test_close_merged_issues.py runs the close script the same way.
@@ -247,8 +258,9 @@ jobs:
           }
 
           # 1. A worker's placeholder title. The squash subject below IS the
-          #    title, so queuing this would put "[swarm] task_..." on main as a
-          #    headline -- the #238 defect with a different string. Quoted, so
+          #    title (and through a merge queue, the merge commit's message
+          #    carries it), so queuing this would put "[swarm] task_..." on
+          #    main -- the #238 defect with a different string. Quoted, so
           #    the prefix is literal: an unquoted [swarm] is a glob bracket
           #    expression matching one character. Case- and leading-whitespace-
           #    insensitive: "[Swarm] task_" or "  [swarm] task_" is still the
@@ -257,7 +269,7 @@ jobs:
           no_leading_space="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
           lower_title="$(printf '%s' "${no_leading_space}" | tr '[:upper:]' '[:lower:]')"
           if [[ "${lower_title}" == "[swarm] task_"* ]]; then
-            refuse "The title starts \`[swarm] task_\`: it is the worker's placeholder, and the squash commit's headline on main is the pull request's title. Retitle it as a fact-style headline that says what the change does."
+            refuse "The title starts \`[swarm] task_\`: it is the worker's placeholder, and the pull request's title is what main's history records for it -- the squash commit's headline, or the merge queue's merge commit message. Retitle it as a fact-style headline that says what the change does."
           fi
 
           # 2. Only main is protected and only main's push starts the release
@@ -297,6 +309,10 @@ jobs:
           if [[ "${required}" -eq 0 ]]; then
             refuse "\`${BASE_REF}\` has no required status checks in its rulesets or its branch protection, so auto-merge would merge this now whether CI is green or not. The owner sets them on the \`main-protection\` ruleset with the command in docs/ci.md." owner
           fi
+          # Whether the base merges only through a merge queue: the merge
+          #    step enqueues there instead of squashing (docs/ci.md "Main
+          #    merges through a merge queue"). Same rules read as above.
+          queue="$(jq -rs 'add // [] | any(.[]; .type == "merge_queue")' "${rules}")"
 
           # 4. No App, no merge. Merging with the GITHUB_TOKEN instead would
           #    land the commit and start no build and no release.
@@ -361,8 +377,9 @@ jobs:
             exit 0
           fi
 
+          echo "queue=${queue}" >>"${GITHUB_OUTPUT}"
           echo "decision=merge" >>"${GITHUB_OUTPUT}"
-          echo "gate passed: ${required} required check(s) on ${BASE_REF}"
+          echo "gate passed: ${required} required check(s) on ${BASE_REF}; merge queue: ${queue}"
 
       - name: mint the merge App's token for this repository
         id: app-token
@@ -384,6 +401,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_TITLE: ${{ steps.pr.outputs.title }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          QUEUE: ${{ steps.gate.outputs.queue }}
         # --subject: a one-commit squash otherwise takes that commit's own
         # message as its headline, which is how #238 put "swarm: work from
         # task_..." on main. --auto: GitHub merges when the required checks
@@ -401,31 +419,69 @@ jobs:
         # passed the gate and armed it) or the pull request merged by it in
         # the meantime. Both are the outcome wanted, not an error; neither
         # merges directly.
+        #
+        # A MERGE QUEUE ON THE BASE (QUEUE=true from the gate): the same three
+        # outcomes, enqueued rather than merged. `--auto` with no method arms
+        # auto-merge, which enqueues once the required checks pass; the
+        # already-green fallback is GraphQL `enqueuePullRequest`, pinned to
+        # the head, and one already in the queue is left there.
         run: |
           set -euo pipefail
           err="$(mktemp)"
-          if gh pr merge "${PR_NUMBER}" --auto --squash \
-              --match-head-commit "${HEAD_SHA}" \
-              --subject "${PR_TITLE} (#${PR_NUMBER})" 2>"${err}"; then
-            outcome="squash-merges when its required checks pass"
-          else
-            view="$(mktemp)"
-            gh pr view "${PR_NUMBER}" --json state,mergeStateStatus,autoMergeRequest >"${view}"
-            state="$(jq -r .mergeStateStatus "${view}")"
-            if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
-              outcome="had already been merged"
-            elif jq -e '.autoMergeRequest != null' "${view}" >/dev/null; then
-              outcome="already had auto-merge enabled, and squash-merges when its required checks pass"
-            else
-              if [[ "${state}" != "CLEAN" ]]; then
-                cat "${err}" >&2
-                echo "::error::auto-merge was not enabled (merge state ${state})"
-                exit 1
-              fi
-              gh pr merge "${PR_NUMBER}" --squash \
+          if [[ "${QUEUE:-false}" != "true" ]]; then
+            if gh pr merge "${PR_NUMBER}" --auto --squash \
                 --match-head-commit "${HEAD_SHA}" \
-                --subject "${PR_TITLE} (#${PR_NUMBER})"
-              outcome="was already green and was merged now"
+                --subject "${PR_TITLE} (#${PR_NUMBER})" 2>"${err}"; then
+              outcome="squash-merges when its required checks pass"
+            else
+              view="$(mktemp)"
+              gh pr view "${PR_NUMBER}" --json state,mergeStateStatus,autoMergeRequest >"${view}"
+              state="$(jq -r .mergeStateStatus "${view}")"
+              if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+                outcome="had already been merged"
+              elif jq -e '.autoMergeRequest != null' "${view}" >/dev/null; then
+                outcome="already had auto-merge enabled, and squash-merges when its required checks pass"
+              else
+                if [[ "${state}" != "CLEAN" ]]; then
+                  cat "${err}" >&2
+                  echo "::error::auto-merge was not enabled (merge state ${state})"
+                  exit 1
+                fi
+                gh pr merge "${PR_NUMBER}" --squash \
+                  --match-head-commit "${HEAD_SHA}" \
+                  --subject "${PR_TITLE} (#${PR_NUMBER})"
+                outcome="was already green and was merged now"
+              fi
+            fi
+          else
+            if gh pr merge "${PR_NUMBER}" --auto \
+                --match-head-commit "${HEAD_SHA}" 2>"${err}"; then
+              outcome="joins main's merge queue when its required checks pass"
+            else
+              view="$(mktemp)"
+              gh pr view "${PR_NUMBER}" --json id,state,mergeStateStatus,autoMergeRequest >"${view}"
+              state="$(jq -r .mergeStateStatus "${view}")"
+              in_queue="$(gh api graphql \
+                -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } }' \
+                -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -F number="${PR_NUMBER}" \
+                --jq .data.repository.pullRequest.isInMergeQueue)"
+              if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+                outcome="had already been merged"
+              elif [[ "${in_queue}" == "true" ]]; then
+                outcome="was already in main's merge queue"
+              elif jq -e '.autoMergeRequest != null' "${view}" >/dev/null; then
+                outcome="already had auto-merge enabled, and joins main's merge queue when its required checks pass"
+              else
+                if [[ "${state}" != "CLEAN" ]]; then
+                  cat "${err}" >&2
+                  echo "::error::auto-merge was not enabled and the pull request was not enqueued (merge state ${state})"
+                  exit 1
+                fi
+                gh api graphql \
+                  -f query='mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) { mergeQueueEntry { position } } }' \
+                  -f id="$(jq -r .id "${view}")" -f head="${HEAD_SHA}" >/dev/null
+                outcome="was already green and was added to main's merge queue now"
+              fi
             fi
           fi
           {

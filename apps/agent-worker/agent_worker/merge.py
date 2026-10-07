@@ -46,6 +46,18 @@ splits `from_fork`, `base_not_default`, `protection_refused`,
 `merge_conflict`, `checks_timeout` and `behind_too_often` out of the codes
 they were folded into, and gives `_close_issues` the close script's page rule.
 
+A BASE THAT MERGES ONLY THROUGH A MERGE QUEUE is enqueued, not merged (lane
+C3H, the owner's 2026-10-06 decision for SwarmCloud's own main). GitHub
+answers the REST merge 405 "Changes must be made through the merge queue";
+then, behind the same fencing recheck, the step enqueues through GraphQL
+`enqueuePullRequest` with the same token, pinned to the head the checks are
+green at, records the entry in `merge_queued`, and parks CI_PENDING with the
+code MERGE_QUEUED, as every MS2 wait does. swarm-api's wake tick reads the
+queue for that park; the next attempt finds the pull request merged
+(success, with the record and the issues), still queued (parked again), or
+removed (`merge_dequeued`, with GitHub's reason). With no queue rule nothing
+here runs: the 405 is the only way in.
+
 THE GITHUB SPECIFICS ARE BEHIND `ForgeMerger`, with `GitHubMerger` its only
 implementation. swarm-api refuses a repository whose host has no merger at
 SUBMISSION (`validation.MERGE_FORGE_HOSTS`, held equal to
@@ -174,6 +186,12 @@ CI_FIX_RUNNING = "ci_fix_running"
 #: move rather than reading the old head's checks, which were green.
 BRANCH_UPDATE_PENDING = "branch_update_pending"
 
+#: The park code of a pull request this step put in its base's merge queue:
+#: swarm-api's wake tick reads the queue for it, not the checks
+#: (`swarm_api.mergewake.MERGE_QUEUED`, held equal by
+#: tests/unit/control_plane/test_merge_wake.py).
+MERGE_QUEUED = "merge_queued"
+
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
 #: anyone else made can carry any tree, so the walk accepts only these.
@@ -184,6 +202,10 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 _OUT_OF_DATE = re.compile(r"out of date|not up to date|is behind", re.IGNORECASE)
 #: A 405/422 (merge) or 422 (update-branch) that names a merge conflict.
 _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
+#: A 405/422 from the merge call that means the base merges only through a
+#: merge queue: GitHub's "Changes must be made through the merge queue",
+#: alone (405) or under "Repository rule violations found" (422).
+_MERGE_QUEUE = re.compile(r"merge queue", re.IGNORECASE)
 
 #: The hosts `GitHubMerger` can merge on: github.com, where the tenant's
 #: token may be sent at all (`forge.may_receive_forge_token`, #307).
@@ -205,6 +227,25 @@ _CLOSING_QUERY = (
     " totalCount nodes { number state repository { nameWithOwner } } } } } }"
 )
 
+_QUEUE_ENTRY = "mergeQueueEntry { id position state enqueuedAt }"
+
+_ENQUEUE_MUTATION = (
+    "mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {"
+    " enqueuePullRequest(input: {pullRequestId: $pullRequestId,"
+    " expectedHeadOid: $expectedHeadOid}) {"
+    f" {_QUEUE_ENTRY} }} }}"
+)
+
+#: Whether the pull request is in its base's merge queue, and the last reason
+#: GitHub gave for taking it out.
+_QUEUE_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!) {"
+    " repository(owner: $owner, name: $name) {"
+    " pullRequest(number: $number) {"
+    f" isInMergeQueue {_QUEUE_ENTRY}"
+    " timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {"
+    " nodes { ... on RemovedFromMergeQueueEvent { reason createdAt } } } } } }"
+)
 
 # ---------------------------------------------------------------------------
 # The rules auto-merge.yml also states (§8)
@@ -270,6 +311,8 @@ class PullRequestFacts:
     #: GitHub's `mergeable_state`: `behind` when the base requires an
     #: up-to-date branch and this one is not; `dirty` on a conflict.
     mergeable_state: str | None = None
+    #: GraphQL's id for the pull request, which `enqueuePullRequest` takes.
+    node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -337,6 +380,31 @@ class RequiredChecks:
     protected: bool = False
 
 
+@dataclass(frozen=True)
+class QueueFacts:
+    """Where a pull request stands in its base's merge queue."""
+
+    queued: bool
+    entry: str | None = None
+    position: int | None = None
+    state: str | None = None
+    enqueued_at: str | None = None
+    #: The reason GitHub gave the last time it removed the pull request.
+    removed_reason: str | None = None
+
+    def record(self, head: str) -> dict[str, Any]:
+        return {"entry": self.entry, "position": self.position, "state": self.state,
+                "enqueued_at": self.enqueued_at, "head": head}
+
+
+@dataclass(frozen=True)
+class EnqueueAnswer:
+    enqueued: bool
+    status: int
+    entry: QueueFacts | None = None
+    message: str = ""
+
+
 class ForgeMerger(Protocol):
     """What the merge step asks of a forge. One implementation: `GitHubMerger`."""
 
@@ -359,6 +427,10 @@ class ForgeMerger(Protocol):
     def update_branch(self, number: int, *, expected_head_sha: str) -> UpdateAnswer: ...
 
     def merge(self, number: int, *, sha: str, title: str, message: str) -> MergeAnswer: ...
+
+    def enqueue(self, number: int, *, node_id: str, expected_head_sha: str) -> EnqueueAnswer: ...
+
+    def queue_state(self, number: int) -> QueueFacts: ...
 
     def comment(self, number: int, body: str) -> bool: ...
 
@@ -441,6 +513,7 @@ class GitHubMerger:
             mergeable=mergeable if isinstance(mergeable, bool) else None,
             merge_commit_sha=_str(data.get("merge_commit_sha")),
             mergeable_state=_str(data.get("mergeable_state")),
+            node_id=_str(data.get("node_id")),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -547,6 +620,46 @@ class GitHubMerger:
             message=forge_mod._message_of(answer.data),
         )
 
+    def enqueue(self, number: int, *, node_id: str, expected_head_sha: str) -> EnqueueAnswer:
+        """Add the pull request to its base's merge queue, if its head is still
+        `expected_head_sha`. GraphQL answers a refusal 200 with `errors`."""
+        answer = self._client.request(
+            "POST", "/graphql",
+            payload={"query": _ENQUEUE_MUTATION,
+                     "variables": {"pullRequestId": node_id,
+                                   "expectedHeadOid": expected_head_sha}},
+        )
+        data = _mapping(answer.data)
+        entry = _mapping(_mapping(_mapping(data.get("data")).get("enqueuePullRequest"))
+                         .get("mergeQueueEntry"))
+        if answer.status != 200 or data.get("errors") or not entry:
+            return EnqueueAnswer(False, answer.status,
+                                 message=_graphql_message(answer.data)
+                                 or f"GitHub answered {answer.status} and enqueued nothing")
+        return EnqueueAnswer(True, answer.status, _queue_entry(entry))
+
+    def queue_state(self, number: int) -> QueueFacts:
+        answer = self._client.request(
+            "POST", "/graphql",
+            payload={"query": _QUEUE_QUERY,
+                     "variables": {"owner": self.owner, "name": self.repo, "number": number}},
+        )
+        data = _mapping(answer.data)
+        pull = _mapping(_mapping(_mapping(data.get("data")).get("repository")).get("pullRequest"))
+        if answer.status != 200 or data.get("errors") or not isinstance(
+            pull.get("isInMergeQueue"), bool
+        ):
+            raise forge_mod.ForgeAnswered(answer.status, "/graphql",
+                                          _graphql_message(answer.data)
+                                          or "the merge queue could not be read")
+        removals = _mapping(pull.get("timelineItems")).get("nodes") or []
+        reason = _str(_mapping(removals[-1]).get("reason")) if removals else None
+        if pull["isInMergeQueue"]:
+            entry = _queue_entry(_mapping(pull.get("mergeQueueEntry")))
+            return QueueFacts(True, entry.entry, entry.position, entry.state,
+                              entry.enqueued_at, reason)
+        return QueueFacts(False, removed_reason=reason)
+
     def comment(self, number: int, body: str) -> bool:
         answer = self._client.request(
             "POST", f"{self._base}/issues/{number}/comments", payload={"body": body}
@@ -585,6 +698,22 @@ class GitHubMerger:
             payload={"state": "closed", "state_reason": "completed"},
         )
         return commented and answer.status == 200
+
+
+def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
+    return QueueFacts(True, _str(entry.get("id")), _int(entry.get("position")),
+                      _str(entry.get("state")), _str(entry.get("enqueuedAt")))
+
+
+def _graphql_message(data: Any) -> str:
+    """GraphQL's first error message, or REST's `message`, at most 300 characters."""
+    errors = data.get("errors") if isinstance(data, Mapping) else None
+    if isinstance(errors, list):
+        for error in errors:
+            message = _str(_mapping(error).get("message"))
+            if message:
+                return message[:300]
+    return forge_mod._message_of(data)
 
 
 def merger_for(
@@ -868,6 +997,17 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
         ) is not None:
+            if _queued_by_this_step(own):
+                # The merge queue merged what this step enqueued (C3H): this
+                # step's merge, recorded as the direct merge's is.
+                summary["merged_by_this_task"] = True
+                summary["merged_through_queue"] = True
+                summary["merge_commit"] = pr.merge_commit_sha
+                _record(summary, merger, number,
+                        queued_provenance(ctx, merger, number=number, head=pr.head_sha,
+                                          base=default))
+                _close_issues(run, merger, number)
+                return _outcome(TaskState.SUCCEEDED, None, summary, "")
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed
             # below as if this attempt had made it.
@@ -918,6 +1058,11 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                               f"CI has not settled in {int(waited // 60)} min, past "
                               f"{MERGE_CI_MAX_SECONDS // 3600} h: {message}")
         return run.wait(code, message, head=head, pull_request=number, pending=pending)
+
+    if _queued_by_this_step(own):
+        # An earlier attempt enqueued it (C3H). Open and unmerged at an
+        # accepted head: the queue still has it, or took it out.
+        return _in_queue(run, merger, number=number, head=head, base=default, wait=wait)
 
     # The checks, at the head this attempt acts at.
     required = merger.required_checks(pr.base_ref or "")
@@ -983,6 +1128,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         if answer.status == 409:
             return run.refuse("head_moved", f"GitHub answered 409: the head is no longer {head}")
         if answer.status in (405, 422):
+            if _MERGE_QUEUE.search(answer.message):
+                # Answered, so nothing was merged: the base merges only
+                # through its merge queue, and the enqueue is a different
+                # call, not the merge sent again.
+                summary.pop("merge_called")
+                summary["merge_answered"] = {"status": answer.status, "message": answer.message}
+                return _enqueue(run, merger, number=number, node_id=pr.node_id, head=head,
+                                base=default, wait=wait)
             if _OUT_OF_DATE.search(answer.message):
                 # Answered, so nothing was merged: the update row, which is a
                 # different call, not the merge sent again.
@@ -1006,13 +1159,96 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
 
     # ---- §5.4: the record, then the issues. The merge stands whatever these
     # answer; each failure is recorded, never raised.
+    _record(summary, merger, number, message)
+    _close_issues(run, merger, number)
+    return _outcome(TaskState.SUCCEEDED, None, summary, "")
+
+
+def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: str) -> None:
+    """The comment naming the task that merged the pull request; a failure is recorded."""
     try:
         summary["recorded_on_pull_request"] = merger.comment(number, message)
     except forge_mod.ForgeError as exc:
         summary["recorded_on_pull_request"] = False
         summary["recorded_on_pull_request_reason"] = str(exc)[:300]
-    _close_issues(run, merger, number)
-    return _outcome(TaskState.SUCCEEDED, None, summary, "")
+
+
+# ---------------------------------------------------------------------------
+# A base that merges only through a merge queue (lane C3H)
+# ---------------------------------------------------------------------------
+
+
+def _queued_by_this_step(own: Mapping[str, Any]) -> bool:
+    """Whether this step's last park was in the merge queue.
+
+    `merge_wait.code` on the step's own document, written by the fenced park.
+    The document is tenant-writable, so a forged code can at worst make the
+    step read the queue and refuse `merge_dequeued`, which changes nothing on
+    the forge -- `_ci_wait_age`'s rule.
+    """
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    return wait.get("code") == MERGE_QUEUED
+
+
+def _queued_wait(run: _Run, state: QueueFacts, *, number: int, head: str, base: str,
+                 wait: Any) -> ActionOutcome:
+    run.summary["merge_queued"] = state.record(head)
+    where = f" at position {state.position}" if state.position is not None else ""
+    return wait(MERGE_QUEUED,
+                f"pull request #{number} is in {base}'s merge queue{where} at {head} "
+                f"(entry {state.entry or 'unnamed'}, {state.state or 'state unknown'})", [])
+
+
+def _enqueue(run: _Run, merger: ForgeMerger, *, number: int, node_id: str | None, head: str,
+             base: str, wait: Any) -> ActionOutcome:
+    """GitHub's merge queue takes the pull request at `head`; then park on it.
+
+    Behind the same fencing recheck as the merge: a superseded worker
+    enqueues nothing (invariant 5). A refusal from GitHub is read against the
+    queue once -- a lost answer, an operator or auto-merge may have queued it
+    first -- and is `merge_queue_refused` only when it is not there.
+    """
+    ctx, summary = run.ctx, run.summary
+    if node_id is None:
+        return run.refuse("merge_queue_refused",
+                          f"{base} merges through a merge queue, and GitHub gave no id for "
+                          f"pull request #{number} to enqueue it by")
+    if ctx.recheck():
+        return cancelled(summary)
+    answer = merger.enqueue(number, node_id=node_id, expected_head_sha=head)
+    state = answer.entry
+    if not answer.enqueued or state is None:
+        state = merger.queue_state(number)
+        if not state.queued:
+            return run.refuse("merge_queue_refused",
+                              f"{base} merges through a merge queue, and GitHub refused to "
+                              f"add pull request #{number} to it: {answer.message}")
+    return _queued_wait(run, state, number=number, head=head, base=base, wait=wait)
+
+
+def _in_queue(run: _Run, merger: ForgeMerger, *, number: int, head: str, base: str,
+              wait: Any) -> ActionOutcome:
+    """The wake of a queued park: still queued parks again; out of the queue
+    unmerged refuses with GitHub's reason, and is never enqueued again -- a
+    merge group that failed would fail again."""
+    state = merger.queue_state(number)
+    if state.queued:
+        return _queued_wait(run, state, number=number, head=head, base=base, wait=wait)
+    return run.refuse("merge_dequeued",
+                      f"pull request #{number} left {base}'s merge queue unmerged: "
+                      f"{state.removed_reason or 'GitHub recorded no reason'}")
+
+
+def queued_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
+                      head: str | None, base: str) -> str:
+    """The pull request comment for a merge the queue made (§5.4). No attribution."""
+    return "\n".join([
+        f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
+        f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
+        f"through {base}'s merge queue, which this task enqueued at {head}, the head "
+        "the workflow pushed or GitHub's update of it onto the base, with every "
+        "required check green there.",
+    ])
 
 
 def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> int | None:
