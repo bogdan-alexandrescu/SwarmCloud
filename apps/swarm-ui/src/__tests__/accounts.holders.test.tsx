@@ -31,6 +31,12 @@ const api = vi.hoisted(() => ({
   removeAccount: vi.fn(),
   setAccountLending: vi.fn(),
   setAccountState: vi.fn(),
+  // Holding now names each agent from its task read (G5-16). Refused here, so
+  // these cases read the id as the name, which is what they assert on.
+  loadTask: vi.fn(async () => ({
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'not read in this test' },
+  })),
 }))
 vi.mock('../api', () => api)
 
@@ -136,8 +142,10 @@ describe('holding now', () => {
 
     const link = await screen.findByRole('link', { name: 'task_abc' }, WAIT)
     expect(link.getAttribute('href')).toBe('#work/task/task_abc')
-    expect(screen.getByText(/attempt 2/)).toBeTruthy()
-    expect(screen.getAllByText(/since \d\d:\d\d \(38m\)/).length).toBe(2)
+    // Agent · Attempt · Since, the mock-up's table (G5-16).
+    const rows = [...document.querySelectorAll('.acct-holding-now tbody tr')]
+    expect(rows[0]!.querySelectorAll('td')[1]!.textContent).toBe('2')
+    expect(screen.getAllByText(/^\d\d:\d\d \(38m\)$/).length).toBe(2)
     expect(screen.getByText('task not recorded')).toBeTruthy()
     // NOT RECORDED IS NOT UNVERIFIED. A regression that folds the two would
     // tell the reader a worker lied when it merely did not say.

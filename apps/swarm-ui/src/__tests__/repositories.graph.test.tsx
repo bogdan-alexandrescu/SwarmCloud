@@ -277,9 +277,9 @@ describe('the call graph and its depth control', () => {
     await waitFor(() => expect(symbolCalls(calls).some((p) => p.get('direction') === 'callers')).toBe(true), WAIT)
   })
 
-  it('draws the Test map view for the picked symbol', async () => {
+  it('draws the Tests reaching a symbol view for the picked symbol', async () => {
     await pickTotal()
-    fireEvent.click(within(document.querySelector('.rg-tools')!).getByRole('radio', { name: 'Test map' }))
+    fireEvent.click(within(document.querySelector('.rg-tools')!).getByRole('radio', { name: 'Tests reaching a symbol' }))
     await waitFor(() => expect(document.querySelectorAll('.rg-testview .rg-test')).toHaveLength(2), WAIT)
     expect(visible(document.querySelector('.rg-testview'))).toContain('tests/core/test_invoices.py#test_invoice_totals')
   })

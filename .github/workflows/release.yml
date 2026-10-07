@@ -928,6 +928,23 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
+      # kubernetes/render.py, which apply.sh runs in the step below, imports
+      # quota_broker, scheduler and swarm_common from apps/. Their import chain
+      # is stdlib-only today, but nothing holds it there: the first module-level
+      # third-party import in any of the three would fail this apply with
+      # ModuleNotFoundError on the runner's bare python3 (#346, #354 review).
+      # So it runs on the project's own interpreter, synced from the lockfile
+      # as `verify` syncs it, and only when the apply runs.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for kubernetes/render.py
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        run: uv sync --frozen --all-extras
+
       - name: apply each tenant namespace with its step-spec public keys
         # CONTRACT REQUEST 34 (#342), owner decision 2026-09-29 on #353: a GKE
         # browser pod reads the step-spec public keys from the
@@ -980,6 +997,12 @@ jobs:
           gcloud container clusters get-credentials "${GKE_CLUSTER}" \
             --project "${PROJECT_ID}" --location "${GKE_LOCATION}"
           context="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
+          # apply.sh runs render.py with ${PYTHON_BIN:-python3}: the project's
+          # synced interpreter, never the runner's bare one (see above). Its
+          # imports are checked once here, before any tenant is applied, so a
+          # missing package fails the step before it writes to the cluster.
+          export PYTHON_BIN="${GITHUB_WORKSPACE}/.venv/bin/python"
+          "${PYTHON_BIN}" kubernetes/render.py --help >/dev/null
           jq -r 'keys[]' build/tenant-namespaces.json > build/tenants.txt
           # A while-read over a file, not `for t in $(...)`: see CLAUDE.md,
           # "Empty output is not success" -- the count is printed and checked.
