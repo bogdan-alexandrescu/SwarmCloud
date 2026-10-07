@@ -85,7 +85,7 @@ import {
   USAGE_NOT_SAMPLED,
 } from './measure'
 import { workflowDispatchOf } from './Dispatch'
-import { Id, Screen } from './Shell'
+import { CountNote, Id, Screen } from './Shell'
 import {
   axisOf,
   boardResultNote,
@@ -116,6 +116,7 @@ import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, ty
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
+import { useInView } from './useInView'
 import {
   bytesLabel,
   consequenceOf,
@@ -171,6 +172,7 @@ import {
   rowWhy,
   SORT_LABEL,
   sortWorkflows,
+  stepsRead,
   workflowDuration,
   workflowHref,
   workflowQueryString,
@@ -4277,7 +4279,11 @@ const LIST_COLUMNS: readonly { col: string; label: string; num?: boolean }[] = [
   { col: 'runners', label: 'Runners' },
   { col: 'cost', label: 'Cost', num: true },
   { col: 'owner', label: 'Owner' },
-  { col: 'started', label: 'Started' },
+  // SUBMITTED, NOT STARTED (QA G3-20, 2026-10-07): every order sorts by
+  // submission, and a column of first-step starts under "newest first" read
+  // 15:33:10, 15:33:09, 15:35:37. Duration is measured from submission too.
+  // The first step's start is the cell's title.
+  { col: 'submitted', label: 'Submitted' },
   { col: 'duration', label: 'Duration', num: true },
 ]
 
@@ -4340,9 +4346,12 @@ function WorkflowListFilters({
         owner
         <select disabled={off} value={query.owner} onChange={(e) => choose({ ...query, owner: e.target.value })}>
           <option value="">anyone</option>
+          {/* The name before the @, as the Owner cell prints it (QA G3-14): a
+              service account's whole address set the select 424px wide in
+              a 354px column at 390. The address is the option's title. */}
           {owners.map((o) => (
-            <option key={o} value={o}>
-              {o}
+            <option key={o} value={o} title={o}>
+              {ownerShort(o)}
             </option>
           ))}
         </select>
@@ -4404,7 +4413,11 @@ export function WorkflowListSkeleton({ query }: { query: WorkflowQuery }) {
             {Array.from({ length: SKELETON_ROWS }, (_, r) => (
               <tr key={r} className="wfl-row is-skel">
                 {SKELETON_WIDTHS.map((w, c) => (
-                  <td key={c} className={c === 1 ? 'wfl-name' : LIST_COLUMNS[c]?.num === true ? 'num' : undefined}>
+                  <td
+                    key={c}
+                    data-col={LIST_COLUMNS[c]?.col}
+                    className={c === 1 ? 'wfl-name' : LIST_COLUMNS[c]?.num === true ? 'num' : undefined}
+                  >
                     <span className="wfl-skel" style={{ width: `${w}em` }} />
                     {c === 1 && <span className="wfl-skel is-sub" style={{ width: `${w - 4}em` }} />}
                   </td>
@@ -4435,9 +4448,11 @@ function WorkflowList({
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
 }) {
+  const reads = useRowReads(board)
+  const taskById = reads.taskById
   const labels = useMemo(
-    () => new Map(board.workflows.map((w) => [w.workflow_id, workflowLabel(w, board.taskById)] as const)),
-    [board.workflows, board.taskById],
+    () => new Map(board.workflows.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
+    [board.workflows, taskById],
   )
   // The segment's counts follow the OTHER filters, so "Failed 2" means two
   // failed workflows of priya's, when owner is priya.
@@ -4446,8 +4461,12 @@ function WorkflowList({
   const rows = sortWorkflows(
     query.state === 'all' ? filtered : filtered.filter((w) => bucketOf(w) === query.state),
     query.sort,
-    board.taskById,
+    taskById,
   )
+  // HOW MANY ROWS KNOW THEIR STEPS (QA G3-06), said once above the table
+  // rather than as a dash in every cell of every row the window missed.
+  const unread = rows.filter((w) => !stepsRead(w, taskById))
+  const failedReads = unread.filter((w) => reads.failed.has(w.workflow_id)).length
   // A filter value the read no longer holds stays offered, so the control
   // never silently shows "anyone" while the list is still filtered by one.
   const owners = withChosen(ownersOf(board.workflows), query.owner)
@@ -4478,10 +4497,20 @@ function WorkflowList({
   return (
     <div className="wfl">
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
+      {unread.length > 0 && (
+        <CountNote>
+          {rows.length - unread.length} of {rows.length} rows have their steps read; older rows show ids only until they
+          scroll into view{failedReads > 0 ? `; ${failedReads} could not be read` : ''}
+        </CountNote>
+      )}
       {rows.length === 0 ? (
         <p className="wfl-none">
-          No {query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow matches
-          {filteredAtAll ? ' these filters' : ' in this read'}.
+          {/* WHAT WAS SEARCHED (QA G3-21): the filters run over the rows this
+              read holds, the newest 100, so "no match" is never a claim about
+              older workflows. */}
+          {filteredAtAll
+            ? `No ${query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}match among the ${board.workflows.length} newest workflows read; older ones are not searched.`
+            : `No ${query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow in this read.`}
           {filteredAtAll && (
             <Button size="sm" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
               Clear the filters
@@ -4498,10 +4527,11 @@ function WorkflowList({
                   key={w.workflow_id}
                   workflow={w}
                   label={labels.get(w.workflow_id) ?? null}
-                  taskById={board.taskById}
+                  taskById={taskById}
                   telemetry={telemetry}
                   query={query}
                   now={now}
+                  onSeen={stepsRead(w, board.taskById) ? null : reads.want}
                 />
               ))}
             </tbody>
@@ -4515,6 +4545,71 @@ function WorkflowList({
   )
 }
 
+/**
+ * ONE ROW'S STEPS, READ AS IT SCROLLS IN (QA G3-06, 2026-10-07). The board
+ * joins states through a window of the tenant's newest tasks, so 55 of 100
+ * rows read `wf_… · — · start not read · not read` while the workflow's own
+ * page showed its title, start and $0.62. A row the window missed reads
+ * `GET /v1/workflows/{id}` -- the page's own read, so the row and the page
+ * agree, cost totals included -- once it is near the viewport, and its tasks
+ * join the board's. The window's copy wins where both hold a task: it is the
+ * fresher read. A finished row reads once; a running one again on each board
+ * read (each read is new `Workflow` objects), so its cost does not freeze at
+ * the first look.
+ */
+function useRowReads(board: WorkflowBoard): {
+  taskById: ReadonlyMap<string, Task> | null
+  failed: ReadonlySet<string>
+  want: (w: Workflow) => void
+} {
+  const [extra, setExtra] = useState<ReadonlyMap<string, Task>>(() => new Map())
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set())
+  const askedIds = useRef(new Set<string>())
+  const askedReads = useRef(new WeakSet<Workflow>())
+  const live = useRef(true)
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
+  const want = useCallback((w: Workflow) => {
+    const id = w.workflow_id
+    if (bucketOf(w) === 'running') {
+      if (askedReads.current.has(w)) return
+      askedReads.current.add(w)
+    } else {
+      if (askedIds.current.has(id)) return
+      askedIds.current.add(id)
+    }
+    void loadWorkflow(id).then((r) => {
+      if (!live.current) return
+      if (r.status === 'ok' || r.status === 'stale') {
+        setExtra((m) => {
+          const next = new Map(m)
+          for (const t of r.data.tasks) next.set(t.id, t)
+          return next
+        })
+        setFailed((f) => {
+          if (!f.has(id)) return f
+          const next = new Set(f)
+          next.delete(id)
+          return next
+        })
+      } else {
+        setFailed((f) => (f.has(id) ? f : new Set(f).add(id)))
+      }
+    })
+  }, [])
+  const taskById = useMemo(() => {
+    if (extra.size === 0) return board.taskById
+    const out = new Map(extra)
+    for (const [k, t] of board.taskById ?? []) out.set(k, t)
+    return out
+  }, [extra, board.taskById])
+  return { taskById, failed, want }
+}
+
 function withChosen(options: string[], chosen: string): string[] {
   return chosen === '' || options.includes(chosen) ? options : [...options, chosen].sort()
 }
@@ -4526,6 +4621,7 @@ function WorkflowListRow({
   telemetry,
   query,
   now,
+  onSeen,
 }: {
   workflow: Workflow
   label: string | null
@@ -4534,19 +4630,25 @@ function WorkflowListRow({
   telemetry: ReadonlyMap<string, StepUsage> | null
   query: WorkflowQuery
   now: number
+  /** Set when the board's window missed this row's steps: read them once it is in view (G3-06). */
+  onSeen: ((w: Workflow) => void) | null
 }) {
+  const [seenRef, inView] = useInView<HTMLTableRowElement>()
+  useEffect(() => {
+    if (onSeen !== null && inView) onSeen(workflow)
+  }, [onSeen, inView, workflow])
   const why = rowWhy(workflow, taskById)
   const roll = rollupLine(workflow, taskById)
   const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
-  // STARTED is the first step's start, with the submit time in its hover --
-  // the same words the open card's head uses (#376). DURATION is wall clock
-  // from submission (`workflowDuration`), so the two columns are not a pair
-  // that should subtract to anything.
+  // SUBMITTED is when the workflow was submitted, the instant every order
+  // sorts by (QA G3-20), with the first step's start in its hover -- the
+  // same words the open card's head uses (#376). DURATION is wall clock from
+  // submission (`workflowDuration`), so the two columns share one origin.
   const started = workflowStartText(workflow, taskById, now)
   const dur = workflowDuration(workflow, taskById, now)
   return (
-    <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
+    <tr ref={seenRef} className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
       {/* EVERY CELL NAMES ITS COLUMN (browser QA D8): the sheet sizes State,
           Steps done and Duration to what they hold, and cuts the name and the
           shape with their whole text as the title. */}
@@ -4563,6 +4665,12 @@ function WorkflowListRow({
             assistive technology to keep one reading of each fact. */}
         <span className="wfl-phone" aria-hidden>
           {phoneSummary(workflow, now)}
+        </span>
+        {/* THE RUNNER MIX ON THE NAME'S SECOND LINE below 1680 (QA G3-09),
+            where the Runners and Shape columns give the name their width;
+            hidden where the column draws it, so it is read once. */}
+        <span className="wfl-mix">
+          <Mix steps={workflow.steps} />
         </span>
         {why !== null && <RowWhyLine why={why} />}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
@@ -4586,8 +4694,12 @@ function WorkflowListRow({
       <td className="wfl-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
       </td>
-      <td className="wfl-started" data-col="started" title={started.title}>
-        {started.text}
+      <td
+        className="wfl-submitted"
+        data-col="submitted"
+        title={`${started.submittedTitle}; first step ${startedPhrase(started)}`}
+      >
+        {started.submitted}
       </td>
       <td className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}`} data-col="duration" title={dur.title}>
         {dur.text}
