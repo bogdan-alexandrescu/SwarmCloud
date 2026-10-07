@@ -2,14 +2,15 @@
 //
 //   G5-11  A pool's raw key was cut ("provider:anthropic:tenant:smoke ·
 //          tenant …") on Pools, and broke mid-word ("…tenant:smok / e") on
-//          Pool limits. Pools drops the scope clause when the key already
-//          names that tenant and gives the Pool column more of the row; Pool
-//          limits breaks a key only after a colon.
+//          Pool limits. Pools lets the scope give way before the key and
+//          gives the Pool column more of the row; Pool
+//          limits breaks a key only after a colon. The scope stays on every
+//          Pools row (CP-2, an owner decision) but is the part that is cut.
 //   G5-19  Set by said "configured" on 28 of 29 rows (capacity.html §G: Set by
 //          only when it is not "configured"). The configured case is a faint
 //          dot, named "configured" for a screen reader and in its title.
 //
-// BREAK IT: put `· {scope}` back unconditionally -- the first case fails; drop
+// BREAK IT: make the scope shrink like the key -- the first case fails; drop
 // the `<wbr>` or the keep-all rule -- the second fails; draw the word again --
 // the third fails.
 
@@ -77,15 +78,25 @@ function rowOf(name: string): HTMLElement {
 }
 
 describe('G5-11: a pool key is never cut by a clause that repeats it', () => {
-  it('drops "tenant X" under a key that already names tenant X, and keeps the scope the key cannot say', async () => {
+  it('keeps the scope on every row (CP-2) but cuts it before the key', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<CapacityScreen />)
     await waitFor(() => expect(document.querySelector('.cap-families tbody tr')).not.toBeNull(), WAIT)
-    expect(rowOf(SMOKE).querySelector('.cap-sub')!.textContent).toBe(SMOKE)
-    expect(rowOf('tenant:smoke').querySelector('.cap-sub')!.textContent).toBe('tenant:smoke')
-    // The viewer's own slice: "this tenant" is not in the key, so it stays.
-    expect(rowOf(MINE).querySelector('.cap-sub')!.textContent).toBe(`${MINE} · this tenant`)
-    expect(rowOf('global').querySelector('.cap-sub')!.textContent).toBe('global · platform')
+    for (const name of [SMOKE, MINE, 'global', 'tenant:smoke']) {
+      const sub = rowOf(name).querySelector('.cap-sub')!
+      const key = sub.querySelector(':scope > .ctl-sub')!
+      const scope = sub.querySelector(':scope > .cap-sub-scope')
+      expect(key.textContent).toBe(name)
+      expect(scope?.querySelector('.cap-scope'), `${name} lost its scope`).not.toBeNull()
+      // Two flex items on one line; the scope shrinks far faster than the key.
+      expect(painted(sub, 'display', WIDE)).toBe('flex')
+      const shrink = (el: Element) => Number((painted(el, ['flex-shrink', 'flex'], WIDE) ?? '').trim().split(/\s+/)[1])
+      expect(shrink(scope!)).toBeGreaterThanOrEqual(100 * shrink(key))
+      expect(painted(scope!, 'min-width', WIDE)).toBe('0')
+      expect(painted(scope!, 'text-overflow', WIDE)).toBe('ellipsis')
+    }
+    expect(rowOf(SMOKE).querySelector('.cap-scope')!.textContent).toBe('tenant smoke')
+    expect(rowOf(MINE).querySelector('.cap-scope')!.textContent).toBe('this tenant')
   })
 
   it('gives the Pool column the widest share of the fixed row', () => {

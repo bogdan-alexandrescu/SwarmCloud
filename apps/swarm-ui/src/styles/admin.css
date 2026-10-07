@@ -252,3 +252,8 @@
    at every width: `table.pools .n` is the cells' mono. */
 table.ten-table > thead > tr > th.n { font-family: var(--font); }
 .adm-setby-cfg { color: var(--text-faint); }
+/* A POOL KEY BREAKS AT A COLON, NEVER MID-WORD (QA G5-11, 2026-10-07).
+   `.cap-families` cells wrap anywhere, which split `…:tenant:smok / e` and,
+   beside the open editor, `backend:CLOUD_RUN_J / OB`. The row header puts a
+   `<wbr>` after each colon (`keyBreaks`), and these stop every other break. */
+table.adm-limits th.pool-name > .ctl-sub { overflow-wrap: normal; word-break: keep-all; }
