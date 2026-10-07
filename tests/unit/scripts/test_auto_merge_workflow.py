@@ -1955,3 +1955,15 @@ def test_docs_describe_the_re_evaluation_of_an_early_ready_label():
     assert "#697" in text
     assert "workflow_run" in text and "workflow_dispatch" in text
     assert "re-evaluat" in text
+
+
+def test_docs_ci_describes_the_required_only_wait_and_the_check_suite_backstop():
+    """#815 reversed two decisions docs/ci.md recorded: that `check_suite`
+    never fires here, and that a non-required check still running must hold
+    the merge. MUTATION: restore the pre-#815 paragraph."""
+    text = CI_DOC.read_text()
+    assert "#815" in text
+    assert "`check_suite: completed` never fires" not in text
+    assert "which is what gate item 5 exists to stop" not in text
+    assert "UNSTABLE" in text and "HAS_HOOKS" in text
+    assert "Only a required check still running holds the merge" in text

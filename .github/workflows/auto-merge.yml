@@ -190,9 +190,10 @@ jobs:
       #   rules (`rules/branches/{branch}`, rulesets included) need only
       #   repository Metadata read, which every GITHUB_TOKEN carries whatever
       #   `permissions:` says, and the endpoint is public on a public repo.
-      # checks: read -- the head commit's check runs (the gate, item 5): a
-      #   path-filtered workflow's checks are not required, but one that DID
-      #   run and is failing or still running must still hold the merge.
+      # checks: read -- the head commit's check runs (the gate, items 5 and
+      #   6): a check that ran and is failing holds the merge whether or not
+      #   it is required; one still running holds it only when it is
+      #   required (#815).
       # pull-requests: write -- the comment that explains a refusal.
       contents: read
       checks: read
@@ -539,7 +540,10 @@ jobs:
           err="$(mktemp)"
 
           # Merge states GitHub will merge now and will not arm auto-merge on:
-          # every required check passed (see ALREADY GREEN above).
+          # every required check passed (see ALREADY GREEN above). UNSTABLE
+          # also covers a non-required check that FAILED after the gate read
+          # the checks; the direct merge then goes through, as native
+          # auto-merge would have. Accepted under #815.
           mergeable_now() {
             case "$1" in
               CLEAN | UNSTABLE | HAS_HOOKS) return 0 ;;
@@ -731,9 +735,10 @@ jobs:
       RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
-      # By head sha, not `workflow_run.pull_requests` (or the check suite's):
-      # GitHub leaves that list empty for a pull request from a fork. A run for a head the pull
-      # request has since moved past matches nothing.
+      # By head sha, not `workflow_run.pull_requests` (or the check
+      # suite's): GitHub leaves that list empty for a pull request from a
+      # fork. A run for a head the pull request has since moved past matches
+      # nothing.
       - name: dispatch a re-evaluation for each open ready pull request at the run's head
         run: |
           set -euo pipefail
