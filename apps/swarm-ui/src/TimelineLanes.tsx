@@ -72,6 +72,9 @@ import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, useP
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
+import { VALUE_LABEL_GAP_PX } from './charts/parts'
+import { SKIPPED_WORD } from './dag'
+import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/timeline.css'
 
@@ -134,20 +137,71 @@ function clock(ms: number, wide = false): string {
  * A TICK NEVER SITS UNDER "now". The now label is drawn at the right edge
  * whenever the window ends at the present; a tick in the last `NOW_GAP_PCT` of
  * the track overprinted it ("1now0" at 24h), so it is not drawn.
+ *
+ * AND THE GAP IS PIXELS ONCE THE TRACK IS MEASURED (QA G3-15, 2026-10-07): a
+ * percentage of a 358 px phone track is 21 px, so `18:00` at 21:07 still ran
+ * into `now`. With the track's width known, a label is kept only when it ends
+ * `VALUE_LABEL_GAP_PX` (the ledger's rule, 14 px) before `now` and before the
+ * next label. Widths are estimated from the mono micro face: 12 px at about
+ * 0.6 em a character, rounded up as `AttemptPhases`'s axis does.
  */
 const NOW_GAP_PCT = 6
+/** One character of the tick face (`var(--t-micro)` mono), rounded up. */
+export const TICK_CHAR_PX = 7.5
+/** A tick label's left padding (`.tl-tk`). */
+export const TICK_PAD_PX = 5
+/** The `now` label: three characters, its padding and its 2 px rule (`.tl-tk.is-now`). */
+export const NOW_LABEL_PX = 3 * TICK_CHAR_PX + 5 + 2
 
-export function axisLabels(since: number, until: number, nowAt: number): { t: number; pct: number; label: string }[] {
+export function axisLabels(
+  since: number,
+  until: number,
+  nowAt: number,
+  trackPx: number | null = null,
+): { t: number; pct: number; label: string }[] {
   const ticks = axisTicks(since, until)
   const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
   const nowShown = until >= nowAt - 60_000
-  return ticks
+  const placed = ticks
     .map((t) => {
       const d = new Date(t)
       const midnight = d.getHours() === 0 && d.getMinutes() === 0
       return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
     })
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
+  if (trackPx === null || !(trackPx > 0)) return placed
+  const limit = nowShown ? trackPx - NOW_LABEL_PX - VALUE_LABEL_GAP_PX : trackPx
+  const kept: typeof placed = []
+  let lastEnd = -Infinity
+  for (const x of placed) {
+    const from = (x.pct / 100) * trackPx
+    const to = from + TICK_PAD_PX + x.label.length * TICK_CHAR_PX
+    if (to > limit || from - lastEnd < VALUE_LABEL_GAP_PX) continue
+    kept.push(x)
+    lastEnd = to
+  }
+  return kept
+}
+
+/**
+ * WHERE `+` AND `−` ZOOM (QA G3-30, 2026-10-07). About the window's middle,
+ * `+` on a 24 h span at 21:07 drew 03:07–15:07 and dropped the last six
+ * hours, running work included. A window that ends at the present keeps
+ * ending there; one in the past zooms about its middle, never past now.
+ * `endsNow` is said by the caller for a span, which ends at its read, however
+ * long ago that read was.
+ */
+export function zoomWindow(
+  win: { since: number; until: number },
+  factor: number,
+  now: number,
+  endsNow = win.until >= now - 60_000,
+): { since: number; until: number } {
+  const width = (win.until - win.since) * factor
+  if (endsNow) return { since: Math.max(0, now - width), until: now }
+  const mid = (win.since + win.until) / 2
+  const until = Math.min(mid + width / 2, now)
+  return { since: Math.max(0, until - width), until }
 }
 
 /**
@@ -656,10 +710,9 @@ export function TimelineLanesScreen({
   const workflowIds = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.workflow_id ?? null)), [allLanes])
 
   const zoomBy = (factor: number) => {
-    const mid = (win.since + win.until) / 2
-    const half = ((win.until - win.since) * factor) / 2
-    const until = Math.min(mid + half, Date.now())
-    setView(zoomedTo(view, Math.max(0, until - 2 * half), until))
+    const at = Date.now()
+    const z = zoomWindow(win, factor, at, view.since === null || win.until >= at - 60_000)
+    setView(zoomedTo(view, z.since, z.until))
   }
 
   return (
@@ -702,11 +755,6 @@ export function TimelineLanesScreen({
           options={LANE_SPANS.map((s) => ({ key: s, label: s }))}
           onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
         />
-        {back !== null && zoomed && (
-          <Chip onClick={() => setView(back)}>
-            ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
-          </Chip>
-        )}
         <span className="tl-zoom">
           <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>
             −
@@ -751,6 +799,16 @@ export function TimelineLanesScreen({
           </select>
         </label>
       </div>
+      {/* THE WAY BACK HAS ITS OWN LINE (QA G3-31, 2026-10-07): inserted
+          among the controls, the chip moved every control after it, and the
+          one being pressed, `+`, jumped from under the pointer. */}
+      {back !== null && zoomed && (
+        <p className="tl-back">
+          <Chip onClick={() => setView(back)}>
+            ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
+          </Chip>
+        </p>
+      )}
 
       <OutcomeStrip strip={strip} lanes={allLanes} view={view} since={win.since} until={win.until} />
 
@@ -913,8 +971,33 @@ function TlPicker({
   onChange: (next: string[]) => void
 }) {
   const summary = selected.length === 0 ? `all ${options.length}` : selected.map(word).join(', ')
+  // ESCAPE AND A PRESS OUTSIDE CLOSE IT (QA G3-18, 2026-10-07): the checklist
+  // stayed open through Escape and across a `+` zoom until its own button was
+  // pressed again. Escape hands focus back to the button that opened it.
+  // The element's own `open` is the state: the browser toggles it from the
+  // summary, and these two only ever close it.
+  const box = useRef<HTMLDetailsElement | null>(null)
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const el = box.current
+      if (el !== null && el.open && e.target instanceof Node && !el.contains(e.target)) el.open = false
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [])
   return (
-    <details className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}>
+    <details
+      ref={box}
+      className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}
+      onKeyDown={(e) => {
+        const el = box.current
+        if (e.key !== 'Escape' || el === null || !el.open) return
+        e.preventDefault()
+        e.stopPropagation()
+        el.open = false
+        el.querySelector('summary')?.focus()
+      }}
+    >
       <summary>
         {label} <i>{summary}</i>
       </summary>
@@ -981,7 +1064,21 @@ function Axis({
   summary: string
   onZoom: (since: number, until: number) => void
 }) {
-  const ticks = axisLabels(since, until, nowAt)
+  // The track's width, so the ticks keep their pixel gaps (G3-15). Null
+  // until measured, and in a browser without ResizeObserver: the
+  // percentage rule alone then.
+  const track = useRef<HTMLDivElement | null>(null)
+  const [trackPx, setTrackPx] = useState<number | null>(null)
+  useEffect(() => {
+    const el = track.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const measure = () => setTrackPx(el.getBoundingClientRect().width || null)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
+  const ticks = axisLabels(since, until, nowAt, trackPx)
   const [drag, setDrag] = useState<{ x0: number; x1: number; w: number; left: number } | null>(null)
   const at = (x: number, d: { w: number; left: number }) => since + (Math.min(Math.max(x - d.left, 0), d.w) / d.w) * (until - since)
   const down = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -1016,6 +1113,7 @@ function Axis({
         <small>{summary}</small>
       </div>
       <div
+        ref={track}
         className="tl-trk"
         title="Drag across the axis to zoom"
         onPointerDown={down}
@@ -1058,7 +1156,7 @@ function GroupHead({ block, workflow, onRetry }: { block: LaneBlock; workflow: W
           </button>
         </span>
       ) : (
-        `${workflow.read.workflow.steps.length} steps · ${workflow.read.workflow.state.toLowerCase().replace('_', '-')}`
+        `${workflow.read.workflow.steps.length} ${workflow.read.workflow.steps.length === 1 ? 'step' : 'steps'} · ${workflow.read.workflow.state.toLowerCase().replace('_', '-')}`
       )
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
@@ -1160,6 +1258,11 @@ function LaneRow({
   const t = lane.task
   const name = t !== null ? agentName(t) : lane.taskId
   const held = heldFor(lane)
+  // A STEP ITS REVIEW VERDICT SKIPPED IS NOT A RUN (QA G3-02, 2026-10-07):
+  // `fix ✓ · 1m 15s` read as a successful run where the graph says `agent not
+  // run`. Its attempt held capacity to publish the reviewed work, and its bar
+  // stays; the label says the agent did not run and which verdict kept it.
+  const skipped = t !== null && t.state === 'SUCCEEDED' && skippedByVerdict(t)
   const wide = until - since > 36 * 3_600_000
   const segs = lane.segs.filter((s) => s.to > since && s.from < until)
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
@@ -1174,11 +1277,18 @@ function LaneRow({
             {name}
           </button>
           {t !== null && <StateMark state={t.state} bare />}
-          {held !== null && (
-            <span className="tl-dur" title="Time its attempts held capacity">
+          {skipped ? (
+            <span className="tl-dur is-skip" title={`${SKIPPED_WORD}: its agent was not run, and its attempt only published the reviewed work`}>
               {' · '}
-              {formatDuration(held)}
+              {`not run (verdict ${(t !== null ? gateVerdictOf(t) : null) ?? '—'})`}
             </span>
+          ) : (
+            held !== null && (
+              <span className="tl-dur" title="Time its attempts held capacity">
+                {' · '}
+                {formatDuration(held)}
+              </span>
+            )
           )}
         </b>
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>

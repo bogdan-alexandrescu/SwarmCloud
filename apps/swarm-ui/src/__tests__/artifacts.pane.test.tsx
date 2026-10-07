@@ -1436,7 +1436,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     expect(logsSection.querySelector('.arts-transcript .ctl-facts')).toBeNull()
   })
 
-  it('(d) draws a thinking step with an empty text as a word and a mark, never an empty expandable', async () => {
+  it('(d) draws a thinking step with an empty text as words, never an empty expandable', async () => {
     await openPane(
       finishedRoutes({
         [`/v1/tasks/${REF}/transcript`]: transcript({
@@ -1451,7 +1451,9 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     expect(empty, 'the empty thinking step is not drawn').toBeTruthy()
     expect(empty!.querySelector('details'), 'an empty thinking text is an expandable that opens onto nothing').toBeNull()
     expect(empty!.textContent).toMatch(/thinking/)
-    expect(empty!.querySelector('.ctl-mark'), 'the empty text carries no mark saying so').not.toBeNull()
+    // `thinking · not shown`, muted, not `real zero` (QA G2-27): nothing was measured.
+    expect(empty!.textContent).toMatch(/not shown/)
+    expect(empty!.querySelector('.ctl-mark.is-zero'), 'an empty thinking text is marked a measured zero').toBeNull()
     expect(full!.querySelector('details'), 'a thinking step with text lost its expandable').not.toBeNull()
   })
 

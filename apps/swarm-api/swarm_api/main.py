@@ -21,12 +21,14 @@ from swarm_common.states import InvalidTransition
 
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
+from .forgeapp import ForgeApp, build_forge_app
 from .routes import (
     accounts,
     admin,
     attempts,
     checkpoints,
     children,
+    forgeapp,
     gittokens,
     health,
     issues,
@@ -69,7 +71,7 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
     )
 
 
-def create_app(ctx: AppContext | None = None) -> FastAPI:
+def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None) -> FastAPI:
     # FIRST, before anything else can log. Nothing configured the root logger
     # previously, so every log.info() in this package was discarded and an
     # operator debugging a refused request saw the request and not the reason.
@@ -82,6 +84,12 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.state.ctx = ctx if ctx is not None else build_context()
+    # The GitHub App's user authorisation (docs/onboarding.md §3.2, lane OB3).
+    # Builds no client: the App's settings come from the environment, and
+    # every route answers "not configured" until they and its client secret
+    # exist. A test injects one over forge fakes.
+    app.state.forge_app = forge_app if forge_app is not None else build_forge_app(
+        app.state.ctx.db, app.state.ctx.settings.project_id, now=app.state.ctx.now)
 
     app.include_router(health.router)
     app.include_router(tasks.router)
@@ -113,6 +121,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # The onboarding checklist (docs/onboarding.md §2, lane OB1): derived on
     # each read from the records above, read-only, the caller's own tenant.
     app.include_router(onboarding.router)
+    # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
+    # authorise, exchange, disconnect, and the refresh sweep the
+    # swarm-forge-refresh job calls. No route returns a token.
+    app.include_router(forgeapp.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

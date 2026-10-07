@@ -808,6 +808,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # §1, lane MS2): reads the named tenant's CI_PENDING parks with that
         # tenant's token and writes only the wake marker on them.
         ("POST", "/v1/admin/merges/wake"),
+        # The GitHub user-token refresh sweep (docs/onboarding.md §3.4 item 6,
+        # owner decision D2; lane OB3): the swarm-forge-refresh job. It spends
+        # each due connection's refresh token and writes the new pair to that
+        # user's own slots; it submits nothing and moves no task.
+        ("POST", "/v1/admin/forge/refresh"),
     }
 )
 
