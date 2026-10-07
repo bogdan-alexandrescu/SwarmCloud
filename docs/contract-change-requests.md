@@ -3237,6 +3237,30 @@ not a new enumeration oracle) is unaffected; only the literal quoted string
 was wrong. Every place describing #273's own `continues_task` message is
 unchanged and was already correct.
 
+**2026-10-06, owner decision (#754): the fixer's reach widened from "any
+`direct-pr` task" to an `integrate` workflow's integrator as well.** Every
+SwarmCloud lane pull request is opened by an integrator -- the workflow's
+final step, which pushes `<prefix><its own task id>` and opens the one pull
+request `integrate` produces -- so a fixer confined to `direct-pr` tasks fixed
+none of them: PR #740's first real run was refused by `resolve_continuation`.
+`_has_own_pull_request` in `apps/swarm-api/swarm_api/continuation.py` now
+admits both, for a member and for a continuation-scoped account alike. What did
+NOT widen: the integrator is told apart by the `role` the API itself wrote into
+the task's dispatch block (a reserved key no caller can write), never by
+anything the request carries; it must be in the caller's own tenant; an
+`integrate` contributor is still refused (its branch has no pull request of its
+own); a chain of continuations is checked again at its root; and a merge-only
+continuation is still a member's power, never this account's. So a stolen
+token's reach in **Isolation analysis (invariant 9)** below reads "any `eng`
+`direct-pr` task **or integrator** that still exists": every open lane pull
+request of the tenant as well as every `direct-pr` one, and still no merge, no
+new work, no read of what it did not submit, and no other tenant. Proved by
+`tests/unit/control_plane/test_continuation_scope_is_narrow.py`
+(`test_the_listed_account_can_continue_an_integrate_workflows_integrator`, and
+the contributor, chain-root and merge-only refusals beside it).
+[ci.md](ci.md), "What the CI fixer may continue", states the same rule from
+the operator's side.
+
 ### What is true today
 
 `.github/workflows/ci-fix.yml` (#273) federates as
@@ -6995,8 +7019,13 @@ close**, the workflow document).
   in that project. **Not verified here:** the project's current quota value,
   its current headroom against the other team's usage, and the platform's
   peak submission rate against it. Before `enforce` is the default (section
-  6), this needs a check against `gcloud services quota list` (or the Cloud
-  KMS quota page) for this project, and a quota increase request filed ahead
+  6), this needs a check against
+  `gcloud quotas info list --service=cloudkms.googleapis.com`
+  (`gcloud services quota list` does not exist: gcloud 586 answers
+  `Invalid choice: 'quota'`; the runbook,
+  [spec-signing-rollout.md](runbooks/spec-signing-rollout.md#not-verified-here),
+  has the full command and the values read 2026-10-01) or the Cloud
+  KMS quota page for this project, and a quota increase request filed ahead
   of the rollout if headroom is thin -- a KMS `RESOURCE_EXHAUSTED` here is a
   503 on every submission (this section's "Fails closed"), not a soft
   degradation.
