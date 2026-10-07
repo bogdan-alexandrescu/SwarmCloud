@@ -312,7 +312,11 @@ TERRAFORM = REPO / "terraform"
 TENANCY = TERRAFORM / "modules" / "tenancy"
 
 _PERMISSION = re.compile(r'"(container\.[A-Za-z]+\.[A-Za-z]+)"')
-_ROLE = re.compile(r'\brole\s*=\s*"(roles/[^"]+)"')
+#: Every quoted predefined-role literal, not only `role = "roles/..."`: the
+#: tenancy module grants its telemetry roles from a list of bare strings
+#: iterated as `role = role`, and a ConfigMap-reaching role added to that list
+#: is the likeliest way the regression arrives (#354 fix review).
+_ROLE = re.compile(r'"(roles/[^"]+)"')
 
 #: Predefined roles that reach ConfigMaps in a cluster (container.configMaps.*
 #: is in each of them).
@@ -349,10 +353,32 @@ def test_no_custom_role_in_terraform_carries_a_configmap_permission():
     assert found == {}
 
 
+def _configmap_reaching_roles(text: str) -> list[str]:
+    return sorted({r for r in _ROLE.findall(text) if _CONFIGMAP_WRITING_ROLES.match(r)})
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        # A one-off binding.
+        'resource "google_project_iam_member" "x" {\n  role   = "roles/container.' + 'developer"\n}\n',
+        # An entry in a list of roles iterated as `role = role`, the way
+        # tenancy/main.tf grants its telemetry roles.
+        'telemetry_roles = [\n  "roles/logging.logWriter",\n  "roles/container.' + 'developer",\n]\n',
+    ],
+)
+def test_the_iam_scan_catches_a_configmap_reaching_role(snippet):
+    """The control for the scan below, in both shapes a grant is written."""
+    assert _configmap_reaching_roles(snippet) == ["roles/container.developer"]
+
+
 def test_the_tenant_gsa_is_granted_no_role_that_reaches_configmaps():
     files = _tf_files(TENANCY)
     roles = {r for f in files for r in _ROLE.findall(f.read_text())}
     assert "roles/storage.objectUser" in roles, (
         "the control: the tenancy module's grants are where the scan looks"
+    )
+    assert "roles/logging.logWriter" in roles, (
+        "the control: the list-of-roles grants (telemetry_roles) are scanned too"
     )
     assert sorted(r for r in roles if _CONFIGMAP_WRITING_ROLES.match(r)) == []
