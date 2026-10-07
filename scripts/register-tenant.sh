@@ -75,14 +75,10 @@
 # `checks: read` and `actions: read`: docs/multi-tenancy.md, "What the forge
 # credential must be allowed"); see FORGE_READER_ID below.
 #
-# A GitHub App key (#295, docs/merge-step.md) is never the worker's to read.
-# `--add-provider git-review` binds the post-verdict account to the review App's
-# key and the review account to its agent's key, and pins the App's bot user id
-# into the tenant's tfvars entry; `--add-provider git-merge` binds the merge
-# account alone. `--tfvars` names that file (default: this environment's):
-#   scripts/register-tenant.sh --tenant eng --add-provider git-review --dry-run
-#   scripts/register-tenant.sh --tenant eng --add-provider git-merge \
-#                              --tfvars terraform/environments/dev/dev.tfvars
+# `git-merge` and `git-review`, the #295 GitHub App keys, are RETIRED (owner
+# decision MS0-Q4, 2026-10-06): the merge, post-verdict and review accounts
+# that alone were to read them are gone, so nothing reads either key. Both are
+# refused on every path, before anything is read.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -101,7 +97,6 @@ DRY_RUN=0
 SKIP_K8S=0
 ADD_PROVIDER=""
 ADD_PROVIDER_GIVEN=0
-TFVARS_FILE=""
 # The flags only a full registration reads, as typed. --add-provider refuses
 # them rather than ignoring them: an operator who typed `--max-active 5` meant
 # it, and a run that quietly did not apply it is worse than one that stops.
@@ -119,7 +114,6 @@ while [[ $# -gt 0 ]]; do
     --display-name)    DISPLAY_NAME="$2"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
-    --tfvars)          TFVARS_FILE="$2"; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
     -h|--help)         sed -n '2,80p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -148,11 +142,11 @@ PY
 }
 
 # The providers whose key is a GitHub App's, one per line:
-# swarm_api.validation.APP_CREDENTIAL_PROVIDERS, the worker actions' providers
-# (git-merge, git-review). known_providers() above leaves them out for the
-# reason this script refuses them for the worker: only the merge and
-# post-verdict Jobs' own accounts may read those keys (contract request 33's
-# #364 amendment). Asked of the code, like the list above.
+# swarm_api.validation.APP_CREDENTIAL_PROVIDERS (git-merge, git-review), the
+# retired #295 App keys. known_providers() above leaves them out, and this
+# script refuses them everywhere: nothing reads either key any more, and the
+# tenant's worker -- whose token any agent of the tenant can mint -- must
+# never be granted one. Asked of the code, like the list above.
 app_credential_providers() {
   python3 - "${REPO_ROOT}" <<'PY'
 import sys
@@ -164,18 +158,21 @@ print("\n".join(sorted(APP_CREDENTIAL_PROVIDERS)))
 PY
 }
 
-# app_key_readers PROVIDER  ->  the profiles terraform/modules/service_account_ids
-# makes the SOLE reader of PROVIDER's secret, comma-joined; empty for none.
-app_key_readers() {
-  tf_action_accounts | awk -F'|' -v p="$1" '$3 == p && $4 == "true" { print $1 }' | paste -sd, -
-}
-
 APP_PROVIDERS="$(app_credential_providers)" \
   || die "could not read swarm_api.validation.APP_CREDENTIAL_PROVIDERS (python's error is above), so
   whether a provider's key is a GitHub App's -- which the worker must never read -- cannot be
   checked. Nothing was changed."
 is_app_provider() {
   printf '%s\n' "${APP_PROVIDERS}" | grep -Fqx -- "$1"
+}
+
+# retired_app_provider_refusal PROVIDER  ->  the one message both paths die with.
+retired_app_provider_refusal() {
+  printf '%s' "provider '$1' is a retired #295 GitHub App key (owner decision MS0-Q4, 2026-10-06):
+  the merge, post-verdict and review accounts that alone were to read it are gone, nothing on
+  this platform reads it, and the tenant's worker -- whose token any agent of the tenant can
+  mint -- must never be granted it. The merge step uses the tenant's forge token, 'git'.
+  Nothing was changed."
 }
 
 if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
@@ -204,11 +201,11 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   # swarm-tenant-eng-anthropic-refresh, tenant eng's refresh half, and walks
   # past the `*-refresh` refusal above. The ownership check below refuses that
   # grant too; this refuses the name before anything is looked up.
+  is_app_provider "${ADD_PROVIDER}" && die "$(retired_app_provider_refusal "${ADD_PROVIDER}")"
   KNOWN_PROVIDERS="$(known_providers)" \
     || die "could not read the provider list from swarm_api.validation and agent_worker.secrets
   (python's error is above), so '${ADD_PROVIDER}' cannot be checked against it. Nothing was changed."
-  if ! is_app_provider "${ADD_PROVIDER}" \
-     && ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
+  if ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
     die "provider '${ADD_PROVIDER}' is not one this platform reads a key for. Known providers:
   $(printf '%s\n' "${KNOWN_PROVIDERS}" | paste -sd, - | sed 's/,/, /g')
   (swarm_api.validation.known_providers(), plus agent_worker.secrets.GIT_PROVIDER). Nothing was changed."
@@ -380,28 +377,16 @@ fi
 
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# NO APP KEY FOR THE WORKER (#295; docs/merge-step.md §1.3, §10 item 5). The
-# full registration binds every listed provider's secret to the worker, and
-# the worker's token is one any agent of the tenant can mint from the metadata
-# server (§0) -- so `--providers git-merge` would hand every agent the merge
-# App, and `git-review` the App that signs verdicts. Refused before anything
-# is created, naming the account the key does belong to; --add-provider binds
-# that account instead.
+# NO APP KEY FOR THE WORKER. The full registration binds every listed
+# provider's secret to the worker, and the worker's token is one any agent of
+# the tenant can mint from the metadata server (docs/merge-step.md §0) -- so a
+# retired #295 App key (git-merge, git-review) is refused before anything is
+# created, rather than granted to it.
 if [[ -n "${PROVIDERS_CSV}" ]]; then
   IFS=',' read -r -a REQUESTED_PROVIDERS <<<"${PROVIDERS_CSV}"
   for requested in ${REQUESTED_PROVIDERS[@]+"${REQUESTED_PROVIDERS[@]}"}; do
     is_app_provider "${requested}" || continue
-    readers="$(app_key_readers "${requested}")"
-    owners=""
-    while IFS= read -r profile; do
-      [[ -n "${profile}" ]] || continue
-      owners+="${owners:+, }$(tenant_action_account_id "${TENANT_ID}" "${profile}")"
-    done < <(printf '%s\n' "${readers}" | tr ',' '\n')
-    die "provider '${requested}' is a GitHub App key, and it belongs to ${owners:-the account terraform/modules/service_account_ids names for it}
-  -- never the tenant's worker ${GSA_ID}, whose token any agent of the tenant can mint.
-  Register everything else without it, then bind it to its own account:
-      scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider ${requested}
-  Nothing was changed."
+    die "$(retired_app_provider_refusal "${requested}")"
   done
 fi
 
@@ -562,30 +547,6 @@ require_grantable_secret() {
   esac
 }
 
-# require_action_account EMAIL  -- the #295 account must exist before anything
-# is bound to it. This script does not create it: terraform/modules/tenancy
-# `google_service_account.action` adopts one made before the release under the
-# same squatting refusal the worker account has (section 2b), and binding an
-# account that is not there fails half-way through the grants.
-require_action_account() {
-  local email="$1" errfile reason rc=0
-  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-action-sa.XXXXXX")"
-  gcloud iam service-accounts describe "${email}" --project "${PROJECT_ID}" \
-    --format='value(email)' >/dev/null 2>"${errfile}" || rc=$?
-  reason="$(cat "${errfile}")"
-  rm -f "${errfile}"
-  [[ "${rc}" -eq 0 ]] && { ok "${email} exists"; return 0; }
-  die_if_auth_failure "${reason}"
-  if gcloud_not_found "${reason}"; then
-    die "${email} does not exist, so it cannot be granted its key. It is the account
-  terraform/modules/tenancy runs this provider's Job as (google_service_account.action),
-  and it must exist before the release that adds the provider (#334). Nothing was changed."
-  fi
-  err "could not establish whether ${email} exists:"
-  printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
-  die "stopping: that is a failure to LOOK, not a missing account. Nothing was changed."
-}
-
 # --- swarm-api, the second reader of -git ------------------------------------
 #
 # swarm-api's issue preview (apps/swarm-api/swarm_api/forge.py `preview`,
@@ -597,9 +558,8 @@ require_action_account() {
 # lets swarm-api read that same ONE secret -- a binding on the secret, never on
 # the project, where it would read every tenant's every key.
 #
-# EXACTLY `git`. Never git-merge or git-review: those App keys have only their
-# own accessors (docs/merge-step.md §1.3, terraform/modules/service_account_ids
-# `sole_accessor`), and swarm-api is not one of them.
+# EXACTLY `git`. Never git-merge or git-review, the retired #295 App keys,
+# which this script refuses outright.
 FORGE_PROVIDER="git"
 FORGE_READER_ID="swarm-api"
 FORGE_READER_EMAIL=""
@@ -635,328 +595,6 @@ forge_reader_bound() {
     "serviceAccount:${FORGE_READER_EMAIL}" || rc=1
   rm -f "${policy_file}" "${errfile}"
   return "${rc}"
-}
-
-# forge_tfvars read FILE TENANT          -> the tenant's `forge` entry, as JSON
-# forge_tfvars write FILE TENANT BOT_ID  -> pin forge.review_app_bot_id
-#
-# THE TFVARS FILE IS WHERE review_app_bot_id LIVES (docs/merge-step.md §2.1b,
-# §5.2a): terraform renders it into the merge Job's environment, and nothing a
-# tenant identity can write ever holds it. The file is edited in place, inside
-# `tenants = { <tenant> = { forge = { ... } } }` and nowhere else, with the
-# block's `=` re-aligned the way `terraform fmt` aligns it, so `make lint`'s
-# fmt -check passes on the result. Braces inside strings, comments and
-# heredocs do not count. Anything this cannot place exactly -- no tenants map,
-# no entry for the tenant, no multi-line forge block, a value it cannot read --
-# is refused (exit 2) rather than guessed. A DIFFERENT value already pinned is
-# refused too (exit 3): it is the identity merge trusts a verdict from, and
-# replacing it is the owner's edit to make by hand, not a side effect.
-#
-# The checks on host, owner and repo are modules/tenancy's validations: they
-# are spliced into a URL that carries the App's JWT.
-forge_tfvars() {
-  python3 - "$@" <<'PY'
-import json
-import os
-import re
-import sys
-import tempfile
-
-mode, path, tenant = sys.argv[1], sys.argv[2], sys.argv[3]
-text = open(path, encoding="utf-8").read()
-
-
-def fail(msg, code=2):
-    print(msg, file=sys.stderr)
-    sys.exit(code)
-
-
-def braces(src):
-    """(offset, char) of every structural { and }."""
-    out, i, n = [], 0, len(src)
-    while i < n:
-        c = src[i]
-        if c == '"':
-            i += 1
-            while i < n and src[i] != '"':
-                i += 2 if src[i] == "\\" else 1
-            i += 1
-            continue
-        if c == "#" or src.startswith("//", i):
-            j = src.find("\n", i)
-            i = n if j < 0 else j
-            continue
-        if src.startswith("/*", i):
-            j = src.find("*/", i + 2)
-            i = n if j < 0 else j + 2
-            continue
-        m = re.match(r"<<-?([A-Za-z_][A-Za-z0-9_]*)[ \t]*\n", src[i:]) if c == "<" else None
-        if m:
-            j = i + m.end()
-            while True:
-                k = src.find("\n", j)
-                if k < 0:
-                    i = n
-                    break
-                if src[j:k].strip() == m.group(1):
-                    i = k
-                    break
-                j = k + 1
-            continue
-        if c in "{}":
-            out.append((i, c))
-        i += 1
-    return out
-
-
-blocks, stack = [], []
-for pos, c in braces(text):
-    if c == "{":
-        stack.append(pos)
-    elif stack:
-        start = stack.pop()
-        blocks.append((start, pos, len(stack)))
-    else:
-        fail(f"{path}: an unmatched '}}' -- not a tfvars file this can edit")
-if stack:
-    fail(f"{path}: an unclosed '{{' -- not a tfvars file this can edit")
-
-
-def key_of(start):
-    line_start = text.rfind("\n", 0, start) + 1
-    m = re.fullmatch(r'\s*"?([A-Za-z0-9_-]+)"?\s*=\s*', text[line_start:start])
-    return m.group(1) if m else None
-
-
-def child(parent, depth, key):
-    found = [
-        b for b in blocks
-        if b[2] == depth and (parent is None or parent[0] < b[0] < parent[1]) and key_of(b[0]) == key
-    ]
-    return found
-
-
-tenants = child(None, 0, "tenants")
-if len(tenants) != 1:
-    fail(f"{path} has no single top-level `tenants = {{ ... }}` map")
-entry = child(tenants[0], 1, tenant)
-if len(entry) != 1:
-    fail(f"{path} has no entry for tenant {tenant} in `tenants` (add it, with its forge block, first)")
-forge = child(entry[0], 2, "forge")
-if len(forge) != 1:
-    fail(
-        f"tenant {tenant} in {path} declares no `forge = {{ ... }}` block. Add one with owner,\n"
-        "  repo and review_app_id (terraform/modules/tenancy requires them for git-merge and git-review)."
-    )
-f_open, f_close, _ = forge[0]
-lines = text.splitlines(keepends=True)
-offsets, acc = [], 0
-for line in lines:
-    offsets.append(acc)
-    acc += len(line)
-
-
-def line_at(offset):
-    lo = 0
-    for idx, start in enumerate(offsets):
-        if start <= offset:
-            lo = idx
-    return lo
-
-
-first, last = line_at(f_open), line_at(f_close)
-if first == last or lines[last].strip() != "}":
-    fail(f"tenant {tenant}'s forge block in {path} is not a multi-line block this can edit")
-
-ATTR = re.compile(r'^(\s*)([a-z_]+)(\s*)=\s*(.*?)\s*$')
-attrs = {}
-for idx in range(first + 1, last):
-    body = lines[idx].strip()
-    if not body or body.startswith(("#", "//")):
-        continue
-    m = ATTR.match(lines[idx].rstrip("\n"))
-    if not m:
-        fail(f"tenant {tenant}'s forge block in {path} has a line this cannot read: {body}")
-    raw = m.group(4)
-    if re.fullmatch(r'"(?:[^"\\]|\\.)*"', raw):
-        value = json.loads(raw)
-    elif re.fullmatch(r"[0-9]+", raw):
-        value = int(raw)
-    else:
-        fail(f"tenant {tenant}'s forge.{m.group(2)} in {path} is not a plain string or number")
-    attrs[m.group(2)] = (idx, value)
-
-forge_values = {k: v for k, (_, v) in attrs.items()}
-host = forge_values.get("host", "api.github.com")
-owner, repo = forge_values.get("owner"), forge_values.get("repo")
-host_re = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+"
-if not isinstance(host, str) or not re.fullmatch(host_re, host):
-    fail(f"tenant {tenant}'s forge.host in {path} is not a bare lower-case hostname")
-if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?", owner):
-    fail(f"tenant {tenant}'s forge.owner in {path} is missing or not a GitHub owner name")
-if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", repo) or repo in (".", ".."):
-    fail(f"tenant {tenant}'s forge.repo in {path} is missing or not a GitHub repository name")
-for name in ("review_app_id", "review_app_bot_id"):
-    v = forge_values.get(name)
-    if v is not None and (not isinstance(v, int) or v <= 0):
-        fail(f"tenant {tenant}'s forge.{name} in {path} is not a positive integer")
-
-if mode == "read":
-    # api.github.com IS the API host; any other host is an Enterprise Server
-    # install, which serves the same API under /api/v3 (agent_worker.forge).
-    api = "https://api.github.com" if host == "api.github.com" else f"https://{host}/api/v3"
-    print(json.dumps({
-        "host": host, "owner": owner, "repo": repo, "api_base": api,
-        "review_app_id": forge_values.get("review_app_id"),
-        "review_app_bot_id": forge_values.get("review_app_bot_id"),
-    }))
-    sys.exit(0)
-
-bot = int(sys.argv[4])
-current = forge_values.get("review_app_bot_id")
-if current == bot:
-    print("unchanged")
-    sys.exit(0)
-if current is not None:
-    fail(
-        f"tenant {tenant}'s forge.review_app_bot_id in {path} is already {current}, and the review\n"
-        f"  App's installation now answers {bot}. That id is the one identity merge accepts a verdict\n"
-        "  from, so it is not replaced here: if the review App really was replaced, edit the line\n"
-        "  by hand, in a reviewed pull request.",
-        3,
-    )
-
-indent = ATTR.match(lines[attrs["owner"][0]].rstrip("\n")).group(1)
-insert_at = max(idx for idx, _ in attrs.values()) + 1
-lines.insert(insert_at, f"{indent}review_app_bot_id = {bot}\n")
-# terraform fmt aligns the `=` of consecutive single-line attributes; a blank
-# or comment line ends the run. Re-align the run the new line joined.
-lo = insert_at
-while lo - 1 > first and ATTR.match(lines[lo - 1].rstrip("\n")) and not lines[lo - 1].strip().startswith(("#", "//")):
-    lo -= 1
-hi = insert_at
-while hi + 1 < last + 1 and ATTR.match(lines[hi + 1].rstrip("\n")) and not lines[hi + 1].strip().startswith(("#", "//")):
-    hi += 1
-run = [ATTR.match(lines[i].rstrip("\n")) for i in range(lo, hi + 1)]
-width = max(len(m.group(2)) for m in run)
-for i, m in zip(range(lo, hi + 1), run):
-    lines[i] = f"{m.group(1)}{m.group(2).ljust(width)} = {m.group(4)}\n"
-
-directory = os.path.dirname(os.path.abspath(path))
-fd, tmp = tempfile.mkstemp(dir=directory, prefix=".swarm-tfvars.")
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write("".join(lines))
-    os.chmod(tmp, os.stat(path).st_mode & 0o7777)
-    os.replace(tmp, path)
-except BaseException:
-    if os.path.exists(tmp):
-        os.unlink(tmp)
-    raise
-print("written")
-PY
-}
-
-# b64url  -- stdin to unpadded base64url, the JWT encoding.
-b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-
-# resolve_review_bot_id SECRET API_BASE OWNER REPO REVIEW_APP_ID
-#
-# Sets REVIEW_BOT_ID to the review App's bot USER id, asked once, with the
-# App's OWN freshly minted JWT (docs/merge-step.md §5.2a): the key being
-# registered attests its own installation, so nothing else is trusted to say
-# who the review App is. GET /repos/{owner}/{repo}/installation names the App
-# (its app_id must be the one registered) and its slug; the bot user is
-# `<slug>[bot]`, whose id GitHub serves publicly at /users/<slug>[bot].
-#
-# THE KEY NEVER LEAVES A 0600 FILE IN A 0700 DIRECTORY, removed on every exit:
-# it is read from Secret Manager to a file (never a variable, never argv),
-# signed with by openssl from that file, and deleted as soon as the signature
-# exists. The JWT reaches curl as `-H @file`, so it is never on a command line
-# either, and nothing here prints the secret, the key or the JWT -- a failure
-# says which step failed and passes gcloud's and curl's own words through
-# `redact`. No redirect is followed (no -L): a redirect is how a credential
-# leaves the pinned host (§2.1b).
-REVIEW_BOT_ID=""
-REVIEW_APP_DIR=""
-resolve_review_bot_id() {
-  local sm_name="$1" api="$2" owner="$3" repo="$4" want_app="$5"
-  local dir app_id now header payload sig code slug reason
-  dir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-review-app.XXXXXX")"
-  REVIEW_APP_DIR="${dir}"
-  trap 'rm -rf "${REVIEW_APP_DIR}"' EXIT INT TERM
-  chmod 700 "${dir}"
-
-  if ! (umask 077; gcloud secrets versions access latest --secret "${sm_name}" \
-         --project "${PROJECT_ID}" >"${dir}/app.json" 2>"${dir}/err"); then
-    reason="$(cat "${dir}/err")"
-    die_if_auth_failure "${reason}"
-    err "could not read the latest version of ${sm_name}:"
-    printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
-    die "the review App's bot id cannot be resolved without its key. Nothing was changed."
-  fi
-  if ! jq -e 'type == "object"
-              and ((.app_id | tostring) | test("^[1-9][0-9]*$"))
-              and ((.private_key | type) == "string") and ((.private_key | length) > 0)' \
-         "${dir}/app.json" >/dev/null 2>&1; then
-    die "${sm_name} does not hold the review App as JSON {app_id, private_key} (its content is not
-  printed). Store it in that shape with scripts/create-secrets.sh --stdin. Nothing was changed."
-  fi
-  app_id="$(jq -r '.app_id | tostring' "${dir}/app.json")"
-  (umask 077; jq -r '.private_key' "${dir}/app.json" >"${dir}/key.pem")
-  chmod 600 "${dir}/key.pem"
-  rm -f "${dir}/app.json"
-  [[ "${app_id}" == "${want_app}" ]] \
-    || die "${sm_name} holds the key of App ${app_id}, but tenant ${TENANT_ID}'s forge.review_app_id
-  is ${want_app}. One of them is wrong; nothing was changed."
-
-  # iat a minute back for clock skew, exp inside GitHub's ten-minute ceiling.
-  now="$(date +%s)"
-  header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
-  payload="$(printf '{"iat":%d,"exp":%d,"iss":%d}' "$((now - 60))" "$((now + 540))" "${app_id}" | b64url)"
-  if ! sig="$(printf '%s.%s' "${header}" "${payload}" \
-               | openssl dgst -sha256 -sign "${dir}/key.pem" -binary 2>/dev/null | b64url)" \
-     || [[ -z "${sig}" ]]; then
-    die "could not sign a JWT with the key in ${sm_name}: openssl did not read it as an RSA
-  private key. Nothing was changed."
-  fi
-  rm -f "${dir}/key.pem"
-  (umask 077; printf 'Authorization: %s %s.%s.%s\n' Bearer "${header}" "${payload}" "${sig}" >"${dir}/auth")
-  sig=""
-
-  code="$(curl -sS --proto '=https' --max-time "${HTTP_TIMEOUT:-30}" \
-            -H @"${dir}/auth" -H 'Accept: application/vnd.github+json' \
-            -o "${dir}/installation.json" -w '%{http_code}' \
-            "${api}/repos/${owner}/${repo}/installation" 2>"${dir}/curl.err")" || code="000"
-  rm -f "${dir}/auth"
-  if [[ "${code}" != "200" ]]; then
-    err "GitHub did not answer GET ${api}/repos/${owner}/${repo}/installation with 200 (got ${code}):"
-    { cat "${dir}/curl.err"; jq -r '.message? // empty' "${dir}/installation.json" 2>/dev/null; } \
-      | redact | head -n 3 | sed 's/^/     /' >&2
-    die "the review App is not installed on ${owner}/${repo}, or its key was refused. Nothing was changed."
-  fi
-  jq -e --arg a "${app_id}" '(.app_id | tostring) == $a' "${dir}/installation.json" >/dev/null 2>&1 \
-    || die "the installation on ${owner}/${repo} that answered belongs to App
-  $(jq -r '.app_id // "?"' "${dir}/installation.json" 2>/dev/null), not the review App ${app_id}. Nothing was changed."
-  slug="$(jq -r '.app_slug // ""' "${dir}/installation.json")"
-  [[ "${slug}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
-    || die "the installation names no usable App slug ('${slug}'). Nothing was changed."
-
-  code="$(curl -sS --proto '=https' --max-time "${HTTP_TIMEOUT:-30}" \
-            -H 'Accept: application/vnd.github+json' \
-            -o "${dir}/bot.json" -w '%{http_code}' \
-            "${api}/users/${slug}%5Bbot%5D" 2>"${dir}/curl.err")" || code="000"
-  if [[ "${code}" != "200" ]]; then
-    err "GitHub did not answer GET ${api}/users/${slug}[bot] with 200 (got ${code}):"
-    redact <"${dir}/curl.err" | head -n 3 | sed 's/^/     /' >&2
-    die "the review App's bot user could not be read. Nothing was changed."
-  fi
-  jq -e --arg l "${slug}[bot]" \
-       '.type == "Bot" and .login == $l and (.id | type) == "number" and .id > 0' \
-       "${dir}/bot.json" >/dev/null 2>&1 \
-    || die "GitHub's answer for ${slug}[bot] is not that App's bot user. Nothing was changed."
-  REVIEW_BOT_ID="$(jq -r '.id' "${dir}/bot.json")"
-  rm -rf "${dir}"
 }
 
 # --- A. add one provider to a registered tenant, and change nothing else -----
@@ -1060,135 +698,20 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   GRANT_SECRETS=()
   GRANT_MEMBERS=()
   GRANT_NAMES=()
-  if ! is_app_provider "${provider}"; then
-    require_grantable_secret "${secret}" "${provider}" "this tenant's worker"
-    GRANT_SECRETS+=("${secret}")
-    GRANT_MEMBERS+=("serviceAccount:${GSA_EMAIL}")
-    GRANT_NAMES+=("${GSA_ID}")
-    # After the worker's, so a run that stops between the two leaves the
-    # worker able to read its key and only the preview without it.
-    if [[ "${provider}" == "${FORGE_PROVIDER}" ]]; then
-      resolve_forge_reader
-      if forge_reader_bound "${secret}"; then
-        ok "${secret}: ${FORGE_READER_ID} already reads it (the issue preview)"
-      else
-        GRANT_SECRETS+=("${secret}")
-        GRANT_MEMBERS+=("serviceAccount:${FORGE_READER_EMAIL}")
-        GRANT_NAMES+=("${FORGE_READER_ID}")
-      fi
-    fi
-  else
-    # A GITHUB APP KEY IS NEVER THE WORKER'S (#295; docs/merge-step.md §1.3,
-    # §10 item 5). The accounts that read it, and what else they read, are
-    # terraform/modules/service_account_ids' `action_accounts`, read through
-    # common.sh rather than restated: the SOLE reader of the provider's own
-    # secret (merge for git-merge, post-verdict for git-review), and -- for
-    # git-review -- the review account, which runs the review agent and so
-    # reads that agent's provider key beside the worker (`also_reads`), only
-    # for a provider the tenant lists, as modules/tenancy's secret_readers does.
-    step "GitHub App key ${provider}: its own accounts, never ${GSA_ID}"
-    SOLE_READERS="$(app_key_readers "${provider}")"
-    [[ -n "${SOLE_READERS}" ]] \
-      || die "terraform/modules/service_account_ids names no sole reader of ${provider}'s secret (or
-  its action_accounts table no longer reads the way common.sh tf_action_accounts expects), so
-  there is no account to bind ${secret} to -- and the worker ${GSA_ID} must never be. Nothing was changed."
-    SOLE_IDS=""
-    while IFS= read -r profile; do
-      [[ -n "${profile}" ]] || continue
-      SOLE_IDS+="${SOLE_IDS:+, }$(tenant_action_account_id "${TENANT_ID}" "${profile}")"
-    done < <(printf '%s\n' "${SOLE_READERS}" | tr ',' '\n')
-    info "${secret} belongs to ${SOLE_IDS} alone; ${GSA_ID} is not granted it"
-    CURRENT_CREDS="$(jq -c '[(.credentials // [])[] | tostring]' <<<"${TENANT_DOC}")"
-
-    [[ -n "${TFVARS_FILE}" ]] || TFVARS_FILE="$(tf_var_file)"
-    [[ -f "${TFVARS_FILE}" ]] || die "no tfvars file at ${TFVARS_FILE}. Nothing was changed."
-    FORGE_JSON="$(forge_tfvars read "${TFVARS_FILE}" "${TENANT_ID}")" \
-      || die "tenant ${TENANT_ID}'s forge record in ${TFVARS_FILE} cannot be used (the reason is above).
-  The merge and post-verdict Jobs take host, owner and repo from it and never from a task. Nothing was changed."
-    FORGE_BOT_ID="$(jq -r '.review_app_bot_id // ""' <<<"${FORGE_JSON}")"
-    if [[ "${provider}" == "git-merge" && -z "${FORGE_BOT_ID}" ]]; then
-      die "tenant ${TENANT_ID} has no forge.review_app_bot_id in ${TFVARS_FILE}. merge accepts a verdict only
-  from the review App's bot user, and terraform/modules/tenancy refuses git-merge without it.
-  Register the review App first:
-      scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider git-review
-  Nothing was changed."
-    fi
-
-    require_grantable_secret "${secret}" "${provider}" "its own account"
-    ACTION_LINES=()
-    while IFS= read -r line; do
-      [[ -n "${line}" ]] && ACTION_LINES+=("${line}")
-    done < <(tf_action_accounts)
-    for line in ${ACTION_LINES[@]+"${ACTION_LINES[@]}"}; do
-      IFS='|' read -r a_profile _ a_provider a_sole a_also <<<"${line}"
-      [[ "${a_provider}" == "${provider}" ]] || continue
-      a_id="$(tenant_action_account_id "${TENANT_ID}" "${a_profile}")" \
-        || die "could not derive tenant ${TENANT_ID}'s ${a_profile} account from terraform/modules/service_account_ids. Nothing was changed."
-      [[ "${#a_id}" -le 30 ]] \
-        || die "${a_id} is ${#a_id} characters; GCP caps a service account id at 30, so tenant ${TENANT_ID}
-  cannot have a ${a_profile} account (modules/service_account_ids sizes them for an 11-character id). Nothing was changed."
-      a_email="${a_id}@${PROJECT_ID}.iam.gserviceaccount.com"
-      require_action_account "${a_email}"
-      if [[ "${a_sole}" == "true" ]]; then
-        GRANT_SECRETS+=("${secret}")
-        GRANT_MEMBERS+=("serviceAccount:${a_email}")
-        GRANT_NAMES+=("${a_id}")
-      fi
-      also_list=()
-      [[ -z "${a_also}" ]] || IFS=',' read -r -a also_list <<<"${a_also}"
-      for also in ${also_list[@]+"${also_list[@]}"}; do
-        if ! jq -e --arg p "${also}" 'any(.[]; . == $p)' <<<"${CURRENT_CREDS}" >/dev/null; then
-          dim "  tenant ${TENANT_ID} does not list ${also}, so ${a_id} is given no ${also} key (as terraform: also_reads only a listed provider)"
-          continue
-        fi
-        also_name="swarm-tenant-${TENANT_ID}-${also}"
-        ALSO_RC=0
-        tenant_secret_state "${also_name}" "${also}" || ALSO_RC=$?
-        case "${ALSO_RC}" in
-          0|4) ;;
-          1)
-            warn "${also_name} does not exist, so ${a_id} is given no ${also} key; if the tenant's ${also}"
-            warn "comes from the account pool, the review agent is served from there instead"
-            continue
-            ;;
-          3) refuse_foreign_secret "${also_name}" "${also}" ;;
-          *)
-            die "stopping: whether ${also_name} exists, and whose it is, could not be established
-  (gcloud's answer is above). Nothing was changed."
-            ;;
-        esac
-        GRANT_SECRETS+=("${also_name}")
-        GRANT_MEMBERS+=("serviceAccount:${a_email}")
-        GRANT_NAMES+=("${a_id}")
-      done
-    done
-
-    # THE REVIEW APP'S BOT USER, pinned before anything is granted, so a key
-    # that does not match the registered App, or an App not installed on the
-    # repository, stops the run with nothing changed.
-    if [[ "${provider}" == "git-review" ]]; then
-      FORGE_APP_ID="$(jq -r '.review_app_id // ""' <<<"${FORGE_JSON}")"
-      FORGE_OWNER="$(jq -r '.owner' <<<"${FORGE_JSON}")"
-      FORGE_REPO="$(jq -r '.repo' <<<"${FORGE_JSON}")"
-      FORGE_API="$(jq -r '.api_base' <<<"${FORGE_JSON}")"
-      [[ -n "${FORGE_APP_ID}" ]] \
-        || die "tenant ${TENANT_ID} has no forge.review_app_id in ${TFVARS_FILE}: the integer GitHub gave the
-  owner when the review App was created. terraform/modules/tenancy requires it for git-review. Nothing was changed."
-      if [[ "${DRY_RUN}" -eq 1 ]]; then
-        dim "  would resolve the review App's bot user id: read ${secret} to a 0600 file, sign a JWT"
-        dim "  as App ${FORGE_APP_ID}, ask GET ${FORGE_API}/repos/${FORGE_OWNER}/${FORGE_REPO}/installation,"
-        dim "  then write review_app_bot_id into tenant ${TENANT_ID}'s forge block in ${TFVARS_FILE}"
-        [[ -z "${FORGE_BOT_ID}" ]] || dim "  (it is pinned there as ${FORGE_BOT_ID} now; a different answer would be refused)"
-      else
-        resolve_review_bot_id "${secret}" "${FORGE_API}" "${FORGE_OWNER}" "${FORGE_REPO}" "${FORGE_APP_ID}"
-        ok "the review App ${FORGE_APP_ID}'s bot user on ${FORGE_OWNER}/${FORGE_REPO} is ${REVIEW_BOT_ID}"
-        if [[ -n "${FORGE_BOT_ID}" && "${FORGE_BOT_ID}" != "${REVIEW_BOT_ID}" ]]; then
-          die "tenant ${TENANT_ID}'s forge.review_app_bot_id in ${TFVARS_FILE} is already ${FORGE_BOT_ID}, and the
-  review App's installation now answers ${REVIEW_BOT_ID}. That id is the one identity merge accepts a
-  verdict from, so it is not replaced here: if the review App really was replaced, edit the line by
-  hand, in a reviewed pull request. Nothing was changed."
-        fi
-      fi
+  require_grantable_secret "${secret}" "${provider}" "this tenant's worker"
+  GRANT_SECRETS+=("${secret}")
+  GRANT_MEMBERS+=("serviceAccount:${GSA_EMAIL}")
+  GRANT_NAMES+=("${GSA_ID}")
+  # After the worker's, so a run that stops between the two leaves the
+  # worker able to read its key and only the preview without it.
+  if [[ "${provider}" == "${FORGE_PROVIDER}" ]]; then
+    resolve_forge_reader
+    if forge_reader_bound "${secret}"; then
+      ok "${secret}: ${FORGE_READER_ID} already reads it (the issue preview)"
+    else
+      GRANT_SECRETS+=("${secret}")
+      GRANT_MEMBERS+=("serviceAccount:${FORGE_READER_EMAIL}")
+      GRANT_NAMES+=("${FORGE_READER_ID}")
     fi
   fi
 
@@ -1204,20 +727,6 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
       ok "${GRANT_SECRETS[$i]}: ${GRANT_NAMES[$i]} may read it"
     fi
   done
-
-  # 1b. the pin, after the grants and before the list: a tenant that lists
-  # git-review is one whose merge Job must already know the bot it trusts.
-  if [[ "${provider}" == "git-review" && "${DRY_RUN}" -eq 0 ]]; then
-    PIN="$(forge_tfvars write "${TFVARS_FILE}" "${TENANT_ID}" "${REVIEW_BOT_ID}")" \
-      || die "review_app_bot_id was not written into ${TFVARS_FILE} (the reason is above). The grants
-  above are in place; nothing was listed."
-    if [[ "${PIN}" == "unchanged" ]]; then
-      ok "tenant ${TENANT_ID}'s forge.review_app_bot_id is already ${REVIEW_BOT_ID} in ${TFVARS_FILE}"
-    else
-      ok "wrote review_app_bot_id = ${REVIEW_BOT_ID} into tenant ${TENANT_ID}'s forge block in ${TFVARS_FILE}"
-      dim "  commit it on a branch; the release renders it into the merge Job's environment"
-    fi
-  fi
 
   # 2. the list.
   CURRENT_CREDS="$(jq -c '[(.credentials // [])[] | tostring]' <<<"${TENANT_DOC}")"
@@ -1638,9 +1147,10 @@ fi
 #   * TWO bindings, terraform/modules/tenancy's `worker_objects_read` and
 #     `worker_objects_write` (#295; docs/merge-step.md §4.3, §10 item 5):
 #     roles/storage.objectViewer on tenants/<t>/, and roles/storage.objectUser
-#     on tenants/<t>/ EXCEPT tenants/<t>/verdicts/, which only the review
-#     account may create in. GCS IAM is allow-only, so the exclusion is the
-#     write binding's condition, not a deny rule. Never objectAdmin, which adds
+#     on tenants/<t>/ EXCEPT tenants/<t>/verdicts/, which was to be the
+#     retired #295 review account's alone; terraform keeps the pair as it is
+#     (modules/tenancy says why), so this does too. GCS IAM is allow-only, so
+#     the exclusion is the write binding's condition, not a deny rule. Never objectAdmin, which adds
 #     storage.objects.setIamPolicy: a compromised worker could share its own
 #     objects with anyone. Nothing in the worker path sets an object policy.
 #   * the READ condition has TWO clauses. The first covers get on an object
@@ -1806,8 +1316,8 @@ if [[ "${BUCKET_RC}" -eq 0 ]]; then
         dim  "    expression: $(jq -r '.expression // ""' <<<"${old}")"
       fi
     done <"${OLD_BINDINGS_FILE}"
-    warn "while it stands, this tenant's worker can write under ${GCS_PREFIX}/verdicts/, the prefix only"
-    warn "the review account may create in (docs/merge-step.md §4.3)"
+    warn "while it stands, this tenant's worker can write under ${GCS_PREFIX}/verdicts/, the prefix"
+    warn "terraform/modules/tenancy keeps out of every worker's write grant (docs/merge-step.md §4.3)"
     if [[ "${DRY_RUN}" -eq 1 ]]; then
       dim "  would remove it once the two bindings above exist, after a typed confirmation:"
     else
