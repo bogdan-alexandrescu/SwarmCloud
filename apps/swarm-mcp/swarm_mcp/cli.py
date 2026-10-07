@@ -1347,7 +1347,7 @@ def cmd_tenants(client: SwarmClient, args) -> int:
             note = "  (chosen)" if listing["chosen"] else "  (default: first matching group)"
         print(f"{mark} {str(entry['tenant_id']):<{width}}  {entry['display_name']}{note}")
     print()
-    print("act as another with `swarm --tenant <id> ...` or SWARM_TENANT=<id>")
+    print(f"act as another with `{terminal_command('swarm --tenant <id> ...')}` or SWARM_TENANT=<id>")
     return EXIT_OK
 
 
@@ -1711,7 +1711,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tenant",
         default=None,
-        help="act as this one of your tenants (`swarm tenants` lists them); sent as "
+        help=f"act as this one of your tenants (`{help_command('swarm tenants')}` lists them); sent as "
         "X-Swarm-Tenant and refused by the API unless you are a member. "
         "Default: SWARM_TENANT, else the API's first matching tenant",
     )
