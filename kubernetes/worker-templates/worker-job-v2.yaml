@@ -301,7 +301,7 @@ spec:
         # belong there.
         - name: work
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__

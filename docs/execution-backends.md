@@ -173,8 +173,11 @@ Every pod carries:
   are outside that cap. So since contract request 53 a `standard` pod on GKE
   gets 10 GiB: 4 for the workspace, the same as on Cloud Run, plus 2 for `/tmp`
   and 4 for HOME. 10 GiB is also the most Autopilot accepts for a
-  general-purpose pod. Other classes still get `disk_gib`
-  (`GKE_EPHEMERAL_STORAGE_GIB` in `scheduler/dispatch.py`);
+  general-purpose pod. `browser` gets 8 GiB, its `disk_gib`, split 5 workspace +
+  1 `/tmp` + 2 HOME (owner, 2026-10-07): its volumes were 8 + 2 + 4 = 14 GiB
+  under that 8 GiB limit, so the pod could be evicted before any one volume was
+  full. The per-class layout is `GkeDisk` in `scheduler/dispatch.py`, and a unit
+  test holds every class to sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
 * `restartPolicy: Never` and `backoffLimit: 0` — the control plane owns retries;
 * the tenant's Kubernetes service account, workload-identity-bound to the
   tenant's Google service account;
