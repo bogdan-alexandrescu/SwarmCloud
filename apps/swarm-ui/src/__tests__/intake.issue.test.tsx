@@ -180,7 +180,10 @@ describe('step 1: the issue is read and shown before anything is created', () =>
       expect(refusal.getAttribute('data-code')).toBe(code)
       expect(visible(refusal)).toMatch(words)
       // The server's own sentence is kept: it names the tenant and the secret.
-      expect(visible(refusal)).toContain(`server says ${code}`)
+      // Not for a malformed reference (QA G4-25): that sentence names the
+      // API's fields (`repository_url`), which this form does not have.
+      if (code === 'validation_failed') expect(visible(refusal)).not.toContain(`server says ${code}`)
+      else expect(visible(refusal)).toContain(`server says ${code}`)
       expect(container.querySelector('.in-preview')).toBeNull()
       expect(planButton().disabled).toBe(true)
       // No count, no state: nothing was read. `#295` and the reference's own
@@ -215,6 +218,43 @@ describe('step 1: the issue is read and shown before anything is created', () =>
     fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'example-org/infra#513' } })
     expect(container.querySelector('.in-preview'), 'the old issue stayed under a new reference').toBeNull()
     expect(planButton().disabled).toBe(true)
+  })
+})
+
+// QA G4-25 (2026-10-07): "foo bar" went to the server, came back naming
+// `repository_url`, and the dock counted a failed read. A reference is parsed
+// here first, in the API's own two shapes, and Read waits until it parses.
+describe('the reference is parsed before it is sent (G4-25)', () => {
+  it('parses owner/repo#N and the issue URL, and refuses anything else', async () => {
+    const { parseIssueRef } = await import('../IssueSubmit')
+    expect(parseIssueRef('example-org/infra#512')).toEqual({ owner: 'example-org', repo: 'infra', number: 512 })
+    expect(parseIssueRef('  https://github.com/example-org/infra/issues/512  ')).toEqual({ owner: 'example-org', repo: 'infra', number: 512 })
+    expect(parseIssueRef('https://www.github.com/example-org/infra/issues/7/')).toEqual({ owner: 'example-org', repo: 'infra', number: 7 })
+    expect(parseIssueRef('https://github.com/example-org/infra/issues/7?x=1#c')).toEqual({ owner: 'example-org', repo: 'infra', number: 7 })
+    // A pull request URL parses: the server answers it with its own refusal,
+    // which points at the task form.
+    expect(parseIssueRef('https://github.com/example-org/infra/pull/9')).not.toBeNull()
+    for (const bad of ['foo bar', 'infra#512', 'example-org/infra', 'example-org/infra#0', 'example-org/infra#1000000',
+      'http://github.com/example-org/infra/issues/5', 'https://gitlab.com/example-org/infra/issues/5',
+      'https://github.com/example-org/infra', 'example-org/.git#5', '']) {
+      expect(parseIssueRef(bad), bad).toBeNull()
+    }
+  })
+
+  it('never sends "foo bar": Read stays disabled and the field says what it takes', async () => {
+    const served = serve({ status: 422, body: { code: 'validation_failed', message: 'repository_url must be an https URL' } })
+    const { container } = await mount()
+    fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'foo bar' } })
+    const read = screen.getByRole('button', { name: 'Read' }) as HTMLButtonElement
+    expect(read.disabled, 'Read is live for a reference that cannot parse').toBe(true)
+    fireEvent.keyDown(screen.getByLabelText('Issue reference'), { key: 'Enter' })
+    fireEvent.click(read)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(served.calls.filter((c) => c.url.startsWith('/v1/issues/preview')), 'an unparsed reference was sent').toEqual([])
+    expect(visible(container)).toMatch(/owner\/repo#N/)
+    expect(visible(container)).not.toContain('repository_url')
+    fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'example-org/infra#512' } })
+    expect(read.disabled).toBe(false)
   })
 })
 

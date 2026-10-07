@@ -565,7 +565,7 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
     const s = await runnerLog({
       logs: ok(logs([stream('stdout'), stream('stderr', { content: '', total_bytes: 0, returned_bytes: 0 })])),
     })
-    const size = cell(rowFor(s, 'stderr'), 'Size')
+    const size = cell(rowFor(s, 'runner stderr'), 'Size')
     expect(size.querySelector('.ctl-mark.is-zero'), 'an empty stream is not marked as a real zero').not.toBeNull()
     expect(s.textContent).not.toMatch(/This object exists and is empty/)
     expect(s.textContent).not.toMatch(/real, measured empty stream/)
@@ -586,8 +586,8 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
         ]),
       ),
     })
-    expect(cell(rowFor(s, 'stdout'), 'Size').querySelector('.ctl-mark.is-partial')).not.toBeNull()
-    const unreadable = cell(rowFor(s, 'stderr'), 'Size')
+    expect(cell(rowFor(s, 'runner stdout'), 'Size').querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    const unreadable = cell(rowFor(s, 'runner stderr'), 'Size')
     expect(unreadable.querySelector('.ctl-mark.is-unread')).not.toBeNull()
     expect(unreadable.querySelector('.ctl-em')).not.toBeNull()
     expect(s.textContent).toContain('permission denied reading the object')
@@ -596,7 +596,7 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
     const absent = await runnerLog({
       logs: ok(logs([stream('stdout', { status: 'absent', source: null, content: null, total_bytes: null, returned_bytes: 0 })])),
     })
-    const size = cell(rowFor(absent, 'stdout'), 'Size')
+    const size = cell(rowFor(absent, 'runner stdout'), 'Size')
     expect(size.querySelector('.ctl-mark.is-absent')).not.toBeNull()
     expect(size.textContent).not.toMatch(/\d/)
   })
@@ -645,7 +645,7 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
       [attempt(1)],
       task({ id: 'tsk_files', state: 'RUNNING' }),
     )
-    expect(cell(rowFor(running, 'stdout'), 'Age').textContent).toBe('live')
+    expect(cell(rowFor(running, 'runner stdout'), 'Age').textContent).toBe('live')
 
     // FAILED, attempt ended: the worker never reached its upload, and what is
     // left is the last tail it published. Nothing is writing it.
@@ -657,7 +657,7 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
     ]
     for (const [t, a] of cases) {
       const s = await runnerLog({ logs: ok(logs([tail], { attempt: a })) }, [attempt(1)], t)
-      const age = cell(rowFor(s, 'stdout'), 'Age')
+      const age = cell(rowFor(s, 'runner stdout'), 'Age')
       expect(age.textContent ?? '', `a ${t.state} task's leftover tail is called live`).not.toMatch(/\blive\b/)
       expect(age.querySelector('.ctl-em')).not.toBeNull()
       const mark = age.querySelector('.ctl-mark.is-partial')
@@ -674,7 +674,7 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
         }),
       ),
     })
-    const age = cell(rowFor(s, 'stdout'), 'Age')
+    const age = cell(rowFor(s, 'runner stdout'), 'Age')
     expect(age.querySelector('.ctl-em')).not.toBeNull()
     expect(age.querySelector('.ctl-mark.is-absent'), 'an unknown age is drawn as a bare dash').not.toBeNull()
   })
@@ -712,7 +712,7 @@ describe("every file's Age is its object's own time, from the API (#172)", () =>
     const tail = stream('stdout', { source: 'live', tail_window: null, object_updated_at: iso(1), age_seconds: 42 })
     const open = { status: 'latest' as const, known: true, generation: 1, created_at: iso(30), completed_at: null, exit_code: null }
     const s = await runnerLog({ logs: ok(logs([tail], { attempt: open })) }, [attempt(1)], task({ id: 'tsk_files', state: 'RUNNING' }))
-    const age = cell(rowFor(s, 'stdout'), 'Age')
+    const age = cell(rowFor(s, 'runner stdout'), 'Age')
     expect(age.textContent).not.toBe('live')
     expect(age.textContent).toMatch(/^42s ago/)
     // Still says it is being written, on the line under the age.
@@ -723,21 +723,21 @@ describe("every file's Age is its object's own time, from the API (#172)", () =>
     const s = await runnerLog({
       logs: ok(logs([stream('stdout', { object_updated_at: iso(20), age_seconds: 20 * 60 })])),
     })
-    const age = cell(rowFor(s, 'stdout'), 'Age')
+    const age = cell(rowFor(s, 'runner stdout'), 'Age')
     // The attempt ended 3m ago (`logs()`); the object is 20m old.
     expect(age.textContent).toBe('20m ago')
   })
 
   it("dates a final log by its object's time when the server sent the time and no age", async () => {
     const s = await runnerLog({ logs: ok(logs([stream('stdout', { object_updated_at: iso(20) })])) })
-    expect(cell(rowFor(s, 'stdout'), 'Age').textContent).toBe('20m ago')
+    expect(cell(rowFor(s, 'runner stdout'), 'Age').textContent).toBe('20m ago')
   })
 
   it("never borrows the attempt's end when the store reported no time for the object", async () => {
     const s = await runnerLog({
       logs: ok(logs([stream('stdout', { object_updated_at: null, age_seconds: null })])),
     })
-    const age = cell(rowFor(s, 'stdout'), 'Age')
+    const age = cell(rowFor(s, 'runner stdout'), 'Age')
     expect(age.textContent).not.toMatch(/\d/)
     expect(age.querySelector('.ctl-em')).not.toBeNull()
     expect(age.querySelector('.ctl-mark.is-absent')?.getAttribute('aria-label') ?? '').toMatch(/reported no time/i)
@@ -769,7 +769,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     try {
       const s = await runnerLog({ logs: ok(logs([stream('stdout')])) })
-      const head = rowFor(s, 'stdout').querySelector('th')!
+      const head = rowFor(s, 'runner stdout').querySelector('th')!
       const uri = head.querySelector<HTMLElement>('.uri')
       expect(uri?.textContent, 'the row header draws no uri').toBe(URI)
       expect(uri!.getAttribute('title'), 'the cut uri is not whole in its title').toBe(URI)
@@ -787,7 +787,7 @@ describe("the log stream's gs:// uri is one line, whole in its title and in its 
 
   it('cuts it to one line below 900px and in the inspector, rather than breaking it', async () => {
     const s = await runnerLog({ logs: ok(logs([stream('stdout')])) })
-    const uri = rowFor(s, 'stdout').querySelector<HTMLElement>('th .uri')
+    const uri = rowFor(s, 'runner stdout').querySelector<HTMLElement>('th .uri')
     expect(uri, 'the row header draws no uri').not.toBeNull()
     // 390: the page's stacked block. 1440 with a 480px inspector: its
     // container-query mirror, which is where this table is actually drawn.

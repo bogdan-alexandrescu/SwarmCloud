@@ -34,6 +34,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .application_paths import app_paths, reaches
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "iam-refusal-probe.sh"
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -201,8 +203,7 @@ def test_the_revert_runs_on_every_path_after_a_write_could_have_happened():
 def test_the_workflow_is_linted_on_every_pull_request_that_touches_it():
     """It runs only when dispatched, so a pull request is the one place it is parsed."""
     application = _workflow(WORKFLOWS / "application.yml")
-    paths = application["on"]["pull_request"]["paths"]
-    assert ".github/workflows/iam-refusal-probe.yml" in paths, paths
+    assert reaches(".github/workflows/iam-refusal-probe.yml"), app_paths()
     lint = [
         step.get("run") or ""
         for step in application["jobs"]["workflows"]["steps"]

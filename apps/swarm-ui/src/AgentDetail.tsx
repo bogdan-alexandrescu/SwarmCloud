@@ -1,5 +1,5 @@
 import { Button, CIcon, Count, ToneMark } from './components'
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -19,6 +19,8 @@ import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest } from './dag'
+import { DecisionCard } from './DecisionCard'
+import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
@@ -48,6 +50,7 @@ import {
   clockTime,
   dispatchOf,
   elapsed,
+  formatDuration,
   newestHeartbeat,
   reasonCopy,
   restoredFrom,
@@ -72,6 +75,31 @@ import {
   type Tone,
 } from './types'
 import './styles/details.css'
+
+/**
+ * THE SPLIT'S ONE INSTANT (G2-03). `AgentSplit` computes it once -- the 1s
+ * clock, capped one poll past the header's read (`rowClock`) -- and provides
+ * it here, so the header's elapsed figure and every running figure on the
+ * Details tab are taken at the same moment. Null outside the split, where
+ * `Run` keeps its own clock.
+ */
+export const SplitClock = createContext<number | null>(null)
+
+/**
+ * THE OPEN RUN'S LENGTH ON THAT ONE CLOCK, or null when the task is not
+ * running. `elapsed()` is the header's and the Elapsed tile's figure, so the
+ * Now card's `run` chip and the Progress total use it too, rather than the
+ * newest heartbeat on the event page (which lagged the tile by minutes).
+ * Only a running task's own start, never an attempt that is over: the
+ * duration rows' rule that the client's clock measures no ended attempt
+ * holds, because a task in a run state has exactly one attempt open.
+ */
+function liveRun(task: Task, now: number): { ms: number; text: string } | null {
+  const el = elapsed(task, now)
+  const start = instant(task.started_at)
+  if (el.phase !== 'running' || start === null) return null
+  return { ms: Math.max(0, now - start), text: el.text }
+}
 
 /**
  * ONE AGENT RUN, IN FULL.
@@ -357,11 +385,22 @@ export function Run({
   // same thing, so the figures stop one poll past it. A FINISHED task is not
   // capped: every age it shows is measured from an instant that will not move,
   // so `finished 3m ago` is as true an hour later as the clock says.
+  //
+  // ONE INSTANT FOR THE WHOLE SPLIT (G2-03, QA 2026-10-07). One running task
+  // showed `17m 33s` in the header and `17m 39s` on the Elapsed tile: the
+  // same clock, capped by two different reads (the header's and this pane's),
+  // so the two figures stopped at different instants. Inside the split the
+  // header's instant is handed down (`SplitClock`) and this pane draws every
+  // running figure at it.
   const clock = useNow(1000)
-  const now =
-    reading === undefined || TERMINAL_STATES.has(task.state)
-      ? clock
-      : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
+  const shared = useContext(SplitClock)
+  const now = TERMINAL_STATES.has(task.state)
+    ? clock
+    : shared !== null
+      ? shared
+      : reading === undefined
+        ? clock
+        : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
   // ONE LISTING, FOR THE TILE (#103). The Checkpoints tile says how many of
   // the checkpoints written are still in the bucket. The Checkpoints TAB
   // lists them (`CheckpointsPane`); Details no longer draws that panel.
@@ -388,6 +427,11 @@ export function Run({
         <Alerts task={task} />
         <Why task={task} events={events} now={now} classes={run.classes} />
       </div>
+      {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
+          a verdict gate, or the review that gated one, leads with the rule,
+          the verdict, what the review weighed and what happened instead.
+          Nothing on any other step. */}
+      <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
       ) : lead === 'outcome' ? (
@@ -653,9 +697,15 @@ function DtPhases({ run, now }: { run: AgentRun; now: number }) {
   const row = rows.at(-1)
   if (row === undefined) return <span className="dt-phase is-todo">phases not datable</span>
   const segs = [row.queue, row.cold, ...(row.run === null ? [] : [row.run])]
+  const live = liveRun(task, now)
   const chips = segs.flatMap((s): { key: Segment['phase']; cls: string; text: string; title: string | undefined }[] => {
     if (s.kind === 'absent') return []
     if (s.kind === 'closed') return [{ key: s.phase, cls: 'is-done', text: `${PHASE_LABEL[s.phase]} ${spanText(s.ms)}`, title: undefined }]
+    // THE RUN IN PROGRESS IS THE ELAPSED TILE'S FIGURE (G2-03): it said
+    // `run 17m 30s` -- to the newest heartbeat -- beside a tile at 17m 39s.
+    if (s.phase === 'run' && s.live && live !== null) {
+      return [{ key: s.phase, cls: 'is-cur', text: `${PHASE_LABEL.run} ${live.text}`, title: 'Running now: the time since this attempt started, the Elapsed figure.' }]
+    }
     return [
       {
         key: s.phase,
@@ -904,10 +954,16 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   // (`clockTime`): local time, the UTC instant and its age in the title.
   const start = clockTime(task.started_at, now)
   const end = clockTime(task.completed_at, now)
+  // A WAIT IS NAMED BY THE LABEL, NOT THE VALUE (G2-13, QA 2026-10-07): a
+  // never-started parked task's tile read `waiting 19…`, the figure cut by
+  // the tile's one-line value. The word moves up to the label and the value
+  // is the duration alone, from the same `elapsed()` instant.
+  const created = instant(task.created_at)
+  const waited = el.phase === 'waiting' && el.ticking && created !== null ? formatDuration(now - created) : null
   const cells: DtCell[] = [
     {
-      label: 'Elapsed',
-      value: el.text,
+      label: waited !== null ? 'Waiting' : 'Elapsed',
+      value: waited ?? el.text,
       sub:
         el.phase === 'running' && start !== null ? (
           <span title={`started ${start.title}`}>since {start.text}</span>
@@ -968,7 +1024,12 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
           ? `${ofLimit} · so far · ${timeAgo(mem.at ?? '', now)}`
           : mem.kind === 'last'
             ? `${ofLimit} · no peak was written`
-            : `${ofLimit} · ${attempts.length > 1 ? `worst of ${mem.measured}` : 'at exit'}${nearMiss ? ' · OOM near miss' : ''}`,
+            : // A PEAK, WRITTEN AT EXIT (G2-11, QA 2026-10-07): `at exit` alone
+              // read as the value at exit, and 26.7 MiB for a Claude Code run
+              // looked like a residue. The worker records the high-water mark
+              // it sampled (`peak_rss_bytes`, agent_worker/metrics.py) and
+              // writes it when the attempt ends.
+              `${ofLimit} · ${attempts.length > 1 ? `worst of ${mem.measured}` : 'peak, written at exit'}${nearMiss ? ' · OOM near miss' : ''}`,
       // THE LIVE HIGH-WATER MARK IS NOT THE FINAL FIGURE (AG-4): full size,
       // because it is a real measurement, but on its own tone and labelled
       // `so far` with its age.
@@ -1189,8 +1250,16 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
         )
       ) : (
         <>
-          {rows.map((r) => (
-            <DtPhaseRow key={r.attempt.attempt_id} r={r} />
+          {/* THE RIGHT-HAND FIGURE IS EACH ATTEMPT'S WHOLE SPAN (G2-03): queue
+              and cold start are in it, which is why it is longer than the
+              Elapsed tile, and it is labelled so. */}
+          <div className="dt-phrow is-head">
+            <span />
+            <span />
+            <span>total incl. queue</span>
+          </div>
+          {rows.map((r, i) => (
+            <DtPhaseRow key={r.attempt.attempt_id} r={r} live={i === rows.length - 1 ? liveRun(task, now) : null} />
           ))}
           <p className="dt-lg">
             <span>
@@ -1268,13 +1337,17 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
 }
 
 /** One attempt's phases as a compact bar: queue, cold start, run -- open runs drawn open, never closed at now. */
-function DtPhaseRow({ r }: { r: AttemptPhases }) {
+function DtPhaseRow({ r, live }: { r: AttemptPhases; live: { ms: number } | null }) {
   const part = (s: Segment | null): number => (s === null ? 0 : s.kind === 'closed' ? s.ms : s.kind === 'open' ? s.atLeastMs : 0)
   const q = part(r.queue)
   const c = part(r.cold)
-  const run = part(r.run)
+  // AN OPEN RUN THAT IS RUNNING NOW is measured on the split's one clock, as
+  // the Elapsed tile is (G2-03), and is then a figure rather than a floor:
+  // no `+`. Any other open run is still a floor at its newest event.
+  const ticking = r.run?.kind === 'open' && r.run.live && live !== null
+  const run = ticking ? live.ms : part(r.run)
   const total = q + c + run
-  const open = r.run?.kind === 'open'
+  const open = r.run?.kind === 'open' && !ticking
   const failed = r.attempt.exit_code !== null && r.attempt.exit_code !== 0 && !isParked(r.attempt)
   return (
     <div className="dt-phrow">
@@ -1284,11 +1357,13 @@ function DtPhaseRow({ r }: { r: AttemptPhases }) {
           <>
             <i className="is-q" style={{ flexGrow: q }} />
             <i className="is-c" style={{ flexGrow: c }} />
-            <i className={`${failed ? 'is-b' : 'is-r'}${open ? ' is-open' : ''}`} style={{ flexGrow: run }} />
+            <i className={`${failed ? 'is-b' : 'is-r'}${r.run?.kind === 'open' ? ' is-open' : ''}`} style={{ flexGrow: run }} />
           </>
         )}
       </span>
-      <b className="mono">{total > 0 ? `${spanText(total)}${open ? '+' : ''}` : '—'}</b>
+      <b className="mono" title="This attempt's whole span: queue, cold start and run.">
+        {total > 0 ? `${spanText(total)}${open ? '+' : ''}` : '—'}
+      </b>
     </div>
   )
 }
@@ -1849,7 +1924,8 @@ function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
   // the figure is a clock, not a measure of work. Only a PARKED task that has
   // never started gets here, so the clock is all wait.
   if (task.state === 'PARKED') return 'wall time, not work'
-  return 'waiting · nothing started'
+  // The label says `Waiting` (G2-13), so the note does not say it again.
+  return 'nothing started'
 }
 
 function Alerts({ task }: { task: Task }) {
@@ -3332,7 +3408,9 @@ function Output({
           <DtMore href={tabHref(task, 'artifacts')} onClick={lead?.links?.artifacts}>
             Artifacts
           </DtMore>
-          <HelpCard topic="attempt-documents" />
+          {/* What the outcome describes, not when an attempt document is
+              written (G2-10). */}
+          <HelpCard topic="outcome-explained" />
         </span>
       </div>
 
@@ -3795,16 +3873,6 @@ function HandedOn({
       )}
     </div>
   )
-}
-
-/** A task's pull request, when its result summary carries a well-formed one. */
-function pullRequestOf(t: Task): { number: number; url: string; state: string } | null {
-  const summary = t.result_summary as ResultSummary | null
-  const pr: unknown = summary?.git?.pull_request
-  if (typeof pr !== 'object' || pr === null) return null
-  const { number, url, state } = pr as Record<string, unknown>
-  if (typeof number !== 'number' || typeof url !== 'string' || !/^https?:\/\//.test(url)) return null
-  return { number, url, state: typeof state === 'string' ? state : 'open' }
 }
 
 /**
@@ -4347,7 +4415,9 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
     <section className="dt-card dt-input">
       <DtCardHead title="Input">
         {prompt !== null && <MaskedNote count={prompt.redaction_count} />}
-        <HelpCard topic="input-is-opaque" />
+        {/* The input as submitted, read; `input-is-opaque` is the Submit
+            form's ("whatever you type"), and nothing is typed here (G2-10). */}
+        <HelpCard topic="input-as-submitted" />
       </DtCardHead>
       {/* WHAT THE PROFILE NAME MEANS IS NOT ON THIS PAGE: the catalogue is
           frozen and no route serves it (`#help/runner-profile-by-name`). The
