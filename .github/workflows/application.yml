@@ -545,9 +545,17 @@ jobs:
         # "does a marketplace install start" -- and skipping it behind any
         # unrelated unit failure hid that answer in the one run that proved a
         # test red (#62, run 36091955032).
+        #
+        # THE MERGE COMMIT, NOT THE PR HEAD. The test compares what it installs
+        # with the checkout's TOOLS, and a pull_request checkout is
+        # refs/pull/<n>/merge, which carries main. Installing the head instead
+        # compared a branch behind main with main merged into it: #775 went red
+        # on `swarm_tenants`, which main's #770 added and the head predates.
+        # github.sha is the commit this job checked out; GitHub serves it by
+        # sha while the pull request's merge ref exists.
         if: ${{ !cancelled() }}
         env:
-          SWARM_BRIDGE_INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          SWARM_BRIDGE_INSTALL_REF: ${{ github.sha }}
         run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s
 
       - name: destroy-guard self-test
