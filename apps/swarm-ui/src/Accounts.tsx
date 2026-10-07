@@ -13,11 +13,12 @@ import {
 import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
-import { ACCOUNTS_POLL_MS, capacityPoll } from './capacityPoll'
+import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
+import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
   FIVE_HOUR,
@@ -363,15 +364,22 @@ function Body({
   )
   // Choosing an account folds an add form nobody is using -- the pane shows
   // one thing at a time -- but never one with a sign-in under way (`addOpen`).
-  const choose = (id: string | null) =>
+  // THE CHOICE IS IN THE ADDRESS TOO (QA G5-23): `?account=<id>`, so a chosen
+  // account can be linked to and a reload reopens it. The address wins over
+  // the held choice, which is what a followed link means.
+  const linked = useLinkedParam('account')
+  const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/accounts', { account: id })
+  }
+  const view = linked !== null ? { ...ui, chosen: linked } : ui
   return (
     <>
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
       <Pool
         board={board}
         accounts={accounts}
-        ui={ui}
+        ui={view}
         patch={patch}
         reload={reload}
         choose={choose}
@@ -689,7 +697,11 @@ function AcctItem({
     <li className={cls}>
       <button type="button" className="acct-open" aria-current={chosen ? 'true' : undefined} onClick={onChoose}>
         <b className="acct-li-name">{account.label}</b>
-        <WindowFig reading={five} window="five-hour" label="5h used" />
+        {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
+            list's % is always the five-hour window, and the only place that
+            said so was the sub-line's `· 5h` -- which is the window Clears is
+            about, and is `· 7d` on another row, 200px away. */}
+        <WindowFig reading={five} window="five-hour" label="5h used" win="5h" />
         <small className="acct-li-line">
           <AcctState state={account.state} /> &middot;{' '}
           <ClearsLine account={account} now={now} readAt={readAt} />
@@ -702,7 +714,7 @@ function AcctItem({
         {/* LAST GIVEN OUT, ON THE ROW (#127): a pool no worker can reach --
             every account `never` -- otherwise looks like a healthy idle one. */}
         <span className="acct-given">
-          {neverAssigned(account) ? 'never given out' : `given out ${timeAgo(account.last_assigned_at as string)}`}
+          {neverAssigned(account) ? 'never given out' : `given out ${agoPastDay(account.last_assigned_at as string, now)}`}
         </span>
         {/* A MARK, NOT A CLAUSE (B4.4). The state is still AVAILABLE and that
             is still true; the pool simply will not hand it to THIS tenant while
@@ -768,16 +780,21 @@ function WindowFig({
   // The figure's name, passed rather than derived: `five-hour` is not what the
   // figure is called, and OV-1 puts the polarity (`used`) on every %.
   label,
+  win,
 }: {
   reading: AccountReading
   window: string
   label: string
+  /** The window's short name, drawn after the figure (`69% 5h`). */
+  win?: string
 }) {
   const title = readingTitle(reading, window)
+  const named = win === undefined ? null : <span className="acct-pct-win"> {win}</span>
   if (reading.kind === 'never' || reading.kind === 'absent') {
     return (
       <em className="acct-window acct-unmeasured" data-label={label} title={title}>
         <span className="acct-pct ctl-em">&mdash;</span>
+        {named}
       </em>
     )
   }
@@ -788,8 +805,25 @@ function WindowFig({
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
       </span>
+      {named}
     </em>
   )
+}
+
+/**
+ * An age past a day in days AND hours (QA G5-23): `given out 1d 20h ago`, not
+ * `44h ago`, which is arithmetic a reader does before reacting. Under a day it
+ * is `timeAgo`'s. Floored, so an age never reads older than it is; a whole
+ * number of days drops its `0h`.
+ */
+export function agoPastDay(when: string, now: number = Date.now()): string {
+  const t = Date.parse(when)
+  if (!Number.isFinite(t)) return timeAgo(when, now)
+  const h = Math.floor((now - t) / 3_600_000)
+  if (h < 24) return timeAgo(t, now)
+  const d = Math.floor(h / 24)
+  const r = h % 24
+  return r === 0 ? `${d}d ago` : `${d}d ${r}h ago`
 }
 
 /**
@@ -1437,9 +1471,9 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
   if (h.task_id) {
     return (
       <>
-        <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(h.task_id)}`}>
-          {h.task_id}
-        </a>
+        {/* ONE TASK REFERENCE (QA G5-15): `task_…` and the last eight, as
+            Holders prints the same task -- never cut from the end. */}
+        <TaskRef id={h.task_id} />
         {typeof h.attempt === 'number' && <span className="muted"> attempt {h.attempt}</span>}
         {h.verified === false && <span className="ctl-mark is-partial">unverified</span>}
       </>
@@ -1575,17 +1609,15 @@ function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
 
 /**
  * One holder's agent, by name (G5-16). The task read is the one the agent's
- * own page makes; the link is the task id's, so a failed read still leaves a
- * working link with the id as its text.
+ * own page makes; until it lands, or if it fails, the link is `TaskRef`'s
+ * short id (QA G5-15), and the whole id is its title and its copy.
  */
 function HolderAgent({ taskId, verified }: { taskId: string; verified?: boolean }) {
   const [res] = useLoad(() => loadTask(taskId), taskId)
-  const name = res.status === 'ok' || res.status === 'stale' ? agentName(res.data) : taskId
+  const name = res.status === 'ok' || res.status === 'stale' ? agentName(res.data) : null
   return (
     <>
-      <a className={`ctl-link${name === taskId ? ' mono' : ''}`} href={`#work/task/${encodeURIComponent(taskId)}`} title={taskId}>
-        {name}
-      </a>
+      <TaskRef id={taskId} title={name} />
       {verified === false && <span className="ctl-mark is-partial">unverified</span>}
     </>
   )

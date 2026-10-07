@@ -1,5 +1,5 @@
 import { loadAdminQuota } from './api'
-import { QUOTA_POLL_MS, capacityPoll, poolHref } from './capacityPoll'
+import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { WarnMark } from './marks'
@@ -27,7 +27,9 @@ import {
  * max, the AIMD target and the cap derived from the provider, forced to 0 by
  * EXHAUSTED, DISABLED and COOLDOWN -- and that figure is ONE input to the
  * pool named beside it, whose own ceiling may be lower. The column name
- * carries the basis; no `?` goes inside the table.
+ * carries the basis; no `?` goes inside the table. `(units)` (QA G5-23): it
+ * is counted in the weighted units the fed pool's ceiling is, and Pools'
+ * `Ceiling (units)` says so; a bare `Quota cap 50` named no unit at all.
  *
  * `429s (this run)` (CP-10). The count is reset when the run ends -- a clean
  * run reports the provider available, or the broker's refresh retires the
@@ -36,7 +38,7 @@ import {
  * name carries the window (B7.4 route 2); `#help/quota-row-fields`, in the
  * footer index, defines the run (route 3).
  */
-const QUOTA_CAP = 'Quota cap'
+const QUOTA_CAP = 'Quota cap (units)'
 const FEEDS_POOL = 'Feeds pool'
 const RATE_LIMITS = '429s (this run)'
 
@@ -85,6 +87,8 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
   // head moves on, so a reading crosses the threshold on screen while the page
   // is open rather than only when it is reloaded.
   const now = useNow(AGE_TICK_MS)
+  // A RECORD PER TENANT ON A PHONE (QA G5-08): the table was 822px in 356.
+  const phone = usePhoneTables()
   const byProvider = new Map<string, QuotaState[]>()
   for (const q of rows) {
     const list = byProvider.get(q.provider)
@@ -119,7 +123,7 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                 card's right edge at 1440, because every column sized itself
                 to its content and the pool name is long. Fixed widths, and
                 the pool name ellipsizes with its whole name in its title. */}
-            <div className="ctl-table is-scroll quota-table">
+            <div className={`ctl-table ${tableMode(phone)} quota-table`}>
               <table role="table">
                 <colgroup>
                   <col className="quota-c-tenant" />
@@ -138,11 +142,13 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                     {/* The unit rides on the column name: these are the two
                         columns where a 0 and a blank mean different things and
                         the heading is where that is cheapest to say. */}
-                    <th role="columnheader" scope="col" className="is-num">{QUOTA_CAP}</th>
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{QUOTA_CAP}</th>
                     {/* WHAT THE CAP FEEDS, right after it (CP-8). */}
                     <th role="columnheader" scope="col">{FEEDS_POOL}</th>
                     <th role="columnheader" scope="col" className="is-num">Requests left</th>
-                    <th role="columnheader" scope="col" className="is-num">{RATE_LIMITS}</th>
+                    {/* ONE LINE (QA G5-23): the head wrapped `429s (this` /
+                        `run)`, splitting the window from the count it names. */}
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{RATE_LIMITS}</th>
                     <th role="columnheader" scope="col">Last 429</th>
                     <th role="columnheader" scope="col">Reported</th>
                   </tr>

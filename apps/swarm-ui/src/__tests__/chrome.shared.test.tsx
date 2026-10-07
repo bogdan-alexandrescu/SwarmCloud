@@ -533,7 +533,11 @@ function tablesInSource(): { file: string; line: number; classes: string[]; colu
   for (const name of readdirSync(SRC)) {
     if (!name.endsWith('.tsx')) continue
     const text = readFileSync(join(SRC, name), 'utf8')
-    for (const m of text.matchAll(/className="((?:ctl-table|table-wrap)\b[^"]*)"/g)) {
+    // A literal class list, or a template whose mode is `tableMode(phone)`
+    // (capacityPoll.ts, QA G5-08): `.is-scroll` above the phone breakpoint and
+    // a stacked record below it, read here as the desktop's `is-scroll` plus
+    // `phone-stack`.
+    for (const m of text.matchAll(/className=(?:"|\{`)((?:ctl-table|table-wrap)\b[^"`]*)(?:"|`\})/g)) {
       const at = m.index ?? 0
       const rest = text.slice(at, at + 6000)
       const table = rest.indexOf('<table')
@@ -543,7 +547,7 @@ function tablesInSource(): { file: string; line: number; classes: string[]; colu
       out.push({
         file: name,
         line: text.slice(0, at).split('\n').length,
-        classes: m[1]!.split(/\s+/),
+        classes: m[1]!.replace('${tableMode(phone)}', 'is-scroll phone-stack').split(/\s+/).filter(Boolean),
         columns: (head[0].match(/<th\b/g) ?? []).length,
       })
     }
@@ -557,6 +561,10 @@ describe('CH-13: one rule for tables below 900px', () => {
     // and wrong for a comparison: Pools stacked was 5,924px tall at 390 and
     // Profile headroom 9,882px. MUTATION: `is-stacked` back on any table of
     // five or more columns, or a data table left with neither class.
+    // AMENDED BELOW 560px (QA G5-08, 2026-10-07): at 390 the scroll hid every
+    // capacity and admin table's answer column, so those tables are a record
+    // per row on a phone only (`tableMode`, read here as `phone-stack`) and
+    // keep this rule from 561 to 899px. Every other table is unchanged.
     const tables = tablesInSource()
     expect(tables.length, 'the source scan found too few tables to mean anything').toBeGreaterThanOrEqual(15)
     const data = tables.filter((t) => t.classes.includes('is-scroll'))

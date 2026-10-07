@@ -61,7 +61,7 @@ const cell = (row: HTMLElement, label: string): string =>
 describe('G5-02: the Feeds pool cell draws the ceiling admission enforces', () => {
   it('names the pool\'s ceiling, what sets it, and that it is below the cap', async () => {
     const row = await renderRow(quota({ feeds_pool: pool() }))
-    expect(cell(row, 'Quota cap')).toBe('50')
+    expect(cell(row, 'Quota cap (units)')).toBe('50')
     expect(cell(row, 'Feeds pool')).toBe('provider:anthropic:tenant:eng · ceiling 40 (configured, below cap)')
   })
 

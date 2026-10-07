@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
+import { tableMode, usePhoneTables } from './capacityPoll'
 import { WarnMark } from './marks'
 import {
   FAMILY_TITLE,
@@ -140,17 +141,24 @@ export function disabledSentence(name: string, reason: string | null | undefined
 
 export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
   const [open, setOpen] = useState<string | null>(null)
+  // ONE CARD PER PROFILE ON A PHONE (QA G5-08). The matrix was 923px in a
+  // 352px box, and Can start and Runs out first -- the answer -- sat 570px
+  // off-screen behind the family cells. On a phone each profile is a record:
+  // its name, `Can start N`, and the pool it runs out on with leased/ceiling;
+  // the per-family figures are in the opened row, whose Fits table names
+  // every pool the profile clears.
+  const phone = usePhoneTables()
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
   const entries = Object.entries(capacity.runner_profiles).sort(([a], [b]) => a.localeCompare(b))
-  // Only the families some profile clears get a column.
-  const families = POOL_FAMILY_ORDER.filter((f) =>
-    entries.some(([, p]) => p.pools.some((n) => poolKind(n) === f)),
-  )
+  // Only the families some profile clears get a column -- and none on a phone.
+  const families = phone
+    ? []
+    : POOL_FAMILY_ORDER.filter((f) => entries.some(([, p]) => p.pools.some((n) => poolKind(n) === f)))
   const span = families.length + 3
 
   return (
     <div className="cap-mx">
-      <div className="ctl-table is-scroll">
+      <div className={`ctl-table ${tableMode(phone)}`}>
         <table role="table">
           <thead role="rowgroup">
             <tr role="row">
@@ -210,10 +218,17 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                     <td role="cell" data-label="Runs out first" className="cap-mx-first">
                       {!off &&
                         binds.map((b) => {
-                          const fits = fitsIn(byName.get(b) ?? null, profile.units)
+                          const row = byName.get(b) ?? null
+                          const fits = fitsIn(row, profile.units)
+                          // LEASED/CEILING BESIDE THE NAME (QA G5-08): `tenant
+                          // eng (37/40)` says how near the pool is without the
+                          // family cell, which a phone card does not draw.
+                          const use =
+                            row === null ? null : `(${row.active}/${row.effective_limit === null ? '—' : row.effective_limit})`
                           return (
                             <span key={b} className="cap-mx-bind" data-pool={b} title={b}>
-                              {poolLabelAmong(b, among)}{' '}
+                              {poolLabelAmong(b, among)}
+                              {use !== null && <span className="cap-mx-bind-use"> {use}</span>}{' '}
                               <small>{fits === null ? 'fits —' : `fits ${fits}`}</small>
                             </span>
                           )
@@ -281,8 +296,10 @@ function FitsTable({
   const uncapped = new Set(
     profile.admission?.uncapped ?? (complete ? profile.pools.filter((n) => !byName.has(n)) : []),
   )
+  // Four columns: a record on a phone, like every table here (QA G5-08).
+  const phone = usePhoneTables()
   return (
-    <div className="ctl-table is-scroll cap-mx-fits">
+    <div className={`ctl-table ${tableMode(phone)} cap-mx-fits`}>
       <table role="table">
         <thead role="rowgroup">
           <tr role="row">
