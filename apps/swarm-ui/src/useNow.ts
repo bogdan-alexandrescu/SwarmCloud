@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useSyncExternalStore } from 'react'
 
 /**
  * ONE CLOCK PER CADENCE, SHARED BY EVERY COMPONENT THAT READS IT.
@@ -87,6 +87,25 @@ function subscribe(intervalMs: number, onTick: () => void): () => void {
  * selects, and the age callers import it.
  */
 export const AGE_TICK_MS = 5_000
+
+/**
+ * THE INSTANT A SCREEN'S HEAD TOOK ITS AGE AT, FOR THE FEET UNDER IT (#98).
+ *
+ * A card foot that says `from 6 min ago` and the head's refresh control that
+ * says `⟳ 6 min` are two statements of one fact. When each foot took
+ * `Date.now()` at its own render they could disagree by up to a tick, and a
+ * foot moved only when its parent happened to re-render. A screen that owns
+ * an age clock provides it here; a foot reads it with `usePageClock`, so the
+ * head and every foot move on the same tick and say the same instant.
+ *
+ * Outside a provider (a card rendered on its own in a test) it falls back to
+ * the moment of render, which is what the foot did before.
+ */
+export const PageClock = createContext<number | null>(null)
+
+export function usePageClock(): number {
+  return useContext(PageClock) ?? Date.now()
+}
 
 /**
  * The current instant, re-rendering the caller every `intervalMs`.

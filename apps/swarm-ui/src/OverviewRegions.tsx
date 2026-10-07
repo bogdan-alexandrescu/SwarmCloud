@@ -22,6 +22,7 @@ import { Dash } from './components/Chip'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
+import { usePageClock } from './useNow'
 import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -67,6 +68,8 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
   const st = stats.status === 'ok' || stats.status === 'stale' ? stats.data : null
   const page = rows(tasks)
   const now = new Date()
+  // The head's instant (#98), so `counted from 6 min ago` and `⟳ 6 min` agree.
+  const at = usePageClock()
   return (
     <section className="ov-life" id="ov-band" aria-label="Waiting, working, done">
       {BAND.map((c) => {
@@ -129,8 +132,8 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                 control carries the screen's age. The page's figure still
                 says it is the page's. */}
             {c.source === 'stats' && (stats.status === 'ok' || stats.status === 'stale') &&
-              staleFoot(stats.fetchedAt, Date.now(), stats.status === 'stale') !== null && (
-                <span className="ov-lc-foot">counted {staleFoot(stats.fetchedAt, Date.now(), stats.status === 'stale')}</span>
+              staleFoot(stats.fetchedAt, at, stats.status === 'stale') !== null && (
+                <span className="ov-lc-foot">counted {staleFoot(stats.fetchedAt, at, stats.status === 'stale')}</span>
               )}
             {c.source === 'page' && page !== null && <span className="ov-lc-foot">of the {page.length} newest read</span>}
           </div>

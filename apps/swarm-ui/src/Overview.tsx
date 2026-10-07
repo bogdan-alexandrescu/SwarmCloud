@@ -25,7 +25,7 @@ import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
-import { AGE_TICK_MS, useNow as useAgeClock } from './useNow'
+import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
@@ -174,6 +174,9 @@ export function OverviewScreen() {
   const failures = page === null ? null : failuresOf(page, Date.now())
 
   return (
+    // THE HEAD'S CLOCK IS EVERY FOOT'S (#98): a stale foot below and the
+    // refresh control above read the same instant, so they cannot disagree.
+    <PageClock.Provider value={clock}>
     <div className="ov-page">
       {/* TITLE LEFT, ACTIONS RIGHT, NOTHING UNDER IT (#138, owner ruling
           2026-10-07): the title and the section's `?`, and on the right the
@@ -284,6 +287,7 @@ export function OverviewScreen() {
         </section>
       </div>
     </div>
+    </PageClock.Provider>
   )
 }
 
@@ -606,9 +610,9 @@ function sourceList(checks: Check[]): string {
  * `AGED_AFTER_MS`), and nothing at all while it is fresh -- the head's
  * refresh control carries a fresh age (#98, owner ruling 2026-10-07).
  */
-function footFor(r: Result<unknown>, absent: string): string | null {
+function footFor(r: Result<unknown>, absent: string, now: number): string | null {
   const at = ageOf(r)
-  return at === null ? absent : staleFoot(at, Date.now(), r.status === 'stale')
+  return at === null ? absent : staleFoot(at, now, r.status === 'stale')
 }
 // ---------------------------------------------------------------------------
 // Card chrome
@@ -920,6 +924,7 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
 }
 
 function CapacityStacks({ state }: { state: Result<Capacity> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={3} />
   if (state.status === 'error') {
     const b = blindness(state.error)
@@ -971,7 +976,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
         <FootRun>
           <span>{countOf(cap.pools.length, 'pool')}</span>
           <span>{tenant === undefined ? 'no tenant pool read' : `tenant ${tenant}`}</span>
-          {footFor(state, 'not read') !== null && <span>{footFor(state, 'not read')}</span>}
+          {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
     </>
@@ -1122,6 +1127,7 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
  * unpolled, paused or skipped account never counts as room.
  */
 function AccountLine({ state }: { state: Result<AccountsPage> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={1} />
   if (state.status === 'error') {
     const b = blindness(state.error)
@@ -1163,7 +1169,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
               (#98, owner ruling 2026-10-07: a tile states freshness only when
               stale); the whole sentence, age included, is the line's title. */}
           best {pool.best.label} at <span className="ov-num">{Math.round(pool.pct)}%</span> of its {pool.best.window} window
-          {staleFoot(Date.parse(pool.best.observedAt), Date.now()) !== null && ` · ${staleFoot(Date.parse(pool.best.observedAt), Date.now())}`}
+          {staleFoot(Date.parse(pool.best.observedAt), now) !== null && ` · ${staleFoot(Date.parse(pool.best.observedAt), now)}`}
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
@@ -1247,6 +1253,7 @@ function RunningCard({
   stats: Result<Stats>
   leases: Result<LeasePage>
 }) {
+  const now = usePageClock()
   const page = dataOf(tasks)
   const silent = silentByTask(leases)
   const leased = leasedAtByTask(leases)
@@ -1311,7 +1318,7 @@ function RunningCard({
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
   const countedAt = ageOf(stats)
   // Said only when stale (#98): a fresh count's age is the head's.
-  const countedAge = countedAt === null ? null : staleFoot(countedAt, Date.now(), stats.status === 'stale')
+  const countedAge = countedAt === null ? null : staleFoot(countedAt, now, stats.status === 'stale')
   // The sentence below names the counts' age on the same rule: only when stale.
   const counts = countedAge === null ? '' : `, ${countedAge},`
   const foot = (
@@ -1554,6 +1561,7 @@ function Runtime({ task, leasedAt }: { task: Task; leasedAt?: string | undefined
  * carried no figure and draws that count rather than folding them in as zeros.
  */
 function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result<TaskPage> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={4} />
   if (state.status === 'error') {
     // TWO FAILURES, AND WHAT THE READER DOES NEXT DIFFERS. This rollup is
@@ -1683,7 +1691,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               only a press of refresh re-sums it (OV-16 set the cadence of
               `/v1/stats`, not of this). IN PLAIN WORDS (#97): it read `no
               re-poll`, which is the poll's jargon for the same fact. */}
-          {footFor(state, 'not summed') !== null && <span>{footFor(state, 'not summed')}</span>}
+          {footFor(state, 'not summed', now) !== null && <span>{footFor(state, 'not summed', now)}</span>}
           <span>updates only on refresh</span>
         </FootRun>
       </p>
