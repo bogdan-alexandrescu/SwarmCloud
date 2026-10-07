@@ -392,14 +392,37 @@ function ModuleRows({ doc }: { doc: IndexDoc }) {
   )
 }
 
+/**
+ * What the index's history depth means for co-change (QA G4-06): a dash with
+ * the API's reason when it was impossible -- a one-commit-deep clone -- and
+ * "a lower bound" when the history stops inside the window. Nothing when the
+ * window was read whole, or the API served no judgement.
+ */
+function HistoryLine({ doc, what }: { doc: IndexDoc; what: string }) {
+  const h = doc.history
+  if (h === null || (h.co_change !== 'impossible' && h.co_change !== 'partial')) return null
+  if (h.co_change === 'partial') {
+    return <p className="ur-hint is-warn ur-history">{h.reason ?? 'The index read only part of the window: counts are a lower bound.'}</p>
+  }
+  return (
+    <p className="ur-hint ur-history">
+      {what}: <Dash why={h.reason ?? 'The indexer read no history inside the window'} /> not known for this index.
+    </p>
+  )
+}
+
 function HotSpotRows({ doc, limit }: { doc: IndexDoc; limit?: number }) {
   const rows = limit === undefined ? doc.hot_spots : doc.hot_spots.slice(0, limit)
   const max = rows.reduce((n, h) => Math.max(n, h.changes ?? 0), 0)
   const co = doc.co_changes[0]
+  const impossible = doc.history?.co_change === 'impossible'
   return (
     <>
+      <HistoryLine doc={doc} what="Hot-spots and co-change" />
       {rows.length === 0 ? (
+        impossible ? null : (
         <p className="ur-none">The index lists no hot-spots.</p>
+        )
       ) : (
         <div className="ur-rows">
           {rows.map((h) => (
@@ -437,6 +460,7 @@ function TestMapTab({ r, index }: { r: RepoRecord; index: IndexRead }) {
             <div className="ur-tmap">
               <TestsMapped r={r} />
               <p className="ur-hint">Edges from the index: a source path and the tests that reach it, each with its evidence. Not executed coverage.</p>
+              <HistoryLine doc={doc} what="Co-change evidence" />
               {doc.truncated.includes('test_map') && (
                 <p className="ur-hint is-warn">The index&apos;s test map was cut at its size ceiling: these are the edges it kept.</p>
               )}

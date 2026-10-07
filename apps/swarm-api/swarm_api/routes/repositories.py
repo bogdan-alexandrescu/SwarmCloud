@@ -25,7 +25,8 @@ forge read or submission. Everything else is `swarm_api.repoindex`'s.
 THE IMPACT AND GRAPH ROUTES (lane RI11, repo-index.md §4.3a, §6.1) are last:
 `POST /{repo_id}/impact` (a pull request, a commit or a base..head range ->
 the test plan), and the graph explorer's reads `GET /{repo_id}/graph`,
-`GET /{repo_id}/symbols` and `GET /{repo_id}/languages`. Same rule: the
+`GET /{repo_id}/symbols`, `GET /{repo_id}/languages` and the paged
+`GET /{repo_id}/test-map?path=&cursor=` (QA G4-07). Same rule: the
 registration first, with the caller's tenant. Everything else is
 `swarm_api.impact`'s; these routes log counts and codes, never a token,
 a path or a symbol name.
@@ -65,12 +66,16 @@ from ..impact import (
 )
 from ..repograph import NoGraph
 from ..repoindex import (
+    MAX_CURSOR_CHARS,
     RUNS_PAGE_MAX,
+    TEST_MAP_PAGE_DEFAULT,
+    TEST_MAP_PAGE_MAX,
     IndexRunRequest,
     RepoIndex,
     SelectRequest,
     check_run_kind,
     freshness,
+    page_test_map,
     render_markdown,
     run_to_api,
     select_tests,
@@ -545,3 +550,40 @@ def repository_languages(
     return {**answer, **_staleness(version, fresh),
             "languages": languages_table(graph, document),
             "source": "graph" if graph is not None else "index"}
+
+
+@router.get("/{repo_id}/test-map")
+def repository_test_map(
+    repo_id: str,
+    path: str = Query(min_length=1, max_length=400),
+    cursor: str | None = Query(default=None, min_length=1, max_length=MAX_CURSOR_CHARS),
+    limit: int = Query(default=TEST_MAP_PAGE_DEFAULT, ge=1, le=TEST_MAP_PAGE_MAX),
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """One page of the test-map edges for a source path or glob (QA G4-07).
+
+    From the graph's file-level map when the index has a graph -- the whole
+    map, each edge with its confidence and other evidence -- plus the
+    document's edges; from the document alone when it has none.
+    `repoindex.page_test_map` says how a path and a glob match.
+    """
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    answer: dict = {"repo_id": repo_id, "tenant_id": tenant_id, "index_sha": None,
+                    "head_sha": fresh["head_sha"], "behind_by": fresh["behind_by"],
+                    "stale": fresh["stale"], "freshness": fresh, "graph_digest": None}
+    if version is None:
+        return {**answer, "path": path, "glob": None, "edges": [], "total": 0, "limit": limit,
+                "next_cursor": None, "sources": {"graph": False, "index": False},
+                "reason": "no index has been promoted for this repository, so no path is mapped"}
+    graph = service.open(tenant_id, repo_id, version)
+    document = service.index.read_version(tenant_id, version)
+    page = page_test_map(document, graph, path, cursor=cursor, limit=limit,
+                         commit_sha=version.get("commit_sha"))
+    # Counts only: a path or a test name is the tenant's, never a log line's.
+    log.info("repository test map tenant=%s repo_id=%s graph=%s edges=%d total=%d",
+             tenant_id, repo_id, graph is not None, len(page["edges"]), page["total"])
+    return {**answer, **_staleness(version, fresh),
+            "graph_digest": graph.digest if graph is not None else None, **page}
