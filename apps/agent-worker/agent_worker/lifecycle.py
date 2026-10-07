@@ -4172,6 +4172,9 @@ class Worker:
                 token=None if refusal else self._git_token(),
                 egress=self._egress,
                 peers=peers,
+                # An index run reads 90 days of history (hot spots,
+                # co-change); every other step stays one commit deep.
+                history_days=indexrun_mod.clone_history_days(self.cfg.runner_profile),
             ))
         except GitTransient as exc:
             self._mark_clone_timed(None, tries=tries, pinned=False)

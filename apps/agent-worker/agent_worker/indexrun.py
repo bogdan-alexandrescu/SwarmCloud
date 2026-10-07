@@ -175,6 +175,20 @@ def is_index_run(runner_profile: str) -> bool:
     return runner_profile == INDEXER_PROFILE
 
 
+#: How much history an index run's clone holds: the extractor's window
+#: (`repo_index_extract.HISTORY_DAYS`, held equal by
+#: tests/unit/worker/test_indexrun_clone_history.py). Measured 2026-10-07 on
+#: the live index: cloned one commit deep, every hot spot read `changes: 1`
+#: and co-change was empty (G4-06). Bounded by date, so the fetch costs the
+#: window's commits and no older ones (`gitops.history_fetch_argv`).
+HISTORY_DAYS = 90
+
+
+def clone_history_days(runner_profile: str) -> int | None:
+    """The days of history the task's clone fetches: the window for an index run, else none."""
+    return HISTORY_DAYS if is_index_run(runner_profile) else None
+
+
 @dataclass(frozen=True)
 class Budgets:
     """Seconds each phase may take, out of the task's own timeout."""

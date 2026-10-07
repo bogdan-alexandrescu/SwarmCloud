@@ -187,7 +187,7 @@ implementer otherwise spends tokens answering:
 | `entry_points` | executables, service mains, CLI commands, workers, `create_app()` factories, with `path` and how they are started | "what runs?" |
 | `routes` | public APIs: HTTP routes (`method`, `path`, handler `file`), exported library symbols, MCP tools | "what do callers depend on?" — the impact question |
 | `test_layout` | test roots, frameworks, how each suite runs, what needs an emulator or credentials | "how are tests organised here?" |
-| `test_map` | source path globs → the tests that cover them, each edge with its `evidence` (`import` / `naming` / `co-change` / `declared`) | "which tests does this change need?" (§4.3) |
+| `test_map` | source path globs → the tests that cover them, each edge with its `evidence` (`import` / `naming` / `co-change` / `declared`, and `ast` / `lsp` from the graph); the file level, with `confidence` and `also_evidence`, is in the graph (§2.5, "The test map") | "which tests does this change need?" (§4.3) |
 | `territory` | ownership hints read from the repository: CLAUDE.md track tables, CODEOWNERS, frozen directories, "do not edit" notes, quoted with their source file | "may I edit this, and who do I tell?" |
 | `commands` | build, lint, test and CI commands, read from Makefile, `package.json`, `pyproject.toml` and the CI workflows, each with its source | "how do I prove it works?" |
 | `hot_spots` | the files changed most in the last 90 days of the default branch, with change counts and the paths most often changed together | "what is fragile, and what else moves when this moves?" |
@@ -385,6 +385,71 @@ the others. Confidence is a number so the impact query can bound a path by
 the product along it, and it is shown, never hidden, so "the graph says no
 test reaches this" can always be answered with "through an `ast` edge at
 0.3".
+
+**The test map (revised 2026-10-07, QA findings G4-04 to G4-07).** The
+file → test map has three more ways to know an edge than the call graph,
+because what a test exercises is often reached by a path, not an import:
+
+| evidence | how it is produced | confidence |
+|---|---|---|
+| `path-ref` | the test file names a repository path in a string literal — `REPO / "scripts" / "lib" / "common.sh"`, `"kubernetes/"`, `spec_from_file_location(…, "images/…/repo_index_extract.py")`, a `.tftest.hcl`'s `source = "../../terraform/infra"` (resolved from the root, then from the test's directory). A directory gives a `<dir>/**` source | 0.35 |
+| `path-ref` (module) | a `.tftest.hcl` names `module.<name>` of a root it runs by path, and that root's `module "<name>" { source = "../modules/x" }` names the module directory | 0.3 |
+| `declared` | every test under a `test_layout[].root`, for each of its `covers` globs that matches a listed source file — the layout the agent last wrote, read from the staged base index | 0.2 |
+
+and the call graph gains one fallback for tests: a Python `obj.method()` in
+a test, with no import or type to resolve it by, resolves to the method of
+that name when exactly one class in the repository defines one (`ast`, 0.3).
+That is what connects `Scheduler._admit_one` to the tests that call it on a
+fixture-built scheduler. A name two classes define gives no edge.
+
+*Test-side files are never a source.* A file is test-side when a directory
+on its path is `tests`, `test`, `__tests__` or `testdata`, when it is
+`conftest.py`, or when it lies under a `test_layout[].root`. The helpers,
+conftest and fixtures a suite imports used to be counted as covered source
+(`tests/unit/control_plane/**` had 200 edges); they are now neither a test map
+source nor a symbol the symbol test map reports as covered. The extractor's
+`test_coverage` says how many modules are source, which are not and why
+(`test`: every file test-side; `build`: every file a Dockerfile, a Makefile
+or not source), and which source modules have no edge — the honest
+denominator: the QA pass of 2026-10-07 counted about 48 source modules among
+the 83 this repository's index listed.
+
+*Where the file level lives.* `repo-index.json` holds at most 4,000 edges
+(§2.2). The extractor no longer cuts the file-level map to that bound: the
+graph carries it whole (up to 200,000 edges, `file_test_map` in the graph's
+`truncated` past that), as `tests` on each source file's row in the `files`
+layer — `{test, evidence, confidence, also_evidence}` — so a reader pages it
+by the file's module shard, as it pages symbols. The index holds the file
+level when it fits; over 4,000 edges or over its byte budget it goes to
+directory granularity first, which merges a directory's duplicate
+(source, test) pairs, and only then cuts entries.
+
+*What a cut keeps.* Entries are kept round by round across sources — every
+source's strongest edge, then every source's second — not most-confident
+first. Confidence-first cut every `naming` edge before any `import` edge,
+and the `naming`, `path-ref` and `declared` edges are exactly what connect a
+module no import reaches.
+
+*The vocabulary `repo-index.json` is served in.* `RepoIndexSpec` accepts
+`declared`, `lsp`, `ast`, `co-change`, `import` and `naming`; an agent that
+copied `path-ref` into the index would have the whole index refused at
+promotion. So the index reports a `path-ref` edge as `declared` — the test
+names the path it exercises — with `path-ref` in its `also_evidence`; the
+graph keeps `path-ref`. Adding `path-ref` to `swarm_api.repoindex.Evidence`
+is a change request, not done here.
+
+*History is read, not assumed.* An index run's clone holds the window the
+hot spots and co-change read: one commit deep, then `git fetch
+--shallow-since=<head − 90 days>` and `--deepen=1` for the parent past it
+(`agent_worker/gitops.py` `deepen_history`, asked for by
+`indexrun.clone_history_days`). Bounded by date: the cost is the window's
+commits' trees and blobs and no older ones — and the checkout, which the
+attempt's periodic checkpoints carry, grows by that pack. A shallow history's
+boundary commit is never counted: git shows it as adding every file it
+holds, which is how a one-commit clone reported every hot spot as
+`changes: 1`. A clone the deepen could not reach says `available: false` with
+the reason, and `window_covered` says whether the counts span the whole
+window.
 
 **Graph shards, per commit, under the tenant's own prefix.**
 
