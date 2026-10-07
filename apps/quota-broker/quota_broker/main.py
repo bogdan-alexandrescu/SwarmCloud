@@ -1689,8 +1689,10 @@ def _sweep_account_pool(
         #: listing will not show.
         "marked_reauth_required": marked,
         #: The same write-cadence counters `_sweep_block` reports, and for the
-        #: same reason: the account secrets carried 1,741 and 1,698 identical
-        #: versions while every tick of this sweep reported success.
+        #: same reason: secrets this broker writes piled up identical versions
+        #: while every tick reported success. The figures are in
+        #: `quota_broker.credentials` (`_BaseState`), and only there: a second
+        #: copy of a count is how this one drifted.
         "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
         "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
         "unverified_skipped": [

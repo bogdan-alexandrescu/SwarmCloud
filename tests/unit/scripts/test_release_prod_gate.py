@@ -146,7 +146,7 @@ PROD_FACING = {
     "promotes": lambda code: bool(re.search(r"docker\s+tags\s+(add|delete)\b", code))
     or any("--scan-only" not in line for line in code.splitlines() if _PUSH_IMAGES.search(line)),
     "applies": lambda code: bool(re.search(r"\bterraform\b[^\n]*\s(apply|destroy|import)\b", code)),
-    "deploys": lambda code: bool(re.search(r"(^|[\s/])(deploy|verify-remote)\.sh(\s|$)", code)),
+    "deploys": lambda code: bool(re.search(r"(^|[\s/])(deploy|verify-remote|warm-jobs)\.sh(\s|$)", code)),
 }
 
 _STATUS_CALL = re.compile(r"\b(always|success|failure|cancelled)\(\s*\)")

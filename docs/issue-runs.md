@@ -305,28 +305,44 @@ is green stays CHECKING until it is written (`issueci.keyword_pending`). A pull
 request a person merges before then is DONE regardless -- there is nothing
 left to protect -- and `writeback_error` says why the block was not written.
 
-## Auto-merge: visible, refused, and why
+## Auto-merge: built since contract request 47, not proven live
 
-The issue's build order is **#342 (signed step specs, S0) → #295/#352 (the
+The issue's build order was **#342 (signed step specs, S0) → #295/#352 (the
 merge step) → this**. A platform that merges code on its own must first be
 unable to run a step spec nobody signed (#342), and then needs a merge step
 that merges only a reviewed, proven sha (#295). Neither is something an issue
-run should improvise.
+run should improvise, and until the `merge` profile was enabled an
+`auto_merge` run was refused. Contract request 47 (2026-10-04) enabled it, and
+the merge is now the CI loop's last move:
 
-So today `auto_merge` is **visible but refused**: the submit form shows the
-switch disabled with the API's reason and `requires: #295`
-(`issueruns.auto_merge_availability`, served on the issue preview so the console
-never offers what `POST /v1/runs` would refuse); `sc run --issue --auto-merge`
-passes it and prints the refusal; `POST /v1/runs` answers
-`422 auto_merge_unavailable` and creates nothing; `compile_plan` refuses an
-`auto_merge` run naming #295 even if one were stored. **A run without
-auto-merge never merges**: it compiles to `integrate` steps and `direct-pr`
-fix rounds, all `claude-code`, none `single-pr` or `merge`, and swarm-api has
-no merge call. A pull request a person merges by hand is read as `DONE`, with
-`green_sha` set only if CI was green at its head.
+* **Whether it is offered** is one rule, `issueruns._auto_merge_refusal`: it
+  returns nothing while the catalogue's `merge` profile is enabled, and a
+  reason naming #295 (`AUTO_MERGE_REQUIRES`) only if a platform disables it
+  again. `issueruns.auto_merge_availability`, served on the issue preview,
+  reads the same rule, so the console's switch is enabled exactly when
+  `POST /v1/runs` would accept it, and `422 auto_merge_unavailable` creates
+  nothing when it would not. A run that does not say takes the platform's
+  `merge_by_default` (default off).
+* **The compiled workflow never merges.** It and every CI fix round say
+  `metadata.merge: "off"`, whatever the run or the platform default says: a
+  merge inside the workflow would run before the API wrote `Closes #N` into
+  the pull request and before the CI loop could fix a red check.
+* **The merge is submitted by the CI loop** (`issueci._merge`), and only once
+  CI is green at the head, the keyword block is recorded written, and the
+  review's verdict is `MERGE`. It is ONE merge-only continuation
+  (`issueci.merge_workflow`) of the run's own task that pushed that head --
+  the newest fix round's, else the integrator -- so the merge step pins the
+  head that task pushed, and a head no task of the run pushed is not merged.
+  Red CI on an `auto_merge` run is a fix round, never a failure. A merge the
+  step refuses, or a verdict that is not `MERGE`, ends the run `FAILED` with
+  the reason and the pull request left open for a person; it is not
+  resubmitted for that head. The merge step itself is
+  [merge-step.md](merge-step.md).
 
-When merges exist they must merge **`green_sha`** and nothing else -- the sha
-the review and CI proved -- refusing if the head has moved since.
+**A run without auto-merge never merges**: it compiles to `integrate` steps and
+`direct-pr` fix rounds, all `claude-code`, none `single-pr` or `merge`, and the
+CI loop submits no merge for it. A pull request a person merges by hand is read
+as `DONE`, with `green_sha` set only if CI was green at its head.
 
 ---
 
@@ -334,7 +350,9 @@ the review and CI proved -- refusing if the head has moved since.
 
 Named here so none of it is read as delivered:
 
-* **Auto-merge** -- refused until #342 and #295/#352 land, above. Not a defect.
+* **Auto-merge, live** -- built (above) and proven offline only: nothing here
+  has run it against a deployed environment, a real repository and real CI.
+  See acceptance item 4.
 * **More than one review round inside the workflow** -- the cap is accepted
   1-5 but one review/fix round is compiled; a second needs a gated
   non-integrator step under `integrate`, which is not built
@@ -422,13 +440,21 @@ integrator branch.
 | claim | test |
 |---|---|
 | off is the default | `test_issue_runs.py::test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds` |
-| on is refused today, naming #295, and creates nothing; the compiler refuses it too | `test_issue_runs.py::test_auto_merge_is_refused_until_the_merge_chain_is_enabled`, `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does`, `test_issue_runs.py::test_auto_merge_compilation_refuses_naming_295` |
-| a run without it ends `DONE` at a green pull request and never merges: no `merge` profile, no `single-pr`, no merge call to GitHub | `test_issue_run_ci.py::test_a_run_without_auto_merge_stops_at_a_green_pull_request_and_never_merges` |
-| the switch is visible and disabled in the console; the CLI prints the refusal | `apps/swarm-ui/src/__tests__/intake.issue.test.tsx`: "plan approval defaults to Required; auto-merge is off and disabled, requiring #295; fix rounds 3 in 1-5"; `tests/unit/mcp/test_issue_runs.py::test_auto_merge_is_passed_through_and_its_refusal_printed_plainly` |
+| on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default` |
+| the console's availability and the API's refusal are one rule: unavailable, naming #295 and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
+| the compiled workflow and every fix round carry no merge, whatever the run or the default says | `test_issue_runs.py::test_the_compiled_workflow_always_says_merge_off`, `test_issue_runs.py::test_an_auto_merge_run_submits_its_workflow_with_no_merge_step`, `test_issue_run_auto_merge.py::test_the_compiled_workflow_and_a_fix_round_never_carry_a_merge` |
+| green with the keyword block written submits ONE merge continuing the task that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |
+| red CI on an `auto_merge` run is a fix round, and the merge then continues the fix round's task | `test_issue_run_auto_merge.py::test_red_ci_on_an_auto_merge_run_is_a_fix_round_then_the_merge_continues_it` |
+| no merge on a verdict that is not `MERGE`, or at a head no task of the run pushed; a refused merge fails the run with the step's reason and is not resubmitted | `test_issue_run_auto_merge.py::test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none`, `test_issue_run_auto_merge.py::test_a_head_no_task_of_the_run_pushed_is_not_merged`, `test_issue_run_auto_merge.py::test_a_refused_merge_fails_the_run_with_the_steps_reason_and_is_not_resubmitted` |
+| a run without it ends `DONE` at a green pull request and never merges: no `merge` profile, no `single-pr`, no merge call to GitHub | `test_issue_run_ci.py::test_a_run_without_auto_merge_stops_at_a_green_pull_request_and_never_merges`, `test_issue_runs.py::test_a_run_without_auto_merge_submits_no_merge_step_even_when_the_default_is_on` |
+| the console enables the switch only when the API reports it available, and shows the API's reason when it does not; the CLI prints a refusal plainly | `apps/swarm-ui/src/__tests__/intake.issue.test.tsx`: "auto-merge can be switched on only when the API reports it available, and is sent", "auto-merge stays disabled when the preview says it is unavailable, and shows the API's reason"; `tests/unit/mcp/test_issue_runs.py::test_auto_merge_is_passed_through_and_its_refusal_printed_plainly` |
 
-**Not proven, and not buildable yet:** "the PR merges at the reviewed sha". It
-waits on #342 and #295/#352; `green_sha` is recorded so that the merge, when it
-exists, has the sha to pin.
+**Built; not proven live:** "the PR merges at the reviewed sha".
+`issueruns._auto_merge_refusal` returns nothing while the `merge` profile is
+enabled, and `issueci._merge` submits the merge once CI is green at a head the
+run pushed, its keyword block is written and the review says `MERGE`. Every
+row above ran offline against the fakes; none has run against a deployed
+environment, a real repository's branch rules and a real merge.
 
 ### The constraint check
 

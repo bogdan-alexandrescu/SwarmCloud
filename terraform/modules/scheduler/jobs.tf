@@ -10,8 +10,10 @@ resource "google_cloud_scheduler_job" "safety_tick" {
   time_zone   = var.time_zone
   paused      = var.paused
 
-  # Shorter than the schedule interval: a tick that has not started within a
-  # minute is superseded by the next one rather than piling up.
+  # Has no effect here: Cloud Scheduler ignores attempt_deadline for a
+  # pubsub_target, and a publish returns in milliseconds. It equals the default
+  # one-minute interval rather than being shorter, and lowering it would change
+  # nothing. tests/terraform/scheduler.tftest.hcl pins the value.
   attempt_deadline = "60s"
 
   pubsub_target {
