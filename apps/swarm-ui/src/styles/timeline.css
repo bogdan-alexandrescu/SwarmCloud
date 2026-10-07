@@ -241,6 +241,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A workflow read the route refused offers its retry in the subtitle's own
+   type, so the line keeps one size (QA G3-07). */
+.tl-lab .c-link.tl-wf-retry { font: inherit; padding: 0; }
 .tl-lab a { color: var(--info); }
 .tl-name {
   min-width: 0;

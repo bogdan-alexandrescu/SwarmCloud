@@ -765,6 +765,33 @@ export function instantLabel(iso: string, tz: string): string {
   return fmt(iso, tz, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 }
 
+/** `Sep 12, 00:00 → now`: the range the server resolved and bucketed, in its zone. */
+export function ledgerRange(d: Pick<Outcomes, 'since' | 'until' | 'generated_at' | 'tz'>): string {
+  const toNow = Math.abs(Date.parse(d.until) - Date.parse(d.generated_at)) < 2_000
+  return `${instantLabel(d.since, d.tz)} → ${toNow ? 'now' : instantLabel(d.until, d.tz)}`
+}
+
+/** A named span's length, `24h` or `30d`, in ms; null for anything else. */
+export function spanLengthMs(span: string): number | null {
+  const m = /^(\d+)([hd])$/.exec(span)
+  return m === null ? null : Number(m[1]) * (m[2] === 'h' ? 3_600_000 : 86_400_000)
+}
+
+/**
+ * HOW A NAMED SPAN WAS ALIGNED (QA G3-08, 2026-10-07). The route starts a
+ * span on a bucket boundary, so Outcomes' `24h` is whole hours from 22:00
+ * while Lanes' `24h` is the last 24 hours to the minute -- one label, two
+ * spans, two sets of numbers on one page. Null for a from–to range and for a
+ * span the route did not move.
+ */
+export function alignedWords(d: Pick<Outcomes, 'requested' | 'since' | 'until' | 'generated_at' | 'tz' | 'bucket'>): string | null {
+  const span = d.requested.span
+  const ms = span === null ? null : spanLengthMs(span)
+  if (span === null || ms === null) return null
+  if (Math.abs(Date.parse(d.generated_at) - ms - Date.parse(d.since)) < 60_000) return null
+  return `${span} · ${d.bucket}-aligned from ${instantLabel(d.since, d.tz)}`
+}
+
 /**
  * Which columns of an hourly axis begin a day on the zone's calendar: the
  * first column, and every one whose date differs from the one before it.

@@ -33,11 +33,13 @@ import {
   SPANS,
   VERIFY_TENANT,
   cacheable,
+  alignedWords,
   dayDocWords,
   filtersSet,
   hourAllowed,
   instantLabel,
   interval,
+  ledgerRange,
   monthAllowed,
   nothingReadWords,
   outcomesQuery,
@@ -46,6 +48,7 @@ import {
   rangeRefusal,
   serializeView,
   spanCoverage,
+  spanLengthMs,
   unitWord,
   viewDays,
   viewerZone,
@@ -231,7 +234,9 @@ export function ActivityScreen({
   const [pending, setPending] = useState(true)
   const [latest, setLatest] = useState<{ key: string; result: Result<Outcomes> } | null>(null)
   /** The last payload that drew, kept (dimmed) while a filter change is being read. */
-  const [good, setGood] = useState<{ key: string; data: Outcomes } | null>(null)
+  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean } | null>(null)
+  /** How many buckets the last read of this query had built, so a continuation that builds nothing stops. */
+  const built = useRef<{ key: string; read: number } | null>(null)
   useEffect(() => {
     let live = true
     setPending(true)
@@ -242,7 +247,11 @@ export function ActivityScreen({
     ledger.then((r) => {
       if (!live) return
       setLatest({ key, result: r })
-      if (r.status === 'ok' || r.status === 'stale') setGood({ key, data: r.data })
+      if (r.status === 'ok' || r.status === 'stale') {
+        const before = built.current?.key === key ? built.current.read : null
+        built.current = { key, read: r.data.totals.buckets_read }
+        setGood({ key, data: r.data, continues: buildContinues(r.data, before) })
+      }
       setPending(false)
     })
     return () => {
@@ -404,6 +413,32 @@ export function ActivityScreen({
   usePoll(TIMELINE_POLL_MS, refresh, idle)
   useClaimPageAge(true)
 
+  // A PARTIAL BUILD CONTINUES BY ITSELF (QA G3-01, 2026-10-07). The route
+  // builds a span's days a budget at a time and caches only a whole one, so
+  // the next read carries on -- but the page waited for its 60 s poll or a
+  // click for that read, and a 30d span sat at "6 of 30 days" with the cards
+  // below it already reading the whole span. While a read is still building,
+  // the next one is asked `CONTINUE_BUILD_MS` after it lands; it stops when a
+  // read builds nothing more, and while the page is idle.
+  const continuing = !pending && !idle && good !== null && good.key === key && good.continues
+  useEffect(() => {
+    if (!continuing) return
+    const t = setTimeout(() => setNonce((n) => n + 1), CONTINUE_BUILD_MS)
+    return () => clearTimeout(t)
+  }, [continuing, good])
+
+  // WHAT THE CARDS COVERED, so a partial headline can say the cards below it
+  // read further (QA G3-01): each card reads its own part, often after the
+  // headline's read has built more of the span.
+  const [cardCover, setCardCover] = useState<{ key: string; whole: Readonly<Record<string, boolean>> }>({ key: '', whole: {} })
+  const onCardCover = useCallback((query: string, id: string, whole: boolean) => {
+    setCardCover((c) => {
+      const base = c.key === query ? c.whole : {}
+      return base[id] === whole && c.key === query ? c : { key: query, whole: { ...base, [id]: whole } }
+    })
+  }, [])
+  const cardsRead = cardCover.key === key ? Object.values(cardCover.whole) : []
+
   const settled = latest !== null && latest.key === key ? latest.result : null
   const failure: ApiError | null = !pending && settled?.status === 'error' ? settled.error : null
   const data = good?.data ?? null
@@ -446,12 +481,13 @@ export function ActivityScreen({
       </PageHead>
 
       {/* Outcomes is the Timeline's second page now (timeline.html pick A); Lanes is /timeline. */}
-      <TimelinePages at="outcomes" />
+      <TimelinePages at="outcomes" otherTitle={data === null ? undefined : (bothRangesWords(data) ?? undefined)} />
 
       <CountNote>
         {data === null ? null : (
           <>
             {rangeWords(data)}
+            {alignedWords(data) !== null && <span className="ol-aligned">{` · ${alignedWords(data)}`}</span>}
             {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
           </>
         )}
@@ -484,6 +520,8 @@ export function ActivityScreen({
               <LedgerFacts data={data} pending={pending} view={view} />
               <LedgerSection
                 data={data}
+                continuing={continuing}
+                cardsWhole={cardsRead.length === 0 ? null : { whole: cardsRead.filter(Boolean).length, of: cardsRead.length }}
                 view={view}
                 picked={picked}
                 onPick={setPicked}
@@ -496,16 +534,16 @@ export function ActivityScreen({
           {/* EVERY CARD READS ITS OWN PART, WHEN IT SCROLLS INTO VIEW (#377),
               whether or not the headline has landed: they are separate reads. */}
           <div className="ctl-cards ol-cards">
-            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
+            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
               {(d) => <FailureClassesCard data={d} picked={picked} />}
             </LedgerPart>
-            <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} lines={[60, 72, 66, 58, 50, 56, 64]}>
+            <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 72, 66, 58, 50, 56, 64]}>
               {(d) => <RetriesCard data={d} />}
             </LedgerPart>
-            <LedgerPart id="latency" title="Time to result, by profile" className="ol-latency" query={key} nonce={nonce} load={loadPart} lines={[90, 40, 76, 76, 40, 76, 76]}>
+            <LedgerPart id="latency" title="Time to result, by profile" className="ol-latency" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[90, 40, 76, 76, 40, 76, 76]}>
               {(d) => <LatencyCard data={d} />}
             </LedgerPart>
-            <LedgerPart id="reliability" title="Reliability" className="is-wide ol-reliability" wide query={key} nonce={nonce} load={loadPart} lines={[36, 92, 92, 92, 92]}>
+            <LedgerPart id="reliability" title="Reliability" className="is-wide ol-reliability" wide query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[36, 92, 92, 92, 92]}>
               {(d) => (
                 <ReliabilityCard
                   data={d}
@@ -517,10 +555,10 @@ export function ActivityScreen({
                 />
               )}
             </LedgerPart>
-            <LedgerPart id="workflows" title="Workflows that failed, and where" className="is-wide ol-workflows" wide query={key} nonce={nonce} load={loadPart} lines={[92, 92, 92, 92, 48]}>
+            <LedgerPart id="workflows" title="Workflows that failed, and where" className="is-wide ol-workflows" wide query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[92, 92, 92, 92, 48]}>
               {(d) => <WorkflowsFailedCard data={d} spanLabel={view.span ?? 'this range'} />}
             </LedgerPart>
-            <LedgerPart id="cost" title="Reported cost" className="ol-cost-card" query={key} nonce={nonce} load={loadPart} lines={[44, 70, 62, 62, 62, 54, 48]}>
+            <LedgerPart id="cost" title="Reported cost" className="ol-cost-card" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[44, 70, 62, 62, 62, 54, 48]}>
               {(d) => <CostCard data={d} picked={picked} />}
             </LedgerPart>
             {/* The observed box. A grid of one, so the card inside stretches
@@ -546,7 +584,7 @@ export function ActivityScreen({
                 <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
               )}
             </div>
-            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} lines={[60, 52, 44, 36, 30]}>
+            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 52, 44, 36, 30]}>
               {(d) => <CancelCausesCard data={d} picked={picked} />}
             </LedgerPart>
           </div>
@@ -641,6 +679,7 @@ function LedgerPart({
   query,
   nonce,
   load,
+  onCover,
   lines,
   children,
 }: {
@@ -654,6 +693,8 @@ function LedgerPart({
   query: string
   nonce: number
   load: PartLoader
+  /** Told, per answer, whether the card's read covered the whole span. */
+  onCover?: (query: string, id: string, whole: boolean) => void
   /** The skeleton's line widths, in the loaded card's shape. */
   lines: readonly number[]
   children: (data: Outcomes) => ReactNode
@@ -676,6 +717,7 @@ function LedgerPart({
       if (r.status === 'ok' || r.status === 'stale') {
         setGood({ ask, data: r.data })
         setFailed(null)
+        onCover?.(query, id, spanCoverage(r.data).complete)
       } else {
         setFailed({ ask, message: r.status === 'error' ? r.error.message : 'the read did not complete' })
       }
@@ -721,8 +763,46 @@ function LedgerPart({
 
 /** `Sep 12, 00:00 → now`, in the zone the server bucketed in. */
 function rangeWords(d: Outcomes): string {
-  const toNow = Math.abs(Date.parse(d.until) - Date.parse(d.generated_at)) < 2_000
-  return `${instantLabel(d.since, d.tz)} → ${toNow ? 'now' : instantLabel(d.until, d.tz)}`
+  return ledgerRange(d)
+}
+
+/**
+ * What Lanes reads for the same named span: the last `span` to the minute,
+ * ending at this read (QA G3-08). Null for a from–to range, which both pages
+ * read exactly.
+ */
+export function lanesRangeWords(d: Outcomes): string | null {
+  const ms = d.requested.span === null ? null : spanLengthMs(d.requested.span)
+  if (ms === null) return null
+  const until = Date.parse(d.generated_at)
+  return `${instantLabel(new Date(until - ms).toISOString(), d.tz)} → now`
+}
+
+/** Both pages' ranges for one named span, for the link between them (QA G3-08). */
+export function bothRangesWords(d: Outcomes): string | null {
+  const aligned = alignedWords(d)
+  const lanes = lanesRangeWords(d)
+  if (aligned === null || lanes === null) return null
+  return `Lanes reads the last ${d.requested.span} to the minute, ${lanes}; this page reads ${rangeWords(d)} (${aligned})`
+}
+
+/** How long after a partial read lands the next one is asked, to continue the build (QA G3-01). */
+export const CONTINUE_BUILD_MS = 5_000
+
+/**
+ * Whether the next read continues building this payload: it is partial
+ * because days were past the read's budget (or the span before it is), and
+ * the last read built something -- `derived_now`, or more buckets than the
+ * read before it of the same query (`readBefore`, null on the first). A read
+ * that built nothing will not build more on the next, so it is left to the poll.
+ */
+export function buildContinues(d: Outcomes, readBefore: number | null): boolean {
+  if (cacheable(d) || d.cached) return false
+  const unbuilt =
+    d.buckets.some((b) => b.state === 'unread' && b.unread_reason === 'derive_budget') ||
+    (d.previous !== null && !d.previous.complete)
+  if (!unbuilt) return false
+  return d.coverage.derived_now > 0 || readBefore === null || d.totals.buckets_read > readBefore
 }
 
 /** The span a delta compares with, in words. */
@@ -756,6 +836,8 @@ export function deltaWords(d: Outcomes): string | null {
  */
 function LedgerSection({
   data,
+  continuing,
+  cardsWhole,
   view,
   picked,
   onPick,
@@ -763,6 +845,10 @@ function LedgerSection({
   figureLink,
 }: {
   data: Outcomes
+  /** The next read is already scheduled to continue this partial build. */
+  continuing: boolean
+  /** How many of the cards read so far covered the whole span, or null before any did. */
+  cardsWhole: { whole: number; of: number } | null
   view: LedgerView
   picked: string | null
   onPick: (start: string | null) => void
@@ -831,6 +917,16 @@ function LedgerSection({
               say={`${t.buckets - t.buckets_read} of ${t.buckets} ${unitWord(data.bucket)} could not be read, so every total here covers ${t.buckets_read} of them and is a floor.`}
             />{' '}
             {t.buckets_read} of {t.buckets} {unitWord(data.bucket)}
+            {continuing && <span className="ol-q ol-building"> · still building, read again in {CONTINUE_BUILD_MS / 1000} s</span>}
+          </span>
+        )}
+        {/* THE CARDS AND THE HEADLINE CAN COVER DIFFERENT DAYS (QA G3-01): each
+            card reads its own part, often after the headline's read built
+            more, so a card can be whole while this figure is partial. */}
+        {!t.complete && !cov.none && cardsWhole !== null && cardsWhole.whole > 0 && (
+          <span className="ol-q ol-cover-split">
+            {cardsWhole.whole === cardsWhole.of ? 'cards' : `${cardsWhole.whole} of ${cardsWhole.of} cards`}: whole span · headline:{' '}
+            {t.buckets_read} of {t.buckets} {unitWord(data.bucket)} built
           </span>
         )}
         {delta !== null && <span className="ol-delta">{delta}</span>}
@@ -1169,8 +1265,15 @@ function LedgerToolbar({
   // and `from–to` on a wide screen; on a phone 24h and `from–to` move to the
   // sheet (`is-wide-only` here, `ol-span-more` there).
   const pickSpan = (k: Span | 'range') => (k === 'range' ? setRange(!range) : choose(k))
+  const aligned = data === null ? null : alignedWords(data)
   const spanOptions = (sheet: boolean) => [
-    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({ key: s as Span | 'range', label: s, ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}) })),
+    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({
+      key: s as Span | 'range',
+      label: s,
+      ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}),
+      // THE CHOSEN SPAN SAYS HOW IT WAS ALIGNED (QA G3-08): `24h` here is whole hours, not Lanes' last 24 hours.
+      ...(aligned !== null && data?.requested.span === s ? { title: aligned } : {}),
+    })),
     { key: 'range' as const, label: 'from–to', ...(sheet ? {} : { className: 'is-wide-only' }) },
   ]
   return (
