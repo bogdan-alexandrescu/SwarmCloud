@@ -231,7 +231,7 @@ def test_no_route_serves_or_accepts_a_token_value_except_the_named_one():
     assert "additive" in body
 
 
-def test_the_worker_credential_section_carries_a_draft_contract_request():
+def test_the_worker_credential_section_carries_the_accepted_contract_request():
     body = _part("### 3.3 ")
     flat = _flat(body)
     for needle in (
@@ -243,11 +243,17 @@ def test_the_worker_credential_section_carries_a_draft_contract_request():
         "CREDENTIAL_MISSING",
     ):
         assert needle in flat, needle
-    draft = _part("#### Draft contract request")
+    draft = _part("#### Contract request E")
     for part in ("What is true today", "The requested change", "What it would break if accepted",
                  "If it is declined", "Invariants"):
         assert part in draft, part
-    assert "not filed" in _flat(draft), "a draft, not an entry in contract-change-requests.md"
+    # Accepted by the owner 2026-10-07 and filed as request 52: the section
+    # must point at the record, and must not still call itself unfiled.
+    flat = _flat(draft)
+    assert "accepted" in flat.lower() and "request 52" in flat, "the record is request 52"
+    assert "**not filed**" not in draft and "(not filed)" not in draft
+    requests = (DESIGN.parent / "contract-change-requests.md").read_text()
+    assert "\n## 52. " in requests, "request 52 is in contract-change-requests.md"
 
 
 def test_the_terraform_list_goes_through_the_dev_iam_review_and_labels():

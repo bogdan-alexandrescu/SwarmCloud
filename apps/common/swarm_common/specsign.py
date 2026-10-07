@@ -31,33 +31,53 @@ from typing import Any, Mapping
 #: parent was rewritten fails its own worker's check. swarm-api signs at
 #: SPEC_FORMAT; a worker verifies every format in SPEC_FORMATS, each under its
 #: own projection, so a document signed at format 1 keeps verifying.
-SPEC_FORMAT = 2
+#:
+#: 3 is contract request 52 (request E of docs/onboarding.md §3.3), accepted by
+#: the owner 2026-10-07: format 2's fields plus `forge_credential` and
+#: `forge_access`, so a task whose forge secret or access mode was rewritten
+#: fails its worker's check.
+SPEC_FORMAT = 3
 
 #: Every format a verifier accepts, oldest first.
-SPEC_FORMATS = (1, 2)
+SPEC_FORMATS = (1, 2, 3)
 
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
 
+#: The fields format 3 adds to format 2's projection. Formats 1 and 2 do not
+#: cover them, so a document at either format that carries one is not
+#: canonical (see `canonical_step_spec`): adding a forge credential to a task
+#: signed without one must fail verification, not slip outside the bytes.
+_FORMAT_3_FIELDS = ("forge_credential", "forge_access")
+
 
 def signing_format(doc: Mapping[str, Any]) -> int:
-    """The format a signer signs `doc` at: 1 when it names no parent, else SPEC_FORMAT.
+    """The format a signer signs `doc` at: the oldest one that covers every field it sets.
 
-    Format 2's projection of a task whose parent fields are both None differs
-    from format 1's only by carrying two nulls, so signing such a task at
-    format 1 covers exactly as much -- and keeps it verifiable by a worker
-    built before format 2, which knows only format 1 and would refuse every
-    task (SPEC_SIGNATURE_INVALID) during a rollout that updated swarm-api
-    first. Only a child is signed at format 2; a child needs a worker that
-    has the child path anyway. A rewrite of a format-1 document that adds a
-    parent STILL VERIFIES: the parent fields are then outside the signed
-    bytes, so the signature vouches for no parent at all, and the readers
-    that act on one (the cascade, the await) are platform components that
-    do not consult the signature (deferred to #476).
+    1 when it names no parent and no forge credential, 2 when it names a parent
+    and no forge credential, else 3. Format 2's projection of a task whose
+    parent fields are both None differs from format 1's only by carrying two
+    nulls, so signing such a task at format 1 covers exactly as much -- and
+    keeps it verifiable by a worker built before format 2, which knows only
+    format 1 and would refuse every task (SPEC_SIGNATURE_INVALID) during a
+    rollout that updated swarm-api first. The same holds one format up: only a
+    task swarm-api resolved a forge credential or access mode for is signed at
+    format 3, and a task with neither keeps the bytes it had before format 3.
+
+    Only a child is signed at format 2; a child needs a worker that has the
+    child path anyway. A rewrite of a format-1 document that adds a parent
+    STILL VERIFIES: the parent fields are then outside the signed bytes, so
+    the signature vouches for no parent at all, and the readers that act on
+    one (the cascade, the await) are platform components that do not consult
+    the signature (deferred to #476). A rewrite that adds a forge field does
+    NOT: the worker acts on those itself, so `canonical_step_spec` refuses
+    them at a format that does not cover them.
     """
+    if any(doc.get(key) is not None for key in _FORMAT_3_FIELDS):
+        return 3
     if all(doc.get(key) is None for key in _FORMAT_2_FIELDS):
         return 1
-    return SPEC_FORMAT
+    return 2
 
 
 #: Domain separation. The bytes of a step spec cannot be read as another message.
@@ -85,6 +105,11 @@ def canonical_step_spec(
     picks the projection: the signer leaves it at SPEC_FORMAT, a verifier
     passes the document's own `spec_format` (which is inside the signed bytes,
     so a rewrite to another format fails).
+
+    A document that sets `forge_credential` or `forge_access` has no
+    canonical form at formats 1 and 2, which do not cover them: absent (or
+    None) they leave those formats' bytes exactly as they were, present they
+    are refused rather than left outside the signature.
     """
     if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
         raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
@@ -93,6 +118,10 @@ def canonical_step_spec(
         metadata = {}
     if not isinstance(metadata, Mapping):
         raise SpecNotCanonical("metadata is not a map")
+    if spec_format < 3:
+        for key in _FORMAT_3_FIELDS:
+            if doc.get(key) is not None:
+                raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
     spec = {
         "purpose": SPEC_PURPOSE,
         "format": spec_format,
@@ -115,6 +144,9 @@ def canonical_step_spec(
     }
     if spec_format >= 2:
         for key in _FORMAT_2_FIELDS:
+            spec[key] = doc.get(key)
+    if spec_format >= 3:
+        for key in _FORMAT_3_FIELDS:
             spec[key] = doc.get(key)
     return jcs(spec)
 
