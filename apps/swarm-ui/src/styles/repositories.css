@@ -190,6 +190,14 @@
 }
 .ur-term > span { color: var(--text-dim); }
 
+/* ---- Connect GitHub (#780, OB3): the card on Git tokens and the callback page -- */
+.ur-gh { display: flex; flex-direction: column; gap: 10px; }
+.ur-gh-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ur-gh-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ur-gh-orgs { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ur-gh-orgs ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ur-gh-page { max-width: 720px; }
+
 /* ---- screen 13, Permissions A: tokens × repositories ------------------------ */
 .ur-mx-wide { padding: 0; overflow-x: auto; }
 table.ur-mx { border-collapse: collapse; width: 100%; font-size: var(--t-micro); }
@@ -229,4 +237,6 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-mx-wide { display: none; }
   .ur-mx-cards { display: grid; gap: 12px; }
   .ur-pick, .ur-check { min-height: 44px; }
+  /* A thumb's reach at 390: Connect, Disconnect and Try again each take the row. */
+  .ur-gh-acts { flex-direction: column; align-items: stretch; }
 }
