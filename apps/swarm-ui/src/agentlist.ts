@@ -43,10 +43,60 @@ export const RECENT_STATE_OF: Readonly<Record<RecentState, TaskState>> = {
   succeeded: 'SUCCEEDED',
 }
 
-/** A list address: a tab, and a state only when the tab is Recent. */
+/**
+ * A list address: a tab, a state only when the tab is Recent, and the list's
+ * two toggles (G2-22, dev QA 2026-10-07).
+ *
+ * `grouped` is "Group by workflow" and `failedFirst` Recent's "Failed first".
+ * They were component state, so a filtered view could not be shared or
+ * reloaded. OPTIONAL AND ONLY EVER `true`: an address that names neither is
+ * the plain list, and every list built as `{ tab, state }` still is one. The
+ * query spelling is `group=wf` and `first=failed` (`agentListQuery`).
+ */
 export interface AgentList {
   tab: AgentTab
   state: RecentState | null
+  grouped?: true
+  failedFirst?: true
+}
+
+/** A list address with its toggles set, written without the ones that are off. */
+export function agentList(
+  tab: AgentTab,
+  state: RecentState | null,
+  flags: { grouped?: boolean; failedFirst?: boolean } = {},
+): AgentList {
+  return {
+    tab,
+    state: tab === 'recent' ? state : null,
+    ...(flags.grouped === true ? { grouped: true as const } : {}),
+    ...(flags.failedFirst === true ? { failedFirst: true as const } : {}),
+  }
+}
+
+/** The query keys a list address carries its toggles in, and their one value. */
+const GROUP_KEY = 'group'
+const GROUP_VALUE = 'wf'
+const FIRST_KEY = 'first'
+const FIRST_VALUE = 'failed'
+
+/**
+ * The toggles a list address names, as its query: `group=wf&first=failed`, or
+ * '' for neither. CARRIED ON EVERY TAB, not only the ones that draw the
+ * control: grouping is the reader's choice for the list, and dropping it on
+ * Live would lose it on the way back to Recent.
+ */
+export function agentListQuery(list: AgentList): string {
+  const q = new URLSearchParams()
+  if (list.grouped === true) q.set(GROUP_KEY, GROUP_VALUE)
+  if (list.failedFirst === true) q.set(FIRST_KEY, FIRST_VALUE)
+  return q.toString()
+}
+
+/** The toggles a query names. Any other value of either key is not the toggle. */
+export function listFlags(query: string): { grouped: boolean; failedFirst: boolean } {
+  const q = new URLSearchParams(query)
+  return { grouped: q.get(GROUP_KEY) === GROUP_VALUE, failedFirst: q.get(FIRST_KEY) === FIRST_VALUE }
 }
 
 function isTab(s: string | undefined): s is AgentTab {
@@ -66,11 +116,12 @@ function isRecentState(s: string | undefined): s is RecentState {
  * make a mistyped link look like a working one, which is worse than landing
  * on the plain list.
  */
-export function parseAgentList(rest: readonly string[]): AgentList | null {
+export function parseAgentList(rest: readonly string[], query = ''): AgentList | null {
   const [tab, state, ...more] = rest
   if (more.length > 0 || !isTab(tab)) return null
-  if (state === undefined) return { tab, state: null }
-  if (tab === 'recent' && isRecentState(state)) return { tab, state }
+  const flags = listFlags(query)
+  if (state === undefined) return agentList(tab, null, flags)
+  if (tab === 'recent' && isRecentState(state)) return agentList(tab, state, flags)
   return null
 }
 
@@ -92,7 +143,8 @@ export { PHONE_PAGE_LIMIT } from './pageLimits'
  * names no tab (the list before it has landed anywhere) goes back to Agents.
  */
 export function backLabel(listAddress: string): string {
-  const m = /running\/(live|waiting|recent)(?:\/|$)/.exec(listAddress)
+  // `?` ends the tab too: a list address carries its toggles as a query.
+  const m = /running\/(live|waiting|recent)(?:[/?]|$)/.exec(listAddress)
   const tab = m?.[1]
   return tab === undefined ? 'Agents' : tab.charAt(0).toUpperCase() + tab.slice(1)
 }

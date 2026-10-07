@@ -183,7 +183,7 @@ function GraphSurface({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
         />
       )}
       {view === 'tests' && <TestView r={r} node={selected} symbol={symbol} onSymbol={setSymbol} />}
-      <GraphFoot g={g} />
+      <GraphFoot r={r} g={g} />
     </>
   )
 }
@@ -362,12 +362,27 @@ function PhoneList({ gv, colour, selected, onPick }: { gv: GraphView; colour: Co
   )
 }
 
-function GraphFoot({ g }: { g: ModuleGraph }) {
+/**
+ * The index's module count beside the graph's, when they differ (QA G4-12):
+ * the index lists every module its indexer named, docs and config included,
+ * while a graph node is a directory holding at least one parsed code symbol
+ * (impact.py `module_graph`). Without the sentence, 83 and 64 on one page
+ * read as one of them being wrong.
+ */
+function moduleGap(r: RepoRecord, g: ModuleGraph): string | null {
+  const listed = r.index.coverage?.modules ?? null
+  const drawn = g.modules.reduce((n, m) => n + (m.modules ?? 1), 0)
+  if (listed === null || listed === drawn) return null
+  return `the index lists ${fmt(listed)} module${listed === 1 ? '' : 's'}; the graph draws the ${fmt(drawn)} director${drawn === 1 ? 'y that holds' : 'ies that hold'} parsed code symbols`
+}
+
+function GraphFoot({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
   const parts: string[] = []
   for (const key of ['files', 'symbols', 'edges'] as const) {
     const n = g.counts[key]
     if (n !== undefined) parts.push(`${fmt(n)} ${key}`)
   }
+  const gap = moduleGap(r, g)
   return (
     <p className="ur-sub rg-foot">
       Index <code className="ur-sha">{g.index_sha === null ? '—' : g.index_sha.slice(0, 7)}</code>
@@ -379,6 +394,7 @@ function GraphFoot({ g }: { g: ModuleGraph }) {
         </>
       )}
       {g.truncated.length > 0 && ` · over the size ceiling, so these were cut: ${g.truncated.join(', ')}`}
+      {gap !== null && ` · ${gap}`}
     </p>
   )
 }

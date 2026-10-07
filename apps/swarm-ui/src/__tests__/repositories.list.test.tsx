@@ -19,7 +19,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor, within } from '@testing-library/react'
-import { HOUR, ago, repo, serve, sha, visible } from './repofixture'
+import { HOUR, ago, coverageOf, repo, serve, sha, visible } from './repofixture'
 import { cascade } from './cssgate'
 import { SHEETS as ALL } from './sheets'
 
@@ -41,7 +41,7 @@ const THREE = [
   repo(),
   repo(
     { repo_id: 'repo_1111111111111111', repo: 'example-web' },
-    { current_sha: sha('9f8e7d6'), head_sha: sha('5c4b3a2'), behind_by: 3, coverage: 0.61, interval_hours: 12, last_indexed_at: ago(3 * HOUR), in_flight_task_id: 'task_abc' },
+    { current_sha: sha('9f8e7d6'), head_sha: sha('5c4b3a2'), behind_by: 3, coverage: coverageOf(40, 26, 310, 2), interval_hours: 12, last_indexed_at: ago(3 * HOUR), in_flight_task_id: 'task_abc' },
   ),
   repo(
     { repo_id: 'repo_2222222222222222', repo: 'example-infra', default_branch: 'develop', last_run: { task_id: 'task_x', state: 'FAILED', end_cause: 'timed_out', kind: 'full' } },
@@ -77,13 +77,13 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     expect(api!.querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('current')
     expect(visible(api!)).toContain('Default branch main')
     expect(visible(api!)).toContain('head a1b2c3d')
-    expect(visible(api!.querySelector('.ur-tm'))).toContain('86%')
+    expect(visible(api!.querySelector('.ur-tm'))).toContain('20 of 83 modules')
     expect(visible(api!)).toContain('Last indexed 18m ago')
     expect(visible(api!)).toContain('Schedule 24 h + on change')
 
     expect(web!.querySelector('.c-pill')?.getAttribute('data-fresh')).toBe('behind')
     expect(visible(web!.querySelector('.c-pill'))).toBe('3 behind')
-    expect(visible(web!.querySelector('.ur-tm'))).toContain('61%')
+    expect(visible(web!.querySelector('.ur-tm'))).toContain('26 of 40 modules')
   })
 
   it('says what it does not know as a dash with its reason, never 0 or current', async () => {
