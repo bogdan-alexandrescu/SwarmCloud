@@ -380,8 +380,10 @@ function AttemptCard({
               <b>exit</b>
               {a.exit_code === null ? <Em /> : num(a.exit_code)}
             </li>
+            {/* `peak rss` (G2-11): the figure is the sampled high-water mark,
+                written at exit -- `rss` alone read as the value at exit. */}
             <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
-              <b>rss</b>
+              <b>peak rss</b>
               {a.peak_rss_bytes === null ? (
                 <>
                   <Em />{' '}
