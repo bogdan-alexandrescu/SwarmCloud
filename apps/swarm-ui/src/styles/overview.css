@@ -159,8 +159,14 @@
 .ov-prun { display: none; list-style: none; margin: 0; padding: 0; }
 .ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
 .ov-prun .sk-st-w { display: none; }
+.ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
 .ov-prun-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); text-decoration: none; }
-.ov-prun em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
+   the phone dropped all three, and two "implement" rows read alike. */
+.ov-prun-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* THE DESKTOP'S NUMERALS, NOT THE MONOSPACE FACE (QA G1-08): the Runtime
+   column is the sans face with tabular figures, and so is this. */
+.ov-prun em { font-style: normal; font-size: var(--t-micro); line-height: var(--lh-micro); font-variant-numeric: tabular-nums; color: var(--text-dim); }
 
 /* ---- Recent token cost (the Cost so far card until QA G1-03) ------------- */
 .ov-big { display: flex; align-items: baseline; gap: 8px; font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
@@ -194,6 +200,10 @@
 .ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .ov-hp b.is-zero { color: var(--s-warn); }
 .ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A DISABLED TILE'S REASON WRAPS TO TWO LINES (QA G1-13, 2026-10-07): cut to
+   one, "the merge chain (#295) is disab…" could not be read without opening
+   Pools. Past two lines it is cut, whole in the line's title. */
+.ov-hp.is-off small { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ov-pls { display: flex; flex-direction: column; gap: 5px; }
 /* THE POOLS CARD SPANS THE PAGE (browser QA N17): its rows are laid across
@@ -208,6 +218,7 @@
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
+.ov-acc-proj { color: var(--text-dim); }
 .ov-acc .ov-link { margin-left: auto; color: var(--sk-ac); text-decoration: none; }
 
 /* ---- absences ------------------------------------------------------------ */
