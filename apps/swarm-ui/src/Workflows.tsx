@@ -365,8 +365,9 @@ export function WorkflowsScreen({
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
           pollMs={workflowPoll}
-          // THE META LINE UNDER THE TITLE (workflows.html B). Without it the
-          // shell's line opened on a stray "·" before the read's age.
+          // THE PAGE'S CENSUS, AS THE NOTE OVER THE FIRST CARD (workflows.html
+          // B; #138, owner ruling 2026-10-07: no line under the title). The
+          // screen's age is the head's refresh control's, not this note's.
           summary={(d) => pageSummary(d, id)}
           // THE PAGE'S OWN SKELETON (#113): its head row with the actions
           // disabled, its view tabs and a body card, so the board lands under
@@ -415,7 +416,7 @@ function useRecentName(id: string | null): string | null {
   return name
 }
 
-/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's meta line. */
+/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's count note (#138). */
 function pageSummary(d: WorkflowBoard, id: string): string {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
@@ -442,7 +443,7 @@ export function startedPhrase(started: { text: string; kind: 'never' | 'unread' 
   return `started ${started.text}`
 }
 
-/** `2 running · 31 finished · 1 failed`, the list's sub-line. */
+/** `2 running · 31 finished · 1 failed`, the list's count note over its first card (#138). */
 function listSummary(workflows: readonly Workflow[]): string {
   const c = bucketCounts(workflows)
   return `${c.running} running · ${c.finished} finished · ${c.failed} failed`
@@ -1184,9 +1185,9 @@ export function WorkflowCard({
       <div className="wf-body">
         {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
             instant and age in each hover. */}
-        {/* ON A WORKFLOW'S PAGE THE META LINE UNDER THE TITLE SAYS BOTH: the
-            census and when it started (`pageSummary`), so the body card does
-            not say them a second time. */}
+        {/* ON A WORKFLOW'S PAGE THE COUNT NOTE OVER THE FIRST CARD SAYS BOTH
+            (#138): the census and when it started (`pageSummary`), so the
+            body card does not say them a second time. */}
         {!page && (
           <ul className="ctl-facts wf-times">
             <li className="ctl-fact" title={started.title}>
@@ -4979,7 +4980,8 @@ function WorkflowHead({
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
-  // and its meta line are the shell's head above (`pageSummary`); this row
+  // is the shell's head above, and its meta line the count note over this
+  // row (`pageSummary`, #138); this row
   // carries what is not a sentence -- the state, the pull request, the failure
   // policy, the cost, the id when the title is the name -- and Copy link and
   // Cancel workflow, centred on the row so nothing leaves blank space under them.

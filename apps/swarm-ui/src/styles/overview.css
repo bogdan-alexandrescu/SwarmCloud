@@ -28,8 +28,15 @@
 /* ---- Needs a look: a row of check cards ----------------------------------- */
 .ov-lead { display: flex; flex-direction: column; gap: 8px; }
 .ov-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.ov-lh h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
-.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* OV-15, ONE RANK DOWN (#138, owner ruling 2026-10-07): the lead title sat at
+   `--t-lead`, the card titles' step, two pixels under the page's h1 -- read
+   at a glance as a second page title. It steps down to `--t-body`/600: under
+   the h1 by two steps, and told from the card titles by its position, its
+   track and its unboxed region, as the heading ladder ranks hierarchy. */
+.ov-lh h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+/* Sans (Q1): `checks 8/8 · 1 found something` is words around a figure, and
+   mono is for ids, values, code and timestamps. Tabular, so the figure holds. */
+.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
    column made 345px cards that cut the title ("25 failed tasks among the 200
    mo…") and both detail lines. Two across on a desktop, one on a phone.
@@ -222,13 +229,12 @@
    it. */
 @media (max-width: 759px) {
   .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .ov-page > .c-phead .c-age { margin-left: 0; }
-  /* THE `?` AND THE TENANT CHIP SHARE THE LINE (U10a D39, owner QA at 390px,
+  /* THE `?` AND THE REFRESH SHARE THE LINE (U10a D39, owner QA at 390px,
      2026-10-04): with the h1 stepped aside the head held only the `?`, and
-     the row wrapped it onto a line of its own above the chip. The row does
-     not wrap; the provenance wraps inside its own half when it must. */
+     the row wrapped it onto a line of its own. The row does not wrap; the
+     actions wrap inside their own half when they must. */
   .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; }
-  .ov-page > .c-phead > .sub { flex: 1 1 0; min-width: 0; }
+  .ov-page > .c-phead > .c-acts { flex: 1 1 0; min-width: 0; }
 }
 @media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }

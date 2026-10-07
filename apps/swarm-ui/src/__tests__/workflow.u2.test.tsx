@@ -392,7 +392,10 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     await page()
     await waitFor(() => expect(document.querySelector('h1')!.textContent).toBe('refactor-broker'))
     expect(document.querySelector('.wfp-label'), 'the name is drawn twice').toBeNull()
-    const sub = document.querySelector('.sub')!.textContent ?? ''
+    // The meta line is the Screen's count note now (#138: no sub-line under the title).
+    expect(document.querySelector('.sub'), 'a sub-line is back under the title').toBeNull()
+    const note = document.querySelector<HTMLElement>('.c-count-note')!
+    const sub = note.textContent ?? ''
     expect(sub.trim().startsWith('·'), `the meta line opens on a dot: "${sub}"`).toBe(false)
     expect(sub).toContain('4 steps · 1 → 2 → 1')
     // The id is still on the page, whole, as the head's chip.

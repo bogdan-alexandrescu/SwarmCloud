@@ -71,7 +71,7 @@ const api = vi.hoisted(() => ({
 // for (#168), and a factory mock throws on any export it does not declare.
 vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
-const { OverviewScreen } = await import('../Overview')
+const { OverviewScreen, OVERVIEW_POLL_MS } = await import('../Overview')
 const { AccountsScreen } = await import('../Accounts')
 const { RuntimesScreen } = await import('../Runtimes')
 
@@ -517,29 +517,42 @@ describe('Overview, with every help card closed', () => {
     expect(failed.getAttribute('aria-label')).toContain('unexplained')
   })
 
-  // RE-POINTED. `.sub` -- the subtitle line under the page title -- is gone
-  // from this screen entirely; the owner's directive was that a data view
-  // carries no subtitle. The cadence moved into the page head's facts strip,
-  // where it is a two-character mono value beside a three-letter key.
+  // RE-POINTED AGAIN (#138, #117, owner rulings 2026-10-07). `.sub` -- the
+  // subtitle line under the page title -- is gone from every screen, and so is
+  // the facts strip that replaced it on this one. The head is title left,
+  // actions right; the cadence is on the head's quiet refresh control, beside
+  // the age it promises to move: `⟳ every 20 s · read 4 s ago`.
   //
   // WHAT IS PINNED IS THE SAME PROPERTY: the figure is INTERPOLATED FROM THE
-  // TIMER CONSTANT and not typed out. That is what stopped the words "every 20
-  // seconds" sitting three hundred lines from `POLL_MS` and drifting from it.
-  // Both spellings are checked -- the visible `20s` and the accessible name
-  // that says it in full -- because a constant rendered in one place and a
-  // sentence hard-coded in the other is exactly the shape being prevented.
+  // TIMER CONSTANT (`OVERVIEW_POLL_MS`) and not typed out. That is what
+  // stopped the words "every 20 seconds" sitting three hundred lines from the
+  // constant and drifting from it. Both spellings are checked -- the visible
+  // `every 20 s` and the accessible name that says it in full -- because a
+  // constant rendered in one place and a sentence hard-coded in the other is
+  // exactly the shape being prevented.
+  //
+  // MUTATION: type `every 20 s` into Overview's head, or pass the control a
+  // cadence that is not `OVERVIEW_POLL_MS`. Change the constant and this
+  // fails. MUTATION: put a line under the title back (a `.sub`, or anything
+  // in `.c-phead` other than its `.head` and `.c-acts`).
   it('states the cadence from the timer constant rather than in words', async () => {
     renderOverview()
     await accountLine()
-    // The canonical page head (#503 Q2) draws its meta and freshness in a
-    // `.sub` ON THE TITLE'S ROW (`.c-phead`, one flex row): that is the facts
-    // strip, not a subtitle line under the title. Any other `.sub` is one.
-    expect(document.querySelector('.sub:not(.c-phead > .sub)'), 'the screen grew a subtitle again').toBeNull()
-    expect(document.querySelector('.c-phead > .sub'), 'the facts strip left the page head').not.toBeNull()
+    expect(document.querySelector('.sub'), 'the screen grew a subtitle again').toBeNull()
+    const head = document.querySelector('.ov-page > .c-phead')
+    expect(head, 'Overview drew no page head').not.toBeNull()
+    expect([...head!.children].map((c) => c.className), 'something besides the title and its actions is in the head').toEqual([
+      'head',
+      'c-acts',
+    ])
 
-    const poll = screen.getByLabelText(/re-read every 20 seconds/i)
-    expect(textOf(poll)).toContain('20s')
-    // ...and the sentence is not on the surface. `textOf` would read the
+    const every = `every ${OVERVIEW_POLL_MS / 1000} s`
+    const poll = head!.querySelector('.c-acts > .c-refresh')
+    expect(poll, 'the cadence left the head’s refresh control').not.toBeNull()
+    expect(textOf(poll)).toContain(every)
+    expect(poll!.getAttribute('aria-label')).toContain(`re-reads ${every}`)
+    // ...and no sentence about re-reading is on the surface: the control says
+    // it in its few words, its name says it in full. `textOf` would read the
     // HelpCard's visually-hidden copy straight back out, which is exactly the
     // trap `visibleText` exists for, so the claim is made against that.
     expect(visibleText()).not.toContain('re-read every')
@@ -555,8 +568,9 @@ describe('Overview, with every help card closed', () => {
     await accountLine()
     expectAllCardsClosed()
 
-    const tally = document.querySelector('.ov-tally')
-    expect(tally, 'the page head carries no read tally').not.toBeNull()
+    // The tally is in the count note over the first card since #138, not the head.
+    const tally = document.querySelector('.c-count-note .ov-tally')
+    expect(tally, 'the count note carries no read tally').not.toBeNull()
     // WAITS FOR THE EIGHTH READ. The spend rollup is a fan-out keyed off the
     // task page, so it lands AFTER the accounts row this test woke on -- and
     // a tally read at that instant says 7/8 with the "still asking" ring,

@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useSyncExternalStore } from 'react'
 
 /**
  * ONE CLOCK PER CADENCE, SHARED BY EVERY COMPONENT THAT READS IT.
@@ -15,7 +15,7 @@ import { useCallback, useSyncExternalStore } from 'react'
  *
  * SHARED, NOT MERELY REUSED. Every caller asking for the same cadence reads
  * the same instant from one interval, so the head, the dock and a screen's
- * sub-line all move on the same tick and cannot contradict each other. A
+ * refresh control all move on the same tick and cannot contradict each other. A
  * hundred rows on a 1s clock are one interval, not a hundred.
  *
  * WHAT IT IS NOT. It re-renders; it does not re-read. A ticking age over data
@@ -75,18 +75,37 @@ function subscribe(intervalMs: number, onTick: () => void): () => void {
 }
 
 /**
- * The tick every AGE in the frame moves on: every screen's sub-line, the
+ * The tick every AGE in the frame moves on: every screen's refresh control, the
  * head's `newest read`, the dock and the API reads page.
  *
  * ONE CONSTANT, NAMED BY EVERY CALLER. Clocks are shared per cadence, so two
  * callers share an instant only while they pass the same number. Shell.tsx
  * held `AGE_TICK_MS = 5_000` while the head, the API reads page and the dock
- * each passed their own `5000`: change the constant alone and the sub-line and
+ * each passed their own `5000`: change the constant alone and a screen's age and
  * the head would move onto different clocks without a line of either
  * changing, which is CH-1 back. So the number lives here, beside the clock it
  * selects, and the age callers import it.
  */
 export const AGE_TICK_MS = 5_000
+
+/**
+ * THE INSTANT A SCREEN'S HEAD TOOK ITS AGE AT, FOR THE FEET UNDER IT (#98).
+ *
+ * A card foot that says `from 6 min ago` and the head's refresh control that
+ * says `⟳ 6 min` are two statements of one fact. When each foot took
+ * `Date.now()` at its own render they could disagree by up to a tick, and a
+ * foot moved only when its parent happened to re-render. A screen that owns
+ * an age clock provides it here; a foot reads it with `usePageClock`, so the
+ * head and every foot move on the same tick and say the same instant.
+ *
+ * Outside a provider (a card rendered on its own in a test) it falls back to
+ * the moment of render, which is what the foot did before.
+ */
+export const PageClock = createContext<number | null>(null)
+
+export function usePageClock(): number {
+  return useContext(PageClock) ?? Date.now()
+}
 
 /**
  * The current instant, re-rendering the caller every `intervalMs`.
@@ -116,7 +135,9 @@ export function useNow(intervalMs: number = AGE_TICK_MS): number {
  * yet known) keeps the clock.
  *
  * HERE, BESIDE THE CLOCK IT CAPS, because two screens use it: the Agents
- * list's rows and the inspector's drawer. It was defined in Agents.tsx, and
+ * list's silent-worker line and the inspector's drawer. (The list's elapsed
+ * and waiting ages no longer read it: G2-04, dev QA 2026-10-07, found them
+ * minutes behind the drawer's on an aged read; see `AgentsBody`.) It was defined in Agents.tsx, and
  * the drawer importing it from there would have made the two modules import
  * each other.
  */

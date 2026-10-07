@@ -85,9 +85,13 @@ describe('API reads orders routes by what went wrong (#140)', () => {
   it('says it is this tab only once', async () => {
     registry()
     await referenceRows()
-    // The canonical page head (visual QA Q2): the caveat is its meta chip.
-    const head = document.querySelector('main .c-phead, .c-phead')!
-    expect(within(head as HTMLElement).getByText(/this tab only/)).toBeTruthy()
+    // The caveat is the note over the page's first card (#138: the head is
+    // title left, actions right, no chip), said exactly once on the page.
+    // MUTATION: put it back in the head, or say it a second time anywhere.
+    const note = document.querySelector('.c-phead + .c-count-note')
+    expect(note?.textContent).toBe('this tab only · not the API surface')
+    expect((document.body.textContent ?? '').match(/this tab only/g) ?? []).toHaveLength(1)
+    expect(within(document.querySelector('.c-phead') as HTMLElement).queryByText(/this tab only/)).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Routes called in this tab' })).toBeNull()
     expect(document.body.textContent ?? '').not.toMatch(/since this tab loaded/)
     expect(document.querySelector('.ctl-table caption')).toBeNull()

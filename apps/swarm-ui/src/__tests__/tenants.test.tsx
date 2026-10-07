@@ -326,10 +326,12 @@ describe('Tenants says there is no budget in the reader’s words (AH-21)', () =
 describe('Tenants counts what a reader scans the roster for (#134)', () => {
   it('says N tenants · N with no tenant key · N disabled', async () => {
     const c = await roster()
-    const summary = visible(c.querySelector('p.sub'))
+    // The count is the note over the first card since #138 (owner ruling
+    // 2026-10-07), not the line under the title, and it carries no age: the
+    // read's age is on the head's refresh control. So it is exactly the count.
+    const summary = visible(c.querySelector('p.c-count-note'))
     // ROSTER: three tenants, two with no credential registered, one disabled.
-    // The head appends the read's age after its own ` · `.
-    expect(summary.startsWith('3 tenants · 2 with no tenant key · 1 disabled ·'), summary).toBe(true)
+    expect(summary).toBe('3 tenants · 2 with no tenant key · 1 disabled')
   })
 
   it('never says a tenant cannot run: a lent account can still run it', async () => {

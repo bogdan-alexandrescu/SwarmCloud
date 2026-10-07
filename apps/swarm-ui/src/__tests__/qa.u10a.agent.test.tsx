@@ -3,6 +3,7 @@
  *
  *   D6   beside an open agent the page title wrapped `Agent / s`.
  *   D28  at the 64px strip the page head's fragments stayed, `?` over meta.
+ *        (#138 since: the head is title left, actions right, no meta in it.)
  *   D36  Children did not change the URL, and its empty state said
  *        `waiting on 0 · 0 of — not measured` beside `no children`.
  *   D21  the Checkpoints tab said `–` beside `found 1 of 1`; Size and Age
@@ -115,10 +116,12 @@ afterEach(() => {
 })
 
 describe('D6: beside an open agent the page title keeps its word', () => {
-  it('does not shrink the title; the meta and then the freshness give way', () => {
+  it('does not shrink the title; the head\'s actions and then the refresh\'s words give way', () => {
+    // #138: the head is title left, actions right; no sub-line, no meta chip.
+    // The actions hold the one refresh control, carrying its ticking age.
     const host = tree(
       '<div class="app has-inspector"><main class="work"><div class="c-phead"><div class="head"><h1>Agents</h1></div>' +
-        '<p class="sub"><span class="c-meta">2 read</span><span class="c-age"><span class="c-age-say">read just now</span><button>refresh</button></span></p></div></main></div>',
+        '<div class="c-acts"><button type="button" class="c-refresh" title="every 30 s · read just now">⟳ every 30 s · read just now</button></div></div></main></div>',
     )
     const head = host.querySelector('.c-phead > .head')!
     const h1 = host.querySelector('h1')!
@@ -126,12 +129,16 @@ describe('D6: beside an open agent the page title keeps its word', () => {
     expect(painted(h1, 'white-space', WIDE)).toBe('nowrap')
     expect(painted(h1, 'overflow-wrap', WIDE), 'the title may break mid-word').toBe('normal')
     expect(painted(h1, 'text-overflow', WIDE)).toBe('ellipsis')
-    const sub = host.querySelector('.sub')!
-    expect(painted(sub, 'min-width', WIDE)).toBe('0')
-    expect(painted(sub, 'overflow', WIDE)).toBe('hidden')
-    expect(painted(host.querySelector('.c-meta')!, 'text-overflow', WIDE)).toBe('ellipsis')
-    // U11a N10: the freshness words give way, not the refresh control after them.
-    expect(painted(host.querySelector('.c-age-say')!, 'text-overflow', WIDE)).toBe('ellipsis')
+    const acts = host.querySelector('.c-phead > .c-acts')!
+    expect(painted(acts, 'min-width', WIDE)).toBe('0')
+    expect(painted(acts, 'overflow', WIDE)).toBe('hidden')
+    // U11a N10 / #138: the refresh's words give way, with an ellipsis.
+    const refresh = host.querySelector('.c-refresh')!
+    // `flex: <grow> <shrink> <basis>`: a shrink of 0 (or `none`) keeps the
+    // refresh whole and pushes the cut onto the title's row instead.
+    expect(painted(refresh, ['flex', 'flex-shrink'], WIDE), 'the refresh never shrinks').toMatch(/^\d+ [1-9]\d* /)
+    expect(painted(refresh, 'min-width', WIDE)).toBe('0')
+    expect(painted(refresh, 'text-overflow', WIDE)).toBe('ellipsis')
   })
 })
 

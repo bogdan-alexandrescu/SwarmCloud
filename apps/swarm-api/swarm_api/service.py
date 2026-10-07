@@ -66,10 +66,8 @@ from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
-    MERGE_LABEL_DROPPED_KEY,
     MERGE_METADATA_KEY,
     MERGE_STEP_MAX_ATTEMPTS,
-    READY_LABEL,
     SINGLE_PR,
     DispatchOptionError,
     DispatchOptions,
@@ -82,8 +80,6 @@ from .validation import (
     merge_repository,
     merge_step_for,
     plan_merge,
-    ready_label_dropped,
-    refuse_merge_label_record,
     refuse_unmergeable_forge,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
@@ -527,9 +523,7 @@ class SubmissionService:
                 reject_reserved_metadata(step.metadata)
                 step_metadata = {**spec.metadata, **step.metadata}
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
-                # step's task will store them, and the drop record only this
-                # service writes.
-                refuse_merge_label_record(step_metadata)
+                # step's task will store them.
                 resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
@@ -567,9 +561,6 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
-        # Beside a merge step, a `ready` label is dropped (`workflow_label`)
-        # so `auto-merge.yml` never races the step; recorded on every task.
-        label_dropped = ready_label_dropped(spec.metadata, merge_step=merge_plan is not None)
         # Every step's commits name the workflow's submitter (P37). A
         # continuation a service account submitted names the person behind
         # the task it continues instead, else the bot (`gitidentity`).
@@ -599,7 +590,7 @@ class SubmissionService:
                 allow_empty_diff=source.allow_empty_diff,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
-                pr_label=workflow_label(spec.metadata, merge_step=merge_plan is not None),
+                pr_label=workflow_label(spec.metadata),
                 # Kept on a gated step only too: the step that reads the
                 # verdict files its minors on the tenant's epic.
                 findings_epic=findings_epic,
@@ -615,10 +606,7 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={
-                        **spec.metadata, **source.metadata, "workflow_step": step_id,
-                        **({MERGE_LABEL_DROPPED_KEY: READY_LABEL} if label_dropped else {}),
-                    },
+                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an

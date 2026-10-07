@@ -266,8 +266,10 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Permissions')
     expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › Git tokens › Permissions')
-    expect(visible(document.querySelector('.c-phead'))).toContain('2 tokens × 2 repositories')
-    expect(visible(document.querySelector('.c-phead'))).toContain('order R2')
+    // #138: the order chip is an action in the head; the tokens × repositories count is the note over the grid.
+    expect(visible(document.querySelector('.c-count-note'))).toContain('2 tokens × 2 repositories')
+    expect(visible(document.querySelector('.c-phead .c-acts'))).toContain('order R2')
+    expect(visible(document.querySelector('.c-phead'))).not.toContain('tokens ×')
     const heads = Array.from(document.querySelectorAll('table.ur-mx thead th')).map((t) => visible(t))
     expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Last verified'])
     expect(Array.from(document.querySelectorAll('tr.ur-grp')).map((g) => visible(g))).toEqual(['example-org/example-api', 'example-org/example-web'])

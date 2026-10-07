@@ -324,7 +324,14 @@
    button or the chips. */
 .ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.ag-head-facts > li + li:not(.is-nodot)::before { content: "·"; margin-inline-end: 3px; color: var(--text-dim); }
+/* THE SEPARATOR ENDS A FACT, IT DOES NOT START ONE (G2-20, QA 2026-10-07):
+   as each fact's `::before`, a fact that wrapped on a phone took its dot to
+   the head of the next line (`· workflow wf_…`). AgentSplit `AgHeadMeta`
+   marks every fact but the last with `data-sep`. */
+.ag-head-facts > li[data-sep]::after { content: "·"; margin-inline-start: 3px; color: var(--text-dim); }
+/* The dispatch chips wrap as chips, and the `?` stays with the last one. */
+.ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
+.ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ag-head-facts > li.is-absent { color: var(--text-faint); }
 .ag-head-facts b { color: var(--text); font-weight: 550; }
 .ag-head-facts .ctl-link { font-weight: 550; }
@@ -563,14 +570,19 @@
   align-items: flex-start;
   gap: var(--ctl-s2);
   width: max-content;
-  max-width: min(420px, 80vw);
+  /* NEVER PAST THE WINDOW (G2-16, QA 2026-10-07): an attempt id ran to
+     x 1410, past the popover's edge, and the attempt select was cut. */
+  max-width: min(420px, calc(100vw - 32px));
   padding: var(--ctl-s2) var(--ctl-s3);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--ctl-shadow-pop);
 }
-.ag-logs-menu > .ag-logs-facts { margin: 0; }
+.ag-logs-menu > .ag-logs-facts { margin: 0; min-width: 0; max-width: 100%; }
+.ag-logs-menu .ctl-fact { overflow-wrap: anywhere; }
+.ag-logs-menu .ag-logs-attempt { max-width: 100%; }
+.ag-logs-menu .ag-logs-attempt select { min-width: 0; max-width: 100%; }
 .ag-logs-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -764,6 +776,16 @@
      scrolled sideways and was cut at `Chi`, and the fade that said so was
      missed. On a phone every tab is on screen, on as many lines as it takes. */
   .c-tabs.ag-split-tabs { flex-wrap: wrap; overflow-x: visible; }
+  /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
+     the header -- state, title, id, facts, chips -- and the two rows of
+     tabs held y 0-373 and never moved, so with the stat strip stuck under
+     them only about 150px of the screen scrolled. Here the COLUMN is the one
+     scroller, so the header goes up with the content and only the tabs stay
+     in view, stuck at the top. Not on Logs: the log keeps its own body as
+     the scroller, under a column that does not move (qa.u11a.logs). */
+  .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: 0; z-index: 3; background: var(--bg); }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */
@@ -829,8 +851,8 @@
 
 /* THE PAGE TITLE BESIDE AN OPEN AGENT (D6): with the list at 380px the
    title block shrank to ~60px and `Agents` wrapped as `Agent / s`. Beside
-   the split the title keeps its whole width and never breaks; the meta chip
-   and then the freshness give way, each with an ellipsis. */
+   the split the title keeps its whole width and never breaks; the head's
+   actions give way, the refresh's words with an ellipsis. */
 .app.has-inspector > .work .c-phead { flex-wrap: nowrap; }
 .app.has-inspector > .work .c-phead > div.head { flex: none; max-width: 100%; }
 .app.has-inspector > .work .c-phead > div.head > h1 {
@@ -842,7 +864,7 @@
   -webkit-line-clamp: none;
   line-clamp: none;
 }
-.app.has-inspector > .work .c-phead > .sub { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.app.has-inspector > .work .c-phead > .c-acts { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
 
 /* AT THE 64px STRIP THE PAGE HEAD IS NOT DRAWN (D28): its fragments --
    `? 2 read just` -- stayed in the strip and the `?` lay over the meta. It
@@ -860,30 +882,24 @@
   }
 }
 
-/* THE PROVENANCE KEEPS ITS CONTROL (U11a N10, owner QA 2026-10-04): beside
-   an open agent the list head's `.c-age` was cut with an ellipsis and its
-   `refresh` with it. Its words (`.c-age-say`, Shell.tsx `AgeLine`) give way
-   and keep their title; the control after them keeps its width. The meta
-   chip gives way first and carries its whole text as its title. */
-.app.has-inspector > .work .c-phead .c-age {
-  display: flex;
-  align-items: baseline;
-  gap: 0 4px;
-  flex: 1 0 auto;
-  justify-content: flex-end;
-  overflow: visible;
-}
-.app.has-inspector > .work .c-phead .c-age > * { flex: none; }
-.app.has-inspector > .work .c-phead .c-age > .c-age-say {
-  flex: 1 1 auto;
-  width: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-}
-.app.has-inspector > .work .c-phead .c-meta { flex: 0 1 auto; }
+/* THE REFRESH GIVES WAY, NOT THE TITLE (U11a N10, owner QA 2026-10-04;
+   #138). Beside an open agent the list head has ~150px for its actions; the
+   refresh control (`.c-refresh`, Shell.tsx `RefreshControl`) is the one that
+   shrinks, its words cut with an ellipsis and whole in its title and its
+   accessible name. It is one button, so cutting it can never cut the press
+   off its age. */
+.app.has-inspector > .work .c-phead .c-acts > .c-refresh { flex: 0 1 auto; }
 
 /* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
 .cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+
+/* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
+   above's, in the same workflow, says so in place of a blank. Muted and at
+   the 12px floor -- it is a pointer to the line above, not a reason -- and
+   on the reason's own line, where the reader looks for one. */
+.row.is-compact > .why.is-same {
+  margin-top: 2px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}

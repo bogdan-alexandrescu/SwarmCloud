@@ -203,7 +203,7 @@ function topicBlock(markup: string, id: string): string {
  * AH-25. THE ONE PAGE HEAD, AND HELP IS ITS ONE NAMED EXCEPTION. The Help page
  * drew its title in `.ctl-page-head` while fourteen routes drew theirs through
  * `Screen`'s `.head`. It renders `PageHead` now, the markup `Screen` renders:
- * a title over one line. The owner's AH-25 decision amends §6.12 with exactly
+ * a title, with its line in the count note over the topics (#138). The owner's AH-25 decision amends §6.12 with exactly
  * one exception -- Help reads nothing, so its line says what the page is and
  * which topic is showing -- and says Help keeps its line.
  *
@@ -218,10 +218,11 @@ function topicBlock(markup: string, id: string): string {
  */
 test('the Help page head says what the page is and which topic is showing (AH-25)', () => {
   const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))
-  // The line's TEXT: the shared page head (U0) wraps it in a `c-age` span, so
-  // tags inside the paragraph are dropped before the words are judged.
+  // The line's TEXT: since #138 the head carries no line under its title, so
+  // the line is the count note over the topics (`CountNote`). Tags inside the
+  // paragraph are dropped before the words are judged.
   const line = (markup: string): string =>
-    (/<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? '').replace(/<[^>]+>/g, '')
+    (/<p class="c-count-note"[^>]*>([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? '').replace(/<[^>]+>/g, '')
   const bare = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
   const deep = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
   const stale = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
@@ -234,7 +235,7 @@ test('the Help page head says what the page is and which topic is showing (AH-25
     // H1: the page head is the shared one, titled with the group the page is.
     assert.ok(
       // The title is its own tooltip too (walkthrough C: a long title is clamped to two lines).
-      markup.includes(`<div class="head"><h1 title="${group.title}">${group.title}</h1></div><p class="sub">`),
+      markup.includes(`<div class="c-phead"><div class="head"><h1 title="${group.title}">${group.title}</h1></div>`),
       `the Help page does not draw the shared head titled ${group.title}`,
     )
     assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')

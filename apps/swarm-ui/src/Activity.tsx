@@ -62,8 +62,8 @@ import {
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
-import { Id, PageHead, Screen, timeAgo } from './Shell'
-import { TimelinePages } from './TimelineLanes'
+import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
+import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -398,6 +398,11 @@ export function ActivityScreen({
 
   const [picked, setPicked] = useState<string | null>(null)
   const refresh = () => setNonce((n) => n + 1)
+  // THE CADENCE (#117: both Timeline pages every `TIMELINE_POLL_MS`) and THE
+  // ONE AGE (#98), on the head's refresh control.
+  const { idle, resume } = useIdleStop(true)
+  usePoll(TIMELINE_POLL_MS, refresh, idle)
+  useClaimPageAge(true)
 
   const settled = latest !== null && latest.key === key ? latest.result : null
   const failure: ApiError | null = !pending && settled?.status === 'error' ? settled.error : null
@@ -421,22 +426,36 @@ export function ActivityScreen({
 
   return (
     <>
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
+          age and the cadence; the range and the cache are the note over the
+          first card. The age is the payload's (`generated_at`), which a
+          cached answer carries from when it was counted. */}
       <PageHead title="Timeline">
-        {data === null ? (
-          'reading…'
-        ) : (
-          <>
-            {rangeWords(data)} · read {timeAgo(data.generated_at, now)}
-            {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
-          </>
-        )}{' '}
-        <button type="button" onClick={refresh} disabled={pending}>
-          {pending ? 'reading…' : 'refresh'}
-        </button>
+        <RefreshControl
+          readAt={data === null ? null : Date.parse(data.generated_at)}
+          now={now}
+          cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
+          reading={pending}
+          idle={idle}
+          onRefresh={refresh}
+          onResume={() => {
+            resume()
+            refresh()
+          }}
+        />
       </PageHead>
 
       {/* Outcomes is the Timeline's second page now (timeline.html pick A); Lanes is /timeline. */}
       <TimelinePages at="outcomes" />
+
+      <CountNote>
+        {data === null ? null : (
+          <>
+            {rangeWords(data)}
+            {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
+          </>
+        )}
+      </CountNote>
 
       <LedgerToolbar
         view={view}

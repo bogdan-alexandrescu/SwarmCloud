@@ -441,20 +441,25 @@ def test_merge_fix_rounds_under_the_platform_default_is_accepted(client):
     assert len(_merge_steps(response.json())) == 1
 
 
-@pytest.mark.parametrize("label", [
-    {"title": "ready"}, {"unit": " Ready "}, {"title": "READY"}, {"unit": "ready\n"},
+# Owner decision 2026-10-06 (#352): the MS1 rule that dropped a `ready`
+# pr_label beside a merge step is reverted. The workflow's label is its pull
+# request's fallback title, merge step or not, and nothing records a drop.
+@pytest.mark.parametrize("label, title", [
+    ({"title": "ready"}, "ready"), ({"unit": " Ready "}, "Ready"),
+    ({"title": "READY"}, "READY"), ({"unit": "ready\n"}, "ready"),
 ])
-def test_a_ready_label_is_dropped_beside_a_merge_step_and_recorded(client, db, label):
+def test_a_ready_pr_label_is_kept_as_the_title_beside_a_merge_step(client, db, label, title):
     response = _post(client, _review_shape(metadata={"merge": "on", **label}))
     assert response.status_code == 201, response.text
+    assert len(_merge_steps(response.json())) == 1
     by_id = _steps_by_id(response.json())
     fix = _task(db, by_id["fix"]["task_id"])
-    assert "pr_label" not in fix["metadata"]["dispatch"]
+    assert fix["metadata"]["dispatch"]["pr_label"] == title
     for step_id in ("implement", "review", "fix", "merge"):
-        assert _task(db, by_id[step_id]["task_id"])["metadata"]["merge_label_dropped"] == "ready"
+        assert "merge_label_dropped" not in _task(db, by_id[step_id]["task_id"])["metadata"]
 
 
-def test_a_ready_label_is_kept_without_a_merge_step(client, db):
+def test_a_ready_pr_label_is_kept_as_the_title_without_a_merge_step(client, db):
     response = _post(client, _review_shape(metadata={"title": "ready"}))
     assert response.status_code == 201, response.text
     assert _merge_steps(response.json()) == []
@@ -465,7 +470,7 @@ def test_a_ready_label_is_kept_without_a_merge_step(client, db):
 
 
 @pytest.mark.parametrize("title", ["ready to merge", "Make the widget ready", "not ready"])
-def test_any_other_label_is_kept_beside_a_merge_step(client, db, title):
+def test_any_other_label_is_kept_as_the_title_beside_a_merge_step(client, db, title):
     response = _post(client, _review_shape(metadata={"merge": "on", "title": title}))
     assert response.status_code == 201, response.text
     by_id = _steps_by_id(response.json())
@@ -475,10 +480,12 @@ def test_any_other_label_is_kept_beside_a_merge_step(client, db, title):
 
 
 @pytest.mark.parametrize("value", [True, "ready", "nothing"])
-def test_a_caller_cannot_write_the_dropped_label_record(client, value):
+def test_merge_label_dropped_is_no_longer_reserved_and_is_stored_as_written(client, db, value):
     response = _post(client, _review_shape(metadata={"merge_label_dropped": value}))
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["field"] == "metadata.merge_label_dropped"
+    assert response.status_code == 201, response.text
+    by_id = _steps_by_id(response.json())
+    fix = _task(db, by_id["fix"]["task_id"])
+    assert fix["metadata"]["merge_label_dropped"] == value
 
 
 def _register(db, tenant_id: str, repository: str, default_branch: str) -> None:

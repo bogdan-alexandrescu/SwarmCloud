@@ -54,10 +54,15 @@ const api = vi.hoisted(() => ({
 // for (#168), and a factory mock throws on any export it does not declare.
 vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
-const { OverviewScreen } = await import('../Overview')
+const { OverviewScreen, OVERVIEW_POLL_MS } = await import('../Overview')
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-23T10:00:00Z' }
+}
+
+/** A good read taken `ago` ms before now: an aged reading (#98). */
+function okFrom<T>(data: T, ago: number): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now() - ago, serverAt: '2026-09-23T10:00:00Z' }
 }
 
 function account(over: Partial<Account>): Account {
@@ -539,10 +544,14 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
    * OV-14. The foot's clauses are separate nowrap elements in the decided
    * order -- what the sum covers, the holes in it, then how old it is -- and
    * no `·` is typed anywhere in a foot: CSS draws it, so a separator never
-   * ends or begins a line.
+   * ends or begins a line. HOW OLD IT IS is said only once the sum is stale
+   * (#98, owner ruling 2026-10-07: `from 6 min ago` past `AGED_AFTER_MS` or
+   * after a failed refresh); a fresh sum's age is the head's refresh
+   * control's, so a fresh foot has no age clause at all.
    *
-   * MUTATION: drop the mark, drop the coverage clause, reorder the clauses, or
-   * type a ' · ' back into any foot.
+   * MUTATION: drop the mark, drop the coverage clause, reorder the clauses,
+   * print a fresh age in the foot, drop the stale age, or type a ' · ' back
+   * into any foot.
    */
   it('marks the sum partial, names its coverage first, and types no separator in any foot', async () => {
     const el = await mountWith({
@@ -575,7 +584,7 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
       '31 attempts, 12 newest of 40 tasks',
       '2 unmeasured',
       '1 of 12 reads failed',
-      expect.stringMatching(/^summed (just now|\d+[smhd] ago)$/),
+      // No age clause: the sum is fresh, and a fresh age is the head's (#98).
       // Plain words, not `no re-poll` (#97): the sum moves on a press of
       // refresh and on nothing else.
       'updates only on refresh',
@@ -591,6 +600,15 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
       expect(foot.querySelector('.ctl-foot-run'), `a foot is not a run of clauses: "${text(foot)}"`).not.toBeNull()
     }
   })
+
+  it('says how old the sum is once it is stale, after the holes and before how it moves', async () => {
+    const el = await mountWith({
+      loadSpend: okFrom(spend({ tasksWithAttempts: 40, tasksSampled: 12, attempts: 31, attemptsWithCost: 31 }), 6 * 60_000),
+    })
+    const run = el.querySelector('.ov-spend .ov-foot .ctl-foot-run')
+    expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
+    expect([...run!.children].map(text)).toEqual(['31 attempts, 12 newest of 40 tasks', 'from 6 min ago', 'updates only on refresh'])
+  })
 })
 
 
@@ -598,7 +616,7 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
   /**
    * The lead drew the "could not run" hatch and `0 open` while its reads were
    * still in flight, and the head printed `scope —` for a tenant id that had
-   * not arrived. Pending is its own picture: the kit's pending mark, no
+   * not arrived. (The tenant is now in the count note under the head, #138.) Pending is its own picture: the kit's pending mark, no
    * count, no card; the partial mark waits for a read that failed.
    *
    * MUTATION: fall through to the check cards or the partial mark while a
@@ -613,7 +631,10 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
     expect(lead.querySelector('.ctl-mark.is-partial'), 'a read in flight drew the partial mark').toBeNull()
     expect(lead.querySelectorAll('a.ov-att').length, 'a check card was drawn before the checks ran').toBe(0)
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^\d+ of \d+ checks still reading$/)
-    expect(text(el.querySelector('.ov-page > .c-phead .c-meta')), 'the tenant reads as missing while it is in flight').toBe('tenant reading…')
+    const note = el.querySelector('.ov-page > .c-phead + .c-count-note')
+    expect(note, 'the tenant and reads tally are not the note under the head').not.toBeNull()
+    expect(text(note!.querySelector('.ov-reading')), 'the tenant reads as missing while it is in flight').toBe('tenant reading…')
+    expect(text(note)).not.toMatch(/tenant —/)
   })
 
   /** MUTATION: drop the partial mark, or the blind count, for a check that could not run. */
@@ -645,7 +666,7 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
       loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
     })
     const lead = el.querySelector('#ov-needs')!
-    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^1 check of \d+ · derived on this read$/)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^checks (\d+)\/\1 · 1 found something$/)
     expect(lead.querySelectorAll('a.ov-att').length).toBeGreaterThan(0)
     expect(lead.querySelector('.ctl-mark.is-partial')).toBeNull()
   })
@@ -666,8 +687,14 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
    * on `setTimeout` and keying on that value still tells the 60 s stats timer
    * apart from the 20 s poll.
    *
+   * THE AGE IS SAID ONLY WHEN STALE (#98, owner ruling 2026-10-07): a fresh
+   * count's age is the head's refresh control's (`⟳ every 20 s · read 4 s
+   * ago`), so the tile foot is silent while fresh and reads `counted from 6
+   * min ago` once the count is older than `AGED_AFTER_MS` or a refresh of it
+   * failed; the Running card's sentence says the same `from … ago`.
+   *
    * MUTATION: put stats back on the manual cadence, or on the 20s poll, or
-   * drop either age.
+   * print a fresh age, or drop either stale age.
    */
   it('re-reads /v1/stats on a 60-second timer and not on the 20-second one', async () => {
     const spy = vi.spyOn(globalThis, 'setTimeout')
@@ -683,7 +710,8 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
       await settle()
       expect(api.loadStats.mock.calls.length, 'the 60-second timer did not re-read /v1/stats').toBeGreaterThan(before)
 
-      const poll = timers.filter((t) => t.ms === 20_000)
+      expect(OVERVIEW_POLL_MS, 'the Overview cadence moved off 20 s').toBe(20_000)
+      const poll = timers.filter((t) => t.ms === OVERVIEW_POLL_MS)
       expect(poll.length, 'the 20-second poll is gone').toBeGreaterThan(0)
       const mid = api.loadStats.mock.calls.length
       await act(async () => {
@@ -696,17 +724,47 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
     }
   })
 
-  it('prints the count’s age beside the figure and in the sentence that reasons from it', async () => {
+  it('is silent about a fresh count’s age, and shows it in the head as every 20 s', async () => {
     const el = await mountWith({ loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }) })
     const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
     expect(holding, 'the band has no Holding capacity figure').toBeDefined()
-    expect(text(holding!.querySelector('.ov-lc-foot'))).toMatch(/^counted (just now|\d+[smhd] ago)$/)
+    expect(holding!.querySelector('.ov-lc-foot'), 'a fresh count prints its age in the tile').toBeNull()
+    // The fresh age is the head's one age, on the control that renews it.
+    expect(text(el.querySelector('.ov-page > .c-phead .c-acts .c-refresh'))).toMatch(/every 20 s · read \d+ s ago$/)
 
-    // No row on the page is running while the counts say 3: the sentence that
-    // explains the gap says how old the 3 is.
+    // No row on the page is running while the counts say 3: the sentence
+    // that explains the gap still reasons from the 3, and prints no fresh age.
     const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
     expect(mark, 'the Running card drew no empty state').not.toBeNull()
-    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, read (just now|\d+[smhd] ago), say 3;/)
+    const say = mark!.getAttribute('aria-label') ?? ''
+    expect(say).toMatch(/The state counts say 3;/)
+    expect(say, 'a fresh count claimed an unknown age').not.toMatch(/unknown time|ago/)
+  })
+
+  it('prints counted from N min ago once the count is older than five minutes', async () => {
+    const el = await mountWith({
+      loadStats: okFrom({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }, 6 * 60_000),
+    })
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    expect(holding, 'the band has no Holding capacity figure').toBeDefined()
+    expect(text(holding!.querySelector('.ov-lc-foot'))).toBe('counted from 6 min ago')
+    const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
+    expect(mark, 'the Running card drew no empty state').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, from 6 min ago, say 3;/)
+  })
+
+  it('prints counted from … ago after a failed refresh, however young the count', async () => {
+    const el = await mountWith({
+      loadStats: {
+        status: 'stale',
+        data: { ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } },
+        fetchedAt: Date.now() - 40_000,
+        error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' },
+      },
+    })
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    expect(holding, 'the band has no Holding capacity figure').toBeDefined()
+    expect(text(holding!.querySelector('.ov-lc-foot'))).toMatch(/^counted from 4\d s ago$/)
   })
 })
 

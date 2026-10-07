@@ -196,13 +196,20 @@ def test_the_tile_no_longer_asserts_that_every_account_has_a_reading():
 # ---------------------------------------------------------------------------
 
 def test_a_stale_reading_is_labelled_with_its_age():
-    """A stale or cleared reading is never headroom, and the figure has an age.
+    """A stale or cleared reading is never headroom, and an old figure says so.
 
     The per-account rows -- `stale ... ago`, `cleared`, a current reading's
     window and age -- are the Accounts screen's since O1 (2026-10-02) drew the
     Overview's account pool as one line. What that line must still do is
     keep a stale or cleared reading OUT of the usable count (`projected`,
-    never `best`) and print the age of the one figure it does show.
+    never `best`) and say the age of the one figure it shows once that figure
+    is old.
+
+    ONLY WHEN OLD (#98, owner ruling 2026-10-07: a tile or card foot states
+    freshness only when stale, and is silent when fresh). The line used to
+    print `read {timeAgo(...)}` always; it now words the reading's age through
+    `staleFoot`, which returns nothing for a fresh reading and `from 7 min
+    ago` past `AGED_AFTER_MS`. A fresh age is the head's refresh control's.
     """
     fn = uncommented(body_of(src("Overview.tsx"), "function accountHeadroom("))
     assert "projected.push(a.label)" in fn, (
@@ -210,8 +217,13 @@ def test_a_stale_reading_is_labelled_with_its_age():
         "counted as headroom"
     )
     line = uncommented(body_of(src("Overview.tsx"), "function AccountLine("))
-    assert "read {timeAgo(pool.best.observedAt)}" in line, (
-        "the account line's figure must carry the age of the reading behind it"
+    assert "staleFoot(Date.parse(pool.best.observedAt)" in line, (
+        "the account line's figure must say the age of the reading behind it "
+        "once that reading is stale"
+    )
+    assert "timeAgo(pool.best.observedAt)" not in line, (
+        "a fresh reading's age is the head's refresh control's to say (#98): "
+        "the account line must not print it unconditionally"
     )
 
 
