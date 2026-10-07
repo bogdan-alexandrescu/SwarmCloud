@@ -27,6 +27,7 @@ from swarm_common.identity import (
 )
 
 from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
+from .gitidentity import clean_name
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 
@@ -135,6 +136,11 @@ class AuthContext:
     #: personal fallback the frozen `resolve_tenant` derives, which no route
     #: it can reach reads -- the rollup route takes its tenant as a parameter.
     is_rollup_sweeper: bool = False
+    #: The verified token's `name` claim, cleaned for a commit identity
+    #: (`gitidentity.clean_name`); "" when the token carries none -- an IAP
+    #: assertion never does. Read from claims already verified, never asked of
+    #: a directory: what a person's commits are named (`gitidentity`).
+    display_name: str = ""
 
     @property
     def email(self) -> str:
@@ -630,6 +636,7 @@ class Authenticator:
             admin_unresolved=admin_unresolved and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
             tenant_choices=self._tenant_choices(member_groups),
+            display_name=clean_name(claims.get("name")),
         )
 
     def is_tenant_member(self, email: str, tenant: Any) -> bool:
