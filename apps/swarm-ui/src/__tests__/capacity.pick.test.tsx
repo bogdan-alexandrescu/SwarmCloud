@@ -420,7 +420,9 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
     render(<HoldersScreen />)
     const table = (await screen.findByText('Every holder', undefined, WAIT)).closest('section')!
     fireEvent.click(screen.getByRole('button', { name: 'research' }))
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(1)
+    // Through the address since QA G5-23 (`?tenant=`), which a browser
+    // announces with a `hashchange` after the click, not inside it.
+    await waitFor(() => expect(table.querySelectorAll('tbody tr')).toHaveLength(1), WAIT)
   })
 })
 

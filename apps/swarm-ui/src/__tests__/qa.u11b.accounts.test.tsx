@@ -126,7 +126,8 @@ describe('D24: History gives the Holder its room', () => {
     })
     await openRow(account())
     fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
-    await screen.findByRole('link', { name: TASK }, WAIT)
+    // The link reads `task_…` and the last eight since QA G5-15 (TaskRef).
+    await screen.findByRole('link', { name: `task_…${TASK.slice(-8)}` }, WAIT)
     const table = document.querySelector<HTMLTableElement>('table.acct-hist')!
     expect(painted(table, 'table-layout', WIDE)).toBe('fixed')
     const { cols } = fixedColumns(table, PANE, WIDE)
