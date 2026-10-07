@@ -509,6 +509,19 @@ class LeaseScan:
     next_page_token: str | None = None
 
 
+@dataclass(frozen=True)
+class QuotaScan:
+    """A quota listing plus whether its window left documents out.
+
+    `truncated` is true exactly when more quota documents match than `limit`
+    returned, so an operator panel can say "not every provider x tenant pair
+    is shown" instead of presenting a cut set as the whole.
+    """
+
+    states: list[QuotaState]
+    truncated: bool
+
+
 def _skipped_entries(value: Any) -> list[dict[str, Any]]:
     """A stored `artifacts_skipped`, as `{name, cause}` entries.
 
@@ -1894,11 +1907,31 @@ class Store:
         return pool_from_dict(name, ref.get().to_dict())
 
     def list_quota(self, tenant_id: str | None = None, limit: int = 500) -> list[QuotaState]:
+        return self.scan_quota(tenant_id, limit=limit).states
+
+    def scan_quota(self, tenant_id: str | None = None, *, limit: int = 500) -> QuotaScan:
+        """Quota documents in document-id order, and whether `limit` cut them.
+
+        This used to read `limit` documents with no `order_by` and no signal,
+        so past 500 provider x tenant pairs `/v1/admin/quota` served an
+        arbitrary subset that could change between calls, and a missing row
+        looked exactly like a pair the broker never wrote (#76).
+
+        Ordered by DOCUMENT ID (`{provider}:{tenant_id}`, swarm_common.models)
+        because it needs no composite index with or without the tenant
+        equality filter, it is unique, and it is the order the route already
+        presents rows in, so the cut falls at the end of what is shown.
+
+        One extra document is read so `truncated` is a fact -- more documents
+        exist -- rather than `len(rows) == limit`, which is also true of a
+        read that happened to fit exactly.
+        """
         query: Any = self._db.collection(QUOTA)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
-        query = query.limit(limit)
-        return [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+        query = query.order_by("__name__").limit(limit + 1)
+        states = [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+        return QuotaScan(states=states[:limit], truncated=len(states) > limit)
 
     def list_leases(
         self,
