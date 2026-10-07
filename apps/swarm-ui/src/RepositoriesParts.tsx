@@ -6,7 +6,7 @@
  * in parallel, and a later pass can swap each of these for its own by name.
  */
 import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
-import { ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
+import { Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
 import type { ApiError, Result } from './fetch'
@@ -71,13 +71,15 @@ export function UrRefresh({ reads }: { reads: readonly UrRead<unknown>[] }) {
  * as an empty one -- and never as a failure of something that exists. The
  * route is named on the element (`data-notserved` and its title), not in the
  * visible words: an API path is not copy for a user's screen (walkthrough E,
- * owner 2026-10-03).
+ * owner 2026-10-03). `what` is the sentence's subject and `plural` its
+ * number, so a plural subject reads "Index runs are not served", never
+ * "is" (QA G4-20).
  */
-export function UrNotServed({ route, what }: { route: string; what: string }) {
+export function UrNotServed({ route, what, plural = false }: { route: string; what: string; plural?: boolean }) {
   return (
     <div className="ur-notserved" data-notserved={route} title={`Not served: ${route}`}>
       <EmptyState kind="partial" heading="Not served yet">
-        {what} is not served by this API yet. Nothing here is a zero: it has not been read.
+        {what} {plural ? 'are' : 'is'} not served by this API yet. Nothing here is a zero: it has not been read.
       </EmptyState>
     </div>
   )
@@ -96,6 +98,7 @@ export function UrRegion<T>({
   empty,
   lines = 3,
   alsoNotServed,
+  plural = false,
   children,
 }: {
   state: Result<T>
@@ -108,11 +111,13 @@ export function UrRegion<T>({
   lines?: number
   /** A failure this one route answers when it is not there yet, beyond `notServed`'s. */
   alsoNotServed?: (e: ApiError) => boolean
+  /** `what` is plural: "… are not served" (QA G4-20). */
+  plural?: boolean
   children: (data: T) => ReactNode
 }) {
   if (state.status === 'loading') return <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
   if (state.status === 'error') {
-    if (notServed(state.error) || alsoNotServed?.(state.error) === true) return <UrNotServed route={route} what={what} />
+    if (notServed(state.error) || alsoNotServed?.(state.error) === true) return <UrNotServed route={route} what={what} plural={plural} />
     return <FailedPanel error={state.error} onRetry={onRetry} />
   }
   if (state.status === 'empty') return <>{empty ?? null}</>
@@ -224,6 +229,15 @@ export function repoAddress(repoId: string, tab: string | null = null, pr: numbe
   // The run page's PR card opens Impact on its pull request (screen 9).
   if (tab === 'impact' && pr !== null) q.set('pr', String(pr))
   return `${LIST}?${q.toString()}`
+}
+
+/**
+ * The Graph tab opened on its "Tests reaching a symbol" view, searching `q`
+ * (QA G4-09): the Test map tab answers path -> tests and links each of its
+ * rows here, where the question is symbol -> tests.
+ */
+export function graphTestsAddress(repoId: string, q: string): string {
+  return `${LIST}?${new URLSearchParams({ repo: repoId, tab: 'graph', view: 'tests', q }).toString()}`
 }
 
 /** A navigation drawn as a button (`ButtonLink`), routed like `UrLink`. */
@@ -338,4 +352,52 @@ export function TestsMapped({ r }: { r: RepoRecord }) {
       {detail !== null && <small className="ur-tm-sub">{detail}</small>}
     </div>
   )
+}
+
+/**
+ * Copy a command, with the command as the button's title and "Copied" once
+ * it is on the clipboard. A refused clipboard leaves the button as it was:
+ * the command is on the page beside it to select by hand.
+ */
+export function UrCopy({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <Button size="sm" kind="ghost" className="ur-copy" aria-label={label} title={text} onClick={() => void copy()}>
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  )
+}
+
+/** How far into a strip's edge a fade reaches: the room left beside a tab scrolled into view. */
+export const FADE_PX = 32
+
+/**
+ * Which edges of a horizontally scrolling strip have more behind them (QA
+ * G4-19): at 390 the repository tabs scroll and three of eight are off the
+ * right edge, so that edge fades -- the affordance a bare overflow lacks.
+ */
+export function stripFade(s: { scrollLeft: number; scrollWidth: number; clientWidth: number }): 'none' | 'start' | 'end' | 'both' {
+  const start = s.scrollLeft > 1
+  const end = s.scrollLeft + s.clientWidth < s.scrollWidth - 1
+  return start && end ? 'both' : start ? 'start' : end ? 'end' : 'none'
+}
+
+/**
+ * The scroll offset that shows `item` (its left in the strip's content, and
+ * its width) with the fade's room beside it; null when it is already in view.
+ * Set on the strip itself, so the page never jumps the way `scrollIntoView`
+ * would.
+ */
+export function scrollToShow(strip: { scrollLeft: number; clientWidth: number }, item: { left: number; width: number }): number | null {
+  if (item.left < strip.scrollLeft) return Math.max(0, item.left - FADE_PX)
+  if (item.left + item.width > strip.scrollLeft + strip.clientWidth) return item.left + item.width - strip.clientWidth + FADE_PX
+  return null
 }

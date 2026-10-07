@@ -35,6 +35,12 @@
 .rg-node.is-sel circle { stroke: var(--sk-ac); stroke-width: 3; }
 .rg-node.is-sel text { fill: var(--sk-ac); font-weight: 600; }
 .rg-node:focus-visible circle { stroke: var(--sk-ac); stroke-width: 3; }
+/* The label collision pass (QA G4-11, RepoGraphData.ts `placeLabels`): a
+   label that would print over another is moved above its node, or, with no
+   room either side, hidden until its node is hovered, focused or picked. */
+.rg-node text.is-hidden { opacity: 0; }
+.rg-node:hover text.is-hidden, .rg-node:focus-visible text.is-hidden, .rg-node.is-sel text.is-hidden { opacity: 1; }
+.rg-node:hover text { fill: var(--text); }
 .rg-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface); }
 .rg-lg { display: inline-flex; align-items: center; gap: 6px; }
 .rg-lg > b, .rg-phone i { display: inline-block; width: 10px; height: 10px; border-radius: var(--r-pill); }
@@ -51,7 +57,8 @@
 .rg-ch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; font-size: var(--t-meta); }
 .rg-dctl { display: inline-flex; align-items: center; gap: 6px; }
 .rg-depth { min-width: 14px; text-align: center; font-family: var(--mono); font-weight: 600; }
-.rg-find { flex: 1 1 140px; max-width: 220px; }
+.rg-find { flex: 1 1 140px; max-width: 280px; display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rg-find .ur-search { flex: 1 1 auto; min-width: 0; }
 .rg-syms, .rg-tests { display: flex; flex-direction: column; min-width: 0; }
 .rg-sym, .rg-test, .rg-prow { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 4px 6px; border: 0; border-bottom: 1px solid var(--line-soft); background: none; color: var(--text); text-align: left; font: inherit; font-size: var(--t-meta); min-width: 0; }
 .rg-sym { cursor: pointer; border-radius: var(--r-xs); }
