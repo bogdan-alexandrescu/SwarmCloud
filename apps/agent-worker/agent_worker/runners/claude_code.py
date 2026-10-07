@@ -65,6 +65,13 @@ same expected-outputs check and the same publish credential scan
 (`agent_worker.publish_scan`) against the tree, and when either fails resumes
 the session for up to two repair turns, naming each missing file's path or
 each flagged `path:line rule` -- never the matched text (`repair_checks`).
+
+WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
+that read stdin with nothing attached sat until the Bash timeout killed it:
+the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
+redirect. A second PreToolUse hook in the same settings file
+(`stdin_hook.py`, shipped in this package) wraps each Bash command so its
+outer stdin is /dev/null, leaving pipes and redirects inside it alone.
 """
 
 from __future__ import annotations
@@ -90,6 +97,14 @@ SETTINGS_DIR_NAME = ".swarm-claude-code"
 
 #: The tools whose calls can ask to run in the background.
 _BACKGROUND_TOOLS = "Bash|Task|Agent"
+
+#: The PreToolUse hook that runs every Bash command with its outer stdin from
+#: /dev/null (#750; the why is in its docstring). Unlike the background
+#: refusal it is not generated into `work/`: it ships in this package and is
+#: named by absolute path, so an agent cannot edit the copy a later attempt
+#: runs, and it is the file the tests run.
+STDIN_HOOK_NAME = "stdin_hook.py"
+STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
 #: interpreter. Exit 2 is the CLI's "block this tool call", and what it writes
@@ -167,7 +182,20 @@ def write_headless_settings(directory: Path) -> Path:
                             "timeout": 30,
                         }
                     ],
-                }
+                },
+                {
+                    # Its own entry, so it runs beside the refusal above. It
+                    # sets no permission decision, only `updatedInput`, and
+                    # fails open: an error lets the command run unchanged.
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(STDIN_HOOK))}",
+                            "timeout": 30,
+                        }
+                    ],
+                },
             ]
         },
     }

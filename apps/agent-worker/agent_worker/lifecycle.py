@@ -142,6 +142,7 @@ from . import children as children_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
+from . import gitops as gitops_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import questions as questions_mod
@@ -206,6 +207,7 @@ from .gitops import (
     GitError,
     GitTransient,
     MergeOutcome,
+    PeerPin,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -656,6 +658,13 @@ class Worker:
         #: `_title_from_issue_input` names the work by the issue number,
         #: always as "part of #N", never "Fixes #N".
         self._issue_title: str | None = None
+        #: The issue fetch started beside the clone (#721, P29,
+        #: `_start_issue_prefetch`), joined at STEP 6b. None when the task
+        #: asks for no issue, or nothing let it start early.
+        self._issue_prefetch: issue_mod.IssuePrefetch | None = None
+        #: When the issue fetch started and ended, seconds since process
+        #: start, for `agent_started`. None until a fetch has been joined.
+        self._issue_fetch_timing: dict[str, Any] | None = None
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -2213,6 +2222,9 @@ class Worker:
         self._heartbeat()
 
         # ---- STEP 5: optional shallow clone -----------------------------
+        # The issue fetch starts first, in a thread, and runs beside the
+        # clone (#721, P29): it needs only the token and the issue number.
+        self._start_issue_prefetch(task)
         self.phases.enter("clone")
         try:
             repo_info = self._clone_keeping_lease(task)
@@ -2376,20 +2388,39 @@ class Worker:
         # A forge that did not answer is retried in-process (`_forge_retry`),
         # and if it stays down the ATTEMPT fails retryably -- never
         # INPUTS_UNAVAILABLE, which is for a forge that answered "no" (F1).
+        #
+        # BESIDE THE CLONE (#721, P29): the network read started before the
+        # clone (`_start_issue_prefetch`) and is joined here; the scrub and
+        # the write still happen here, after the credentials. A fetch that
+        # cannot be used -- none started, or for another repository URL than
+        # the clone settled on -- is made here as it always was. Either way
+        # a failure is raised from `stage_issue` exactly as before.
         issue_number = issue_mod.requested(task.get("input"), cfg.profile)
         if issue_number is not None:
             self.phases.enter("fetch_issue")
+            prefetch = self._issue_prefetch
+            if prefetch is not None and (
+                prefetch.number != issue_number or prefetch.repository_url != self._repo_url
+            ):
+                prefetch = None
+            if prefetch is not None and prefetch.running:
+                # Still reading after the clone: the lease is beaten while
+                # this waits, as it was while the clone ran.
+                with self._heartbeat_meanwhile("fetch_issue"):
+                    prefetch.wait()
+            fetch_started = float(self.phases.seconds_since_start())
             try:
                 issue_mod.stage_issue(
                     number=issue_number,
                     repository_url=self._repo_url,
-                    token=self._git_token(),
+                    token=prefetch.token if prefetch is not None else self._git_token(),
                     refusal=self._git_token_refusal(),
                     work_dir=ws.work,
                     scrub=self._scrub,
                     logger=self.log,
                     on_request=self._heartbeat,
                     retry=self._forge_retry(),
+                    prefetched=prefetch,
                 )
             except forge_mod.ForgeUnavailable as exc:
                 return functools.partial(
@@ -2399,6 +2430,16 @@ class Worker:
                     exc.retry_after_seconds,
                     exc.tries,
                 )
+            self._issue_fetch_timing = (
+                {**prefetch.timing(), "beside_clone": True}
+                if prefetch is not None
+                else {
+                    "started_seconds": round(fetch_started, 3),
+                    "ended_seconds": float(self.phases.seconds_since_start()),
+                    "ok": True,
+                    "beside_clone": False,
+                }
+            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -3849,6 +3890,48 @@ class Worker:
             return None
         return record
 
+    def _start_issue_prefetch(self, task: dict[str, Any]) -> None:
+        """Start the issue fetch in a thread, beside the clone (#721, P29). Never raises.
+
+        Owner decision 2026-10-06 (chunk-3 observer P29): the fetch needs only
+        the token and the issue number, and both are known here, before the
+        clone. Started only when the task asks for an issue and names a
+        repository the clone will accept; in every other case nothing starts
+        and STEP 6b fetches, or refuses, exactly as it always did -- so a
+        refusal that never needed the forge (no repository, an input the
+        profile refuses) is still raised there and nowhere else.
+
+        The token is read here, by the same `_git_token` the fetch always
+        used, and only when an issue is asked for: a task without one reads
+        no extra secret. The URL is the one `_maybe_clone` settles on
+        (`validate_repository_url` of the same field it reads), so the join
+        uses this fetch; a different one is dropped there.
+        """
+        try:
+            number = issue_mod.requested(task.get("input"), self.cfg.profile)
+            raw = self.cfg.repository_url or task.get("repository_url")
+            if number is None or not raw:
+                return
+            try:
+                url = gitops_mod.validate_repository_url(raw)
+            except GitError:
+                return
+            self.phases.enter("issue_prefetch", issue=number)
+            prefetch = issue_mod.IssuePrefetch(
+                number=number,
+                repository_url=url,
+                token=self._git_token(),
+                retry=self._forge_retry(),
+                clock=self.phases.seconds_since_start,
+            )
+            prefetch.start()
+            self._issue_prefetch = prefetch
+        except Exception as exc:  # noqa: BLE001 -- STEP 6b fetches as before
+            self.log.warning(
+                "the issue fetch could not start beside the clone; fetching it later",
+                error=type(exc).__name__,
+            )
+
     def _clone_keeping_lease(self, task: dict[str, Any]) -> dict[str, Any] | None:
         """`_maybe_clone`, with the lease heartbeated from a thread meanwhile (#742).
 
@@ -3967,6 +4050,11 @@ class Worker:
         # Every try recorded, the pinned fetch's and the failed ones included
         # (#742): the clone's mark (`_mark_clone_timed`) lists them in order.
         tries: list[dict[str, Any]] = []
+        # Which address git and the egress probe each reached, per try, and
+        # the pin to the probe's after a stalled connect elsewhere (#721, P27;
+        # `gitops.PeerPin`). One for the whole clone, so a pin decided on the
+        # base pin's fetch carries to the branch-tip clone of the same host.
+        peers = PeerPin(self._egress, url)
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
             return retry_clone(
@@ -3997,6 +4085,7 @@ class Worker:
                     logger=self.log,
                     token=None if refusal else self._git_token(),
                     egress=self._egress,
+                    peers=peers,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
@@ -4031,6 +4120,7 @@ class Worker:
                 logger=self.log,
                 token=None if refusal else self._git_token(),
                 egress=self._egress,
+                peers=peers,
             ))
         except GitTransient as exc:
             self._mark_clone_timed(None, tries=tries, pinned=False)
@@ -6495,6 +6585,12 @@ class Worker:
         reader of the fields before this one. A clone that never landed --
         the forge never answered, or refused -- is marked too, `ok: False`,
         with `seconds` the tries' wall time summed and no phase numbers.
+
+        WHICH ADDRESS EACH SIDE REACHED (#721, P27): every `try_log` entry
+        also carries `probe_peer`, `git_peer` and `peer_pinned`
+        (`gitops.PeerPin`), and the top level the last try's two peers and
+        `peer_pinned`, true when any try ran pinned to the probe's address.
+        Distinct from `pinned`, which is the workflow BASE pin.
         """
         if self._clone_marked:
             return
@@ -6511,6 +6607,10 @@ class Worker:
             "try_log": log,
             **(clone.phases if clone is not None else {}),
         }
+        last = log[-1] if log else {}
+        timings.setdefault("probe_peer", last.get("probe_peer"))
+        timings.setdefault("git_peer", last.get("git_peer"))
+        timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
         # Set before the write, so a failed write is not tried again later.
         self._clone_marked = True
         self._emit_startup_mark("clone_timed", {"clone": timings})
@@ -6527,17 +6627,22 @@ class Worker:
         once, never an in-place restart. `seconds_since_process_start` is the
         worker's own clock from its first line; `cloned` says whether this
         attempt made a clone (a checkpoint can bring one back instead).
+
+        `issue_fetch` (#721, P29), when the step was pointed at an issue:
+        `started_seconds` and `ended_seconds` of the fetch on the same clock,
+        `ok`, and `beside_clone` -- true when it ran in its thread beside the
+        clone (`_start_issue_prefetch`), false when it was made at STEP 6b.
         """
         if self._agent_start_marked:
             return
         self._agent_start_marked = True
-        self._emit_startup_mark(
-            "agent_started",
-            {
-                "seconds_since_process_start": float(self.phases.seconds_since_start()),
-                "cloned": self._clone_marked,
-            },
-        )
+        detail: dict[str, Any] = {
+            "seconds_since_process_start": float(self.phases.seconds_since_start()),
+            "cloned": self._clone_marked,
+        }
+        if self._issue_fetch_timing is not None:
+            detail["issue_fetch"] = dict(self._issue_fetch_timing)
+        self._emit_startup_mark("agent_started", detail)
 
     def _release_account(self) -> None:
         """Give the account back, on whatever path this attempt is leaving by.
