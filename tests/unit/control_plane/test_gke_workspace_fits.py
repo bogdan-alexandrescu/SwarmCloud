@@ -10,11 +10,18 @@ archive the worker builds in /tmp (up to `max_checkpoint_bytes`, 2 GiB), so a
 run that fits on Cloud Run would have been evicted on GKE at its first
 checkpoint.
 
+The same arithmetic held nowhere else until 2026-10-07: the browser class
+mounted workspace 8 + /tmp 2 + HOME 4 = 14 GiB of disk under an 8 GiB pod limit,
+so a browser pod could be evicted before any one volume was full (owner
+decision, contract request 53). So the sum is now checked for EVERY resource
+class the GKE manifest renders, not only claude-code's.
+
 MUTATIONS: point `resources["ephemeral-storage"]` in `GkeJobDispatcher._manifest`
-back at `rc.disk_gib`, and the first test fails; raise GKE_TMP_GIB or
-GKE_HOME_GIB without the total, and it fails too; raise the total past 10 and
-the Autopilot test fails; shrink the workspace below Cloud Run's and the
-workspace test fails.
+back at `rc.disk_gib`, and the claude-code test fails; put browser's `GkeDisk`
+back to 8/2/4, or point the workspace volume back at `rc.disk_gib`, and the
+every-class test fails for browser; raise any class's total past 10 and it
+fails too; shrink claude-code's workspace below Cloud Run's and the workspace
+test fails.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from swarm_common.states import TaskState
 
 from scheduler.dispatch import (
     AUTOPILOT_MAX_EPHEMERAL_GIB,
-    GKE_TMP_GIB,
+    GKE_DISK,
     GkeJobDispatcher,
     GkeTarget,
     workspace_size_gib,
@@ -56,7 +63,7 @@ def tenant() -> Tenant:
     )
 
 
-def _pod(tenant: Tenant, profile_name: str) -> dict:
+def _pod(tenant: Tenant, profile_name: str, resource_class: str | None = None) -> dict:
     profile = RUNNER_PROFILES[profile_name]
     task = Task(
         id="task_ws0001",
@@ -65,7 +72,7 @@ def _pod(tenant: Tenant, profile_name: str) -> dict:
         updated_at=NOW,
         state=TaskState.LEASED,
         runner_profile=profile_name,
-        resource_class=profile.resource_class,
+        resource_class=resource_class or profile.resource_class,
         input={},
         submitted_by="eng@saga.xyz",
         provider=profile.provider,
@@ -134,12 +141,17 @@ def test_the_gke_workspace_is_no_smaller_than_cloud_runs(tenant):
 
 
 def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds():
-    """The archive is built under /tmp (`checkpoint.py`, TemporaryDirectory)."""
+    """The archive is built under /tmp (`checkpoint.py`, TemporaryDirectory).
+
+    claude-code's class only. Browser's /tmp is 1 GiB by the owner's decision of
+    2026-10-07 (see GKE_DISK): it fits the pod's 8 GiB, not the 2 GiB cap.
+    """
     from agent_worker.config import WorkerConfig
 
     defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
 
-    assert GKE_TMP_GIB * GIB >= defaults["max_checkpoint_bytes"]
+    standard = GKE_DISK[RUNNER_PROFILES["claude-code"].resource_class]
+    assert standard.tmp_gib * GIB >= defaults["max_checkpoint_bytes"]
 
 
 @pytest.mark.parametrize("profile_name", ["claude-code"] + sorted(
@@ -151,3 +163,81 @@ def test_no_gke_pod_asks_autopilot_for_more_disk_than_it_admits(tenant, profile_
     resources = _worker(_pod(tenant, profile_name))["resources"]
 
     assert _gib(resources["requests"]["ephemeral-storage"]) <= AUTOPILOT_MAX_EPHEMERAL_GIB
+
+
+def _gke_pods() -> list[tuple[str, str]]:
+    """(profile, resource class) for every class the GKE manifest can render.
+
+    The profiles are every GKE_AUTOPILOT one plus claude-code (contract request
+    53 moves it to GKE), and each with its own class and every class a step may
+    override it to -- swarm-api's own rule, `validate_resource_class_override`,
+    not a restatement of it. Then every class in the catalogue on top, under
+    claude-code, because `_manifest` renders whatever class it is handed and
+    a class that is one catalogue edit from GKE should already fit.
+    """
+    from swarm_api.validation import ValidationFailed, validate_resource_class_override
+
+    profiles = {"claude-code"} | {
+        name for name, p in RUNNER_PROFILES.items() if resolve_backend(p) is Backend.GKE_AUTOPILOT
+    }
+    pairs: set[tuple[str, str]] = {("claude-code", rc) for rc in RESOURCE_CLASSES}
+    for name in profiles:
+        for rc in RESOURCE_CLASSES:
+            try:
+                pairs.add((name, validate_resource_class_override(RUNNER_PROFILES[name], rc)))
+            except ValidationFailed:
+                pass
+    return sorted(pairs)
+
+
+def test_every_resource_class_is_rendered_below():
+    """The parametrisation below must not silently shrink to nothing."""
+    assert {rc for _, rc in _gke_pods()} == set(RESOURCE_CLASSES)
+    assert ("browser", "browser") in _gke_pods()
+    assert ("claude-code", RUNNER_PROFILES["claude-code"].resource_class) in _gke_pods()
+
+
+@pytest.mark.parametrize(("profile_name", "resource_class"), _gke_pods())
+def test_a_gke_pods_scratch_volumes_never_add_up_past_its_disk_limit(
+    tenant, profile_name, resource_class
+):
+    """sum(disk emptyDir sizeLimits) <= ephemeral-storage <= Autopilot's 10 GiB.
+
+    kubelet evicts the pod when the volumes together pass its ephemeral-storage
+    limit, so a sum above it is a pod evicted -- no checkpoint, no park --
+    before any one volume is full. The memory-medium /dev/shm is charged to the
+    memory limit, not to ephemeral-storage, and is left out of the sum.
+    """
+    pod = _pod(tenant, profile_name, resource_class)
+    resources = _worker(pod)["resources"]
+    volumes = _disk_volumes(pod)
+    limit = _gib(resources["limits"]["ephemeral-storage"])
+
+    assert resources["requests"] == resources["limits"], "invariant 7"
+    assert {"workspace", "tmp", "home"} <= set(volumes), volumes
+    assert sum(volumes.values()) <= limit, (
+        f"{profile_name}/{resource_class}: the pod may write {sum(volumes.values())} GiB "
+        f"across {volumes} but is evicted at {limit} GiB"
+    )
+    assert limit <= AUTOPILOT_MAX_EPHEMERAL_GIB, (
+        f"{profile_name}/{resource_class}: {limit} GiB is more than Autopilot admits"
+    )
+
+
+def test_a_browser_pod_has_the_owners_disk_layout(tenant):
+    """Owner decision 2026-10-07: workspace 4 + /tmp 2 + HOME 2 = the 8 GiB limit.
+
+    /tmp holds the largest checkpoint archive (max_checkpoint_bytes = 2 GiB)."""
+    pod = _pod(tenant, "browser")
+
+    assert _disk_volumes(pod) == {"workspace": 4, "tmp": 2, "home": 2}
+    assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "8Gi"
+
+
+def test_the_tenant_jobs_quota_defaults_to_200():
+    """Owner decision 2026-10-07: 100 running pods plus an hour of finished Jobs."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3] / "kubernetes" / "render.py").read_text()
+    assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)
