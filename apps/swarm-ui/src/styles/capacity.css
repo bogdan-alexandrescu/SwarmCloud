@@ -173,10 +173,10 @@
 .quota-table > table { table-layout: fixed; width: 100%; }
 .quota-table col.quota-c-tenant { width: 11%; }
 .quota-table col.quota-c-state { width: 15%; }
-.quota-table col.quota-c-cap { width: 9%; }
-.quota-table col.quota-c-feeds { width: 25%; }
+.quota-table col.quota-c-cap { width: 14%; }
+.quota-table col.quota-c-feeds { width: 17%; }
 .quota-table col.quota-c-left { width: 11%; }
-.quota-table col.quota-c-429s { width: 10%; }
+.quota-table col.quota-c-429s { width: 13%; }
 .quota-table col.quota-c-last { width: 9%; }
 .quota-table col.quota-c-rep { width: 10%; }
 .quota-table thead th { white-space: normal; }
@@ -394,3 +394,47 @@
    names -- and a name wider than the card is cut, whole in its title. */
 .rt-cred code { display: inline-block; max-width: 100%; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 .cap-setby-cfg { color: var(--text-faint); }
+
+/* ---------------------------------------------------------------------------
+   QA G5 (2026-10-07), lane C6U.
+   --------------------------------------------------------------------------- */
+
+/* G5-20: A ZERO IS A 1PX TICK, NOT AN OUTLINED TRACK. `.ctl-util-track.is-zero`
+   (styles.css) draws an inset hairline round the whole track and a 3px tick;
+   on Pools a 0% row's outlined track read as FULLER than a 5% row's
+   borderless one. Here the zero is the start of the scale and nothing else:
+   no outline, a 1px tick at the origin -- still a different picture from a
+   track that failed to paint (which has no tick) and from 5% (a fill). */
+.cap-use .ctl-util-track.is-zero { box-shadow: none; }
+.cap-use .ctl-util-track.is-zero > .ctl-util-zero { width: 1px; border-radius: 0; }
+
+/* G5-15: ONE TASK REFERENCE (TaskRef.tsx). The link, then its copy. */
+.task-ref { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
+.task-ref-link { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-ref-copy {
+  flex: none; display: inline-flex; align-self: center; padding: 0; border: 0; background: none;
+  color: var(--text-faint); cursor: pointer;
+}
+.task-ref-copy:hover { color: var(--text); }
+.task-ref-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; border-radius: 2px; }
+.task-ref-said { flex: none; font-size: var(--t-micro); color: var(--text-dim); }
+/* Holders' second line is a lease and says so: `lease …a1b2c3d4`. */
+.lease-ref { display: block; }
+/* In an Accounts holder row the reference is the part that gives way. */
+.acct-hist-whoin > .task-ref { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+
+/* G5-23: the account list's figure names its window: `69% 5h`. */
+.acct-pct-win { color: var(--text-faint); }
+
+/* G5-23: `Quota cap (units)` and `429s (this run)` hold one line each, in
+   the widths above (Feeds pool gave up the room; its name ellipsizes). */
+.quota-table thead th.quota-nowrap { white-space: nowrap; }
+
+/* G5-08: ON A PHONE A CAPACITY TABLE IS A RECORD PER ROW (capacityPoll
+   `tableMode`). The stacked layout is styles.css §B6.3's `.is-stacked`; the
+   one thing it cannot know is that Provider quota sizes its table to its
+   content below 900px (above), which as a block is a 822px box in a 356px
+   card. */
+@media (max-width: 560px) {
+  .quota-table.is-stacked > table { width: auto; min-width: 0; }
+}

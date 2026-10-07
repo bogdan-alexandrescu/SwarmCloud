@@ -2,6 +2,7 @@ import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, typ
 import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
@@ -660,10 +661,14 @@ function PoolEditor({
     poolLabel(p.name).toLowerCase().includes(needle) ||
     // The open editor's row is never filtered away from under what was typed.
     p.name === editing?.pool
+  // ONE POOL ORDER (QA G5-22): Pools' -- family, problems first, this
+  // tenant, name (`comparePools`). It was alphabetical here, so `standard`
+  // sat third on this screen and first on Pools.
+  const order = comparePools(poolViewer(capacity))
   const families = POOL_FAMILY_ORDER.flatMap((kind) => {
     const rows = pools
       .filter((p) => poolKind(p.name) === kind && matches(p))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(order)
     return rows.length === 0 ? [] : [{ kind, rows }]
   })
 
@@ -819,13 +824,16 @@ function Family({
   admin: boolean | null
   onOpen: (pool: string) => void
 }) {
+  // A RECORD PER POOL ON A PHONE (QA G5-08): at 390 the table ran 553-626px in
+  // a 356px box and cut `edit` to `edi`.
+  const phone = usePhoneTables()
   return (
     <section className="ctl-card adm-family">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <div className="ctl-table is-scroll">
+        <div className={`ctl-table ${tableMode(phone)}`}>
           {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
               SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
               family where some pool was not at its configured value, so the

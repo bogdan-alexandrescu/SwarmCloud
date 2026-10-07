@@ -4,8 +4,9 @@ import { Segmented, ToneMark } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
 import { Mark } from './primitives'
-import { HOLDERS_POLL_MS, capacityPoll, useLinkedPool } from './capacityPoll'
+import { HOLDERS_POLL_MS, capacityPoll, paneHref, tableMode, useLinkedParam, useLinkedPool, usePhoneTables } from './capacityPoll'
 import { Screen } from './Shell'
+import { LeaseRef, TaskRef } from './TaskRef'
 import './styles/capacity.css'
 import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -484,7 +485,11 @@ function HolderTable({
   // this read loaded. The filter narrows what is drawn; the note beside the
   // heading still says what the loaded rows are out of, so a filtered list is
   // never read as the platform's whole.
-  const [tenant, setTenant] = useState<string | null>(null)
+  // IN THE ADDRESS (QA G5-23): `?tenant=`, so a filtered list can be linked
+  // to and survives a reload, beside the `?pool=` a Pools row links with.
+  // A linked tenant with no row here filters nothing: `All` is drawn chosen,
+  // never an empty table under a tenant chip that is not on screen.
+  const linkedTenant = useLinkedParam('tenant')
   // AND BY POOL, WHEN A LINK NAMED ONE (#125): a Pools row's name links here
   // as `?pool=<name>`, and the table draws the leases whose `pools` list names
   // it. `All pools` drops it; the address is moved too, so a reload does not
@@ -495,12 +500,17 @@ function HolderTable({
   const now = useNow(AGE_TICK_MS)
   const inPool = pool === null ? rows : rows.filter((l) => Array.isArray(l.pools) && l.pools.includes(pool))
   const tenants = [...new Set(inPool.map((l) => l.tenant_id))].sort()
+  const tenant = linkedTenant !== null && tenants.includes(linkedTenant) ? linkedTenant : null
   const shown = tenant === null ? inPool : inPool.filter((l) => l.tenant_id === tenant)
   const sorted = [...shown].sort((a, b) => b.units - a.units)
   const clearPool = (name: string) => {
     setCleared(name)
-    if (typeof window !== 'undefined') window.location.hash = '#capacity/holders'
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/holders', { tenant })
   }
+  const setTenant = (next: string | null) => {
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/holders', { pool, tenant: next })
+  }
+  const phone = usePhoneTables()
   return (
     /* §B6.1: the screen's one full-width table is the one box on it. It was
        a card wrapping a card-body wrapping a `.ctl-table`, which drew two
@@ -551,7 +561,7 @@ function HolderTable({
           {coverage.kind === 'unreported' && ' · completeness unreported'}
         </span>
       </div>
-      <div className="ctl-table is-scroll">
+      <div className={`ctl-table ${tableMode(phone)}`}>
           <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -592,12 +602,11 @@ function HolderTable({
               {sorted.map((l) => (
                 <tr role="row" key={l.lease_id}>
                   <th role="rowheader" scope="row">
-                    {/* The task links to the agent, which is where a reader
-                        goes from "what holds this" to "why is it still here". */}
-                    <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(l.task_id)}`} title={l.task_id}>
-                      {l.task_id.slice(-10)}
-                    </a>
-                    <span className="ctl-sub">{l.lease_id.slice(-10)}</span>
+                    {/* ONE TASK REFERENCE (QA G5-15): `task_…` and the last
+                        eight, as Accounts prints the same task, and the lease
+                        under it says it is a lease. */}
+                    <TaskRef id={l.task_id} />
+                    <LeaseRef id={l.lease_id} />
                   </th>
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
                   <td role="cell" data-label="Units (weighted)" className="is-num">{l.units}</td>
