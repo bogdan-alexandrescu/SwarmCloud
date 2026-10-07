@@ -4877,7 +4877,8 @@ function WorkflowHead({
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
-  // and its meta line are the shell's head above (`pageSummary`); this row
+  // is the shell's head above, and its meta line the count note over this
+  // row (`pageSummary`, #138); this row
   // carries what is not a sentence -- the state, the pull request, the failure
   // policy, the cost, the id when the title is the name -- and Copy link and
   // Cancel workflow, centred on the row so nothing leaves blank space under them.

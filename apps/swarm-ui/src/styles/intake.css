@@ -189,8 +189,9 @@
    pushed them past the column (.ctl-scroll 1322 wide in 1120; 'newest read ·
    refresh' at x=1589). The head's title block steps out of the way
    (`display: contents`), the title takes the whole first row -- two lines,
-   then cut, whole in its title (names.css) -- and the `?`, the meta and the
-   freshness share the second. On a phone the `?` beside the reference cost
+   then cut, whole in its title (names.css) -- and the `?` and the head's
+   actions share the second; the meta is the count note under the head
+   (#138). On a phone the `?` beside the reference cost
    it '54' of '#454' (D11); alone on its row the reference fits. */
 .rn-run .c-phead { flex-wrap: wrap; }
 .rn-run .c-phead > div.head { display: contents; }

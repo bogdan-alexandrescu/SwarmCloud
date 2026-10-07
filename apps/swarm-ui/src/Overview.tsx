@@ -184,7 +184,10 @@ export function OverviewScreen() {
           readAt={newest}
           now={clock}
           cadence={{ base: OVERVIEW_POLL_MS, wait: OVERVIEW_POLL_MS }}
-          stale={newest !== null && clock - newest > AGED_AFTER_MS}
+          // NOT REFRESHED when any read behind the cards failed its refresh
+          // and is showing older data, or when the newest is past
+          // `AGED_AFTER_MS` -- the same two cases `Screen` says it for.
+          stale={reads.some((r) => r.status === 'stale') || (newest !== null && clock - newest > AGED_AFTER_MS)}
           reading={pending > 0}
           idle={idle}
           onRefresh={refresh}
@@ -1307,6 +1310,8 @@ function RunningCard({
   const countedAt = ageOf(stats)
   // Said only when stale (#98): a fresh count's age is the head's.
   const countedAge = countedAt === null ? null : staleFoot(countedAt, Date.now(), stats.status === 'stale')
+  // The sentence below names the counts' age on the same rule: only when stale.
+  const counts = countedAge === null ? '' : `, ${countedAge},`
   const foot = (
     <p className="ov-foot">
       <FootRun>
@@ -1331,8 +1336,8 @@ function RunningCard({
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0
-                ? `The state counts, read ${countedAge ?? 'at an unknown time'}, agree: zero.`
-                : `The state counts, read ${countedAge ?? 'at an unknown time'}, say ${counted}; those agents were created before this page begins.`)
+                ? `The state counts${counts} agree: zero.`
+                : `The state counts${counts} say ${counted}; those agents were created before this page begins.`)
           }
         />
         {foot}

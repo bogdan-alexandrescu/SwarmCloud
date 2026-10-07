@@ -27,9 +27,9 @@ import { Button } from './components'
  * run returns is at #help/platform-counts.
  *
  * AND IT IS ON THE CONTROL IT PRICES (AH-25, #138). The cost once sat in a
- * toolbar row a row away from the press it priced. The head is `.head > h1`,
- * the shape `PageHead` draws, with the button beside the title (#503); the
- * line under it reads like every Screen route's: what was read, how long ago.
+ * toolbar row a row away from the press it priced. The head is `PageHead`'s
+ * one shape, title left and actions right (#138, owner ruling 2026-10-07):
+ * what the last count found and how old it is, then the run, on the right.
  *
  * SCOPE IS NOT DECORATION. `tasks_by_state` is the caller's own tenant;
  * `platform_tasks_by_state` is everyone. They are separate cards with the

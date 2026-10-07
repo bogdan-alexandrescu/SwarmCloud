@@ -91,10 +91,10 @@ const ME: Me = {
  * lands -- which is the whole of CH-2's defect. `VITE_LIVE` turns the fixtures
  * off, and `resetModules` makes api.ts read it again.
  *
- * The frame's identity read answers at once; the screen's read waits for
- * `release`; everything else never answers.
+ * The frame's identity read answers at once; the screen's read (`held`)
+ * waits for `release`; everything else never answers.
  */
-async function liveApp(hash: string): Promise<{ release: (res: Response) => Promise<void> }> {
+async function liveApp(hash: string, held = '/v1/admin/tenants'): Promise<{ release: (res: Response) => Promise<void> }> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const gate: { answer?: (r: Response) => void } = {}
@@ -104,7 +104,7 @@ async function liveApp(hash: string): Promise<{ release: (res: Response) => Prom
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url.startsWith('/v1/tenants/me')) return json(ME)
-    if (url.startsWith('/v1/admin/tenants')) return screenRead
+    if (url.startsWith(held)) return screenRead
     return new Promise<Response>(() => {})
   }) as unknown as typeof fetch
   window.location.hash = hash
@@ -124,25 +124,66 @@ async function liveApp(hash: string): Promise<{ release: (res: Response) => Prom
 
 const headAge = (): string => document.querySelector('.ctl-head-age')?.textContent ?? ''
 const dockLine = (): string => document.querySelector('.ctl-dock-line')?.textContent ?? ''
+/** The page's own refresh control: the first in the page, never the inspector's beside it. */
+const pageRefresh = (): HTMLButtonElement | null => document.querySelector<HTMLButtonElement>('main.work .c-phead .c-refresh')
+const refreshSays = (): string => pageRefresh()?.textContent ?? ''
+/** A read age as the refresh control words it (`⟳ 12 s`, `⟳ every 30 s · read 4 s ago`). */
+const AN_AGE = /\d+ (s|min|h|d)\b/
 
+// ONE AGE PER SCREEN (#98, owner ruling 2026-10-07). On a `Screen` route the
+// screen's age is its head's refresh control (`.c-refresh`), and the screen
+// claims the page age, so the frame's `.ctl-head-age` is not drawn there at
+// all. The frame still draws it on a page head with no age of its own -- the
+// Repositories pages -- and there it must still be THAT screen's reads, never
+// the frame's identity read: CH-2's defect, kept pinned below.
 describe("CH-2: the head's read age is the screen's own", () => {
   it('says "reading…" while its screen loads, even after the frame\'s own read has landed', async () => {
-    // THE DEFECT: the head's "newest read" was the newest success of ANY route
-    // in the tab, so it said "just now" beside a page that was still loading.
-    // MUTATION: read the age off the tab-wide registry again.
+    // THE DEFECT: the head's age was the newest success of ANY route in the
+    // tab, so it said "just now" beside a page that was still loading.
+    // MUTATION: give the refresh control the tab-wide newest read as its
+    // `readAt`, or stop `Screen` claiming the page age (the frame's age comes
+    // back beside the control) -- either turns this red.
     const { release } = await liveApp('#admin/tenants')
-    expect(headAge(), 'the head claims an age for a screen that has read nothing').toMatch(/reading…/)
-    expect(headAge()).not.toMatch(/newest read/)
+    await waitFor(() => expect(pageRefresh(), 'the screen has no refresh control').not.toBeNull())
+    expect(refreshSays(), 'the head claims an age for a screen that has read nothing').toBe('⟳ reading…')
+    expect(pageRefresh()!.disabled).toBe(true)
+    expect(document.querySelector('.ctl-head-age'), 'the frame prints a second age on a Screen route').toBeNull()
     // The dock keeps the tab-wide view, and there IS a tab-wide read.
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ tenants: [] }))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ \d+ s$/))
+    expect(document.querySelector('.ctl-head-age')).toBeNull()
+  })
+
+  it('says "reading…" on a head with no age of its own until that screen\'s read lands', async () => {
+    // The frame's age, where it is still drawn (a PageHead with no refresh
+    // control of its own: the Repositories list), is the screen's own reads.
+    // MUTATION: read the age off the tab-wide registry again.
+    const { release } = await liveApp('#work/repositories', '/v1/repositories')
+    await waitFor(() => expect(document.querySelector('.c-phead .c-acts .ctl-head-age'), 'the frame age left the head').not.toBeNull())
+    expect(headAge(), 'the head claims an age for a screen that has read nothing').toMatch(/reading…/)
+    expect(headAge()).not.toMatch(/newest read/)
+    expect(dockLine()).toMatch(/newest/)
+
+    await release(json({ repositories: [] }))
     await waitFor(() => expect(headAge()).toMatch(/newest read/))
   })
 
   it('says "not read" when its screen\'s read failed, and never shows the frame\'s age', async () => {
     // MUTATION: fall back to the tab-wide age when the screen has none.
     const { release } = await liveApp('#admin/tenants')
+    await release(json({ message: 'A service the API depends on did not answer.' }, 503))
+    await waitFor(() => expect(pageRefresh()?.getAttribute('aria-label')).toBe('Refresh · not read'))
+    expect(refreshSays()).toBe('⟳ refresh')
+    expect(refreshSays()).not.toMatch(/\d/)
+    expect(document.querySelector('.ctl-head-age'), 'the frame prints its age beside a failed screen').toBeNull()
+    expect(dockLine(), 'the dock is the tab-wide view').toMatch(/newest/)
+  })
+
+  it('says "not read" on a head with no age of its own when that screen\'s read failed', async () => {
+    // MUTATION: fall back to the tab-wide age when the screen has none.
+    const { release } = await liveApp('#work/repositories', '/v1/repositories')
     await release(json({ message: 'A service the API depends on did not answer.' }, 503))
     await waitFor(() => expect(headAge()).toMatch(/not read/))
     expect(headAge()).not.toMatch(/newest read|\d/)
@@ -151,13 +192,13 @@ describe("CH-2: the head's read age is the screen's own", () => {
 
   it("shows the list's own age again when the inspector over it closes, with no read in flight", async () => {
     // THE DEFECT: closing the agent drawer routes back to work/running, and
-    // that began a new, empty scope -- but the Agents list under the drawer
-    // stayed mounted and does not read again until its next poll (30s with
-    // nothing live; never, once polling has stopped on an answer only a person
-    // can change). So the head said "reading…" with nothing in flight, beside
-    // a list fully drawn: a claim about the screen's reads that was false.
-    // MUTATION: begin a fresh scope on every route change, or count the
-    // list's polls to the inspector while it is open.
+    // the Agents list under the drawer stayed mounted and does not read again
+    // until its next poll. So the head said "reading…" with nothing in
+    // flight, beside a list fully drawn: a claim about the screen's reads
+    // that was false. The list's age is its own refresh control now (#98).
+    // MUTATION: remount the list on the route change (its control falls back
+    // to "reading…"), or stop the list claiming the page age while the
+    // inspector is over it (the frame's age is drawn beside it again).
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
@@ -185,7 +226,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     window.location.hash = '#work/running'
     const { App: LiveApp } = await import('../App')
     render(<LiveApp />)
-    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+    await waitFor(() => expect(refreshSays()).toMatch(AN_AGE), { timeout: 5000 })
+    expect(headAge(), 'the frame prints a second age beside the list').toBe('')
 
     // Open the inspector over the list. Its head is the inspector's own.
     await act(async () => {
@@ -193,7 +235,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     })
     // The crumb names the open agent (walkthrough G): its id until read, then what it is.
     await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')).not.toBeNull())
-    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+    await waitFor(() => expect(refreshSays()).toMatch(AN_AGE), { timeout: 5000 })
+    expect(headAge(), 'the frame prints an age beside the breadcrumb, over a list that has its own').toBe('')
 
     // Close it: the list never went away and reads nothing now.
     await act(async () => {
@@ -203,18 +246,19 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')).toBeNull())
     await act(async () => {})
     expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
-    expect(headAge(), 'the head says "reading…" with nothing being read').not.toMatch(/reading…/)
-    expect(headAge(), "the head lost the list's own read").toMatch(/newest read/)
+    expect(refreshSays(), 'the list says "reading…" with nothing being read').not.toMatch(/reading…/)
+    expect(refreshSays(), "the list lost its own read").toMatch(AN_AGE)
+    expect(headAge()).toBe('')
   })
 
   it("keeps the list's own age across its tab and state addresses (OV-10), which read nothing", async () => {
     // THE DEFECT: a list address (`#work/running/recent/succeeded`) is a view
-    // of one mounted list, but keying the reads scope by the whole address
-    // began an empty scope on every segment click, and again when the
-    // inspector closed back to the list address it opened from -- "reading…"
-    // beside a drawn list, with nothing in flight until the next poll.
-    // MUTATION: key `beginScreenReads` and `ScreenAge` by `canonical(at)`
-    // again instead of `readsKey(at)`.
+    // of one mounted list, but a segment click, and closing the inspector
+    // back to the list address it opened from, each said "reading…" beside a
+    // drawn list, with nothing in flight until the next poll.
+    // MUTATION: key the list's mount by the whole address (so a segment click
+    // remounts it and its refresh control says "reading…"), or let the frame
+    // draw its own age on these routes again.
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const done = task({ id: 'tsk_done', tenant_id: 'u-bogdan', state: 'SUCCEEDED', completed_at: at(59) })
@@ -246,7 +290,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     window.location.hash = '#work/running/recent'
     const { App: LiveApp } = await import('../App')
     render(<LiveApp />)
-    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+    await waitFor(() => expect(refreshSays()).toMatch(AN_AGE), { timeout: 5000 })
 
     // A segment click: a route change the list answers from the rows it holds.
     const seg = await waitFor(() => {
@@ -264,7 +308,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {})
     expect(listReads, 'the click read the list again; the check would prove nothing').toBe(readsBefore)
     expect(pending).toBe(0)
-    expect(headAge(), 'a segment click began an empty scope').toMatch(/newest read/)
+    expect(refreshSays(), 'a segment click began an empty read').toMatch(AN_AGE)
+    expect(headAge(), 'the frame prints a second age beside the list').toBe('')
 
     // Open the inspector over that address, then close back to it.
     await act(async () => {
@@ -273,7 +318,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     // The crumb names the agent humanly (U8 G); the full id stays reachable as its title.
     await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.getAttribute('title')).toBe('tsk_done'))
     expect(document.querySelector('.ctl-crumb')?.textContent).toContain('task · done')
-    await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
+    await waitFor(() => expect(refreshSays()).toMatch(AN_AGE), { timeout: 5000 })
     await act(async () => {
       window.location.hash = '#work/running/recent/succeeded'
     })
@@ -281,8 +326,9 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')).toBeNull())
     await act(async () => {})
     expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
-    expect(headAge(), 'closing to a list address began an empty scope').not.toMatch(/reading…/)
-    expect(headAge(), "the head lost the list's own read").toMatch(/newest read/)
+    expect(refreshSays(), 'closing to a list address began an empty read').not.toMatch(/reading…/)
+    expect(refreshSays(), "the list lost its own read").toMatch(AN_AGE)
+    expect(headAge()).toBe('')
   })
 })
 

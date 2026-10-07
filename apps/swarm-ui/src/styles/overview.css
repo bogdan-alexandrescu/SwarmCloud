@@ -34,7 +34,9 @@
    the h1 by two steps, and told from the card titles by its position, its
    track and its unboxed region, as the heading ladder ranks hierarchy. */
 .ov-lh h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
-.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* Sans (Q1): `checks 8/8 · 1 found something` is words around a figure, and
+   mono is for ids, values, code and timestamps. Tabular, so the figure holds. */
+.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
    column made 345px cards that cut the title ("25 failed tasks among the 200
    mo…") and both detail lines. Two across on a desktop, one on a phone.

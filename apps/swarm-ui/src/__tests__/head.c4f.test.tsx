@@ -76,6 +76,19 @@ describe('#138: one head shape -- title left, actions right, no sub-line', () =>
     expect(note!.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('says a real zero on a screen with no empty panel as its note, not under the title', async () => {
+    fake()
+    const empty = (): Promise<Result<Rows>> => Promise.resolve({ status: 'empty', fetchedAt: Date.now() })
+    render(
+      <Screen title="Artifacts" load={empty}>
+        {() => <p>rows</p>}
+      </Screen>,
+    )
+    await advance(0)
+    expect(document.querySelector('.c-count-note')?.textContent).toBe('Nothing to show')
+    expect(document.querySelector('.c-phead')!.textContent).not.toContain('Nothing to show')
+  })
+
   it('puts every PageHead child in the right-hand actions, never on a line under the title', () => {
     render(
       <PageHead title="Platform counts">

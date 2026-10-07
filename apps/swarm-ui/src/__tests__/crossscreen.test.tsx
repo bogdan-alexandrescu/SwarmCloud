@@ -146,22 +146,40 @@ function screenOf(result: Result<Rows>) {
   )
 }
 
-const sub = (): string => document.querySelector('.sub')?.textContent ?? ''
+/** The screen's refresh control (`RefreshControl`), which carries its one age (#98). */
+const refresh = (): string => document.querySelector('.c-phead .c-refresh')?.textContent ?? ''
+/** The screen's count, the note over its first card (`CountNote`, #138). */
+const note = (): string => document.querySelector('.c-count-note')?.textContent ?? ''
 
+// ONE AGE PER SCREEN (#98, owner ruling 2026-10-07). A `Screen`'s age is its
+// head's refresh control (`⟳ 12 s`), in or out of the frame, and the screen
+// claims the page age so the frame's `.ctl-head-age` is not drawn beside it.
+// The count moved off the head to a note over the first card (#138) and says
+// no age at all. A head with no age of its own (API reads, Help, the
+// Repositories pages) still takes the frame's.
 describe('#98: one read age per screen', () => {
-  it("prints a fresh read's age once: in the frame's head, not again under the title", async () => {
-    // MUTATION: keep `read …` on the sub-line inside the frame.
+  it("prints a fresh read's age once: on the head's refresh control, not again on the count", async () => {
+    // MUTATION: put a `read …` age on the count note, or a second age in the
+    // head beside the control.
     render(<FrameAge.Provider value={true}>{screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() })}</FrameAge.Provider>)
-    await waitFor(() => expect(sub()).toContain('1 rows'))
-    expect(sub()).not.toMatch(/\bread\b/)
-    expect(sub(), 'the refresh control went with the age').toContain('refresh')
+    await waitFor(() => expect(note()).toBe('1 rows'))
+    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ \d+ s$/)
+    expect(document.querySelectorAll('.c-phead .c-refresh')).toHaveLength(1)
+    expect(document.querySelector('.ctl-head-age'), 'a second age in the head').toBeNull()
+    // Per text node: the body's textContent runs `⟳ 0 s` into `1 rows`.
+    const ages: string[] = []
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) {
+      ages.push(...((n.textContent ?? '').match(/\b\d+ (s|min|h|d)\b|\bread\b/g) ?? []))
+    }
+    expect(ages, 'the age is said more than once on the screen').toHaveLength(1)
   })
 
-  it('still prints it where no head carries it, and whenever the read is stale', async () => {
-    // MUTATION: drop the age everywhere, or drop it from an aged read too --
-    // a panel states its freshness when it is stale, and only then.
+  it('prints it with or without the frame, and says `not refreshed` once the read is aged', async () => {
+    // MUTATION: drop the age outside the frame, or stop marking an aged read
+    // -- a read older than AGED_AFTER_MS is said to be one, in words.
     const first = render(screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() }))
-    await waitFor(() => expect(sub()).toContain('read just now'))
+    await waitFor(() => expect(refresh()).toMatch(/^⟳ \d+ s$/))
     first.unmount()
 
     render(
@@ -169,13 +187,15 @@ describe('#98: one read age per screen', () => {
         {screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() - AGED_AFTER_MS - 60_000 })}
       </FrameAge.Provider>,
     )
-    await waitFor(() => expect(sub()).toMatch(/not refreshed · read \d+m ago/))
+    await waitFor(() => expect(refresh()).toMatch(/^⟳ not refreshed · read \d+ min ago$/))
+    expect(document.querySelector('.c-refresh')?.classList.contains('is-stale')).toBe(true)
   })
 
-  it("keeps a cached payload's own age on the sub-line, beside a head that times the fetch", async () => {
-    // A read that landed just now of a payload generated 30m ago: the head
-    // says `just now`, so the data's age has to be said here. MUTATION:
-    // `ownAge = aged || !frameAge` -- the 30m disappears from the screen.
+  it("times a cached payload by its own age, not by the fetch that brought it", async () => {
+    // A read that landed just now of a payload generated 30 min ago: the
+    // control is the screen's one age, so it has to be the DATA's.
+    // MUTATION: give `RefreshControl` the fetch's `fetchedAt` and ignore
+    // `serverAt` -- the 30 min disappears from the screen.
     render(
       <FrameAge.Provider value={true}>
         {screenOf({
@@ -186,12 +206,12 @@ describe('#98: one read age per screen', () => {
         })}
       </FrameAge.Provider>,
     )
-    await waitFor(() => expect(sub()).toContain('1 rows'))
-    expect(sub()).toMatch(/read 30m ago/)
+    await waitFor(() => expect(note()).toBe('1 rows'))
+    expect(refresh()).toMatch(/\b30 min\b/)
   })
 
-  it('leads with the cadence, not a separator, when a fresh in-frame line has nothing before it', async () => {
-    // MUTATION: always print `every`'s leading ` · `.
+  it('leads with the cadence, not a separator, when a fresh polled read has nothing before it', async () => {
+    // MUTATION: always print `every`'s leading ` · `, or drop the cadence.
     render(
       <FrameAge.Provider value={true}>
         <Screen<Rows> title="Things" load={async () => ({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() })} pollMs={10_000}>
@@ -199,14 +219,15 @@ describe('#98: one read age per screen', () => {
         </Screen>
       </FrameAge.Provider>,
     )
-    await waitFor(() => expect(sub()).toContain('every'))
-    expect(sub().trim()).toMatch(/^every /)
+    await waitFor(() => expect(refresh()).toContain('every'))
+    expect(refresh()).toMatch(/^⟳ every 10 s · read \d+ s ago$/)
   })
 
   it('keeps the list\'s own age while an agent is open over it', async () => {
-    // With an agent open the head times the INSPECTOR (`shownBy`), so the
-    // list under it must keep its own `read …`. MUTATION: one
-    // `FrameAge.Provider value={true}` around the page as well as the drawer.
+    // With an agent open the list under it must still carry its own age on
+    // its own refresh control, and the frame must not draw an age for it.
+    // MUTATION: drop the list's control under an open inspector, or stop it
+    // claiming the page age (the frame's age appears beside it).
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const id = 'task_' + 'crossscreen0open'.padEnd(20, '0')
@@ -229,30 +250,45 @@ describe('#98: one read age per screen', () => {
       window.history.replaceState(null, '', `/agents/live/${id}`)
       const { App: LiveApp } = await import('../App')
       render(<LiveApp />)
-      const listSub = () => document.querySelector('main.work .sub')?.textContent ?? ''
-      await waitFor(() => expect(listSub()).toMatch(/\bread (just now|\d+s ago)/))
+      const listAge = () => document.querySelector('main.work .c-phead .c-refresh')?.textContent ?? ''
+      await waitFor(() => expect(listAge()).toMatch(/^⟳ (\d+ s|.*· read \d+ s ago)$/))
+      expect(document.querySelector('main.work .ctl-head-age'), 'the frame drew an age over the list').toBeNull()
     } finally {
       globalThis.fetch = real
       vi.unstubAllEnvs()
     }
   })
 
-  it("lets the head print the screen's age on a Screen route, and none on Platform counts", async () => {
-    // Counts' figures are as old as the count, not as the session read the
-    // head would time. MUTATION: drop the claim, or the head's check of it.
+  it("draws the frame's age only on a head with none of its own: not on a Screen route, not on Platform counts", async () => {
+    // A Screen carries its own age, and Counts' figures are as old as the
+    // count, not as the session read the frame would time. A head with no
+    // age of its own (API reads) still takes the frame's, in its actions.
+    // MUTATION: drop a claim (`useClaimPageAge`), or the provider's check of
+    // it -- two ages on that screen; or stop PageHead drawing the frame's.
     window.history.replaceState(null, '', '/admin/tenants')
     const a = render(<App />)
-    expect(document.querySelector('.ctl-head-age'), 'a Screen route lost the head age').not.toBeNull()
+    await waitFor(() => expect(document.querySelector('.c-phead .c-refresh'), 'a Screen route lost its own age').not.toBeNull())
+    expect(document.querySelector('.ctl-head-age'), 'two ages on a Screen route').toBeNull()
     a.unmount()
 
     window.history.replaceState(null, '', '/admin/counts')
-    render(<App />)
+    const b = render(<App />)
     await waitFor(() => expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts'))
+    expect(document.querySelector('.c-phead .c-acts .counts-prov'), 'Counts lost its own provenance').not.toBeNull()
     expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
+    b.unmount()
+
+    window.history.replaceState(null, '', '/api-reads')
+    render(<App />)
+    await waitFor(() => expect(document.querySelector('.c-phead .c-acts > .ctl-head-age'), 'a head with no age lost the frame\'s').not.toBeNull())
+    expect(document.querySelectorAll('.ctl-head-age')).toHaveLength(1)
   })
 
   it("labels Overview's lead count as the checks it counts", async () => {
-    // MUTATION: an unlabelled `{n}/{m}` fraction back beside `8/8 reads`.
+    // The ruling (#98, 2026-10-07): the lead count is `checks ran/total ·
+    // found found something` -- the fraction is allowed, but it says what it
+    // is a fraction of. MUTATION: an unlabelled `{n}/{m}` fraction, or drop
+    // the `found something` half.
     window.history.replaceState(null, '', '/')
     render(<App />)
     const line = await waitFor(() => {
@@ -260,7 +296,11 @@ describe('#98: one read age per screen', () => {
       expect(el).not.toBeNull()
       return el!
     })
-    expect(line.textContent).toMatch(/^(\d+ checks? of \d+ · derived on this read|\d+ of \d+ checks still reading)/)
+    expect(line.textContent).toMatch(/^(checks \d+\/\d+ · \d+ found something|\d+ of \d+ checks still reading)$/)
+    // Once every check has run, the settled form, labelled.
+    await waitFor(() => expect(line.textContent).toMatch(/^checks (\d+)\/(\d+) · \d+ found something$/), { timeout: 5000 })
+    const [, ran, total] = /^checks (\d+)\/(\d+)/.exec(line.textContent ?? '')!
+    expect(Number(ran)).toBeLessThanOrEqual(Number(total))
     expect(line.textContent).not.toMatch(/^\d+\/\d+/)
   })
 })

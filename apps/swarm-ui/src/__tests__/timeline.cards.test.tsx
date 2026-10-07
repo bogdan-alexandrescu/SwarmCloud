@@ -331,7 +331,7 @@ describe('with IntersectionObserver', () => {
     scroll(box(root, 'workflows'), true)
     await waitFor(() => expect(loaded(box(root, 'workflows'))).toBe(true))
     api.loadOutcomes.mockClear()
-    fireEvent.click(within(root).getByRole('button', { name: 'refresh' }))
+    fireEvent.click(within(root).getByRole('button', { name: /^refresh/i }))
     await waitFor(() => expect(cardCalls().length).toBe(1))
     await settle()
     expect(cardCalls().map((c) => c.sections)).toEqual([CARDS.workflows])

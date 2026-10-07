@@ -11,7 +11,9 @@
  *         cut with an ellipsis, whole in its title. The PR fact is a link.
  *   B/R2  A long title pushed the `?`, the meta chip and the freshness off the
  *         column (.ctl-scroll 1322 > 1120). The title takes its own row (two
- *         lines, then cut, whole in its title); the rest share the next row.
+ *         lines, then cut, whole in its title); the `?` and the head's actions
+ *         (the refresh, cut whole in its title) share the next row. Since #138
+ *         the meta chip is the count note over the first card, cut likewise.
  *   D11   On a phone the reference heading lost '54' of '#454' to the `?`
  *         beside it: alone on its row it fits.
  *   C     A step's touches and tests are LISTS, one per line, each breaking
@@ -21,13 +23,15 @@
  *   E     Overlaps are neutral when none needs action; amber, with the count
  *         in the heading, when one does. Each is a compact row that opens to
  *         its reasoning.
- *   F     A cut lead has an inline "Read more"; the meta chip opens on a tap.
+ *   F     A cut lead has an inline "Read more"; the meta chip (in the count
+ *         note since #138) opens on a tap.
  *   N18   The lead is cut on its RENDERED text: never inside a code span,
  *         never leaving a raw backtick.
  *   R11   The Runs list sizes Workflow and By to what they hold.
  *
  * MUTATIONS: put the fact back to a flex row; drop a `<wbr>` or add one
- * mid-identifier; drop `display: contents` or the h1's 100% basis; render
+ * mid-identifier; drop `display: contents` or the h1's 100% basis, or the actions'
+ * zero min-width; put the meta chip back in the head; render
  * touches as one comma line; drop the banner's actions or draw them for a
  * RUNNING run; drop the needs-action count; cut the lead on the source text
  * -- each turns a case red.
@@ -212,10 +216,18 @@ describe('B/R2/D11: the page head never leaves the column', () => {
       expect(painted(h1, 'flex', env)).toBe('1 0 100%')
       expect(painted(h1, '-webkit-line-clamp', env)).toBe('2')
       expect(h1.getAttribute('title')).toBe(LONG_TITLE)
-      const sub = head.querySelector(':scope > .sub')!
-      expect(painted(sub, 'min-width', env)).toBe('0')
-      expect(painted(sub, 'max-width', env)).toBe('100%')
-      const meta = head.querySelector('.c-meta')!
+      // #138: no sub-line; the head's second row is its actions, which take
+      // what the row leaves and never pass the column.
+      expect(head.querySelector(':scope > .sub'), 'a sub-line is back in the head').toBeNull()
+      const acts = head.querySelector(':scope > .c-acts')!
+      expect(painted(acts, 'min-width', env)).toBe('0')
+      expect(painted(acts, 'max-width', env)).toBe('100%')
+      // The refresh in them is cut, whole in its title, rather than pushed off.
+      const refresh = acts.querySelector<HTMLElement>('.c-refresh')!
+      expect(painted(refresh, 'text-overflow', env)).toBe('ellipsis')
+      expect(refresh.getAttribute('title')).toBeTruthy()
+      // The meta (now the count note's chip, out of the head) is cut too.
+      const meta = container.querySelector('.rn-run .c-count-note .rn-meta')!
       expect(painted(meta, 'text-overflow', env)).toBe('ellipsis')
     })
   }
@@ -230,7 +242,9 @@ describe('B/R2/D11: the page head never leaves the column', () => {
 
   it('opens the meta chip on a tap (F)', async () => {
     const { container } = await mount(run())
-    const button = container.querySelector('.c-phead .c-meta button.rn-meta') as HTMLButtonElement
+    // #138: the meta chip is the count note over the first card, not the head.
+    expect(container.querySelector('.c-phead .rn-meta'), 'the meta is back in the head').toBeNull()
+    const button = container.querySelector('.c-count-note button.rn-meta') as HTMLButtonElement
     expect(button).not.toBeNull()
     expect(button.getAttribute('title')).toContain(RUN_ID)
     expect(button.getAttribute('aria-expanded')).toBe('false')

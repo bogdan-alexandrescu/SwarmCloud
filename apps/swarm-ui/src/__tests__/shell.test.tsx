@@ -37,6 +37,7 @@ import { painted } from './marks'
 import { App } from '../App'
 import { Button, Tabs } from '../components'
 import { HelpScreen } from '../HelpSection'
+import { PageHead } from '../Shell'
 import {
   DOCK,
   DOCK_COLLAPSED,
@@ -195,40 +196,52 @@ describe('B3: the work area, now beside the Sky spine', () => {
 })
 
 describe('B3: the head', () => {
-  it('carries a breadcrumb and the age of the newest successful read', () => {
+  it('carries a breadcrumb, and each screen carries its own read age on its refresh control', () => {
     // THE CRUMB IS THE TRAIL TO THE PAGE (#138): on Overview, a one-page
     // section, the trail is empty -- the `<h1>` names the page -- and on a
     // page inside a section it is the section, as a link.
     //
     // THE CRUMB ROW IS GONE FROM SECTION PAGES (visual QA Q2, 2026-10-02):
-    // the panel lights the page and the title names it, and the age sits on
-    // the title row. The trail is drawn inside an open object (crossscreen
-    // #138), so this asks the open agent for it.
+    // the panel lights the page and the title names it. The trail is drawn
+    // inside an open object (crossscreen #138), so this asks the open agent
+    // for it.
+    //
+    // ONE AGE PER SCREEN, RE-POINTED (#98, owner ruling 2026-10-07): a
+    // `Screen` claims the page age and carries its own on the head's refresh
+    // control (`.c-refresh`), so the frame's `.ctl-head-age` is not drawn on
+    // its route -- not on the title row and not beside the crumb.
+    //
+    // MUTATION: drop `useClaimPageAge(true)` from `Screen`. The frame's age is
+    // drawn as well, and the page says its age twice. MUTATION: drop the
+    // refresh control from `Screen`'s head. The page has no age at all.
     window.history.replaceState(null, '', '/capacity/accounts')
     const page = render(<App />)
     expect(document.querySelector('.ctl-head'), 'a section page draws the crumb row').toBeNull()
-    expect(document.querySelectorAll('.ctl-head-age'), 'the age is drawn twice').toHaveLength(1)
+    expect(document.querySelectorAll('.ctl-head-age'), 'the frame drew a second age beside the screen’s').toHaveLength(0)
+    expect(
+      document.querySelectorAll('.c-phead .c-acts .c-refresh'),
+      'the screen’s age is not on its head’s refresh control, or is drawn twice',
+    ).toHaveLength(1)
     page.unmount()
     window.location.hash = '#work/task/t-1'
     render(<App />)
     const head = document.querySelector('.ctl-head')
     expect(head, 'no head region inside an open agent').not.toBeNull()
     expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Work')
+    // The crumb row carries no age of its own: the list and the open agent's
+    // pane are each a `Screen`, and each says its own on its own control.
+    expect(document.querySelectorAll('.ctl-head-age'), 'the crumb row drew an age the screens already carry').toHaveLength(0)
+    const ages = [...document.querySelectorAll('.c-phead .c-refresh')].map((e) => e.textContent ?? '')
+    expect(ages.length, 'no screen under the open agent carries an age').toBeGreaterThan(0)
 
-    // READING is a different sentence from "0s ago", and on the first render
-    // nothing this screen asked for has landed, so it is the true one here. A
-    // head that rendered a zero age against no successful read would be the
-    // defining bug of this product, in the frame.
-    //
-    // RE-POINTED BY CH-2: the head's age is the SCREEN's own newest read now,
-    // and the word for a read in flight is "reading…" (the tab-wide age is
-    // the dock's). It used to say "nothing has loaded in this tab".
-    // The age sits on the screen's title row now (#503, "Page head"), or
-    // beside the crumb when no screen draws a page head: one of the two.
-    const age = document.querySelector('.ctl-head-age')?.textContent ?? ''
-    expect(document.querySelectorAll('.ctl-head-age'), 'the age is drawn twice').toHaveLength(1)
-    expect(age).toContain('reading')
-    expect(age).not.toMatch(/\d/)
+    // READING is a different sentence from "0 s", and on the first render
+    // nothing these screens asked for has landed, so it is the true one here.
+    // A control that rendered a zero age against no successful read would be
+    // the defining bug of this product, in the head.
+    for (const age of ages) {
+      expect(age).toContain('reading')
+      expect(age).not.toMatch(/\d/)
+    }
   })
 })
 
@@ -395,8 +408,9 @@ describe('one control, one appearance', () => {
     // had whatever the browser draws by default: the same control had two
     // appearances. The spacing probe found it by failing to resolve
     // `buttonface` to a colour. (PlatformCounts' "Run the count" was the first
-    // such case; AH-25 moved it into the head line as a `.sub button`, the same
-    // read-now control as Screen's `refresh`, so it is no longer a `.retry`.)
+    // such case; AH-25 moved it into the page head, and since #138 it is the
+    // canonical Button in the head's right-hand actions, so it is no longer a
+    // `.retry`.)
     //
     // This is the claim the probe CANNOT make -- it measures geometry and
     // contrast, not "these two are the same button" -- so it is made here, on
@@ -1961,20 +1975,35 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('AH-25: the cost and the control on the Platform counts head line never split', () => {
-    // The head is Screen's -- a title over one provenance line -- and the cost
-    // of a read is printed ON the control that spends it (#138). At 390 the
-    // line wraps; the label and its price must wrap together.
-    // MUTATION: drop `white-space: nowrap` from `.counts-run`.
-    const f = fragment(
-      '<div class="head"><h1>Platform counts</h1></div>' +
-        '<p class="sub">not counted yet · <span class="counts-run"><button>Run the count · <span class="counts-cost">12–24 count()</span></button></span></p>',
+    // RE-POINTED (#138, owner ruling 2026-10-07): ONE head shape, title left,
+    // actions right. Platform counts' provenance and its billed run are the
+    // head's right-hand actions (`.c-acts`), not a line under the title and
+    // not a control beside it; the cost of a read is still printed ON the
+    // control that spends it. The head is drawn by the real `PageHead`.
+    // MUTATION: drop `white-space: nowrap` from `.counts-run` (the label and
+    // its price split). MUTATION: give `PageHead` a slot beside the title
+    // again and put the run there (it is no longer in `.c-acts`). MUTATION:
+    // drop `margin-left: auto` from `.c-phead > .c-acts` (the actions sit
+    // against the title instead of at the right).
+    const page = render(
+      <PageHead title="Platform counts">
+        <span className="counts-prov">not counted yet</span>
+        <Button className="counts-run" kind="primary" onClick={() => {}}>
+          Run the count · <span className="counts-cost">24 reads</span>
+        </Button>
+      </PageHead>,
     )
+    const head = page.container.querySelector('.c-phead')!
+    expect([...head.children].map((c) => c.className)).toEqual(['head', 'c-acts'])
+    expect(head.querySelector('.head')!.textContent, 'something sits beside the title').toBe('Platform counts')
+    expect(head.querySelector('.c-acts > .counts-prov'), 'the provenance is not in the actions').not.toBeNull()
+    expect(head.querySelector('.c-acts > .counts-run'), 'the run is not in the actions').not.toBeNull()
+    expect(document.querySelector('.sub'), 'a line under the title is back').toBeNull()
     for (const env of [PHONE, WIDE]) {
-      expect(won(pick(f, '.counts-run'), 'white-space', env)).toBe('nowrap')
+      expect(won(pick(head, '.counts-run'), 'white-space', env)).toBe('nowrap')
+      expect(won(pick(head, '.c-acts'), 'margin-left', env), 'the actions are not pushed right').toBe('auto')
     }
-    // THE CONTROL IS `.sub button`, THE SAME ACT AS SCREEN'S `refresh`: a
-    // link-style read-now, not the boxed `.retry`. MUTATION: `.retry` back.
-    expect(won(pick(f, 'button'), ['background', 'background-color'], WIDE)).toBe('none')
+    page.unmount()
   })
 
   it('CH-4: the absent and stale marks put their words on a solid fill and keep the hatch as a band', () => {
@@ -1990,11 +2019,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('CH-5, RE-POINTED (#503): the link primitive is sky and sans; a bare anchor stays ink', () => {
-    // MUTATION: put `color: var(--info)` back on any of the five, or delete the
+    // MUTATION: put `color: var(--info)` back on any of the four, or delete the
     // `:where(a)` fallback so an unclassed anchor is the browser's blue.
+    // The head's refresh was the fifth (`.sub button`); since #138 it is
+    // `.c-refresh`, a QUIET control and not an accent link, held below.
     const f = fragment(
       '<div class="app">' +
-        '<p class="sub">read 2s ago <button>refresh</button></p>' +
+        '<div class="c-phead"><div class="head"><h1>Agents</h1></div><div class="c-acts"><button class="c-refresh">⟳ 2 s</button></div></div>' +
         '<div class="ctl-dock-tools"><a href="#a">API reads</a></div>' +
         '<p class="ctl-panel-note"><a href="#b">why</a></p>' +
         '<p class="ol-line"><a class="ctl-link" href="#c">open in Agents</a></p>' +
@@ -2003,7 +2034,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '</div>',
     )
     const links = [
-      pick(f, '.sub button'),
       pick(f, '.ctl-dock-tools a'),
       pick(f, '.ctl-panel-note a'),
       pick(f, '.ol-line .ctl-link'),
@@ -2040,6 +2070,15 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     const label = pick(tile, '.ctl-metric-label')
     expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--info)')
     expect(won(label, 'text-decoration-thickness', WIDE)).toBe('1px')
+    // THE HEAD'S REFRESH IS QUIET (#138, owner ruling 2026-10-07): dim ink,
+    // the micro step, no underline, no fill -- the age it carries is read, not
+    // clicked first. MUTATION: put `.c-refresh` back in the `.ctl-link` list
+    // (it turns accent and underlined), or give it a fill.
+    const refresh = pick(f, '.c-refresh')
+    expect(won(refresh, 'color', WIDE), 'the refresh control is drawn as an accent link').toBe('var(--text-dim)')
+    expect(won(refresh, ['background', 'background-color'], WIDE), 'the refresh control is boxed').toBe('none')
+    expect(won(refresh, ['text-decoration', 'text-decoration-line'], WIDE) ?? 'none', 'the refresh control is underlined').not.toMatch(/underline/)
+    expect(won(refresh, 'color', { ...WIDE, states: ['hover'] }), 'the refresh control does not answer a hover').toBe('var(--text)')
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
@@ -2090,7 +2129,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="c-btn is-primary is-full">Send</button>' +
-        '<button class="ctl-q-glyph">?</button><p class="sub"><button>refresh</button></p>' +
+        '<button class="ctl-q-glyph">?</button><button class="c-refresh">⟳ 2 s</button>' +
         '<a class="ov-link" href="#x">open</a><button class="c-link is-sm">remove</button>' +
         '</div>',
     )
@@ -2115,7 +2154,8 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // The segment keeps its desktop size: the target is a phone rule.
     expect(px(painted(pick(f, '.c-seg > button'), 'min-height', WIDE) ?? '0px')).toBeLessThan(44)
     // A word or a disc that must not grow gets an empty, centred hit area.
-    for (const sel of ['.ctl-q-glyph', '.sub button', '.ov-link', '.c-link.is-sm']) {
+    // `.c-refresh` where `.sub button` was: the head's refresh control (#138).
+    for (const sel of ['.ctl-q-glyph', '.c-refresh', '.ov-link', '.c-link.is-sm']) {
       const el = pick(f, sel)
       expect(won(el, 'position', PHONE), `${sel} is not the hit area's containing block`).toBe('relative')
       expect(won(el, 'content', PHONE, 'after'), `${sel} has no hit area`).toBe("''")
@@ -2280,7 +2320,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // `.sbf-flow` where `.wfb-stage + .wfb-stage` was: the break between two
     // stages is the arrow drawn between them now (#118), and the adjacency
     // rule that drew the old tick is deleted.
-    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.sbf-flow']) {
+    // `.c-phead` and `.c-count-note` where `.sub` was: the summary line under
+    // the title is gone (#138); the head's row gap and the count note's margin
+    // are the spacing that replaced it.
+    for (const sel of ['.c-phead', '.c-count-note', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.sbf-flow']) {
       const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
       expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
       for (const r of rules) {

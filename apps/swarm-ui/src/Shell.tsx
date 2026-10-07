@@ -858,6 +858,11 @@ export function Screen<T>({
         </Absent>
       )}
 
+      {/* A REAL ZERO ON A SCREEN WITH NO EMPTY PANEL still says so: it was
+          the head's `Nothing to show`, and with no line under the title it
+          is the note where the first card would be (#138). */}
+      {state.status === 'empty' && !empty && <CountNote>Nothing to show</CountNote>}
+
       {/* Dimmed when stale or aged, and the dimming is the signal that the
           numbers below are from an earlier read. */}
       {data !== null && reading !== null && (
