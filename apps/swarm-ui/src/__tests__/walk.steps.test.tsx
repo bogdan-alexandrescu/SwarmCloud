@@ -38,7 +38,11 @@ const WORST: Record<string, readonly string[]> = {
   ran: ['45m 40s', '23h 59m'],
   attempts: ['2 of 3', '10 of 10'],
   cost: ['$12.3456'],
-  tokens: ['656 in · 1084.2k out'],
+  // The cell prints ONE total since #322 (`tokenKindsCell`: `1.34M`), and
+  // its widest word is the absence `not reported`; `656 in · 1084.2k out`
+  // is the retired kinds shape, which no cell prints now (QA G3-10 gave
+  // Tokens' spare width to State).
+  tokens: ['1.34M', 'not reported'],
   inputs: ['12 files'],
 }
 
