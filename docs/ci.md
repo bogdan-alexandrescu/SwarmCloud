@@ -1397,7 +1397,18 @@ it is not configured, and submits nothing.
   through the IAP front door, with an access token for a principal granted
   `roles/iap.httpsResourceAccessor` (`frontend_iap_members` in
   `terraform/bootstrap/terraform.tfvars`, applied by the owner) -- the same
-  path `SWARM_IMPERSONATE_SA` gives an operator's laptop.
+  path `SWARM_IMPERSONATE_SA` gives an operator's laptop. IAP membership lives
+  only there: `terraform/bootstrap/wif.tf` binds each member on the
+  platform's own backends (`frontend_accessors`), in the root only the owner
+  applies, so adding the fixer is an owner apply and never a release. The
+  deployer (`GCP_DEPLOY_SA`) holds no IAP role at all -- no `roles/iap.*`
+  project role, and it is not in `frontend_iap_members` (read 2026-10-07) --
+  and the release never reads an IAP policy: each of the three ways of
+  granting it IAP admin tried on 2026-09-24 either reached the other team's
+  backends or was refused (wif.tf, "WHO MAY PASS IAP"). `tests/terraform/bootstrap.tftest.hcl`
+  (`iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role`)
+  requires every accessor binding to be `roles/iap.httpsResourceAccessor` and
+  no deployer role to start `roles/iap.`.
 * **`ci_fix_service_account` in `terraform/bootstrap/terraform.tfvars`**, the
   same email, applied by the owner. It binds that account
   (`roles/iam.workloadIdentityUser`) to exactly one principal,

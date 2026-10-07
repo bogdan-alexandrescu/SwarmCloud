@@ -21,8 +21,11 @@ Two invariants, both about not locking a tenant out:
 And one about not writing for the sake of writing:
 
   3. An UNCHANGED credential adds no secret version. A sweep runs every five
-     minutes and a token lives eight hours, so anything this module writes per
-     tick it writes ~1,700 times per token. See `_BaseState` for the bool that
+     minutes and a token is refreshed about three hours before its eight-hour
+     expiry, so anything this module writes per tick it writes about 60 times
+     per token (96 if one were never refreshed early). The 1,741 and 1,814
+     versions below are what that added up to over a four-day incident, not
+     per token. See `_BaseState` for the bool that
      could not tell "the secret differs" from "I was not allowed to look", and
      what that cost -- and `quota_broker.publishledger` for why the replacement
      had to be durable rather than a dict on this object.

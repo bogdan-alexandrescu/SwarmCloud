@@ -515,7 +515,10 @@ info "$(jq -r '"\(.total_changes) change(s), \(.deletions) deletion(s)"' "${VERD
 
 if report "${VERDICT}" "${MODE}"; then
   ok "no deny-listed resource is touched"
-  ok "every deletion is ours, and every creation carries managed-by=swarm-terraform"
+  # Says only what aborted on: `offenders` and `unlabelled_creations` skip
+  # the unlabelable types, and `foreign_touches` only warns (see its comment
+  # in report()), so this line must not claim every change was attributed.
+  ok "every labelable deletion is ours and every labelable creation carries managed-by=swarm-terraform (unlabelable types are exempt; any unattributed change is listed above as a warning)"
   exit 0
 fi
 

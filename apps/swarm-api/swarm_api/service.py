@@ -47,11 +47,12 @@ from swarm_common.models import (
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
+from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
 from .continuation import resolve_continuation
-from .errors import Forbidden, ValidationFailed
+from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
 from .repositories import Repositories, repo_id_for
@@ -250,6 +251,7 @@ class SubmissionService:
         repository_url: str | None = None,
         repository_ref: str | None = None,
         submitted_by: str | None = None,
+        git_identity: dict[str, str] | None = None,
     ) -> Task:
         # `submitted_by` is set only by the child route (swarm_api.children),
         # which has no person on the call: a child's submitter is its parent's,
@@ -297,6 +299,17 @@ class SubmissionService:
         # override the workflow's choice.
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # Who the agent's commits name (P37, `gitidentity`): the authenticated
+        # caller unless the caller of this method resolved someone else (a
+        # child's parent, a service account's continued task). Inside the
+        # dispatch block, which the signature covers and no caller can write.
+        if git_identity is None:
+            git_identity = (
+                gitidentity.for_caller(ctx.email, ctx.display_name)
+                if ctx is not None
+                else gitidentity.for_caller(submitted_by)
+            )
+        gitidentity.record_on(metadata[DISPATCH_METADATA_KEY], git_identity, submitted_by)
 
         # Walk the real state machine even though only the end state is stored.
         assert_transition(TaskState.SUBMITTED, TaskState.QUEUED)
@@ -380,6 +393,19 @@ class SubmissionService:
         return SubmissionResult(tasks=tasks, woke_scheduler=woke)
 
     # -- workflows --------------------------------------------------------
+
+    def _continued_task(self, tenant_id: str, continuation: Any) -> Task | None:
+        """The task a continuation names, for whose person its commits carry.
+
+        Unfiltered by submitter, as `resolve_continuation` reads it: a
+        continuation-scoped account continues a task someone else submitted.
+        None when it has gone since that check, so the bot is named.
+        """
+        task_id = continuation.task_id or continuation.root_task_id
+        try:
+            return self._store.get_task(tenant_id, task_id, submitted_by=None)
+        except NotFound:
+            return None
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
         # A continuation-scoped caller (a listed service account, contract
@@ -544,6 +570,13 @@ class SubmissionService:
         # Beside a merge step, a `ready` label is dropped (`workflow_label`)
         # so `auto-merge.yml` never races the step; recorded on every task.
         label_dropped = ready_label_dropped(spec.metadata, merge_step=merge_plan is not None)
+        # Every step's commits name the workflow's submitter (P37). A
+        # continuation a service account submitted names the person behind
+        # the task it continues instead, else the bot (`gitidentity`).
+        git_identity = gitidentity.for_continuation(
+            ctx.email, ctx.display_name,
+            self._continued_task(tenant.tenant_id, continuation) if continuation else None,
+        )
         for step_id in order:
             source = by_id[step_id]
             parent_task_ids = [step_task_id[dep] for dep in source.depends_on]
@@ -605,6 +638,7 @@ class SubmissionService:
                 priority=spec.priority,
                 repository_url=repository_url,
                 repository_ref=spec.repository_ref,
+                git_identity=git_identity,
             )
             # The one place `metadata.input_from` is written. After `_build_task`,
             # which refused the key in the caller's metadata, so what lands here

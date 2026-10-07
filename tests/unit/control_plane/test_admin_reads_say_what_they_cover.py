@@ -310,3 +310,71 @@ def test_an_empty_quota_answer_is_still_dated(fixed_client):
     body = response.json()
     assert body["quota"] == []
     assert _parse(body["generated_at"]) == NOW
+
+
+# -- 3. /v1/admin/quota says whether it cut, and cuts the same rows each time --
+#
+# `Store.list_quota` read `limit` (500) quota documents with no `order_by` and
+# returned them with no signal, so past 500 provider x tenant pairs the route
+# served an arbitrary subset that could differ between two calls, and a
+# missing row looked exactly like a pair the broker never wrote (#76).
+
+
+def _quota(db, provider: str, tenant: str) -> None:
+    db.docs[f"quota/{provider}:{tenant}"] = {
+        "provider": provider, "tenant_id": tenant, "state": "AVAILABLE",
+        "updated_at": NOW - timedelta(minutes=1), "configured_hard_max": 50,
+        "adaptive_target": 10, "quota_derived_limit": None,
+        "requests_remaining": None, "tokens_remaining": None, "reset_at": None,
+        "cooldown_until": None, "last_429_at": None, "retry_after_seconds": None,
+        "success_count": 0, "rate_limit_count": 0,
+    }
+
+
+def test_the_quota_store_reads_in_document_id_order_and_says_when_it_cut(db):
+    from swarm_api.store import Store
+
+    # Written out of order, so an unordered read cannot pass by accident.
+    for provider, tenant in [("openai", "eng"), ("anthropic", "zeta"), ("anthropic", "eng"), ("google", "eng")]:
+        _quota(db, provider, tenant)
+
+    scan = Store(db).scan_quota(limit=3)
+    assert [(q.provider, q.tenant_id) for q in scan.states] == [
+        ("anthropic", "eng"), ("anthropic", "zeta"), ("google", "eng"),
+    ], "the window must be the first `limit` documents by id, the same rows on every call"
+    assert scan.truncated is True
+
+    whole = Store(db).scan_quota(limit=4)
+    assert len(whole.states) == 4
+    assert whole.truncated is False, "exactly `limit` documents is a complete read, not a cut one"
+
+    eng = Store(db).scan_quota("eng", limit=2)
+    assert [(q.provider, q.tenant_id) for q in eng.states] == [("anthropic", "eng"), ("google", "eng")]
+    assert eng.truncated is True
+
+    # `list_quota` -- what /v1/providers already calls -- still returns a list.
+    assert [q.provider for q in Store(db).list_quota("eng", limit=2)] == ["anthropic", "google"]
+
+
+def test_admin_quota_says_truncated_false_when_it_read_everything(fixed_client, db):
+    _quota(db, "anthropic", "eng")
+    response = fixed_client.get("/v1/admin/quota", headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["quota"]) == 1
+    assert body["truncated"] is False
+
+
+def test_admin_quota_says_truncated_true_past_its_window(fixed_client, db):
+    """501 documents against the route's 500-row window: the response must
+    say it is not the whole set rather than look complete."""
+    for i in range(501):
+        _quota(db, "anthropic", f"t{i:04d}")
+    response = fixed_client.get("/v1/admin/quota", headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["quota"]) == 500
+    assert body["truncated"] is True
+    assert "t0500" not in {row["tenant_id"] for row in body["quota"]}, (
+        "the cut falls at the end of document-id order, not at an arbitrary row"
+    )
