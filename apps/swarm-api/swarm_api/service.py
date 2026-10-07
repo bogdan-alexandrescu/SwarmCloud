@@ -63,6 +63,7 @@ from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
 from .validation import (
+    APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
@@ -1037,7 +1038,12 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         quota_by_provider = {q.provider: q for q in self._store.list_quota(ctx.tenant_id)}
         entries = []
-        for name in sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}):
+        # Never a retired #295 App key (`git-review`, which the frozen
+        # catalogue's disabled post-verdict entry still names): nothing reads
+        # one, so listing it would offer a tenant a credential to register
+        # that no route accepts and no Job reads.
+        named = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+        for name in sorted(named - APP_CREDENTIAL_PROVIDERS):
             quota = quota_by_provider.get(name)
             entries.append(
                 {

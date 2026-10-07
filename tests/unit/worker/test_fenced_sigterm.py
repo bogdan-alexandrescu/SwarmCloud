@@ -490,9 +490,9 @@ def test_a_fence_the_periodic_checkpoint_meets_stops_the_runner_like_the_poll_wo
     gate = threading.Lock()
     real_checkpoint = worker._checkpoint
 
-    def checkpoint(label: str) -> Any:
+    def checkpoint(label: str, **kwargs: Any) -> Any:
         with gate:
-            return real_checkpoint(label)
+            return real_checkpoint(label, **kwargs)
 
     worker._checkpoint = checkpoint  # type: ignore[method-assign]
     frozen: dict[str, World] = {}
@@ -713,8 +713,8 @@ def park_began(worker: Any, label: str) -> threading.Event:
     began = threading.Event()
     real_checkpoint = worker._checkpoint
 
-    def checkpoint(name: str) -> Any:
-        record = real_checkpoint(name)
+    def checkpoint(name: str, **kwargs: Any) -> Any:
+        record = real_checkpoint(name, **kwargs)
         if name == label:
             began.set()
         return record
