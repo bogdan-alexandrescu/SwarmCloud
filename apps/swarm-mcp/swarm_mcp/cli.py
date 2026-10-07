@@ -38,11 +38,13 @@ from .client import (
     TERMINAL,
     SwarmClient,
     SwarmError,
+    chosen_tenant,
     outputs_of,
     project_id,
     region,
     service_name,
     task_id_of,
+    tenant_listing,
 )
 from .follow import (
     DEFAULT_LOG_BUDGET,
@@ -1316,6 +1318,39 @@ def cmd_profiles(_client, args) -> int:
     return EXIT_OK
 
 
+def cmd_tenants(client: SwarmClient, args) -> int:
+    """The tenants you may act as, from `GET /v1/tenants/mine`, current marked.
+
+    `*` marks the tenant this invocation acts as, as `GET /v1/tenants/me`
+    reports it with the same `--tenant`/`SWARM_TENANT` every other command
+    sends -- so it is the API's answer, not a guess. A tenant you are not a
+    member of is the API's 403, printed as it came (`main`), never decided
+    here: the header selects among your verified memberships; it grants none.
+    """
+    listing = tenant_listing(client)
+    if args.json:
+        print(json.dumps(listing, indent=2))
+        return EXIT_OK
+    entries = listing["tenants"]
+    if not entries:
+        # A personal tenant is not a membership, so there is nothing to choose.
+        print(
+            f"tenant  {listing['current'] or '(not reported)'} -- personal: you are in "
+            "no registered tenant group, so there is no other tenant to choose"
+        )
+        return EXIT_OK
+    width = max(len(str(e["tenant_id"])) for e in entries)
+    for entry in entries:
+        mark = "*" if entry["current"] else " "
+        note = ""
+        if entry["current"]:
+            note = "  (chosen)" if listing["chosen"] else "  (default: first matching group)"
+        print(f"{mark} {str(entry['tenant_id']):<{width}}  {entry['display_name']}{note}")
+    print()
+    print("act as another with `swarm --tenant <id> ...` or SWARM_TENANT=<id>")
+    return EXIT_OK
+
+
 def _doctor_deployment(args) -> Any:
     """Which deployment doctor is about, printed first: it decides the tier.
 
@@ -1499,7 +1534,10 @@ def cmd_doctor(_client, args) -> int:
     # is still worth printing when the API is down, and is exactly what someone
     # needs in order to say WHY it is down.
     try:
-        with SwarmClient(context=getattr(args, "context", None)) as client:
+        with SwarmClient(
+            context=getattr(args, "context", None),
+            tenant=chosen_tenant(getattr(args, "tenant", None)),
+        ) as client:
             endpoint = client.base_url
             me = client.request("GET", "/v1/tenants/me")
     except SwarmError as exc:
@@ -1669,6 +1707,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"which configured deployment to use (`{help_command('sc context list')}`); "
         "default: SWARM_URL, SWARM_CONTEXT, the plugin's, or the current context",
+    )
+    parser.add_argument(
+        "--tenant",
+        default=None,
+        help="act as this one of your tenants (`swarm tenants` lists them); sent as "
+        "X-Swarm-Tenant and refused by the API unless you are a member. "
+        "Default: SWARM_TENANT, else the API's first matching tenant",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1855,6 +1900,10 @@ def build_parser() -> argparse.ArgumentParser:
     prof.add_argument("--json", action="store_true")
     prof.set_defaults(func=cmd_profiles, no_client=True)
 
+    ten = sub.add_parser("tenants", help="the tenants you may act as, the current one marked")
+    ten.add_argument("--json", action="store_true")
+    ten.set_defaults(func=cmd_tenants)
+
     doc = sub.add_parser("doctor", help="which auth tier this machine is on, and what it reaches")
     doc.set_defaults(func=cmd_doctor, no_client=True)
 
@@ -1880,7 +1929,7 @@ def main(argv: list[str] | None = None) -> int:
         # running when they are needed.
         if getattr(args, "no_client", False):
             return args.func(None, args)
-        with SwarmClient(context=args.context) as client:
+        with SwarmClient(context=args.context, tenant=chosen_tenant(args.tenant)) as client:
             return args.func(client, args)
     except SwarmError as exc:
         print(f"swarm: {exc}", file=sys.stderr)
