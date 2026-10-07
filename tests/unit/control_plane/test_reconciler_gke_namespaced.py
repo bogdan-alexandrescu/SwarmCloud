@@ -56,6 +56,7 @@ from typing import Any, Callable
 
 import pytest
 
+from swarm_common.config import Settings
 from swarm_common.models import Tenant, pool_names_for, utcnow
 
 from reconciler import repair
@@ -329,6 +330,8 @@ def seed_stranded(
     minutes_ago: int = 20,
     state: str = "DISPATCHED",
     heartbeat_seconds_ago: int | None = None,
+    seconds_ago: int | None = None,
+    dispatch_timeout_seconds: int = 300,
 ) -> dict[str, str]:
     """A task exactly as the incident left it -- or, with a heartbeat, a healthy one.
 
@@ -340,11 +343,17 @@ def seed_stranded(
     `heartbeat_seconds_ago` makes the lease one a worker is keeping alive: the
     worker's heartbeat writes `heartbeat_at = now` and pushes `expires_at` out
     by its extension (`agent_worker/control.py`), so both move together here.
+
+    `seconds_ago` overrides `minutes_ago` where a test sits either side of a
+    deadline; `dispatch_timeout_seconds` sets that deadline.
     """
     suffix = task_id.replace("task_", "")
     lease_id, attempt_id = f"lease_{suffix}", f"att_{suffix}"
     now = utcnow()
-    created = now - timedelta(minutes=minutes_ago)
+    created = now - (
+        timedelta(seconds=seconds_ago) if seconds_ago is not None
+        else timedelta(minutes=minutes_ago)
+    )
     if heartbeat_seconds_ago is None:
         heartbeat_at, expires_at = None, created + timedelta(seconds=120)
     else:
@@ -370,7 +379,7 @@ def seed_stranded(
         "lease_id": lease_id, "task_id": task_id, "attempt_id": attempt_id,
         "tenant_id": tenant, "generation": generation, "pools": pools, "units": 2,
         "state": state, "created_at": created,
-        "dispatch_deadline": created + timedelta(seconds=300),
+        "dispatch_deadline": created + timedelta(seconds=dispatch_timeout_seconds),
         "expires_at": expires_at,
         "heartbeat_at": heartbeat_at, "released_at": None,
     }
@@ -991,6 +1000,69 @@ def test_a_live_job_under_a_silent_lease_is_still_killed_before_its_release():
     assert db.docs[f"tasks/{ids['task']}"]["current_generation"] == 2
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None
     assert [o.kind for o in report.outcomes if o.terminated] == ["dead_worker"]
+
+
+#: The dispatch deadline a lease is written with (contract request 37), read
+#: from the frozen settings rather than restated.
+DISPATCH_TIMEOUT_SECONDS = Settings(project_id="p").dispatch_timeout_seconds
+
+
+@pytest.mark.parametrize(
+    ("seconds_ago", "reclaimed"),
+    [(DISPATCH_TIMEOUT_SECONDS - 30, False), (DISPATCH_TIMEOUT_SECONDS + 30, True)],
+)
+def test_a_never_scheduled_pods_job_is_deleted_when_the_dispatch_deadline_reclaims_its_lease(
+    seconds_ago: int, reclaimed: bool,
+):
+    """Contract request 53: "a pod that never schedules holds its lease until the
+    480 s dispatch deadline reclaims it ... whether the reconciler deletes that
+    pod's Job on reclaim was not checked". It does, and this holds it there.
+
+    The Job is listed (its namespace is readable), its pod is Pending -- GKE
+    counts a Pending pod in `status.active` and the Job carries no terminal
+    condition, so `job_phase` reads it as RUNNING -- and the worker never wrote
+    a heartbeat. Before the deadline nothing happens: an Autopilot scale-up is
+    still allowed to finish (fresh-node p90 120 s, probe of 2026-10-07). After
+    it the finding is a dead_worker and the Job is DELETED, pods and all,
+    BEFORE the fence and the release, so a pod that schedules late can never
+    start a worker under a lease that no longer exists -- and if it somehow
+    did, generation 1 is fenced and it exits without running the agent
+    (invariant 5). Leaving the Job would leave a Pending pod demanding a node
+    for a task that holds no lease (invariant 1).
+
+    MUTATION: make `GkeBackend.terminate` return True without calling
+    `delete_namespaced_job`, and the reclaimed case fails on `batch.deleted`;
+    make `job_phase` read a condition-less Job as PENDING and it fails on the
+    finding kind.
+    """
+    db = FakeFirestore()
+    seed_tenant(db, ENG, record_namespace=True)
+    ids = seed_stranded(
+        db, "task_9e1b7c3d5f2a4e68b0c1", state="DISPATCHED", seconds_ago=seconds_ago,
+        dispatch_timeout_seconds=DISPATCH_TIMEOUT_SECONDS,
+    )
+    job = k8s_job(task_id=ids["task"], active=1)
+    batch = RbacBatchApi(jobs=[job], listable={ENG_NS})
+    before = pool_actives(db)
+    rec, _ = reconciler(db, gke(batch))
+
+    report = rec.run_once()
+
+    assert report.leases_examined == 1, "the lease must be in the snapshot"
+    assert ENG_NS in batch.listed(), "the Job must have been seen by listing"
+    lease = db.docs[f"leases/{ids['lease']}"]
+    task = db.docs[f"tasks/{ids['task']}"]
+    if not reclaimed:
+        assert batch.deleted == [], "a pod still inside its dispatch window was killed"
+        assert lease["released_at"] is None
+        assert task["current_generation"] == 1
+        assert pool_actives(db) == before
+        return
+    assert batch.deleted == [f"{ENG_NS}/{job.metadata.name}"], batch.calls
+    assert [o.kind for o in report.outcomes if o.terminated] == ["dead_worker"]
+    assert lease["released_at"] is not None
+    assert task["current_generation"] == 2
+    assert set(pool_actives(db).values()) == {0}, pool_actives(db)
 
 
 def test_a_job_is_judged_by_its_conditions_not_by_its_failed_counter():

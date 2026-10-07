@@ -95,7 +95,7 @@ sys.path.insert(0, str(REPO / "apps" / "common"))
 sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
 sys.path.insert(0, str(REPO / "apps" / "scheduler"))
 from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
-from scheduler.dispatch import backend_deadline_seconds  # noqa: E402
+from scheduler.dispatch import backend_deadline_seconds, gke_ephemeral_storage_gib  # noqa: E402
 from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
@@ -286,6 +286,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "CPU": re.compile(r"^[0-9]{1,4}m?$"),
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "EPHEMERAL": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "ACTIVE_DEADLINE_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "CHECKPOINT_INTERVAL_SECONDS": re.compile(r"^[0-9]{1,8}$"),
@@ -792,7 +793,12 @@ def render_job(args: argparse.Namespace) -> str:
             f"{args.registry}/{profile.image}:{args.tag}",
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
+            # The workspace volume's sizeLimit...
             "DISK": f"{rc.disk_gib}Gi",
+            # ...and the whole pod's ephemeral-storage, which also holds /tmp
+            # and HOME. Two tokens since contract request 53: the dispatcher's
+            # own number, imported, so the YAML cannot drift from what runs.
+            "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are
             # two tokens, because they were one and the Job always won: see
             # WORKER_FINALISE_BUDGET_SECONDS in apps/scheduler/scheduler/dispatch.py.

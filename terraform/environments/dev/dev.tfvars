@@ -154,9 +154,23 @@ pool_limits = {
     browser     = 20
   }
 
+  # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
+  # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
+  # before claude-code's own ceiling (runner:claude-code 80), shared with
+  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
+  # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
+  # 100 x 4 vCPU = 400.
+  #
+  # NO COMPUTE CLASS MAY PIN T2D. T2D_CPUS quota in us-central1 is 128 vCPUs,
+  # 32 standard pods; the pods carry no nodeSelector, so Autopilot's default
+  # class picks from every family, and a T2D pin (or a ComputeClass listing
+  # T2D alone) would cap this pool at 32 whatever it says here -- and every
+  # probe pinned to one family hit "never scheduled" or "GCE out of
+  # resources" (request 53, "What the probe saw go wrong").
   backends = {
     CLOUD_RUN_JOB = 100
-    GKE_AUTOPILOT = 40
+    GKE_AUTOPILOT = 100
   }
 
   providers = {

@@ -165,7 +165,16 @@ Every pod carries:
   platform-wide. Until 2026-10-02 this line gave the key as
   `cloud.google.com/gke-extended-run-time`, which is not a real annotation and
   which nothing in this repository sets;
-* `requests == limits` on cpu, memory and ephemeral storage;
+* `requests == limits` on cpu, memory and ephemeral storage. Ephemeral storage
+  is the WHOLE pod's local disk, because kubelet adds the workspace, `/tmp` and
+  HOME emptyDirs together and evicts the pod (no checkpoint, no park) when
+  their total passes it. On Cloud Run only the workspace is a capped tmpfs, and
+  `/tmp` (where the worker builds checkpoint archives of up to 2 GiB) and HOME
+  are outside that cap. So since contract request 53 a `standard` pod on GKE
+  gets 10 GiB: 4 for the workspace, the same as on Cloud Run, plus 2 for `/tmp`
+  and 4 for HOME. 10 GiB is also the most Autopilot accepts for a
+  general-purpose pod. Other classes still get `disk_gib`
+  (`GKE_EPHEMERAL_STORAGE_GIB` in `scheduler/dispatch.py`);
 * `restartPolicy: Never` and `backoffLimit: 0` — the control plane owns retries;
 * the tenant's Kubernetes service account, workload-identity-bound to the
   tenant's Google service account;
