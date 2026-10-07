@@ -122,10 +122,10 @@ def test_no_tenants_variable_carries_a_forge_record():
 
 def test_the_worker_bucket_split_is_kept_unchanged():
     """Collapsing it into one binding is a create; this change creates nothing."""
-    text = _tf(TENANCY)
+    text = " ".join(_tf(TENANCY).split())
     assert 'resource "google_storage_bucket_iam_member" "worker_objects_read"' in text
     assert 'resource "google_storage_bucket_iam_member" "worker_objects_write"' in text
-    assert 'write_expression    = { for t, _ in var.tenants : t => "${local.object_prefix[t]} && !${local.verdicts_prefix[t]}" }' in text
+    assert 'write_expression = { for t, _ in var.tenants : t => "${local.object_prefix[t]} && !${local.verdicts_prefix[t]}" }' in text
 
 
 # ---------------------------------------------------------------------------
