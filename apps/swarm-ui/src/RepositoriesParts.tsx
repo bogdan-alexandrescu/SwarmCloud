@@ -12,7 +12,7 @@ import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './S
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { CAPABILITIES, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
+import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
 /** One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped. */
 export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): UrRead<T> {
@@ -311,15 +311,31 @@ export function UrBar({ ratio, label }: { ratio: number | null; label: string })
   )
 }
 
-/** "Tests mapped" with its bar: the share of source files with a test edge. */
+/** Why "Tests mapped" is a dash, in the words its tooltip carries. */
+export function testsMappedWhy(r: RepoRecord): string {
+  if (r.index.current_sha === null) return 'No index has been built yet'
+  return r.index.coverage === null
+    ? 'The registration carries no test-map coverage for its index'
+    : 'The index did not report how many of its modules have a test edge'
+}
+
+/**
+ * "Tests mapped" with its bar: the index's MODULES with at least one test
+ * edge, with the edges and always-run tests behind the figure -- the counts
+ * `index.coverage` serves (QA G4-03, repo-index.md §6.2). Never a percentage
+ * of source files: the index does not count those.
+ */
 export function TestsMapped({ r }: { r: RepoRecord }) {
   const c = r.index.coverage
-  const why = r.index.current_sha === null ? 'No index has been built yet' : 'The index did not report its test-map coverage'
+  const words = coverageWords(c)
+  const detail = coverageDetail(c)
+  const why = testsMappedWhy(r)
   return (
     <div className="ur-tm">
       <span className="ur-mu">Tests mapped</span>
-      <UrBar ratio={c} label={c === null ? `Tests mapped: ${why}` : `Tests mapped: ${pct(c)} of source files have a test edge`} />
-      {c === null ? <Dash why={why} /> : <b>{pct(c)}</b>}
+      <UrBar ratio={coverageRatio(c)} label={words === null ? `Tests mapped: ${why}` : `Tests mapped: ${words} have a test edge`} />
+      {words === null ? <Dash why={why} /> : <b>{words}</b>}
+      {detail !== null && <small className="ur-tm-sub">{detail}</small>}
     </div>
   )
 }

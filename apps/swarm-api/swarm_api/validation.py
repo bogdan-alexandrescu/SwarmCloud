@@ -75,14 +75,19 @@ def known_providers() -> tuple[str, ...]:
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
 
-    EXCEPT A WORKER ACTION'S PROVIDER (`APP_CREDENTIAL_PROVIDERS`). Both
+    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). Both
     credential routes accept exactly this set (`routes/tenants.py`,
-    `routes/admin.py`), and a credential registered through them is granted to
-    the tenant's ORDINARY worker account (`credentials._grant_accessor`), whose
-    token any agent of the tenant can mint. `git-merge` and `git-review` are
-    GitHub App keys that only the merge and post-verdict Jobs' own service
-    accounts may read (contract request 33's #364 amendment, accepted
-    2026-10-01), so neither may ever enter through that path.
+    `routes/admin.py` `_check_provider`), and a credential registered through
+    them is granted to the tenant's ORDINARY worker account
+    (`credentials._grant_accessor`), whose token any agent of the tenant can
+    mint. `git-merge` and `git-review` were GitHub App keys meant for the
+    merge and post-verdict Jobs' own accounts (contract request 33's #364
+    amendment). Those accounts are retired (owner decision MS0-Q4,
+    2026-10-06): nothing reads either key any more, so neither is registrable,
+    listed (`service.providers`) or accepted by the quota broker
+    (`quota_broker.main._known_provider`) anywhere. The frozen catalogue still
+    names `git-review` on its disabled post-verdict entry until contract
+    request 50 is decided, which is why the exclusion is still needed.
 
     AND THE FORGE TOKEN, `git`, which the `merge` profile names since contract
     request 47 (2026-10-04). It is the tenant's own forge token, registered
@@ -110,18 +115,16 @@ FORGE_PROVIDER = "git"
 #: 47 moved the merge onto the tenant's `-git` token. Derived from the
 #: catalogue rather than named, so a third worker action is left out of
 #: `known_providers()` the day it is added rather than the day someone
-#: remembers this line. An App key is read by its own Job's service account at
-#: action time and is never registered against the worker account.
-#: `scripts/register-tenant.sh` reads this set to refuse binding one to the
-#: worker; the forge token is the one worker-action provider the worker DOES
-#: read, so it is not in it.
+#: remembers this line. The forge token is the one worker-action provider the
+#: worker DOES read, so it is not in it.
 #:
-#: `git-merge` STAYS IN THE SET after contract request 47 retired it from the
-#: catalogue (`RETIRED_APP_CREDENTIAL_PROVIDERS`). A `-git-merge` secret that
-#: exists holds a GitHub App key; dropping the name here would let
-#: `register-tenant.sh` grant the tenant's worker account read on it, which is
-#: the one thing that secret's design forbids. It goes when the merge account
-#: leaves `terraform/modules/service_account_ids`.
+#: BOTH ARE RETIRED (owner decision MS0-Q4, 2026-10-06): the merge,
+#: post-verdict and review accounts that alone were to read them are gone from
+#: terraform, so no account reads either key. The set stays, as the refusal:
+#: `scripts/register-tenant.sh` reads it to refuse either provider on every
+#: path, and a `-git-merge` or `-git-review` secret that exists still holds an
+#: App key no worker may be granted. `git-merge` is named
+#: (`RETIRED_APP_CREDENTIAL_PROVIDERS`) because the catalogue no longer is.
 RETIRED_APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({"git-merge"})
 APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
     p.provider for p in RUNNER_PROFILES.values()

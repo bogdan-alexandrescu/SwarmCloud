@@ -271,7 +271,7 @@ describe('axisOf', () => {
 describe('sortRows', () => {
   const row = (id: string, order: number, costUsd: number | null) => ({
     id,
-    sort: { order, stateRank: 0, waitedMs: null, ranMs: null, attempts: null, costUsd } satisfies SortFacts,
+    sort: { order, stateRank: 0, waitedMs: null, ranMs: null, attempts: null, costUsd, tokens: null } satisfies SortFacts,
   })
   const rows = [row('a', 0, null), row('b', 1, 0.5), row('c', 2, 0), row('d', 3, null), row('e', 4, 0.1)]
 

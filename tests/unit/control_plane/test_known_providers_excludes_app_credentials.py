@@ -84,3 +84,41 @@ def test_the_tenant_route_refuses_to_register_an_app_provider(client, provider):
 def test_the_admin_routes_provider_check_refuses_an_app_provider(provider):
     with pytest.raises(ValidationFailed):
         admin_routes._check_provider(provider)
+
+
+# ---------------------------------------------------------------------------
+# #453 boxes 14-16, the #295 leftovers retired (owner decision MS0-Q4,
+# 2026-10-06). The catalogue still names `git-review` (frozen; contract request
+# 50), so every place that reads providers straight off it would list or accept
+# it. None of these may: nothing on the platform reads an App key any more.
+#
+# FAILS WITHOUT THE CHANGE: `/v1/providers` listed `git-review` (as the
+# post-verdict profile's provider) and the broker's `_known_provider` accepted
+# it, because both read `{p.provider for p in RUNNER_PROFILES.values()}`.
+# ---------------------------------------------------------------------------
+
+
+def test_the_providers_route_lists_no_app_provider(client):
+    response = client.get("/v1/providers", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    listed = {p["provider"] for p in response.json()["providers"]}
+    assert not listed & set(APP_PROVIDERS), listed
+    # The control: the route still lists the catalogue's other providers.
+    assert {"anthropic", "openai"} <= listed, listed
+
+
+@pytest.mark.parametrize("provider", APP_PROVIDERS)
+def test_the_broker_refuses_an_app_provider(provider):
+    from quota_broker.main import BrokerValidationError, _known_provider
+
+    with pytest.raises(BrokerValidationError) as refused:
+        _known_provider(provider)
+    # Nor does its refusal offer one as a known provider.
+    assert not any(p in str(refused.value).split("known providers are", 1)[1] for p in APP_PROVIDERS)
+
+
+def test_the_broker_still_knows_every_other_catalogue_provider():
+    from quota_broker.main import _known_provider
+
+    for provider in ("anthropic", "openai"):
+        assert _known_provider(provider) == provider

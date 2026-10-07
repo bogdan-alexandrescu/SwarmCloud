@@ -377,6 +377,9 @@ export function gate(source: string, label = 'sheet'): GateReport {
 export interface CascadeEnv {
   /** The viewport width a `@media (min|max-width)` is evaluated against, px. */
   width: number
+  /** The viewport height a `@media (min|max-height)` is evaluated against, px.
+   *  900 when not given: a laptop window, where no height query has bitten. */
+  height?: number
   /** `prefers-color-scheme`. `:root` carries the dark palette, so dark is the default. */
   theme?: 'dark' | 'light'
   /** The inline size of the nearest size container, px, or null for none. An
@@ -553,6 +556,10 @@ function mediaFeature(feature: string, env: CascadeEnv, width: number): boolean 
       return width >= px()
     case 'max-width':
       return width <= px()
+    case 'min-height':
+      return (env.height ?? 900) >= px()
+    case 'max-height':
+      return (env.height ?? 900) <= px()
     case 'prefers-color-scheme':
       return value === (env.theme ?? 'dark')
     case 'prefers-reduced-motion':

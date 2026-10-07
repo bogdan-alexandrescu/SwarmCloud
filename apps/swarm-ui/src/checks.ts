@@ -527,10 +527,14 @@ function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean):
           newestFailureClause(failed, now) +
           workflowClause(failed) +
           windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT),
-        detail:
-          exhausted.length > 0
-            ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
-            : `All still have attempts left and may retry. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
+        // FAILED IS TERMINAL (QA G1-04, 2026-10-07). The detail read "All
+        // still have attempts left and may retry" beside an error saying the
+        // task failed without a retry: attempts left is not a retry coming.
+        // A retryable failure with attempts left goes back to READY
+        // (agent_worker/control.py), so FAILED is written only once nothing
+        // will run it again: TERMINAL_STATES holds it, and no writer moves it
+        // back. The attempt count says why, never whether.
+        detail: `${terminalClause(failed.length, exhausted.length)} Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
         // A failed agent is a row in the agent list, not an entry on a board
         // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
         // tab filtered to FAILED. The tab used to be component state the hash
@@ -556,6 +560,19 @@ function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean):
 function namesOf(ids: string[]): string {
   const shown = ids.slice(0, 3).join(', ')
   return ids.length > 3 ? `${shown} +${ids.length - 3} more` : shown
+}
+
+/**
+ * Why N FAILED tasks will not run again, by what their attempts say (QA
+ * G1-04): never "may retry", because FAILED is terminal whatever was left.
+ */
+export function terminalClause(failed: number, exhausted: number): string {
+  const left = failed - exhausted
+  const parts = [
+    ...(exhausted > 0 ? [`${exhausted} used every attempt`] : []),
+    ...(left > 0 ? [`${left} had attempts left but the cause is not retryable`] : []),
+  ]
+  return `Terminal: nothing will retry ${failed === 1 ? 'it' : 'them'}. ${parts.join('; ')}.`
 }
 
 /**
