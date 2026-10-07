@@ -56,7 +56,7 @@ pull request it merges all stay the same.
 The four questions this revision raised were answered by the owner on 2026-10-06:
 
 1. **CI wait park reason:** add `ParkReason.CI_PENDING`. Frozen-contract request (A) is accepted by the owner (2026-10-06). It is applied in MS2 with the phrase the frozen-contract guard reads. A CI wait refunds the attempt, up to the maximum wake count.
-2. **PRs no workflow opened:** a merge-only workflow that names a pull request and its head sha runs just the merge step. It is a separate lane after MS3.
+2. **PRs no workflow opened:** a merge-only workflow that names a pull request and its head sha runs just the merge step. It is a separate lane after MS3. **Built 2026-10-07 (lane C5J, part of #352)**: the field is `merge_pr: {number, head_sha}` on the workflow submission (owner, 2026-10-07, triage Q1); "A pull request no workflow opened" below says what it accepts and refuses.
 3. **The close-issues job:** it survives `auto-merge.yml`'s retirement as its own `close-merged-issues.yml`, which runs `scripts/close-merged-issues.sh` on every merge into main.
 4. **The unused #295 pieces:** the per-tenant review, post-verdict and merge service accounts, the `worker_objects` split and the disabled single-pr catalogue entries are removed in a cleanup lane. The Terraform IAM change goes to the owner at dev-iam, and frozen-contract request (B) retires the catalogue entries.
 
@@ -491,8 +491,49 @@ The owner then uninstalls the `swarmcloud-merge` App and deletes
 `MERGE_APP_ID` and `MERGE_APP_PRIVATE_KEY`, which are owner-side steps.
 
 Pull requests a person or a laptop lane opened, with no workflow behind
-them, need an owner decision before the retirement: merge by hand, or a
-merge-only workflow naming a pull request (owner question MS0-Q2).
+them, needed an owner decision before the retirement: merge by hand, or a
+merge-only workflow naming a pull request (owner question MS0-Q2). The owner
+chose the second; it is built (2026-10-07), as below.
+
+#### A pull request no workflow opened (`merge_pr`, built 2026-10-07)
+
+`WorkflowCreate.merge_pr: {number, head_sha}` beside ONE `merge` step under
+`direct-pr` (`swarm merge <pr> --sha <head>`, or `swarm_workflow`'s
+`merge_pr`). It is the merge-only continuation's shape with the caller naming
+the pull request instead of the task that opened it, and it reuses
+everything after submission: the signed `merge_target` names `{number,
+head_sha, base}`, and the worker's merge action pins `head_sha` exactly as it
+pins a pushed head, then runs the same gate -- open, not from a fork, the
+registered base, the head (or GitHub's own update of it), every required
+check green there, the CI_PENDING park while they run, the merge-queue
+enqueue, the issue closing. The one check it skips is the branch name, which
+no SwarmCloud task chose.
+
+**Which repository -- the rule chosen, and why.** The one `repository_url`
+names, which must be a registration of the caller's own tenant; when the
+request names none, the tenant's only registration. A tenant with several
+and none named is refused, not guessed at, because pull request numbers
+repeat across repositories and a guess would merge the wrong #N. A
+repository the tenant never registered is refused even when its token could
+reach it: the registration is the tenant's statement that its `-git` token
+is meant to act there, and a merge is the widest thing that token does.
+
+**What is refused at submission, before anything is written**
+(`continuation.resolve_merge_pr`, `tests/unit/control_plane/test_merge_pr_submission.py`):
+a `head_sha` that is not the pull request's current head (the refusal names
+the current head, so the caller looks at what changed); a closed or merged
+pull request; one not in the registered repository, from a fork, or on a
+base other than the registered default branch; any step but the one merge
+step; a `continues_task` (two pull requests), a `repository_ref` (the head is
+the ref) or `merge_fix_rounds` (a CI-fix round continues the task that pushed
+the branch, and no task pushed this one) beside it; any strategy but
+`direct-pr`. The pull request is read ONCE, with the tenant's own `-git`
+token (invariant 9); a tenant with no `-git` secret is 409. A
+continuation-scoped account is refused before any read: `merge_pr` is new
+work, which that scope may not submit.
+
+**Not built:** the console's Submit forms do not offer `merge_pr` (another
+lane was editing them); the API and the bridge are the way in until then.
 
 ### 6. Build plan
 

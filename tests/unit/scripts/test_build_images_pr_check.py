@@ -22,8 +22,8 @@ each against the REAL scripts and workflow:
     `images:` to push and no registry at all, touches no registry itself,
     writes no manifest, and builds agent-runtime-browser on a base built in
     the same Cloud Build instead of pulling one from the registry;
-  * every input path the mapping knows fires application.yml on a pull
-    request, so ci-gate expects the run that carries the build;
+  * every input path the mapping knows reaches application.yml's jobs on a
+    pull request (its `changes` job's APP_PATHS), so the build job runs;
   * the workflow job runs both modes on a pull request and authenticates as
     something other than the deployer.
 
@@ -47,7 +47,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .test_ci_gate import gate
+from .application_paths import reaches
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "build-images.sh"
@@ -221,9 +221,10 @@ def test_copy_from_a_stage_is_not_an_input(tmp_path):
 
 
 def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):
-    """The build job lives in application.yml, whose pull_request trigger is
-    path-filtered. An input the filter misses starts no run, ci-gate expects
-    none, and the image goes unbuilt with every check green."""
+    """The build job lives in application.yml, and runs only when its
+    `changes` job says the change reaches the workflow (APP_PATHS, which was
+    the pull_request path filter until 2026-10-07). An input that list misses
+    skips the job, and the image goes unbuilt with every check green."""
     proc = subprocess.run(
         ["bash", str(SCRIPT), "--inputs"],
         env=_env(tmp_path),
@@ -239,15 +240,8 @@ def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):
         for _, pattern in (line.split("\t") for line in proc.stdout.splitlines() if line)
     })
     assert samples
-    missed = []
-    for sample in samples:
-        listing = tmp_path / "changed.txt"
-        listing.write_text(sample + "\n")
-        got = gate(tmp_path, "expected", "--event", "pull_request", "--changed", str(listing))
-        assert got.returncode == 0, got.stderr
-        if "application.yml" not in got.stdout.split():
-            missed.append(sample)
-    assert not missed, f"application.yml does not run on a pull request changing {missed}"
+    missed = [sample for sample in samples if not reaches(sample)]
+    assert not missed, f"application.yml's jobs do not run on a pull request changing {missed}"
 
 
 # ---------------------------------------------------------------------------

@@ -1658,6 +1658,12 @@ export interface RuntimeTopology {
    * that read failed -- never rebuilt here from a naming rule.
    */
   profilePools?: Record<string, string[]> | null
+  /**
+   * Of those, the pools with no document, by runner-profile name: the same
+   * read's `admission.uncapped`, which admission skips as unlimited (QA
+   * G5-04). Absent or null when that read failed or served no admission block.
+   */
+  profileUncapped?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1688,6 +1694,13 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
       profilePools: poolsOk
         ? Object.fromEntries(
             Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
+      profileUncapped: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).flatMap(([name, p]) =>
+              p.admission === undefined ? [] : [[name, p.admission.uncapped]],
+            ),
           )
         : null,
       poolsDetail: poolsOk

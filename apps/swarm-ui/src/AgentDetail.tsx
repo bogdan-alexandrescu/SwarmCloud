@@ -19,6 +19,8 @@ import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest } from './dag'
+import { DecisionCard } from './DecisionCard'
+import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
@@ -425,6 +427,11 @@ export function Run({
         <Alerts task={task} />
         <Why task={task} events={events} now={now} classes={run.classes} />
       </div>
+      {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
+          a verdict gate, or the review that gated one, leads with the rule,
+          the verdict, what the review weighed and what happened instead.
+          Nothing on any other step. */}
+      <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
       ) : lead === 'outcome' ? (
@@ -3866,16 +3873,6 @@ function HandedOn({
       )}
     </div>
   )
-}
-
-/** A task's pull request, when its result summary carries a well-formed one. */
-function pullRequestOf(t: Task): { number: number; url: string; state: string } | null {
-  const summary = t.result_summary as ResultSummary | null
-  const pr: unknown = summary?.git?.pull_request
-  if (typeof pr !== 'object' || pr === null) return null
-  const { number, url, state } = pr as Record<string, unknown>
-  if (typeof number !== 'number' || typeof url !== 'string' || !/^https?:\/\//.test(url)) return null
-  return { number, url, state: typeof state === 'string' ? state : 'open' }
 }
 
 /**

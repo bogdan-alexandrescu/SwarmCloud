@@ -207,7 +207,7 @@ describe('the landing screen is a lead, a band and five panels', () => {
     // Cost so far and Headroom, so no column is blank beside a taller card;
     // the pools are the full-width row under both. On a phone the sheet draws
     // them in O1's order (qa.u12.overview.test.tsx).
-    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent failures', 'Cost so far', 'Headroom', 'Pools'])
+    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent failures', 'Recent token cost', 'Headroom', 'Pools'])
     expect(el.querySelectorAll('.ov-headroom .ov-group').length).toBe(0)
   })
 })
