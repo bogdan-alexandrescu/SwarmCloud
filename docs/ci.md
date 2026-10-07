@@ -1356,11 +1356,33 @@ Since #454's CI loop a tenant MEMBER may also continue an `integrate`
 workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
 `publish_branch` a `direct-pr` task does, and opens the workflow's one pull
 request from it, so an issue run's fix round lands on the run's pull request.
-A contributor is still refused (its branch has no pull request). The CI
-fixer's continuation-scoped account is NOT given this: its reach was reviewed
-as `direct-pr` tasks only (contract request 30), so it is refused an
-integrator, directly or through a member's continuation of one, and a red
-integrate pull request is fixed by its issue run, not by `ci-fix.yml`. The rules are in
+A contributor is still refused (its branch has no pull request).
+
+**What the CI fixer may continue** (owner decision 2026-10-06). Its
+continuation-scoped account reaches exactly the tasks that opened a pull
+request from their own branch, in its own tenant:
+
+* a `direct-pr` task -- the reach contract request 30 reviewed;
+* an `integrate` workflow's **integrator**. Every SwarmCloud lane pull
+  request is opened by one (the workflow's final fix step), so a fixer
+  limited to `direct-pr` tasks could fix none of them: its first real run,
+  on PR #740, was refused `422 invalid_dispatch`. The fix pushes to the same
+  `swarm/<integrator task>` branch, so that pull request updates, and the
+  per-pull-request cap and the post-back above work unchanged, both keyed on
+  the integrator as the continued task. The integrator is recognised by the
+  `role` the API recorded in its dispatch block when the workflow was
+  submitted -- a reserved key no caller can write -- never by anything the
+  fixer sends.
+
+Still refused to it, each as `422 invalid_dispatch`: any other step of a
+workflow (a contributor's branch has no pull request of its own, so a fix
+there reaches nobody), any task of another tenant (read exactly like a
+missing one), a chain of continuations whose root is neither of the two, and
+a merge-only continuation (a merge is a member's power, not a push). Widening
+the reach to integrators lets a stolen fixer token push to every lane pull
+request of its tenant as well as every `direct-pr` one; it still cannot
+merge, start new work, read what it did not submit, or reach another tenant.
+The rules are in
 [`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
 block it writes is recorded under request #6 in
 [`contract-change-requests.md`](contract-change-requests.md).
@@ -1509,7 +1531,8 @@ derived from its group's address by the frozen
 of `eng`'s pull requests -- every fix would be refused as "not a task in your
 tenant". A group member is also a full member of its tenant, able to submit
 any work, where the listing above makes the account continuation-scoped (it
-may only continue a `direct-pr` task; contract request 30). The listing
+may only continue a `direct-pr` task or an integrator; contract request 30
+and the 2026-10-06 decision above). The listing
 already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
 `eng` is a frozen-contract change, and whether to make it is the owner's
 question, not this document's: until it is answered, the listing is the
@@ -1978,6 +2001,194 @@ Before sending, compare the body with a fresh read of the ruleset: a rule
 added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
 `security.yml`'s always-run jobs plus `ci-gate`, none pinned.
+
+## Main merges through a merge queue
+
+> **Not available on this repository (read 2026-10-07).** GitHub offers merge queues only to
+> repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is owned by a user
+> account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints `User`). The
+> `merge_queue` rule below was refused with `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset
+> was left unchanged. The body below also lacks `max_entries_to_merge`, which the API requires; add
+> it if this repository ever moves to an organization.
+>
+> **What protects main instead** (owner decision 2026-10-07): ruleset 24160219's
+> `required_status_checks` sets `strict_required_status_checks_policy: true`, so a pull request must
+> be up to date with main, and green at that head, before it merges. Two pull requests that are green
+> on their own bases but red together (#726 and #727, 2026-10-06: main red 19:12-19:58Z) can no longer
+> both merge: the second is behind once the first lands, and must update and pass CI again. The merge
+> step already updates a behind branch (MS3) and re-reads its checks at the new head (MS2's wake).
+> The `merge_group` triggers and the merge step's enqueue path below are inert while no queue exists:
+> GitHub raises no `merge_group` event, and the merge step only enqueues when the base requires a queue.
+
+
+**Owner decision, 2026-10-06 (observer P26).** `main` was red from 19:12 to
+19:58Z because #726 and #727 were each green on their own base and merged
+nine seconds apart. Neither had run against the other: `main-protection`
+(`24160219`) has `strict_required_status_checks_policy: false`, so a pull
+request is not required to be up to date with `main` before it merges, and
+two changes that each pass alone can fail together. Turning `strict` on would
+serialise every merge behind a manual "update branch" and a full CI run each.
+The owner chose a **merge queue** instead: GitHub builds a temporary branch
+(`gh-readonly-queue/main/pr-<n>-<sha>`) holding `main` plus every queued pull
+request ahead of it, runs the required checks there, and merges only what is
+green together.
+
+The ruleset change is the operator's, **after** the pull request carrying this
+section has merged. Until then nothing here changes how anything merges.
+
+### What is ready for it
+
+* **Every required check reports on a queue entry.** A queue waits for the
+  ruleset's required contexts on the entry's ref, through the `merge_group`
+  event. `security.yml` (four of them) and `ci-gate.yml` (`ci-gate`) trigger
+  on `merge_group: types: [checks_requested]`, with no filter, and so do
+  `application.yml` and `terraform.yml`, which `ci-gate` waits for there:
+  `merge_group` does not take a path filter, and a filtered-out run would be
+  one `ci-gate` waits ten minutes for and then fails the entry on.
+  `scripts/ci-gate.sh` accepts `--event merge_group`; on it every gated
+  workflow is expected, whatever changed. The entry's commit is `github.sha`
+  and its base `merge_group.base_sha`.
+* **Nothing that mints a cloud identity runs there.** `build images` and
+  `plan` are gated off `merge_group` as they are off `pull_request`: the
+  workload identity pool admits `refs/heads/main` only, and an entry's ref is
+  not main. Left to run, they would fail auth, fail their run, and fail
+  `ci-gate` on every entry. `plan (not run on a pull request)` says so on the
+  entry, as on a pull request. `build changed images without pushing` and the
+  frozen-contract check read pull-request fields and stay pull-request only
+  (skipped is a pass inside a successful run).
+* **`release.yml` and `auto-merge.yml` never run on `merge_group`.** A
+  release is for a commit on `main`, which an entry is not yet; the queue's
+  merge is a push to `main` like any other, and that push starts
+  `application.yml` and `release.yml` as today (GitHub documents that a
+  queue's merge raises `push`; not yet observed on this repository).
+* **`auto-merge.yml` enqueues.** Its gate reads whether `main`'s effective
+  rules carry a `merge_queue` rule (the same `rules/branches/main` read as its
+  required-checks item) and says `queue`. On a queued base the merge step runs
+  `gh pr merge --auto --match-head-commit` with no method and no subject --
+  the queue's `merge_method` decides how it lands -- and its already-green
+  fallback is GraphQL `enqueuePullRequest`, pinned to the head, never a direct
+  merge, which would be the queue bypassed. A pull request already in the
+  queue is left there. Without the rule the step is exactly what it was.
+* **The worker's merge step enqueues.** In any repository whose base
+  requires a queue, GitHub answers the REST merge `405` "Changes must be made
+  through the merge queue". The step then enqueues through
+  `enqueuePullRequest` with the tenant's `-git` token, behind the same fencing
+  recheck, records the entry in `result_summary.merge.merge_queued`, and parks
+  `CI_PENDING` with code `merge_queued`, holding no lease and no pool count
+  (invariants 1, 3 and 4). The wake tick reads the queue for that park, not
+  the checks. The next attempt finds the pull request merged (success, the
+  record comment and the issues closed), still queued (parked again), or
+  taken out unmerged (`merge_dequeued`, with GitHub's reason; it is never
+  enqueued again).
+
+`tests/unit/scripts/test_merge_queue_workflows.py` holds the workflow side to
+the ruleset's five required contexts, hard-coded there with the ruleset id;
+`test_auto_merge_workflow.py`, `tests/unit/worker/test_merge_action.py` and
+`tests/unit/control_plane/test_merge_wake.py` hold the rest.
+
+**What changes on `main` once it is on.** `merge_method` `MERGE` puts a merge
+commit on `main` for each pull request, titled by GitHub ("Merge pull request
+#N from ...") with the pull request's title in its body, where the squash put
+the title as the headline. A `[swarm] task_` title is still refused before it
+gets there. Merge commits must be allowed on the repository
+(`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .allow_merge_commit` is
+`true`), and the ruleset's `allowed_merge_methods` already lists `merge`.
+
+### Operator step: add the merge queue rule
+
+Apply it only once the pull request carrying this section has merged and a
+pull request has shown `ci-gate` and the four security checks green after it.
+The PUT replaces the ruleset whole, so the body restates every rule the
+[ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main) sets and adds
+only `merge_queue`. Compare it with a fresh read first
+(`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219`): a rule
+added since that this body leaves out would be deleted by the PUT.
+
+```bash
+gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+  },
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
+  ],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {"context": "secret scan"},
+          {"context": "trivy (repo)"},
+          {"context": "checkov (terraform + kubernetes)"},
+          {"context": "platform policy assertions"},
+          {"context": "ci-gate"}
+        ]
+      }
+    },
+    {
+      "type": "merge_queue",
+      "parameters": {
+        "merge_method": "MERGE",
+        "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 5,
+        "min_entries_to_merge": 1,
+        "min_entries_to_merge_wait_minutes": 0,
+        "check_response_timeout_minutes": 60
+      }
+    }
+  ]
+}
+JSON
+```
+
+Why these values: `ALLGREEN` merges an entry only when its checks and those
+of every entry ahead of it pass, which is the guarantee the incident lacked.
+`max_entries_to_build: 5` bounds the groups built at once (each is a full
+`application.yml` run, so a cost in runner time); `min_entries_to_merge: 1`
+with a `0`-minute wait merges a lone entry at once instead of holding it for
+company. `check_response_timeout_minutes: 60` is under `ci-gate`'s own
+90-minute wait, so a hung check drops the entry rather than stalling the
+queue behind it. `strict` stays `false`: the queue is what tests the
+combination now.
+
+Then check it took: `gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main --jq '.[] | select(.type == "merge_queue") | .parameters'`.
+The first queued pull request shows a `merge_group` run of `security`,
+`ci-gate`, `application` and `terraform`; if any of them is missing, roll back
+(below) before more pull requests pile into the queue.
+
+### Rolling back
+
+Roll back by sending the same PUT **without the `merge_queue` rule** -- that
+is exactly the body in the
+[ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main). Everything this
+section added stays harmless with the queue off: GitHub never raises
+`merge_group`, `auto-merge.yml`'s gate says `queue=false` and squashes as
+before, and the merge step never sees the merge-queue `405`. A pull request
+still in the queue at the rollback is taken out by GitHub; label it `ready`
+again.
 
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 

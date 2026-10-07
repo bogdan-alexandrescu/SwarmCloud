@@ -200,7 +200,12 @@ def test_the_cli_is_started_with_background_tasks_off_and_the_refusing_hook(
     assert run["settings"], "the CLI was not given the generated settings"
     settings = json.loads(Path(run["settings"]).read_text())
     assert settings["env"]["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
-    (entry,) = settings["hooks"]["PreToolUse"]
+    # The refusal's entry; the stdin hook beside it is #750's (test_claude_stdin_hook).
+    (entry,) = [
+        e
+        for e in settings["hooks"]["PreToolUse"]
+        if any("refuse-background.py" in h["command"] for h in e["hooks"])
+    ]
     assert "Bash" in entry["matcher"].split("|")
     (hook,) = entry["hooks"]
     assert hook["type"] == "command"
