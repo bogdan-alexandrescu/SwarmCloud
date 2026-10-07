@@ -2,7 +2,7 @@ import './styles/help.css'
 import { useEffect, useRef, useState, type Ref } from 'react'
 import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type HelpGroupId, type TopicId } from './help'
 import { addressToPath } from './paths'
-import { Absent } from './primitives'
+import { EmptyState } from './components'
 import { CountNote, PageHead } from './Shell'
 
 /**
@@ -50,7 +50,7 @@ export function HelpScreen({ topic }: { topic: string }) {
   // the long form, case-insensitively. Nothing is fetched.
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
-  const hits = q === '' ? [] : TOPIC_IDS.filter((id) => matchOf(id, q) !== null)
+  const hits = q === '' ? [] : searchTopics(q)
 
   // Deep links are the point of the anchors, so one has to actually land --
   // BUT ONLY WHEN IT IS NOT ALREADY IN VIEW (AH-16). The viewport is
@@ -120,19 +120,20 @@ export function HelpScreen({ topic }: { topic: string }) {
         </select>
       </div>
 
-      {/* AN UNKNOWN TOPIC IS A REAL ANSWER, SO IT IS THE DEFAULT EMPTY STATE
-          (AH-17): the `real zero` mark, the heading, one sentence, a way back
-          to the top of Help, and the one large break before the page. */}
+      {/* AN UNKNOWN TOPIC IS NOT FOUND, NOT A MEASURED ZERO (G1-18, QA pass
+          2026-10-07). It carried the `real zero` mark (AH-17), which says a
+          figure was measured and came to nothing; here nothing was measured,
+          so it takes the treatment an unknown address gets (`NotFound.tsx`):
+          the heading, one sentence, a way back to the top of Help, and the
+          one large break before the page. */}
       {topic !== '' && groupId === null && wanted === null && (
         <div style={{ marginBottom: 'var(--ctl-s5)' }}>
-          <Absent
-            kind="zero"
-            heading={`No help topic is called ${topic}`}
-            say={`This build carries no help topic called ${topic}.`}
-            link={{ href: `#${HELP_ROUTE}`, label: 'All topics' }}
-          >
-            The first group of what this build does carry is below.
-          </Absent>
+          <EmptyState kind="partial" heading={`No help topic is called ${topic}`}>
+            This build carries no topic by that name; the first group of what it does carry is below.{' '}
+            <a className="ctl-link" href={`#${HELP_ROUTE}`}>
+              All topics
+            </a>
+          </EmptyState>
         </div>
       )}
 
@@ -141,8 +142,8 @@ export function HelpScreen({ topic }: { topic: string }) {
           <p className="ctl-em">No topic mentions {query.trim()}.</p>
         ) : (
           <ul className="help-hits" aria-label="Search results">
-            {hits.map((id) => (
-              <Hit key={id} id={id} q={q} />
+            {hits.map((h) => (
+              <Hit key={h.id} id={h.id} q={q} whole={h.whole} />
             ))}
           </ul>
         )
@@ -172,14 +173,68 @@ export function helpPageOf(tail: string): HelpGroupId {
   return HELP_GROUPS.find((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))!.id
 }
 
-/** Where `q` first appears in a topic -- its name, claim, card or long form -- or null. */
-function matchOf(id: TopicId, q: string): { text: string; at: number } | null {
+/** Every text a topic is searched in, in the order a match is looked for. */
+function textsOf(id: TopicId): readonly string[] {
   const t = HELP[id]
-  for (const text of [t.subject, t.title, t.short, ...t.long]) {
-    const at = text.toLowerCase().indexOf(q)
+  return [t.subject, t.title, t.short, ...t.long]
+}
+
+/** `q` as a regular expression's literal text. */
+function literal(q: string): string {
+  return q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Where `q` first appears in a topic -- its name, claim, card or long form --
+ * or null. `whole` asks for a match at the START of a word: "lease" finds
+ * "lease" and "leases", and not the inside of "released" (G1-17). Letters and
+ * digits of any script count as a word, which `\b` -- ASCII only -- does not.
+ */
+function matchOf(id: TopicId, q: string, whole: boolean): { text: string; at: number } | null {
+  const find = whole ? new RegExp(`(?<![\\p{L}\\p{N}])${literal(q)}`, 'iu') : null
+  for (const text of textsOf(id)) {
+    const at = find === null ? text.toLowerCase().indexOf(q) : text.search(find)
     if (at !== -1) return { text, at }
   }
   return null
+}
+
+/**
+ * THE SEARCH, WHOLE WORDS FIRST (G1-17, QA pass 2026-10-07). A plain
+ * substring search answered "lease" with every topic that says "released".
+ * Matches at the start of a word are the answer when there are any; only a
+ * query no word starts with -- a fragment typed on purpose -- falls back to
+ * matching inside words, so a search never finds nothing that is there.
+ */
+function searchTopics(q: string): { id: TopicId; whole: boolean }[] {
+  const whole = TOPIC_IDS.filter((id) => matchOf(id, q, true) !== null)
+  if (whole.length > 0) return whole.map((id) => ({ id, whole: true }))
+  return TOPIC_IDS.filter((id) => matchOf(id, q, false) !== null).map((id) => ({ id, whole: false }))
+}
+
+/** How many characters of context a hit shows, at most, either side of the match. */
+const BEFORE = 48
+const AFTER = 72
+
+/**
+ * The window of `text` a hit shows around a match at `at`, its edges moved
+ * IN to the nearest space so no word is cut ("…ounts read at one moment" was
+ * the snippet the QA pass found). A window with no space inside it keeps its
+ * cut rather than collapsing to the match alone.
+ */
+export function snippetBounds(text: string, at: number, length: number): { from: number; to: number } {
+  let from = Math.max(0, at - BEFORE)
+  if (from > 0 && !/\s/.test(text[from - 1]!)) {
+    const space = text.slice(from, at).search(/\s/)
+    if (space !== -1) from += space + 1
+  }
+  let to = Math.min(text.length, at + length + AFTER)
+  if (to < text.length && !/\s/.test(text[to]!)) {
+    const tail = text.slice(at + length, to)
+    const space = tail.search(/\s\S*$/)
+    if (space !== -1) to = at + length + space
+  }
+  return { from, to }
 }
 
 /**
@@ -187,11 +242,10 @@ function matchOf(id: TopicId, q: string): { text: string; at: number } | null {
  * words around the match with the match marked. A link to the topic, which
  * routes to its group page and lands on it.
  */
-function Hit({ id, q }: { id: TopicId; q: string }) {
+function Hit({ id, q, whole }: { id: TopicId; q: string; whole: boolean }) {
   const t = HELP[id]
-  const m = matchOf(id, q)!
-  const from = Math.max(0, m.at - 48)
-  const to = Math.min(m.text.length, m.at + q.length + 72)
+  const m = matchOf(id, q, whole)!
+  const { from, to } = snippetBounds(m.text, m.at, q.length)
   return (
     <li>
       <a className="help-hit" href={`#${t.anchor}`}>

@@ -27,9 +27,10 @@ import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } fro
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
-import { HELP_GROUPS, HELP, TOPIC_IDS } from './help'
+import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK } from './marks'
 import { addressToPath } from './paths'
+import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
@@ -134,15 +135,38 @@ export function hrefOf(to: string): string {
   return addressToPath(to)
 }
 
-/** The Overview page's regions, as jump links (overview.html O1). */
+/**
+ * The Overview page's regions, as jump links (overview.html O1), in the order
+ * the page draws them. Cost so far and Pools were on the page and not here
+ * (G1-14, QA pass 2026-10-07); `qa.g1.jumps.test.tsx` reads Overview's
+ * sections and holds this list to them.
+ */
 export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-needs', label: 'Needs a look' },
   { id: 'ov-band', label: 'Waiting, working, done' },
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
-  { id: 'ov-headroom', label: 'Headroom' },
   { id: 'ov-failures', label: 'Recent failures' },
+  { id: 'ov-spend', label: 'Cost so far' },
+  { id: 'ov-headroom', label: 'Headroom' },
+  { id: 'ov-pools', label: 'Pools' },
 ]
+
+/**
+ * Jump to one of Overview's regions, and put it on the address (G1-14).
+ *
+ * The link prevents its own navigation -- the router would treat
+ * `/overview#…` as a route change -- so the hash was never written and a
+ * section could not be linked. `replaceState`, not a push: a jump is a place
+ * on the page, and Back should leave the page rather than walk its sections.
+ * A hidden tab does not animate a smooth scroll (measured by the QA pass: the
+ * section stayed put), so it jumps there instead.
+ */
+function jumpTo(id: string): void {
+  window.history.replaceState(window.history.state, '', `#${id}`)
+  const behavior = document.visibilityState === 'hidden' ? 'auto' : 'smooth'
+  document.getElementById(id)?.scrollIntoView?.({ block: 'start', behavior })
+}
 
 // ---------------------------------------------------------------------------
 // Per-browser memory, every access inside try/catch: storage throws in a
@@ -344,6 +368,9 @@ const loadFrameTenants = () => loadMyTenants()
  * is not a dialog but holds a draft and a typed confirmation N must not drop.
  */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
+/** N and `?`, as the shortcut table spells them (G1-21). */
+const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
+const HELP_SHORTCUT = shortcut('anywhere', '?')
 const loadFrameCapacity = () => loadCapacity({ frame: true })
 const loadFrameStats = () => loadStats({ frame: true })
 
@@ -840,19 +867,24 @@ export function SkyShell({
   // already consumed, such as the diff view's next-file `n`. `closest`, not
   // `isContentEditable`: the target is often a span inside the editable
   // element, and jsdom does not implement `isContentEditable` at all.
+  //
+  // `?` OPENS THE KEYBOARD TOPIC (G1-21), under the same guards but one: it
+  // is Shift and `/` on most layouts, so Shift is allowed for it alone. Both
+  // keys, and N's destination, are read from `SHORTCUTS` (shortcuts.ts), the
+  // table the Help topic is generated from.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'n' && e.key !== 'N') return
-      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      const el = e.target instanceof Element ? e.target : null
-      if (el !== null && el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
-      if (el instanceof HTMLElement && el.isContentEditable) return
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+      if (key !== SUBMIT_SHORTCUT.key && key !== HELP_SHORTCUT.key) return
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.shiftKey && key !== HELP_SHORTCUT.key) return
+      if (typedIntoField(e.target)) return
       // Nor while something sits over the page: a modal, an open drawer or
       // pinned help card (`role=dialog`), or Pool limits' side editor. It owns
       // the keyboard, and N there navigating away drops what was being edited.
       if (document.querySelector(OVER_THE_PAGE) !== null) return
       e.preventDefault()
-      nav('submit')
+      nav(key === HELP_SHORTCUT.key ? helpAnchor('keyboard') : SUBMIT_SHORTCUT.to!)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1421,7 +1453,7 @@ function PanelPages({
             onClick={(e) => {
               if (!routedClick(e)) return
               e.preventDefault()
-              document.getElementById(j.id)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+              jumpTo(j.id)
             }}
           >
             <span className="sk-pl">{j.label}</span>

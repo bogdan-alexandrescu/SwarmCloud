@@ -32,6 +32,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
 import { NotFound, nearestPath } from './NotFound'
+import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -1736,6 +1737,11 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
   useEffect(() => setFailuresOnly(asked), [asked])
   const ordered = referenceOrder(probes)
   const shown = failuresOnly ? ordered.filter(failing) : ordered
+  // THE 403 CAVEAT EXPLAINS A ROW, SO IT IS DRAWN WITH ONE (G1-15). An
+  // administrator gets 200 on /v1/admin and never has such a row; read off
+  // the rows rather than off `/v1/tenants/me`, because this page issues no
+  // read of its own and the rows are what the caveat is about.
+  const adminGated = shown.some((p) => p.lastKind === 'admin_required')
 
   return (
     <>
@@ -1810,7 +1816,9 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
                         it is about says so instead, and `describeProbe` already
                         draws that row with the neutral flat bar (`is-info`,
                         grey since CH-17) rather than in `--bad`. */}
-                    <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
+                    <th role="columnheader" scope="col">
+                      {adminGated ? 'Outcome (403 on /v1/admin is expected)' : 'Outcome'}
+                    </th>
                     <th role="columnheader" scope="col" className="is-num">Took</th>
                     <th role="columnheader" scope="col">Newest payload</th>
                   </tr>
@@ -1851,7 +1859,7 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
       <td role="cell" data-label="Outcome">
         <ToneMark tone={outcome.tone}>{outcome.label}</ToneMark>
       </td>
-      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
+      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{fmtLatency(probe.lastLatencyMs)}</td>
       <td role="cell" data-label="Newest payload">
         {/* THE COLUMN THAT MATTERS. A panel showing a figure from four minutes
             ago while its route has been failing for three of them looks

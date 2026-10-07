@@ -62,6 +62,7 @@ import {
   TERMINAL_STATES,
   type TaskState,
 } from './types'
+import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
 
 /**
  * Every topic. Adding a member here without adding an entry to `TOPICS` is a
@@ -100,6 +101,7 @@ export type TopicId =
   | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
+  | 'keyboard'
   | 'lease-and-pool-are-two-records'
   | 'lending'
   | 'lending-narrows-isolation'
@@ -174,6 +176,7 @@ export type HelpGroupId =
   | 'the-catalogue'
   | 'submitting-work'
   | 'an-account'
+  | 'using-the-console'
 
 export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'reading-a-figure', title: 'Reading a figure' },
@@ -182,6 +185,8 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'the-catalogue', title: 'The runtime catalogue' },
   { id: 'submitting-work', title: 'Submitting work' },
   { id: 'an-account', title: 'Running the account pool' },
+  // G1-21: the keyboard had no topic, and belongs to none of the above.
+  { id: 'using-the-console', title: 'Using the console' },
 ]
 
 /**
@@ -260,7 +265,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'api-reads': {
     group: 'the-platform',
-    title: 'The reads behind a screen',
+    title: 'The dock: routes, failures and the newest payload’s age',
     short:
       'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
     long: [
@@ -396,7 +401,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   capacity: {
     group: 'the-platform',
-    title: 'What reserves capacity',
+    title: 'Only work holding a slot costs capacity',
     short:
       'Only these states create infrastructure demand. Capacity for a task is reserved all-or-nothing across every pool it needs, in one transaction, and is counted from the moment it is held rather than from the moment an agent starts.',
     long: [
@@ -653,7 +658,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // pool_names_for in apps/common/swarm_common), said without its names.
   'what-a-pool-is': {
     group: 'the-platform',
-    title: 'What a pool is',
+    title: 'A ceiling, a count of what holds it, and a pause switch',
     short:
       'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every task needs several at the same moment, and it starts only when all of them have room.',
     long: [
@@ -770,7 +775,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'tenant-scope': {
     group: 'the-platform',
-    title: 'Whose figures these are',
+    title: 'Capacity is your tenant’s, never the platform’s',
     short:
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
     // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
@@ -974,6 +979,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // G1-21 (QA pass 2026-10-07). GENERATED FROM `SHORTCUTS` (shortcuts.ts), the
+  // table the handlers read: the list is that table, and the claim's two keys
+  // are its rows, so a rebound key cannot leave this topic naming the old one.
+  keyboard: {
+    group: 'using-the-console',
+    title: `${shortcut('anywhere', 'n').label} opens Submit and ${shortcut('anywhere', '?').label} opens the list of keys`,
+    short: `${shortcut('anywhere', 'n').label} opens Submit from any page, and ${shortcut('anywhere', '?').label} opens the full list of keys. A key acts only where the list says it is listened for, and a letter never acts while you are typing in a field.`,
+    long: [
+      'Each key is listed once, with where it is listened for. A letter or a symbol does nothing while focus is in a text field, a select or an editable area, where it is a character; nothing while Ctrl, Alt or Cmd is held, so the browser’s and the system’s own shortcuts are left alone; and nothing while a dialog or a side editor is open over the page, which owns the keyboard until it closes.',
+      'A key listened for inside one view is taken by that view first. In a diff, the key that opens Submit everywhere else opens the next file instead.',
+    ],
+    values: () => SHORTCUTS.map((k) => ({ term: k.label, note: `${k.does}, ${SCOPE_WORDS[k.scope]}` })),
+  },
   'workflow-stages': {
     group: 'submitting-work',
     title: 'How a workflow runs its steps',
@@ -1282,7 +1300,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'lent-account': {
     group: 'an-account',
-    title: 'An account lent to you',
+    title: 'A lent account runs your agents and has no controls',
     short:
       'Your agents can run on it. Pausing, draining, re-lending, refreshing and signing in again stay with its owner, and those routes answer here as though no such account existed — the same answer a label that does not exist gets, so asking cannot confirm somebody else’s account names.',
     long: [
@@ -1651,7 +1669,9 @@ export interface HelpAct {
  * `subject` is the topic's NAME, two to six words -- what the Help index and
  * every footer index (`HelpLinks`) print. The `title` stays the claim, word for
  * word, because the `?` card beside a figure opens with it and renaming it is
- * the owner's choice rather than this record's.
+ * the owner's choice rather than this record's. The two never match: the
+ * owner's QA pass of 2026-10-07 (G1-16) found five topics whose "You see" row
+ * repeated the name above it, and gave them claims of their own.
  *
  * Kept as its own `Record<TopicId, ...>` rather than inside each spec so a new
  * topic without one is a type error in one place, and so the claims and
@@ -1890,6 +1910,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'input-is-opaque': {
     subject: 'The task input',
     act: { say: 'Write the input for the agent; check it yourself, because nothing else will.', at: 'submit' },
+  },
+  keyboard: {
+    subject: 'Keyboard shortcuts',
+    act: { say: 'Press the key where its row says it is listened for, with focus outside any field.', at: 'submit' },
   },
   'workflow-stages': {
     subject: 'Workflow stages',

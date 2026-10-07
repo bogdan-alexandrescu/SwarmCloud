@@ -120,6 +120,22 @@ export function safeStorage(): Storage | null {
 // ---------------------------------------------------------------------------
 
 /**
+ * A read's latency, as every screen that prints one writes it (G1-15, QA pass
+ * 2026-10-07): `812 ms` under a second, `4.14 s` from one. The dock read
+ * `p95 4141ms` and API reads `1493ms` -- no separator, and never seconds --
+ * beside screens that write durations as `2m 17s`. A latency is not a run
+ * length, so it keeps its milliseconds below a second rather than rounding
+ * them to `0s` the way `formatDuration` would; one function, so the strip,
+ * its cells and API reads cannot drift apart.
+ */
+export function fmtLatency(ms: number): string {
+  const whole = Math.round(ms)
+  // Hundredths rounded as integers: `(1095 / 1000).toFixed(2)` is `1.09`,
+  // because 1.095 is not representable and sits just below the half.
+  return whole < 1000 ? `${whole} ms` : `${(Math.round(whole / 10) / 100).toFixed(2)} s`
+}
+
+/**
  * The nearest-rank percentile of a sample, or null when there is no sample.
  *
  * Nearest-rank rather than an interpolated one: with sixteen values an
