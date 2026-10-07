@@ -80,7 +80,10 @@ COLLECTION = "git_tokens"
 FORGE = "github"
 
 #: What `kind` may say once the probe (lane GT2) has read it; None until then.
-TOKEN_KINDS = ("fine_grained_pat", "classic_pat", "app_installation")
+#: `app_user` is a SwarmCloud GitHub App user access token in a user slot,
+#: written by the exchange and kept fresh by the refresh sweep
+#: (`swarm_api.forgeapp`, docs/onboarding.md §3.1; #780, lane OB3).
+TOKEN_KINDS = ("fine_grained_pat", "classic_pat", "app_installation", "app_user")
 
 #: Who `registered_by` names for the tenant default, which nobody registers:
 #: it is created from the slot the tenant document already lists.
@@ -1114,8 +1117,10 @@ def token_kind(value: str) -> str | None:
 
     GitHub's documented prefixes: `github_pat_` fine-grained, `ghp_` classic
     (and `gho_`, an OAuth app's token, which carries classic scopes), `ghs_`
-    an App installation token. Anything else is None, and its unreadable rows
-    are `unknown` as a fine-grained token's are.
+    an App installation token, `ghu_` an App user access token. Anything else
+    is None. A user access token's grant is the App's permissions narrowed
+    to the user's, which no read here returns, so its unreadable rows are
+    `unknown` as a fine-grained token's are.
     """
     if value.startswith("github_pat_"):
         return "fine_grained_pat"
@@ -1123,6 +1128,8 @@ def token_kind(value: str) -> str | None:
         return "classic_pat"
     if value.startswith("ghs_"):
         return "app_installation"
+    if value.startswith("ghu_"):
+        return "app_user"
     return None
 
 
@@ -2139,6 +2146,14 @@ def expiry_status(record: GitTokenRecord, now: datetime) -> dict[str, Any]:
         return {"level": "by_design", "days": None, "expires_at": None,
                 "message": "an installation token is minted per use and expires in an hour by "
                            "design; the App key behind it has no expiry"}
+    if record.kind == "app_user":
+        # Eight hours by design, renewed by the refresh sweep long before it
+        # runs out: counted in days it would read `danger` all its life. A
+        # connection whose refresh GitHub refused says so on the connection
+        # (REFRESH_FAILED), and its record turns `expired`.
+        return {"level": "by_design", "days": None, "expires_at": expires,
+                "message": "a GitHub App user access token lasts eight hours by design; "
+                           "SwarmCloud refreshes it before it expires"}
     if record.expires_at is None:
         if record.verified_at is None:
             return {"level": "unknown", "days": None, "expires_at": None,
