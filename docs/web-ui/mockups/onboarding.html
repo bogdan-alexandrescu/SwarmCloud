@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud onboarding: connect GitHub as yourself, enable orgs, choose repositories</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell, pills and the icon sprite are copied from the approved
+   components.html (pick A as built) and agent-details-v3.html (pick A). TYPE RULE (owner,
+   2026-10-01): 12px floor, no all-caps, no tracking. The frames follow the page's theme
+   toggle (light / dark / system), so one click shows every frame in both themes; the one
+   frame drawn in .fd is always dark, for side-by-side comparison. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+.lede{font-size:17px;color:var(--mute);max-width:760px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.variant{margin-top:32px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.fr{margin:0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute)}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ======== frame tokens: .fx follows the page theme, .fd is always dark ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+:root[data-theme="dark"] .fx,.fd{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);min-width:1280px;width:1280px;min-height:760px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app a{color:inherit;text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee!important;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff!important}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e!important;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.pk .new{font:600 12px var(--f-mono);color:var(--f-ac)}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.ct h3{margin:0;font-size:21px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sub{font-size:13px;color:var(--f-mu);margin:0}
+/* brand state marks and pills */
+.st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.st svg{width:12px;height:12px;flex:none}
+.st.live{color:var(--s-live)}.st.park{color:var(--s-park)}.st.bad{color:var(--s-bad)}.st.warn{color:var(--s-warn)}.st.neu{color:var(--s-neu)}
+.st span{color:var(--f-ink);font-size:13px}
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.park{background:var(--s-parkb);color:var(--s-park)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}.sp.warn{background:var(--s-warnb);color:var(--s-warn)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ctx{background:var(--f-acs);color:var(--f-ac);border:1px solid var(--f-acl);font-family:var(--f-display);font-weight:600}
+.chip.ctx .ic{width:13px;height:13px}
+.chip.warn{background:var(--s-warnb);color:var(--s-warn)}
+.dash{color:var(--f-mu);border-bottom:1px dotted var(--f-mu);cursor:help}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.danger{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 55%,transparent)}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.more{color:var(--f-ac)!important;font-size:12.5px;white-space:nowrap;font-weight:550}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln)}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.bar{height:6px;border-radius:3px;background:var(--f-ln);overflow:hidden;display:flex;min-width:60px}
+.bar i{display:block;height:100%;background:var(--f-ac)}
+.bar i.l{background:var(--s-live)}.bar i.w{background:var(--s-warn)}
+.bar.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px);border:1px dashed var(--f-bd)}
+.inp{border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--f-mu);min-height:32px}
+.inp.val{color:var(--f-ink)}
+.inp.err{border-color:var(--s-bad)}
+.app code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.app .exd{color:var(--f-mu)}
+/* tables in frames */
+table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+table.t th{font-size:12px;font-weight:600;color:var(--f-mu);text-align:left;padding:7px 10px;border-bottom:1px solid var(--f-ln);white-space:nowrap}
+table.t td{padding:0 10px;height:40px;border-bottom:1px solid var(--f-ln);white-space:nowrap;vertical-align:middle}
+table.t tr:last-child td{border-bottom:0}
+table.t td.mu{color:var(--f-mu)}
+table.t .rn{display:flex;flex-direction:column;line-height:1.25}
+table.t .rn b{font-weight:600}
+table.t .rn small{font-size:12px;color:var(--f-mu)}
+table.t tr.sel td{background:var(--f-acs)}
+.fresh{display:inline-flex;align-items:center;gap:6px}
+.fresh small{font-size:12px;color:var(--f-mu)}
+.tm{display:grid;grid-template-columns:70px minmax(0,1fr) 44px;gap:8px;align-items:center;font-size:12.5px}
+/* forms */
+.fgrid{display:grid;grid-template-columns:200px minmax(0,1fr);gap:14px 18px;align-items:start}
+.fl{font-size:13px;font-weight:600;padding-top:6px}
+.fl small{display:block;font-weight:400;color:var(--f-mu);font-size:12px}
+.hint{font-size:12px;color:var(--f-mu);margin-top:4px}
+.hint.bad{color:var(--s-bad)}
+.radio{display:flex;gap:6px;flex-wrap:wrap}
+.radio span{border:1px solid var(--f-ln);border-radius:8px;padding:5px 10px;font-size:12.5px;color:var(--f-mu)}
+.radio span.on{border-color:var(--f-ac);background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.check{display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:12px}
+.check i{width:14px;height:14px;border:1px solid var(--f-bd);border-radius:4px;display:inline-block}
+.check i.on{background:var(--f-ac);border-color:var(--f-ac)}
+.check.off{color:var(--f-mu)}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:440px;background:var(--f-sf);border-left:1px solid var(--f-ln);box-shadow:var(--f-sh);padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.28)}
+.steps{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.steps b{display:inline-flex;align-items:center;gap:6px;color:var(--f-ac);font-weight:600}
+.steps i{font-style:normal;width:20px;height:20px;border-radius:50%;border:1px solid currentColor;display:inline-flex;align-items:center;justify-content:center;font-size:12px}
+.pick{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln)}
+.pick small{grid-column:2/4;font-size:12px;color:var(--f-mu)}
+.pick.on{background:var(--f-acs)}
+.pick .dot{width:14px;height:14px;border-radius:50%;border:1px solid var(--f-bd)}
+.pick.on .dot{border:4px solid var(--f-ac)}
+/* detail */
+.kv{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden}
+.kv>div{padding:9px 12px;border-left:1px solid var(--f-ln);display:flex;flex-direction:column;gap:2px;min-width:0}
+.kv>div:first-child{border-left:0}
+.kv .l{font-size:12px;color:var(--f-mu)}
+.kv .v{font:650 17px/1.25 var(--f-display);font-variant-numeric:tabular-nums;white-space:nowrap}
+.kv .v small{font-size:12.5px;font-weight:500;color:var(--f-mu)}
+.kv .s{font-size:12px;color:var(--f-mu)}
+.kv .s.warn{color:var(--s-warn)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.cols3{display:grid;grid-template-columns:260px minmax(0,1fr) 300px;gap:12px;align-items:start}
+.mrow{display:grid;grid-template-columns:minmax(0,180px) minmax(0,1fr) 54px;gap:10px;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.mrow:first-child{border-top:0}
+.mrow code{justify-self:start}
+.mrow span{color:var(--f-mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.hs{display:grid;grid-template-columns:minmax(0,1fr) 120px 30px;gap:10px;align-items:center;font-size:12.5px;padding:4px 0}
+.hs .p{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hs em{font:normal 12px var(--f-mono);color:var(--f-mu);text-align:right}
+.run{display:grid;grid-template-columns:18px 92px 110px minmax(0,1fr) 70px;gap:8px;align-items:center;font-size:12.5px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.run:first-child{border-top:0}
+.run em{font:normal 12px var(--f-mono);color:var(--f-mu)}
+.run small{color:var(--f-mu);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree{font:12.5px/1.9 var(--f-mono);margin:0;white-space:pre;color:var(--f-ink)}
+.tree .on{background:var(--f-acs);color:var(--f-ac);border-radius:4px;padding:0 4px}
+.tree i{font-style:normal;color:var(--f-mu)}
+.used{display:flex;flex-direction:column}
+.used>div{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--f-ln);font-size:12.5px}
+.used>div:first-child{border-top:0}
+.used small{color:var(--f-mu);font-size:12px}
+.banner{display:flex;align-items:center;gap:10px;border:1px solid color-mix(in srgb,var(--s-warn) 45%,transparent);background:var(--s-warnb);color:var(--f-ink);border-radius:10px;padding:8px 12px;font-size:12.5px}
+.banner b{color:var(--s-warn)}
+.banner .btn{margin-left:auto}
+/* plan + agent details */
+.plan{display:flex;flex-direction:column;gap:8px}
+.pstep{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px 10px;border:1px solid var(--f-ln);border-radius:10px;padding:10px 12px;background:var(--f-sf)}
+.pstep .n{width:22px;height:22px;border-radius:50%;background:var(--f-hv);font:600 12px/22px var(--f-mono);text-align:center;color:var(--f-mu)}
+.pstep b{font-size:13.5px}
+.pstep .f{grid-column:2;display:flex;flex-wrap:wrap;gap:4px 8px;font-size:12px;color:var(--f-mu)}
+.pstep .f code{font-size:12px}
+.pop{position:absolute;z-index:4;width:340px;background:var(--f-sf);border:1px solid var(--f-bd);border-radius:12px;box-shadow:var(--f-sh);padding:12px 14px;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.pop b{font-size:13px}.pop p{margin:0}.pop small{color:var(--f-mu);font-size:12px}
+.meta{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12.5px;color:var(--f-mu)}
+.meta>span{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.meta>span+span::before{content:"·";margin-right:3px}
+.meta b{color:var(--f-ink);font-weight:550}
+.meta.col{flex-direction:column;align-items:flex-start;gap:4px}.meta.col>span+span::before{content:none}
+.ctxcard{border:1px solid var(--f-acl);border-left:3px solid var(--f-ac);border-radius:12px;background:var(--f-sf);padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.ctxcard ul{margin:0;padding-left:18px;font-size:12.5px}
+.ctxcard li{margin:2px 0}
+.half{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.pane{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.pane h4{margin:0;font-size:16px}
+/* ======== second pass (RI0b, 2026-10-05): graph explorer, impact, gate, settings, git tokens ======== */
+.gcanvas{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);position:relative;overflow:hidden}
+.gcanvas .tools{position:absolute;top:10px;left:10px;display:flex;gap:6px;flex-wrap:wrap}
+.gcanvas .legend{position:absolute;bottom:10px;left:10px;display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--f-mu);background:var(--f-sf);padding:4px 8px;border-radius:8px;border:1px solid var(--f-ln)}
+svg.g{display:block}
+svg.g text{font:12px var(--f-mono);fill:var(--f-ink)}
+svg.g text.mu{fill:var(--f-mu)}
+svg.g text.ac{fill:var(--f-ac);font-weight:600}
+svg.g .e{stroke:var(--f-bd);stroke-width:1.4;fill:none}
+svg.g .e.lsp{stroke:var(--f-ac);stroke-width:1.8}
+svg.g .e.ast{stroke:var(--f-mu);stroke-dasharray:5 4}
+svg.g .e.low{stroke:var(--s-warn);stroke-dasharray:2 4}
+svg.g .e.hot{stroke:var(--s-bad)}
+svg.g .n{fill:var(--f-sf);stroke:var(--f-bd);stroke-width:1.4}
+svg.g .n.sel{fill:var(--f-acs);stroke:var(--f-ac);stroke-width:2.2}
+svg.g .n.hot{fill:var(--s-badb);stroke:var(--s-bad)}
+svg.g .n.warm{fill:var(--s-warnb);stroke:var(--s-warn)}
+svg.g .n.cool{fill:var(--s-liveb);stroke:var(--s-live)}
+svg.g .n.test{fill:var(--s-parkb);stroke:var(--s-park)}
+svg.g .cl{fill:var(--f-hv);stroke:var(--f-ln);stroke-width:1}
+svg.g .cell{fill:var(--f-hv)}
+svg.g .cell.d1{fill:var(--f-acs)}
+svg.g .cell.d2{fill:var(--f-acl)}
+svg.g .cell.d3{fill:var(--f-ac)}
+svg.g .cell.cyc{fill:var(--s-badb);stroke:var(--s-bad)}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.lg i{display:inline-block;width:22px;height:0;border-top:2px solid var(--f-ac)}
+.lg i.ast{border-top:2px dashed var(--f-mu)}.lg i.low{border-top:2px dotted var(--s-warn)}
+.lg b{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid var(--s-bad);background:var(--s-badb)}
+.lg b.warm{border-color:var(--s-warn);background:var(--s-warnb)}.lg b.cool{border-color:var(--s-live);background:var(--s-liveb)}.lg b.test{border-color:var(--s-park);background:var(--s-parkb)}
+.ev{font:500 12px var(--f-mono);padding:1px 6px;border-radius:99px;border:1px solid var(--f-acl);color:var(--f-ac);background:var(--f-acs)}
+.ev.ast{border-style:dashed;border-color:var(--f-bd);color:var(--f-mu);background:none}
+.ev.low{border-color:color-mix(in srgb,var(--s-warn) 55%,transparent);color:var(--s-warn);background:var(--s-warnb)}
+.cap{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 7px;border-radius:99px;white-space:nowrap}
+.cap svg{width:12px;height:12px}
+.cap.ok{background:var(--s-liveb);color:var(--s-live)}.cap.missing{background:var(--s-badb);color:var(--s-bad)}.cap.unknown{background:var(--s-neub);color:var(--s-neu)}
+table.mx{border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+table.mx th{font-size:12px;font-weight:600;color:var(--f-mu);padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap;vertical-align:bottom}
+table.mx th.l,table.mx td.l{text-align:left}
+table.mx td{padding:6px 8px;border-bottom:1px solid var(--f-ln);text-align:center;white-space:nowrap}
+table.mx tr.grp td{background:var(--f-hv);font-weight:600;text-align:left}
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.flow .col{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.flow .col h5{margin:0;font-size:13px;display:flex;gap:6px;align-items:baseline}
+.flow .col h5 em{font:normal 600 17px var(--f-display);color:var(--f-ac)}
+.flow .it{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow .it small{display:block;font:12px var(--f-display);color:var(--f-mu);white-space:normal}
+.treerow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:5px 0;border-top:1px solid var(--f-ln);font-size:12.5px;align-items:baseline}
+.treerow:first-child{border-top:0}
+.treerow code{justify-self:start}
+.treerow small{color:var(--f-mu);font-size:12px}
+.ind1{padding-left:18px}.ind2{padding-left:36px}.ind3{padding-left:54px}
+.prcard{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.gate{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:4px 10px;align-items:center;font-size:13px;padding:6px 0;border-top:1px solid var(--f-ln)}
+.gate:first-of-type{border-top:0}
+.gate small{grid-column:2/4;color:var(--f-mu);font-size:12px}
+.gate svg{width:12px;height:12px}
+.term{background:#06101e;color:#d7e3f0;border-radius:10px;padding:10px 12px;font:12.5px/1.6 var(--f-mono);white-space:pre;overflow:auto;margin:0;border:1px solid var(--f-ln)}
+.term b{color:#7cc8f8;font-weight:500}.term i{font-style:normal;color:#4cd9a0}.term u{text-decoration:none;color:#f5c451}.term s{text-decoration:none;color:#9fb0c4}
+.ghcheck{border:1px solid var(--f-ln);border-radius:10px;overflow:hidden;background:var(--f-sf)}
+.ghcheck .hd{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--f-ln);font-size:13px;background:var(--f-hv)}
+.ghcheck .bd{padding:8px 12px;font-size:12.5px;display:flex;flex-direction:column;gap:4px}
+.paste{border:1px dashed var(--f-bd);border-radius:8px;padding:8px 10px;font:13px var(--f-mono);color:var(--f-mu);display:flex;align-items:center;gap:8px;min-height:36px}
+.lang{display:grid;grid-template-columns:120px 130px 120px minmax(0,1fr) 80px;gap:10px;align-items:center;font-size:12.5px;padding:7px 0;border-top:1px solid var(--f-ln)}
+.lang:first-child{border-top:0}
+.lang small{color:var(--f-mu);font-size:12px}
+.slider{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.slider .tr{position:relative;width:200px;height:4px;border-radius:2px;background:var(--f-ln)}
+.slider .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--f-ac)}
+.slider .tr b{position:absolute;top:-6px;width:16px;height:16px;border-radius:50%;background:var(--f-sf);border:2px solid var(--f-ac)}
+.ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:15px}
+.ask .inp{min-width:200px}
+.answer{border:1px solid color-mix(in srgb,var(--s-bad) 45%,transparent);border-left:3px solid var(--s-bad);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.answer.yes{border-color:color-mix(in srgb,var(--s-live) 45%,transparent);border-left-color:var(--s-live)}
+.pickt td:nth-child(2) a{margin-right:8px}
+/* ======== onboarding (lane C4T, 2026-10-07) ======== */
+.chk{display:flex;flex-direction:column}
+.chk>div{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 0;border-top:1px solid var(--f-ln);font-size:13px}
+.chk>div:first-child{border-top:0}
+.chk>div>small{grid-column:2/4;color:var(--f-mu);font-size:12px}
+.chk svg{width:14px;height:14px}
+.chk b{font-weight:600}
+.chk .nx{background:var(--f-acs);border-radius:8px;padding-inline:8px;margin-inline:-8px}
+.rw{display:inline-flex;border:1px solid var(--f-ln);border-radius:8px;overflow:hidden;flex:none}
+.rw span{padding:3px 10px;font-size:12.5px;color:var(--f-mu)}
+.rw span.on{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.rw span+span{border-left:1px solid var(--f-ln)}
+.rw.off{opacity:.55}
+.vsteps{display:flex;flex-direction:column;gap:2px;width:230px;flex:none}
+.vsteps>div{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:8px;font-size:13px;color:var(--f-mu)}
+.vsteps>div.on{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.vsteps svg{width:12px;height:12px;flex:none}
+.vsteps .live{color:var(--s-live)}.vsteps .warn{color:var(--s-warn)}
+.fix{border:1px solid color-mix(in srgb,var(--s-warn) 45%,transparent);border-left:3px solid var(--s-warn);border-radius:10px;background:var(--s-warnb);padding:10px 12px;font-size:12.5px;display:flex;flex-direction:column;gap:6px;color:var(--f-ink)}
+.fix.bad{border-color:color-mix(in srgb,var(--s-bad) 45%,transparent);border-left-color:var(--s-bad);background:var(--s-badb)}
+.fix .code{font:600 12px var(--f-mono);color:var(--s-warn)}
+.fix.bad .code{color:var(--s-bad)}
+.fix .acts{display:flex;gap:8px;flex-wrap:wrap}
+.own{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--f-ln);font-size:13px}
+.own>small{grid-column:2/4;color:var(--f-mu);font-size:12px}
+.own.on{background:var(--f-acs)}
+.own .oa{width:28px;height:28px;border-radius:8px;background:var(--f-hv);display:inline-flex;align-items:center;justify-content:center;font:600 12px var(--f-mono);color:var(--f-mu)}
+.pager{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--f-mu)}
+.pager .r{margin-left:auto;display:flex;gap:6px}
+.ghpage{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:16px 18px;display:flex;flex-direction:column;gap:10px;max-width:520px}
+.ghpage .who{display:flex;gap:10px;align-items:center}
+.ghpage ul{margin:0;padding-left:18px;font-size:12.5px}
+.stepbar{display:flex;gap:4px}
+.stepbar i{flex:1;height:6px;border-radius:3px;background:var(--f-ln)}
+.stepbar i.d{background:var(--s-live)}.stepbar i.w{background:var(--s-warn)}.stepbar i.n{background:var(--f-ac)}
+.tile{border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.tile.on{border-color:var(--f-ac);box-shadow:0 0 0 1px var(--f-ac)}
+.tile h5{margin:0;font-size:14px;display:flex;gap:8px;align-items:center}
+.tile p{margin:0;font-size:12.5px;color:var(--f-mu)}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.tiles.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol><symbol id="i-repo" viewBox="0 0 24 24"><path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z"/><path d="M5.5 17.5a2 2 0 0 1 2-2h11"/><path d="M9 8.5h6"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol></defs></svg>
+<div class="wrap">
+<p class="kicker">SwarmCloud · Setup and Access · design lane C4T · 2026-10-07 · #780</p>
+<h1>Onboarding: connect GitHub as yourself, enable orgs, choose repositories</h1>
+<p class="lede">The owner asked on 2026-10-07 for an onboarding experience, in the console and in the sc plugin, that hand-holds a user through git access, enabling one or more GitHub orgs and choosing the repositories SwarmCloud may read and write, acting as the user. These are the screens, two or three variants each, for the owner to pick. The design behind them is <a href="../../onboarding.md">docs/onboarding.md</a>; the token slots and the permission matrix they build on are <a href="../../git-tokens.md">docs/git-tokens.md</a>. <b>Nothing here is built.</b></p>
+<p class="sub" style="color:var(--mute)">All data is <span class="exd">example data</span>: the tenant is <code>eng</code>, the signed-in user is Operator, GitHub account <code>example-user</code>, the console <code>swarm.example.com</code>, the organisations <code>example-org</code> (SAML SSO) and <code>example-lab</code>. No value on this page is a credential, and no frame has a field that takes one.</p>
+<div class="themebar" role="group" aria-label="Theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#today">0 · Today</a></li><li><a href="#entry">1 · Onboarding entry and checklist</a></li><li><a href="#connect">2 · Connect GitHub</a></li><li><a href="#chooser">3 · Org and repository chooser</a></li><li><a href="#verify">4 · Verification results</a></li><li><a href="#access">5 · Access, the steady state</a></li><li><a href="#rec">6 · Recommendation</a></li><li><a href="#pick">7 · All screens to pick</a></li></ul>
+
+<h2 id="today"><span class="n">0</span>Today, measured from the code</h2>
+<div class="tw"><table class="doc"><thead><tr><th>Where</th><th>What it does today</th><th>Source</th></tr></thead><tbody>
+<tr><td>Work › Repositories › Register</td><td>lists page 1 of what the tenant token can read; no typed owner/repo, no org or token choice</td><td class="src"><code>apps/swarm-ui/src/RepositoriesRegister.tsx</code></td></tr>
+<tr><td>Git tokens, permission matrix</td><td>tenant, repository and user slots as records; values only through <code>scripts/create-secrets.sh --stdin</code></td><td class="src"><code>apps/swarm-ui/src/GitTokens.tsx</code></td></tr>
+<tr><td>Clone and push</td><td>always the tenant token, <code>swarm-tenant-eng-git</code></td><td class="src"><code>apps/agent-worker/agent_worker/secrets.py</code></td></tr>
+<tr><td>Setup, Access</td><td><span class="dash" title="does not exist: there is no onboarding state and no per-user grant">—</span></td><td class="src">this page</td></tr>
+</tbody></table></div>
+
+<!-- ================================================================== -->
+<h2 id="entry"><span class="n">1</span>Onboarding entry and checklist</h2>
+<p>Where a new user meets setup, and how they see what is done and what is next.</p>
+<div class="variant" id="entry-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A checklist card on Overview, until every step is done</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Overview"></div><main class="ct"><div class="crumb">Overview › <b>Overview</b></div><div class="phead"><h3>Overview</h3><div class="r"><span class="chip ctx">eng</span></div></div><div class="card" style="max-width:880px"><div class="ch"><b>Set up SwarmCloud</b><span class="chip">3 of 6 done</span><div class="r"><span class="btn ghost sm">Hide</span><span class="btn sm">Open setup</span></div></div><div class="stepbar"><i class="d"></i><i class="d"></i><i class="w"></i><i class="d"></i><i></i><i></i></div><div class="chk"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Sign in <code>signed_in</code></b><span class="exd">done</span><small>Google identity verified · tenant eng</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Connect GitHub <code>github_connected</code></b><span class="exd">done</span><small>connected as example-user · GitHub App · refreshed 12 min ago</small></div><div class="nx"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg></span><b>Enable orgs <code>orgs_enabled</code></b><span class="btn sm pri">Continue</span><small>example-user installed · example-org ORG_APPROVAL_PENDING</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Choose repositories <code>repos_chosen</code></b><span class="exd">done</span><small>1 granted: example-user/example-api (write)</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b>Verify access <code>access_verified</code></b><span class="exd">to do</span><small>clone, push and pull request checked for every granted repository</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b>Ready <code>ready</code></b><span class="exd">to do</span><small>submit a first task in a granted repository</small></div></div><div class="fix"><span class="code">ORG_APPROVAL_PENDING</span><span>You asked example-org's owners to install SwarmCloud. Nothing can be read in example-org until one of them approves it in example-org's settings › GitHub Apps. You can carry on with your other orgs; this step re-checks on its own every 15 minutes, or press Re-check.</span><div class="acts"><span class="btn sm">Re-check</span><span class="btn ghost sm">Carry on with example-user</span></div></div></div><p class="sub">The same six steps <code>uv run sc setup status</code> prints. Agents running: <span class="dash" title="not drawn: this frame is about setup, the rest of Overview is unchanged">—</span></p></main></div></div><figcaption>The card sits above the Overview tiles until ready; Hide keeps the steps and puts a Setup link in the panel. Every step's sub-line is its last probe.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>A first-run checklist where the user already lands, with the next step's button and the failing step's recovery copy inline.</p></div><div><h4>Pros</h4><ul><li>No new page to find; it disappears by itself when every step is done.</li><li>The recovery copy is the API's, word for word, so the plugin says the same.</li></ul></div><div><h4>Risks</h4><ul><li>Overview gets taller for a new user.</li><li>An admin who never works in repositories sees it until they hide it.</li></ul></div></div><div class="variant" id="entry-b">
+<div class="vh"><span class="vn">Variant B</span><h3>A Setup page with a vertical stepper</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › <b>Setup</b></div><div class="phead"><h3>Set up SwarmCloud</h3><div class="r"><span class="chip">resumes where you left off</span></div></div><div style="display:flex;gap:16px;align-items:flex-start"><div class="vsteps"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span>Sign in</div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span>Connect GitHub</div><div class="on"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg></span>Enable orgs</div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span>Choose repositories</div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span>Verify access</div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span>Ready</div></div><div class="pane" style="flex:1"><h4>Enable orgs</h4><p class="sub">Each owner is enabled by installing the SwarmCloud GitHub App there. The installation, not SwarmCloud, decides which repositories can ever be reached.</p><div class="own on"><span class="oa">EU</span><b>example-user <span class="exd">your account</span></b><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>installed · 2 repositories</span></span><small>Only select repositories · checked 4 min ago</small></div><div class="own"><span class="oa">EO</span><b>example-org <span class="exd">organisation · SAML SSO</span></b><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>approval pending</span></span><small>requested by you 2026-10-07 09:12 · an owner of example-org approves it</small></div><div class="own"><span class="oa">EL</span><b>example-lab <span class="exd">organisation</span></b><span class="btn sm">Install</span><small>not installed · repositories <span class="dash" title="unknown until the App is installed: GitHub lists nothing for an owner without an installation">—</span></small></div><div class="fix"><span class="code">ORG_APPROVAL_PENDING</span><span>You asked example-org's owners to install SwarmCloud. Nothing can be read in example-org until one of them approves it in example-org's settings › GitHub Apps. You can carry on with your other orgs; this step re-checks on its own every 15 minutes, or press Re-check.</span><div class="acts"><span class="btn sm">Re-check</span></div></div><div style="display:flex;justify-content:flex-end;gap:8px"><span class="btn ghost">Back</span><span class="btn pri">Continue to Choose repositories</span></div></div></div></main></div></div><figcaption>One page for the whole flow. The stepper is the checklist; the right pane is the current step, so Connect GitHub, Enable orgs, Choose repositories and Verify each get the room they need.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>A dedicated Setup page under Work, with the steps on the left and the current step on the right.</p></div><div><h4>Pros</h4><ul><li>Room for the chooser and the results without a drawer.</li><li>A deep link per step: the plugin can print it.</li></ul></div><div><h4>Risks</h4><ul><li>One more page in the panel; after setup it duplicates Access.</li></ul></div></div><div class="variant" id="entry-c">
+<div class="vh"><span class="vn">Variant C</span><h3>A thin banner on every page, a drawer with the checklist</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Agents"></div><main class="ct" style="position:relative"><div class="banner"><b>Setup 3 of 6</b><span>Next: Enable orgs. example-org is waiting for an owner's approval.</span><span class="btn sm">Open checklist</span></div><div class="crumb">Work › <b>Agents</b></div><h3>Agents</h3><p class="sub">Agents <span class="dash" title="not drawn: the page under the drawer is unchanged">—</span></p><div class="scrim"></div><div class="drawer"><div class="ch"><b>Set up SwarmCloud</b><div class="r"><span class="btn ghost sm">Close</span></div></div><div class="stepbar"><i class="d"></i><i class="d"></i><i class="w"></i><i class="d"></i><i></i><i></i></div><div class="chk"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Sign in <code>signed_in</code></b><span class="exd">done</span><small>Google identity verified · tenant eng</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Connect GitHub <code>github_connected</code></b><span class="exd">done</span><small>connected as example-user · GitHub App · refreshed 12 min ago</small></div><div class="nx"><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg></span><b>Enable orgs <code>orgs_enabled</code></b><span class="btn sm pri">Continue</span><small>example-user installed · example-org ORG_APPROVAL_PENDING</small></div><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Choose repositories <code>repos_chosen</code></b><span class="exd">done</span><small>1 granted: example-user/example-api (write)</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b>Verify access <code>access_verified</code></b><span class="exd">to do</span><small>clone, push and pull request checked for every granted repository</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b>Ready <code>ready</code></b><span class="exd">to do</span><small>submit a first task in a granted repository</small></div></div><div class="fix"><span class="code">ORG_APPROVAL_PENDING</span><span>You asked example-org's owners to install SwarmCloud. Nothing can be read in example-org until one of them approves it in example-org's settings › GitHub Apps. You can carry on with your other orgs; this step re-checks on its own every 15 minutes, or press Re-check.</span><div class="acts"><span class="btn sm">Re-check</span></div></div></div></main></div></div><figcaption>Reachable from anywhere; the banner names the next step. The drawer is the same checklist as A, so Connect GitHub, Enable orgs, Choose repositories and Verify are one click away.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Setup follows the user around as a banner until it is done.</p></div><div><h4>Pros</h4><ul><li>Impossible to miss.</li><li>No new page.</li></ul></div><div><h4>Risks</h4><ul><li>A banner on every page is noise for a user who is waiting on an org owner for a week.</li><li>The chooser does not fit in a drawer; it opens a page anyway.</li></ul></div></div>
+<!-- ================================================================== -->
+<h2 id="connect"><span class="n">2</span>Connect GitHub</h2>
+<p>The first real step. The token never appears: the page says where it goes.</p>
+<div class="variant" id="connect-a">
+<div class="vh"><span class="vn">Variant A</span><h3>One button, the GitHub App, and where the token goes</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Connect GitHub</b></div><h3>Connect GitHub</h3><div class="cols"><div class="pane"><h4>SwarmCloud acts as you</h4><p class="sub">You authorise the SwarmCloud GitHub App once. Pushes, pull requests and comments are yours; the App can only reach repositories an installation selects, and only those you also choose here.</p><ul><li>Read and write code, pull requests and issues in the repositories each installation selects</li><li>Read checks and metadata</li><li>Act as you: pushes and pull requests show your name</li></ul><div class="meta col"><span><b>Where the token goes</b> GitHub sends it to SwarmCloud's server, which stores it in Secret Manager as <code>swarm-tenant-eng-git-u-…</code>. You never see it; it is never in a log, a task or this page.</span><span><b>Lifetime</b> 8 hours, renewed automatically; ends when you disconnect or revoke it at GitHub.</span></div><div style="display:flex;gap:8px"><span class="btn pri">Connect GitHub</span><span class="btn ghost">Use a personal access token instead</span></div></div><div class="pane"><h4>After you return</h4><div class="chk"><div><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg></span><b>Connected as example-user</b><span class="exd">GitHub App · user token</span><small>account id read from GET /user · expires in 7 h 48 min · refreshed automatically</small></div><div><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg></span><b>Last refresh</b><span class="dash" title="not refreshed yet: the first refresh is due 2 hours before the token expires">—</span><small>the refresher runs every 15 minutes</small></div></div><div class="fix"><span class="code">AUTHORISATION_EXPIRED</span><span>That sign-in link has expired or was already used. Press Connect GitHub for a fresh one; links last 10 minutes and work once.</span><div class="acts"><span class="btn sm">Connect GitHub</span></div></div></div></div></main></div></div><figcaption>The recommended mechanism, B. The page names the secret's prefix, never a value, and says where the token lives (Secret Manager) before the click.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Connect is one button; everything the user needs to trust it is on the same page.</p></div><div><h4>Pros</h4><ul><li>Nothing to paste, nothing to rotate.</li><li>The failure states on return are drawn next to the success.</li></ul></div><div><h4>Risks</h4><ul><li>The PAT fallback is a quiet link; an org that blocks Apps needs it found.</li></ul></div></div><div class="variant" id="connect-b">
+<div class="vh"><span class="vn">Variant B</span><h3>Pick how to connect: App, fine-grained token, classic token</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Connect GitHub</b></div><h3>How should SwarmCloud reach GitHub as you?</h3><div class="tiles"><div class="tile on"><h5>GitHub App <span class="rec">Recommended</span></h5><p>Authorise once; each org installs it and picks repositories. 8-hour token, renewed automatically, stored in Secret Manager.</p><span class="btn pri sm">Connect GitHub</span></div><div class="tile"><h5>Fine-grained token</h5><p>One per org, for an org that will not install the App. You create it at GitHub; the terminal sends it once to Secret Manager.</p><code>uv run sc setup token --owner example-org</code><p>Expiry: yours to set and rotate.</p></div><div class="tile"><h5>Classic token</h5><p>One token, every org you SSO-authorise it for. Many orgs forbid it.</p><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>example-org refuses classic tokens</span></span></div></div><div class="fix bad"><span class="code">CLASSIC_PAT_BLOCKED</span><span>example-org does not accept classic personal access tokens. Connect with the SwarmCloud GitHub App instead (recommended), or create a fine-grained token whose resource owner is example-org and store it with <code>uv run sc setup token --owner example-org</code>.</span><div class="acts"><span class="btn sm">Connect GitHub</span><span class="btn ghost sm">How to create a fine-grained token</span></div></div><p class="sub">No field on this page takes a token. A token goes from your terminal to Secret Manager, never through the console.</p></main></div></div><figcaption>Mechanisms A and B side by side, with the classic-token refusal drawn. The token command reads stdin; nothing is typed into the console.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Make the choice visible, because some orgs will force the fallback.</p></div><div><h4>Pros</h4><ul><li>An admin-blocked org has an obvious second path.</li><li>Honest about what each option costs the user.</li></ul></div><div><h4>Risks</h4><ul><li>Three choices where most users should make none.</li></ul></div></div><div class="variant" id="connect-c">
+<div class="vh"><span class="vn">Variant C</span><h3>The hand-off pages: GitHub's consent, then 'return to your terminal'</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">github.com › <b>Authorize SwarmCloud</b></div><div class="cols"><div class="ghpage"><div class="who"><span class="av">EU</span><b>SwarmCloud by example-org wants to act as example-user</b></div><ul><li>Read and write code, pull requests and issues in the repositories each installation selects</li><li>Read checks and metadata</li><li>Act as you: pushes and pull requests show your name</li></ul><p class="sub">Only in repositories where SwarmCloud is installed.</p><div style="display:flex;gap:8px"><span class="btn ghost">Cancel</span><span class="btn pri">Authorize SwarmCloud</span></div></div><div class="ghpage"><b>swarm.example.com/onboarding/github/callback</b><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>Connected as example-user</span></span><p class="sub">SwarmCloud stored the token in Secret Manager. You can return to your terminal: <code>/sc:setup</code> continues at Enable orgs.</p><div class="meta col"><span>Not signed in to the console in this browser? The page shows a one-time code to paste into the terminal instead; it is not echoed there.</span></div><div class="fix"><span class="code">AUTHORISATION_DENIED</span><span>GitHub says the authorisation was cancelled, so SwarmCloud has no access. Press Connect GitHub to start again; nothing was stored.</span><div class="acts"><span class="btn sm">Connect GitHub</span></div></div></div></div></main></div></div><figcaption>What the plugin user sees in the browser: GitHub's page (drawn approximately) and SwarmCloud's callback page, which finishes the exchange server-side.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Draw the two browser pages the plugin's hand-off lands on.</p></div><div><h4>Pros</h4><ul><li>The plugin and the console share this callback page.</li><li>Says plainly that the terminal resumes.</li></ul></div><div><h4>Risks</h4><ul><li>GitHub owns the first page; ours can only describe it.</li></ul></div></div>
+<!-- ================================================================== -->
+<h2 id="chooser"><span class="n">3</span>Org and repository chooser</h2>
+<p>Owners are installations; repositories are paged from each, searchable, and each chosen Read or Write. A repository not listed can be typed as owner/repo.</p>
+<div class="variant" id="chooser-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Owners on the left, one owner's repositories on the right</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Choose repositories</b></div><div class="phead"><h3>Choose repositories</h3><div class="r"><span class="chip">2 chosen · 1 write · 1 read</span></div></div><div style="display:flex;gap:12px;align-items:flex-start"><div class="card" style="width:270px;padding:0;gap:0"><div class="own"><span class="oa">EU</span><b>example-user</b><span class="cnt">2</span><small>installed · 1 chosen</small></div><div class="own on"><span class="oa">EO</span><b>example-org</b><span class="cnt">14</span><small>installed · selected repositories · 2 chosen</small></div><div class="own"><span class="oa">EL</span><b>example-lab</b><span class="cnt"><span class="dash" title="not installed: GitHub lists no repositories for an owner without an installation">—</span></span><small>not installed · <a class="more">Install</a></small></div></div><div class="card" style="flex:1"><div class="ch"><div class="inp" style="flex:1"><svg class="ic"><use href="#i-search"/></svg>Search example-org</div><span class="radio"><span class="on">All</span><span>Chosen</span><span>Write</span></span></div><table class="t"><thead><tr><th>Repository</th><th>You can push</th><th>Chosen</th><th>Access</th></tr></thead><tbody><tr><td><span class="rn"><b>example-org/example-service</b><small>private · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>chosen</span></span></td><td><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-service-ui</b><small>private · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="exd">not chosen</span></td><td><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-docs</b><small>public · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>chosen</span></span></td><td><span class="rw" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-tools</b><small>private · you can read, not push</small></span></td><td><span class="cap missing"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="exd">not chosen</span></td><td><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr></tbody></table><div class="pager"><span>Page 1 of 1 · 14 repositories in the installation</span><div class="r"><span class="btn sm ghost">Previous</span><span class="btn sm ghost">Next page</span></div></div><div class="fgrid" style="grid-template-columns:150px minmax(0,1fr)"><div class="fl">Not listed?<small>type owner/repo</small></div><div><div class="inp val">example-org/example-legacy</div></div></div><div class="fix"><span class="code">REPO_NOT_INSTALLED</span><span>SwarmCloud is installed on example-org but not for example-org/example-legacy. Add example-org/example-legacy to the installation at github.com/organizations/example-org/settings/installations (an org owner may have to), then press Re-check. SwarmCloud never reaches a repository the installation leaves out.</span><div class="acts"><span class="btn sm">Re-check</span></div></div></div></div></main></div></div><figcaption>Owners from GET /user/installations; repositories from the installation, paged 100 at a time, searched server-side. Read or Write per repository; the typed owner/repo is read once.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>The org list is the installations; choosing within it is SwarmCloud's own grant.</p></div><div><h4>Pros</h4><ul><li>Org and repository are both visible at once.</li><li>A repository the user cannot push to says so before Write is chosen.</li></ul></div><div><h4>Risks</h4><ul><li>Two columns are cramped on a narrow screen.</li></ul></div></div><div class="variant" id="chooser-b">
+<div class="vh"><span class="vn">Variant B</span><h3>One table across every owner, filtered by owner chips</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Choose repositories</b></div><h3>Choose repositories</h3><div class="ch"><div class="inp" style="min-width:320px"><svg class="ic"><use href="#i-search"/></svg>Search every installed owner</div><span class="chip ctx">example-user</span><span class="chip ctx">example-org</span><span class="chip">example-lab · not installed</span></div><div class="card"><table class="t"><thead><tr><th>Repository</th><th>You can push</th><th>Chosen</th><th>Access</th></tr></thead><tbody><tr><td><span class="rn"><b>example-user/example-api</b><small>private · your account</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>chosen</span></span></td><td><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span></td></tr><tr><td><span class="rn"><b>example-user/example-site</b><small>public · your account</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="exd">not chosen</span></td><td><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-service</b><small>private · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>chosen</span></span></td><td><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-service-ui</b><small>private · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="exd">not chosen</span></td><td><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-docs</b><small>public · default branch main</small></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>chosen</span></span></td><td><span class="rw" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr><tr><td><span class="rn"><b>example-org/example-tools</b><small>private · you can read, not push</small></span></td><td><span class="cap missing"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="exd">not chosen</span></td><td><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td></tr></tbody></table><div class="pager"><span>16 of 16 shown</span><div class="r"><span class="btn sm">Load more</span></div></div></div><div class="card"><div class="ch"><b>Add by name</b></div><div class="inp val">owner/repo: example-org/example-legacy</div><div class="fix"><span class="code">REPO_NOT_INSTALLED</span><span>SwarmCloud is installed on example-org but not for example-org/example-legacy. Add example-org/example-legacy to the installation at github.com/organizations/example-org/settings/installations (an org owner may have to), then press Re-check. SwarmCloud never reaches a repository the installation leaves out.</span><div class="acts"><span class="btn sm">Re-check</span></div></div></div></main></div></div><figcaption>Every installed owner in one list; owner chips filter. Load more pages through each installation in turn.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>One list for a user with few repositories.</p></div><div><h4>Pros</h4><ul><li>Fastest for the common case of a dozen repositories.</li><li>Search crosses owners.</li></ul></div><div><h4>Risks</h4><ul><li>An org with hundreds of repositories drowns the personal account's two.</li></ul></div></div><div class="variant" id="chooser-c">
+<div class="vh"><span class="vn">Variant C</span><h3>Available on the left, chosen on the right</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Choose repositories</b></div><h3>Choose repositories in example-org</h3><div class="cols"><div class="pane"><h4>Available</h4><div class="inp"><svg class="ic"><use href="#i-search"/></svg>Search: service</div><div class="pick"><span class="dot"></span><b>example-org/example-service-ui</b><span class="btn sm">Add</span><small>private · you can push</small></div><div class="pick"><span class="dot"></span><b>example-org/example-tools</b><span class="btn sm">Add as read</span><small>private · you can read, not push</small></div><div class="pager"><span>Page 2 of 3</span><div class="r"><span class="btn sm ghost">Previous</span><span class="btn sm ghost">Next page</span></div></div><div class="inp val">owner/repo: example-org/example-legacy</div></div><div class="pane"><h4>Chosen</h4><div class="pick on"><span class="dot"></span><b>example-org/example-service</b><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span><small>registered for eng on first grant</small></div><div class="pick on"><span class="dot"></span><b>example-org/example-docs</b><span class="rw" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span><small>clone only; SwarmCloud refuses to push</small></div><div style="display:flex;justify-content:flex-end"><span class="btn pri">Verify 2 repositories</span></div></div></div></main></div></div><figcaption>A transfer list: the left pages through the installation; the right is what SwarmCloud may reach, each with Read or Write.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Make the allow-list itself the object on screen.</p></div><div><h4>Pros</h4><ul><li>What SwarmCloud may touch is one column, nothing else.</li><li>Read is the visible default for a repository the user cannot push to.</li></ul></div><div><h4>Risks</h4><ul><li>Two lists to keep in sync for an org with hundreds of repositories.</li></ul></div></div>
+<!-- ================================================================== -->
+<h2 id="verify"><span class="n">4</span>Verification results</h2>
+<p>Clone, Push and Pull request, per granted repository, as ok, missing or unknown, with the recovery copy for anything that failed.</p>
+<div class="variant" id="verify-a">
+<div class="vh"><span class="vn">Variant A</span><h3>A results grid, failures first, with the fix inline</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Verify access</b></div><div class="phead"><h3>Verify access</h3><div class="r"><span class="stamp">checked 2026-10-07 10:41</span><span class="btn sm">Re-check all</span></div></div><div class="card"><table class="mx"><thead><tr><th class="l">Repository</th><th>Access</th><th>Clone</th><th>Push</th><th>Pull request</th><th>Write test</th></tr></thead><tbody><tr><td class="l">example-org/example-service</td><td>write</td><td><span class="cap missing"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg>missing</span></td><td><span class="cap unknown"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="cap unknown"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg>unknown</span></td><td><span class="dash" title="not run: opt-in, and the clone check failed first">—</span></td></tr><tr><td class="l">example-user/example-api</td><td>write</td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="dash" title="not run: the write test is opt-in per repository">—</span></td></tr><tr><td class="l">example-org/example-docs</td><td>read</td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="dash" title="not checked: a read grant never pushes">—</span></td><td><span class="dash" title="not checked: a read grant opens no pull request">—</span></td><td><span class="dash" title="not offered for a read grant">—</span></td></tr></tbody></table></div><div class="fix bad"><span class="code">SSO_NOT_AUTHORISED</span><span>example-org uses SAML single sign-on and GitHub has not linked your session to it yet. Open github.com/orgs/example-org/sso, sign in with example-org's identity provider, then press Re-check. Nothing in SwarmCloud has to change.</span><div class="acts"><span class="btn sm">Open example-org SSO</span><span class="btn sm">Re-check</span></div></div><p class="sub">Clone reads the upload-pack advertisement, Push the receive-pack advertisement and your push permission, Pull request the installation's pull_requests permission. All are reads; nothing is written unless you run the write test.</p></main></div></div><figcaption>One row per granted repository. unknown is a measured answer (the earlier check failed), never a pass.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>The permission matrix's grammar (ok / missing / unknown) applied to the user's own grants.</p></div><div><h4>Pros</h4><ul><li>Same marks as the Git tokens permission view the console already has.</li><li>The fix is next to the cell that needs it.</li></ul></div><div><h4>Risks</h4><ul><li>Wide with many repositories; it scrolls.</li></ul></div></div><div class="variant" id="verify-b">
+<div class="vh"><span class="vn">Variant B</span><h3>One card per repository, checks running live</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Verify access</b></div><h3>Verifying 3 repositories</h3><div class="tiles"><div class="tile"><h5>example-user/example-api</h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>Clone ok</span></span><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>Push ok</span></span><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>Pull request ok</span></span><p>write · 3 reads · 0.8 s</p></div><div class="tile"><h5>example-org/example-service</h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg><span>Clone checking</span></span><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg><span>Push waiting</span></span><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg><span>Pull request waiting</span></span><p>write · started 2 s ago</p></div><div class="tile"><h5>example-org/example-docs</h5><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>Clone ok</span></span><p>Push <span class="dash" title="not checked: read grant">—</span> · Pull request <span class="dash" title="not checked: read grant">—</span></p><p>read</p></div></div><div class="fix"><span class="code">FORGE_UNREACHABLE</span><span>GitHub did not answer this check, so its result is unknown, not failed. It is retried on the next pass; press Re-check to try now.</span><div class="acts"><span class="btn sm">Re-check</span></div></div></main></div></div><figcaption>Progress is visible while each probe runs; a check that did not come back says so instead of failing.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Show the checks as they happen.</p></div><div><h4>Pros</h4><ul><li>Feels alive for the 2-5 seconds verification takes.</li></ul></div><div><h4>Risks</h4><ul><li>Cards hide the cross-repository pattern a grid shows (one org failing every clone).</li></ul></div></div><div class="variant" id="verify-c">
+<div class="vh"><span class="vn">Variant C</span><h3>A verdict sentence, then only what needs you</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Setup"></div><main class="ct"><div class="crumb">Work › Setup › <b>Verify access</b></div><div class="answer"><b>SwarmCloud can work as example-user in 2 of 3 repositories.</b><span class="sub">example-user/example-api: Clone, Push and Pull request ok. example-org/example-docs: Clone ok (read).</span></div><div class="answer"><b>1 needs you: example-org/example-service</b><div class="fix bad"><span class="code">SSO_NOT_AUTHORISED</span><span>example-org uses SAML single sign-on and GitHub has not linked your session to it yet. Open github.com/orgs/example-org/sso, sign in with example-org's identity provider, then press Re-check. Nothing in SwarmCloud has to change.</span><div class="acts"><span class="btn sm">Open example-org SSO</span><span class="btn sm">Re-check</span></div></div></div><div class="answer yes"><b>Optional: prove a push</b><span class="sub">Create and delete one branch, swarmcloud/onboarding-check-…, in example-user/example-api. It is the only check that writes.</span><span><span class="btn sm">Run write test</span></span></div></main></div></div><figcaption>Answers the question the user has (can it work?) first; the full grid is one link away.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>A sentence first, failures second, details on request.</p></div><div><h4>Pros</h4><ul><li>Shortest path to 'done' for a user with no failures.</li></ul></div><div><h4>Risks</h4><ul><li>The details a support conversation needs are one click further away.</li></ul></div></div>
+<!-- ================================================================== -->
+<h2 id="access"><span class="n">5</span>Access, the steady state</h2>
+<p>Adding and removing orgs and repositories later, and the tenant's members.</p>
+<div class="variant" id="access-a">
+<div class="vh"><span class="vn">Variant A</span><h3>Work › Access: connection, owners, grants</h3><span class="rec">Recommended</span></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Access"></div><main class="ct"><div class="crumb">Work › <b>Access</b></div><div class="phead"><h3>Access</h3><div class="r"><span class="btn">Add org</span><span class="btn pri">Add repository</span></div></div><div class="kv"><div><span class="l">GitHub</span><span class="v">example-user</span><span class="s">GitHub App · user token</span></div><div><span class="l">Token</span><span class="v">7 h 12 min <small>left</small></span><span class="s">renewed automatically · refresh valid 179 days</span></div><div><span class="l">Owners</span><span class="v">2</span><span class="s">1 org, your account</span></div><div><span class="l">Last verified</span><span class="v">10:41</span><span class="s">re-verified daily</span></div></div><div class="card"><div class="ch"><b>Owners</b></div><table class="t"><thead><tr><th>Owner</th><th>Installation</th><th>SSO</th><th>Granted</th><th></th></tr></thead><tbody><tr><td><span class="rn"><b>example-user</b><small>your account</small></span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>selected · 2</span></span></td><td><span class="dash" title="not applicable: a personal account has no SSO">—</span></td><td>1</td><td><span class="btn sm danger">Remove</span></td></tr><tr><td><span class="rn"><b>example-org</b><small>organisation</small></span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>selected · 14</span></span></td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>session active</span></span></td><td>2</td><td><span class="btn sm danger">Remove</span></td></tr></tbody></table></div><div class="card"><div class="ch"><b>Repositories SwarmCloud may reach as you</b><div class="r"><div class="inp"><svg class="ic"><use href="#i-search"/></svg>Filter</div></div></div><table class="t"><thead><tr><th>Repository</th><th>Access</th><th>Clone</th><th>Push</th><th>Pull request</th><th></th></tr></thead><tbody><tr><td>example-user/example-api</td><td><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="btn sm ghost">Remove</span></td></tr><tr><td>example-org/example-service</td><td><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="btn sm ghost">Remove</span></td></tr><tr><td>example-org/example-docs</td><td><span class="rw" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span></td><td><span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></td><td><span class="dash" title="not checked: read grant">—</span></td><td><span class="dash" title="not checked: read grant">—</span></td><td><span class="btn sm ghost">Remove</span></td></tr></tbody></table></div><p class="sub">Remove an org deletes its grants at once; tasks naming its repositories are refused from then on. GitHub still lets your token reach an installed org until an owner uninstalls it or you disconnect. <span class="btn sm danger">Disconnect GitHub</span></p></main></div></div><figcaption>The steady state: everything the setup made, editable. A task for a repository not on this list is refused at submission.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Setup's result as a page the user owns.</p></div><div><h4>Pros</h4><ul><li>Add org and Remove are where the owners are.</li><li>Says plainly what removal does at GitHub and what it cannot.</li></ul></div><div><h4>Risks</h4><ul><li>A third credentials page beside Git tokens and the permission matrix; GT pages stay for tenant tokens.</li></ul></div></div><div class="variant" id="access-b">
+<div class="vh"><span class="vn">Variant B</span><h3>The tenant view: every member's connection, for an admin</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Access"></div><main class="ct"><div class="crumb">Work › Access › <b>Members</b></div><div class="phead"><h3>Access in eng</h3><div class="r"><span class="radio"><span>Mine</span><span class="on">Members</span></span><span class="btn">Add org</span></div></div><div class="card"><table class="t"><thead><tr><th>Member</th><th>GitHub</th><th>Connection</th><th>Owners</th><th>Repositories</th><th>Credential used by their last task</th><th></th></tr></thead><tbody><tr><td>operator@swarm.example.com</td><td>example-user</td><td><span class="st live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg><span>active</span></span></td><td>example-user, example-org</td><td>3 · 2 write</td><td><code>git-u-…</code> user token</td><td><span class="btn sm ghost">Remove</span></td></tr><tr><td>second@swarm.example.com</td><td>example-user2</td><td><span class="st bad"><svg viewBox="0 0 12 12"><use href="#s-failed"/></svg><span>REFRESH_FAILED</span></span></td><td>example-org</td><td>1 · 1 write</td><td><span class="dash" title="no task since the connection failed">—</span></td><td><span class="btn sm ghost">Remove</span></td></tr><tr><td>third@swarm.example.com</td><td><span class="dash" title="not connected">—</span></td><td><span class="st neu"><svg viewBox="0 0 12 12"><use href="#s-queued"/></svg><span>not started</span></span></td><td><span class="dash" title="none enabled">—</span></td><td>0</td><td><code>git</code> tenant token, by the tenant policy</td><td></td></tr></tbody></table></div><div class="fix bad"><span class="code">REFRESH_FAILED</span><span>SwarmCloud's access as example-user2 has ended at GitHub, so tasks second@ submits will wait instead of running. They press Reconnect to authorise again; their orgs and repositories are kept.</span><div class="acts"><span class="btn sm">Copy reminder link</span></div></div></main></div></div><figcaption>Several users in one tenant: each connects as themselves. An admin sees states and names, never a value, and cannot reconnect for someone else.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>Answer 'who in eng can do what' in one table.</p></div><div><h4>Pros</h4><ul><li>Shows which credential tasks actually used, including the tenant fallback.</li><li>A failed refresh is visible before tasks pile up.</li></ul></div><div><h4>Risks</h4><ul><li>Admin-only; members see variant A.</li></ul></div></div><div class="variant" id="access-c">
+<div class="vh"><span class="vn">Variant C</span><h3>A tree: owner, then its repositories, toggles inline</h3></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Access"></div><main class="ct"><div class="crumb">Work › <b>Access</b></div><div class="phead"><h3>Access</h3><div class="r"><span class="btn">Add org</span></div></div><div class="card"><div class="treerow"><b>example-user <span class="exd">your account · installed, selected</span></b><span class="btn sm danger">Remove</span></div><div class="treerow ind1"><code>example-user/example-api</code><span><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></span></div><div class="treerow ind1"><code>example-user/example-site</code><span><span class="rw off" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span> <span class="exd">not chosen</span></span></div><div class="treerow"><b>example-org <span class="exd">organisation · installed, selected · SSO</span></b><span class="btn sm danger">Remove</span></div><div class="treerow ind1"><code>example-org/example-service</code><span><span class="rw" role="group" aria-label="Access mode"><span>Read</span><span class="on">Write</span></span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></span></div><div class="treerow ind1"><code>example-org/example-docs</code><span><span class="rw" role="group" aria-label="Access mode"><span class="on">Read</span><span>Write</span></span> <span class="cap ok"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>ok</span></span></div><div class="treerow ind1"><span class="exd">12 more in the installation</span><a class="more">Show · Page 1 of 1</a></div><div class="treerow"><b>example-lab <span class="exd">organisation</span></b><span><span class="st warn"><svg viewBox="0 0 12 12"><use href="#s-warn"/></svg><span>ORG_APPROVAL_PENDING</span></span></span></div></div></main></div></div><figcaption>Owners and repositories in one tree; a toggle grants or removes. Closest to GitHub's own installation page.</figcaption></figure>
+</div>
+<div class="idea"><div><h4>Idea</h4><p>One tree, everything editable in place.</p></div><div><h4>Pros</h4><ul><li>Fewest clicks to change one grant.</li><li>Pending orgs sit where they will appear.</li></ul></div><div><h4>Risks</h4><ul><li>Verification results get one mark each; the reason needs a hover.</li></ul></div></div>
+<h2 id="rec"><span class="n">6</span>Recommendation</h2>
+<div class="recbox"><h3>A everywhere, and B for the admin view of Access</h3><ul>
+<li><b>Entry A</b>: the checklist where the user lands, gone when ready; its rows are the six step ids the plugin prints.</li>
+<li><b>Connect A</b>: one button for the GitHub App, with the fine-grained token fallback a link away (connect B's middle tile, drawn for when an org forces it).</li>
+<li><b>Chooser A</b>: owners are installations, repositories are paged and searched per owner, Read or Write per repository, and a typed owner/repo for anything unlisted.</li>
+<li><b>Verify A</b>: the ok / missing / unknown grammar the permission matrix already uses.</li>
+<li><b>Access A</b> for each user, <b>Access B</b> for an admin: several users per tenant is #780's requirement and only B shows it.</li>
+</ul></div>
+
+<h2 id="pick"><span class="n">7</span>All screens to pick</h2>
+<p>Every screen on this page with its variants, so the owner can pick in one pass. Picks are recorded by the owner in PICKS.md; this page does not edit it. The lanes are the build plan's (onboarding.md §5).</p>
+<div class="tw"><table class="doc pickt"><thead><tr><th>Screen</th><th>Variants</th><th>Recommended</th><th>Lane</th></tr></thead><tbody>
+<tr><td>1 · Onboarding entry and checklist</td><td><a href="#entry-a">A Overview card</a> <a href="#entry-b">B Setup page</a> <a href="#entry-c">C banner + drawer</a></td><td>A</td><td>OB8</td></tr><tr><td>2 · Connect GitHub</td><td><a href="#connect-a">A one button</a> <a href="#connect-b">B choose a method</a> <a href="#connect-c">C hand-off pages</a></td><td>A</td><td>OB3, OB8</td></tr><tr><td>3 · Org and repository chooser</td><td><a href="#chooser-a">A owners + repositories</a> <a href="#chooser-b">B one table</a> <a href="#chooser-c">C transfer list</a></td><td>A</td><td>OB8</td></tr><tr><td>4 · Verification results</td><td><a href="#verify-a">A grid</a> <a href="#verify-b">B live cards</a> <a href="#verify-c">C verdict first</a></td><td>A</td><td>OB8</td></tr><tr><td>5 · Access, the steady state</td><td><a href="#access-a">A Access page</a> <a href="#access-b">B members</a> <a href="#access-c">C tree</a></td><td>A, and B for admins</td><td>OB8</td></tr>
+</tbody></table></div>
+<p class="sub" style="color:var(--mute)">Decisions that ride on these picks, from onboarding.md §6: the mechanism (D1), who refreshes (D2), how user slots are created (D3), the fallback for a user who has not connected (D4), whether a personal access token may reach the API (D5), whether verification may write (D6), isolation inside a tenant (D7).</p>
+<p class="sub" style="color:var(--mute);margin-top:24px">Drawn 2026-10-07 for design lane C4T (#780).</p>
+</div>
+
+<script>
+<script>
+/* Page theme: light / dark / system, remembered for this page only. */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+
+/* Shell: Sky spine + panel, filled into every frame's .side[data-shell]. Work pages from
+   App.tsx SECTIONS, plus the proposed Setup and Access pages. */
+(function(){
+  const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+  const rail=cur=>`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE}</div><a class="ri rcta">${I('i-submit')}<small>Submit</small></a><div class="rsep"></div><a class="ri${cur==='Overview'?' on':''}">${I('i-overview')}<small>Overview</small></a><a class="ri${cur==='Overview'?'':' on'}">${I('i-agents')}<small>Work</small></a><a class="ri">${I('i-pools')}<small>Capacity</small></a><a class="ri">${I('i-limits')}<small>Admin</small></a><div class="rgrow"></div><a class="ri">${I('i-help')}<small>Help</small></a><a class="ri">${I('i-api')}<small>API reads</small></a><span class="av">OP</span></nav>`;
+  const page=(on,icon,label,extra)=>`<a class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span>${extra||''}</a>`;
+  function panel(cur){
+    const work=cur==='Overview'?`<div class="pt">Overview</div>${page(true,'i-overview','Overview')}`:`<div class="pt">Work</div>${page(cur==='Agents','i-agents','Agents','<span class="cnt">6</span>')}${page(false,'i-workflows','Workflows','<span class="cnt">2</span>')}${page(false,'i-branch','Runs')}${page(false,'i-timeline','Timeline')}${page(false,'i-repo','Repositories')}${page(cur==='Setup','i-up','Setup','<span class="new">3 of 6</span>')}${page(cur==='Access','i-lock','Access','<span class="new">new</span>')}`;
+    return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll">${work}</div><div class="pfoot"><span class="pfrow"><b>Operator</b><span class="seg" role="group" aria-label="Theme"><button class="ibtn" title="Light">${I('i-sun')}</button><button class="ibtn" title="Dark">${I('i-moon')}</button><button class="ibtn on" title="System">${I('i-monitor')}</button></span><button class="ibtn" title="Sign out">${I('i-out')}</button></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com · ui and api at main</span></div></nav>`;
+  }
+  document.querySelectorAll('.side[data-shell]').forEach(el=>{el.innerHTML=rail(el.dataset.shell)+panel(el.dataset.shell)});
+})();
+</script>
+</body>
+</html>

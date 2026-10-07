@@ -91,12 +91,7 @@ module "artifact_registry" {
   # known until apply.
   readers = { for c in local.control_plane_services : c => module.iam.service_account_members[c] }
 
-  pullers = merge(
-    { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" },
-    # The #295 accounts run the same image as the worker, and get the same
-    # no-list pull.
-    { for k, member in module.tenancy.action_members : "action-${replace(k, ":", "-")}" => member },
-  )
+  pullers = { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" }
 
   labels = local.labels
 
@@ -223,13 +218,6 @@ module "tenancy" {
     var.deployer_service_account == "" ? {} : { deployer = local.deployer_member },
   )
 
-  # The #295 merge, post-verdict and review accounts: the deployer alone, which
-  # deploys their Jobs. Not the scheduler or the reconciler, whose actAs on
-  # every worker account is what lets them name one on a Job they create; a
-  # Job for these profiles is Terraform's, never the dispatcher's
-  # (modules/tenancy/main.tf, action_act_as_grants).
-  action_act_as_members = var.deployer_service_account == "" ? {} : { deployer = local.deployer_member }
-
   labels = local.labels
 }
 
@@ -250,15 +238,8 @@ module "secret_manager" {
       providers     = cfg.providers
       accessor      = cfg.accessor
       admin_members = local.tenant_secret_admins[t]
-      # #295: the merge account is the only reader of -git-merge, the
-      # post-verdict account the only reader of -git-review, and the review
-      # account reads the review agent's provider key beside the worker.
-      accessor_overrides = cfg.accessor_overrides
     }
   }
-
-  # Never refreshed, and the worker account never their reader.
-  action_providers = module.tenancy.action_providers
 
   # swarm-api reads each tenant's -git secret for the issue preview (#454,
   # mock-up 1A), by a per-secret binding on that secret alone. This reaches
@@ -514,12 +495,9 @@ module "scheduler" {
 
   # #636: a worker publishes `task_finished` when it ends a task, so that
   # task's dependants are released at once, not on the next safety tick. Every
-  # identity a task runs as: the tenant's worker account, and the #295
-  # per-profile accounts. Keys are known at plan; the emails are not.
-  worker_publisher_members = merge(
-    { for t, m in module.tenancy.worker_members : "worker:${t}" => m },
-    { for k, m in module.tenancy.action_members : "action:${k}" => m },
-  )
+  # identity a task runs as: the tenant's worker account. Keys are known at
+  # plan; the emails are not.
+  worker_publisher_members = { for t, m in module.tenancy.worker_members : "worker:${t}" => m }
 
   # #627: swarm-api publishes a cancelled task's attempt; the reconciler, the
   # identity that already holds the stop permissions, is pushed it.

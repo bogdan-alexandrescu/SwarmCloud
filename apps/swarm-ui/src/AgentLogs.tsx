@@ -186,6 +186,44 @@ function attemptEnd(a: AttemptRow): string {
   return a.exit_code === null ? 'ended' : `exit ${a.exit_code}`
 }
 
+/** An attempt's place among the task's attempts, oldest first: 1 for the first. */
+function attemptOrdinal(rows: readonly AttemptRow[], row: AttemptRow): number {
+  const ordered = [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at))
+  return ordered.indexOf(row) + 1
+}
+
+/** How many leading characters of an attempt id the More menu prints; the whole id is its title and its copy. */
+const ATT_ID_HEAD = 12
+
+/** `1 · gen 1 · att_8f8ecaa6e5…` and a copy of the whole id (G2-16). */
+function AttemptFact({ row, ordinal }: { row: AttemptRow; ordinal: number }) {
+  const [said, setSaid] = useState('')
+  const id = row.attempt_id
+  const copy = () => {
+    const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clip === undefined || typeof clip.writeText !== 'function') {
+      setSaid('copy refused')
+      return
+    }
+    clip.writeText(id).then(
+      () => setSaid('copied'),
+      () => setSaid('copy refused'),
+    )
+  }
+  return (
+    <span className="ag-logs-attfact">
+      {ordinal > 0 ? `${ordinal} · ` : ''}gen {row.generation} ·{' '}
+      <span className="mono" title={id}>
+        {id.length > ATT_ID_HEAD ? `${id.slice(0, ATT_ID_HEAD)}…` : id}
+      </span>{' '}
+      <Button size="sm" className="copy" onClick={copy} aria-label={`Copy attempt id ${id}`}>
+        copy
+      </Button>
+      {said !== '' && <span role="status"> {said}</span>}
+    </span>
+  )
+}
+
 export function AgentLogs({ task }: { task: Task }) {
   const [view, setView] = useState<LogView>(() => defaultView(task.runner_profile))
   const [attemptId, setAttemptId] = useState<string | null>(null)
@@ -560,7 +598,11 @@ export function AgentLogs({ task }: { task: Task }) {
               ref={search}
               type="search"
               value={needle}
-              placeholder="Search this window"
+              // `Search…`, NOT THE WHOLE PHRASE (G2-15, QA 2026-10-07): at the
+              // 1440 split the box cut `Search this window` to `Search this
+              // wind`. The phrase stays the title and the accessible name; the
+              // box's floor is unchanged, so the row spills nothing new.
+              placeholder="Search…"
               title="Search this window: the lines this read holds, not the whole stream"
               aria-label="Search this window"
               onChange={(e) => {
@@ -613,8 +655,16 @@ export function AgentLogs({ task }: { task: Task }) {
                 {logs !== null && (logs.attempt.status === 'latest' || logs.attempt.status === 'requested') && (
                   <li className="ctl-fact">
                     <b>attempt</b>
-                    {attemptLine(logs).toLowerCase()}
-                    {picked !== null && <span className="mono"> · {picked.attempt_id}</span>}
+                    {/* THE ID ONCE (G2-16, QA 2026-10-07): it read `attempt
+                        attempt att_8f8e… · att_8f8e…`, the line already
+                        naming the id and a span adding it again, and the
+                        second ran past the popover. With the attempts read
+                        it is `attempt 1 · gen 1 · att_8f8e…` with a copy. */}
+                    {picked !== null ? (
+                      <AttemptFact row={picked} ordinal={attemptOrdinal(attemptRows ?? [], picked)} />
+                    ) : (
+                      attemptLine(logs).toLowerCase()
+                    )}
                   </li>
                 )}
                 {/* FACTS ONLY FOR A WINDOW THAT WAS READ (#222): no source and no
