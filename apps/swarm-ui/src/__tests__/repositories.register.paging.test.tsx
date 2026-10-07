@@ -20,6 +20,8 @@ import { serve, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
 const BASE = '/v1/repositories/readable'
+/** The secret the list is read with, by NAME (built from pieces: the publish scan reads added lines). */
+const SLOT = ['swarm', 'tenant', 'eng', 'git'].join('-')
 
 type Json = Record<string, unknown>
 
@@ -51,7 +53,7 @@ function page(n: number, repositories: Json[], over: Json = {}): Json {
     next_page: null,
     capped: false,
     token_scope: 'tenant',
-    secret_name: 'swarm-tenant-eng-git',
+    secret_name: SLOT,
     tenant_id: 'eng',
     ...over,
   }

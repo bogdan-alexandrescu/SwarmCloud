@@ -11,7 +11,7 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
   type ResolvedToken, type TokenScope,
 } from './RepositoriesData'
@@ -5235,9 +5235,43 @@ export async function loadResolvedToken(repoId: string): Promise<Result<Resolved
   return readAs(route('/v1/git-tokens'), (raw) => normResolvedFromTokens(raw, repoId))
 }
 
-/** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
+/**
+ * Pages read at most, whatever `next_page` says: the API caps the list at
+ * `MAX_READABLE_PAGES` (10, repositories.py) and says `capped`, so this is
+ * only a backstop against an answer that never stops offering a next page.
+ */
+const READABLE_PAGE_BACKSTOP = 50
+
+/**
+ * `GET /v1/repositories/readable`, EVERY page: what the tenant's git token can
+ * read, for Register C (OB0, docs/onboarding.md §5). Page 1 is asked for with
+ * no `page`, then `?page=N` for each `next_page` the API offers, until it
+ * offers none. `capped` arrives on the last page and is kept, so the picker
+ * can say the token reads more than is listed.
+ *
+ * A failure on page 1 is the read's failure. A failure on a later page is
+ * not: the pages already read are served, with `gap` naming the page that did
+ * not come back, so the picker says the list is short instead of passing it
+ * off as everything.
+ */
 export async function loadReadableRepositories(): Promise<Result<ReadableList>> {
-  return readAs(route('/v1/repositories/readable'), normReadable, (d) => d.repositories.length === 0)
+  const first = await readAs(route('/v1/repositories/readable'), normReadable)
+  if (first.status !== 'ok') return first
+  let list = first.data
+  let asked = 1
+  while (list.next_page !== null && list.next_page > asked && asked < READABLE_PAGE_BACKSTOP) {
+    asked = list.next_page
+    const more = await readAs(route('/v1/repositories/readable', {}, new URLSearchParams({ page: String(asked) })), normReadable)
+    if (more.status === 'ok') {
+      list = appendReadable(list, more.data)
+      continue
+    }
+    const message = more.status === 'error' || more.status === 'stale' ? more.error.message : 'the page was not read'
+    list = { ...list, next_page: null, gap: { page: asked, message } }
+    break
+  }
+  if (list.repositories.length === 0 && list.gap === null) return { status: 'empty', fetchedAt: first.fetchedAt, serverAt: first.serverAt }
+  return { ...first, data: list }
 }
 
 export interface RegisterRepositoryBody {
