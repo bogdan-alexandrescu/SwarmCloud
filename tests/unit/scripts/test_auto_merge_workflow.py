@@ -891,6 +891,11 @@ exit 3
 """
 
 
+# Which identity made each call, in plain words: the fake logs them.
+DISABLE_WORKFLOW_IDENTITY = "workflow"
+DISABLE_APP_IDENTITY = "app"
+
+
 @pytest.fixture
 def run_disable(disable_job: dict, tmp_path: Path):
     """The disable job's `disarm` then `strip` steps, as they run on a push
@@ -913,8 +918,8 @@ def run_disable(disable_job: dict, tmp_path: Path):
         "HOME": str(tmp_path),
         "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
         "PR_NUMBER": "4242",
-        "GH_TOKEN": "workflow",
-        "APP_TOKEN": "app",
+        "GH_TOKEN": DISABLE_WORKFLOW_IDENTITY,
+        "APP_TOKEN": DISABLE_APP_IDENTITY,
         "DISARM_OUTCOME": "success",
         "FAKE_GH_LOG": str(log),
         "FAKE_GH_COMMENTS": str(comments),
