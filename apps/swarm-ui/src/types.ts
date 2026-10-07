@@ -1484,13 +1484,36 @@ export interface LeasePage {
   examined: number
 }
 
-/** How a lease row reads, given the thresholds the API just sent. */
-export type Liveliness = 'alive' | 'silent' | 'presumed-dead'
+/**
+ * How a lease row reads, given the thresholds the API just sent. `starting`
+ * is a lease whose worker has not beaten yet and is still inside its dispatch
+ * deadline: booting, not silent, and not a reason for anyone to act.
+ */
+export type Liveliness = 'alive' | 'starting' | 'silent' | 'presumed-dead'
 
 export function leaseLiveliness(
   row: LeaseRow,
   thresholds: LeasePage['thresholds'],
 ): { kind: Liveliness; copy: string } {
+  // A BOOTING AGENT IS NOT A SILENT ONE (G5-01, QA 2026-10-07). Before the
+  // first beat the reconciler judges the lease by `dispatch_overdue` alone, as
+  // `LeaseHeartbeat` below says. Checking `expired` first drew two Cloud Run
+  // cold starts red "presumed dead" at 2m 38s: their 120 s TTL had run out,
+  // their 8-minute dispatch deadline had not, and both were RUNNING by the
+  // next read. A never-beaten lease is never `silent` either -- its
+  // `silent_seconds` counts from creation, not from a beat that went quiet.
+  if (!row.heartbeat_ever) {
+    if (row.dispatch_overdue) {
+      return {
+        kind: 'presumed-dead',
+        copy: 'Never beat, and its dispatch deadline has passed. The reconciler will reclaim this lease on its next pass.',
+      }
+    }
+    return {
+      kind: 'starting',
+      copy: 'No heartbeat yet: the worker is still starting. Until the first beat the reconciler judges this lease by its dispatch deadline alone.',
+    }
+  }
   // Past expires_at is a SECOND, INDEPENDENT signal, not a later stage of the
   // first: the lease TTL has run out as well as the heartbeat going quiet.
   if (row.expired) {
@@ -2125,6 +2148,14 @@ export interface QuotaState {
   success_count: number
   rate_limit_count: number
   effective_limit: number
+  /**
+   * The pool this row's cap feeds, `provider:<provider>:tenant:<tenant>`, as
+   * `/v1/capacity` serves it, read in the same request (G5-02). Its
+   * `effective_limit` is what admission enforces; this row's own
+   * `effective_limit` is one input to it. null: no such pool document exists.
+   * Absent: an API older than the one that serves it -- not the same as null.
+   */
+  feeds_pool?: Pool | null
 }
 
 /**
