@@ -1021,9 +1021,12 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     # the pools admitted. Applied per tenant by scripts/register-tenant.sh ->
     # kubernetes/apply.sh; an existing namespace keeps its old quota until it
     # is re-applied. --quota-jobs (count/jobs.batch) was not part of that
-    # decision and is unchanged.
+    # decision; it was 32 and is now 200 (see below).
     parser.add_argument("--quota-pods", type=int, default=100)
-    parser.add_argument("--quota-jobs", type=int, default=32)
+    # owner 2026-10-07 -- 100 running pods plus an hour of finished Jobs awaiting
+    # ttlSecondsAfterFinished=3600. At 32 the quota refused new Jobs while pods
+    # were still free.
+    parser.add_argument("--quota-jobs", type=int, default=200)
     parser.add_argument("--quota-cpu", type=int, default=400)
     parser.add_argument("--quota-memory", default="800Gi")
     parser.add_argument("--quota-ephemeral", default="1000Gi")

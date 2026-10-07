@@ -225,8 +225,19 @@ def test_a_gke_pods_scratch_volumes_never_add_up_past_its_disk_limit(
 
 
 def test_a_browser_pod_has_the_owners_disk_layout(tenant):
-    """Owner decision 2026-10-07: workspace 5 + /tmp 1 + HOME 2 = the 8 GiB limit."""
+    """Owner decision 2026-10-07: workspace 4 + /tmp 2 + HOME 2 = the 8 GiB limit.
+
+    /tmp holds the largest checkpoint archive (max_checkpoint_bytes = 2 GiB)."""
     pod = _pod(tenant, "browser")
 
-    assert _disk_volumes(pod) == {"workspace": 5, "tmp": 1, "home": 2}
+    assert _disk_volumes(pod) == {"workspace": 4, "tmp": 2, "home": 2}
     assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "8Gi"
+
+
+def test_the_tenant_jobs_quota_defaults_to_200():
+    """Owner decision 2026-10-07: 100 running pods plus an hour of finished Jobs."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3] / "kubernetes" / "render.py").read_text()
+    assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)

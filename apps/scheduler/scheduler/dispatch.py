@@ -226,12 +226,13 @@ class GkeDisk:
 #: evicted on GKE the first time it checkpointed. The workspace stays at the
 #: class's 4 GiB, the size it has on Cloud Run; 10 is Autopilot's maximum.
 #:
-#: browser: 5 + 1 + 2 = 8, the class's disk_gib and the pod limit it always had.
-#: Owner decision 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
+#: browser: 4 + 2 + 2 = 8, the class's disk_gib and the pod limit it always had.
+#: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
 #: HOME 4 = 14 GiB of sizeLimits against an 8 GiB pod limit, so the pod could be
-#: evicted before any one volume was full. /tmp at 1 GiB is below the 2 GiB
-#: checkpoint cap: a browser workspace whose compressed archive passes 1 GiB
-#: fills /tmp, and the owner chose that over a smaller workspace.
+#: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
+#: the checkpoint cap. /tmp must hold the worker's largest checkpoint archive
+#: (agent_worker/config.py max_checkpoint_bytes = 2 GiB), so /tmp is 2 and the
+#: workspace gives up the GiB: 4 + 2 + 2.
 #:
 #: large: 4 + 2 + 4 = 10, standard's layout. No GKE profile can reach it --
 #: none is `large`, and a step's resource_class override may only shrink
@@ -240,7 +241,7 @@ class GkeDisk:
 #: Autopilot admits, so a pod sized from it would never start.
 GKE_DISK: dict[str, GkeDisk] = {
     "standard": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
-    "browser": GkeDisk(workspace_gib=5, tmp_gib=1, home_gib=2),
+    "browser": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=2),
     "large": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
 }
 
