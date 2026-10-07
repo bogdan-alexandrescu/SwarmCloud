@@ -7,6 +7,7 @@ import type { Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { runAddress } from './IssueSubmit'
 import { addressToPath } from './paths'
+import { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM, shortcutsIn, typedIntoField } from './shortcuts'
 import { AGED_AFTER_MS, PageHead, RefreshControl, useClaimPageAge } from './Shell'
 import { workflowLabel } from './stepviews'
 import { timeAgo, type Task } from './types'
@@ -35,13 +36,14 @@ import './styles/submit.css'
  * consumed, and never while something sits over the page.
  */
 
-/** The task form's and the workflow form's addresses, as `go` takes them. */
-export const TASK_FORM = 'work/new'
-export const WORKFLOW_FORM = 'work/new-workflow'
-/** The issue form (intake-tenants.html 1A): /submit/issue, key I. */
-export const ISSUE_FORM = 'work/new-issue'
+/** The three forms' addresses, as `go` takes them; owned by the shortcut table. */
+export { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM }
 
-const KEYS: Readonly<Record<string, string>> = { t: TASK_FORM, w: WORKFLOW_FORM, i: ISSUE_FORM }
+/**
+ * T, W and I, READ FROM THE SHORTCUT TABLE (G1-21) that the Help topic
+ * `keyboard` is generated from, so the page and Help cannot name different keys.
+ */
+const KEYS: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.key, s.to!]))
 
 /** What sits over the page and owns the keyboard: the same list as N's. */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
@@ -84,9 +86,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       const to = KEYS[e.key.toLowerCase()]
       if (to === undefined) return
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      const el = e.target instanceof Element ? e.target : null
-      if (el !== null && el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
-      if (el instanceof HTMLElement && el.isContentEditable) return
+      if (typedIntoField(e.target)) return
       if (document.querySelector(OVER_THE_PAGE) !== null) return
       e.preventDefault()
       go(to)

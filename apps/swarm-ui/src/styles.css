@@ -6542,6 +6542,10 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   border: 1px solid var(--ctl-bd); border-radius: 6px; padding: 6px 8px;
 }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+/* THE FIXED CARRIER (QA G4-28). A disabled select takes the UA's grey text,
+   which is below contrast in both themes; it is set in the muted token at
+   full strength, and the arrow cursor's "not allowed" says it cannot move. */
+.dsp select:disabled { color: var(--text-dim); opacity: 1; cursor: not-allowed; }
 
 .dsp-facts { margin: 0; }
 /* The gap above each of the dispatch control's two labelled fields. It was an
@@ -6959,6 +6963,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .arts-step.is-text { border-left-color: var(--text-faint); }
 .arts-step.is-result { border-left-color: var(--text); }
 .arts-step-kind { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+/* A step that carries nothing to open -- an empty or redacted thinking block
+   (QA G2-27) -- is quieter than one that does: regular weight and italic, in
+   the same dim ink and 13px meta size, so it keeps the dim ink's contrast in
+   both themes. */
+.arts-step-kind.is-muted { font-weight: 400; font-style: italic; }
+/* A fold of progress notices (QA G2-26) has no ink of its own: its summary is
+   the `.arts-more` disclosure, and the steps it opens onto are drawn as ever. */
+.arts-step.is-fold { border-left-style: dashed; }
 /* The answer and each text step are documents inside a pane that scrolls; a
    second scroller inside every step would trap the wheel. */
 .arts-step .art-md,

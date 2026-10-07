@@ -30,6 +30,7 @@ import { SkippedArtifactsNote } from './DecisionCard'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import { GapNotice, LogText, NO_MARKS, stepMarks, useLogMarks } from './logMarks'
+import { foldProgress } from './logLines'
 import { servedAge, Stream, streamLabel, useRead } from './RunFiles'
 import { Id, Screen, type ScreenReading } from './Shell'
 import {
@@ -1929,11 +1930,28 @@ function StepList({
   /** Tool calls already drawn above this list: a cycle in the parent ids stops here. */
   seen: Set<string>
 }) {
+  // RUNS OF PROGRESS NOTICES ARE ONE ROW (QA G2-26, 2026-10-07): `other ·
+  // tool_progress` and `system · thinking_tokens` were most of a running
+  // agent's transcript. Two or more in a row fold into `N progress events`,
+  // which opens onto every one of them; a lone one is drawn as itself.
   return (
     <ol className="arts-steps">
-      {steps.map((s) => (
-        <StepRow key={s.id} step={s} results={results} nested={nested} seen={seen} />
-      ))}
+      {foldProgress(steps).map((r) =>
+        r.kind === 'step' ? (
+          <StepRow key={r.step.id} step={r.step} results={results} nested={nested} seen={seen} />
+        ) : (
+          <li key={`fold:${r.steps[0]!.id}`} className="arts-step is-meta is-fold">
+            <details className="arts-more">
+              <summary>{r.steps.length} progress events</summary>
+              <ol className="arts-steps">
+                {r.steps.map((s) => (
+                  <StepRow key={s.id} step={s} results={results} nested={nested} seen={seen} />
+                ))}
+              </ol>
+            </details>
+          </li>
+        ),
+      )}
     </ol>
   )
 }
@@ -2006,17 +2024,24 @@ function StepRowBody({
     case 'thinking':
       // AN EMPTY THINKING TEXT IS NOT AN EXPANDABLE (#222, post-deploy QA of
       // 2026-09-26). `text: ""` passed the null check and drew `▸ thinking`
-      // that opened onto nothing. It is drawn as the word and a real-zero
-      // mark, like a null one; a redacted block keeps its own sentence.
+      // that opened onto nothing. It is drawn as words, like a null or a
+      // redacted one.
       return (
         <li className="arts-step is-thinking">
-          {m.redacted === true || step.text === null ? (
-            <span className="arts-step-kind">
-              thinking <Mark kind="absent" say="The provider redacted this thinking block, so there is no text to show." />
-            </span>
-          ) : step.text === '' ? (
-            <span className="arts-step-kind">
-              thinking <Mark kind="zero" say="This thinking block carries an empty text: there is nothing to open." />
+          {/* NOT SHOWN, NEVER `real zero` (QA G2-27, 2026-10-07). That mark
+              says a measured zero; an empty or redacted thinking block
+              measured nothing, it only carries no text to open. Both are the
+              same muted words, and which one it was is the title. */}
+          {m.redacted === true || step.text === null || step.text === '' ? (
+            <span
+              className="arts-step-kind is-muted"
+              title={
+                m.redacted === true || step.text === null
+                  ? 'The provider redacted this thinking block, so there is no text to show.'
+                  : 'This thinking block carries an empty text: there is nothing to open.'
+              }
+            >
+              thinking · not shown
             </span>
           ) : (
             <details className="arts-more">

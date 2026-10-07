@@ -152,23 +152,26 @@ test('an unknown topic is reported, not silently swallowed', () => {
 })
 
 /**
- * AH-17. THE UNKNOWN TOPIC IS THE SHARED EMPTY STATE, NOT A HAND-BUILT ONE.
+ * AH-17, AMENDED BY G1-18 (QA pass 2026-10-07). THE UNKNOWN TOPIC IS THE
+ * SHARED NOT-FOUND STATE, NOT A HAND-BUILT ONE.
  *
  * It was a warn-coloured `.ctl-empty.is-partial` with two sentences, no mark,
- * no link and no gap to the first group below it. Nothing about a stale link
- * is PARTIAL -- this build has no such topic, which is a real answer -- so it
- * is the default variant, one sentence, a way back to the top of Help, and the
- * one large break under it.
+ * no link and no gap to the first group below it (AH-17). AH-17 then drew it
+ * with the `real zero` mark -- but that mark says a figure was measured and
+ * came to nothing, and for a stale link nothing was measured. So it is the
+ * treatment an unknown ADDRESS gets (`NotFound.tsx`, `EmptyState
+ * kind="partial"`), keeping what AH-17 added: one sentence, a way back to the
+ * top of Help, and the one large break under it.
  *
- * MUTATION: put the `.is-partial` panel back. It is partial, has no mark, two
- * paragraphs, and no `#help` link.
+ * MUTATION: put the `real zero` mark back, or a second paragraph, or drop the
+ * `#help` link.
  */
-test('an unknown topic is the default empty state: a mark, one sentence, a link out', () => {
+test('an unknown topic is the shared not-found state: one sentence, a link out, no measured-zero mark', () => {
   const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
-  const panel = /<div class="ctl-empty"[^>]*>[\s\S]*?<\/div>/.exec(markup)
-  assert.ok(panel, 'the unknown topic is not the default .ctl-empty variant')
-  assert.ok(!markup.includes('is-partial'), 'an unknown topic is drawn as a partial read')
-  assert.ok(panel[0].includes('ctl-mark is-zero'), 'the unknown-topic state carries no mark')
+  const panel = /<div class="c-emp is-partial"[^>]*>[\s\S]*?<\/div>/.exec(markup)
+  assert.ok(panel, 'the unknown topic is not the shared not-found state')
+  assert.ok(!markup.includes('ctl-mark is-zero'), 'an unknown topic carries the real-zero mark')
+  assert.ok(!panel[0].includes('real zero'), 'an unknown topic says real zero')
   assert.equal((panel[0].match(/<p[\s>]/g) ?? []).length, 1, 'more than one sentence')
   assert.ok(panel[0].includes('href="#help"'), 'no way back to the top of Help')
   assert.match(markup, /margin-bottom:var\(--ctl-s5\)/, 'no large break under the unknown-topic state')
