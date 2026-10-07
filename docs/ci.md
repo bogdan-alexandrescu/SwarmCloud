@@ -1604,8 +1604,10 @@ It refuses, with a comment on the pull request saying which and why:
   but when a pull request's changes do trigger it, this still holds the merge
   on its result.
 
-A check **still running** is not a refusal (since 2026-10-06, #697): the
-pull request is queued and waits, as the next section says.
+A check **still running** is not a refusal (since 2026-10-06, #697): if it
+is a *required* one the pull request is queued and waits, as the next section
+says; if it is not required it does not hold the merge at all (since
+2026-10-07, #815).
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
@@ -1622,35 +1624,63 @@ unmerged after it went green. Every pull request SwarmCloud opens with
 Owner decision, 2026-10-06: a pull request labelled early is merged once its
 checks are green at head.
 
-So a check still running at the head **waits** instead of refusing. The
-label run comments once ("Queued for auto-merge, waiting for checks still
-running on the head commit: …") and arms nothing: native auto-merge waits
-only for the *required* checks, and the running one may not be required.
+So a *required* check still running at the head **waits** instead of
+refusing. The label run comments once ("Queued for auto-merge, waiting for
+required checks still running on the head commit: …") and arms nothing.
 Then:
 
 * the **`requeue` job** (`re-evaluate ready pull requests when a run
   finishes`) runs on `workflow_run: completed` of every workflow that runs on
   `pull_request` — `application`, `ci-gate`, `security`, `terraform`; the test
   reads that list out of the workflow files, so a new one cannot be left
-  out. It lists the open `ready` pull requests whose head is the finished
+  out. Since #815 it also runs on `check_suite: completed`, the backstop for
+  a suite another App created (code scanning's, for one). It lists the open `ready` pull requests whose head is the finished
   run's head sha (not `workflow_run.pull_requests`, which GitHub leaves empty
   for a fork) and sends a `workflow_dispatch` of `auto-merge.yml` on main for
   each, with `pr: <number>`;
 * the **dispatched run is the `enable` job again**: it reads the pull request
   back from the API (title and head as they are now), does nothing unless it
-  is still open and labelled `ready`, and runs the same gate. Still running:
-  it waits, silently. Every check green: it merges with the App token,
-  exactly as a label on a green pull request does. The last run to finish on
-  the head is the one that merges it.
+  is still open and labelled `ready`, and runs the same gate. A required
+  check still running: it waits, silently. Every required check green and no
+  check that ran failed: it merges with the App token, exactly as a label on
+  a green pull request does. The last run to finish on the head is the one
+  that merges it.
+
+**Only a required check still running holds the merge (#815, 2026-10-07).**
+#811 got `ready` while code scanning's `Trivy` was still running. Trivy is
+not one of the checks ruleset 24160219 requires, and no application or
+security run reports it, so the gate waited on it, nothing looked again when
+it finished, and the merge queue stalled for five hours until an operator
+dispatched the re-evaluation by hand. Now:
+
+* the wait reads the same required names gate item 3 reads (the branch's
+  effective rules plus classic protection), and only one of those still
+  running waits. A non-required check still running does not hold the merge;
+* a check that already **failed** still refuses, required or not — #815
+  narrows the wait, not gate item 5;
+* GitHub reports a pull request whose required checks are green but a
+  non-required one is running (or red) as `UNSTABLE`, and will not *enable*
+  auto-merge on it, as on `CLEAN`. So `UNSTABLE` and `HAS_HOOKS` are merged
+  directly, or enqueued on a merge-queue base, exactly like `CLEAN`; the
+  ruleset still decides. A non-required check that fails after the gate read
+  the checks is merged past in that window — as native auto-merge would
+  have done — which #815 accepts;
+* `check_suite: completed` dispatches the same re-evaluation for each open
+  `ready` pull request at the suite's head. GitHub runs no workflow on
+  `check_suite` for a suite GitHub Actions created, so it never fires for
+  `application` or `security` — `workflow_run` stays the way in for those —
+  only for another App's suite. It is a backstop: the narrowed wait above
+  does not depend on it.
 
 Why not something simpler. `workflow_run` cannot merge by itself: a merge
 with its GITHUB_TOKEN starts no build and no release (next section), so it
 dispatches, and the dispatched run mints the App token after the gate.
-`check_suite: completed` never fires here: GitHub does not run a workflow on
-`check_suite` for a suite GitHub Actions created, which is every suite in
-this repository. And arming native auto-merge at once, on a running check,
-would merge as soon as the *required* checks pass, past a non-required one
-still running — which is what gate item 5 exists to stop. A `ready` label on
+`check_suite: completed` alone would not do: GitHub does not run a workflow
+on `check_suite` for a suite GitHub Actions created, so it is only the
+backstop for other Apps' suites (above). And arming native auto-merge at
+once, on a running *required* check, is not done either: the gate re-reads
+the checks when it finishes, so a failed check — required or not — is
+refused by gate item 5 instead of merged past. A `ready` label on
 a pull request with no check run at all yet (opened seconds ago) passes the
 gate and arms native auto-merge, as before; the re-evaluation then finds it
 armed (or already merged) and leaves it.
