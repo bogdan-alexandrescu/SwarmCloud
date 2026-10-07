@@ -9051,7 +9051,16 @@ of the field only by reading the worker.
 
 ## 53. `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s
 
-**Status:** proposed, filed 2026-10-07. The owner set the rule before the
+**Status:** ACCEPTED by the owner 2026-10-07, with conditions:
+1. Land the follow-ups first: MODEL is passed to GKE pods, and the workspace
+   is sized for the 4Gi disk emptyDir.
+2. Raise the `GKE_AUTOPILOT` backend ceiling to **100**. us-central1 has 2,990
+   of 3,000 regional vCPUs free, so 100 x 4 vCPU fits. T2D allows only 128
+   vCPUs, so no compute class may pin to T2D.
+3. Keep the Cloud Run claude-code Jobs as a fallback, until a week of clean
+   GKE runs.
+The profiles.py switch is the last change, after those land. Filed
+2026-10-07. The owner set the rule before the
 probe ran (decision on #667, 2026-10-07): file this request if a fresh-node
 GKE Autopilot start of the claude-code image has p90 <= 128 s AND a warm start
 has p50 <= 20 s; do not if the fresh-node p50 is >= 128 s. The probe met the
