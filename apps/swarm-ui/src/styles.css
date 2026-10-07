@@ -3620,9 +3620,15 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    `ov-projected` for a stale or reset reading beside its `~`, `is-bad` only
    for a live window at 100%, and the baseline tick for a measured 0%.
 
-   A FIXED 40px, INLINE BESIDE THE FIGURE. The base track is `display: flex`,
-   a block that would take a line of its own under the figure, so the scoped
-   rule makes it an inline box. It sits inside a `@media (min-width: 561px)`
+   THE TILE'S WIDTH, UNDER THE FIGURE, AND NOT THE TILE'S COLOUR (G5-07, QA
+   2026-10-07). It was a fixed 40px inline box beside the figure, painted the
+   base `--surface-2` -- which is the tile's own `--sk-hv` in both themes --
+   so in a 122px tile all that showed was a lone 6-8px fill nobody could read
+   as a share. Full width on `--surface` with a `--line` hairline, its extent
+   reads in both themes; `.ctl-util-track.is-zero`, later in this sheet at the
+   same specificity, still draws a measured 0%'s own hairline. (Only the tiles
+   draw a track: the list item's `em.acct-window` is the figure alone.) The
+   `display` sits inside a `@media (min-width: 561px)`
    ON PURPOSE: at 560px and below the phone block's `.ctl-util-track
    { display: none }` hides every track but a pool tile's, and a scoped
    `display` at (0,2,0) would out-rank it. The phone keeps the rule every
@@ -3631,9 +3637,10 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    exception is added. `.acct-unmeasured` still draws no track at all, which
    is the distinction this column exists to protect (§8.7.2). */
 .acct-window > .ctl-util-track {
-  width: 40px;
-  margin-left: 7px;
-  vertical-align: middle;
+  width: 100%;
+  margin: 4px 0 0;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 @media (min-width: 561px) {
   .acct-window > .ctl-util-track { display: inline-flex; }
@@ -10202,6 +10209,12 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
   --sk-prod: #c81e1e;
   --sk-ac: #7cc8f8;
   --sk-acs: #10294a;
+  /* MUTED TEXT ON A CHOSEN ROW (G5-17, QA 2026-10-07): `--text-faint` on
+     `--sk-acs` is 4.33:1 in dark, under the 4.5:1 floor for 12px text. This
+     is 5.7:1 there; light keeps `--text-faint`'s #606a77, already 4.85:1 on
+     its #e5f3fc. Still quieter than `--text-dim`, so the clauses stay below
+     the figures they qualify. */
+  --text-dim-on-selected: #97a3b3;
   --sk-acl: #1f4a7a;
   /* The Navigation mock-up's --f-ln: the nav chrome's structural hairlines
      (panel edge, tenant block, page-kids rule, footer rule, admin tag, theme
@@ -10225,6 +10238,7 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
   :root:not([data-theme='dark']) {
     --sk-ac: #0369a1;
     --sk-acs: #e5f3fc;
+    --text-dim-on-selected: #606a77;
     --sk-acl: #b6daf2;
     --sk-ln: #dde5ee;
     --sk-hv: #eef4fa;
@@ -10246,6 +10260,7 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
 :root[data-theme='light'] {
   --sk-ac: #0369a1;
   --sk-acs: #e5f3fc;
+  --text-dim-on-selected: #606a77;
   --sk-acl: #b6daf2;
   --sk-ln: #dde5ee;
   --sk-hv: #eef4fa;

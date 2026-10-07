@@ -927,6 +927,18 @@ function PoolRow({
         ) : (
           <span className="adm-ceiling">{pool.effective_limit}</span>
         )}
+        {/* THE CONFIGURED HARD LIMIT BESIDE THE EFFECTIVE ONE, AS POOLS DRAWS
+            IT (G5-21, QA 2026-10-07): a quota-held pool read "50" here and
+            "50/100" on Pools, and its editor then prefilled 100. A slot of its
+            own and a fixed width, drawn empty when the two agree, so `edit`
+            still starts at one x in every row. */}
+        <span className="adm-was">
+          {pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit && (
+            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+              /{pool.hard_limit}
+            </span>
+          )}
+        </span>
         <span className="limit-edit">
           {/* A pool nothing can write gets no editor to open: an enabled
               control that silently does nothing is worse than none. The
@@ -1105,7 +1117,7 @@ function SideEditor({
         {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>
-            <dd>{pool.hard_limit}</dd>
+            <dd>{unitsWord(pool.hard_limit)}</dd>
           </>
         )}
         <dt>Last changed</dt>
@@ -1119,8 +1131,12 @@ function SideEditor({
       </dl>
 
       <div className="adm-side-field">
+        {/* THE FIELD SAYS WHAT IT EDITS AND WHAT IT HOLDS (G5-21): the write
+            sets the HARD limit, and the prefill is that hard limit -- not the
+            effective ceiling printed above it when a quota or an adaptive
+            target holds the pool lower. */}
         <label className="adm-side-k" htmlFor={`${titleId}-new`}>
-          New ceiling
+          {pool.hard_limit === null ? 'New hard limit' : `New hard limit (now ${pool.hard_limit})`}
         </label>
         <input
           id={`${titleId}-new`}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  loadCapacity,
   loadMe,
   loadOutcomes,
   loadRunnerProfiles,
@@ -70,6 +71,7 @@ import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
+import type { Pool, Tenant } from './types'
 import './styles/admin.css'
 
 /**
@@ -1401,6 +1403,44 @@ function LedgerToolbar({
  * failure: a non-admin genuinely cannot read these, and styling that as an
  * error makes a working page look broken.
  */
+/**
+ * THE CEILING EACH TENANT'S POOL ENFORCES, READ FROM ITS POOL (G5-13, QA
+ * 2026-10-07). `Enforced` was `Math.min(max_active, capacity_units)` worked
+ * out here: a second statement of a rule the tenant pool already carries, and
+ * one that mixes agents with units. It is now the pool's own
+ * `effective_limit`, as `/v1/capacity` serves it to an admin -- the same
+ * figure Pools and Pool limits print for `tenant:<id>`, and the one admission
+ * actually compares against (it also folds in an adaptive or quota cap, which
+ * the registry values never could).
+ *
+ * A READ BESIDE THE ROSTER, NOT IN FRONT OF IT. The roster is the page and
+ * its read is the page's age; a capacity read that is slow or fails must not
+ * hold the roster back, so it is read here, again each time the roster is,
+ * and until it lands each Enforced cell is a dash that says why. A refresh
+ * keeps the previous figures on screen while the next read is in flight.
+ */
+type TenantPools = Record<string, Pool> | 'reading' | 'unread'
+
+function WithTenantPools({ roster, children }: { roster: unknown; children: (pools: TenantPools) => ReactNode }) {
+  const [pools, setPools] = useState<TenantPools>('reading')
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadCapacity()).then(
+      (r) => {
+        if (!live) return
+        setPools(r.status === 'ok' || r.status === 'stale' ? Object.fromEntries(r.data.pools.map((p) => [p.name, p])) : 'unread')
+      },
+      () => {
+        if (live) setPools('unread')
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [roster])
+  return <>{children(pools)}</>
+}
+
 export function TenantsScreen() {
   return (
     <Screen
@@ -1423,176 +1463,184 @@ export function TenantsScreen() {
       }}
     >
       {(d) => (
-        <section className="section">
-          {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
-              as the People table above: eight columns compared down the
-              roster is a data table, so below 900px it scrolls sideways with
-              the tenant column held in view; only records of four columns or
-              fewer stack. It was `is-stacked`, because at 390pt everything
-              from `Enforced` rightwards sat behind a scrollbar this
-              platform does not paint, and a tenant row whose visible part
-              ends at `Principal` says nothing about whether that tenant can
-              run anything at all. The held column is what answers that now:
-              every value stays beside the tenant it belongs to.
+        <WithTenantPools roster={d}>
+          {(pools) => (
+            <section className="section">
+              {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
+                  as the People table above: eight columns compared down the
+                  roster is a data table, so below 900px it scrolls sideways with
+                  the tenant column held in view; only records of four columns or
+                  fewer stack. It was `is-stacked`, because at 390pt everything
+                  from `Enforced` rightwards sat behind a scrollbar this
+                  platform does not paint, and a tenant row whose visible part
+                  ends at `Principal` says nothing about whether that tenant can
+                  run anything at all. The held column is what answers that now:
+                  every value stays beside the tenant it belongs to.
 
-              STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
-              last, and at 1440 it sat past the panel edge behind the same
-              unpainted scrollbar -- pushed there by two identity columns of
-              55-65 characters in `nowrap` cells. Whether a tenant can run
-              anything is the first thing this roster is read for, so it
-              cannot be the column that falls off, and at 390 it is the first
-              column past the held name. The identities are shortened on the
-              wide table instead (`.ten-ident`, styles/admin.css). */}
-          <div className="table-wrap is-scroll">
-            {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
-                roster out fixed above 900px with these widths, so it is the
-                panel's width and never wider: with the 84+236px nav it ran
-                past the panel edge and clipped Identity's copy buttons. One
-                head row, as admin-help.html's Tenants frame draws it: the two
-                registry values are one Configured column, `max · units`. */}
-            <table className="pools ten-table" role="table">
-              <colgroup>
-                {TENANT_COLUMNS.map((c) => (
-                  <col key={c} className={`ten-col-${c}`} />
-                ))}
-              </colgroup>
-              <thead role="rowgroup">
-                <tr role="row">
-                  <th role="columnheader" scope="col" title="Tenant">Tenant</th>
-                  <th role="columnheader" scope="col" title="Status">Status</th>
-                  <th role="columnheader" scope="col" title="Kind">Kind</th>
-                  <th role="columnheader" scope="col" title="Principal">Principal</th>
-                  {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
-                      registry values were printed bare, and the figure that
-                      binds -- the smaller, which every writer of the tenant
-                      pool writes as its hard limit -- was nowhere. It is the
-                      column; the two values it comes from sit under
-                      `Configured`.
+                  STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
+                  last, and at 1440 it sat past the panel edge behind the same
+                  unpainted scrollbar -- pushed there by two identity columns of
+                  55-65 characters in `nowrap` cells. Whether a tenant can run
+                  anything is the first thing this roster is read for, so it
+                  cannot be the column that falls off, and at 390 it is the first
+                  column past the held name. The identities are shortened on the
+                  wide table instead (`.ten-ident`, styles/admin.css). */}
+              <div className="table-wrap is-scroll">
+                {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
+                    roster out fixed above 900px with these widths, so it is the
+                    panel's width and never wider: with the 84+236px nav it ran
+                    past the panel edge and clipped Identity's copy buttons. One
+                    head row, as admin-help.html's Tenants frame draws it: the two
+                    registry values are one Configured column, `max · units`. */}
+                <table className="pools ten-table" role="table">
+                  <colgroup>
+                    {TENANT_COLUMNS.map((c) => (
+                      <col key={c} className={`ten-col-${c}`} />
+                    ))}
+                  </colgroup>
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col" title="Tenant">Tenant</th>
+                      <th role="columnheader" scope="col" title="Status">Status</th>
+                      <th role="columnheader" scope="col" title="Kind">Kind</th>
+                      <th role="columnheader" scope="col" title="Principal">Principal</th>
+                      {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
+                          registry values were printed bare, and the figure that
+                          binds -- the smaller, which every writer of the tenant
+                          pool writes as its hard limit -- was nowhere. It is the
+                          column; the two values it comes from sit under
+                          `Configured`.
 
-                      THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
-                      link is under the table, not a `?` in here: a glyph in a
-                      `<th>` publishes its HelpNote as part of the column's
-                      name, which a screen reader then reads on every cell. */}
-                  <th role="columnheader" scope="col" className="n" title="Enforced">
-                    Enforced
-                  </th>
-                  <th role="columnheader" scope="col" className="n" title="Configured">
-                    Configured
-                  </th>
-                  <th role="columnheader" scope="col" title="Credentials">Credentials</th>
-                  <th role="columnheader" scope="col" title="Identity">Identity</th>
-                </tr>
-              </thead>
-              <tbody role="rowgroup">
-                {d.tenants.map((t) => (
-                  <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
-                    <th role="rowheader" scope="row">{t.tenant_id}</th>
-                    <td role="cell" data-label="Status">
-                      {/* THE BRAND MARKS (admin-help.html, Tenants): a disabled
-                          tenant is the parked mark -- held on purpose, not
-                          failed -- and an enabled one is the plain word, since
-                          enabled is the normal case and needs no glyph. */}
-                      {t.enabled === false ? (
-                        <span className="ten-status">
-                          <StateMark state="PARKED" label="disabled" />
-                        </span>
-                      ) : (
-                        <span className="ten-status">
-                          <NamedMark mark={null} hue="neu" word="enabled" />
-                        </span>
-                      )}
-                    </td>
-                    <td role="cell" data-label="Kind">{t.kind}</td>
-                    <td role="cell" data-label="Principal" className="mono">
-                      <Ident value={t.principal} noun="principal" />
-                    </td>
-                    <td role="cell" data-label="Enforced" className="n">
-                      {/* To the tenant pool's own row on Pool limits, which
-                          is where this ceiling is changed (#134). */}
-                      <a className="ctl-link" href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}>
-                        <Enforced tenant={t} />
-                      </a>
-                    </td>
-                    <td role="cell" data-label="Configured" className="n">
-                      {/* Max active, then capacity units: the two values
-                          Enforced is the smaller of. Each word is on the
-                          cell's name, so the short form is never the only
-                          way to read it. */}
-                      <span
-                        title={`max active ${t.max_active} · capacity units ${t.capacity_units}`}
-                        aria-label={`max active ${t.max_active}, capacity units ${t.capacity_units}`}
-                      >
-                        {t.max_active} · {t.capacity_units}u
-                      </span>
-                    </td>
-                    <td role="cell" data-label="Credentials">
-                      {t.credentials.length > 0 ? (
-                        // `.tags`, the wrapper every other run of tags in this
-                        // console sits in: it spaces them. Bare, `anthropic`
-                        // and `openai` rendered touching, as one word. They
-                        // stay `.tag` and not `.ctl-chip` -- a chip is a state,
-                        // and a credential name is metadata.
-                        <span className="tags">
-                          {t.credentials.map((c) => (
-                            // These are Secret Manager NAMES and `.tag`
-                            // uppercases. An uppercased secret name is one
-                            // nobody can look up, so the value is wrapped:
-                            // `.id` beats the ancestor by inheritance.
-                            <span className="tag" key={c}>
-                              <Id>{c}</Id>
+                          THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
+                          link is under the table, not a `?` in here: a glyph in a
+                          `<th>` publishes its HelpNote as part of the column's
+                          name, which a screen reader then reads on every cell. */}
+                      <th role="columnheader" scope="col" className="n" title="Enforced">
+                        Enforced
+                      </th>
+                      <th role="columnheader" scope="col" className="n" title="Configured">
+                        Configured
+                      </th>
+                      <th role="columnheader" scope="col" title="Credentials">Credentials</th>
+                      <th role="columnheader" scope="col" title="Identity">Identity</th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {d.tenants.map((t) => (
+                      <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
+                        <th role="rowheader" scope="row">{t.tenant_id}</th>
+                        <td role="cell" data-label="Status">
+                          {/* THE BRAND MARKS (admin-help.html, Tenants): a disabled
+                              tenant is the parked mark -- held on purpose, not
+                              failed -- and an enabled one is the plain word, since
+                              enabled is the normal case and needs no glyph. */}
+                          {t.enabled === false ? (
+                            <span className="ten-status">
+                              <StateMark state="PARKED" label="disabled" />
                             </span>
-                          ))}
-                        </span>
-                      ) : (
-                        // AMBER, NOT RED: a tenant with no key of its own can
-                        // still run on an account lent to it (Capacity ›
-                        // Accounts), so this is a warning and not a failure.
-                        <WarnMark label="none registered" />
-                      )}
-                    </td>
-                    <td role="cell" data-label="Identity" className="mono">
-                      {/* null means NO IDENTITY, not an empty string. A blank
-                          cell here reads as fine and it is the opposite. */}
-                      {typeof t.service_account === 'string' ? (
-                        <Ident value={t.service_account} noun="service account" />
-                      ) : (
-                        <span className="tag full">no service account</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
-              READER'S WORDS (AH-21). A table with a column quietly missing is
-              a table a reader completes from memory, so this cannot simply be
-              deleted. It printed the API's field name and a rationale under a
-              `not measured` mark -- but a budget is a setting, not a
-              measurement, and this line sits in no figure slot, so it carries
-              no mark (as AG-5's plain facts do not). The account of the 422
-              and of the missing cost-attribution source is one paragraph of
-              the Tenants fields topic, behind `Why →`.
+                          ) : (
+                            <span className="ten-status">
+                              <NamedMark mark={null} hue="neu" word="enabled" />
+                            </span>
+                          )}
+                        </td>
+                        <td role="cell" data-label="Kind">{t.kind}</td>
+                        <td role="cell" data-label="Principal" className="mono">
+                          <Ident value={t.principal} noun="principal" tenant={t.tenant_id} />
+                        </td>
+                        <td role="cell" data-label="Enforced" className="n">
+                          {/* To the tenant pool's own row on Pool limits, which
+                              is where this ceiling is changed (#134). */}
+                          <a
+                            className="ctl-link"
+                            href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
+                            title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
+                          >
+                            <Enforced tenant={t} pools={pools} />
+                          </a>
+                        </td>
+                        <td role="cell" data-label="Configured" className="n">
+                          {/* Max active, then capacity units: the two values
+                              the pool's hard limit is written from. Each word is on the
+                              cell's name, so the short form is never the only
+                              way to read it. */}
+                          <span
+                            title={`max active ${t.max_active} · capacity units ${t.capacity_units}`}
+                            aria-label={`max active ${t.max_active}, capacity units ${t.capacity_units}`}
+                          >
+                            {t.max_active} · {t.capacity_units}u
+                          </span>
+                        </td>
+                        <td role="cell" data-label="Credentials">
+                          {t.credentials.length > 0 ? (
+                            // `.tags`, the wrapper every other run of tags in this
+                            // console sits in: it spaces them. Bare, `anthropic`
+                            // and `openai` rendered touching, as one word. They
+                            // stay `.tag` and not `.ctl-chip` -- a chip is a state,
+                            // and a credential name is metadata.
+                            <span className="tags">
+                              {t.credentials.map((c) => (
+                                // These are Secret Manager NAMES and `.tag`
+                                // uppercases. An uppercased secret name is one
+                                // nobody can look up, so the value is wrapped:
+                                // `.id` beats the ancestor by inheritance.
+                                <span className="tag" key={c}>
+                                  <Id>{c}</Id>
+                                </span>
+                              ))}
+                            </span>
+                          ) : (
+                            // AMBER, NOT RED: a tenant with no key of its own can
+                            // still run on an account lent to it (Capacity ›
+                            // Accounts), so this is a warning and not a failure.
+                            <WarnMark label="none registered" />
+                          )}
+                        </td>
+                        <td role="cell" data-label="Identity" className="mono">
+                          {/* null means NO IDENTITY, not an empty string. A blank
+                              cell here reads as fine and it is the opposite. */}
+                          {typeof t.service_account === 'string' ? (
+                            <Ident value={t.service_account} noun="service account" tenant={t.tenant_id} />
+                          ) : (
+                            <span className="tag full">no service account</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
+                  READER'S WORDS (AH-21). A table with a column quietly missing is
+                  a table a reader completes from memory, so this cannot simply be
+                  deleted. It printed the API's field name and a rationale under a
+                  `not measured` mark -- but a budget is a setting, not a
+                  measurement, and this line sits in no figure slot, so it carries
+                  no mark (as AG-5's plain facts do not). The account of the 422
+                  and of the missing cost-attribution source is one paragraph of
+                  the Tenants fields topic, behind `Why →`.
 
-              AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
-              fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
-              tone of a qualifier under a figure, and this line qualifies no
-              figure -- it is the fact that a column is absent. */}
-          <p
-            className="ctl-panel-note ten-budget"
-            aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
-          >
-            no budget column · no budget can be set
-            <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
-          </p>
-          {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
-              index every migrated panel carries (HelpCard.tsx, route 3 of 4),
-              drawn at every width and costing no glyph from the ration. It is
-              a separate line from the note's `Why →` because the two answer
-              different questions -- what the columns mean, and why one is
-              missing -- that happen to live in one topic. */}
-          <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
-        </section>
+                  AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
+                  fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
+                  tone of a qualifier under a figure, and this line qualifies no
+                  figure -- it is the fact that a column is absent. */}
+              <p
+                className="ctl-panel-note ten-budget"
+                aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
+              >
+                no budget column · no budget can be set
+                <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
+              </p>
+              {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
+                  index every migrated panel carries (HelpCard.tsx, route 3 of 4),
+                  drawn at every width and costing no glyph from the ration. It is
+                  a separate line from the note's `Why →` because the two answer
+                  different questions -- what the columns mean, and why one is
+                  missing -- that happen to live in one topic. */}
+              <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
+            </section>
+          )}
+        </WithTenantPools>
       )}
     </Screen>
   )
@@ -1617,7 +1665,39 @@ export function TenantsScreen() {
 /** How long a copy's outcome stays beside the button that asked for it. */
 const COPY_SAID_MS = 4000
 
-function Ident({ value, noun }: { value: string; noun: string }) {
+/**
+ * AN IDENTITY IN THREE PIECES, SO THE CUT FALLS IN THE MIDDLE (G5-12, QA
+ * 2026-10-07). Cut at its end, every Identity read "swarm-agent-work…" and
+ * every Principal "…@saga.x…": the part that tells one tenant's identity from
+ * the next is the part an end-ellipsis removes. The KEY is the tenant's own
+ * part of the local part -- the tenant id where the local part ends in it,
+ * the whole local part when it is short, otherwise its last 12 characters --
+ * with its `@`; it never shrinks. The shared prefix before it and the domain
+ * after it are each cut with their own ellipsis (`.ten-ident-head`,
+ * `.ten-ident-tail`, styles/admin.css). The three pieces are one text, so a
+ * selection and the title are still the whole value, and the copy control is
+ * unchanged.
+ */
+export function identParts(value: string, tenant: string): { head: string; key: string; tail: string } {
+  const at = value.lastIndexOf('@')
+  const local = at === -1 ? value : value.slice(0, at)
+  const tail = at === -1 ? '' : value.slice(at + 1)
+  const own =
+    tenant !== '' && (local === tenant || local.endsWith(`-${tenant}`))
+      ? tenant
+      : local.length <= SHORT_LOCAL
+        ? local
+        : local.slice(-OWN_TAIL)
+  return { head: local.slice(0, local.length - own.length), key: at === -1 ? own : `${own}@`, tail }
+}
+
+/** A local part this short is shown whole: it is all key. */
+const SHORT_LOCAL = 20
+/** How much of a long local part that does not end in the tenant id is kept. */
+const OWN_TAIL = 12
+
+function Ident({ value, noun, tenant }: { value: string; noun: string; tenant: string }) {
+  const parts = identParts(value, tenant)
   const [said, setSaid] = useState('')
   const refused = `copy refused; select the ${noun} instead`
   // SAID, THEN GONE. The outcome answers the click that asked; left in the
@@ -1642,7 +1722,9 @@ function Ident({ value, noun }: { value: string; noun: string }) {
   return (
     <span className="ten-ident-row">
       <span className="ten-ident" title={value}>
-        {value}
+        {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}
+        <span className="ten-ident-key">{parts.key}</span>
+        {parts.tail !== '' && <span className="ten-ident-tail">{parts.tail}</span>}
       </span>
       <button type="button" className="ten-copy" aria-label={`Copy ${noun} ${value}`} title={`Copy the whole ${noun}`} onClick={copy}>
         copy
@@ -1664,19 +1746,24 @@ const TENANT_HELP: TopicId = 'tenant-fields'
 const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
 
 /**
- * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12): the smaller of its two
- * configured values. Both cap the same count -- the units its running work
- * holds, where every task costs at least one -- so the smaller binds, and it
- * is what every writer of the tenant pool writes as its hard limit:
- * `set_tenant_limits` and `ensure_tenant` (swarm_api/store.py),
- * scripts/register-tenant.sh, and terraform/infra/locals.tf `pool_tenants`.
+ * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12, G5-13): the tenant pool's
+ * `effective_limit`, read, never derived here. Every writer of that pool sets
+ * its hard limit from the two configured values (`set_tenant_limits` and
+ * `ensure_tenant` in swarm_api/store.py, scripts/register-tenant.sh,
+ * terraform/infra/locals.tf `pool_tenants`), and the pool's effective limit
+ * is that hard limit with any adaptive or quota cap applied -- so the pool,
+ * not this file, is where the rule lives.
  *
- * A value that is not a finite number is not a limit anyone can read, so the
- * cell is the em dash rather than `NaN` or a guess from the other value.
+ * Four ways to have no figure, each a dash with its reason: the capacity read
+ * has not landed, it failed, the tenant has no pool, or the pool has no limit
+ * set (#374).
  */
-function Enforced({ tenant: t }: { tenant: { max_active: number; capacity_units: number } }) {
-  if (!Number.isFinite(t.max_active) || !Number.isFinite(t.capacity_units)) {
-    return <i className="ctl-em">—</i>
-  }
-  return <>{Math.min(t.max_active, t.capacity_units)}</>
+function Enforced({ tenant: t, pools }: { tenant: Tenant; pools: TenantPools }) {
+  const name = `tenant:${t.tenant_id}`
+  if (pools === 'reading') return <i className="ctl-em" title="reading /v1/capacity">—</i>
+  if (pools === 'unread') return <i className="ctl-em" title="/v1/capacity was not read">—</i>
+  const pool = pools[name]
+  if (pool === undefined) return <i className="ctl-em" title={`no ${name} pool in /v1/capacity`}>—</i>
+  if (pool.effective_limit === null) return <i className="ctl-em" title={`${name} has no limit set`}>—</i>
+  return <>{pool.effective_limit}</>
 }
