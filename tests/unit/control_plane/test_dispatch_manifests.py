@@ -33,6 +33,7 @@ from scheduler.dispatch import (
     DispatchError,
     GkeJobDispatcher,
     GkeTarget,
+    gke_ephemeral_storage_gib,
     job_id_for,
     sanitize_name,
     worker_env,
@@ -928,7 +929,12 @@ def test_gke_sizes_the_container_from_the_task_not_the_profile(settings, tenant)
     rc = RESOURCE_CLASSES["standard"]
     assert container["resources"]["limits"]["cpu"] == str(int(rc.cpu))
     assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
-    assert container["resources"]["limits"]["ephemeral-storage"] == f"{rc.disk_gib}Gi"
+    # The pod's whole local disk, which on GKE also holds /tmp and HOME: not
+    # disk_gib for `standard` since contract request 53. See
+    # tests/unit/control_plane/test_gke_workspace_fits.py.
+    assert container["resources"]["limits"]["ephemeral-storage"] == (
+        f"{gke_ephemeral_storage_gib(rc)}Gi"
+    )
     assert container["resources"]["requests"] == container["resources"]["limits"]
 
 

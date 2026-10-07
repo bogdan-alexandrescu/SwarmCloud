@@ -61,6 +61,11 @@ LIVE_POOLS = {
 PENDING_POOLS = {
     "provider:anthropic": 120,
     "provider:anthropic:tenant:smoke": 40,
+    # Contract request 53, accepted by the owner 2026-10-07: GKE_AUTOPILOT
+    # 40 -> 100 ahead of claude-code's move to GKE (dev.tfvars says why). Live
+    # once an operator runs
+    # `scripts/pool-limit.sh --pool backend:GKE_AUTOPILOT --limit 100`.
+    "backend:GKE_AUTOPILOT": 100,
 }
 
 #: (max_active, capacity_units) of every live dev tenant, read 2026-10-02.

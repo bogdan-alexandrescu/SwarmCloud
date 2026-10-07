@@ -228,6 +228,10 @@ Expected: `{"owner": "terraform/bootstrap", "roles": 0, "lister": 0}`.
 From the checkout that holds `terraform/bootstrap/terraform.tfstate`, on a
 `main` that contains this merge, between releases, in zsh.
 
+(Written while bootstrap state was a local file. Since #827 it is in the state
+bucket at `bootstrap/`, and any up-to-date `main` checkout reads it. See
+[operations](../operations.md#the-bootstrap-layers-state).)
+
 **Pre-flight**, all read-only:
 
 ```bash
