@@ -76,6 +76,8 @@ contract's and must not leak into it.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import hashlib
 import json
@@ -126,6 +128,7 @@ from .json_masking import redact_json_window
 from .objects import ObjectAbsent, ObjectUnreadable
 from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, RepoGraph
 from .repograph import graph_root as repograph_root
+from .repograph import module_of
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import (
     FULL_EVERY_DAYS_DEFAULT,
@@ -355,8 +358,14 @@ _Command = Annotated[str, Field(min_length=1, max_length=500)]
 
 #: How a test-map edge is known (§2.1, §2.5), strongest first: a selection
 #: that reaches one test through several edges reports the strongest.
-EVIDENCE_ORDER: tuple[str, ...] = ("declared", "lsp", "ast", "co-change", "import", "naming")
-Evidence = Literal["declared", "lsp", "ast", "co-change", "import", "naming"]
+#: `path-ref` -- the test names the path it exercises (#786, G4-05) -- sits
+#: beside `declared`, which is what the extractor served it as until this
+#: vocabulary had it: a selection ranks it as it did then. This vocabulary is
+#: swarm-api's own, not the frozen contract's.
+EVIDENCE_ORDER: tuple[str, ...] = (
+    "declared", "path-ref", "lsp", "ast", "co-change", "import", "naming",
+)
+Evidence = Literal["declared", "path-ref", "lsp", "ast", "co-change", "import", "naming"]
 
 
 class Module(_Spec):
@@ -405,6 +414,10 @@ class TestEdge(_Spec):
     test: _Path
     evidence: Evidence
     command: _Command | None = None
+    #: The extractor's 0-1 confidence in the edge (§2.5) and the other ways
+    #: it was found (G4-07). An edge written before #786 has neither.
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    also_evidence: list[Evidence] = Field(default_factory=list, max_length=len(EVIDENCE_ORDER))
 
 
 class AlwaysTest(_Spec):
@@ -462,6 +475,26 @@ class GraphSummary(_Spec):
     top_symbols: list[TopSymbol] = Field(default_factory=list, max_length=100)
 
 
+class History(_Spec):
+    """How much history the extractor's checkout held (G4-06): the
+    extractor's `extractor.history`, copied as it wrote it.
+
+    `available` false means no commit inside the window could be read -- a
+    one-commit-deep clone, or no git -- so hot spots and co-change are not
+    known, not zero. `window_covered` false means the history stops inside
+    the window, so the counts are a lower bound."""
+
+    available: StrictBool
+    reason: str | None = Field(default=None, max_length=500)
+    window_days: StrictInt | None = Field(default=None, ge=0)
+    window_start: str | None = Field(default=None, max_length=40)
+    window_end: str | None = Field(default=None, max_length=40)
+    commits: StrictInt | None = Field(default=None, ge=0)
+    shallow: StrictBool | None = None
+    boundary_commits: StrictInt | None = Field(default=None, ge=0)
+    window_covered: StrictBool | None = None
+
+
 class Extractor(_Spec):
     """Whether RI3's extractor ran, so a consumer knows whose reading the
     mechanical fields are."""
@@ -470,11 +503,37 @@ class Extractor(_Spec):
     command: str | None = Field(default=None, max_length=80)
     version: str | None = Field(default=None, max_length=80)
     reason: _Line | None = None
+    history: History | None = None
 
     @model_validator(mode="after")
     def _reason_when_not_run(self) -> "Extractor":
         if not self.ran and not self.reason:
             raise ValueError("an extractor that did not run says why, in reason")
+        return self
+
+
+class NotCounted(_Spec):
+    path: _Path
+    reason: Literal["test", "build"]
+
+
+class TestCoverage(_Spec):
+    """The extractor's `test_coverage` block (G4-04): how many SOURCE modules
+    have a test map edge. A module of test code, or of build and packaging
+    files only, is in `not_counted` with why, never in the denominator."""
+
+    __test__ = False
+
+    modules: StrictInt = Field(ge=0)
+    source_modules: StrictInt = Field(ge=0)
+    source_modules_with_tests: StrictInt = Field(ge=0)
+    not_counted: list[NotCounted] = Field(default_factory=list, max_length=400)
+    without_tests: list[_Path] = Field(default_factory=list, max_length=400)
+
+    @model_validator(mode="after")
+    def _adds_up(self) -> "TestCoverage":
+        if not self.source_modules_with_tests <= self.source_modules <= self.modules:
+            raise ValueError("source_modules_with_tests <= source_modules <= modules")
         return self
 
 
@@ -506,6 +565,9 @@ class RepoIndexSpec(_Spec):
     notes: list[Note] = Field(default_factory=list, max_length=20)
     languages: list[LanguageRow] = Field(default_factory=list, max_length=50)
     graph: GraphSummary | None = None
+    #: The extractor's own count of source modules with tests (G4-04);
+    #: absent from an index written before #786, or without the extractor.
+    test_coverage: TestCoverage | None = None
     truncated: list[_TRUNCATABLE] = Field(default_factory=list, max_length=12)
 
     @field_validator("built_at")
@@ -575,7 +637,8 @@ _INDEX_SHAPE = (
     '  {"schema": "swarm.repo-index/v1", "commit_sha": "<the sha above>",\n'
     '   "branch": "<the branch above>", "built_at": "<ISO 8601 UTC>",\n'
     '   "kind": "full" | "incremental", "base_sha": "<incremental only: the base commit>",\n'
-    '   "extractor": {"ran": true, "command": "' + EXTRACTOR_COMMAND + '", "version": "<its version>"}\n'
+    '   "extractor": {"ran": true, "command": "' + EXTRACTOR_COMMAND + '", "version": "<its version>",\n'
+    '                 "history": <its extractor.history, as it wrote it>}\n'
     '             or {"ran": false, "reason": "<why: e.g. not installed in this image>"},\n'
     '   "modules": [{"path", "language", "purpose": "<one line>", "files", "lines",\n'
     '                "commit_sha": "<incremental only: the commit the entry was read at>"}],\n'
@@ -584,7 +647,10 @@ _INDEX_SHAPE = (
     '   "test_layout": [{"root", "framework", "command", "needs": ["emulator" | "credentials" |\n'
     '                    "network" | "docker"], "covers": ["<source glob this suite covers>"]}],\n'
     '   "test_map": [{"source": "<source path or glob>", "test": "<test path>",\n'
-    '                 "evidence": "import" | "naming" | "co-change" | "declared", "command"}],\n'
+    '                 "evidence": "import" | "naming" | "co-change" | "declared" | "path-ref" |\n'
+    '                             "ast" | "lsp", "command",\n'
+    '                 "confidence": <its 0-1 confidence>, "also_evidence": [<its other evidence>]}],\n'
+    '   "test_coverage": <the extractor\'s test_coverage, as it wrote it>,\n'
     '   "always_tests": [{"target", "because", "command", "source"}],\n'
     '   "territory": [{"path", "rule", "source": "<the file that says so>"}],\n'
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
@@ -668,7 +734,10 @@ def indexer_prompt(
         "them into the shape below keeping only the keys the shape names (a hot spot's "
         '"changed_with" paths become "co_changed", at most 10). Its graph summary becomes '
         '"graph": {"symbols": <its symbols>, "edges": <its call_edges>, "top_symbols": '
-        '[{"id": <each most_called symbol>, "callers": <its callers>}]}. '
+        '[{"id": <each most_called symbol>, "callers": <its callers>}]}. Copy its '
+        '"test_coverage" and its "extractor.history" whole: they say which modules are source '
+        "and how much history the clone held, which the API serves as the index's coverage and "
+        "history depth. "
         # RI10: the extractor's language rows carry more than LanguageRow
         # allows (`reason`, `parsed`, the per-file counts, `lsp`); the
         # document refuses any other key, so the prompt names the mapping.
@@ -1533,20 +1602,220 @@ def select_tests(document: Mapping[str, Any], paths: Sequence[str]) -> dict[str,
     }
 
 
-def coverage(document: Mapping[str, Any]) -> dict[str, int]:
-    """The list card's "tests mapped": modules with at least one test-map edge."""
+def coverage(document: Mapping[str, Any]) -> dict[str, Any]:
+    """The list card's "tests mapped": modules with at least one test-map edge.
+
+    `basis` says whose count it is. "extractor": the document's
+    `test_coverage` block (G4-04, #786), where `modules` is SOURCE modules
+    only -- a directory of tests, or of build and packaging files, is never
+    in the denominator, and test-side files are never covered -- with every
+    module the index lists in `modules_indexed` and the rest by reason in
+    `not_counted`. "legacy": a document written before that block, counted
+    here as before: every listed module, a test directory included.
+    """
     sources = [edge["source"] for edge in document.get("test_map") or []]
+    behind = {
+        "test_map_edges": len(sources),
+        "always_tests": len(document.get("always_tests") or []),
+    }
+    block = document.get("test_coverage")
+    if isinstance(block, Mapping):
+        reasons: dict[str, int] = {}
+        for row in block.get("not_counted") or []:
+            reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+        return {
+            "basis": "extractor",
+            "modules": block["source_modules"],
+            "modules_with_tests": block["source_modules_with_tests"],
+            "modules_indexed": block["modules"],
+            "not_counted": reasons,
+            **behind,
+        }
     modules = document.get("modules") or []
     covered = sum(
         1 for module in modules
         if any(source.startswith(module["path"].rstrip("/") + "/") or source == module["path"]
                for source in sources)
     )
+    return {"basis": "legacy", "modules": len(modules), "modules_with_tests": covered, **behind}
+
+
+# --------------------------------------------------------------------------
+# how much history the index read (G4-06)
+# --------------------------------------------------------------------------
+
+def history_depth(extractor: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Whether hot spots and co-change could be known, from `extractor.history`.
+
+    `co_change` is "known" (the whole window was read), "partial" (the
+    history stops inside the window: the counts are a lower bound),
+    "impossible" (no commit inside the window could be read -- a
+    one-commit-deep clone shows every file changed once, which #786 stopped
+    reporting) or "unknown" (the index does not say). `reason` is the
+    sentence a console puts behind its dash; None only when "known".
+    """
+    extractor = extractor if isinstance(extractor, Mapping) else {}
+    history = extractor.get("history")
+    answer: dict[str, Any] = {
+        "recorded": isinstance(history, Mapping), "available": None, "shallow": None,
+        "window_days": None, "window_covered": None, "commits": None,
+        "co_change": "unknown", "reason": None,
+    }
+    if not isinstance(history, Mapping):
+        answer["reason"] = (
+            "the extractor did not run, so the index records no history"
+            if extractor.get("ran") is False else
+            "this index does not record how much history its indexer read (it predates the "
+            "record), so whether hot spots and co-change are complete is not known"
+        )
+        return answer
+    days = history.get("window_days")
+    answer.update({key: history.get(key) for key in
+                   ("available", "shallow", "window_days", "window_covered", "commits")})
+    window = f"{days}-day window" if isinstance(days, int) else "history window"
+    if history.get("available") is not True:
+        answer["co_change"] = "impossible"
+        answer["reason"] = history.get("reason") or (
+            f"the indexer's checkout held no commit inside the {window}, so hot spots and "
+            "co-change are not known")
+    elif history.get("window_covered") is False:
+        answer["co_change"] = "partial"
+        answer["reason"] = (
+            f"the indexer's checkout is shallow: its history stops inside the {window} "
+            f"after {history.get('commits')} commits, so change counts and co-change are a "
+            "lower bound")
+    elif history.get("window_covered") is True:
+        answer["co_change"] = "known"
+    else:
+        answer["reason"] = "the index does not say whether its history covers the whole window"
+    return answer
+
+
+# --------------------------------------------------------------------------
+# the paged test map (G4-07): GET /v1/repositories/{id}/test-map
+# --------------------------------------------------------------------------
+
+#: A page of edges: the default, and the most one request may ask for.
+TEST_MAP_PAGE_DEFAULT = 200
+TEST_MAP_PAGE_MAX = 1000
+#: A cursor is three short strings; anything longer was never issued here.
+MAX_CURSOR_CHARS = 2048
+
+
+def _is_glob(path: str) -> bool:
+    return "*" in path or "?" in path or path.endswith("/")
+
+
+def _encode_cursor(commit_sha: str | None, path: str, after: tuple[str, str]) -> str:
+    raw = json.dumps({"c": commit_sha, "p": path, "a": list(after)}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str, commit_sha: str | None, path: str) -> tuple[str, str]:
+    """The (source, test) a page starts after. A cursor from another index or
+    another path is refused: its position means nothing in this list."""
+    try:
+        if len(cursor) > MAX_CURSOR_CHARS:
+            raise ValueError
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        after = value["a"]
+        if not (isinstance(after, list) and len(after) == 2
+                and all(isinstance(x, str) for x in after)):
+            raise ValueError
+    except (ValueError, TypeError, KeyError, UnicodeError, binascii.Error):
+        raise ValidationFailed("the cursor is not one this route issued") from None
+    if value.get("c") != commit_sha or value.get("p") != path:
+        raise ValidationFailed(
+            "the cursor was issued for another path or another index; start again without it")
+    return after[0], after[1]
+
+
+def _graph_files(graph: Any, path: str, glob: bool) -> list[dict[str, Any]]:
+    """The graph's file rows a query can reach: the file's own module for a
+    path, the modules under the glob's literal prefix for a glob."""
+    if not glob:
+        return [row for row in graph.shard("files", module_of(path)) if row.get("path") == path]
+    stop = min((i for i, ch in enumerate(path) if ch in "*?"), default=len(path))
+    prefix = path[:stop]
+    directory = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+    if directory:
+        modules = [m for m in graph.modules("files")
+                   if m == directory or m.startswith(directory + "/")]
+    else:
+        graph.prefetch(("files",))
+        modules = graph.modules("files")
+    pattern = _glob_regex(path)
+    return [row for module in modules for row in graph.shard("files", module)
+            if isinstance(row.get("path"), str) and pattern.match(row["path"])]
+
+
+def page_test_map(
+    document: Mapping[str, Any], graph: Any, path: str, *, cursor: str | None = None,
+    limit: int = TEST_MAP_PAGE_DEFAULT, commit_sha: str | None,
+) -> dict[str, Any]:
+    """One page of the test-map edges for a source `path` or glob (G4-07).
+
+    A PATH gets every edge whose source covers it (`src/api/**` covers
+    `src/api/users.py`), as `tests:select` matches; a GLOB gets every edge
+    whose source lies inside it. With a `graph` (a `repograph.Graph`), the
+    graph's file-level map -- the whole map, with `confidence` and
+    `also_evidence`, which repo-index.json may hold only at directory
+    granularity -- is read first; the document's edges add its glob sources
+    and its commands. Each edge says which it came `from`. Edges are ordered
+    by (source, test); `next_cursor` is None on the last page.
+    """
+    glob = _is_glob(path)
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    if graph is not None:
+        for row in _graph_files(graph, path, glob):
+            for test in row.get("tests") or []:
+                if not isinstance(test, Mapping) or not isinstance(test.get("test"), str):
+                    continue
+                merged[(row["path"], test["test"])] = {
+                    "source": row["path"], "test": test["test"],
+                    "evidence": test.get("evidence"), "confidence": test.get("confidence"),
+                    "also_evidence": list(test.get("also_evidence") or []),
+                    "command": None, "from": "graph",
+                }
+    pattern = _glob_regex(path) if glob else None
+    for edge in document.get("test_map") or []:
+        source = edge["source"]
+        hit = (pattern.match(source) is not None or source == path) if pattern is not None \
+            else _glob_regex(source).match(path) is not None
+        if not hit:
+            continue
+        known = merged.get((source, edge["test"]))
+        if known is not None:
+            known["command"] = known["command"] or edge.get("command")
+            continue
+        merged[(source, edge["test"])] = {
+            "source": source, "test": edge["test"], "evidence": edge["evidence"],
+            "confidence": edge.get("confidence"),
+            "also_evidence": list(edge.get("also_evidence") or []),
+            "command": edge.get("command"), "from": "index",
+        }
+    ordered = sorted(merged)
+    start = 0
+    if cursor:
+        after = _decode_cursor(cursor, commit_sha, path)
+        start = next((n for n, key in enumerate(ordered) if key > after), len(ordered))
+    keys = ordered[start:start + limit]
+    more = start + limit < len(ordered)
+    truncated = "test_map" in (document.get("truncated") or [])
+    reason = None
+    if truncated and graph is None:
+        reason = ("the index's test map was cut to fit its size budget and this index has no "
+                  "graph to read the whole map from: these are the edges it kept")
     return {
-        "modules": len(modules),
-        "modules_with_tests": covered,
-        "test_map_edges": len(sources),
-        "always_tests": len(document.get("always_tests") or []),
+        "path": path,
+        "glob": glob,
+        "edges": [merged[key] for key in keys],
+        "total": len(ordered),
+        "limit": limit,
+        "next_cursor": _encode_cursor(commit_sha, path, keys[-1]) if more and keys else None,
+        "sources": {"graph": graph is not None, "index": True},
+        "reason": reason,
     }
 
 
@@ -1620,6 +1889,9 @@ def version_to_api(version: Mapping[str, Any]) -> dict[str, Any]:
         "bytes": version.get("bytes"),
         "truncated": list(version.get("truncated") or []),
         "extractor": dict(version.get("extractor") or {}),
+        # How much history the index read, judged (G4-06): the console's
+        # dash and its reason where co-change could not be known.
+        "history": history_depth(version.get("extractor")),
         "promoted_at": _iso(version.get("recorded_at")),
     }
 
@@ -2557,4 +2829,5 @@ __all__ = [
     "poll_trigger",
     "promotion_decision", "read_head", "read_head_if_changed", "read_relation", "render_markdown", "run_to_api", "select_tests",
     "staleness_line", "version_to_api",
+    "TEST_MAP_PAGE_DEFAULT", "TEST_MAP_PAGE_MAX", "history_depth", "page_test_map",
 ]

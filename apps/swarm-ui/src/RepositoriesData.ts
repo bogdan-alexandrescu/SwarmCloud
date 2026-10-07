@@ -439,6 +439,25 @@ export interface TestMapRow {
   source: string
   tests: { test: string; evidence: string | null; command: string | null }[]
 }
+/**
+ * How much history the index read, as the API judges it (`index.history`,
+ * `swarm_api/repoindex.py` `history_depth`, QA G4-06): `impossible` when the
+ * indexer's clone held no commit inside the window, `partial` when its
+ * history stops inside it. `reason` is what the dash says.
+ */
+export interface IndexHistory {
+  co_change: 'known' | 'partial' | 'impossible' | 'unknown'
+  reason: string | null
+}
+
+const CO_CHANGE = ['known', 'partial', 'impossible', 'unknown'] as const
+
+function normHistory(v: unknown): IndexHistory | null {
+  if (!isRec(v)) return null
+  const c = CO_CHANGE.find((x) => x === v.co_change)
+  return c === undefined ? null : { co_change: c, reason: str(v.reason) }
+}
+
 /** One always-run test (repoindex.py `AlwaysTest`): run on every change, with why and where that is declared. */
 export interface AlwaysTestRow {
   target: string
@@ -470,6 +489,8 @@ export interface IndexDoc {
   test_layout: SuiteRow[]
   /** The document's `languages` rows; null when the document carries no such array. */
   languages: LanguageRow[] | null
+  /** The version's `history` judgement; null when the API served none. */
+  history: IndexHistory | null
 }
 
 export function normIndexDoc(v: unknown): IndexDoc | null {
@@ -543,6 +564,7 @@ export function normIndexDoc(v: unknown): IndexDoc | null {
       return root === null ? [] : [{ root, framework: str(t.framework), command: str(t.command), needs: strs(t.needs), covers: strs(t.covers) }]
     }),
     languages: Array.isArray(d.languages) ? normLanguages(d.languages) : null,
+    history: normHistory(meta.history),
   }
 }
 
