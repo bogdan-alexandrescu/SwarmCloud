@@ -257,6 +257,69 @@ def test_a_head_that_cannot_be_read_is_treated_as_any_other_push(disable_job: di
     assert "::warning::" in proc.stdout, proc.stdout
 
 
+def _concurrency_group(workflow: dict, event_name: str, *, action: str | None = None, pr: int | None = None,
+                       inputs_pr: int | None = None, run_id: int) -> str:
+    """Evaluate the workflow's concurrency group the way GitHub does, for the
+    operators it uses: `&&` and `||` return an operand, '' and null are falsy."""
+    context = {
+        "github.event_name": event_name,
+        "github.event.action": action,
+        "github.event.pull_request.number": pr,
+        "inputs.pr": inputs_pr,
+        "github.run_id": run_id,
+    }
+
+    def evaluate(expression: str):
+        python = re.sub(r"\b[a-z_]+(?:\.[a-z_]+)+\b", lambda m: f"_ctx[{m.group(0)!r}]", expression)
+        python = python.replace("&&", " and ").replace("||", " or ")
+        unknown = set(re.findall(r"_ctx\['([^']+)'\]", python)) - set(context)
+        assert not unknown, f"the group reads {unknown}; teach this evaluator what they are"
+        value = eval(python, {"_ctx": context, "format": lambda f, *a: f.format(*a)})  # noqa: S307 -- the repo's own workflow
+        return "" if value is None else str(value)
+
+    template = workflow["concurrency"]["group"]
+    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: evaluate(m.group(1)), template)
+
+
+def test_no_later_event_can_cancel_a_push_s_disable_run(workflow: dict):
+    """Review of #795: label L, push a foreign A, click Update branch (B =
+    main merged into A). B's classify sees before=A and says pure -- correctly,
+    about B. Only A's own run disarms and strips; in a shared group B's pending
+    run cancelled it, and auto-merge stayed armed with `ready` on an
+    unreviewed A. Every run but `labeled` is alone in its group, so none is
+    ever cancelled. MUTATION: drop the run-id suffix, or give it to
+    `labeled` (two labels in a row must still collapse)."""
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    group = lambda *a, **k: _concurrency_group(workflow, *a, **k)  # noqa: E731
+    labelled = group("pull_request_target", action="labeled", pr=7, run_id=1)
+    pushes = [group("pull_request_target", action=action, pr=7, run_id=run_id)
+              for run_id, action in enumerate(["synchronize", "synchronize", "reopened", "edited", "closed"], start=2)]
+    assert len(set(pushes)) == len(pushes), pushes
+    assert labelled not in pushes, (labelled, pushes)
+    assert group("pull_request_target", action="labeled", pr=7, run_id=9) == labelled
+    assert group("pull_request_target", action="labeled", pr=8, run_id=10) != labelled
+    requeue = group("workflow_dispatch", inputs_pr=7, run_id=11)
+    assert requeue not in pushes and requeue != labelled
+    assert requeue == group("workflow_dispatch", inputs_pr=7, run_id=12)
+    assert group("workflow_run", run_id=13) != group("workflow_run", run_id=14)
+
+
+def test_a_pure_merge_over_a_foreign_push_is_pure_only_about_its_own_step(disable_job: dict, tmp_path: Path,
+                                                                         history: dict):
+    """The chain L -> plain (foreign) -> stale_parent (main merged into plain):
+    the last step alone IS a pure base merge, so keeping `ready` safe rests on
+    plain's own run -- which the test above keeps from being cancelled -- and
+    over the labelled head the chain is not pure. MUTATION: drop the
+    first-parent check (the second assertion fails)."""
+    proc, outputs = _run_classify(disable_job, tmp_path, history, before=history["plain"],
+                                  after=history["stale_parent"])
+    assert proc.returncode == 0, proc.stderr
+    assert outputs.get("pure_base_merge") == "true", (outputs, proc.stdout, proc.stderr)
+    proc, outputs = _run_classify(disable_job, tmp_path, history, after=history["stale_parent"])
+    assert proc.returncode == 0, proc.stderr
+    assert outputs.get("pure_base_merge") == "false", (outputs, proc.stdout, proc.stderr)
+
+
 def test_the_disable_job_acts_only_when_the_push_is_not_a_pure_base_merge(disable_job: dict):
     """A pure base merge does nothing at all: no token, no disable, no strip.
     Every other outcome -- including a classify step that failed -- does all

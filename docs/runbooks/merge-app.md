@@ -102,6 +102,19 @@ The `enable` job uses the same classifier when GitHub refuses to arm with
 pure base merge of the labelled head it arms once more at the new head; if it
 moved by anything else it arms nothing, because that head was never labelled.
 
+The disable job classifies a push against `before`, the head just before it,
+so the exemption is only safe if **every push's own run executes**. In one
+shared concurrency group a newer pending run cancels the older pending one:
+label L, push a foreign commit A, click Update branch (B merges main into A),
+and B's run -- correctly a pure merge over A -- would have cancelled A's run and
+left auto-merge armed with `ready` on an unreviewed A. So every
+`pull_request_target` run except `labeled` has a concurrency group of its own
+(the run id is in it) and is never cancelled; A's run disarms and strips in
+whichever order the two runs land. Two `labeled` runs still share a group.
+Running a disable beside a `labeled` run is safe because every arming is
+pinned with `--match-head-commit`, and the enable job re-arms only over a pure
+base merge of the head it was labelled at.
+
 ### Fewer runs (#795)
 
 `auto-merge.yml` re-evaluates `ready` pull requests when a CI run completes.

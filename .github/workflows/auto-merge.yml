@@ -136,7 +136,21 @@ concurrency:
   # queued before it in its group, so a burst of finishing CI runs must not
   # cancel a queued `synchronize` (the disable job) on the same pull request.
   # A `workflow_run` has no pull request; its run id keeps each one alone.
-  group: auto-merge-${{ github.event_name == 'workflow_dispatch' && 'requeue-' || '' }}${{ github.event.pull_request.number || inputs.pr || github.run_id }}
+  #
+  # Every pull_request_target run but `labeled` is alone in its group too, so
+  # no later event can cancel it before it runs (#795 review). The pure-base-
+  # merge exemption classifies a push against `before`, the head just before
+  # it -- which is the labelled head only if every push in between had its
+  # own run. Label L, push a foreign commit A, click Update branch (B merges
+  # main into A): sharing one group, B's pending run cancelled A's, B's run
+  # saw a pure merge over A, and auto-merge stayed armed with `ready` on an
+  # unreviewed A. Alone, A's run always disarms and strips, in whichever
+  # order the two run. Running beside a `labeled` run is safe: every arming
+  # is pinned with --match-head-commit, so GitHub refuses an arming at a head
+  # that moved, and the enable job re-arms only over a pure base merge of the
+  # head it was labelled at. `closed` is alone for the same reason: a later
+  # label must not cancel close-issues.
+  group: auto-merge-${{ github.event_name == 'workflow_dispatch' && 'requeue-' || '' }}${{ github.event.pull_request.number || inputs.pr || github.run_id }}${{ github.event_name == 'pull_request_target' && github.event.action != 'labeled' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 jobs:
