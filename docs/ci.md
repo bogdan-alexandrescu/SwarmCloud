@@ -1981,6 +1981,23 @@ added since 2026-09-29 that is not in this body would be removed by the PUT.
 
 ## Main merges through a merge queue
 
+> **Not available on this repository (read 2026-10-07).** GitHub offers merge queues only to
+> repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is owned by a user
+> account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints `User`). The
+> `merge_queue` rule below was refused with `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset
+> was left unchanged. The body below also lacks `max_entries_to_merge`, which the API requires; add
+> it if this repository ever moves to an organization.
+>
+> **What protects main instead** (owner decision 2026-10-07): ruleset 24160219's
+> `required_status_checks` sets `strict_required_status_checks_policy: true`, so a pull request must
+> be up to date with main, and green at that head, before it merges. Two pull requests that are green
+> on their own bases but red together (#726 and #727, 2026-10-06: main red 19:12-19:58Z) can no longer
+> both merge: the second is behind once the first lands, and must update and pass CI again. The merge
+> step already updates a behind branch (MS3) and re-reads its checks at the new head (MS2's wake).
+> The `merge_group` triggers and the merge step's enqueue path below are inert while no queue exists:
+> GitHub raises no `merge_group` event, and the merge step only enqueues when the base requires a queue.
+
+
 **Owner decision, 2026-10-06 (observer P26).** `main` was red from 19:12 to
 19:58Z because #726 and #727 were each green on their own base and merged
 nine seconds apart. Neither had run against the other: `main-protection`
