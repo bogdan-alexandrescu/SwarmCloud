@@ -235,6 +235,18 @@ export function profilesOf(rows: readonly Workflow[]): string[] {
   return [...new Set(rows.flatMap((w) => w.steps.map((s) => s.runner_profile)))].sort()
 }
 
+/**
+ * WHETHER THE ROW'S STEPS WERE READ (QA G3-06, 2026-10-07): every step that
+ * has a task has it in the read. The board joins through a window of the
+ * tenant's newest 200 tasks, so an older workflow's steps fall outside it and
+ * its row knows no title, start, cost or end -- 55 of 100 rows did. A step
+ * with no task never ran and has nothing to read. Null read: nothing was.
+ */
+export function stepsRead(w: Workflow, taskById: ReadonlyMap<string, Task> | null): boolean {
+  if (taskById === null) return false
+  return w.steps.every((s) => !s.task_id || taskById.has(s.task_id))
+}
+
 /** How many of the workflow's steps the task read shows FAILED or DEAD_LETTERED. */
 export function failedSteps(w: Workflow, taskById: ReadonlyMap<string, Task> | null): number {
   let n = 0

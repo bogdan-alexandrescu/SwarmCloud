@@ -466,7 +466,7 @@ describe('Not finished yet, in platform scope', () => {
     const root = await timeline(ledgerFixture(), { view: 'scope=platform' }, { admin: true })
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    await waitFor(() => expect(c.textContent).toContain('CREDENTIAL_MISSING 2'))
+    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this tenant 2'))
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('14 parked')
     expect(c.querySelector('.ol-reason-scope')?.textContent).toBe('park reasons: tenant eng only')
   })
@@ -496,7 +496,7 @@ describe('Not finished yet, in platform scope', () => {
   it('draws no scope line in tenant scope, where the counts and the reasons are one tenant’s', async () => {
     const root = await timeline()
     const c = card(root, /^Not finished yet/)
-    await waitFor(() => expect(c.textContent).toContain('CREDENTIAL_MISSING 2'))
+    await waitFor(() => expect(c.textContent).toContain('No provider key is registered for this tenant 2'))
     expect(c.querySelector('.ol-reason-scope')).toBeNull()
   })
 })

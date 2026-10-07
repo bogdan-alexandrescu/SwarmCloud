@@ -15,8 +15,9 @@ What has to hold:
   * a re-run on a tenant that already has it adds nothing, and one that lacks
     it gains it and nothing else;
   * `--dry-run` prints it and changes nothing;
-  * it NEVER reaches `-git-merge` or `-git-review`: those App keys have only
-    their own accessors (docs/merge-step.md §1.3), and swarm-api is not one;
+  * it NEVER reaches `-git-merge` or `-git-review`: those App keys are
+    retired (owner decision MS0-Q4, 2026-10-06) and the script refuses them
+    before anything is read, so swarm-api is never bound to one;
   * swarm-api's address is read off terraform/modules/service_account_ids,
     not restated.
 
@@ -37,7 +38,6 @@ from .test_register_tenant_merge_step import (
     REGISTER,
     REPO,
     SA_IDS,
-    TFVARS,
     WORKER,
     Fakes,
     _derive,
@@ -187,31 +187,14 @@ def test_a_full_registration_without_git_never_names_swarm_api(tmp_path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_add_provider_git_merge_never_binds_swarm_api(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic", "git", "git-review"]))
-    fakes.tfvars.write_text(
-        TFVARS.replace("review_app_id = 123456", "review_app_id = 123456\n      review_app_bot_id = 4242")
-    )
-    proc = fakes.run([
-        str(REGISTER), "--tenant", "eng", "--add-provider", "git-merge", "--tfvars", str(fakes.tfvars),
-    ])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    assert fakes.secret_grants(), out
-    assert API not in json.dumps(fakes.secret_grants()), out
-    assert API not in out, f"swarm-api was named on the git-merge path:\n{out}"
-
-
-def test_add_provider_git_review_never_binds_swarm_api(tmp_path) -> None:
+@pytest.mark.parametrize("provider", ["git-merge", "git-review"])
+def test_add_provider_of_an_app_key_never_binds_swarm_api(tmp_path, provider) -> None:
     fakes = Fakes(tmp_path, _tenant_document(["anthropic", "git"]))
-    proc = fakes.run([
-        str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars),
-    ])
+    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", provider])
     out = _out(proc)
-    assert proc.returncode == 0, out
-    assert fakes.secret_grants(), out
-    assert API not in json.dumps(fakes.secret_grants()), out
-    assert API not in out, f"swarm-api was named on the git-review path:\n{out}"
+    assert proc.returncode != 0, out
+    assert fakes.secret_grants() == [], out
+    assert API not in out, f"swarm-api was named on the {provider} path:\n{out}"
 
 
 # ---------------------------------------------------------------------------

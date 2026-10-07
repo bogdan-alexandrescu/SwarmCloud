@@ -45,6 +45,7 @@ to disagree with it.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from . import profiles as catalogue
@@ -421,6 +422,7 @@ def submit(
     priority: int | None = None,
     label: str | None = None,
     title: str | None = None,
+    merge_pr: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -450,7 +452,77 @@ def submit(
         body["on_step_failure"] = on_step_failure
     if priority is not None:
         body["priority"] = int(priority)
+    if merge_pr is not None:
+        body["merge_pr"] = merge_pr
     return _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+
+
+# --------------------------------------------------------------------------
+# A pull request no workflow opened (#352, owner decision 2026-10-07)
+# --------------------------------------------------------------------------
+
+#: The one step a `merge_pr` workflow is: swarm-api refuses any other.
+MERGE_PR_STEP = {"step_id": "merge", "runner_profile": "merge"}
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+_NUMBER = re.compile(r"^#?([1-9][0-9]{0,8})$")
+_SHORT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$")
+_PULL_URL = re.compile(
+    r"^https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]{0,8})(?:/.*)?$"
+)
+
+
+def parse_pull_request(text: Any) -> tuple[str | None, int]:
+    """`(repository URL or None, number)` from `41`, `#41`, `owner/repo#41` or the PR's URL.
+
+    A bare number names no repository: swarm-api then takes the tenant's only
+    registered one, and refuses when it has several. github.com only,
+    because the merge step merges nowhere else.
+    """
+    value = str(text or "").strip()
+    matched = _NUMBER.match(value)
+    if matched:
+        return None, int(matched.group(1))
+    matched = _SHORT.match(value) or _PULL_URL.match(value)
+    if matched:
+        owner, repo, number = matched.groups()
+        return f"https://github.com/{owner}/{repo}", int(number)
+    raise SwarmError(
+        f"{value!r} is not a pull request: pass its number (41), owner/repo#41, or its "
+        "https://github.com/<owner>/<repo>/pull/<n> URL. Nothing was sent"
+    )
+
+
+def submit_merge_pr(
+    client: SwarmClient,
+    *,
+    number: int,
+    head_sha: str,
+    repository_url: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Merge a pull request no workflow opened, at `head_sha` (#352).
+
+    One `merge` step, `direct-pr`, and `merge_pr: {number, head_sha}`. The
+    API checks everything about the pull request -- registered repository,
+    open, not a fork, `head_sha` its head now -- and the merge step merges
+    only once the required checks are green at that head. Nothing here reads
+    the forge.
+    """
+    sha = str(head_sha or "").strip()
+    if not _SHA.fullmatch(sha):
+        raise SwarmError(
+            f"the head sha {sha!r} is not a full 40-character lowercase commit sha; name "
+            "the exact head you mean to merge. Nothing was sent"
+        )
+    return submit(
+        client,
+        steps=[dict(MERGE_PR_STEP)],
+        strategy="direct-pr",
+        repository_url=repository_url,
+        title=title,
+        merge_pr={"number": int(number), "head_sha": sha},
+    )
 
 
 # --------------------------------------------------------------------------

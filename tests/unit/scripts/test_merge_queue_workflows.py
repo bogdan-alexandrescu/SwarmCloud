@@ -37,7 +37,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from .test_ci_gate import GATE_WORKFLOW, SHA, app_jobs, gate, wait
+from .test_ci_gate import GATE_WORKFLOW, SHA, gate, tf_jobs, wait
 from .test_workflow_step_reachability import _events, _triggers
 
 REPO = Path(__file__).resolve().parents[3]
@@ -168,10 +168,8 @@ def test_ci_gate_waits_for_the_merge_group_runs_and_passes_when_they_pass(tmp_pa
     """MUTATION: keep `--event must be pull_request or push` in ci-gate.sh;
     the gate then fails every queue entry before it reads a run."""
     world = {"runs": [
-        {"id": 1, "workflow": "application.yml", "head_sha": SHA, "event": "merge_group",
-         "jobs": app_jobs()},
         {"id": 2, "workflow": "terraform.yml", "head_sha": SHA, "event": "merge_group",
-         "jobs": [{"name": "terraform test"}]},
+         "jobs": tf_jobs()},
     ]}
     proc, events = wait(tmp_path, world, ["LICENSE"], event="merge_group")
     assert proc.returncode == 0, proc.stderr
@@ -182,14 +180,12 @@ def test_ci_gate_waits_for_the_merge_group_runs_and_passes_when_they_pass(tmp_pa
 def test_ci_gate_fails_a_merge_group_whose_workflow_failed(tmp_path):
     """The control for the pass above: the gate judges the merge_group runs."""
     world = {"runs": [
-        {"id": 1, "workflow": "application.yml", "head_sha": SHA, "event": "merge_group",
-         "jobs": app_jobs(**{"format / unit tests": "failure"}), "conclusion": "failure"},
         {"id": 2, "workflow": "terraform.yml", "head_sha": SHA, "event": "merge_group",
-         "jobs": [{"name": "terraform test"}]},
+         "jobs": tf_jobs(**{"terraform test": "failure"}), "conclusion": "failure"},
     ]}
     proc, _events_seen = wait(tmp_path, world, ["LICENSE"], event="merge_group")
     assert proc.returncode != 0
-    assert "application.yml" in proc.stderr
+    assert "terraform.yml" in proc.stderr
 
 
 def test_ci_gate_hands_the_queue_entrys_commits_to_the_script():
