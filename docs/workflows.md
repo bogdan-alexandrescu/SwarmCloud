@@ -1258,17 +1258,17 @@ submission, from the workflow's own `metadata`:
   spend are a request that would silently not happen, as `metadata.merge`
   `"on"` there is refused. It is stored as written; lane MS7 spends it, and
   until then it is accepted and changes nothing.
-* **A `ready` label is dropped beside a merge step.** `ready` is the label
-  `.github/workflows/auto-merge.yml` merges on. When the workflow's label
-  (`metadata.unit`, else `metadata.title`) is `ready`, in any case, and the
-  workflow has a merge step, swarm-api leaves it out of the dispatch block's
-  `pr_label` and records `metadata.merge_label_dropped: "ready"` on every
-  task, so the two mergers never race for one pull request and the step's
-  merges are the ones `auto-merge.yml`'s retirement gate counts
-  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
-  §5). Any other label, and a `ready` label on a workflow with no merge step,
-  is kept as before. `metadata.merge_label_dropped` is written by swarm-api
-  only: a caller's is a 422.
+* **The workflow's label is its pull request's fallback title, merge step
+  or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
+  the dispatch block's `pr_label`, which the worker uses only as title and
+  body text when no agent wrote `pr-title.txt`; it never becomes a GitHub
+  label. So a label that reads `ready` is kept as written beside a merge step
+  too. Lane MS1 had dropped it there, recording
+  `metadata.merge_label_dropped`; the owner reverted that on 2026-10-06
+  (#352) because it was aimed at the wrong thing: what races the merge step
+  is the GitHub `ready` label `auto-merge.yml` merges on, which an operator's
+  watcher or brief adds, not this title. `metadata.merge_label_dropped` is
+  no longer reserved or written.
 
 What the merge step checks, in order, and refuses with a plain reason
 (`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is
