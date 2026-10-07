@@ -82,7 +82,8 @@ describe('a cancel request on the timeline', () => {
       ev('submitted', at(0), null),
       ev('cancel_requested', at(10), null, { ...REQUESTED_BY, phase: 'cancel_requested' }),
     ])
-    expect(text).toContain('ends at cancel_requested')
+    // In words (QA G2-25, `eventWord`); the row's `data-kind` keeps the type.
+    expect(text).toContain('ends at cancel requested')
     expect(last).toBe('cancel_requested')
   })
 

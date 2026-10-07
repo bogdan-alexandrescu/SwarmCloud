@@ -289,7 +289,8 @@ describe('/runs/<id>: one run', () => {
         error: 'the planner task task_planner1 ended FAILED' }) } }
       : null)
     await mount('run=run_4c1e09d2')
-    await screen.findByText(/the planner task task_planner1 ended FAILED/, undefined, WAIT)
+    // The API's `FAILED` is worded at read, as every state in prose is (QA G2-25).
+    await screen.findByText(/the planner task task_planner1 ended failed/, undefined, WAIT)
     expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
   })
 
