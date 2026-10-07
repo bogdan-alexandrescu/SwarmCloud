@@ -18,6 +18,8 @@
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --subscription --stdin
 #   scripts/create-secrets.sh --list [--tenant eng]
 #   scripts/create-secrets.sh --child-key
+#   scripts/create-secrets.sh --github-app client-secret --stdin
+#   scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -45,7 +47,16 @@
 # Without it, the value is written directly as a static credential -- an API key
 # or a `claude setup-token` token.
 #
-# The secret's NAME is never an input. It is always
+# --github-app <slot> adds a version to one of the SwarmCloud GitHub App's two
+# PLATFORM secrets (docs/runbooks/github-app.md): `client-secret` ->
+# swarm-github-app-client-secret, `private-key` -> swarm-github-app-private-key.
+# The value is read from stdin ONLY -- never a file argument, a tfvars value or
+# an environment variable, because the repository is public and a path on a
+# command line is one shell-history line from being committed. Terraform owns
+# both slots and their one reader, swarm-api (modules/secret_manager); this
+# never creates one, so a typo cannot make an unbound twin.
+#
+# A tenant credential's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
 # secret_name() returns and what the worker asks Secret Manager for.
 
@@ -63,6 +74,7 @@ READ_STDIN=0
 DISABLE_PREVIOUS=0
 LIST=0
 CHILD_KEY=0
+GITHUB_APP_SLOT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -73,7 +85,9 @@ while [[ $# -gt 0 ]]; do
     --disable-previous) DISABLE_PREVIOUS=1; shift ;;
     --list|-l)          LIST=1; shift ;;
     --child-key)        CHILD_KEY=1; shift ;;
-    -h|--help)          sed -n '2,41p' "$0"; exit 0 ;;
+    --github-app)       [[ $# -ge 2 ]] || die "--github-app needs a slot: client-secret or private-key"
+                        GITHUB_APP_SLOT="$2"; shift 2 ;;
+    -h|--help)          sed -n '2,61p' "$0"; exit 0 ;;
     # There is deliberately no --name. The secret's name is
     # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
     # spelling the first of three independent mechanisms keeping one tenant's key
@@ -150,6 +164,85 @@ if [[ "${CHILD_KEY}" -eq 1 ]]; then
   ok "added version ${CHILD_VERSION##*/} of ${CHILD_SECRET}; its value was never printed"
   dim "swarm-scheduler and swarm-api read it as SWARM_CHILD_KEY once enable_child_tasks = true is applied"
   dim "rotating: set child_key_previous_version to the version this one replaced and apply in the same change"
+  exit 0
+fi
+
+if [[ -n "${GITHUB_APP_SLOT}" ]]; then
+  # The slot word is the only input that names the secret, and it names one of
+  # exactly two; tests/unit/scripts/test_github_app_runbook.py holds this list
+  # to the ids terraform/modules/secret_manager declares.
+  case "${GITHUB_APP_SLOT}" in
+    client-secret|private-key) ;;
+    *) die "--github-app takes client-secret or private-key, not '${GITHUB_APP_SLOT}'" ;;
+  esac
+  APP_SLOT_ID="swarm-github-app-${GITHUB_APP_SLOT}"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 ]]; then
+    die "--github-app takes only --stdin: no --tenant, --provider, --from-file, --subscription or --child-key. The App's secrets are the platform's, not a tenant's, and a file argument is a path to a plaintext copy"
+  fi
+  # GitHub keeps both client secrets (and both private keys) valid until you
+  # delete the old one there, so a rotation is: add here, let swarm-api read
+  # the new version, delete the old one at GitHub, then disable the old
+  # version by hand. Disabling first would refuse every exchange in between.
+  if [[ "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--disable-previous is refused with --github-app: delete the old ${GITHUB_APP_SLOT} at GitHub first, then disable its version by hand (gcloud secrets versions disable <N> --secret ${APP_SLOT_ID}); docs/runbooks/github-app.md, 'Rotating'"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--github-app reads the value from --stdin and nothing else"
+
+  step "Secret ${APP_SLOT_ID}"
+  APP_ERR=""
+  if ! APP_ERR="$(gcloud secrets describe "${APP_SLOT_ID}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${APP_ERR}"
+    die "${APP_SLOT_ID} does not exist in ${PROJECT_ID}. terraform creates it with swarm-api as its one reader (modules/secret_manager, enable_github_app = true): apply first, then this"
+  fi
+
+  APP_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${APP_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${APP_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${APP_TMP}' 2>/dev/null || true" EXIT INT TERM
+  APP_FILE="${APP_TMP}/value"
+  ( umask 077; : >"${APP_FILE}" )
+  if [[ -t 0 ]]; then
+    if [[ "${GITHUB_APP_SLOT}" == "private-key" ]]; then
+      die "the private key is many lines: redirect the downloaded .pem into stdin (--stdin < <file>), then delete the file"
+    fi
+    printf 'Paste the GitHub App client secret (input hidden), then press Enter: ' >&2
+    read -rs APP_VALUE
+    printf '\n' >&2
+    printf '%s' "${APP_VALUE}" >"${APP_FILE}"
+    unset APP_VALUE
+  else
+    cat >"${APP_FILE}"
+  fi
+  # One trailing newline off, as for every other value.
+  if [[ -s "${APP_FILE}" ]]; then
+    printf '%s' "$(cat "${APP_FILE}")" >"${APP_FILE}.trimmed"
+    mv "${APP_FILE}.trimmed" "${APP_FILE}"
+    chmod 0600 "${APP_FILE}"
+  fi
+  APP_BYTES="$(wc -c <"${APP_FILE}" | tr -d ' ')"
+  [[ "${APP_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${APP_BYTES}" -lt 65536 ]] || die "value is ${APP_BYTES} bytes; that is neither a client secret nor a private key"
+  # The shape BLOCKS for the key: a pasted client secret or a public key in the
+  # private-key slot is accepted by every byte count and fails only when
+  # swarm-api first signs a JWT with it.
+  if [[ "${GITHUB_APP_SLOT}" == "private-key" ]]; then
+    if ! head -n 1 "${APP_FILE}" | grep -Eq '^-----BEGIN ([A-Z]+ )?PRIVATE KEY-----$'; then
+      die "the private-key slot takes the PEM file GitHub downloads (its first line is the BEGIN ... PRIVATE KEY marker); nothing was stored"
+    fi
+    ok "value is a PEM private key (${APP_BYTES} bytes)"
+  else
+    if grep -q -- '-----BEGIN' "${APP_FILE}"; then
+      die "that is a PEM block, not a client secret; store the key with --github-app private-key. Nothing was stored"
+    fi
+    info "stored value is ${APP_BYTES} bytes"
+  fi
+
+  APP_VERSION="$(gcloud secrets versions add "${APP_SLOT_ID}" \
+    --project "${PROJECT_ID}" --data-file="${APP_FILE}" --format='value(name)')"
+  ok "added version ${APP_VERSION##*/} of ${APP_SLOT_ID}; its value was never printed"
+  dim "swarm-api is its one reader (terraform/modules/secret_manager github_app_accessor)"
+  dim "delete any downloaded copy now; Secret Manager is the only place the value lives"
   exit 0
 fi
 

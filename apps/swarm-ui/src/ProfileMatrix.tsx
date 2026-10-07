@@ -123,6 +123,21 @@ export function liftedFor(profile: RunnerProfile, pool: string): string {
   return bindingOf(profile).includes(pool) ? 'not priced' : 'no change'
 }
 
+/**
+ * The opened row of a disabled profile, said once (QA G5-18). The server's
+ * `disabled_reason` often already reads `<name> is disabled ...` and ends in
+ * a full stop, and prefixing `<name> is disabled:` and appending `.` drew
+ * "codex is disabled: codex is disabled on this platform. ... claude-code..".
+ * A reason whose first word is the profile's name is the sentence as it
+ * stands; any other is prefixed. Either way it ends in exactly one stop.
+ */
+export function disabledSentence(name: string, reason: string | null | undefined): string {
+  const said = (reason ?? '').trim().replace(/\.+$/, '')
+  const body = said === '' ? 'refused by the platform' : said
+  const first = body.split(/\s/, 1)[0]
+  return `${first === name ? body : `${name} is disabled: ${body}`}.`
+}
+
 export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
   const [open, setOpen] = useState<string | null>(null)
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
@@ -209,9 +224,15 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                     <tr role="row" className="cap-mx-exp">
                       <td role="cell" colSpan={span}>
                         {off ? (
-                          <>{`${name} is disabled: ${profile.disabled_reason || 'refused by the platform'}.`}</>
+                          <>{disabledSentence(name, profile.disabled_reason)}</>
                         ) : (
-                          <FitsTable profile={profile} byName={byName} among={among} binds={binds} />
+                          <FitsTable
+                            profile={profile}
+                            byName={byName}
+                            among={among}
+                            binds={binds}
+                            complete={capacity.pools_complete !== false}
+                          />
                         )}{' '}
                         <a className="ctl-link" href="#admin/limits">Pool limits</a>
                       </td>
@@ -242,12 +263,24 @@ function FitsTable({
   byName,
   among,
   binds,
+  complete,
 }: {
   profile: RunnerProfile
   byName: ReadonlyMap<string, Pool>
   among: readonly string[]
   binds: readonly string[]
+  /** `pools_complete`: false means a pool missing from the read may exist. */
+  complete: boolean
 }) {
+  // A POOL WITH NO DOCUMENT IS UNCAPPED, NOT UNMEASURED (QA G5-04). A profile's
+  // list is `pool_names_for`, which names a per-tenant provider pool whether
+  // or not anyone created it, and admission skips a missing pool as unlimited
+  // (`evaluate_capacity`). The server says which ones in `admission.uncapped`;
+  // without an admission block, absence from a complete read means the same.
+  // The em dash stays for a pool that was not read -- the matrix's own split.
+  const uncapped = new Set(
+    profile.admission?.uncapped ?? (complete ? profile.pools.filter((n) => !byName.has(n)) : []),
+  )
   return (
     <div className="ctl-table is-scroll cap-mx-fits">
       <table role="table">
@@ -269,12 +302,22 @@ function FitsTable({
                 <th role="rowheader" scope="row" title={name}>
                   {poolLabelAmong(name, among)}
                 </th>
-                <td role="cell" data-label="Leased/ceiling (units)" className="is-num">
-                  {row === null ? '—' : `${row.active}/${row.effective_limit === null ? '—' : row.effective_limit}`}
-                </td>
-                <td role="cell" data-label="Fits" className="is-num">
-                  {fits === null ? '—' : String(fits)}
-                </td>
+                {row === null && uncapped.has(name) ? (
+                  // One statement across both figure columns: there is no
+                  // ceiling to lease against and so no count it fits.
+                  <td role="cell" data-label="Leased/ceiling (units)" className="is-num" colSpan={2}>
+                    no pool · uncapped
+                  </td>
+                ) : (
+                  <>
+                    <td role="cell" data-label="Leased/ceiling (units)" className="is-num">
+                      {row === null ? '—' : `${row.active}/${row.effective_limit === null ? '—' : row.effective_limit}`}
+                    </td>
+                    <td role="cell" data-label="Fits" className="is-num">
+                      {fits === null ? '—' : String(fits)}
+                    </td>
+                  </>
+                )}
                 <td role="cell" data-label="+N if lifted" className="is-num">
                   {liftedFor(profile, name)}
                 </td>

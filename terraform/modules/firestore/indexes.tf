@@ -377,6 +377,32 @@ locals {
         { field_path = "created_at", order = "DESCENDING" },
       ]
     }
+
+    # ---- onboarding: one user's GitHub orgs and repository grants -----------
+    # docs/onboarding.md §3.1 and §3.4 item 7 (#780, lane OB2). The Access page
+    # and the plugin read "this user's orgs" and "this user's grants" as
+    # `tenant_id ==, user_hash ==` (GET /v1/access, GET /v1/access/orgs), and
+    # removing an org deletes its grants by the same pair plus `owner`.
+    # tenant_id leads, as in every tenant-scoped index here (invariant 9). A
+    # query that adds an ORDER BY to this pair needs its own index, with the
+    # ordered field after these two -- add it with the route that asks.
+    "forge-grants-tenant-user" = {
+      collection  = "forge_grants"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "user_hash", order = "ASCENDING" },
+      ]
+    }
+
+    "forge-orgs-tenant-user" = {
+      collection  = "forge_orgs"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "user_hash", order = "ASCENDING" },
+      ]
+    }
   }
 }
 

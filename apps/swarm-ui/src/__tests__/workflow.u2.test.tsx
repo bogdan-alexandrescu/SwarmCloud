@@ -238,7 +238,7 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
       'Runners',
       'Cost',
       'Owner',
-      'Started',
+      'Submitted',
       'Duration',
     ])
     // Browser QA D8 (2026-10-04): State, Steps done and Duration are px wide,

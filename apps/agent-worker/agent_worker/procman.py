@@ -567,6 +567,20 @@ def _sigkill_all_other_processes() -> None:
         pass
 
 
+class ProcessTableUnreadable(OSError):
+    """`/proc` could not be listed, so whether anything survives is unknown.
+
+    Raised rather than answered with `()`: an empty answer is what a clean
+    container gives, and a reap that read it as one would publish having
+    checked nothing (#346, #259 review)."""
+
+
+#: What `reap_foreign_processes` returns when it could not read the process
+#: table: not a real PID (none is negative), but a non-empty result, so every
+#: caller's `if survivors:` refuses to publish -- fail closed.
+UNVERIFIED_PID = -1
+
+
 def _live_foreign_pids(
     *, proc_root: str = "/proc", uid: int | None = None, self_pid: int | None = None
 ) -> tuple[int, ...]:
@@ -577,6 +591,8 @@ def _live_foreign_pids(
     is not a zombie -- a zombie has been killed and is merely awaiting a reap by
     tini, so counting it would refuse a publish over a corpse. `/proc` entries
     that vanish mid-scan are a process exiting under us and are skipped.
+    `/proc` ITSELF failing to list raises `ProcessTableUnreadable`: that is not
+    "no process survives", it is "nobody looked".
 
     `proc_root`, `uid` and `self_pid` are injectable so the logic is testable
     against a fabricated /proc without spawning anything.
@@ -586,8 +602,8 @@ def _live_foreign_pids(
     survivors: list[int] = []
     try:
         entries = os.listdir(proc_root)
-    except OSError:
-        return ()
+    except OSError as exc:
+        raise ProcessTableUnreadable(exc.errno, f"cannot list {proc_root}: {exc.strerror}") from exc
     for entry in entries:
         if not entry.isdigit():
             continue
@@ -631,7 +647,8 @@ def reap_foreign_processes(
 
     Returns `()` when the container holds only PID 1 and this process after the
     reap; otherwise the PIDs still alive after `attempts` kill-and-check rounds,
-    which the caller turns into a refusal to publish. Never raises: a reap that
+    which the caller turns into a refusal to publish; `(UNVERIFIED_PID,)` when
+    the process table could not be read at all. Never raises: a reap that
     cannot prove the container is clean must fail closed at the call site, not
     crash the teardown path.
 
@@ -642,13 +659,23 @@ def reap_foreign_processes(
     kill = killer or _sigkill_all_other_processes
     live = lister or _live_foreign_pids
     kill()
-    survivors = live()
-    tries = 0
-    while survivors and tries < attempts:
-        time.sleep(delay)
-        kill()  # a process mid-fork when the last kill landed is caught now
+    try:
         survivors = live()
-        tries += 1
+        tries = 0
+        while survivors and tries < attempts:
+            time.sleep(delay)
+            kill()  # a process mid-fork when the last kill landed is caught now
+            survivors = live()
+            tries += 1
+    except OSError as exc:
+        # The process table could not be read, so the reap cannot prove the
+        # container clean. Fail closed: a non-empty result is a refusal.
+        logger.error(
+            "the pre-publish reap could not read the process table; refusing to "
+            "publish because no process the agent started can be ruled out",
+            error=str(exc),
+        )
+        return (UNVERIFIED_PID,)
     if survivors:
         logger.error(
             "processes the agent started are still alive after the pre-publish reap; "

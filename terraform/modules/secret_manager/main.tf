@@ -221,3 +221,86 @@ resource "google_secret_manager_secret_iam_binding" "refresh_accessor" {
   role      = "roles/secretmanager.secretAccessor"
   members   = [var.refresher_member]
 }
+
+# -- the SwarmCloud GitHub App's platform secrets ----------------------------
+#
+# docs/onboarding.md §3.4 items 1-2 (#780, lane OB2): the App is registered by
+# hand (docs/runbooks/github-app.md), its non-secret settings are tfvars, and
+# its two secret values -- the OAuth client secret, which turns an
+# authorisation code into a user access token and a refresh token into the
+# next one, and the App's private key, which signs the JWT that reads the
+# App's installations -- live here, in two PLATFORM slots, never a tenant's.
+#
+# Created EMPTY, as every secret in this module is. A managed version would
+# put the plaintext in a state file several people can read, and the
+# repository is public. The values arrive by
+# `scripts/create-secrets.sh --github-app <slot> --stdin`, which never creates
+# a slot, so a typo cannot make an unbound twin of one of these.
+#
+# Not under swarm-tenant- or swarm-account-: those are the two prefixes the
+# quota broker may add versions to (modules/iam broker_version_adder), and the
+# broker has no business writing the App's credentials.
+locals {
+  # The slot words `create-secrets.sh --github-app` takes; each secret id is
+  # `swarm-github-app-<slot>`. tests/unit/scripts/test_github_app_runbook.py
+  # holds the script, the runbook and these ids to one another.
+  github_app_slot_words = ["client-secret", "private-key"]
+
+  github_app_secrets = var.github_app_secrets_enabled ? {
+    for slot in local.github_app_slot_words : slot => "swarm-github-app-${slot}"
+  } : {}
+}
+
+resource "google_secret_manager_secret" "github_app" {
+  for_each = local.github_app_secrets
+
+  project   = var.project_id
+  secret_id = each.value
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+
+        dynamic "customer_managed_encryption" {
+          for_each = var.kms_key_name == "" ? [] : [var.kms_key_name]
+          content {
+            kms_key_name = customer_managed_encryption.value
+          }
+        }
+      }
+    }
+  }
+
+  version_destroy_ttl = var.version_destroy_ttl
+  deletion_protection = var.deletion_protection
+
+  labels = merge(var.labels, {
+    "component"       = "github-app"
+    "github-app-slot" = each.key
+  })
+
+  annotations = {
+    "swarm-populated-by" = "scripts/create-secrets.sh --github-app ${each.key} --stdin"
+  }
+
+  lifecycle {
+    ignore_changes = [annotations["swarm-last-rotated"]]
+  }
+}
+
+# swarm-api, and nobody else: it runs the authorisation exchange and the
+# refresh sweep (decision D2), the two things that need the client secret.
+# Authoritative, so a grant made out of band is removed on the next apply. No
+# tenant worker is here -- a worker that could read the client secret could
+# refresh any user's token whose refresh token it also held -- and no human:
+# rotating a value is `versions add`, which the owner's own role allows and
+# which carries no read.
+resource "google_secret_manager_secret_iam_binding" "github_app_accessor" {
+  for_each = local.github_app_secrets
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.github_app[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  members   = var.github_app_secret_readers
+}
