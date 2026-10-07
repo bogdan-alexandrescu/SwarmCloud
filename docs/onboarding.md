@@ -243,7 +243,10 @@ machine with every step done:
 * **Remove an org**: SwarmCloud deletes the user's `forge_orgs` record and every
   grant under that owner, in one write, so a task naming one of its
   repositories is **refused** at submission from that moment, and a worker
-  already running is refused at its next forge use (§3.3). What GitHub still
+  already running is refused at its next push or pull request, where it
+  re-reads the grant (§3.3 step 4). The token already inside that running
+  attempt is not narrowed by the deletion: it stays valid at GitHub for the
+  installations that remain until it expires (at most 8 hours). What GitHub still
   allows is said plainly: the user's token is not per org, so the page offers
   the installation's settings link (an org owner uninstalls) and, if it is
   the user's last org, "Disconnect GitHub", which revokes the token.
@@ -359,18 +362,32 @@ swarm-api at submission and carried by name:
    the user's slot suffix `git-u-<hex>` and its mode. Resolution order
    becomes user grant, then repository token, then tenant token only where the
    tenant allows it (decision D4).
-2. **The scheduler** checks the connection's `state` before dispatch; a
-   `refresh_failed` connection parks the task `CREDENTIAL_MISSING` without
-   starting a worker, so a dead token costs no capacity.
+2. **The scheduler** checks the connection's `state` at admission, as
+   `CREDENTIAL_MISSING` is decided today: `credentials.py::credential_for`,
+   asked by `loop.Scheduler._admit_one` before any pool is reserved, also
+   answers "no" for a `refresh_failed` connection, so the task parks
+   `CREDENTIAL_MISSING` without a lease or a worker and a dead token costs no
+   capacity. The existing credential sweep (`loop.Scheduler._promote_credentials`)
+   asks the same question and returns the park to `READY` once the connection
+   is `active` again. Nothing here is checked in `dispatch.py`, which runs
+   after the lease is reserved.
 3. **The worker** reads `tenant.secret_name(task.forge_credential or "git")`
    at runtime (the latest version, which the refresher keeps at least two
    hours from expiry), registers it with the redaction filter as today, and
    reads it again before each push or pull request, since an attempt can
-   outlive an 8-hour token. A `read` grant makes the worker refuse to push:
+   outlive an 8-hour token. That re-read refreshes the token, not the grant;
+   step 4 re-reads the grant. A `read` grant makes the worker refuse to push:
    it never configures a push credential for that task.
-4. **Before cloning** the worker re-reads the grant document by `repo_id`
-   (tenant-scoped); a grant deleted since submission ends the attempt before
-   the agent starts, without touching the lease beyond releasing it.
+4. **Before cloning, and again before each push or pull request**, the
+   worker re-reads the grant document by `repo_id` (tenant-scoped). A grant
+   deleted since submission ends the attempt before the agent starts if it is
+   found before cloning, without touching the lease beyond releasing it; found
+   before a push or pull request, the worker checkpoints, refuses that forge
+   write, and ends the attempt. What this cannot stop is said plainly: the
+   token already in the running attempt's workspace is a user token, which
+   reaches every installation the user has until it expires (at most 8
+   hours), so an agent that uses it directly, outside the worker's push, is
+   bounded by GitHub's installation list, not by the grant.
 
 The suffix must come from somewhere the worker can trust. Two ways:
 
@@ -437,14 +454,18 @@ does).
    self-service is the point (decision D3). swarm-api gets a custom role with
    `secretmanager.secrets.create` (Secret Manager evaluates creation against
    the project, so a name condition cannot narrow it; the role carries no
-   read) and `secretVersionAdder` on names matching
-   `swarm-tenant-*-git-u-*`, by IAM condition. Runtime-created secrets are
+   read) and `secretVersionAdder` on user slots, by IAM condition. `resource.name` for
+   a secret is the full form `projects/<number>/secrets/<name>`, so the
+   condition is written as a prefix on that form, one per tenant:
+   `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-<t>-git-u-")`. Runtime-created secrets are
    labelled `managed-by=swarm-api` and `swarm-tenant=<tenant>`; teardown
    (`docs/runbooks/tenant-offboarding.md`) gains a step that deletes them by
    label, since no Terraform plan will.
 4. **The tenant's worker account reads its own users' slots**:
-   `secretAccessor` at the project, conditioned on the name starting
-   `swarm-tenant-<tenant>-git-u-` and not ending `-refresh`, one conditional
+   `secretAccessor` at the project, conditioned on
+   `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-<t>-git-u-")
+   && !resource.name.endsWith("-refresh")` (the full resource name, not the
+   bare secret name), one conditional
    binding per tenant, from the tenancy module. This replaces the per-secret
    authoritative binding for these slots only, and the review should weigh
    exactly that.
@@ -483,13 +504,16 @@ classic PAT can then be revoked at GitHub.
 **1. Only LEASED/DISPATCHED/STARTING/RUNNING create demand.** Every onboarding
 probe, listing and verification runs inside swarm-api on a request, never as
 a task, so none of it holds a lease or a slot; a task whose connection has
-failed parks `CREDENTIAL_MISSING` in the scheduler before dispatch rather than
-starting a worker to find out, and a parked task costs nothing.
+failed parks `CREDENTIAL_MISSING` at admission, as `CREDENTIAL_MISSING` is
+today (`credentials.py::credential_for`), rather than starting a worker to
+find out, and a parked task costs nothing.
 
 **2. All-or-nothing reservation in one transaction.** Admission is untouched:
 the credential is resolved at submission, before admission sees the task, and
-the scheduler's connection check is a read before the transaction, so no
-pool is reserved and then released because of a credential, and nothing here
+the scheduler's connection check happens at admission, as `CREDENTIAL_MISSING`
+is today (`credentials.py::credential_for`, asked by `loop.Scheduler._admit_one`
+before the transaction), so no pool is reserved and then released because of
+a credential, and nothing here
 splits the single transaction that reserves every pool.
 
 **3. Concurrency counts from LEASED.** Nothing in this design changes when a
@@ -500,8 +524,9 @@ never counted, so the count from LEASED stays the only count.
 **4. Workers never sleep through a long provider wait.** A worker that finds
 its user token expired or refused does not wait for the user to re-authorise:
 it checkpoints, parks the task `CREDENTIAL_MISSING`, releases and exits, and
-the scheduler re-admits it when the connection is `active` again, exactly as
-a missing provider key is handled today.
+the existing credential sweep (`loop.Scheduler._promote_credentials`, asking
+`credential_for`) returns it to `READY` when the connection is `active` again,
+exactly as a missing provider key is handled today.
 
 **5. Every attempt carries a fencing generation.** A stale worker must still
 exit before running the agent and before reading any credential, and this
@@ -699,10 +724,10 @@ root, since they do not exist yet.
 | OB0b | 0 | the probe records the `X-GitHub-SSO` header and the orgs a token reaches; the no-access refusal names SSO and the classic-token policy | `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/repositories.py` | — |
 | OB1 | 1 | the onboarding document and `GET /v1/onboarding`, derived from today's records (tenant token, registrations, probe) | new `swarm_api/onboarding.py`, new `swarm_api/routes/onboarding.py`, `apps/swarm-api/swarm_api/main.py` | OB0b |
 | OB2 | 1 | the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
-| OB3 | 2 | authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py` | OB1, OB2 |
-| OB4 | 3 | the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py` | OB3 |
-| OB5 | 3 | the worker reads the task's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
-| OB6 | 3 | the scheduler parks a task whose connection has failed, before dispatch | `apps/scheduler/scheduler/dispatch.py` | OB3 |
+| OB3 | 2 | authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
+| OB4 | 3 | the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
+| OB5 | 3 | the worker reads the task's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
+| OB6 | 3 | admission parks a task whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
 | OB7 | 4 | submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
 | OB8 | 4 | the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
 | OB9 | 4 | `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |

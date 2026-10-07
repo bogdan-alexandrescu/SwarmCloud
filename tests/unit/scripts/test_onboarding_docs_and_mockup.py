@@ -310,6 +310,21 @@ def test_the_build_plan_is_lanes_with_disjoint_territories_per_phase():
             seen[path] = lane
 
 
+def test_a_failed_connection_parks_at_admission_not_at_dispatch():
+    # Dispatch runs after the lease is reserved: a credential check there
+    # reserves a pool and releases it again (invariant 2), and no sweep would
+    # return the park to READY (invariant 4). CREDENTIAL_MISSING is decided in
+    # credentials.py, asked by loop.Scheduler._admit_one and its sweep.
+    plan = _part("## 5. Build plan")
+    ob6 = re.search(r"^\| OB6 \|.*$", plan, flags=re.M)
+    assert ob6, "lane OB6 exists"
+    assert "apps/scheduler/scheduler/credentials.py" in ob6.group(0)
+    assert "apps/scheduler/scheduler/loop.py" in ob6.group(0)
+    assert "dispatch.py" not in ob6.group(0)
+    assert "before dispatch" not in _flat(_text(DESIGN)), "the connection check is at admission"
+    assert "credential_for" in _part("### 3.3")
+
+
 def test_no_lane_depends_on_a_lane_in_its_own_or_a_later_phase():
     plan = _part("## 5. Build plan")
     rows = re.findall(r"^\| (OB\d+[a-z]?) \| (\d) \|.*\| ([^|]*) \|$", plan, flags=re.M)
