@@ -1,5 +1,7 @@
-// Capacity polling, decided 2026-10-01 (#117, capacity.html §G): Pools and
-// Holders re-read every 30s, Accounts every 60s, and none of them reads while
+// Capacity polling (#117): decided 2026-10-01 (capacity.html §G) as Pools and
+// Holders every 30s and Accounts every 60s; the owner ruling of 2026-10-07
+// puts Pools, Holders, Accounts and Provider quota all on 30s (60s below the
+// phone breakpoint, `CAPACITY_PHONE_POLL_MS`), and none of them reads while
 // the tab is hidden.
 //
 // Holders is the screen driven here because its read is one call with no
@@ -14,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HoldersBoard } from '../api'
 import type { LeasePage } from '../types'
-import { ACCOUNTS_POLL_MS, HOLDERS_POLL_MS, POOLS_POLL_MS } from '../capacityPoll'
+import { ACCOUNTS_POLL_MS, CAPACITY_PHONE_POLL_MS, HOLDERS_POLL_MS, POOLS_POLL_MS, QUOTA_POLL_MS } from '../capacityPoll'
 
 const loadHolders = vi.hoisted(() => vi.fn())
 vi.mock('../api', () => ({ loadHolders }))
@@ -61,10 +63,16 @@ afterEach(() => {
 })
 
 describe('the capacity screens poll at the decided cadences', () => {
-  it('pins Pools and Holders at 30s and Accounts at 60s', () => {
+  // RE-POINTED (#117, owner ruling 2026-10-07): Accounts was 60s and Provider
+  // quota unpolled; all four are one 30s cadence now, so a pool's headroom
+  // and the accounts and quota behind it are reads of the same age.
+  // MUTATION: change any of the four constants, or the phone cadence.
+  it('pins Pools, Holders, Accounts and Provider quota at 30s, and 60s on a phone', () => {
     expect(POOLS_POLL_MS).toBe(30_000)
     expect(HOLDERS_POLL_MS).toBe(30_000)
-    expect(ACCOUNTS_POLL_MS).toBe(60_000)
+    expect(ACCOUNTS_POLL_MS).toBe(30_000)
+    expect(QUOTA_POLL_MS).toBe(30_000)
+    expect(CAPACITY_PHONE_POLL_MS).toBe(60_000)
   })
 
   it('re-reads Holders every 30s, reads nothing while the tab is hidden, and reads at once on return', async () => {

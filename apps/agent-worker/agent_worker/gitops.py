@@ -972,8 +972,15 @@ def shallow_clone(
     git_binary: str = "git",
     egress: Any = None,
     peers: PeerPin | None = None,
+    history_days: int | None = None,
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
+
+    `history_days` (an index run, `indexrun.clone_history_days`, G4-06):
+    after the one-commit clone, deepen it to the `history_days` before the
+    head commit, and one parent past them, so the extractor's hot spots and
+    co-change read real history (`deepen_history`). A deepen that fails leaves the clone
+    one commit deep, which the extractor reports as having no history.
 
     `peers` (#721, P27) is the clone's `PeerPin`, shared across its tries:
     this try runs with its pin, if one is decided, and its phases gain
@@ -1026,6 +1033,14 @@ def shallow_clone(
             steps, url=url, token=token, private_dir=private_dir, env=trace.env(env),
             logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
         )
+        if history_days:
+            # Inside the try: the credential file is still there, and the
+            # `finally` below removes it after the deepen as after the clone.
+            total += deepen_history(
+                destination, history_days, git_binary=git_binary, config_args=config_args,
+                url=url, token=token, private_dir=private_dir, env=trace.env(env),
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            )
     except GitError as exc:
         failed = exc
         raise
@@ -1050,6 +1065,101 @@ def shallow_clone(
         path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty,
         phases=phases,
     )
+
+
+def history_fetch_argv(
+    git_binary: str, config_args: Sequence[str], destination: Path, head_sha: str,
+    head_time: int, days: int,
+) -> list[str]:
+    """`git fetch --shallow-since=<head - days> origin <head>`.
+
+    Bounded by date, not by count: the window the extractor reads
+    (`repo_index_extract.HISTORY_DAYS`, anchored at the head commit), and
+    nothing older. The cost is the trees and blobs of the window's commits.
+    """
+    since = datetime.fromtimestamp(head_time - days * 86_400, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
+            f"--shallow-since={since}", "origin", head_sha]
+
+
+def history_parent_argv(
+    git_binary: str, config_args: Sequence[str], destination: Path, head_sha: str,
+) -> list[str]:
+    """`git fetch --deepen=1 origin <head>`: one commit past the window.
+
+    `--shallow-since` stops AT the oldest commit inside the window, without
+    its parent, and git shows a commit without its parent as adding every
+    file it holds. One more generation makes every commit in the window a
+    real diff; the extractor skips the boundary commit, now outside it.
+    """
+    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
+            "--deepen=1", "origin", head_sha]
+
+
+def deepen_history(
+    destination: Path,
+    days: int,
+    *,
+    git_binary: str,
+    config_args: Sequence[str],
+    url: str,
+    token: str | None,
+    private_dir: Path,
+    env: dict[str, str],
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+) -> float:
+    """Deepen a one-commit clone to `days` of history before its head. Seconds taken.
+
+    Never raises: a forge that refuses or times out the deepen leaves the
+    clone with what it fetched, and the warning says so; the extractor
+    reads the history it finds (`window_covered`, `available`). The
+    checkout is not touched: a fetch moves no branch and no working file.
+    """
+    head = run_child(
+        [git_binary, "-C", str(destination), "show", "-s", "--format=%H %ct", "HEAD"],
+        cwd=private_dir,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(private_dir),
+             "GIT_CONFIG_NOSYSTEM": "1"},
+        stdout_path=logs_dir / "git-history-head.out.log",
+        stderr_path=logs_dir / "git-history-head.err.log",
+        timeout_seconds=30,
+        grace_seconds=5,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+        logger=logger,
+    )
+    text = ""
+    if head.exit_code == 0:
+        text = (logs_dir / "git-history-head.out.log").read_text(errors="replace").strip()
+    parts = text.split()
+    if len(parts) != 2 or not _FULL_SHA_RE.match(parts[0]) or not parts[1].isdigit():
+        logger.warning("clone history: the head commit could not be read; the clone stays "
+                       "one commit deep")
+        return head.duration_seconds
+    argv = history_fetch_argv(git_binary, config_args, destination, parts[0], int(parts[1]), days)
+    try:
+        seconds = _run_git_steps(
+            [argv], url=url, token=token, private_dir=private_dir, env=env, logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds, logger=logger, label="git-history",
+        )
+        # Still shallow: the history goes back past the window. Not shallow:
+        # the window holds the whole history, root commit included.
+        if (destination / ".git" / "shallow").exists():
+            seconds += _run_git_steps(
+                [history_parent_argv(git_binary, config_args, destination, parts[0])],
+                url=url, token=token, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                timeout_seconds=timeout_seconds, logger=logger, label="git-history-parent",
+            )
+    except GitError as exc:  # GitTransient included
+        # The class only: git's own words are in logs/git-history*-0.err.log.
+        logger.warning("clone history: the deepen failed; the extractor reports the "
+                       "history the clone holds", days=days, error=type(exc).__name__)
+        return head.duration_seconds
+    logger.info("clone history deepened", days=days, seconds=round(seconds, 2))
+    return head.duration_seconds + seconds
 
 
 def clone_at_commit(
@@ -1349,11 +1459,18 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         # graph the agent wrote; this switches graphs off for every worker
         # git as well, so none is read even where one exists. Command-scope
         # configuration outranks any repository's own `core.commitGraph`.
-        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_COUNT": "3",
         "GIT_CONFIG_KEY_0": "core.commitGraph",
         "GIT_CONFIG_VALUE_0": "false",
         "GIT_CONFIG_KEY_1": "fetch.writeCommitGraph",
         "GIT_CONFIG_VALUE_1": "false",
+        # `GIT_GRAFT_FILE=/dev/null` above makes git open a graft file, which
+        # succeeds, and print its eight-line graft-deprecation advice on every
+        # command (#808). The advice key only decides whether that message
+        # prints: grafts stay off. Command-scope configuration outranks the
+        # clone's `.git/config`, so the agent cannot turn the hint back on.
+        "GIT_CONFIG_KEY_2": "advice.graftFileDeprecated",
+        "GIT_CONFIG_VALUE_2": "false",
     }
 
 
@@ -2231,13 +2348,33 @@ def _worker_idents(run: Any, g: list[str]) -> tuple[tuple[str, str], tuple[str, 
     return idents[0], idents[1]
 
 
-def _foreign(commit: _Commit, author: tuple[str, str], committer: tuple[str, str]) -> list[str]:
-    """Every reason `commit` is not one the worker wrote. Empty when it is."""
+def _foreign(
+    commit: _Commit,
+    author: tuple[str, str],
+    committer: tuple[str, str],
+    *,
+    also: Sequence[tuple[tuple[str, str], tuple[str, str]]] = (),
+) -> list[str]:
+    """Every reason `commit` is not one the worker wrote. Empty when it is.
+
+    `also` is any other (author, committer) pair the worker writes as, each
+    asked of git by `_worker_idents` (#765: the task's person, with the bot
+    kept for a branch an earlier attempt pushed). A commit must carry ONE of
+    the pairs whole: the worker never writes one identity's author with
+    another's committer, so a mixed pair is not its.
+    """
     problems = []
-    if commit.author != author:
-        problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
-    if commit.committer != committer:
-        problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+    own = [(author, committer), *also]
+    if (commit.author, commit.committer) not in own:
+        if all(commit.author != mine for mine, _ in own):
+            problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
+        if all(commit.committer != mine for _, mine in own):
+            problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+        if not problems:
+            problems.append(
+                f"authored by {commit.author[0]} <{commit.author[1]}> but committed by "
+                f"{commit.committer[0]} <{commit.committer[1]}>, a pair the worker never writes"
+            )
     if commit.signed:
         # The worker never signs (`commit.gpgSign=false` on every call), so a
         # signature is text from a program the worker did not choose.
@@ -2260,6 +2397,7 @@ def verify_worker_authorship(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    also_own: Sequence[tuple[str, str]] = (),
 ) -> int:
     """Refuse a push that would add a commit the worker did not write.
 
@@ -2280,6 +2418,15 @@ def verify_worker_authorship(
     the contributor commits those merges bring in are their second parents,
     and each was checked by its own worker when it pushed. A contributor branch
     pushed before this check existed is therefore not re-checked here.
+
+    WHO THE WORKER IS (#765, owner decision 2026-10-07). `author_name` and
+    `author_email` are the identity this publish writes as -- the task's
+    person when it has one -- and `also_own` every other identity the worker
+    has written this branch as: the bot, `WorkerConfig.git_author_*`, for a
+    branch an earlier attempt pushed before its person was known. Nobody else
+    joins the set; a third identity's commit is refused as before. A
+    contributor's person on its own branch is never asked about here: those
+    commits are an integrator's second parents.
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
@@ -2317,8 +2464,13 @@ def verify_worker_authorship(
         return 0
 
     author, committer = _worker_idents(run, g)
+    also = [
+        _worker_idents(run, [git_binary, *_NO_HOOKS, *_worker_identity(name, email)])
+        for name, email in also_own
+        if (name, email) != (author_name, author_email)
+    ]
     for sha in shas:
-        problems = _foreign(_read_commit(run, g, sha), author, committer)
+        problems = _foreign(_read_commit(run, g, sha), author, committer, also=also)
         if problems:
             raise GitError(
                 f"refusing to push commit {sha[:12]}: {'; '.join(problems)}. The "
@@ -2345,7 +2497,15 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:
 #: * no system file and no global file, so the only configuration read is the
 #:   clone's and the command line's;
-#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
+#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`.
+#:   The graft file here is a path that cannot exist, not /dev/null (#808):
+#:   git prints its graft-deprecation advice whenever the graft file OPENS,
+#:   and upload-pack never loads `advice.*` -- its config callback does not
+#:   chain to git's default one (git 2.39.5 measured, master read), so
+#:   `advice.graftFileDeprecated=false` cannot reach it from the command line,
+#:   the environment or any config file. `/dev/null/no-grafts` fails to open
+#:   with ENOTDIR, which git's `fopen_or_warn` skips silently, and a graft
+#:   file that does not open means no grafts -- exactly what /dev/null gave;
 #: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
 #:   (`extensions.partialClone`, `remote.<name>.promisor`) makes a git that
 #:   misses an object FETCH it from the remote the clone's config names, with
@@ -2363,7 +2523,7 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:   command-line one. `false` is the worker's own program and connects to
 #:   nothing.
 _UPLOAD_PACK_ENV = [
-    "GIT_GRAFT_FILE=/dev/null",
+    "GIT_GRAFT_FILE=/dev/null/no-grafts",
     "GIT_NO_REPLACE_OBJECTS=1",
     "GIT_CONFIG_NOSYSTEM=1",
     "GIT_CONFIG_GLOBAL=/dev/null",

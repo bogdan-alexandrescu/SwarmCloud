@@ -1218,6 +1218,38 @@ is green and its `Closes #N` block is written, and only when its review said
 merges that task's pull request at the head that task pushed, with every
 check below except the verdict (it has no review). A tenant member's only.
 
+**A merge of a pull request no workflow opened** (#352, owner decision
+2026-10-07, MS0 question 2) is the same one-`merge`-step `direct-pr`
+workflow with `merge_pr: {number, head_sha}` in place of `continues_task`:
+
+```json
+{"strategy": "direct-pr",
+ "merge_pr": {"number": 41, "head_sha": "<the full 40-character head sha>"},
+ "steps": [{"step_id": "merge", "runner_profile": "merge"}]}
+```
+
+From the bridge it is `swarm merge 41 --sha <head>` (or `owner/repo#41`, or
+the pull request's URL), or `swarm_workflow` with `merge_pr`. Which
+repository: the one `repository_url` names, which must be one the caller's
+tenant registered (`/v1/repositories`), or -- when it names none -- the
+tenant's ONLY registration. Several registrations and none named is refused
+rather than guessed, because pull request numbers repeat across
+repositories, and an unregistered repository is refused even when the
+token could reach it, because the registration is the tenant's statement
+that its `-git` token is meant to act there. At submission swarm-api reads
+the pull request once with the tenant's `-git` token and refuses, writing
+nothing: a `head_sha` that is not its head now (the answer names the current
+head), a pull request that is closed or already merged, one not in that
+repository or from a fork, one on another base than the registered default
+branch, any step besides the one merge step, a `continues_task`,
+`repository_ref` or `merge_fix_rounds` beside it, and any strategy but
+`direct-pr`. A continuation-scoped account is refused before any read. The
+merge step's signed `merge_target` is then `{number, head_sha, base}` instead
+of a task id, and the worker merges through the gate every merge step uses:
+only at that head (or GitHub's own update of it onto the base), only with
+every required check green there. The console's Submit forms do not offer it
+yet; that is a follow-up.
+
 What swarm-api appends, before it signs anything:
 
 * **`depends_on` the step that opens the pull request and the review.**
@@ -1235,7 +1267,9 @@ What swarm-api appends, before it signs anything:
   nothing (invariants 1 and 4), then reads every fact again.
 * **Its signed dispatch block names its target by task id**
   (`merge_target: {pull_request, review, verdict_file}`), so the worker never
-  follows a pointer the signed spec does not name.
+  follows a pointer the signed spec does not name. A `merge_pr` workflow's
+  names the pull request instead (`merge_target: {number, head_sha}`),
+  because no task opened it.
 * **`merge_target.base`, the default branch the tenant registered the
   repository with** (`/v1/repositories`, [repo-index.md](repo-index.md) §1),
   read once at submission from the tenant's OWN registration, and absent when
@@ -1258,17 +1292,17 @@ submission, from the workflow's own `metadata`:
   spend are a request that would silently not happen, as `metadata.merge`
   `"on"` there is refused. It is stored as written; lane MS7 spends it, and
   until then it is accepted and changes nothing.
-* **A `ready` label is dropped beside a merge step.** `ready` is the label
-  `.github/workflows/auto-merge.yml` merges on. When the workflow's label
-  (`metadata.unit`, else `metadata.title`) is `ready`, in any case, and the
-  workflow has a merge step, swarm-api leaves it out of the dispatch block's
-  `pr_label` and records `metadata.merge_label_dropped: "ready"` on every
-  task, so the two mergers never race for one pull request and the step's
-  merges are the ones `auto-merge.yml`'s retirement gate counts
-  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
-  §5). Any other label, and a `ready` label on a workflow with no merge step,
-  is kept as before. `metadata.merge_label_dropped` is written by swarm-api
-  only: a caller's is a 422.
+* **The workflow's label is its pull request's fallback title, merge step
+  or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
+  the dispatch block's `pr_label`, which the worker uses only as title and
+  body text when no agent wrote `pr-title.txt`; it never becomes a GitHub
+  label. So a label that reads `ready` is kept as written beside a merge step
+  too. Lane MS1 had dropped it there, recording
+  `metadata.merge_label_dropped`; the owner reverted that on 2026-10-06
+  (#352) because it was aimed at the wrong thing: what races the merge step
+  is the GitHub `ready` label `auto-merge.yml` merges on, which an operator's
+  watcher or brief adds, not this title. `metadata.merge_label_dropped` is
+  no longer reserved or written.
 
 What the merge step checks, in order, and refuses with a plain reason
 (`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is

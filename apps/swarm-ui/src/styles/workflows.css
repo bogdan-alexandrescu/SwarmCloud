@@ -48,7 +48,8 @@
      (168px at 1056), cut with its title. */
   .wfl .wfl-table th[data-col="cost"] { width: 100px; }
   .wfl .wfl-table th[data-col="owner"] { width: 116px; }
-  .wfl .wfl-table th[data-col="started"] { width: 88px; }
+  /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20). */
+  .wfl .wfl-table th[data-col="submitted"] { width: 96px; }
   .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
   .wfl .wfl-table td[data-col="state"],
@@ -68,6 +69,24 @@
   .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
   .wfl .wfl-name { min-width: 0; }
   .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* THE ID IS ONE LINE, CUT (QA G3-09): it broke across two and three lines
+     (`wf_37d2a419ea5a4bb / eb463`) in a 166px column. Whole in its title. */
+  .wfl .wfl-name > .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }
+}
+/* THE NAME GETS ITS ROOM BELOW 1680 (QA G3-09, 2026-10-07). At 1440 the nine
+   columns left the name 166px of a 1054px table: titles cut at ~20
+   characters and the Shape cell at `1 → 1 →…`. Shape repeats what Steps done
+   says and Runners moves to the name's second line (`.wfl-mix`), so the name
+   holds about 390px. 1680 is where the table is wide enough (~1290px) for all
+   nine with the name still over 280px. */
+.wfl .wfl-name > .wfl-mix { display: none; }
+@media (min-width: 900px) and (max-width: 1679px) {
+  .wfl .wfl-table th[data-col="shape"],
+  .wfl .wfl-table td[data-col="shape"],
+  .wfl .wfl-table th[data-col="runners"],
+  .wfl .wfl-table td[data-col="runners"] { display: none; }
+  .wfl .wfl-name > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 .wfl-shape { white-space: nowrap; }
@@ -195,14 +214,31 @@
    only, so the border and overflow below would never apply to it (D12). */
 .wf-card .wf-table-box { container: wf-steps / inline-size; }
 @media (min-width: 900px) {
-  .wf-card .ctl-table.wf-table { overflow-x: auto; }
+  /* `clip`, NOT `auto` (QA G3-12): an `overflow-x: auto` wrapper is the
+     head's scroll container on both axes and never scrolls vertically, so a
+     sticky head inside it never stuck (WF-21). At this width the table never
+     needs to scroll sideways -- below its 980px minimum the box stacks the
+     rows instead (the container query below) -- so the wrapper clips, which
+     makes no scroll container, and the head sticks to the page. */
+  .wf-card .ctl-table.wf-table { overflow-x: clip; }
+  /* THE HEAD STAYS IN VIEW over a long table (QA G3-12). On `thead`, not on
+     each `th`: the fill is `thead`'s one-rectangle paint (#178), so no head
+     cell declares a fill or a layer of its own. z-index 2 stays under the
+     drawer's band (3), the order shell.test.tsx holds. */
+  .wf-card .ctl-table.wf-table > table > thead { position: sticky; top: 0; z-index: 2; background: var(--surface-2); }
   .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 980px; font-size: var(--t-meta); }
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
-  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 82px; }
+  /* QA G3-10 (2026-10-07): State at 100px cut `skipped by verdict` to
+     `skipped by ver…` and Step at 82px cut `implement` to `implem…`. State is
+     the list's 136px; Step is 96px, and takes the slack when no row has a
+     why. Tokens gave the 12px it did not need (its absences are `none`,
+     `none yet`, `not reported` now; `no attempt yet` is never a cost or token
+     cell), and Why keeps 62px at the minimum, on two lines. */
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 96px; min-width: 96px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
-  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
+  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 136px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
   .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 114px; }
@@ -212,7 +248,14 @@
   .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
   .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
-  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 156px; }
+  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 104px; }
+  /* WHY WRAPS ONTO TWO LINES before it is cut (QA G3-10): `expecte…` and
+     `Waiting o…` said nothing. The whole reason is still its title. */
+  .wf-card .ctl-table.wf-table td[data-col="why"] { white-space: normal; }
+  .wf-card .ctl-table.wf-table td[data-col="why"] > .wf-why {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+    overflow: hidden; white-space: normal; overflow-wrap: anywhere;
+  }
   /* The files a step reads, in the row under it: wrapping text, the row's width. */
   .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
 }
@@ -229,12 +272,17 @@
   .wf-card .ctl-table.wf-table.is-scroll > table { display: block; min-width: 0; width: 100%; }
   .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }
   .wf-card .ctl-table.wf-table.is-scroll > table > tbody { display: block; }
-  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 4px; border-bottom: 1px solid var(--line-soft); }
+  /* `padding-left: 14px` (QA G3-34): the row's 4px state edge is an inset
+     shadow, and the 4px padding left every label flush against it. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 4px 6px 14px; border-bottom: 1px solid var(--line-soft); }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; white-space: normal; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-label]::before { content: attr(data-label) ' '; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
+  /* A row with no why draws no Why block (QA G3-32): the cell is empty and
+     carries no label, and an empty block still cost a gap. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"]:empty { display: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr.wf-xrow,
   .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; height: auto; }
 }
@@ -258,6 +306,16 @@
 .wf-xinputs { display: flex; align-items: baseline; gap: var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--mono); }
 .wf-xinputs-h { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
+/* STACKED, THE SKIP HATCH IS A STRIP BESIDE THE EDGE (QA G3-34): across the
+   cells it ran behind every figure on the card. The row keeps its tint; the
+   hatch is the 10px between the state edge and the first label. */
+@container wf-steps (max-width: 979px) {
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].is-skipped > td { background: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].is-skipped {
+    background-image: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, transparent 2px 5px);
+    background-size: 10px 100%; background-position: 4px 0; background-repeat: no-repeat;
+  }
+}
 
 /* ---- Step tints: one state vocabulary in every view (#405) --------------- */
 
@@ -315,6 +373,53 @@
 .wf-timeline .wf-tl-track > .wf-tl-span.t-bad { background-color: var(--s-badb); box-shadow: inset 0 0 0 1px var(--s-bad); }
 .wf-timeline .wf-tl-track > .wf-tl-span.t-neu { background-color: var(--s-neub); box-shadow: inset 0 0 0 1px var(--s-neu); }
 .wf-timeline .wf-tl-track > .wf-tl-span.is-ran.is-bad::before { background: var(--s-bad); }
+/* A RUN HAS A SOLID CORE IN ITS EDGE HUE (QA G3-13). The tint alone was the
+   bar: `--s-neub` on the card is about 1.1:1, so a finished run and the empty
+   track looked alike. The core is the middle half of the bar in the state's
+   edge colour, 3:1 or better on the card in both themes
+   (qa.g3.workflow.test.tsx), and a background IMAGE, so the tint pair #405
+   holds is still the bar's colour and edge. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran { background-size: 100% 50%; background-position: center; background-repeat: no-repeat; }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-live { background-image: linear-gradient(var(--s-live), var(--s-live)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-park { background-image: linear-gradient(var(--s-park), var(--s-park)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-bad { background-image: linear-gradient(var(--s-bad), var(--s-bad)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-neu { background-image: linear-gradient(var(--s-neu), var(--s-neu)); }
+/* A VERDICT-SKIPPED RUN IS THE NODE'S SKIP HATCH (QA G3-02): its agent never
+   ran, so it is drawn as the striped card the Graph draws, not as a run. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.is-skipped {
+  background-image: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, transparent 2px 6px);
+  background-size: auto; background-position: 0 0; background-repeat: repeat;
+}
+/* PARKED NOW: the open wait in the parked hatch and edge (QA G3-13). A step
+   parked 1h 37m drew a faint outline the length of the track. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-waiting.is-parked {
+  border-color: var(--s-park);
+  background: repeating-linear-gradient(135deg, var(--s-park) 0 2px, var(--s-parkb) 2px 6px);
+}
+/* ON PARENTS, DOTTED in the wait's ink (QA G3-13): the `--line` outline was
+   nearly invisible on the card. Dotted against the queue's solid outline, so
+   the two waits differ by shape, not only by shade. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-parents { border: 1px dotted var(--text-faint); }
+
+/* THE KEY, one line above the axis across both columns (QA G3-13). Each
+   swatch is drawn by the classes its spans use. */
+.wf-timeline > .wf-tl-key {
+  grid-column: 1 / -1;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  margin: 0 0 var(--ctl-s1); padding: 0; list-style: none;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
+}
+.wf-tl-key-item { display: inline-flex; align-items: center; gap: 6px; }
+.wf-tl-swatch { display: inline-block; width: 20px; height: 10px; box-sizing: border-box; border-radius: var(--track-radius); }
+.wf-tl-swatch.is-parents { border: 1px dotted var(--text-faint); }
+.wf-tl-swatch.is-waited { border: 1px solid var(--text-faint); }
+.wf-tl-swatch.is-parked { border: 1px solid var(--s-park); background: repeating-linear-gradient(135deg, var(--s-park) 0 2px, var(--s-parkb) 2px 6px); }
+.wf-tl-swatch.is-ran {
+  background-color: var(--s-neub); box-shadow: inset 0 0 0 1px var(--s-neu);
+  background-image: linear-gradient(var(--s-neu), var(--s-neu)); background-size: 100% 50%; background-position: center; background-repeat: no-repeat;
+}
+.wf-tl-swatch.is-skipped { background: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, var(--s-neub) 2px 6px); box-shadow: inset 0 0 0 1px var(--s-neu); }
+
 
 /* A MAP NODE: the tint as its fill and the edge as its stroke, held at 1px
    however far the map is scaled down. Unread is the dashed amber. */
@@ -452,7 +557,11 @@
   background: var(--surface);
   font: var(--t-meta)/var(--lh-meta) var(--font);
 }
-.wf-verdict.is-pending { color: var(--text-dim); }
+/* THE PENDING REVIEW VERDICT IS ONE SENTENCE (QA G3-19): `.wf-verdict` is a
+   column flex box for the verdict card, which made every text run of this
+   paragraph a block of its own -- `not read yet` on a line, and the next one
+   starting with its colon. A paragraph flows inline. */
+.wf-verdict.is-pending { display: block; color: var(--text-dim); }
 .wf-card-h { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .wf-card-r { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-card-foot { margin: 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }

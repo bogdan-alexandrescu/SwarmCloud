@@ -28,8 +28,15 @@
 /* ---- Needs a look: a row of check cards ----------------------------------- */
 .ov-lead { display: flex; flex-direction: column; gap: 8px; }
 .ov-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.ov-lh h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
-.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* OV-15, ONE RANK DOWN (#138, owner ruling 2026-10-07): the lead title sat at
+   `--t-lead`, the card titles' step, two pixels under the page's h1 -- read
+   at a glance as a second page title. It steps down to `--t-body`/600: under
+   the h1 by two steps, and told from the card titles by its position, its
+   track and its unboxed region, as the heading ladder ranks hierarchy. */
+.ov-lh h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+/* Sans (Q1): `checks 8/8 · 1 found something` is words around a figure, and
+   mono is for ids, values, code and timestamps. Tabular, so the figure holds. */
+.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
    column made 345px cards that cut the title ("25 failed tasks among the 200
    mo…") and both detail lines. Two across on a desktop, one on a phone.
@@ -136,8 +143,11 @@
 .ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.ov-name { color: var(--text); text-decoration: none; font-weight: 500; }
-.ov-name:hover { text-decoration: underline; }
+/* A ROW LINK LOOKS LIKE ONE (QA G1-09, 2026-10-07): with no underline the
+   name read as a label while the workflow id beside it was underlined. A
+   hairline in the line token at rest, the text colour on hover. */
+.ov-name { color: var(--text); text-decoration-line: underline; text-decoration-color: var(--line); text-underline-offset: 3px; font-weight: 500; }
+.ov-name:hover { text-decoration-color: currentColor; }
 .ov-wf { color: var(--text-dim); }
 .ov-silent { color: var(--warn); font-size: var(--t-micro); margin-left: 6px; }
 .ov-open { color: var(--sk-ac); font-size: var(--t-micro); text-decoration: none; }
@@ -152,7 +162,7 @@
 .ov-prun-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); text-decoration: none; }
 .ov-prun em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
-/* ---- Cost so far ---------------------------------------------------------- */
+/* ---- Recent token cost (the Cost so far card until QA G1-03) ------------- */
 .ov-big { display: flex; align-items: baseline; gap: 8px; font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
 .ov-big small { font: 400 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-figure.is-absent { font-size: var(--t-body); }
@@ -222,21 +232,32 @@
    it. */
 @media (max-width: 759px) {
   .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .ov-page > .c-phead .c-age { margin-left: 0; }
-  /* THE `?` AND THE TENANT CHIP SHARE THE LINE (U10a D39, owner QA at 390px,
+  /* THE `?` AND THE REFRESH SHARE THE LINE (U10a D39, owner QA at 390px,
      2026-10-04): with the h1 stepped aside the head held only the `?`, and
-     the row wrapped it onto a line of its own above the chip. The row does
-     not wrap; the provenance wraps inside its own half when it must. */
+     the row wrapped it onto a line of its own. The row does not wrap; the
+     actions wrap inside their own half when they must. */
   .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; }
-  .ov-page > .c-phead > .sub { flex: 1 1 0; min-width: 0; }
+  .ov-page > .c-phead > .c-acts { flex: 1 1 0; min-width: 0; }
 }
 @media (max-width: 560px) {
+  /* RECENT FAILURES BEFORE HEADROOM AND THE POOLS (QA G1-07, 2026-10-07):
+     last in the column, the most actionable card sat under 29 pool rows. */
+  .ov-cols .ov-failures { order: 4; }
+  .ov-cols .ov-headroom { order: 5; }
+  .ov-cols > .ov-pools { order: 6; }
+  /* ROOM FOR THE STICKY `↑ Top` (G1-07): 44px tall plus its 12px offset, so
+     at the foot of the page it never sits over the last rows' figures. */
+  .ov-page { padding-bottom: 56px; }
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
   .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }
   .ov-lc + .ov-lc::before { display: none; }
   .ov-lc-h small, .ov-lc-ps, .ov-lc-foot { display: none; }
+  /* THE PAGE'S FOOT STAYS (QA G1-02, 2026-10-07): a phone reads the newest
+     50 and a desktop the newest 200, so "Finished today" differs by width;
+     hidden here, a phone's 41 sat under the same words as a desktop's 62. */
+  .ov-lc-foot.is-page { display: block; }
   .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
   /* Recent failures stacks (D2): the name and why over the age and Open. */

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -30,7 +30,7 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
+import { SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
 import { NotFound, nearestPath } from './NotFound'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
@@ -41,7 +41,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
+import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
@@ -717,7 +717,9 @@ export function fromLocation(): Route {
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
   const r = fromAddress(p.address)
-  return p.agentTab === null || r.taskId === null ? r : { ...r, list: { tab: p.agentTab, state: null } }
+  // The list an agent was opened from, with its state and toggles when the
+  // path's query names them (G2-22), so a reload closes to the same list.
+  return p.agentTab === null || r.taskId === null ? r : { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
 }
 
 /**
@@ -805,7 +807,8 @@ export function fromAddress(full: string): Route {
   // addresses (`running/bogus`, `running/live/failed`, `running/recent/faild`)
   // is the plain list, never a drawer and never a guessed tab.
   if (head === WORK && tail[0] === 'running' && tail.length > 1) {
-    const list = parseAgentList(tail.slice(1))
+    // The list's toggles ride on its query (G2-22): `running/recent?group=wf`.
+    const list = parseAgentList(tail.slice(1), query)
     return list === null
       ? { sectionId: WORK, tab: 'running', ...blank }
       : { sectionId: WORK, tab: 'running', ...blank, list }
@@ -883,7 +886,8 @@ export function canonical(r: Route): string {
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
   if (r.sectionId === WORK && r.tab === 'running' && r.list) {
-    return `${WORK}/running/${agentListPath(r.list)}`
+    const flags = agentListQuery(r.list)
+    return `${WORK}/running/${agentListPath(r.list)}${flags === '' ? '' : `?${flags}`}`
   }
   // The Timeline's view rides on its address, so a copied link reproduces the
   // page (#185). Written only for that route: no other screen reads a query.
@@ -947,7 +951,15 @@ export function App() {
 
   /** The path a route is written as: an open agent sits under its list's tab. */
   const pathFor = useCallback(
-    (r: Route) => r.missing ?? addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
+    (r: Route) => {
+      if (r.missing != null) return r.missing
+      const list = r.list ?? lastList.current
+      const path = addressToPath(canonical(r), list?.tab ?? 'live')
+      // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
+      // so a reload or a shared link closes to the same filtered list.
+      const search = r.taskId !== null && list !== null ? agentListSearch(list) : ''
+      return search === '' ? path : `${path}?${search}`
+    },
     [],
   )
 
@@ -961,7 +973,7 @@ export function App() {
         const u = new URL(to, window.location.origin)
         const p = pathToAddress(u.pathname, u.search, u.hash)
         r = p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
-        if (p !== null && p.agentTab !== null) r = { ...r, list: { tab: p.agentTab, state: null } }
+        if (p !== null && p.agentTab !== null) r = { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
       } else {
         r = fromAddress(to.replace(/^#/, ''))
       }
@@ -1052,14 +1064,21 @@ export function App() {
     list: lastList.current,
   })
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const title =
-    at.sectionId === SUBMIT
+  // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
+  // a page that is not Overview, because the spine lights the nearest section.
+  const title = at.missing
+    ? NOT_FOUND_TITLE
+    : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
           : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : openObjectOf(at)
+  useEffect(() => {
+    document.title = documentTitleOf(title, object)
+  }, [title, object])
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1073,6 +1092,7 @@ export function App() {
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
+          missing={Boolean(at.missing)}
           go={go}
           helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
@@ -1114,8 +1134,9 @@ export function App() {
             </div>
           }
         >
-          {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
-              inside it prints none of its own while its read is fresh. */}
+          {/* THE FRAME'S HEAD CAN TIME THE SCREEN'S READS (CH-2), for a page
+              head with no age of its own; a `Screen` carries its own on its
+              refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
           <HeadAgeProvider at={at}>
@@ -1135,9 +1156,9 @@ export function App() {
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
                 // agent is open beside it (`RoutedPage` in Shell.tsx). And so
                 // does its AGE (#98): with an agent open the head times the
-                // inspector (`shownBy` in fetch.ts), so the list under it
-                // keeps its own `read Ns ago` -- otherwise it would be shown
-                // nowhere but the dock's tab-wide age.
+                // inspector (`shownBy` in fetch.ts), so a page head under it
+                // does not take the frame's age; a `Screen` there carries its
+                // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
                   {at.missing ? <NotFound path={at.missing} go={go} /> : <SectionBody
@@ -1231,9 +1252,11 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
  *      admin only          every read it made met the admin gate
  *
  *    Help and API reads issue no reads of their own and say so. A screen
- *    that prints its own data's age claims it (`useClaimPageAge`, #98) and
- *    the head prints none; a `Screen` defers its fresh age to this one
- *    (`FrameAge` in Shell.tsx). One age per screen.
+ *    that prints its own age claims it (`useClaimPageAge`, #98) and the head
+ *    prints none: every `Screen`, Overview and the Timeline carry theirs on
+ *    their head's refresh control (#98, owner ruling 2026-10-07), and
+ *    Platform counts prints the count's. One age per screen; the dock keeps
+ *    the tab-wide one.
  *
  *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
  *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
@@ -1342,8 +1365,8 @@ function HeadAgeProvider({ at, children }: { at: Route; children: ReactNode }) {
   const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
   // The age is the point, so it moves on its own rather than only when a
   // fetch happens to land -- on the SHARED clock, the one every screen's
-  // sub-line and the dock read, so the head and the provenance line under a
-  // screen title can no longer disagree by up to a tick (CH-1).
+  // refresh control and the dock read, so the head and a screen's own age
+  // can no longer disagree by up to a tick (CH-1).
   const now = useNow(AGE_TICK_MS)
   // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
   // claimed it, and the head prints none: one age per screen.
@@ -1399,6 +1422,22 @@ export function crumbsOf({
   return out
 }
 
+/** The title of a path this console has no page for: the phone header's and the tab's. */
+export const NOT_FOUND_TITLE = 'Not found'
+
+/**
+ * THE TAB'S TITLE (QA G1-12, 2026-10-07): the page, then the console, and
+ * inside an open object its id first -- the part that tells two tabs apart.
+ * Every page was "SwarmCloud", so a row of tabs, the history menu and a
+ * bookmark could not say which was which. Set here, once, from the title the
+ * phone header draws, rather than in each `PageHead`: the 404 and an open
+ * agent draw no head of their own, and a page with an inspector draws two.
+ */
+export function documentTitleOf(title: string, object: string | null): string {
+  const page = title === 'SwarmCloud' ? 'SwarmCloud' : `${title} · SwarmCloud`
+  return object === null ? page : `${object} · ${page}`
+}
+
 /**
  * THE OBJECT AN ADDRESS HAS OPEN, if any (#503, Q2): an agent (`taskId`), a
  * workflow (`/workflows/<id>`, `wf=<id>` on the list's query) or an issue run
@@ -1422,9 +1461,11 @@ export function openObjectOf(at: Route): string | null {
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help, API reads and the Submit chooser draw from nothing they fetch, so
-  // there is no age -- and no "reading…" that never resolves (#503).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
+  // Help and API reads draw from nothing they fetch, so there is no age --
+  // and no "reading…" that never resolves (#503). The Submit chooser is not
+  // one of them: it reads your recent submissions and carries that read's age
+  // on its own refresh (QA G1-05/G4-23).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -1729,15 +1770,18 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
           belongs to the thing it qualifies -- the page's own title -- so it is
           a `.ctl-card-note` beside it, in the slot §8.4.2 reserves for exactly
           this, and the argument is one click away in `#help/api-reads`.
+          The head is title left, actions right (#138), so the caveat is the
+          note over the page's first card (`CountNote`).
 
           `ctl-link` (CH-5): this anchor carried no class, so it fell back to
           the browser's own blue -- visited purple once followed -- in a
           product whose links are ink plus an underline. */}
-      <PageHead title={REFERENCE_LABEL} meta="this tab only · not the API surface">
+      <PageHead title={REFERENCE_LABEL}>
         <a className="ctl-link" href={`#${HELP}/api-reads`}>
           What these mean &rarr;
         </a>
       </PageHead>
+      <CountNote>this tab only · not the API surface</CountNote>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by

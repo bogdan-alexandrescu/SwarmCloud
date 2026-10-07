@@ -506,20 +506,24 @@ describe('B4.1: the tokens are actually in the cascade', () => {
    * headings at --t-lead/600; the lead stays distinct from the card titles by
    * its position, its track and its unboxed region.
    *
+   * AND ONE RANK FURTHER DOWN (#138, owner ruling 2026-10-07): at --t-lead the
+   * lead still read as a second page title two pixels under the h1, so it
+   * steps down to --t-body/600.
+   *
    * O1's "Needs a look" is that heading (`.ov-lh h2`, styles/overview.css).
    *
-   * MUTATION: put the lead heading on --t-title.
+   * MUTATION: put the lead heading back on --t-lead, or on --t-title.
    */
   it('sets the attention lead title a step below the page title', () => {
     const style = withStyles()
     const section = document.createElement('section')
     section.className = 'ov-lead'
-    section.innerHTML = '<div class="ov-lh"><h2>Needs a look</h2><span class="ov-cnt">3 checks of 8</span></div>'
+    section.innerHTML = '<div class="ov-lh"><h2>Needs a look</h2><span class="ov-cnt">checks 8/8 · 3 found something</span></div>'
     document.body.appendChild(section)
 
     const seen = getComputedStyle(section.querySelector('.ov-lh h2')!)
-    expect(seen.fontSize).toBe('var(--t-lead)')
-    expect(seen.lineHeight).toBe('var(--lh-lead)')
+    expect(seen.fontSize).toBe('var(--t-body)')
+    expect(seen.lineHeight).toBe('var(--lh-body)')
     expect(seen.fontWeight).toBe('600')
 
     section.remove()

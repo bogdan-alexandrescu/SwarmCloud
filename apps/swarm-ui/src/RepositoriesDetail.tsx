@@ -3,11 +3,14 @@ import { loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResol
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
 import { addressToPath } from './paths'
 import {
-  freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
-  type IndexDoc, type IndexRun, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
+  coverageDetail, coverageWords, freshness, HEAD_UNREAD, intervalWords, kindWords, pct, repoName, shortSha, notServed, expiryWords,
+  testMapRows, thousands,
+  type IndexDoc, type IndexRun, type LanguageRow, type RepoDetail, type RepoRecord, type ResolvedToken, type UsedBy,
 } from './RepositoriesData'
+import type { Result } from './fetch'
 import {
-  LIST, GT_PAGE, TestsMapped, UrCapRow, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRegion, repoAddress,
+  LIST, GT_PAGE, TestsMapped, testsMappedWhy, UrCapRow, UrCrumb, UrFreshPill, UrLink, UrNavButton, UrNotServed, UrRadio, UrRefresh, UrRegion, repoAddress,
+  type UrRead,
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -73,7 +76,9 @@ export function RepositoryDetail({ repoId, tab, go, pr = null }: { repoId: strin
     return (
       <div className="ur-page ur-detail">
         {crumb}
-        <PageHead title={title}>{null}</PageHead>
+        <PageHead title={title}>
+          <UrRefresh reads={[detail, index]} />
+        </PageHead>
         <UrRegion
           state={detail.state}
           route="GET /v1/repositories/{repo_id}"
@@ -97,14 +102,31 @@ export function RepositoryDetail({ repoId, tab, go, pr = null }: { repoId: strin
   return (
     <div className="ur-page ur-detail">
       {crumb}
-      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} pr={pr} />
+      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} pr={pr} reads={[detail, index]} />
     </div>
   )
 }
 
 type IndexRead = ReturnType<typeof useUrRead<IndexDoc | null>>
 
-function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: IndexRead; tab: TabKey; go: (to: string) => void; onRead: () => void; pr: string | null }) {
+function DetailBody({
+  d,
+  index,
+  tab,
+  go,
+  onRead,
+  pr,
+  reads,
+}: {
+  d: RepoDetail
+  index: IndexRead
+  tab: TabKey
+  go: (to: string) => void
+  onRead: () => void
+  pr: string | null
+  /** The page's head reads, for its refresh and its one age (#98). */
+  reads: readonly UrRead<unknown>[]
+}) {
   const r = d.repository
   const f = freshness(r.index)
   const [busy, setBusy] = useState(false)
@@ -121,15 +143,19 @@ function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: I
 
   const inFlight = r.index.in_flight_task_id
   // An array the detail did not serve is a dash with its reason, never "0".
+  // Test map counts the edges it lists, as `index.coverage` serves them (QA G4-03).
+  const edges = r.index.coverage?.test_map_edges ?? null
   const counts: Partial<Record<TabKey, ReactNode>> = {
-    ...(r.index.coverage !== null ? { 'test-map': pct(r.index.coverage) } : {}),
+    ...(edges !== null ? { 'test-map': thousands(edges) } : {}),
     'index-runs': d.index_runs === null ? <Dash why="Index runs are not served yet" /> : String(d.index_runs.length),
     'used-by': d.used_by === null ? <Dash why="Who used this index is not served yet" /> : String(d.used_by.length),
   }
 
   return (
     <>
-      <PageHead title={repoName(r)} action={<UrFreshPill f={f} />}>
+      <PageHead title={repoName(r)}>
+        <UrRefresh reads={reads} />
+        <UrFreshPill f={f} />
         {inFlight !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={inFlight} />
         ) : (
@@ -180,7 +206,7 @@ function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: I
           <RunList runs={d.index_runs} />
         </Card>
       )}
-      {tab === 'settings' && <SettingsTab r={r} go={go} busy={busy} onFull={() => void indexNow('full')} />}
+      {tab === 'settings' && <SettingsTab r={r} index={index} go={go} busy={busy} onFull={() => void indexNow('full')} />}
       {tab === 'used-by' && (
         <Card title="Used by">
           <UsedByList used={d.used_by} go={go} />
@@ -280,9 +306,9 @@ function Overview({ d, index, go }: { d: RepoDetail; index: IndexRead; go: (to: 
               />
               <Tile
                 label="Tests mapped"
-                value={r.index.coverage === null ? null : pct(r.index.coverage)}
-                why="The index did not report its test-map coverage"
-                sub={doc.unmapped.length > 0 ? `${doc.unmapped.length} source paths with no test edge` : 'edges, not executed coverage'}
+                value={coverageWords(r.index.coverage)}
+                why={testsMappedWhy(r)}
+                sub={doc.unmapped.length > 0 ? `${doc.unmapped.length} source paths with no test edge` : (coverageDetail(r.index.coverage) ?? 'edges, not executed coverage')}
                 warn={doc.unmapped.length > 0}
               />
               <Tile
@@ -404,23 +430,36 @@ function TestMapTab({ r, index }: { r: RepoRecord; index: IndexRead }) {
       <IndexRegion r={r} index={index}>
         {(doc) => {
           const f = filter.trim().toLowerCase()
-          const rows = doc.test_map.filter((t) => f === '' || t.source.toLowerCase().includes(f) || t.tests.some((x) => x.toLowerCase().includes(f)))
+          // One edge is one test (QA G4-02); many edges share a source, so a row is a source with all of its tests.
+          const all = testMapRows(doc.test_map)
+          const rows = all.filter((t) => f === '' || t.source.toLowerCase().includes(f) || t.tests.some((x) => x.test.toLowerCase().includes(f)))
           return (
             <div className="ur-tmap">
               <TestsMapped r={r} />
-              <p className="ur-hint">Edges from the index: a source path and the tests that reach it, with the evidence. Not executed coverage.</p>
+              <p className="ur-hint">Edges from the index: a source path and the tests that reach it, each with its evidence. Not executed coverage.</p>
+              {doc.truncated.includes('test_map') && (
+                <p className="ur-hint is-warn">The index&apos;s test map was cut at its size ceiling: these are the edges it kept.</p>
+              )}
               <input type="search" className="ur-search" aria-label="Filter by path" placeholder="Filter by path" value={filter} onChange={(e) => setFilter(e.target.value)} />
               <div className="ur-rows">
                 {rows.map((t) => (
                   <div className="ur-tmap-row" key={t.source}>
                     <code>{t.source}</code>
                     <span className="ur-tests">
-                      {t.tests.length === 0 ? <Dash why="No tests listed for this path" /> : t.tests.map((x) => <code key={x}>{x}</code>)}
+                      {t.tests.length === 0 ? (
+                        <Dash why="No tests listed for this path" />
+                      ) : (
+                        t.tests.map((x) => (
+                          <span className="ur-test" key={`${t.source}\u0000${x.test}`} title={x.command === null ? 'No command recorded for this test' : `Run: ${x.command}`}>
+                            <code>{x.test}</code>
+                            {x.evidence === null ? <Dash why="No evidence recorded" /> : <Chip>{x.evidence}</Chip>}
+                          </span>
+                        ))
+                      )}
                     </span>
-                    {t.evidence === null ? <Dash why="No evidence recorded" /> : <Chip>{t.evidence}</Chip>}
                   </div>
                 ))}
-                {rows.length === 0 && <p className="ur-none">{doc.test_map.length === 0 ? 'The index maps no tests.' : 'No path matches the filter.'}</p>}
+                {rows.length === 0 && <p className="ur-none">{all.length === 0 ? 'The index maps no tests.' : 'No path matches the filter.'}</p>}
               </div>
               {doc.unmapped.length > 0 && (
                 <>
@@ -566,11 +605,35 @@ function UsedByList({ used, go }: { used: readonly UsedBy[] | null; go: (to: str
 
 const LANG_TONE: Readonly<Record<string, string>> = { ok: 'ok', unsupported: 'warn', failing: 'bad', timed_out: 'bad' }
 
-function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) => void; busy: boolean; onFull: () => void }) {
-  const langs = useUrRead(() => loadRepositoryLanguages(r.repo_id), `langs:${r.repo_id}`)
+/**
+ * The languages table: the languages route's rows, or -- when this API does
+ * not serve that route -- the index document's own `languages` (QA G4-13).
+ * "Not served yet" only when neither has them.
+ */
+function languagesRead(route: Result<LanguageRow[]>, index: Result<IndexDoc | null>): { state: Result<LanguageRow[]>; fromDoc: boolean } {
+  if (route.status !== 'error' || !notServed(route.error)) return { state: route, fromDoc: false }
+  if (index.status === 'loading') return { state: index, fromDoc: false }
+  if (index.status !== 'ok' && index.status !== 'stale') return { state: route, fromDoc: false }
+  const doc = index.data
+  if (doc === null || doc.languages === null) return { state: route, fromDoc: false }
+  if (doc.languages.length === 0) return { state: { status: 'empty', fetchedAt: index.fetchedAt }, fromDoc: true }
+  return { state: { ...index, data: doc.languages }, fromDoc: true }
+}
+
+/** Who sets the policy, as a chip; none when the policy itself was not served beside a "set here" (QA G4-15). */
+function policyChip(pol: RepoRecord['selection_policy']): string | null {
+  if (pol.inherited_from_tenant === true) return 'from the tenant default'
+  if (pol.inherited_from_tenant === false && pol.policy !== null) return 'set for this repository'
+  return null
+}
+
+function SettingsTab({ r, index, go, busy, onFull }: { r: RepoRecord; index: IndexRead; go: (to: string) => void; busy: boolean; onFull: () => void }) {
+  const langRoute = useUrRead(() => loadRepositoryLanguages(r.repo_id), `langs:${r.repo_id}`)
+  const langs = languagesRead(langRoute.state, index.state)
   const resolved = useUrRead(() => loadResolvedToken(r.repo_id), `token:${r.repo_id}`)
   const pol = r.selection_policy
   const policy = pol.inherited_from_tenant === true ? 'inherit' : pol.policy
+  const chip = policyChip(pol)
   return (
     <>
       <p className="ur-hint ur-locked" data-route={PATCH_ROUTE} title={`Not served: ${PATCH_ROUTE}`}>
@@ -589,11 +652,12 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
               </Button>
             }
           >
+            {langs.fromDoc && <p className="ur-hint ur-lang-src">Read from the index document: the languages route is not served by this API.</p>}
             <UrRegion
               state={langs.state}
               route="GET /v1/repositories/{repo_id}/languages"
               what="The languages table"
-              onRetry={langs.reload}
+              onRetry={langs.fromDoc ? index.reload : langRoute.reload}
               empty={<p className="ur-none">The index detected no languages.</p>}
             >
               {(rows) => (
@@ -655,7 +719,7 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
           <Card
             title="Selection policy"
             className="ur-policy"
-            action={pol.inherited_from_tenant === null ? undefined : <Chip>{pol.inherited_from_tenant ? 'from the tenant default' : 'set for this repository'}</Chip>}
+            action={chip === null ? undefined : <Chip>{chip}</Chip>}
           >
             <UrRadio
               label="Selection policy"
@@ -678,7 +742,7 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
                 { key: 'X1', label: 'X1 run in SwarmCloud' },
               ]}
             />
-            <p className="ur-hint">{rulesetHint(pol.policy, r.default_branch)}</p>
+            <p className="ur-hint">{rulesetHint(pol.policy, r.default_branch, pol.inherited_from_tenant === true)}</p>
           </Card>
           <Card title="Resolved token" className="ur-resolved" action={<UrNavButton to={GT_PAGE} go={go} size="sm">Git tokens</UrNavButton>}>
             <UrRegion state={resolved.state} route="GET /v1/git-tokens" what="The token that resolves here" onRetry={resolved.reload}>
@@ -698,13 +762,15 @@ function langNote(l: { files: number | null; resolved: number | null; fallback: 
 }
 
 /** What the picked policy expects of the branch rules (repo-index.md §4.4). The live ruleset is not read here. */
-function rulesetHint(policy: string | null, branch: string | null): string {
+function rulesetHint(policy: string | null, branch: string | null, inherited: boolean): string {
   const on = branch ?? 'the default branch'
   if (policy === 'P1' || policy === 'P3') {
     return `The ruleset this policy expects on ${on}: swarmcloud/selected-tests required; full-suite jobs not required${policy === 'P3' ? ' (they still run when a change falls back to the full suite)' : ''}.`
   }
   if (policy === 'P2') return `The ruleset this policy expects on ${on}: the full suite required; swarmcloud/selected-tests reports first.`
   if (policy === 'off') return 'Selection is off: every pull request runs the full suite.'
+  // The registration says it inherits and carries no policy of its own (repositories.py serves exactly that).
+  if (inherited) return "Inherited from the tenant default, which this page does not read: the expected ruleset is the tenant's."
   return 'The policy was not served.'
 }
 

@@ -4,7 +4,7 @@ import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, poolHref, useLinkedPool } from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
@@ -71,7 +71,7 @@ export function CapacityScreen() {
       load={loadPoolsBoard}
       // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
       // pauses the timer while the tab is hidden.
-      pollMs={POOLS_POLL_MS}
+      pollMs={capacityPoll(POOLS_POLL_MS)}
       summary={(d) => <PoolsSummary capacity={d} />}
       /* A REAL ZERO. Pools are created at provisioning time, so an environment
          with none has not been fully applied -- which is an absence the mark
@@ -510,7 +510,16 @@ function PoolRow({
             with. It was a column of its own, which the frame does not have
             and which wrapped the names beside it (#503). */}
         <span className="cap-sub">
-          <span className="ctl-sub">{pool.name}</span> · <span className="cap-scope">{scope}</span>
+          <span className="ctl-sub">{pool.name}</span>
+          {/* THE KEY IS NEVER THE PART THAT IS CUT (QA G5-11): at 1440
+              `provider:anthropic:tenant:smoke · tenant …` lost the scope and
+              `provider:mock-provider:tenant:eng · this t…` nearly lost the key.
+              The scope stays on every row (CP-2) but gives way first -- it is
+              the part a key with a `tenant:` segment already repeats. */}
+          <span className="cap-sub-scope">
+            {' · '}
+            <span className="cap-scope">{scope}</span>
+          </span>
         </span>
       </th>
       <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
@@ -550,12 +559,18 @@ function PoolRow({
           <PoolMarks marks={marks} />
         </span>
       </td>
-      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04). #125 left the
-          configured case empty, and with a links column that had no head the
-          holders/limit links then read as Set by's contents. The configured
-          case is the word, faint; AIMD and quota stand out in ink. */}
+      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04), AND NEVER THE WORD ON
+          EVERY ROW (QA G5-19; capacity.html §G, "Set by only when it is not
+          'configured'"). 28 of 29 rows said `configured` and drowned the one
+          that said `provider quota`. The configured case is a faint dot --
+          a filled cell, not a blank one -- named `configured` for a screen
+          reader and in the cell's title; AIMD and quota stand out in ink. */}
       <td role="cell" data-label="Set by" title={by.detail}>
-        {by.term === 'configured' ? <span className="cap-setby-cfg">configured</span> : by.term}
+        {by.term === 'configured' ? (
+          <span className="cap-setby-cfg" role="img" aria-label="configured">·</span>
+        ) : (
+          by.term
+        )}
       </td>
       <td role="cell" data-label="Links" className="cap-links">
         {/* Both name the pool (#125): Holders filtered to it, and its own row

@@ -25,8 +25,13 @@ export interface TabDef {
   label: string
   /** The tab's address. Not read by the tablist form. */
   href?: string
-  /** The count behind the tab. `null` is unknown and draws a dash; omitted, nothing. */
-  count?: number | null
+  /**
+   * The count behind the tab. `null` is unknown and draws a dash; omitted,
+   * nothing. A string is a count that needs its denominator, drawn as given:
+   * the agent's Checkpoints tab says `0 of 3` -- kept of written -- where a
+   * bare `0` read as none ever written (G2-12).
+   */
+  count?: number | string | null
   /** Why the count is what it is (a dash's reason), as the count's title. */
   why?: string
 }

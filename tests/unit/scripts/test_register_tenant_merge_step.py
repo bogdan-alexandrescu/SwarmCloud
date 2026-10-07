@@ -1,33 +1,27 @@
-"""`scripts/register-tenant.sh` and the #295 identities (docs/merge-step.md §1.3, §4.3, §10 item 5).
+"""`scripts/register-tenant.sh` and what is left of the #295 identities (docs/merge-step.md §4.3, §10 item 5).
 
-Three things the script has to produce exactly as terraform/modules/tenancy and
-terraform/modules/service_account_ids (M2, #480) do, because it is the second
-path that grants them:
+Two things the script has to do exactly as terraform/modules/tenancy does,
+because it is the second path that grants a tenant's worker:
 
-  * NO WORKER ACCOUNT EVER READS AN APP KEY. `swarm-tenant-<t>-git-merge` is
-    read by `swarm-<t>-merge` alone and `-git-review` by `swarm-<t>-post-verdict`
-    alone; the review account reads its profile's own provider key beside the
-    worker. Any agent of the tenant can mint the worker's token (§0), so a
-    worker binding on an App key hands every agent the merge or verdict App.
   * THE WORKER'S BUCKET GRANT IS SPLIT. Read and list on tenants/<t>/, write
-    on tenants/<t>/ EXCEPT tenants/<t>/verdicts/, which only the review
-    account may create in. The old single objectUser binding still lets a
-    worker write a verdict, so a re-run must find it and replace it -- the new
-    pair created first, the old one removed after, under a typed
-    confirmation -- and a re-run on a tenant already split changes nothing.
-  * `review_app_bot_id` IS PINNED AT REGISTRATION (§5.2a): resolved once with
-    the review App's own JWT and written into the tenant's tfvars entry, so the
-    merge Job never asks GitHub who the review App is.
+    on tenants/<t>/ EXCEPT tenants/<t>/verdicts/. The old single objectUser
+    binding must be found and replaced -- the new pair created first, the old
+    one removed after, under a typed confirmation -- and a re-run on a tenant
+    already split changes nothing. The split is KEPT after the merge,
+    post-verdict and review accounts were retired (owner decision MS0-Q4,
+    2026-10-06): collapsing it back into one binding is a create, on every
+    tenant, which that retirement does not make.
+  * NO ACCOUNT IS GIVEN AN APP KEY. `git-merge` and `git-review` are retired:
+    nothing reads either key, so the script refuses both, on every path, before
+    it reads anything.
 
 Driven end to end: the real script with a fake `gcloud` and `curl` first on
 PATH, each appending every call to one log in order. Nothing reaches a real
-project or GitHub. The App key is generated per test with openssl, so no key
-material is written into this file.
+project.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import pty
@@ -46,9 +40,6 @@ TENANCY = REPO / "terraform" / "modules" / "tenancy" / "main.tf"
 PROJECT = "swarm-test-project"
 BUCKET = "swarm-test-artifacts"
 UPDATE_TIME = "2026-09-25T23:09:12.345678Z"
-APP_ID = 123456
-BOT_ID = 4242
-APP_SLUG = "swarm-review-eng"
 
 
 def _sa(account_id: str) -> str:
@@ -56,15 +47,10 @@ def _sa(account_id: str) -> str:
 
 
 WORKER = _sa("swarm-agent-worker-eng")
-MERGE = _sa("swarm-eng-merge")
-POST_VERDICT = _sa("swarm-eng-post-verdict")
-REVIEW = _sa("swarm-eng-review")
 
 pytestmark = pytest.mark.skipif(
-    not REGISTER.exists()
-    or shutil.which("jq") is None
-    or shutil.which("openssl") is None,
-    reason="register-tenant.sh, jq and openssl are all required",
+    not REGISTER.exists() or shutil.which("jq") is None,
+    reason="register-tenant.sh and jq are both required",
 )
 
 
@@ -112,16 +98,12 @@ case "${args}" in
       echo '{}'
     fi ;;
   *"secrets versions list"*)          echo "projects/x/secrets/${name}/versions/1" ;;
-  *"secrets versions access"*)        cat "${FAKE_APP_SECRET}" ;;
   *)                                  : ;;
 esac
 exit 0
 """
 
-# Firestore as the real fs_request calls it (status on stdout, body in -o),
-# plus the two GitHub reads. A `-H @file` header is read at call time and
-# appended to FAKE_GH_AUTH, so a test can check the JWT the script signed
-# without it ever having been on a command line.
+# Firestore as the real fs_request calls it (status on stdout, body in -o).
 FAKE_CURL = r"""#!/usr/bin/env bash
 set -euo pipefail
 out=""; want_status=0; method="GET"; body=""; url=""; prev=""
@@ -131,7 +113,6 @@ for arg in "$@"; do
     -w) [[ "${arg}" == *http_code* ]] && want_status=1 ;;
     -X) method="${arg}" ;;
     --data-binary) body="${arg}" ;;
-    -H) if [[ "${arg}" == @* ]]; then cat "${arg#@}" >>"${FAKE_GH_AUTH}"; fi ;;
   esac
   case "${arg}" in https://*) url="${arg}" ;; esac
   prev="${arg}"
@@ -149,10 +130,6 @@ case "${method} ${url}" in
       status=404
       resp='{"error":{"code":404,"message":"Document not found","status":"NOT_FOUND"}}'
     fi ;;
-  "GET https://api.github.com/repos/"*"/installation")
-    resp="$(jq -nc --argjson a "${FAKE_GH_APP_ID}" --arg s "${FAKE_GH_SLUG}" '{id:99, app_id:$a, app_slug:$s}')" ;;
-  "GET https://api.github.com/users/"*)
-    resp="$(jq -nc --argjson i "${FAKE_GH_BOT_ID}" --arg s "${FAKE_GH_SLUG}" '{id:$i, login:($s + "[bot]"), type:"Bot"}')" ;;
 esac
 if [[ -n "${out}" ]]; then
   printf '%s' "${resp}" >"${out}"
@@ -162,42 +139,6 @@ else
 fi
 exit 0
 """
-
-TFVARS = """\
-tenants = {
-  eng = {
-    kind      = "group"
-    principal = "eng@saga.xyz"
-    providers = ["anthropic", "git-review"]
-    forge = {
-      owner         = "saga-xyz"
-      repo          = "swarm"
-      review_app_id = 123456
-    }
-  }
-  # A brace in a comment must not move the parser: {
-  other = {
-    kind      = "group"
-    principal = "other@saga.xyz"
-    forge = {
-      owner             = "saga-xyz"
-      repo              = "other"
-      review_app_id     = 7
-      review_app_bot_id = 8
-    }
-  }
-}
-"""
-
-ENG_FORGE_AFTER = """\
-    forge = {
-      owner             = "saga-xyz"
-      repo              = "swarm"
-      review_app_id     = 123456
-      review_app_bot_id = 4242
-    }
-"""
-
 
 def _tenant_document(credentials: list[str]) -> str:
     values = [{"stringValue": c} for c in credentials]
@@ -213,10 +154,6 @@ def _tenant_document(credentials: list[str]) -> str:
         "fields": fields,
         "updateTime": UPDATE_TIME,
     })
-
-
-def _b64url_decode(part: str) -> bytes:
-    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
 class Fakes:
@@ -239,31 +176,12 @@ class Fakes:
         )
         env_file.chmod(0o600)
 
-        # The App's key, made here so no key is ever a literal in the repository.
-        self.key = tmp / "app.pem"
-        subprocess.run(
-            ["openssl", "genrsa", "-out", str(self.key), "2048"],
-            check=True, capture_output=True,
-        )
-        self.pem = self.key.read_text()
-        self.public = tmp / "app.pub"
-        subprocess.run(
-            ["openssl", "rsa", "-in", str(self.key), "-pubout", "-out", str(self.public)],
-            check=True, capture_output=True,
-        )
-        self.app_secret = tmp / "app-secret.json"
-        self.app_secret.write_text(json.dumps({"app_id": APP_ID, "private_key": self.pem}))
-
-        self.tfvars = tmp / "dev.tfvars"
-        self.tfvars.write_text(TFVARS)
         self.policy = tmp / "bucket-policy.json"
         self.policy.write_text("")
         doc_file = tmp / "tenant.json"
         doc_file.write_text(tenant_doc or "")
         self.log = tmp / "calls.jsonl"
         self.log.write_text("")
-        self.gh_auth = tmp / "gh-auth"
-        self.gh_auth.write_text("")
         self.scratch = tmp / "scratch"
         self.scratch.mkdir()
 
@@ -279,11 +197,6 @@ class Fakes:
             "FAKE_LOG": str(self.log),
             "FAKE_TENANT_DOC": str(doc_file),
             "FAKE_BUCKET_POLICY": str(self.policy),
-            "FAKE_APP_SECRET": str(self.app_secret),
-            "FAKE_GH_AUTH": str(self.gh_auth),
-            "FAKE_GH_APP_ID": str(APP_ID),
-            "FAKE_GH_SLUG": APP_SLUG,
-            "FAKE_GH_BOT_ID": str(BOT_ID),
         })
         self.env = env
 
@@ -534,173 +447,57 @@ def test_a_dry_run_on_the_old_shape_changes_nothing(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# App keys never reach the worker account
+# App keys: retired, and refused for every account (owner decision MS0-Q4)
 # ---------------------------------------------------------------------------
+#
+# Nothing reads a `-git-merge` or `-git-review` App key any more: the merge
+# runs as the worker on `-git` (contract request 47) and the merge, post-verdict
+# and review accounts are gone from terraform. So the script no longer binds
+# either key to any account, and still never to the worker. FAILS WITHOUT THE
+# CHANGE: `--add-provider git-review` bound the post-verdict and review
+# accounts and listed the provider; `--providers git-merge` named the merge
+# account as the key's owner.
 
 
-@pytest.mark.parametrize(
-    ("provider", "owner"), [("git-merge", "swarm-eng-merge"), ("git-review", "swarm-eng-post-verdict")]
-)
-def test_a_full_registration_refuses_an_app_provider_for_the_worker(tmp_path, provider, owner) -> None:
+@pytest.mark.parametrize("provider", ["git-merge", "git-review"])
+def test_a_full_registration_refuses_an_app_provider(tmp_path, provider) -> None:
     fakes = Fakes(tmp_path)
     proc = fakes.run([str(REGISTER), *FULL, "--providers", f"anthropic,{provider}", "--dry-run"])
     out = _out(proc)
     assert proc.returncode != 0, out
-    assert owner in out, f"the refusal must name the account the key belongs to:\n{out}"
-    assert fakes.gcloud_changes() == [] and f"swarm-tenant-eng-{provider}" not in " ".join(
+    assert "retired" in out and "#295" in out, f"the refusal must say the provider is retired:\n{out}"
+    for account in ("swarm-eng-merge", "swarm-eng-post-verdict", "swarm-eng-review", "--add-provider"):
+        assert account not in out, f"the refusal sends the operator to a path that no longer exists:\n{out}"
+    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
+    assert f"swarm-tenant-eng-{provider}" not in " ".join(
         line for line in out.splitlines() if "would run" in line
     ), out
 
 
-def test_add_provider_git_merge_binds_the_merge_account_alone(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic", "git-review"]))
-    fakes.tfvars.write_text(TFVARS.replace("review_app_id = 123456", "review_app_id = 123456\n      review_app_bot_id = 4242"))
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-merge", "--tfvars", str(fakes.tfvars)])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    assert fakes.secret_grants() == [("swarm-tenant-eng-git-merge", f"serviceAccount:{MERGE}")], out
-    assert WORKER not in json.dumps(fakes.secret_grants()), out
-
-
-def test_add_provider_git_merge_needs_the_review_bot_pinned_first(tmp_path) -> None:
+@pytest.mark.parametrize("provider", ["git-merge", "git-review"])
+def test_add_provider_refuses_an_app_provider_before_reading_anything(tmp_path, provider) -> None:
     fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-merge", "--tfvars", str(fakes.tfvars)])
+    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", provider])
     out = _out(proc)
     assert proc.returncode != 0, out
-    assert "review_app_bot_id" in out, out
+    assert "retired" in out and "Nothing was changed" in out, out
     assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
+    # Refused on the name: not a single secret, account or GitHub read.
+    assert not [c for c in fakes.calls() if c["tool"] == "curl"], out
+    assert not [c for c in fakes.calls() if "secrets" in c.get("argv", [])], out
 
 
-def test_add_provider_git_review_binds_post_verdict_and_review_never_the_worker(tmp_path) -> None:
+def test_the_tfvars_flag_went_with_the_forge_record(tmp_path) -> None:
     fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    assert sorted(fakes.secret_grants()) == sorted([
-        ("swarm-tenant-eng-git-review", f"serviceAccount:{POST_VERDICT}"),
-        ("swarm-tenant-eng-anthropic", f"serviceAccount:{REVIEW}"),
-    ]), out
-    patches = fakes.patches()
-    assert len(patches) == 1 and "git-review" in patches[0]["body"], out
-
-
-def test_a_missing_action_account_stops_before_anything_changes(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run(
-        [str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)],
-        FAKE_MISSING_ACCOUNTS=POST_VERDICT,
-    )
+    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "openai", "--tfvars", "x.tfvars", "--dry-run"])
     out = _out(proc)
     assert proc.returncode != 0, out
-    assert POST_VERDICT in out, out
+    assert "--tfvars" in out, out
     assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
-    assert fakes.tfvars.read_text() == TFVARS
 
 
 # ---------------------------------------------------------------------------
-# review_app_bot_id
-# ---------------------------------------------------------------------------
-
-
-def test_review_app_bot_id_is_resolved_with_the_apps_jwt_and_written(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    text = fakes.tfvars.read_text()
-    assert ENG_FORGE_AFTER in text, f"review_app_bot_id not written into eng's forge block:\n{text}"
-    assert "review_app_bot_id = 8" in text, "another tenant's entry was changed"
-    assert text.count("review_app_bot_id") == 2, text
-
-    # The installation was asked with a JWT the App's own key signed, iss = app id.
-    auth = fakes.gh_auth.read_text().strip()
-    m = re.fullmatch(r"Authorization: Bearer ([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)", auth)
-    assert m, f"the installation call did not carry a JWT header from a file: {auth[:40]!r}"
-    header, payload = (json.loads(_b64url_decode(p)) for p in m.groups()[:2])
-    assert header == {"alg": "RS256", "typ": "JWT"}, header
-    assert str(payload["iss"]) == str(APP_ID) and payload["exp"] > payload["iat"], payload
-    signed = tmp_path / "signed"
-    signed.write_bytes(f"{m.group(1)}.{m.group(2)}".encode())
-    sig = tmp_path / "sig"
-    sig.write_bytes(_b64url_decode(m.group(3)))
-    verify = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-verify", str(fakes.public), "-signature", str(sig), str(signed)],
-        capture_output=True, text=True,
-    )
-    assert verify.returncode == 0, f"the JWT is not signed by the App's key: {verify.stdout}{verify.stderr}"
-
-
-def test_a_rerun_with_the_same_bot_id_writes_nothing_new(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic", "git-review"]))
-    argv = [str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)]
-    assert fakes.run(argv).returncode == 0
-    first = fakes.tfvars.read_text()
-    proc = fakes.run(argv)
-    assert proc.returncode == 0, _out(proc)
-    assert fakes.tfvars.read_text() == first
-
-
-def test_a_different_pinned_bot_id_is_not_overwritten(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    pinned = TFVARS.replace("review_app_id = 123456", "review_app_id = 123456\n      review_app_bot_id = 1")
-    fakes.tfvars.write_text(pinned)
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)])
-    out = _out(proc)
-    assert proc.returncode != 0, out
-    assert "already 1" in out and f"answers {BOT_ID}" in out, f"refused, but not for the pinned id:\n{out}"
-    assert fakes.tfvars.read_text() == pinned
-    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
-
-
-def test_an_installation_of_another_app_is_refused(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run(
-        [str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)],
-        FAKE_GH_APP_ID="999",
-    )
-    out = _out(proc)
-    assert proc.returncode != 0, out
-    assert "belongs to App" in out and "999" in out, f"refused, but not for the App mismatch:\n{out}"
-    assert fakes.tfvars.read_text() == TFVARS
-    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
-
-
-def test_add_provider_git_review_dry_run_changes_nothing(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run([
-        str(REGISTER), "--tenant", "eng", "--add-provider", "git-review",
-        "--tfvars", str(fakes.tfvars), "--dry-run",
-    ])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
-    assert fakes.tfvars.read_text() == TFVARS
-    assert fakes.gh_auth.read_text() == "", "a dry run minted a JWT and asked GitHub"
-    assert not any("versions" in c.get("argv", []) and "access" in c["argv"] for c in fakes.calls()), (
-        "a dry run read the App key"
-    )
-    assert "would resolve" in out and "review_app_bot_id" in out, out
-    assert "would run: gcloud secrets add-iam-policy-binding swarm-tenant-eng-git-review" in out, out
-
-
-def test_no_key_or_jwt_reaches_output_argv_or_disk(tmp_path) -> None:
-    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
-    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "git-review", "--tfvars", str(fakes.tfvars)])
-    out = _out(proc)
-    assert proc.returncode == 0, out
-    jwt = fakes.gh_auth.read_text().strip().rsplit(" ", 1)[-1]
-    body_lines = [line for line in fakes.pem.splitlines() if line and not line.startswith("-----")]
-    argv_text = json.dumps([c.get("argv") for c in fakes.calls()])
-    for label, haystack in (("output", out), ("argv", argv_text), ("tfvars", fakes.tfvars.read_text())):
-        assert jwt not in haystack, f"the JWT reached the {label}"
-        for line in body_lines[:3]:
-            assert line not in haystack, f"the App key reached the {label}"
-    leftovers = list(fakes.scratch.iterdir())
-    assert leftovers == [], f"temporary files were left behind: {leftovers}"
-
-
-# ---------------------------------------------------------------------------
-# The account names come from terraform/modules/service_account_ids
+# Probing common.sh against a terraform module (test_register_tenant_forge_reader)
 # ---------------------------------------------------------------------------
 
 SA_IDS = REPO / "terraform" / "modules" / "service_account_ids" / "main.tf"
@@ -716,26 +513,3 @@ def _derive(tmp_path: Path, module: Path, *calls: str) -> list[str]:
     ])
     proc = subprocess.run(["bash", "-c", probe], env=fakes.env, capture_output=True, text=True, check=True)
     return proc.stdout.splitlines()
-
-
-def test_the_account_table_is_read_off_terraform(tmp_path) -> None:
-    rows = _derive(tmp_path, SA_IDS, "tf_action_accounts")
-    assert rows == [
-        "merge|-merge|git-merge|true|",
-        "post-verdict|-post-verdict|git-review|true|",
-        "claude-code-review|-review|git-review|false|anthropic",
-    ], rows
-    ids = _derive(
-        tmp_path, SA_IDS,
-        *(f'tenant_action_account_id eng {p}; echo' for p in ("merge", "post-verdict", "claude-code-review")),
-    )
-    assert ids == ["swarm-eng-merge", "swarm-eng-post-verdict", "swarm-eng-review"], ids
-
-
-def test_a_renamed_suffix_in_terraform_moves_the_script_with_it(tmp_path) -> None:
-    changed = tmp_path / "main.tf"
-    text = SA_IDS.read_text()
-    assert 'suffix = "-post-verdict"' in text
-    changed.write_text(text.replace('suffix = "-post-verdict"', 'suffix = "-pv"'))
-    ids = _derive(tmp_path, changed, "tenant_action_account_id eng post-verdict; echo")
-    assert ids == ["swarm-eng-pv"], ids

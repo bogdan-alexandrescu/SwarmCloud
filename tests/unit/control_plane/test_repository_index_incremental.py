@@ -182,13 +182,16 @@ def test_a_graph_the_extractor_would_not_carry_forces_full(record, why):
 
 
 def test_the_graph_extractor_record_is_read_from_the_manifest():
-    manifest = {"extractor": {"version": "1", "blob_ids": True, "files_not_listed": 0},
+    version = repoindex.INDEXER_EXTRACTOR_VERSION
+    manifest = {"extractor": {"version": version, "blob_ids": True, "files_not_listed": 0},
                 "truncated": ["call_edges:below_0.4"]}
     record = repoindex.graph_extractor_record(manifest)
-    assert record == {"version": "1", "blob_ids": True, "files_not_listed": 0,
+    assert record == {"version": version, "blob_ids": True, "files_not_listed": 0,
                       "truncated": ["call_edges:below_0.4"]}
     assert "truncated" in repoindex.graph_carry_refusal(record)
     assert repoindex.graph_carry_refusal(dict(record, truncated=[])) is None
+    # A graph of the extractor before the G4-04/05 edges is not carried.
+    assert "version '1'" in repoindex.graph_carry_refusal(dict(record, truncated=[], version="1"))
     # A manifest with no extractor block is a graph nobody can carry.
     assert repoindex.graph_extractor_record({})["blob_ids"] is False
     assert repoindex.graph_extractor_record(None) is None

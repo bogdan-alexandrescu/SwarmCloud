@@ -10,17 +10,27 @@
  *   Finished today             the task page: `/v1/stats` counts terminal
  *                              states for all time and has no "today", so
  *                              this is counted off the rows read and says
- *                              "of the N newest read".
+ *                              "of the N newest read" -- at every width
+ *                              (QA G1-02, 2026-10-07: a phone hid the foot
+ *                              and read 41 where the desktop read 62). A
+ *                              page with more behind it is a lower bound,
+ *                              `≥N` with the partial mark.
  *   Waiting, and why           the task page's waiting rows, grouped.
  *   Recent failures            the task page's last 24 hours.
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
+import { useEffect, useState } from 'react'
+
 import { agentName, type AgentTab } from './agentlist'
+import { loadTask } from './api'
 import type { Result } from './fetch'
 import { Dash } from './components/Chip'
+import { Mark } from './primitives'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
+import { staleFoot } from './Shell'
+import { usePageClock } from './useNow'
 import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -34,6 +44,79 @@ import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, typ
 export function agentPath(t: Pick<Task, 'id' | 'state'>): string {
   const tab: AgentTab = CONCURRENCY_STATES.has(t.state) ? 'live' : TERMINAL_STATES.has(t.state) ? 'recent' : 'waiting'
   return addressToPath(`work/task/${encodeURIComponent(t.id)}`, tab)
+}
+
+/**
+ * WHAT THE WORK IS, BEFORE WHICH STEP OF IT (QA G1-09, 2026-10-07): six
+ * Recent failures rows read "fix, review, implement, fix, review, implement".
+ * The frozen `Task` has no title; a workflow's `title` and its `label` (as
+ * `unit`) ride on every step task's metadata (`swarm_mcp/workflows.py`
+ * `submit`, read back the same way by `stored_names`). MASKED metadata, like
+ * all of it: a title the masker caught reads as its mask. Null when neither
+ * is a non-blank string -- the row is then its step name alone, as before.
+ *
+ * ONLY ON A FULL ROW. The Overview polls `view=summary` (#168), which drops
+ * `metadata`, so this is called on what `useRowTitles` reads, never on a page
+ * row.
+ */
+export function rowTitle(t: Pick<Task, 'metadata'>): string | null {
+  for (const key of ['title', 'unit']) {
+    const v = t.metadata?.[key]
+    if (typeof v === 'string' && v.trim() !== '') return v.trim()
+  }
+  return null
+}
+
+/** The row's link words: the title, then the step (`agentName`). */
+export function rowLabel(t: Pick<Task, 'id' | 'step_id' | 'runner_profile'>, title: string | null): string {
+  return title === null ? agentName(t) : `${title} · ${agentName(t)}`
+}
+
+/**
+ * One title per workflow, or per lone task: every step task carries its
+ * workflow's metadata, so one full read names all of its steps.
+ *
+ * Read AT MOST ONCE A SESSION per key -- a title is written at submission and
+ * never changes -- so the 20 s poll adds no request once a workflow is named,
+ * and #168's summary payload stays what it is. A read that fails is not
+ * retried; its rows keep the step name alone, which is what they said before.
+ * `TITLE_READS` bounds what one screen can start at once.
+ */
+const titles = new Map<string, string | null>()
+const tried = new Set<string>()
+const TITLE_READS = 12
+const titleKey = (t: Pick<Task, 'id' | 'workflow_id'>): string => t.workflow_id ?? t.id
+
+export function useRowTitles(shown: readonly Task[]): (t: Task) => string | null {
+  const [, redraw] = useState(0)
+  const wanted = new Map<string, string>()
+  for (const t of shown) {
+    const k = titleKey(t)
+    if (!titles.has(k) && !tried.has(k) && !wanted.has(k) && wanted.size < TITLE_READS) wanted.set(k, t.id)
+  }
+  // A STRING, so the effect runs when the set of keys changes and not on
+  // every render's new array.
+  const ask = JSON.stringify([...wanted.entries()])
+  useEffect(() => {
+    let live = true
+    for (const [k, id] of JSON.parse(ask) as [string, string][]) {
+      if (tried.has(k)) continue
+      tried.add(k)
+      void (async () => {
+        try {
+          const r = await loadTask(id)
+          if (r.status === 'ok' || r.status === 'stale') titles.set(k, rowTitle(r.data))
+        } catch {
+          // A read that threw names nothing; the row keeps its step name.
+        }
+        if (live) redraw((n) => n + 1)
+      })()
+    }
+    return () => {
+      live = false
+    }
+  }, [ask])
+  return (t) => titles.get(titleKey(t)) ?? null
 }
 
 function rows(tasks: Result<TaskPage>): Task[] | null {
@@ -66,6 +149,8 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
   const st = stats.status === 'ok' || stats.status === 'stale' ? stats.data : null
   const page = rows(tasks)
   const now = new Date()
+  // The head's instant (#98), so `counted from 6 min ago` and `⟳ 6 min` agree.
+  const at = usePageClock()
   return (
     <section className="ov-life" id="ov-band" aria-label="Waiting, working, done">
       {BAND.map((c) => {
@@ -84,6 +169,12 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
         })
         const landed = c.source === 'stats' ? st !== null : page !== null
         const total = landed && parts.every((p) => p.v !== null) ? parts.reduce((n, p) => n + (p.v ?? 0), 0) : null
+        // A LOWER BOUND WHEN THE PAGE IS NOT THE WHOLE LIST (QA G1-02,
+        // 2026-10-07). A task created before the page's window can finish
+        // today, and it is not on the page, so the count off a page with a
+        // next page is "at least", never the day's figure. `/v1/stats` has no
+        // `finished_at` window to ask instead.
+        const partial = c.source === 'page' && (tasks.status === 'ok' || tasks.status === 'stale') && (tasks.data.next_page_token ?? null) !== null
         const why =
           read.status === 'loading'
             ? 'still reading'
@@ -105,10 +196,25 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                   ? `Not measured: ${why}.`
                   : c.source === 'stats'
                     ? 'Counted by /v1/stats, one count per state, for the whole tenant.'
-                    : `Counted off the ${page?.length ?? 0} newest tasks this page read.`
+                    : partial
+                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest tasks this page read, and older tasks that finished today are not on it.`
+                      : `Counted off the ${page?.length ?? 0} newest tasks this page read, which is every task.`
               }
             >
-              {total !== null ? total : read.status === 'loading' ? <span className="ov-reading">reading…</span> : '—'}
+              {total !== null ? (
+                partial ? (
+                  <>
+                    &ge;{total}{' '}
+                    <Mark kind="partial" say={`At least ${total}: older tasks that finished today are not on the page read.`} />
+                  </>
+                ) : (
+                  total
+                )
+              ) : read.status === 'loading' ? (
+                <span className="ov-reading">reading…</span>
+              ) : (
+                '—'
+              )}
             </div>
             {landed && (
               <div className="ov-lc-ps">
@@ -120,13 +226,20 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                 ))}
               </div>
             )}
-            {/* PROVENANCE, ALWAYS (OV-16): the counts are on their own
-                sixty-second read, so their age is part of the figure; the
-                page's figure says it is the page's. */}
-            {c.source === 'stats' && (stats.status === 'ok' || stats.status === 'stale') && (
-              <span className="ov-lc-foot">counted {timeAgo(stats.fetchedAt)}</span>
-            )}
-            {c.source === 'page' && page !== null && <span className="ov-lc-foot">of the {page.length} newest read</span>}
+            {/* PROVENANCE ONLY WHEN STALE (#98, owner ruling 2026-10-07,
+                which narrows OV-16's "always"): the counts are on their own
+                sixty-second read, and once that read is stale -- a failed
+                refresh, or older than `AGED_AFTER_MS` -- the tile says how
+                old they are. While fresh it is silent; the head's refresh
+                control carries the screen's age. The page's figure still
+                says it is the page's. */}
+            {c.source === 'stats' && (stats.status === 'ok' || stats.status === 'stale') &&
+              staleFoot(stats.fetchedAt, at, stats.status === 'stale') !== null && (
+                <span className="ov-lc-foot">counted {staleFoot(stats.fetchedAt, at, stats.status === 'stale')}</span>
+              )}
+            {/* AT EVERY WIDTH (QA G1-02): a phone reads 50 and a desktop 200,
+                so the two figures differ, and this is what says why. */}
+            {c.source === 'page' && page !== null && <span className="ov-lc-foot is-page">of the {page.length} newest read</span>}
           </div>
         )
       })}
@@ -286,6 +399,9 @@ function EndedAgo({ task: t, now }: { task: Task; now: number }) {
 /** "Recent failures": mark, agent and why, age, Open (O1). */
 export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
+  const now = Date.now()
+  const failed = all === null ? [] : failuresOf(all, now).rows
+  const titleOf = useRowTitles(failed.slice(0, 6))
   if (all === null) {
     return (
       <p className="ctl-em" title={tasks.status === 'error' ? `The task list could not be read: ${tasks.error.message}` : undefined}>
@@ -293,8 +409,6 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
       </p>
     )
   }
-  const now = Date.now()
-  const { rows: failed } = failuresOf(all, now)
   if (failed.length === 0) return <p className="ctl-em">None among the {all.length} newest.</p>
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
@@ -321,8 +435,8 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
                 <StateMark state={t.state} bare />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href} title={`${agentName(t)} · ${t.id}`}>
-                  {agentName(t)}
+                <a className="ov-name" href={href} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
+                  {rowLabel(t, titleOf(t))}
                 </a>
                 {why !== '' && (
                   <span className="ov-sub ov-why" title={why}>

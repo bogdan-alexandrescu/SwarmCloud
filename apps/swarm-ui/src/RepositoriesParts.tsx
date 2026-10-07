@@ -8,13 +8,14 @@
 import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
 import { ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
-import { FailedPanel } from './Shell'
+import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
-import { CAPABILITIES, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
+import { AGE_TICK_MS, useNow } from './useNow'
+import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
 /** One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped. */
-export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): { state: Result<T>; reload: () => void } {
+export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): UrRead<T> {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   const [nonce, setNonce] = useState(0)
   useEffect(() => {
@@ -30,6 +31,38 @@ export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): { sta
   }, [key, nonce])
   const reload = useCallback(() => setNonce((n) => n + 1), [])
   return { state, reload }
+}
+
+/** What `useUrRead` hands back: the read, and the way to run it again. */
+export type UrRead<T> = { state: Result<T>; reload: () => void }
+
+/**
+ * THE PAGE'S REFRESH, CARRYING ITS ONE TICKING AGE (#98, #138; owner rulings
+ * 2026-10-07). These pages read through `useUrRead`, not `Screen`, so they
+ * had no refresh in the head and the frame drew its plain `newest read`
+ * span there instead. Every screen's own age lives on the control that renews
+ * it, so this is `Screen`'s `RefreshControl` over the page's head reads: the
+ * age is the newest of them, `not refreshed` once any is a failed refresh's or
+ * older than `AGED_AFTER_MS`, and pressing it re-runs every one. It claims the
+ * page age, so the frame prints none beside it: one age per screen. These
+ * pages are read once per visit, so it carries no cadence (#117 names none).
+ */
+export function UrRefresh({ reads }: { reads: readonly UrRead<unknown>[] }) {
+  useClaimPageAge(true)
+  const now = useNow(AGE_TICK_MS)
+  const ats = reads.flatMap((r) => (r.state.status === 'loading' || r.state.status === 'error' ? [] : [r.state.fetchedAt]))
+  const readAt = ats.length === 0 ? null : Math.max(...ats)
+  return (
+    <RefreshControl
+      readAt={readAt}
+      now={now}
+      stale={reads.some((r) => r.state.status === 'stale') || (readAt !== null && now - readAt > AGED_AFTER_MS)}
+      reading={reads.some((r) => r.state.status === 'loading')}
+      onRefresh={() => {
+        for (const r of reads) r.reload()
+      }}
+    />
+  )
 }
 
 /**
@@ -278,15 +311,31 @@ export function UrBar({ ratio, label }: { ratio: number | null; label: string })
   )
 }
 
-/** "Tests mapped" with its bar: the share of source files with a test edge. */
+/** Why "Tests mapped" is a dash, in the words its tooltip carries. */
+export function testsMappedWhy(r: RepoRecord): string {
+  if (r.index.current_sha === null) return 'No index has been built yet'
+  return r.index.coverage === null
+    ? 'The registration carries no test-map coverage for its index'
+    : 'The index did not report how many of its modules have a test edge'
+}
+
+/**
+ * "Tests mapped" with its bar: the index's MODULES with at least one test
+ * edge, with the edges and always-run tests behind the figure -- the counts
+ * `index.coverage` serves (QA G4-03, repo-index.md §6.2). Never a percentage
+ * of source files: the index does not count those.
+ */
 export function TestsMapped({ r }: { r: RepoRecord }) {
   const c = r.index.coverage
-  const why = r.index.current_sha === null ? 'No index has been built yet' : 'The index did not report its test-map coverage'
+  const words = coverageWords(c)
+  const detail = coverageDetail(c)
+  const why = testsMappedWhy(r)
   return (
     <div className="ur-tm">
       <span className="ur-mu">Tests mapped</span>
-      <UrBar ratio={c} label={c === null ? `Tests mapped: ${why}` : `Tests mapped: ${pct(c)} of source files have a test edge`} />
-      {c === null ? <Dash why={why} /> : <b>{pct(c)}</b>}
+      <UrBar ratio={coverageRatio(c)} label={words === null ? `Tests mapped: ${why}` : `Tests mapped: ${words} have a test edge`} />
+      {words === null ? <Dash why={why} /> : <b>{words}</b>}
+      {detail !== null && <small className="ur-tm-sub">{detail}</small>}
     </div>
   )
 }

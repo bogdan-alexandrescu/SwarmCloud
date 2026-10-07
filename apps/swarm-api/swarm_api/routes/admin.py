@@ -690,14 +690,56 @@ def list_quota(
     `truncated` says the store's window (500 documents, in document-id
     order) left matching documents out. Without it a cut set and the whole
     set were the same response (#76).
+
+    `feeds_pool` (G5-02, QA 2026-10-07) is the pool each row's cap feeds,
+    `provider:<provider>:tenant:<tenant>`, as `/v1/capacity` serves it, or
+    null when no such pool document exists. The row's own `effective_limit`
+    is the QUOTA DOCUMENT's (`QuotaState.effective_limit`) and is one input to
+    that pool; the pool's `effective_limit` is what admission enforces
+    (`SlotPool.has_capacity`). The live console drew `Quota cap 50` for a pool
+    Pools showed at 40, and nothing on this route could say which binds.
+    Served here rather than joined in the client so the two figures come
+    from one request and cannot be of different ages. Additive: no existing
+    key changed.
     """
     scan = ctx.store.scan_quota(tenant_id)
+    pools = _provider_pools(ctx, {(q.provider, q.tenant_id) for q in scan.states})
     return {
-        "quota": [quota_to_api(q) for q in sorted(scan.states, key=lambda q: (q.provider, q.tenant_id))],
+        "quota": [
+            {**quota_to_api(q), "feeds_pool": pools.get(_provider_pool_name(q.provider, q.tenant_id))}
+            for q in sorted(scan.states, key=lambda q: (q.provider, q.tenant_id))
+        ],
         "truncated": scan.truncated,
         "tenant_id": tenant_id,
         "generated_at": ctx.now(),
     }
+
+
+def _provider_pool_name(provider: str, tenant_id: str) -> str:
+    # The name `swarm_common.models.pool_names_for` gives a profile's
+    # per-tenant provider pool.
+    return f"provider:{provider}:tenant:{tenant_id}"
+
+
+def _provider_pools(ctx: AppContext, pairs: set[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+    """The provider pools the quota rows feed, by name, as `pool_to_api` serves them.
+
+    One listing read, as `/v1/capacity` does. A listing that filled its window
+    is not evidence a name outside it is absent, so only then is each missing
+    name read by itself; a name absent after that has no pool document.
+    """
+    if not pairs:
+        return {}
+    page = 500
+    listed = ctx.store.list_pools(limit=page)
+    by_name = {pool.name: pool for pool in listed}
+    wanted = {_provider_pool_name(provider, tenant) for provider, tenant in pairs}
+    if len(listed) >= page:
+        for name in sorted(wanted - set(by_name)):
+            pool = ctx.store.get_pool(name)
+            if pool is not None:
+                by_name[name] = pool
+    return {name: pool_to_api(by_name[name]) for name in wanted if name in by_name}
 
 
 @router.get("/tenants")

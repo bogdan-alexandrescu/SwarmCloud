@@ -66,8 +66,8 @@ export function Dock() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages on this strip are the whole point of it, so they move on their
   // own rather than only when a fetch happens to land -- on the SHARED clock
-  // (useNow.ts) the head and every screen's sub-line read, so the dock's
-  // `newest 22s ago` and a sub-line's `read just now` are one instant (CH-1).
+  // (useNow.ts) the head and every screen's refresh control read, so the dock's
+  // `newest 22s ago` and a screen's `⟳ 0 s` are one instant (CH-1).
   const now = useNow(AGE_TICK_MS)
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))

@@ -203,7 +203,7 @@ function topicBlock(markup: string, id: string): string {
  * AH-25. THE ONE PAGE HEAD, AND HELP IS ITS ONE NAMED EXCEPTION. The Help page
  * drew its title in `.ctl-page-head` while fourteen routes drew theirs through
  * `Screen`'s `.head`. It renders `PageHead` now, the markup `Screen` renders:
- * a title over one line. The owner's AH-25 decision amends §6.12 with exactly
+ * a title, with its line in the count note over the topics (#138). The owner's AH-25 decision amends §6.12 with exactly
  * one exception -- Help reads nothing, so its line says what the page is and
  * which topic is showing -- and says Help keeps its line.
  *
@@ -218,10 +218,11 @@ function topicBlock(markup: string, id: string): string {
  */
 test('the Help page head says what the page is and which topic is showing (AH-25)', () => {
   const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))
-  // The line's TEXT: the shared page head (U0) wraps it in a `c-age` span, so
-  // tags inside the paragraph are dropped before the words are judged.
+  // The line's TEXT: since #138 the head carries no line under its title, so
+  // the line is the count note over the topics (`CountNote`). Tags inside the
+  // paragraph are dropped before the words are judged.
   const line = (markup: string): string =>
-    (/<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? '').replace(/<[^>]+>/g, '')
+    (/<p class="c-count-note"[^>]*>([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? '').replace(/<[^>]+>/g, '')
   const bare = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
   const deep = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
   const stale = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
@@ -234,7 +235,7 @@ test('the Help page head says what the page is and which topic is showing (AH-25
     // H1: the page head is the shared one, titled with the group the page is.
     assert.ok(
       // The title is its own tooltip too (walkthrough C: a long title is clamped to two lines).
-      markup.includes(`<div class="head"><h1 title="${group.title}">${group.title}</h1></div><p class="sub">`),
+      markup.includes(`<div class="c-phead"><div class="head"><h1 title="${group.title}">${group.title}</h1></div>`),
       `the Help page does not draw the shared head titled ${group.title}`,
     )
     assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')
@@ -924,7 +925,10 @@ test('a topic published silently draws nothing at all', () => {
  * laying out, stages and what waits for what, had no topic at all. It has
  * one now, among the submitting-work topics, and it states the three rules a
  * plan runs by: steps run in stages, a step starts once every step it depends
- * on has succeeded, and a failure cancels its dependants.
+ * on has succeeded, and what a failure cancels: under the default policy
+ * every step not yet started, under Continue only its dependents (G4-27
+ * corrected the earlier "cancels its dependants", which was Continue's rule
+ * stated as everyone's).
  *
  * MUTATION: point `Lay out the plan` back at `runner-profile-by-name`, or drop
  * the failure rule from the topic.
@@ -936,7 +940,8 @@ test('the workflow-stages topic says how a plan runs, and the plan step opens it
   const all = [t.short, ...t.long].join(' ')
   assert.match(all, /\bstages?\b/i, 'the topic never says steps run in stages')
   assert.match(t.short, /every step it depends on has succeeded/, 'the start rule is not on the card')
-  assert.match(t.short, /cancels? (its|every step that depends|the steps that depend)/, 'the failure rule is not on the card')
+  assert.match(t.short, /default, a failure cancels every step not yet started/, 'the failure rule is not on the card')
+  assert.match(t.short, /Continue, only its dependents/, "Continue's failure rule is not on the card")
   const src = readFileSync(join(SRC, 'SubmitWorkflow.tsx'), 'utf8')
   const plan = /<Move n=\{1\} title="Lay out the plan" aside=\{<HelpCard topic="([a-z0-9-]+)" \/>\}>/.exec(src)
   assert.ok(plan, 'the plan step carries no `?`')

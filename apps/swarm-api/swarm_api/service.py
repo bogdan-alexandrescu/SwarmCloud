@@ -51,7 +51,7 @@ from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
-from .continuation import resolve_continuation
+from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
 from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
@@ -63,13 +63,12 @@ from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
 from .validation import (
+    APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
-    MERGE_LABEL_DROPPED_KEY,
     MERGE_METADATA_KEY,
     MERGE_STEP_MAX_ATTEMPTS,
-    READY_LABEL,
     SINGLE_PR,
     DispatchOptionError,
     DispatchOptions,
@@ -82,8 +81,6 @@ from .validation import (
     merge_repository,
     merge_step_for,
     plan_merge,
-    ready_label_dropped,
-    refuse_merge_label_record,
     refuse_unmergeable_forge,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
@@ -143,6 +140,8 @@ class SubmissionService:
         metrics: ApiMetrics,
         now=utcnow,
         signer: SpecSigner | None = None,
+        forge_tokens: Any = None,
+        forge_writer: Any = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -153,6 +152,11 @@ class SubmissionService:
         #: in local development: `build_context` refuses a hardened
         #: environment without a key.
         self._signer = signer
+        #: The tenant's `-git` token reader and the pinned GitHub client, for
+        #: the one read a `merge_pr` workflow makes at submission (#352,
+        #: `continuation.resolve_merge_pr`). Neither builds a client until used.
+        self._forge_tokens = forge_tokens
+        self._forge_writer = forge_writer
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -446,6 +450,13 @@ class SubmissionService:
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
+            # A pull request no workflow opened (#352): checked against the
+            # tenant's registry and read from GitHub once, before the
+            # continuation (a `continues_task` beside it is refused for
+            # naming two) and before the dispatch options, because it
+            # supplies the repository they require. A continuation-scoped
+            # caller was refused above: `merge_pr` carries no continues_task.
+            named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
             # A continuation-scoped account continues a `direct-pr` task or an
@@ -459,7 +470,9 @@ class SubmissionService:
             # anything is built from the workflow's metadata (cifix.py).
             spec = stamp_ci_fix(self._store, tenant.tenant_id, spec, continuation)
             repository_url = (
-                continuation.repository_url if continuation else spec.repository_url
+                continuation.repository_url if continuation
+                else named_pull.repository_url if named_pull
+                else spec.repository_url
             )
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
@@ -504,6 +517,7 @@ class SubmissionService:
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
+                named_pull=named_pull is not None,
             )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
@@ -527,9 +541,7 @@ class SubmissionService:
                 reject_reserved_metadata(step.metadata)
                 step_metadata = {**spec.metadata, **step.metadata}
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
-                # step's task will store them, and the drop record only this
-                # service writes.
-                refuse_merge_label_record(step_metadata)
+                # step's task will store them.
                 resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
@@ -567,9 +579,6 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
-        # Beside a merge step, a `ready` label is dropped (`workflow_label`)
-        # so `auto-merge.yml` never races the step; recorded on every task.
-        label_dropped = ready_label_dropped(spec.metadata, merge_step=merge_plan is not None)
         # Every step's commits name the workflow's submitter (P37). A
         # continuation a service account submitted names the person behind
         # the task it continues instead, else the bot (`gitidentity`).
@@ -590,6 +599,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                named_pull=named_pull,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -599,7 +609,7 @@ class SubmissionService:
                 allow_empty_diff=source.allow_empty_diff,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
-                pr_label=workflow_label(spec.metadata, merge_step=merge_plan is not None),
+                pr_label=workflow_label(spec.metadata),
                 # Kept on a gated step only too: the step that reads the
                 # verdict files its minors on the tenant's epic.
                 findings_epic=findings_epic,
@@ -615,10 +625,7 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={
-                        **spec.metadata, **source.metadata, "workflow_step": step_id,
-                        **({MERGE_LABEL_DROPPED_KEY: READY_LABEL} if label_dropped else {}),
-                    },
+                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
@@ -799,6 +806,21 @@ class SubmissionService:
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
         )
 
+    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
+        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
+        if self._forge_tokens is None or self._forge_writer is None:
+            raise DispatchOptionError(
+                "merge_pr reads the pull request from GitHub at submission, and this "
+                "deployment has no forge reader configured.",
+                detail={"merge_pr": spec.merge_pr.model_dump() if spec.merge_pr else None},
+            )
+        return resolve_merge_pr(
+            spec, tenant,
+            repositories=Repositories(self._store.db, now=self._now),
+            tokens=self._forge_tokens,
+            writer=self._forge_writer,
+        )
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -829,6 +851,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        named_pull: NamedPull | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -873,6 +896,12 @@ class SubmissionService:
             # step it names is one it depends on, so topological order has
             # minted each id already.
             sources = merge_plan.sources
+            if sources.named and named_pull is not None:
+                # No task opened it (#352): the number and the head the
+                # caller named, as `resolve_merge_pr` checked them.
+                return dispatch.with_merge_target(
+                    number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                )
             return dispatch.with_merge_target(
                 pull_request=(
                     sources.pull_request if sources.continued
@@ -1049,7 +1078,12 @@ class SubmissionService:
         tenant = self.tenant_for(ctx)
         quota_by_provider = {q.provider: q for q in self._store.list_quota(ctx.tenant_id)}
         entries = []
-        for name in sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}):
+        # Never a retired #295 App key (`git-review`, which the frozen
+        # catalogue's disabled post-verdict entry still names): nothing reads
+        # one, so listing it would offer a tenant a credential to register
+        # that no route accepts and no Job reads.
+        named = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+        for name in sorted(named - APP_CREDENTIAL_PROVIDERS):
             quota = quota_by_provider.get(name)
             entries.append(
                 {

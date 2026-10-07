@@ -21,7 +21,7 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
@@ -167,6 +167,55 @@ export function writePref(key: string, value: string | null): void {
 }
 
 const COLLAPSED_KEY = 'swarm.shell.collapsed'
+
+/**
+ * THE TENANT NAMES `/v1/tenants/me` HAS GIVEN IN THIS BROWSER, by tenant id
+ * (QA G1-06, 2026-10-07). `/v1/tenants/mine` names each tenant by its
+ * registered group's email -- it reads nothing, by design -- so the shell
+ * called one tenant "Engineering" in the panel and "eng@saga.xyz" in the list
+ * under it. The list draws the name `me` gave where one is known: the current
+ * tenant's always, another's once it has been acted as here.
+ */
+export const TENANT_NAMES_STORE = 'swarm.tenants.names'
+
+function knownTenantNames(): Record<string, string> {
+  const raw = readPref(TENANT_NAMES_STORE)
+  if (raw === null) return {}
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return {}
+    const out: Record<string, string> = {}
+    for (const [k, n] of Object.entries(v)) if (typeof n === 'string' && n !== '') out[k] = n
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function learnTenantName(id: string, name: string): void {
+  const known = knownTenantNames()
+  if (known[id] === name) return
+  writePref(TENANT_NAMES_STORE, JSON.stringify({ ...known, [id]: name }))
+}
+
+/** A tenant the list offers, named as the panel names it, with the group it was registered by. */
+export interface NamedTenantChoice extends TenantChoice {
+  /** The registered group's email: `/v1/tenants/mine`'s own `display_name`. */
+  group: string
+}
+
+/**
+ * The one name the shell draws for a tenant: the current tenant's from `me`,
+ * another's as `me` last gave it in this browser, and the group email only
+ * for a tenant never acted as here. The id is always the secondary line.
+ */
+export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
+  const known = knownTenantNames()
+  return choices.map((c) => {
+    const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
+    return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
+  })
+}
 /** The Workflows panel's Recent (5) switcher, per browser. */
 export const RECENT_WORKFLOWS_KEY = 'swarm.workflows.recent'
 
@@ -249,25 +298,64 @@ function announce(): void {
   }
 }
 
+/**
+ * THE WORKFLOWS A READ REFRESHED SINCE THIS PAGE LOADED (QA G3-04,
+ * 2026-10-07). The stores above outlive the tab, so a state in them may be
+ * days old: Recent drew `running` beside workflows the list read had as
+ * succeeded, and beside some no read had seen at all. Only an id in here
+ * carries its state mark; any other is drawn as not re-read.
+ */
+const readThisLoad = new Set<string>()
+
+/** Whether a read in this page load gave this workflow's state. */
+export function workflowReadThisLoad(id: string): boolean {
+  return readThisLoad.has(id)
+}
+
 /** Put a workflow first in Recent (5), with the state and name it was read with. */
 export function rememberWorkflow(id: string, state: TaskState | null = null, name: string | null = null): void {
+  const fresh = !readThisLoad.has(id)
+  readThisLoad.add(id)
   const before = openedWorkflows()
   const next = [{ id, state, name }, ...before.filter((x) => x.id !== id)].slice(0, 5)
-  if (JSON.stringify(next) === JSON.stringify(before)) return
+  if (JSON.stringify(next) === JSON.stringify(before)) {
+    if (fresh) announce()
+    return
+  }
   writePref(RECENT_WORKFLOWS_KEY, JSON.stringify(next))
   announce()
 }
 
 /**
- * THE LIST READ'S NEWEST FIVE, given newest first: what fills Recent (5)
- * behind the opened ones. It costs no read -- the list already made it -- and
- * it refreshes the state and name of an opened workflow the read holds.
+ * THE LIST'S WHOLE READ, given newest first. Its newest five fill Recent (5)
+ * behind the opened ones, and EVERY workflow it holds refreshes the state and
+ * name of an opened one with that id -- not only the newest five, which left
+ * an opened workflow outside them marked with whatever it was last opened in
+ * (QA G3-04). It costs no read: the list already made it.
  */
-export function offerNewestWorkflows(newest: readonly RecentWorkflow[]): void {
-  const next = newest.slice(0, 5).map((w) => ({ id: w.id, state: w.state, name: w.name }))
-  if (readPref(NEWEST_WORKFLOWS_KEY) === JSON.stringify(next)) return
-  writePref(NEWEST_WORKFLOWS_KEY, JSON.stringify(next))
-  announce()
+export function offerNewestWorkflows(board: readonly RecentWorkflow[]): void {
+  let changed = false
+  for (const w of board) {
+    if (readThisLoad.has(w.id)) continue
+    readThisLoad.add(w.id)
+    changed = true
+  }
+  const read = new Map(board.map((w) => [w.id, w] as const))
+  const before = openedWorkflows()
+  const opened = before.map((w) => {
+    const f = read.get(w.id)
+    return f === undefined ? w : { id: w.id, state: f.state, name: f.name ?? w.name }
+  })
+  if (JSON.stringify(opened) !== JSON.stringify(before)) {
+    writePref(RECENT_WORKFLOWS_KEY, JSON.stringify(opened))
+    changed = true
+  }
+  const next = board.slice(0, 5).map((w) => ({ id: w.id, state: w.state, name: w.name }))
+  if (readPref(NEWEST_WORKFLOWS_KEY) !== JSON.stringify(next)) {
+    writePref(NEWEST_WORKFLOWS_KEY, JSON.stringify(next))
+    changed = true
+  }
+  if (changed) announce()
 }
 
 /** The name Recent holds for a workflow, or null: what a page can be titled by before its read lands. */
@@ -303,14 +391,20 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null,
     let live = true
     let timer: ReturnType<typeof setTimeout> | undefined
     let failures = 0
+    let landed = false
     const tick = () => {
-      // Paused in a hidden tab; picked up again on the next tick.
-      if (typeof document !== 'undefined' && document.hidden && everyMs !== null) {
+      // A REPEAT is paused in a hidden tab and picked up on the next tick; the
+      // FIRST read never is (QA G1-01, 2026-10-07). A tab opened in the
+      // background skipped it, so the meter and the panel counts sat at
+      // "loading" for the whole session -- and a meter that has never read is
+      // not a meter that read nothing.
+      if (landed && typeof document !== 'undefined' && document.hidden && everyMs !== null) {
         timer = setTimeout(tick, everyMs)
         return
       }
       load().then((next) => {
         if (!live) return
+        landed = true
         setR(next)
         if (next.status === 'error' && retry && FRAME_RETRIES.has(next.error.kind)) {
           failures += 1
@@ -644,6 +738,12 @@ export interface ShellProps {
   agentTab?: AgentTab
   /** The page title, for the phone header. */
   title: string
+  /**
+   * The address has no page (NotFound.tsx). The spine still lights the
+   * nearest section, but the panel draws none of that page's own anchors:
+   * Overview's "On this page" jumps to cards a 404 does not have (QA G1-11).
+   */
+  missing?: boolean
   go: (to: string) => void
   /** Help's search, owned by the Help page through the route. */
   helpGroup?: string | null
@@ -689,6 +789,7 @@ export function SkyShell({
   helpGroup = null,
   apiFailuresOnly = false,
   onApiFilter,
+  missing = false,
   foot,
   dock,
   keepOnSwitch = false,
@@ -865,7 +966,10 @@ export function SkyShell({
   }
 
   // ---- the tenant switch (intake-tenants.html 2A) --------------------------
-  const choices = dataOf(mine) ?? []
+  const choices = useMemo(() => nameTenants(dataOf(mine) ?? [], who), [mine, who])
+  useEffect(() => {
+    if (who !== null && who.tenant.display_name) learnTenantName(who.tenant.tenant_id, who.tenant.display_name)
+  }, [who])
   const switchable = who !== null && choices.length > 1
   // THE SWITCH ON A KEPT FORM, for the banner over it and its button's words.
   const switched = useSyncExternalStore(subscribeTenantSwitch, tenantSwitchSnapshot, tenantSwitchSnapshot)
@@ -972,6 +1076,7 @@ export function SkyShell({
       helpGroup={helpGroup}
       apiFailuresOnly={apiFailuresOnly}
       onApiFilter={onApiFilter}
+      missing={missing}
     />
   )
 
@@ -988,7 +1093,7 @@ export function SkyShell({
       </div>
       <TenantBlock me={me} mine={mine} onRetryList={rereadMine} open={picker === 'panel'} onOpen={() => setPicker(picker === 'panel' ? null : 'panel')} />
       <div className="sk-pscroll">{pages}</div>
-      <Meter meter={meter} unread={cap.status === 'error' || fault !== null} />
+      <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
           <b>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
@@ -1049,6 +1154,10 @@ export function SkyShell({
             <span className="sk-tn">{who.tenant.display_name ?? who.tenant.tenant_id}</span>
           ))}
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
+        {/* AN ADMIN IS MARKED ON THE PHONE TOO (#139, CH-20): the same grey
+            hairline tag as the panel's foot, last in the one row, after the
+            environment it sits beside. */}
+        {admin && <span className="sk-adm">admin</span>}
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
       <div className="sk-side" ref={sideRef}>
@@ -1292,8 +1401,8 @@ function TenantPicker({
 }: {
   at: TenantPickerAt
   current: string
-  choices: readonly TenantChoice[]
-  onChoose: (c: TenantChoice) => void
+  choices: readonly NamedTenantChoice[]
+  onChoose: (c: NamedTenantChoice) => void
   onClose: () => void
 }) {
   const box = useRef<HTMLDivElement | null>(null)
@@ -1331,7 +1440,14 @@ function TenantPicker({
       {choices.map((c) => {
         const on = c.tenant_id === current
         return (
-          <button key={c.tenant_id} type="button" className={`sk-to${on ? ' is-on' : ''}`} aria-current={on ? 'true' : undefined} onClick={() => onChoose(c)}>
+          <button
+            key={c.tenant_id}
+            type="button"
+            className={`sk-to${on ? ' is-on' : ''}`}
+            aria-current={on ? 'true' : undefined}
+            title={c.group === c.display_name ? undefined : `registered as ${c.group}`}
+            onClick={() => onChoose(c)}
+          >
             <span className="sk-tg" aria-hidden>
               {initialOf(c.display_name)}
             </span>
@@ -1353,13 +1469,26 @@ function TenantPicker({
   )
 }
 
-function Meter({ meter, unread }: { meter: ReturnType<typeof meterOf>; unread: boolean }) {
+/**
+ * THE RAIL'S GLOBAL POOL. Three ways to have no figure, and each says which
+ * (QA G1-01): `reading…` while the first read is out, `not read` when it
+ * failed, and the dash only for a read that landed without a `global` pool --
+ * the house legend's "nothing recorded". Loading drew the dash too, so a tab
+ * whose read never ran looked like a platform with no pool.
+ */
+function Meter({ meter, read }: { meter: ReturnType<typeof meterOf>; read: 'loading' | 'unread' | 'landed' }) {
   if (meter === null) {
     return (
       <div className="sk-meter">
         <div className="sk-mh">
           <span>Global pool</span>
-          <b>{unread ? 'not read' : '—'}</b>
+          {read === 'loading' ? (
+            <b>reading…</b>
+          ) : read === 'unread' ? (
+            <b>not read</b>
+          ) : (
+            <b title="The capacity read landed without a global pool.">—</b>
+          )}
         </div>
       </div>
     )
@@ -1393,6 +1522,7 @@ function PanelPages({
   helpGroup,
   apiFailuresOnly,
   onApiFilter,
+  missing,
 }: {
   section: SpineSection
   tab: string
@@ -1404,7 +1534,10 @@ function PanelPages({
   helpGroup: string | null
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
+  missing: boolean
 }) {
+  // A 404 lit as Overview has none of Overview's cards to jump to.
+  if (section === 'overview' && missing) return null
   if (section === 'overview') {
     return (
       <>
@@ -1546,8 +1679,13 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
     <div className="sk-kids sk-recent" role="group" aria-label="Recent workflows">
       <span className="sk-recent-h">Recent</span>
       {items.map((w) => {
-        const look = w.state === null ? null : STATE_MARK[w.state]
-        const word = w.state === null ? 'state not recorded' : w.state.toLowerCase().replace('_', '-')
+        // A STATE NO READ OF THIS PAGE LOAD GAVE is not drawn as a state
+        // (QA G3-04): it is the one the workflow was last opened in, which
+        // may be long over. The word says so; the mark is withheld.
+        const current = workflowReadThisLoad(w.id)
+        const look = w.state === null || !current ? null : STATE_MARK[w.state]
+        const said = w.state === null ? null : w.state.toLowerCase().replace('_', '-')
+        const word = said === null ? 'state not recorded' : current ? said : `last seen ${said}; not re-read since this page loaded`
         return (
           <button
             key={w.id}
@@ -1558,7 +1696,13 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
             onClick={() => nav(`work/workflows?wf=${encodeURIComponent(w.id)}`)}
           >
             <span className="sk-recent-row">
-              <NamedMark mark={look === null ? null : look.mark} hue={look === null ? 'neu' : look.hue} word={word} bare />
+              <NamedMark
+                mark={look === null ? null : look.mark}
+                hue={look === null ? 'neu' : look.hue}
+                word={word}
+                dataMark={said !== null && !current ? 'stale' : undefined}
+                bare
+              />
               {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):
                   the ellipsis is drawn on this span, so the hover that
                   explains it is too, not only on the button around it. */}
