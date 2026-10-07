@@ -180,6 +180,61 @@ def workspace_size_gib(rc: Any) -> int:
     return max(1, min(rc.disk_gib, math.floor(rc.memory_gib * WORKSPACE_MEMORY_FRACTION)))
 
 
+#: THE GKE POD'S DISK-BACKED SCRATCH VOLUMES other than the workspace, in GiB.
+#: `readOnlyRootFilesystem` makes these the only other places the worker and its
+#: toolchain can write: /tmp (where `checkpoint.py` builds its archive, up to
+#: `max_checkpoint_bytes`, 2 GiB) and HOME (npm, uv and git caches).
+GKE_TMP_GIB = 2
+GKE_HOME_GIB = 4
+
+#: AUTOPILOT'S CEILING on a pod's total ephemeral-storage request in the
+#: general-purpose class (every class but Performance and accelerator pods):
+#: "between 10 MiB and 10 GiB" (GKE docs, "Resource requests in Autopilot",
+#: read 2026-10-07). A pod that asks for more is refused at admission.
+AUTOPILOT_MAX_EPHEMERAL_GIB = 10
+
+#: A GKE pod's ephemeral-storage (requests == limits, invariant 7), per resource
+#: class, where it is NOT the class's `disk_gib`.
+#:
+#: standard: 10 GiB, not 4 (contract request 53, follow-up "the workspace is
+#: sized for the 4Gi disk emptyDir"). On Cloud Run claude-code's 4 GiB workspace
+#: is a tmpfs (`workspace_size_gib`) and /tmp and HOME sit OUTSIDE it, in the
+#: container's in-memory writable layer, bounded only by the 8 GiB memory limit.
+#: On GKE all three are disk `emptyDir`s and kubelet sums them against this ONE
+#: number, evicting the pod -- no checkpoint, no park -- when the sum passes it.
+#: At 4 GiB a full workspace left no room for the checkpoint archive the worker
+#: writes to /tmp, so a run that fits on Cloud Run would be evicted on GKE the
+#: first time it checkpointed. 10 = workspace 4 + /tmp 2 + HOME 4, the volumes'
+#: own sizeLimits, so each volume's limit binds before the pod's -- as the
+#: workspace limit binds on Cloud Run -- and it is also Autopilot's maximum.
+#: The WORKSPACE stays at the class's 4 GiB, the size it has on Cloud Run.
+#:
+#: Not the same formula for every class: browser's 8 + 2 + 4 = 14 GiB is above
+#: Autopilot's ceiling, and moving browser is not request 53's change.
+GKE_EPHEMERAL_STORAGE_GIB = {
+    "standard": RESOURCE_CLASSES["standard"].disk_gib + GKE_TMP_GIB + GKE_HOME_GIB,
+}
+
+
+def gke_ephemeral_storage_gib(rc: Any) -> int:
+    """The ephemeral-storage a GKE worker pod of this resource class requests and is limited to."""
+    return GKE_EPHEMERAL_STORAGE_GIB.get(rc.name, rc.disk_gib)
+
+
+def profile_model(settings: Any, profile: RunnerProfile) -> str | None:
+    """The model this profile's agent runs, from WORKER_MODELS, or None.
+
+    ONE answer for every backend (#226; contract request 53). WORKER_MODELS is
+    terraform's `local.runner_models`, the same map it writes onto the Cloud Run
+    Jobs it creates, so a Job the scheduler creates -- Cloud Run or GKE -- runs
+    the model a terraform Job does. None means no profile pins one, and the Job
+    then carries no MODEL at all: the CLI runs its own default, on either backend.
+    """
+    models = getattr(settings, "worker_models", None) or {}
+    value = models.get(profile.name)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
 #: Admission at `enforce: baseline` rather than `restricted` precisely because
 #: the manifest this module builds carried no securityContext at all, so
@@ -765,9 +820,7 @@ class CloudRunJobDispatcher:
 
     def _model_for(self, profile: RunnerProfile) -> str | None:
         """The model this profile's agent runs, from WORKER_MODELS, or None."""
-        models = getattr(self._settings, "worker_models", None) or {}
-        value = models.get(profile.name)
-        return value.strip() if isinstance(value, str) and value.strip() else None
+        return profile_model(self._settings, profile)
 
     def _build_job(
         self, profile: RunnerProfile, tenant: Tenant, resource_class: str | None = None
@@ -1508,10 +1561,20 @@ class GkeJobDispatcher:
         # FROM THIS SAME RENDER, so the comparison proves only that this
         # dispatcher agrees with itself; GKE injects no Job name of its own.
         env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
+        # THE PROFILE'S MODEL, as a Cloud Run Job carries it (#226; contract
+        # request 53). Same source, `profile_model` over WORKER_MODELS, and the
+        # same absence: no pinned model, no MODEL, the CLI's default on both
+        # backends. On the Job, never in `worker_env`, which a task shapes: a
+        # caller never chooses it (invariant 10).
+        model = profile_model(self._settings, profile)
+        if model:
+            env.append({"name": "MODEL", "value": model})
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
-            "ephemeral-storage": f"{rc.disk_gib}Gi",
+            # The whole pod's local disk, not the workspace's: see
+            # GKE_EPHEMERAL_STORAGE_GIB. The workspace volume keeps disk_gib.
+            "ephemeral-storage": f"{gke_ephemeral_storage_gib(rc)}Gi",
         }
         labels = {
             "managed-by": "swarm-scheduler",
@@ -1626,8 +1689,8 @@ class GkeJobDispatcher:
                             # is the reason browser work is on GKE at all.
                             {"name": "dshm", "emptyDir": {
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
-                            {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
-                            {"name": "home", "emptyDir": {"sizeLimit": "4Gi"}},
+                            {"name": "tmp", "emptyDir": {"sizeLimit": f"{GKE_TMP_GIB}Gi"}},
+                            {"name": "home", "emptyDir": {"sizeLimit": f"{GKE_HOME_GIB}Gi"}},
                             # `optional`: a namespace whose ConfigMap has not
                             # been applied yet still starts its pod, and the
                             # worker then exits CANNOT_START for every task,
