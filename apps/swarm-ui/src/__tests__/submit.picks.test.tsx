@@ -188,7 +188,9 @@ describe('the task form is F1', () => {
     expect(steps().map((s) => s.classList.contains('is-dim'))).toEqual([false, true, true])
     fireEvent.click(runnerCard(container, 'mock').querySelector('input')!)
     expect(steps().map((s) => s.classList.contains('is-dim'))).toEqual([false, false, false])
-    expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\.is-dim\s*\{[^}]*opacity/)
+    // The CONTROLS are dimmed, not the step (QA G4-26): qa.c6p.submit.test.tsx.
+    expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\.is-dim textarea[^{]*\{[^}]*opacity/)
+    expect(rules(SUBMIT_CSS)).not.toMatch(/\.sb-step\.is-dim\s*\{/)
     expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\s*\{[^}]*border-radius:\s*var\(--radius\)/)
   })
 
@@ -226,7 +228,8 @@ describe('the workflow form is G1', () => {
     expect(names).toEqual(['', 'browser', 'claude-code', 'codex', 'generic', 'mock'])
     const codex = [...select.options].find((o) => o.value === 'codex')!
     expect(codex.disabled).toBe(true)
-    expect(codex.textContent).toMatch(/not enabled yet/)
+    // The card's own words, not a lowercased copy (QA G4-30).
+    expect(codex.textContent).toBe('codex · Not enabled yet. Use claude-code')
     expect(step.classList.contains('is-bad'), 'an unchosen step is not flagged').toBe(true)
 
     fireEvent.change(select, { target: { value: 'mock' } })
