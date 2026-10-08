@@ -36,10 +36,10 @@
       "config_why": "fs_request hands curl its bearer header on stdin (-K -) so the token is never an argument. The guard reads that config in memory and allows exactly one kind of line, the Authorization header; a url, request or data line there would be a call the arguments do not show."
     }
   },
-  "kube_kinds": ["Namespace", "ServiceAccount", "ConfigMap", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding"],
+  "kube_kinds": ["Namespace", "ServiceAccount", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding"],
   "kube_kind_words_why": "The namespaced kinds a tenant namespace holds, as kubectl spells them. Namespace is not among them: it is cluster-scoped, so -n would not confine it, and its own shapes name it.",
-  "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "configmap", "configmaps", "cm", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
-  "kube_patch_kind_words": ["serviceaccount", "serviceaccounts", "sa", "configmap", "configmaps", "cm", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol"],
+  "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
+  "kube_patch_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol"],
   "kube_patch_kind_words_why": "A patch's payload is not read by the guard, so a Role or RoleBinding is changed only by apply, whose whole object the guard and the scope admission policy both see.",
   "kube_role_names": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
   "rules": [
@@ -59,6 +59,7 @@
         {"tool": "gcloud", "command": ["auth", "print-access-token"], "args": [], "after_stop": true},
         {"tool": "gcloud", "command": ["config", "get-value"], "args": [["account", "project"]], "after_stop": true},
         {"tool": "gcloud", "command": ["config", "config-helper"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["auth", "list"], "args": [], "flags": {"--filter": "status:ACTIVE"}, "require": ["--filter"], "why": "scripts/lib/check-cluster-network-parity.sh, which kubernetes/apply.sh --confirm runs after a tenant apply, asks which account is active before it reads the cluster"},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
@@ -80,7 +81,6 @@
         {"tool": "kubectl", "command": ["get"], "args": [["service", "services", "svc"], "kube-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [["daemonset", "daemonsets", "ds"], "node-local-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"-o": "*", "--output": "*"}},
-        {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}, "*"], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
 
         {"tool": "curl", "method": "GET", "url": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "headers": ["Metadata-Flavor: Google"], "body": "none", "after_stop": true},

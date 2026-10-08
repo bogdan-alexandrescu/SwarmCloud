@@ -20,6 +20,8 @@ to be written down rather than assumed.
 | `network-policies/default-deny.yaml` | Deny ingress and egress, for every pod |
 | `network-policies/allow-egress.yaml` | DNS (NodeLocal DNSCache and kube-dns), the metadata server, Google APIs, the internet minus the cluster |
 | `policies/pod-security.yaml` | Cluster-scoped ValidatingAdmissionPolicies |
+| `policies/workspace-provisioner-scope.yaml` | The policies that confine the workspace deployer's writes to `swarm-tenant-u-*` and to what the tenant render produces |
+| `rbac/provisioner-rbac.yaml` | The workspace deployer's ClusterRole and binding, and its two reads in `kube-system` — the one cluster-scoped grant here ([docs/workspaces.md](../docs/workspaces.md) §2.3) |
 | `worker-templates/worker-job.yaml` | The canonical worker Job |
 | `worker-templates/worker-job-browser.yaml` | The same, plus shared memory for Chromium |
 | `render.py` | Fills in the placeholders; sizing comes from the frozen catalogue, the cluster's network from its inputs |

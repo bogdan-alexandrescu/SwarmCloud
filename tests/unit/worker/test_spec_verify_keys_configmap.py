@@ -295,7 +295,13 @@ def test_nothing_in_kubernetes_is_a_cluster_role_or_cluster_role_binding():
     files = sorted(KUBERNETES.rglob("*.yaml")) + sorted(KUBERNETES.rglob("*.yml"))
     assert files, "the control: kubernetes/ holds manifests"
     found = [str(p.relative_to(REPO)) for p in files if cluster_scoped.search(p.read_text())]
-    assert found == []
+    # The one exception: the workspace deployer's ClusterRole, which creates a
+    # person's namespace (docs/workspaces.md §2.3). Its admission policy
+    # confines its ConfigMap writes to swarm-spec-verify-keys inside
+    # swarm-tenant-u-*, and it binds the deployer, never a tenant identity --
+    # test_kubernetes_manifests.py and test_workspace_provisioner_scope.py
+    # hold both.
+    assert found == ["kubernetes/rbac/provisioner-rbac.yaml"]
 
 
 # ---------------------------------------------------------------------------
