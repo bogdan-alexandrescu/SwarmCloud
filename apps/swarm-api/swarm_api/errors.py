@@ -99,3 +99,58 @@ class Unpageable(ApiError):
 
     status_code = 500
     code = "unpageable"
+
+
+# --------------------------------------------------------------------------
+# Personal workspaces (docs/workspaces.md §1.3, §5.2; #847, lane W1)
+#
+# UPPER-CASE codes, as the owner wrote them and as the onboarding codes are,
+# though every other `ApiError` code here is lower-case: the console and the
+# plugin branch on these exact strings (§5.2).
+# --------------------------------------------------------------------------
+
+
+class WorkspaceNotReady(Forbidden):
+    """A submission to a person's own tenant before its workspace is `ready`."""
+
+    code = "WORKSPACE_NOT_READY"
+
+
+class NoClaudeAccount(Forbidden):
+    """A `ready` workspace with no Claude account to run on (WD6): every
+    runner profile, because a ready workspace "runs nothing" until then."""
+
+    code = "NO_CLAUDE_ACCOUNT"
+
+
+class WorkspaceNotForServiceAccounts(Forbidden):
+    code = "WORKSPACE_NOT_FOR_SERVICE_ACCOUNTS"
+
+
+class WorkspacePrincipalForbidden(Forbidden):
+    code = "WORKSPACE_PRINCIPAL_FORBIDDEN"
+
+
+class WorkspaceIdTaken(Forbidden):
+    code = "WORKSPACE_ID_TAKEN"
+
+
+class WorkspaceRequestTooSoon(Forbidden):
+    """A new request inside 24 hours of a denial (§1.3). An admin may still
+    approve the denied record at any time; only the person waits."""
+
+    code = "WORKSPACE_REQUEST_TOO_SOON"
+
+
+class WorkspaceFailed(Conflict):
+    """A request against a `failed` record: a retry is an admin's action,
+    because it starts a run of a privileged identity (§1.3)."""
+
+    code = "WORKSPACE_FAILED"
+
+
+class WorkspaceNotRequested(Conflict):
+    """A loan request from a person who has not requested a workspace: the
+    loan is for the workspace, and admins address it by its id."""
+
+    code = "WORKSPACE_NOT_REQUESTED"
