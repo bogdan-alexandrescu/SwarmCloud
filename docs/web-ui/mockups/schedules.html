@@ -397,11 +397,11 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <!-- ================================================================== -->
 <h2 id="place"><span class="n">2</span>Placement in the navigation</h2>
-<p>Work has ten tabs today (<code>apps/swarm-ui/src/App.tsx</code> <code>SECTIONS</code>). The owner suggested "below runs in the main menu", or inside Runs. Three placements, each showing the panel and where the approvals inbox goes:</p>
+<p>Work has ten tabs today (<code>apps/swarm-ui/src/App.tsx</code> <code>SECTIONS</code>). The owner suggested "below runs in the main menu", or inside Runs. Three placements, each showing the panel and where the approvals inbox goes. <b>The owner picked P3, a new spine section, Automate, on 2026-10-08</b> (docs/schedules.md SD1); every frame below is drawn in it.</p>
 <div class="nav3">
-<div class="mini"><div class="app fx" style="min-width:360px;width:360px;min-height:420px"><div class="side" data-shell="Schedules" data-variant="p1"></div></div><div style="padding:10px 14px"><div class="vh"><h3 style="font-size:17px">P1 · Work › Schedules, after Runs</h3><span class="rec">recommended</span></div><p class="note">One new tab with a count badge for waiting approvals. Approvals is the screen's second pane, at <code>/schedules/approvals</code>. Overview gets a "Waiting on you" card only when something waits.</p></div></div>
+<div class="mini"><div class="app fx" style="min-width:360px;width:360px;min-height:420px"><div class="side" data-shell="Schedules" data-variant="p1"></div></div><div style="padding:10px 14px"><div class="vh"><h3 style="font-size:17px">P1 · Work › Schedules, after Runs</h3><span class="vn">recommended, not picked</span></div><p class="note">One new tab with a count badge for waiting approvals. Approvals is the screen's second pane, at <code>/schedules/approvals</code>. Overview gets a "Waiting on you" card only when something waits.</p></div></div>
 <div class="mini"><div class="app fx" style="min-width:360px;width:360px;min-height:420px"><div class="side" data-shell="Runs" data-variant="p2"></div></div><div style="padding:10px 14px"><div class="vh"><h3 style="font-size:17px">P2 · Inside Runs</h3><span class="vn">variant</span></div><p class="note">No new tab. Runs becomes "Issue runs | Schedules | Approvals". But Runs means issue runs today, and a schedule is not a run, so the tab's name would stop describing it.</p></div></div>
-<div class="mini"><div class="app fx" style="min-width:360px;width:360px;min-height:420px"><div class="side" data-shell="Schedules" data-variant="p3"></div></div><div style="padding:10px 14px"><div class="vh"><h3 style="font-size:17px">P3 · A new spine section, Automate</h3><span class="vn">variant</span></div><p class="note">Schedules and Approvals get a spine slot. navigation.html kept the spine to four sections on purpose, and repositories.html rejected a section for one page.</p></div></div>
+<div class="mini"><div class="app fx" style="min-width:360px;width:360px;min-height:420px"><div class="side" data-shell="Schedules" data-variant="p3"></div></div><div style="padding:10px 14px"><div class="vh"><h3 style="font-size:17px">P3 · A new spine section, Automate</h3><span class="rec">owner pick 2026-10-08</span></div><p class="note">Schedules and Approvals get a spine slot: Overview, Work, Automate, Capacity, Admin. navigation.html kept the spine to four sections on purpose and repositories.html rejected a section for one page; the owner chose this over P1 because it is two pages with their own question.</p></div></div>
 </div>
 <div class="idea"><div><h4>Admin</h4><p>All variants add <b>Admin › Schedules</b> (admin only), beside Tenants, for the cross-tenant view (§7).</p></div><div><h4>Tests that follow</h4><p>A new tab moves the issue forms' "Where" list (<code>test_issue_forms.py</code>) and the nav tests. That is in the console lane's territory (docs/schedules.md §9, S7).</p></div></div>
 
@@ -411,8 +411,8 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="list-a">
 <div class="vh"><h3>A · Table</h3><span class="vn">list-a</span><span class="rec">recommended</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Schedules"></div><main class="ct">
-<div class="crumb">Work › <b>Schedules</b></div>
+<figure class="fr"><div class="scroller"><div class="app fx"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct">
+<div class="crumb">Automate › <b>Schedules</b></div>
 <div class="phead"><h3>Schedules</h3><span class="cnt">6 schedules · tenant eng</span><div class="r"><span class="tabs" style="border:0"><span class="on">Schedules</span><span>Approvals <span class="badge">4</span></span></span><span class="inp" style="width:200px"><svg class="ic"><use href="#i-search"/></svg>Filter by name, type or repository</span><a class="btn pri" href="#edit-a"><svg class="ic"><use href="#i-submit"/></svg>New schedule</a></div></div>
 <div class="banner"><svg viewBox="0 0 12 12" width="13" height="13" style="color:var(--s-warn)"><use href="#s-warn"/></svg><span><b>1 schedule paused itself.</b> Shepherd stale PRs failed 3 runs in a row and stopped at 08:30.</span><span class="btn sm">Show it</span></div>
 <table class="t"><thead><tr><th>Name · type</th><th>Repository</th><th>When</th><th>Next run</th><th>Last run</th><th>Spend today</th><th>Approvals</th><th>State</th><th></th></tr></thead><tbody>
@@ -445,7 +445,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="list-b">
 <div class="vh"><h3>B · Cards grouped by repository</h3><span class="vn">list-b</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:640px"><div class="side" data-shell="Schedules"></div><main class="ct">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:640px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct">
 <div class="phead"><h3>Schedules</h3><span class="cnt">6 schedules</span><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>New schedule</span></div></div>
 <div class="ch"><b>example-org/example-api</b><span class="cnt">2 schedules · built-in index on change</span></div>
 <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">
@@ -468,7 +468,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="list-c">
 <div class="vh"><h3>C · Split: list and detail</h3><span class="vn">list-c</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:560px"><div class="side" data-shell="Schedules"></div><main class="ct">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:560px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct">
 <div class="phead"><h3>Schedules</h3><div class="r"><span class="btn pri"><svg class="ic"><use href="#i-submit"/></svg>New schedule</span></div></div>
 <div class="half" style="grid-template-columns:380px minmax(0,1fr)">
 <div class="card" style="padding:0;gap:0"><table class="t"><tbody>
@@ -489,8 +489,8 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="detail-a">
 <div class="vh"><h3>A · Tabs</h3><span class="vn">detail-a</span><span class="rec">recommended</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:860px"><div class="side" data-shell="Schedules"></div><main class="ct" data-tabs>
-<div class="crumb">Work › Schedules › <b>Weekday issue sweep</b></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:860px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct" data-tabs>
+<div class="crumb">Automate › Schedules › <b>Weekday issue sweep</b></div>
 <div class="phead"><h3>Weekday issue sweep</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>enabled</span><span class="tier r2" title="Risk tier R2: opens pull requests; merges wait for approval">R2 · merges need approval</span><div class="r"><span class="btn">Run now</span><span class="btn">Dry run</span><span class="btn">Pause</span><a class="btn" href="#edit-a">Edit</a><span class="btn ghost">⋯</span></div></div>
 <div class="meta"><span>issue-sweep</span><span><b>example-org/example-api</b></span><span>Weekdays at 09:00 Europe/London <code>0 9 * * 1-5</code>, spread +3 min</span><span>owner <b>operator</b></span><span>created by a schedule-migration on 2026-10-08</span></div>
 <div class="kv"><div><span class="l">Next run</span><span class="v">Fri 09:03</span><span class="s">10:03 your time</span></div><div><span class="l">Last run</span><span class="v">partial</span><span class="s warn">4 of 5 issue runs ok</span></div><div><span class="l">Live runs</span><span class="v">2 <small>of 8</small></span><span class="s">1 running, 1 checking</span></div><div><span class="l">Spend today</span><span class="v">$41.20 <small>of $120</small></span><span class="s warn">+1 attempt unreported</span></div></div>
@@ -549,7 +549,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="detail-b">
 <div class="vh"><h3>B · One page, timeline first</h3><span class="vn">detail-b</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:700px"><div class="side" data-shell="Schedules"></div><main class="ct">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:700px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct">
 <div class="phead"><h3>Plan new bugs</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-running"/></svg>enabled</span><span class="tier r1">R1</span><div class="r"><span class="btn">Run now</span><span class="btn">Pause</span><span class="btn">Edit</span></div></div>
 <div class="meta"><span>issue-plan-only</span><span><b>example-org/example-web</b></span><span>Every 2 hours on weekdays, 08:00-18:00 London <code>0 8-18/2 * * 1-5</code></span></div>
 <div class="cols"><div class="card"><div class="ch"><b>Today</b></div><div class="used">
@@ -569,8 +569,8 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="edit-a">
 <div class="vh"><h3>A · One page from a template</h3><span class="vn">edit-a</span><span class="rec">recommended</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:980px"><div class="side" data-shell="Schedules"></div><main class="ct" id="edit-form">
-<div class="crumb">Work › Schedules › <b>New schedule</b></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:980px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct" id="edit-form">
+<div class="crumb">Automate › Schedules › <b>New schedule</b></div>
 <div class="phead"><h3>New schedule</h3><span class="cnt">tenant eng · 6 of 25 used</span></div>
 <div class="tpl" id="tpl">
 <div class="on" data-type="issue-sweep" data-cron="0 9 * * 1-5" data-tier="R2" data-gate="plan auto · merge approve" data-budget="$15 / run · $120 / day · 8" data-min="15"><b>Issue sweep</b><small>Plan, run and open PRs for ready issues. Merges wait for you.</small></div>
@@ -603,7 +603,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="edit-b">
 <div class="vh"><h3>B · Four-step wizard</h3><span class="vn">edit-b</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:520px"><div class="side" data-shell="Schedules"></div><main class="ct">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:520px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct">
 <div class="phead"><h3>New schedule</h3></div>
 <div class="steps"><b><i>1</i>Type</b>›<b><i>2</i>Where and when</b>›<span><i>3</i>Gate and budget</span>›<span><i>4</i>Review</span></div>
 <div class="card" style="max-width:720px"><div class="fl2"><div class="fl">Repositories</div><div><div class="radio"><span class="on">example-api</span><span>example-web</span><span>All registered</span></div></div><div class="fl">When</div><div><div class="inp val">0 9 * * 1-5</div><div class="hint">At 09:00, Monday to Friday · Europe/London · next Fri 09 Oct 09:00</div></div></div><div style="display:flex;gap:8px;justify-content:flex-end"><span class="btn ghost">Back</span><span class="btn pri">Next: gate and budget</span></div></div>
@@ -613,7 +613,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="edit-c">
 <div class="vh"><h3>C · Drawer over the list</h3><span class="vn">edit-c</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:560px"><div class="side" data-shell="Schedules"></div><main class="ct" style="position:relative">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:560px"><div class="side" data-shell="Schedules" data-variant="p3"></div><main class="ct" style="position:relative">
 <div class="phead"><h3>Schedules</h3></div><div class="card" style="height:300px"></div>
 <div class="scrim"></div><div class="drawer"><div class="ch"><b style="font-size:16px">Edit · Nightly observer</b><span class="r"><span class="btn sm ghost">✕</span></span></div><div class="fl">When</div><div class="inp val">0 6 * * *</div><div class="hint">Daily at 06:00 · UTC · next Fri 06:00</div><div class="fl">Window</div><div class="radio"><span class="on">24 h</span><span>72 h</span><span>168 h</span></div><div class="fl">Focus</div><div><span class="check"><i class="on"></i>cost</span><span class="check"><i class="on"></i>latency</span><span class="check"><i class="on"></i>ci</span><span class="check"><i class="on"></i>titles</span></div><div class="hint">revision 7 · saving checks nobody else saved since you opened it</div><div style="margin-top:auto;display:flex;gap:8px;justify-content:flex-end"><span class="btn ghost">Cancel</span><span class="btn pri">Save</span></div></div>
 </main></div></div></figure>
@@ -626,8 +626,8 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="inbox-a">
 <div class="vh"><h3>A · One list, expanding in place</h3><span class="vn">inbox-a</span><span class="rec">recommended on a phone</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:700px"><div class="side" data-shell="Schedules"></div><main class="ct">
-<div class="crumb">Work › Schedules › <b>Approvals</b></div>
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:700px"><div class="side" data-shell="Approvals" data-variant="p3"></div><main class="ct">
+<div class="crumb">Automate › <b>Approvals</b></div>
 <div class="phead"><h3>Approvals</h3><span class="cnt">4 waiting · tenant eng</span><div class="r"><span class="radio"><span class="on">All</span><span>Plans 2</span><span>Merges 2</span><span>Runs 0</span><span>Proposals 0</span></span></div></div>
 <div class="inbox">
 <div class="it open" data-item><div class="ch"><span class="sp park"><svg viewBox="0 0 12 12"><use href="#s-parked"/></svg>merge</span><b>example-api#207 Totals round wrong · PR #144</b><span class="r"><span class="cnt">Weekday issue sweep · expires in 71 h</span></span></div>
@@ -651,7 +651,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <div class="variant" id="inbox-b">
 <div class="vh"><h3>B · Split: list and the item</h3><span class="vn">inbox-b</span><span class="rec">recommended on desktop</span></div>
-<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:640px"><div class="side" data-shell="Schedules"></div><main class="ct">
+<figure class="fr"><div class="scroller"><div class="app fx" style="min-height:640px"><div class="side" data-shell="Approvals" data-variant="p3"></div><main class="ct">
 <div class="phead"><h3>Approvals</h3><span class="cnt">4 waiting</span></div>
 <div class="half" style="grid-template-columns:360px minmax(0,1fr)">
 <div class="card ilist" style="padding:0;gap:0">
@@ -708,14 +708,14 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <!-- ================================================================== -->
 <h2 id="rec"><span class="n">8</span>Recommendation</h2>
-<div class="recbox"><h3>P1 placement · List A · Detail A · Edit A · Inbox B on desktop and A on a phone · Admin A</h3>
-<ul><li><b>P1</b>: Work › Schedules after Runs, where "below runs in the main menu" puts it, with Approvals as its second pane and a badge.</li>
+<div class="recbox"><h3>P3 placement (owner pick 2026-10-08) · List A · Detail A · Edit A · Inbox B on desktop and A on a phone · Admin A</h3>
+<ul><li><b>P3</b>, the owner's pick: a new spine section, Automate (Overview · Work · Automate · Capacity · Admin) with Schedules and Approvals as its two pages and a badge. P1 (Work › Schedules after Runs) was the recommendation and was not chosen.</li>
 <li><b>List A</b> holds every column the owner named, and shows built-in recurring work read-only, so nothing recurring is invisible.</li>
 <li><b>Detail A</b> leads with history and says, in the budget tab, what a dollar cap can and cannot stop.</li>
 <li><b>Edit A</b> shows the cron's words, the next five firings, the gate's floor and the hard stops before Create.</li>
 <li><b>Inbox B</b> gives a merge its checklist at the moment of approval; on a phone, A.</li>
 <li><b>Admin A</b> sorts across tenants by tier, failure and spend.</li></ul>
-<p>The owner picks; this is a recommendation. The decisions that are not screens (types first, gates, budgets, approvers, catch-up) are in <a href="../../schedules.md#10-decisions-for-the-owner">docs/schedules.md §10</a>.</p></div>
+<p>The owner has picked the placement (P3). The other screens below are still recommendations, until the owner picks them. The decisions that are not screens (types first, gates, budgets, approvers, catch-up) are in <a href="../../schedules.md#10-decisions-for-the-owner">docs/schedules.md §10</a>.</p></div>
 
 <h2 id="map"><span class="n">9</span>Every element, mapped to data</h2>
 <p>Each figure on these frames, and the field the proposed routes would serve it from. None of these routes exists yet.</p>
@@ -742,7 +742,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 
 <h2 id="pick"><span class="n">10</span>All screens to pick</h2>
 <div class="tw"><table class="doc pickt"><thead><tr><th>Screen</th><th>Variants</th><th>Recommended</th></tr></thead><tbody>
-<tr><td>2 · Placement</td><td><a href="#place">P1 Work › Schedules</a> <a href="#place">P2 inside Runs</a> <a href="#place">P3 Automate section</a></td><td>P1</td></tr>
+<tr><td>2 · Placement</td><td><a href="#place">P1 Work › Schedules</a> <a href="#place">P2 inside Runs</a> <a href="#place">P3 Automate section</a></td><td><b>P3</b> (owner pick 2026-10-08; P1 was recommended)</td></tr>
 <tr><td>3 · Schedules list</td><td><a href="#list-a">A table</a> <a href="#list-b">B cards by repository</a> <a href="#list-c">C split</a></td><td>A</td></tr>
 <tr><td>4 · Schedule detail</td><td><a href="#detail-a">A tabs</a> <a href="#detail-b">B one page</a></td><td>A</td></tr>
 <tr><td>5 · Create and edit</td><td><a href="#edit-a">A one page from a template</a> <a href="#edit-b">B wizard</a> <a href="#edit-c">C drawer</a></td><td>A</td></tr>
@@ -767,7 +767,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
 })();
 
 /* Shell: Sky spine + panel, filled into every frame's .side[data-shell]. Work pages from
-   App.tsx SECTIONS, plus the proposed Schedules page; data-variant draws placements P2 and P3. */
+   App.tsx SECTIONS; data-variant draws placements P2 and P3. Every content frame uses P3, the owner's pick (2026-10-08). */
 (function(){
   const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
   const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
@@ -783,7 +783,7 @@ table.t tr.click:hover td{background:var(--f-hv)}
     if(cur==='Admin schedules'){
       body=`<div class="pt">Admin</div>${page(false,'i-limits','Pool limits')}${page(false,'i-agents','Tenants')}${page(true,'i-clock','Schedules','<span class="new">new</span>')}${page(false,'i-timeline','Platform counts')}`;
     }else if(variant==='p3'){
-      body=`<div class="pt">Automate</div>${page(true,'i-clock','Schedules','<span class="new">new</span>')}${page(false,'i-inbox','Approvals',badge)}`;
+      body=`<div class="pt">Automate</div>${page(cur!=='Approvals','i-clock','Schedules','<span class="new">new</span>')}${page(cur==='Approvals','i-inbox','Approvals',badge)}`;
     }else if(variant==='p2'){
       body=`<div class="pt">Work</div>${page(false,'i-agents','Agents','<span class="cnt">6</span>')}${page(false,'i-workflows','Workflows','<span class="cnt">2</span>')}${page(true,'i-branch','Runs',badge)}${page(false,'i-branch','Issue runs','',1)}${page(false,'i-clock','Schedules','',1)}${page(false,'i-inbox','Approvals','',1)}${page(false,'i-timeline','Timeline')}${page(false,'i-repo','Repositories')}`;
     }else{
