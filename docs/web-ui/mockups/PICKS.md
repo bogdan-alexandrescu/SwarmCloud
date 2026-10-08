@@ -84,3 +84,19 @@ override:
 | Token resolution order (git-tokens.md §3.1) | **R2**: repository token, then tenant token. A user's token is used for attribution only | A task never fails because the dispatching user's token lacks a right that the repository or tenant token has. R1 can refuse work that R2 would do |
 | User-token isolation (§2) | **U1**: a user token is a tenant secret attributed to a person | Simplest for phase 1 and enough under R2, where a user token never clones or pushes. U2 (personal tenants) and U3 (a reader identity per user) stay open if user tokens ever push |
 | Secret creation (§2) | **S1**: Terraform declares each slot, and values come only from `create-secrets.sh --stdin` | The doc's recommendation. It adds no platform privilege, and the registry does not depend on self-service |
+
+## Onboarding: connect GitHub, enable orgs, choose repositories (picked 2026-10-07)
+
+From `onboarding.html` and the design in [`docs/onboarding.md`](../../onboarding.md)
+(#780). The owner's decision D10 on #780, 2026-10-07: chooser A, and the
+recommended variant of every other screen. Built by lane OB8 as
+`apps/swarm-ui/src/Onboarding.tsx` (Work › Setup, `/setup`) and
+`apps/swarm-ui/src/Access.tsx` (Work › Access, `/access`).
+
+| Screen | Pick |
+|---|---|
+| 1 · Entry and checklist | **A**: a checklist card on Overview until every step is done, the six step ids the API serves, the failing step's §2.3 copy inline. Hide keeps the steps; Work › Setup still shows them. `POST /v1/onboarding/dismiss` is not built, so Hide is kept per browser |
+| 2 · Connect GitHub | **A**: one Connect GitHub button for the App (built by OB3 as `GitHubConnect.tsx`) |
+| 3 · Org and repository chooser | **A**: owners on the left (the installations, plus orgs with none), the selected owner's repositories on the right, paged and searched server-side, each Not chosen, Read or Write with push ability shown before Write; "Not listed? type owner/repo" carries the recovery copy |
+| 4 · Verification results | **A**: a grid, failures first, the fix inline; ok / missing / unknown as the permission matrix draws them. Reads only (D6); the opt-in write test is not served yet, and the column says so |
+| 5 · Access | **A**, Work › Access, for each person, **plus B**, the admin's Members view. The page states D9 (SwarmCloud enforces a read grant) and D8 (no workflows write) |
