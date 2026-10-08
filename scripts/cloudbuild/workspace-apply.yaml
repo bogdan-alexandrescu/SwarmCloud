@@ -1,0 +1,149 @@
+# The personal-workspace job (docs/workspaces.md §2.1-2.2, lane W4 of #847).
+#
+# WHO RUNS THIS. Only the Cloud Build trigger `swarm-workspace-apply`
+# (terraform/bootstrap/workspace_deployer.tf), which the owner's bootstrap
+# apply creates. It is a Pub/Sub trigger on the topic of the same name, to which
+# swarm-api is the only publisher; it builds refs/heads/main of this repository
+# and reads THIS FILE from main too; and it runs as swarm-workspace-deployer,
+# the identity with project-wide account-IAM power that only this job may use
+# (§2.4). What bounds that identity is this file, the call guard it installs
+# and the script it runs -- which is why .github/CODEOWNERS names the owner on
+# all three.
+#
+# WHAT REACHES IT FROM THE MESSAGE. Two fields, as the substitutions
+# _WORKSPACE_ID and _MODE; the trigger's filter refuses any other shape before a
+# build exists, and step 1 refuses it again. Nothing else in the message is
+# read. _BUILDER_IMAGE is the trigger's own value, the workspace-apply image by
+# digest (images/workspace-apply/Dockerfile), never the message's.
+#
+# SUBSTITUTIONS ARE NEVER PASTED INTO A SCRIPT. Each step is a `script`, which
+# Cloud Build does not substitute into, and takes the values through `env`, so
+# a value is data in an environment variable and never shell text. A
+# `bash -c "...${_WORKSPACE_ID}..."` would run whatever the value held.
+#
+# THE LOGS. CLOUD_LOGGING_ONLY: the log goes to Cloud Logging and nowhere else
+# (no logs bucket in GCS). The bootstrap's sink routes this trigger's build log
+# to the restricted bucket swarm-workspace-apply and excludes it from _Default
+# (§2.6), because the project's other log viewers include another team. Step
+# lines name the workspace id only.
+#
+# THE THREE STEPS (§2.2), in one image:
+#   1. validate    -- the id and the mode, before anything else runs;
+#   2. guard       -- check the guard against its own cases on this image, then
+#                     write the expectation file that admits A1's reads only;
+#   3. apply       -- scripts/register-tenant.sh --workspace, with every gcloud,
+#                     kubectl and curl it makes passing through the guard.
+# Steps share nothing but /workspace (the checkout) and the `guard` volume, so
+# step 3 installs the guard on its own PATH again and checks that it took.
+#
+# `--workspace` is lane W6's (docs/workspaces.md §10); until it merges, step 3
+# ends with register-tenant.sh refusing the argument and nothing is written.
+
+timeout: 1800s
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  # The guard's expectation file lives here, OUTSIDE the checkout (§2.2 A1),
+  # and is the only state carried from step 2 to step 3.
+  volumes:
+    - name: guard
+      path: /guard
+  env:
+    # load_env (scripts/lib/common.sh) reads these. No .env exists in a
+    # checkout of main and none is sourced: the path names nothing.
+    - PROJECT_ID=$PROJECT_ID
+    - SWARM_ENV_FILE=/guard/no-env-file
+    - SWARM_CALL_GUARD=/guard/expect.json
+    # A report-only request is ignored while this is set (workspace-guard.sh):
+    # the deployer identity never runs unguarded.
+    - SWARM_CALL_GUARD_ENFORCE=1
+    # The real kubectl the guard runs after an allow, by absolute path.
+    - SWARM_KUBECTL=/usr/local/bin/kubectl
+    - NO_COLOR=1
+
+steps:
+  - id: validate
+    name: ${_BUILDER_IMAGE}
+    env:
+      - WORKSPACE_ID=${_WORKSPACE_ID}
+      - MODE=${_MODE}
+      - BUILDER_IMAGE=${_BUILDER_IMAGE}
+      - TRIGGER=$TRIGGER_NAME
+      - COMMIT=$COMMIT_SHA
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # A malformed message ends the build here and writes nothing (§2.2).
+      if [[ ! "${WORKSPACE_ID}" =~ ^w-[0-9a-f]{6}$ ]]; then
+        echo "refused: the message's workspace_id is not w-<6 hex>" >&2
+        exit 1
+      fi
+      case "${MODE}" in
+        create|limits) ;;
+        *) echo "refused: the message's mode is neither create nor limits" >&2; exit 1 ;;
+      esac
+      if [[ ! "${BUILDER_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+        echo "refused: the builder image is not pinned by digest" >&2
+        exit 1
+      fi
+      # Not a security boundary -- whoever submits a build chooses this file --
+      # but a build of it from anywhere else is a mistake to stop early, and
+      # the bootstrap's alert pages on any build as the deployer that did not
+      # come from this trigger.
+      if [[ "${TRIGGER}" != "swarm-workspace-apply" ]]; then
+        echo "refused: this file runs only from the swarm-workspace-apply trigger" >&2
+        exit 1
+      fi
+      echo "workspace ${WORKSPACE_ID}: mode ${MODE}, main at ${COMMIT}"
+
+  - id: guard
+    name: ${_BUILDER_IMAGE}
+    env:
+      - WORKSPACE_ID=${_WORKSPACE_ID}
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      cd /workspace
+      guard_bin="/workspace/scripts/lib/guard-bin"
+      for tool in gcloud kubectl curl; do
+        if [[ ! -x "${guard_bin}/${tool}" ]]; then
+          echo "refused: the guard's ${tool} shim is missing from the checkout" >&2
+          exit 1
+        fi
+      done
+      # A guard that cannot judge its own cases on this image must not judge
+      # this run: every rule against a call built to trip it, and one allowed
+      # call per rule (scripts/lib/workspace-guard-cases.json). Offline.
+      scripts/lib/workspace-guard.sh self-test
+      umask 077
+      rm -f /guard/expect.json /guard/expect.json.stop
+      # Before A1 reads the approved record, only A1's own reads can match.
+      scripts/lib/workspace-guard.sh init --workspace-id "${WORKSPACE_ID}"
+      echo "workspace ${WORKSPACE_ID}: guard installed"
+
+  - id: apply
+    name: ${_BUILDER_IMAGE}
+    env:
+      - WORKSPACE_ID=${_WORKSPACE_ID}
+      - MODE=${_MODE}
+    script: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      cd /workspace
+      guard_bin="/workspace/scripts/lib/guard-bin"
+      export PATH="${guard_bin}:${PATH}"
+      # register-tenant.sh --workspace makes the same check and refuses to
+      # start without it (§2.5); made here too so a build whose PATH did not
+      # take fails at this line, naming the tool.
+      for tool in gcloud kubectl curl; do
+        resolved="$(command -v "${tool}")"
+        if [[ "${resolved}" != "${guard_bin}/${tool}" ]]; then
+          echo "refused: ${tool} resolves to ${resolved}, not the guard's shim" >&2
+          exit 1
+        fi
+      done
+      if [[ ! -r "${SWARM_CALL_GUARD}" ]]; then
+        echo "refused: the guard's expectation file is missing" >&2
+        exit 1
+      fi
+      exec scripts/register-tenant.sh --workspace "${WORKSPACE_ID}" --mode "${MODE}"

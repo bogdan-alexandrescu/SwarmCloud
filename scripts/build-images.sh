@@ -81,7 +81,7 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify)
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify workspace-apply)
 
 # Find the build recipe for a target. Track B owns images/ and the service
 # Dockerfiles, so both layouts are accepted rather than assumed.
@@ -248,9 +248,9 @@ LIST_INPUTS=0
 # take what it needs and no more. And 4 is what it needs. agent-runtime-browser
 # and agent-runtime-indexer cannot be submitted until agent-runtime-base has
 # FINISHED, so the critical path is two builds long whatever the bound; four
-# slots fit the other six images inside that path, and the two derived images
-# share the slots the base frees, so nine images would only finish at the same
-# time with more.
+# slots fit the other seven images inside that path (workspace-apply, #847,
+# made it seven), and the two derived images share the slots the base frees,
+# so ten images would only finish at the same time with more.
 PARALLELISM="${BUILD_PARALLELISM:-4}"
 # How often the scheduler looks for finished builds. A build takes minutes.
 POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"

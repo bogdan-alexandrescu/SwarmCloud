@@ -366,6 +366,24 @@ variable "tenants" {
     )) == 0
     error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
   }
+
+  # A PERSON'S WORKSPACE IS NOT A TERRAFORM TENANT (docs/workspaces.md §3.2,
+  # rule 3; owner decision WD3, 2026-10-08). Personal workspaces are made by
+  # the workspace job and live outside Terraform state, so a plan can never
+  # change or destroy one; a person in this map would be in state, and in a
+  # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
+  # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
+  #
+  # u-bogdan is the one exception, and only until lane W9 moves it out of this
+  # map with `removed` blocks (§3.3); W9 deletes it from the list below in the
+  # same change, and from then on the list is empty.
+  validation {
+    condition = alltrue([
+      for t, v in var.tenants :
+      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com") || contains(["u-bogdan"], t)
+    ])
+    error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
+  }
 }
 
 variable "enable_safety_tick_alert" {
