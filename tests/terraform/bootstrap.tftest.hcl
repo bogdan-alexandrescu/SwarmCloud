@@ -446,7 +446,7 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_runs_only_verifi
   assert {
     condition = alltrue([
       for p in google_project_iam_custom_role.acceptance_lister[0].permissions : !can(regex("\\.cancel$", p))
-    ]) && alltrue([
+      ]) && alltrue([
       for p in google_project_iam_custom_role.acceptance_runner[0].permissions :
       !can(regex("\\.cancel$", p)) || p == "run.executions.cancel"
     ])
