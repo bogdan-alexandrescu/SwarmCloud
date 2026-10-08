@@ -19,6 +19,7 @@ provider key is that short.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
@@ -107,6 +108,42 @@ _SKIPPED = frozenset(
         ScrubOutcome.WRITE_FAILED,
     }
 )
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def replace_lone_surrogates(value: Any) -> tuple[Any, int]:
+    """`value` with every lone surrogate in its strings -- keys included --
+    replaced by U+FFFD, and how many were replaced (#227).
+
+    `json.loads` turns a `\\ud800` escape the agent CLI printed into a lone
+    surrogate, and a Firestore write cannot carry one: the summary it reached
+    failed `finish`, and every retry read the same output and failed the same
+    way. A Python str holds a pair as one astral character, so every
+    surrogate code point left in one is lone. Lists, tuples and dicts are
+    walked; anything else is returned as it is.
+    """
+    if isinstance(value, str):
+        return _LONE_SURROGATE.subn("\ufffd", value)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        total = 0
+        for key, item in value.items():
+            new_key, in_key = replace_lone_surrogates(key)
+            new_item, in_item = replace_lone_surrogates(item)
+            out[new_key] = new_item
+            total += in_key + in_item
+        return out, total
+    if isinstance(value, (list, tuple)):
+        items = []
+        total = 0
+        for item in value:
+            new_item, count = replace_lone_surrogates(item)
+            items.append(new_item)
+            total += count
+        return (items if isinstance(value, list) else tuple(items)), total
+    return value, 0
 
 
 def scrub_file_outcome(
