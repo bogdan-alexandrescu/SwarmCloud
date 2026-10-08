@@ -1,0 +1,120 @@
+# release-promote: move the channel tag to exactly the scanned digests -- on
+# dev under the release lock, and never backwards (scripts/lib/release-order.sh).
+#
+# THE STEPS ARE SHARED, THE GATES ARE NOT. This composite action is one stage
+# of a dev or prod release, run by BOTH release lanes: release.yml (the
+# normal release) and hotfix.yml (the hotfix lane, owner decision 2026-10-08,
+# observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
+# cannot drift. Each caller's JOB keeps its permissions, its checkout and
+# Google authentication, its `needs:` and its `if:` -- every gate stays in the
+# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
+# with this action's steps inlined (test_release_reuses_ci_images.py,
+# `_workflow`).
+#
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
+# workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, #457), and
+# for a reusable workflow that names the CALLED file -- which would have to be
+# pinned and callable at once, so any workflow on main that grants id-token
+# could call it and mint the deployer
+# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# A composite action runs inside the caller's job, so the token still names
+# release.yml or hotfix.yml.
+#
+# The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
+# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
+# below must be the same value as ENVIRONMENT.
+#
+# The caller checks out with fetch-depth: 0: the order guard reads history.
+
+name: release-promote
+description: Scan again and promote the recorded digests, all or nothing; on dev, only forwards.
+inputs:
+  environment:
+    description: "dev | prod"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: take the release lock
+      id: lock
+      # Dev only (see the header). Waits while the other lane holds it.
+      if: inputs.environment != 'prod'
+      shell: bash
+      run: ./scripts/lib/release-order.sh lock --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+    - name: is a newer commit already out
+      id: order
+      # Writes superseded=true|false. Superseded ends this job green with
+      # nothing moved: the newer commit contains this one.
+      if: inputs.environment != 'prod'
+      shell: bash
+      run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
+
+    - name: fetch the record `images` scanned
+      if: steps.order.outputs.superseded != 'true'
+      uses: actions/download-artifact@v7
+      with:
+        name: scanned-images-${{ inputs.environment }}
+        path: build/
+
+    # The promotion scans again, so it needs trivy here too -- see `images`'
+    # install step for why it is installed this way and pinned.
+    - name: install trivy
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+          | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+        trivy --version
+
+    - name: scan and promote the recorded digests
+      id: promote
+      # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image
+      # was built as, from the record `images` obtained and scanned; each is
+      # confirmed in Artifact Registry first, and a record built for another
+      # environment is refused. `:<tag>` is not read at all, so a later build
+      # of the same commit cannot change what this release promotes.
+      #
+      # SCANNED AGAIN, deliberately. `--scan` is the promotion's own gate,
+      # and the approval may come hours after the first scan, against a
+      # vulnerability database that has learned something since. Measured on
+      # release 36059484794: scanning and promoting all eight images took
+      # 75 seconds (21:29:50-21:31:05), so the second scan costs about a
+      # minute.
+      #
+      # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
+      # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
+      # none of them. Run 35969538707 scanned and tagged one image at a time,
+      # so seven images were already on :dev when swarm-ui was refused, and
+      # :dev described a release nobody built. A tag that fails to move
+      # part-way is put back, and the manifest below is written only after
+      # every tag has moved -- so on failure there is no artifact to upload.
+      # If the put-back itself fails, the step's last line says the channel
+      # is MIXED and names the images; a `skip_build` redeploy reads the
+      # channel, so put those back (the commands are in the log) first.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan
+
+    - name: record what the channel now holds
+      if: inputs.environment != 'prod' && steps.promote.outcome == 'success'
+      shell: bash
+      run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what promoted
+
+    - uses: actions/upload-artifact@v6
+      if: steps.promote.outcome == 'success'
+      with:
+        name: deployed-images-${{ inputs.environment }}
+        path: build/deployed-images-*.json
+        retention-days: 30
+
+    - name: release the release lock
+      # always(): a failed or cancelled promote must not leave dev locked
+      # until the lock goes stale. It deletes only THIS lane's lock (by
+      # generation), and changes nothing else.
+      if: always() && steps.lock.outputs.generation != ''
+      env:
+        GENERATION: ${{ steps.lock.outputs.generation }}
+      shell: bash
+      run: ./scripts/lib/release-order.sh unlock --environment "${ENVIRONMENT}" --generation "${GENERATION}"
