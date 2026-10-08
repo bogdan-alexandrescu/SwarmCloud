@@ -225,6 +225,10 @@ def _sync_issue(ctx: Any, run: IssueRun) -> IssueRun:
                 "writeback_error": None,
                 "writeback_failed_at": None,
                 "writeback_attempt": None,
+                # After the writes, so it is no earlier than the `updated_at`
+                # they gave the issue: the sweeper tells this run's own
+                # comment from a person's edit by it (`issuesweep`).
+                "last_writeback_at": ctx.now(),
             }
 
         stored = runs.patch(run.tenant_id, run.id, _patch)
