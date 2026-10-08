@@ -43,7 +43,7 @@ test('Admin asks what each of its tabs answers, in tab order (AH-23)', () => {
   assert.ok(admin, 'there is no Admin section')
   assert.equal(
     admin.question,
-    'What is each ceiling set to, who is registered to use this platform, and how many tasks are in each state?',
+    'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
   )
 })
 
