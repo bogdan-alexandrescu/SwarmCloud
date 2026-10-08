@@ -1630,10 +1630,14 @@ It refuses, with a comment on the pull request saying which and why:
   `part of #840`. An issue passes. So does a closed or merged pull request:
   the keyword closes, never reopens, and cannot change a merged one. If the
   check cannot tell (an error, a failed read other than a 404, more than one
-  page of references or commits), the job fails and nothing is armed.
+  page of references or commits), the job fails and nothing is armed;
+* **something the body says it depends on that has not landed** (since
+  2026-10-08, owner decision, observer proposal I part 2) — see
+  [Saying what a pull request depends on](#saying-what-a-pull-request-depends-on).
 
 A check **still running** is not a refusal (since 2026-10-06, #697): if it
-is a *required* one the pull request is queued and waits, as the next section
+is a *required* one the pull request is queued and waits, as
+[the section after next](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)
 says; if it is not required it does not hold the merge at all (since
 2026-10-07, #815).
 
@@ -1641,6 +1645,48 @@ If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
 workflow merges it directly with the same token, method and subject. The
 ruleset still decides; the App has no bypass.
+
+### Saying what a pull request depends on
+
+Lanes run in parallel, and one lane's pull request is often written on top of
+another's that has not merged yet. Before this, nothing kept them in order:
+`ready` merged whichever went green first, and the later one landed on a main
+without the change it needed. Now a pull request says so in its **body**, on a
+line of its own or anywhere in a sentence:
+
+```text
+depends on PR 840
+depends on PR #840
+depends on #840
+```
+
+Any case (`Depends on PR 840`), any whitespace between the words. Nothing else
+is read as a dependency: `see #840`, `after #840` and `part of #840` are not,
+and neither is the phrase in the title or in a commit message. A number in
+another repository cannot be written this way, and the pull request's own
+number is ignored.
+
+The enable job runs the default branch's
+[`scripts/check-pr-dependencies.sh`](../scripts/check-pr-dependencies.sh)
+beside the closing-references check, from the same sparse checkout. For each
+number it asks REST `repos/<R>/issues/<n>`:
+
+| what `<n>` is | passes when | refuses when |
+|---|---|---|
+| a pull request | it is **merged** | open; or closed without merging, since it will never land and the line must go |
+| an issue | it is **closed** | open |
+| nothing (404) | never | always: a dependency nobody can read has not landed |
+
+A refusal works like the gate's other refusals: on the label, a comment naming
+each dependency and why, and a failed run; on a re-evaluation, the comment,
+`ready` removed and auto-merge disarmed. **Nothing re-evaluates when the
+dependency merges** (its merge is a push to main, not a run at this pull
+request's head), so add `ready` again once it has. A read that fails for any
+reason other than a 404 fails the job, and nothing is armed: fail closed.
+
+Only `auto-merge.yml` reads the phrase. The SwarmCloud worker's merge step
+(`apps/agent-worker/agent_worker/merge.py`), which merges with the tenant's
+own token, does not.
 
 ### A ready label that lands while checks run is re-evaluated
 
@@ -2242,24 +2288,67 @@ seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
 than 80 % of the test files have a weight, and holds the split to within 10 %
 of an even share.
 
-## Main merges through a merge queue
+## Merging through the merge queue
 
-> **Not available on this repository (read 2026-10-07).** GitHub offers merge queues only to
-> repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is owned by a user
-> account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints `User`). The
-> `merge_queue` rule below was refused with `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset
-> was left unchanged. The body below also lacks `max_entries_to_merge`, which the API requires; add
-> it if this repository ever moves to an organization.
+**Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main
+has been held by `strict_required_status_checks_policy: true` (below): a pull
+request merges only when it is up to date with `main` and green at that head.
+That holds main green, but it serialises merging. Each `ready` pull request
+waits its turn for an "Update branch" (the merge step's MS3, or the operator's
+merge watcher), then for a full CI run at the new head, and the next one
+starts only after it lands. **On 2026-10-07 pull requests waited p50 75 min
+and p90 8.5 h from open to merge**, mostly in that queue of update-branch and
+re-run CI rather than in review or in their own first CI run. A merge queue
+keeps the guarantee and drops the serial wait. GitHub tests up to five queued
+pull requests together on one temporary branch, merges every one that is green
+in that group, and needs no update-branch at all.
+
+What changed for this, and what did not:
+
+* **Every workflow producing a required check runs on `merge_group`** with
+  the same jobs (`application.yml` for `ci-gate`, `security.yml` for the other
+  four, and `terraform.yml`, which `ci-gate` waits for). The jobs that must
+  not run there (`build images`, `plan`) are excluded with an `if:` that says
+  why. [What is ready for it](#what-is-ready-for-it) has the detail.
+* **`auto-merge.yml` enqueues instead of merging** once the ruleset carries
+  the `merge_queue` rule: `gh pr merge --auto` with no method arms auto-merge,
+  and on a queued base that is what puts the pull request in the queue. Every
+  refusal it has today still applies before that: a `[swarm] task_` title, a
+  closing keyword naming an open pull request, a failing check, a missing
+  merge App, and since 2026-10-08
+  [an unlanded dependency](#saying-what-a-pull-request-depends-on).
+* **No update-branch runs while the queue is on.** `auto-merge.yml` never
+  updated a branch: it arms auto-merge, and in strict mode GitHub left an
+  out-of-date pull request waiting for someone else to update it. The two
+  things that do update a branch go quiet by themselves. The worker's merge
+  step updates only when GitHub reports the pull request `behind` or refuses
+  a merge as out of date, which is what the strict policy causes. The rule
+  below turns strict off, and a merge that GitHub answers with "must be made
+  through the merge queue" goes to `enqueuePullRequest`, never to an update.
+  The operator's merge watcher has nothing to update once nothing requires an
+  up-to-date branch. (Not yet observed: whether GitHub still reports `behind`
+  with strict off. If it does, the step makes one needless update before the
+  merge's 405 enqueues it. That costs a CI run but never merges anything
+  untested.) With the queue off, both behave exactly as they do today.
+  **Turning the queue on is the ruleset change below and nothing else.**
+
+> **Not available on this repository yet (read 2026-10-07, and again 2026-10-08).** GitHub offers
+> merge queues only to repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is
+> owned by a user account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints
+> `User`, read again 2026-10-08). On 2026-10-07 a `merge_queue` rule was refused with
+> `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset was left unchanged. Expect the operator
+> step below to be refused the same way until the repository is owned by an organization. That is
+> the owner's decision, not something a pull request can change.
 >
-> **What protects main instead** (owner decision 2026-10-07): ruleset 24160219's
-> `required_status_checks` sets `strict_required_status_checks_policy: true`, so a pull request must
-> be up to date with main, and green at that head, before it merges. Two pull requests that are green
-> on their own bases but red together (#726 and #727, 2026-10-06: main red 19:12-19:58Z) can no longer
-> both merge: the second is behind once the first lands, and must update and pass CI again. The merge
-> step already updates a behind branch (MS3) and re-reads its checks at the new head (MS2's wake).
-> The `merge_group` triggers and the merge step's enqueue path below are inert while no queue exists:
-> GitHub raises no `merge_group` event, and the merge step only enqueues when the base requires a queue.
-
+> **What protects main meanwhile** (owner decision 2026-10-07): ruleset 24160219's
+> `required_status_checks` sets `strict_required_status_checks_policy: true` (read 2026-10-08), so a
+> pull request must be up to date with main, and green at that head, before it merges. Two pull
+> requests that are green on their own bases but red together (#726 and #727, 2026-10-06: main red
+> 19:12-19:58Z) can no longer both merge: the second is behind once the first lands, and must update
+> and pass CI again. The merge step already updates a behind branch (MS3) and re-reads its checks at
+> the new head (MS2's wake). The `merge_group` triggers and both enqueue paths are inert while no
+> queue exists: GitHub raises no `merge_group` event, and nothing enqueues unless the base requires
+> a queue.
 
 **Owner decision, 2026-10-06 (observer P26).** `main` was red from 19:12 to
 19:58Z because #726 and #727 were each green on their own base and merged
@@ -2395,6 +2484,7 @@ gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
         "merge_method": "MERGE",
         "grouping_strategy": "ALLGREEN",
         "max_entries_to_build": 5,
+        "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 0,
         "check_response_timeout_minutes": 60
@@ -2407,13 +2497,21 @@ JSON
 
 Why these values: `ALLGREEN` merges an entry only when its checks and those
 of every entry ahead of it pass, which is the guarantee the incident lacked.
-`max_entries_to_build: 5` bounds the groups built at once (each is a full
-`application.yml` run, so a cost in runner time); `min_entries_to_merge: 1`
-with a `0`-minute wait merges a lone entry at once instead of holding it for
-company. `check_response_timeout_minutes: 60` is under `ci-gate`'s own
-90-minute wait, so a hung check drops the entry rather than stalling the
-queue behind it. `strict` stays `false`: the queue is what tests the
-combination now.
+In the settings page's words, that is **Require merge queue**, merge method
+**Merge commit**, **Only merge non-failing pull requests** (`ALLGREEN`),
+build concurrency 5, group size 1-5, no wait, and a 60-minute **status check
+timeout**. `max_entries_to_merge: 5` is the group size the owner chose: up to
+five pull requests land on one green run instead of one CI cycle each, which
+is where the 2026-10-07 wait went. The API requires it; the 2026-10-07 body
+lacked it. `max_entries_to_build: 5` bounds the groups built at once (each is
+a full `application.yml` run, so a cost in runner time). `min_entries_to_merge:
+1` with a `0`-minute wait merges a lone entry at once instead of holding it
+for company. `check_response_timeout_minutes: 60` is under `ci-gate`'s own
+90-minute wait, so a hung check drops the entry rather than stalling the queue
+behind it. `strict` goes from `true` (2026-10-07) back to `false`: with
+strict on, every pull request would still need an update-branch and its own
+CI run before it could even enter the queue. That is the wait this removes,
+and the queue's group run is what tests the combination now.
 
 Then check it took: `gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main --jq '.[] | select(.type == "merge_queue") | .parameters'`.
 The first queued pull request shows a `merge_group` run of `security`,
@@ -2422,9 +2520,12 @@ The first queued pull request shows a `merge_group` run of `security`,
 
 ### Rolling back
 
-Roll back by sending the same PUT **without the `merge_queue` rule** -- that
-is exactly the body in the
-[ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main). Everything this
+Roll back by sending the same PUT **without the `merge_queue` rule and with
+`strict_required_status_checks_policy` back to `true`**. That is the ruleset
+as it was on 2026-10-07, and the protection main had before the queue. (The
+body in the [ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main)
+predates that and says `false`. Sending it as it stands would leave main with
+neither the queue nor strict.) Everything this
 section added stays harmless with the queue off: GitHub never raises
 `merge_group`, `auto-merge.yml`'s gate says `queue=false` and squashes as
 before, and the merge step never sees the merge-queue `405`. A pull request
