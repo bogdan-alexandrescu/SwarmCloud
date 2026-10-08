@@ -1466,12 +1466,24 @@ limited to the roles preflight could read, which is all of them before step 4
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
+**It covers a self-grant of `swarmSecretLister` (#69).** #69's acceptance is
+that, with `projectIamAdmin` scoped, the deployer cannot bind itself
+`swarmSecretLister`, whose project-wide `secretmanager.secrets.setIamPolicy`
+reaches the other team's secrets. The refusal of `roles/browser` stands for that
+exactly when no live chunk lists `swarmSecretLister`, so preflight checks it --
+by role id, `.../roles/swarmSecretLister` under any project prefix, in either
+quote style -- stops with nothing attempted if a chunk does, and a pass says in
+the run summary that the refusal also covers `swarmSecretLister`. The probe
+never asks for `swarmSecretLister` itself: if the condition were broken, the
+deployer would hold `secrets.setIamPolicy` over the other team's secrets until
+the revert.
+
 **Preflight checks every chunk, not one binding (#276).**
 [`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
 one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
 chunk -- and refuses unless each one's expression is exactly
 `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`
-and its list does not name `roles/browser`. A grant is admitted if *any*
+and its list names neither `roles/browser` nor `swarmSecretLister`. A grant is admitted if *any*
 binding admits it, so one chunk with a broader condition (a `|| true`, a
 `hasAny`) or the probe role in its list would make a grant prove nothing; the
 whole expression is matched, and the list is parsed, for that reason. Before
