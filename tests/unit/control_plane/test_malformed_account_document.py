@@ -210,9 +210,13 @@ def test_a_bad_state_value_is_not_quoted_into_the_log(broker, caplog):
     with caplog.at_level(logging.WARNING, logger="quota_broker.accountstore"):
         store.list_reporting()
 
-    (record,) = [r for r in caplog.records if r.name == "quota_broker.accountstore"]
+    ours = [r for r in caplog.records if r.name == "quota_broker.accountstore"]
+    (record,) = [r for r in ours if r.levelno == logging.WARNING]
     assert record.error == "ValueError"
-    assert SENTINEL not in _rendered(record)
+    # The point: no field value reaches the log, from the per-document
+    # warning or from the every-document-unreadable ERROR alike.
+    for r in ours:
+        assert SENTINEL not in _rendered(r)
 
 
 def test_the_route_serves_the_readable_account_and_counts_both_bad_ones(client):
