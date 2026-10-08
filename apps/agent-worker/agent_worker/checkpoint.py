@@ -73,6 +73,39 @@ from .workspace import Workspace, walk_tree
 #: were left out is logged, so the loss is never silent.
 CHECKPOINT_MAX_DEPTH = 512
 
+#: How many bytes of FILE CONTENT a checkpoint archives, as a multiple of its
+#: compressed cap (`max_checkpoint_bytes`, 2 GiB by default, so 16 GiB). The
+#: compressed cap is enforced while the archive is written (`_CappedFile`),
+#: but a highly compressible tree -- gigabytes of zeros, a log of one repeated
+#: line -- stays under it while gzip still reads and compresses every byte,
+#: on the heartbeat's clock (#227). Source text compresses to about a quarter
+#: under gzip -9, so a real tree under the compressed cap is well under this
+#: one; and `work/` is memory-backed tmpfs, so 16 GiB of content is half the
+#: memory of the largest resource class (32 GiB) before the agent uses any.
+#: Past it the checkpoint is refused, as past the compressed cap.
+CHECKPOINT_EXPANSION_RATIO = 8
+
+#: How many bytes of file content a RESTORE writes, summed over every layer
+#: of the chain, as a multiple of the compressed cap (32 GiB by default). A
+#: small archive of zeros expands without bound, and it expands into `work/`,
+#: which is memory: this is what stops a planted or corrupt chain from
+#: filling the container's memory before the agent starts (#227). Twice the
+#: per-archive bound, because a chain is a full archive and the incrementals
+#: on it, and it is rebased once the incrementals weigh as much as the full
+#: (`_create`); every layer this platform wrote is under
+#: `CHECKPOINT_EXPANSION_RATIO` on its own. It is the largest resource
+#: class's whole memory, so a chain past it could not be restored anyway.
+RESTORE_EXPANSION_RATIO = 2 * CHECKPOINT_EXPANSION_RATIO
+
+#: The largest `seq` a restored manifest may carry for this attempt's ids to
+#: continue from it (#174). The manifest is data read from a bucket, and its
+#: `seq` becomes every later checkpoint's id and so part of its object key:
+#: a planted seq of 1,100 digits made every key longer than GCS's 1,024
+#: bytes, failing every later checkpoint (#227). A billion checkpoints is one
+#: a minute for nineteen centuries, so no real chain of attempts reaches it,
+#: and its ten digits keep the key short. Past it the ids start again at 1.
+RESTORED_SEQ_MAX = 10**9
+
 def _require_data_filter(module: Any = tarfile) -> None:
     """Refuse to run on a Python whose `tarfile` has no extraction filters.
 
@@ -438,6 +471,15 @@ def _link_leaves(parts: tuple[str, ...], linkname: str) -> bool:
     Only the first of two checks: `tarfile.data_filter` repeats it at
     extraction against the real filesystem, where a link through an earlier
     link (`d -> .`, then `c -> d/..`) is resolved as the kernel would.
+
+    IT OVER-SKIPS, KNOWINGLY (#227). The reading is lexical, so `..` undoes
+    the component before it whatever that component is: `x -> d/../../y` is
+    judged to leave, even when `d` is a link to a directory two levels down
+    (`d -> sub/inner`) and the kernel would resolve it to `y`, inside. Such a
+    link is skipped and named in the restore's warning rather than made.
+    Accepted: a skip loses one link, never a byte outside `work/`, and
+    `data_filter` re-checks every link this lets through, so being exact here
+    would buy nothing the filter does not already guarantee.
     """
     if not linkname or os.path.isabs(linkname):
         return True
@@ -525,8 +567,12 @@ def _safe_members(
                     f"{'/'.join(parts[:depth])}"
                 )
         if member.islnk():
+            # A trailing slash names the target as a DIRECTORY, which no
+            # hard link this archiver writes can have; `_archive_parts` drops
+            # the empty part, so it would pass as the file, and the link then
+            # fails at extraction with an OSError rather than a refusal.
             target = _archive_parts(member.linkname)
-            if target is None or target not in files:
+            if member.linkname.endswith("/") or target is None or target not in files:
                 raise CheckpointError(
                     f"checkpoint archive holds a hard link, {name}, that is not to "
                     f"an earlier file of its own"
@@ -1100,17 +1146,35 @@ class CheckpointManager:
         previous: dict[str, tuple[Any, ...]] | None,
         index: dict[str, tuple[Any, ...]],
     ) -> int:
-        """`_write_archive`'s walk, into `tar`, or only into `index` when `tar` is None."""
+        """`_write_archive`'s walk, into `tar`, or only into `index` when `tar` is None.
+
+        AN UNREADABLE ENTRY IS LEFT OUT, NOT A REASON TO FAIL (#227). A folder
+        or file the worker may not open (`EACCES`/`EPERM`: an agent's
+        `chmod 000`) failed the whole checkpoint, and every later one, where
+        `Path.rglob` used to pass it by. It is skipped, the walk goes on, and
+        one warning names the skipped paths and counts them, as `too_deep`.
+        """
         try:
             root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise CheckpointError(
+                    f"refusing to checkpoint {source}: it is a link or not a directory "
+                    f"({exc.strerror}), and archiving it would archive whatever it "
+                    f"points at"
+                ) from exc
+            # Any other failure is not the link case, and saying it was would
+            # send whoever reads the log looking for a link that is not there.
+            code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
             raise CheckpointError(
-                f"refusing to checkpoint {source}: it is a link or not a directory "
-                f"({exc.strerror}), and archiving it would archive whatever it "
-                f"points at"
+                f"refusing to checkpoint {source}: it could not be opened "
+                f"({code}: {exc.strerror})"
             ) from exc
         count = 0
         too_deep: list[str] = []
+        unreadable: list[str] = []
+        #: File content archived so far, against `CHECKPOINT_EXPANSION_RATIO`.
+        expanded = [0]
         stack: list[tuple[int, str, list[str]]] = []
         try:
             stack.append((root_fd, "", sorted(os.listdir(root_fd), reverse=True)))
@@ -1141,12 +1205,17 @@ class CheckpointManager:
                         build_dirs=build_dirs,
                         previous=previous,
                         index=index,
+                        expanded=expanded,
+                        expanded_cap=self._max_bytes * CHECKPOINT_EXPANSION_RATIO,
                     )
                 except (FileNotFoundError, NotADirectoryError):
                     continue  # gone, or no longer a directory
                 except OSError as exc:
                     if exc.errno == errno.ELOOP:
                         continue  # became a link after it was looked at
+                    if exc.errno in (errno.EACCES, errno.EPERM):
+                        unreadable.append(rel)
+                        continue
                     raise
         finally:
             for dir_fd, _, _ in stack:
@@ -1165,6 +1234,19 @@ class CheckpointManager:
                 max_depth=CHECKPOINT_MAX_DEPTH,
                 folders_not_archived=folders,
             )
+        if unreadable and tar is not None:
+            # The path only, never the OS error's text, and through the
+            # worker's scrub: a path is the agent's text, as a link's is
+            # (`_log_skipped_links`).
+            scrub: Callable[[str], str] = getattr(self._log, "scrub_text", None) or (
+                lambda text: text
+            )
+            self._log.warning(
+                "entries of the working tree could not be read; they were not archived",
+                unreadable=len(unreadable),
+                named=[scrub(rel) for rel in unreadable[:SKIPPED_LINKS_NAMED]],
+                not_named=max(0, len(unreadable) - SKIPPED_LINKS_NAMED),
+            )
         return count
 
     @staticmethod
@@ -1178,6 +1260,8 @@ class CheckpointManager:
         build_dirs: _BuildDirFilter | None = None,
         previous: dict[str, tuple[Any, ...]] | None = None,
         index: dict[str, tuple[Any, ...]] | None = None,
+        expanded: list[int] | None = None,
+        expanded_cap: int | None = None,
     ) -> int:
         """Add one entry of the directory open as `dir_fd`; 1 when it counts.
 
@@ -1190,6 +1274,19 @@ class CheckpointManager:
         `tar` is given and the signature differs from the one in `previous`
         (always, with no `previous`); a directory is entered either way, since
         what changed may be below it.
+
+        `expanded[0]` sums the size of every file archived; past
+        `expanded_cap` the checkpoint is refused before the file's bytes are
+        read (`CHECKPOINT_EXPANSION_RATIO`).
+
+        A HARD LINK IS ARCHIVED AS THE FILE IT NAMES, KNOWINGLY (#227). A link
+        whose other name is outside `work/` -- or is `input.json`, which is
+        never archived -- is archived as a regular file of its content under
+        the name it has here: exactly what the agent copying that file into
+        `work/` would produce, and the agent can do that with any file its uid
+        reads. Accepted: it publishes nothing a copy would not, and refusing
+        it would leave the copy archived anyway. Only a second name of an
+        inode this walk already archived becomes a hard-link member.
         """
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
 
@@ -1238,6 +1335,13 @@ class CheckpointManager:
             info = tar.gettarinfo(arcname=rel, fileobj=handle)
             if info is None or not (info.isreg() or info.islnk()):
                 return 0
+            if expanded is not None and expanded_cap is not None and info.isreg():
+                expanded[0] += info.size
+                if expanded[0] > expanded_cap:
+                    raise CheckpointError(
+                        f"the checkpoint's files passed {expanded_cap} bytes before "
+                        f"compression; refusing it"
+                    )
             tar.addfile(info, handle if info.isreg() else None)
         return 1
 
@@ -1369,12 +1473,21 @@ class CheckpointManager:
             skipped.append((name, link))
 
         layers: list[tuple[str, Path, list[str]]] = []
+        #: File content written so far, over every layer; see
+        #: `RESTORE_EXPANSION_RATIO`.
+        expanded = [0]
         try:
             self._download_chain(record, ws, layers)
             # Oldest first: the full archive, then each change in order.
             for position, (checkpoint_id, path, deleted) in enumerate(reversed(layers)):
                 self._apply_layer(
-                    checkpoint_id, path, ws.work, deleted, incremental=position > 0, on_skip=skip
+                    checkpoint_id,
+                    path,
+                    ws.work,
+                    deleted,
+                    incremental=position > 0,
+                    on_skip=skip,
+                    expanded=expanded,
                 )
                 path.unlink(missing_ok=True)
         except CheckpointError:
@@ -1393,12 +1506,14 @@ class CheckpointManager:
         # heartbeat's count, is not moved: it stays this attempt's.
         #
         # The manifest is data read from a bucket, so its `seq` is used only
-        # when it is a non-negative integer. Anything else would make every
-        # later `create` raise formatting the id, and invariant 8 says this
-        # attempt must keep checkpointing; its ids start again at 1 instead.
+        # when it is a non-negative integer no larger than `RESTORED_SEQ_MAX`.
+        # Anything else would make every later `create` raise formatting the
+        # id, or name an object key longer than GCS accepts, and invariant 8
+        # says this attempt must keep checkpointing; its ids start again at 1
+        # instead.
         restored_seq = record.seq
         is_count = isinstance(restored_seq, int) and not isinstance(restored_seq, bool)
-        if is_count and restored_seq >= 0:
+        if is_count and 0 <= restored_seq <= RESTORED_SEQ_MAX:
             self._seq = max(self._seq, restored_seq)
         else:
             self._log.warning(
@@ -1477,6 +1592,7 @@ class CheckpointManager:
         *,
         incremental: bool,
         on_skip: Callable[[str, str], None],
+        expanded: list[int] | None = None,
     ) -> None:
         """Extract one archive of a chain into `work/`, after its deletions.
 
@@ -1488,9 +1604,23 @@ class CheckpointManager:
         A member under a path that is a link on disk is refused: this
         platform's archiver never writes one, any more than within one
         archive (`_safe_members`).
+
+        `expanded[0]` sums the size of every file member accepted, over every
+        layer `restore` applies; past `RESTORE_EXPANSION_RATIO` times the cap
+        the archive is refused before this layer writes a byte. And an
+        `OSError` out of the extraction is a `CheckpointError`, so `restore`
+        empties `work/` for it as for any refusal.
         """
         with tarfile.open(path, "r:gz") as tar:
             members = _safe_members(tar, work, on_skip=on_skip)
+            if expanded is not None:
+                expanded[0] += sum(member.size for member in members if member.isfile())
+                cap = self._max_bytes * RESTORE_EXPANSION_RATIO
+                if expanded[0] > cap:
+                    raise CheckpointError(
+                        f"checkpoint {checkpoint_id} expands past {cap} bytes; "
+                        f"refusing to restore it"
+                    )
             if incremental:
                 for rel in deleted:
                     _remove_within(work, rel, checkpoint_id, keep_directory=False)
@@ -1502,6 +1632,10 @@ class CheckpointManager:
                 raise CheckpointError(
                     f"checkpoint {checkpoint_id} holds a member the restore "
                     f"refuses: {type(exc).__name__}"
+                ) from exc
+            except OSError as exc:
+                raise CheckpointError(
+                    f"checkpoint {checkpoint_id} could not be extracted: {type(exc).__name__}"
                 ) from exc
         _unmake_escaped_links(work, members, on_skip)
 

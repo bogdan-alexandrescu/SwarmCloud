@@ -38,7 +38,12 @@ outside `work/` or stop raising); take the heartbeat thread out of
 bound and the cancel tests see beats past it); stop on a cancel as well as a
 fence (the cancel test counts too few beats); drop the poll from the thread
 (the fence test counts beats after the fence); check the
-cap only after the archive is written (the oversized test sees `b.txt` added).
+cap only after the archive is written (the oversized test sees `b.txt` added);
+drop the walk's uncompressed bound (the compressible-tree test checkpoints);
+drop the restore's expansion bound (the zeros archive restores); accept a hard
+link to `a/` (the trailing-slash test raises `NotADirectoryError`, or
+restores); let an `OSError` out of `extractall` (the half-extracted `work/` is
+not emptied).
 """
 
 from __future__ import annotations
@@ -49,11 +54,17 @@ import json
 import os
 import tarfile
 import time
+from pathlib import Path
 
 import pytest
 
 from agent_worker import workspace as workspace_mod
-from agent_worker.checkpoint import CheckpointManager, CheckpointRecord, checkpoint_prefix
+from agent_worker.checkpoint import (
+    CheckpointManager,
+    CheckpointRecord,
+    _link_leaves,
+    checkpoint_prefix,
+)
 from agent_worker.errors import CheckpointError, ExitCode
 from agent_worker.logs import build_logger
 
@@ -430,6 +441,122 @@ def test_an_oversized_tree_aborts_the_checkpoint_while_it_is_written(
     assert "a.bin" in added
     assert "b.txt" not in added, "the checkpoint went on writing past its cap"
     assert not store.list_keys(manager.own_prefix), "an oversized checkpoint was uploaded"
+
+
+def test_a_compressible_tree_past_the_expansion_bound_refuses_the_checkpoint(
+    store, tmp_path, log_stream
+):
+    """#227: `_CappedFile` counts COMPRESSED bytes, so a megabyte of zeros is
+    a kilobyte against the cap and gzip read every byte of it. The walk also
+    sums the files' own sizes and refuses past `CHECKPOINT_EXPANSION_RATIO`
+    times the cap -- here 64 KiB x 8 = 512 KiB."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    (ws.work / "zeros.bin").write_bytes(bytes(1024 * 1024))
+    _write(ws.work / "notes.md")
+    manager = CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_1",
+        generation=1, logger=_logger(log_stream), max_bytes=64 * 1024,
+    )
+    with pytest.raises(CheckpointError, match="before compression"):
+        manager.create(ws)
+    assert not store.list_keys(manager.own_prefix), "an over-bound checkpoint was uploaded"
+
+
+# ---------------------------------------------------------------------------
+# 2d. a restore bounds what it expands, and refuses a malformed hard link (#227)
+# ---------------------------------------------------------------------------
+
+
+def test_a_small_archive_that_expands_past_the_bound_is_refused_and_work_emptied(
+    store, tmp_path, log_stream
+):
+    """Two megabytes of zeros gzip to a few kilobytes, and `work/` is memory.
+    The restore sums the accepted members' sizes over every layer and refuses
+    past `RESTORE_EXPANSION_RATIO` times the cap (64 KiB x 16 = 1 MiB) before
+    the layer writes a byte."""
+    logger = _logger(log_stream)
+    _, record, resumed = _crafted(store, tmp_path, logger, [
+        _file("notes.md"),
+        _file("zeros.bin", bytes(2 * 1024 * 1024)),
+    ])
+    assert record.archive_bytes < 64 * 1024, "the archive itself is small"
+    manager = CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_2",
+        generation=2, logger=logger, max_bytes=64 * 1024,
+    )
+    _assert_refused(manager, record, resumed)
+
+
+def test_an_archive_under_the_expansion_bound_is_restored(store, tmp_path, log_stream):
+    """The control: the same shape, under the bound, restores."""
+    logger = _logger(log_stream)
+    _, record, resumed = _crafted(store, tmp_path, logger, [
+        _file("notes.md"),
+        _file("zeros.bin", bytes(512 * 1024)),
+    ])
+    manager = CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_2",
+        generation=2, logger=logger, max_bytes=64 * 1024,
+    )
+    manager.restore(record, resumed)
+    assert (resumed.work / "zeros.bin").stat().st_size == 512 * 1024
+
+
+def test_a_hard_link_to_a_name_with_a_trailing_slash_refuses_the_archive(
+    store, tmp_path, log_stream
+):
+    """`_archive_parts` drops the empty part, so `a/` read as the earlier
+    file `a` and passed; the extraction then raised `NotADirectoryError`, not
+    `CheckpointError`, and `work/` was not emptied. A hard link's target can
+    never be a directory, so it is refused as inconsistent."""
+    manager, record, resumed = _crafted(store, tmp_path, _logger(log_stream), [
+        _file("a"),
+        _hard("b", "a/"),
+    ])
+    _assert_refused(manager, record, resumed)
+
+
+def test_an_os_error_out_of_the_extraction_is_a_refusal_and_empties_work(
+    store, tmp_path, log_stream, monkeypatch
+):
+    """Whatever the extraction raises as an `OSError` part-way through is a
+    `CheckpointError`, so `restore` empties `work/` as for any refusal and
+    the resume falls back."""
+    manager, record, resumed = _crafted(store, tmp_path, _logger(log_stream), [
+        _file("notes.md"),
+        _file("more.md"),
+    ])
+
+    def half_then_fail(self, path=".", members=None, **kwargs):
+        (Path(path) / "notes.md").write_text("half\n")
+        raise NotADirectoryError(20, "Not a directory")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", half_then_fail)
+    _assert_refused(manager, record, resumed)
+
+
+def test_a_link_through_an_internal_directory_link_is_over_skipped_knowingly(
+    store, tmp_path, log_stream
+):
+    """PINNED, not a defect fixed (#227). `_link_leaves` reads a target
+    lexically, so `x -> d/../../y` is judged to leave though `d -> sub/inner`
+    makes the kernel resolve it to `y`, inside. Accepted: it loses one link
+    and never a byte outside `work/`, and `data_filter` re-checks every link
+    that passes. A change that makes it exact should change this test."""
+    assert _link_leaves(("x",), "d/../../y") is True
+    manager, record, resumed = _crafted(store, tmp_path, _logger(log_stream), [
+        _dir("sub"),
+        _dir("sub/inner"),
+        _sym("d", "sub/inner"),
+        _file("y", b"inside\n"),
+        _sym("x", "d/../../y"),
+    ])
+    manager.restore(record, resumed)
+    assert (resumed.work / "y").read_text() == "inside\n"
+    assert os.readlink(resumed.work / "d") == "sub/inner"
+    assert not os.path.lexists(resumed.work / "x"), "the lexical check let it through"
+    skipped = [r for r in _records(log_stream) if "skipped" in r]
+    assert skipped and any(n["member"] == "x" for n in skipped[0]["named"]), skipped
 
 
 # ---------------------------------------------------------------------------
