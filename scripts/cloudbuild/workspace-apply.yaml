@@ -1,0 +1,130 @@
+# The workspace job (docs/workspaces.md §2.1-§2.2, lane W6 of #847).
+#
+# WHAT RUNS THIS. The Pub/Sub-kind Cloud Build trigger `swarm-workspace-apply`
+# (terraform/bootstrap, lane W4), subscribed to the topic swarm-api publishes
+# an approved workspace id to. It builds only `main`, reads this file from
+# `main`, and runs as `swarm-workspace-deployer` -- the identity with
+# project-wide account-IAM power that Google cannot narrow (§2.4). The message's
+# two fields reach this file as the substitutions _WORKSPACE_ID and _MODE, and
+# nothing else from the message is used.
+#
+# WHAT BOUNDS IT. Three steps, all in one image pinned by digest:
+#
+#   1. validate       _WORKSPACE_ID must be w-<6 hex> and _MODE create, limits
+#                     or verify, before anything else runs. A malformed message
+#                     ends the build and writes nothing.
+#   2. install-guard  a pinned jq (the stock image has none; see below) and the
+#                     guard's expectation file, written by
+#                     scripts/lib/workspace-guard.sh init from the opaque id
+#                     alone, on a volume outside the checkout. Until A1 reads the
+#                     approved record, only A1's own reads can pass the guard.
+#   3. run            scripts/lib/guard-bin/ first on PATH, SWARM_CALL_GUARD
+#                     naming the expectation, SWARM_CALL_GUARD_ENFORCE=1 (so the
+#                     owner's report-only mode cannot be switched on here), and
+#                     scripts/register-tenant.sh --workspace. Every gcloud,
+#                     kubectl and curl it -- and kubernetes/apply.sh -- runs is
+#                     judged by the guard first (§2.5).
+#
+# SUBSTITUTIONS ARE NEVER SHELL TEXT. Cloud Build pastes `$_X` into a step's
+# args before the shell sees them, so a crafted value would be code. Each step
+# takes them through `env:` and reads `$$WS_ID` / `$$WS_MODE` -- `$$` is Cloud
+# Build's escape for a literal `$` -- and the validate step checks both before
+# any other step reads them.
+#
+# THE SCRIPT'S EXIT. 0 done or nothing to do; 3 stopped for the platform owner,
+# which is not a failure of the build: the record says needs_owner, the refused
+# call is in this build's log above, and the owner decides (§2.5 "What the
+# owner does then"); anything else fails the build, and the record says why in
+# a code, never in command output.
+#
+# THE IMAGE. gcr.io/google.com/cloudsdktool/google-cloud-cli:588.0.0, the
+# full (`latest`) variant, read from the registry on 2026-10-08: its
+# Dockerfile installs bash, curl, python3, kubectl and
+# google-cloud-cli-gke-gcloud-auth-plugin, which the script, the guard and
+# kubernetes/apply.sh need. It does not install jq, so step 2 fetches jq 1.7.1
+# by URL and checks its sha256 (the value the jq project publishes in the
+# release's sha256sum.txt) before anything runs it. W0 still owns confirming
+# the image end to end on a real build (docs/workspaces.md §10); moving the
+# digest is a reviewed change to this file, which .github/CODEOWNERS gives to
+# the owner.
+#
+# THE LOGS stay in the project: CLOUD_LOGGING_ONLY, no logs bucket, routed by
+# the trigger's sink to the restricted log bucket (§2.6). The step lines name
+# the workspace id only.
+
+substitutions:
+  _WORKSPACE_ID: ""
+  _MODE: create
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: false
+  volumes:
+    - name: guard
+      path: /guard
+
+timeout: 1800s
+
+steps:
+  - id: validate
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:588.0.0@sha256:5dcbab1ba8909f6fc066443553f6543abcd2ae81b50f2d8e2353987410058b68
+    entrypoint: bash
+    env:
+      - WS_ID=${_WORKSPACE_ID}
+      - WS_MODE=${_MODE}
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [[ ! "$${WS_ID}" =~ ^w-[0-9a-f]{6}$$ ]]; then
+          echo "workspace-apply: the message's workspace id is not w-<6 hex>; nothing was run" >&2
+          exit 1
+        fi
+        case "$${WS_MODE}" in
+          create|limits|verify) ;;
+          *) echo "workspace-apply: mode must be create, limits or verify; nothing was run" >&2; exit 1 ;;
+        esac
+        echo "workspace-apply: $${WS_ID} --mode $${WS_MODE}"
+
+  - id: install-guard
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:588.0.0@sha256:5dcbab1ba8909f6fc066443553f6543abcd2ae81b50f2d8e2353987410058b68
+    entrypoint: bash
+    env:
+      - WS_ID=${_WORKSPACE_ID}
+      - PROJECT_ID=$PROJECT_ID
+      - SWARM_CALL_GUARD=/guard/expect.json
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        umask 077
+        mkdir -p /guard/bin
+        curl -fsSL --retry 3 -o /guard/bin/jq \
+          https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+        echo "5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5  /guard/bin/jq" | sha256sum -c -
+        chmod 0700 /guard/bin/jq
+        export PATH="/guard/bin:$${PATH}"
+        scripts/lib/workspace-guard.sh init --workspace-id "$${WS_ID}"
+
+  - id: run
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:588.0.0@sha256:5dcbab1ba8909f6fc066443553f6543abcd2ae81b50f2d8e2353987410058b68
+    entrypoint: bash
+    env:
+      - WS_ID=${_WORKSPACE_ID}
+      - WS_MODE=${_MODE}
+      - PROJECT_ID=$PROJECT_ID
+      - BUILD_ID=$BUILD_ID
+      - SWARM_CALL_GUARD=/guard/expect.json
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export PATH="/workspace/scripts/lib/guard-bin:/guard/bin:$${PATH}"
+        export SWARM_CALL_GUARD_ENFORCE=1
+        rc=0
+        scripts/register-tenant.sh --workspace "$${WS_ID}" --mode "$${WS_MODE}" || rc=$$?
+        if [[ "$${rc}" -eq 3 ]]; then
+          echo "workspace-apply: $${WS_ID} stopped for the platform owner (needs_owner); the refused call is above" >&2
+          exit 0
+        fi
+        exit "$${rc}"
