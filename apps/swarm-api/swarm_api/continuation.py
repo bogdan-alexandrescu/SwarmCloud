@@ -146,6 +146,10 @@ class Continuation:
     #: The task `continues_task` named, as checked: what a merge-only
     #: continuation merges (`validation.merge_sources`), at the head IT pushed.
     task_id: str = ""
+    #: That task's own workflow, from its record: what a merge-only
+    #: continuation's signed `merge_target` names, and what the worker
+    #: verifies the task's signed spec against (#900). "" for a standalone task.
+    workflow_id: str = ""
 
 
 def _same_repository(a: str, b: str) -> bool:
@@ -285,7 +289,10 @@ def resolve_continuation(
                 f"{INTEGRATOR_ROLE}.",
                 detail={"continues_task": requested},
             )
-    return Continuation(root_task_id=root, repository_url=task.repository_url, task_id=task.id)
+    return Continuation(
+        root_task_id=root, repository_url=task.repository_url, task_id=task.id,
+        workflow_id=task.workflow_id or "",
+    )
 
 
 @dataclass(frozen=True)
