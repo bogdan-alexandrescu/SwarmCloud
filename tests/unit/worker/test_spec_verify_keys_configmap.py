@@ -20,6 +20,11 @@ nothing cluster-wide, lets the tenant's KSA or GSA -- by email or by uniqueId
 GKE allows what either one allows, IAM (no `container.configMaps.*` in any
 custom role, no ConfigMap-reaching predefined role on the tenant GSA; #346).
 
+Since 2026-10-08 (owner decision) the GKE Job the scheduler creates carries
+the same settings in its environment, from the scheduler's own settings, and
+this ConfigMap is the FALLBACK the worker reads when that environment has
+none (tests/unit/control_plane/test_spec_signing_dispatch_env.py).
+
 Same loading and rendering style as test_kubernetes_manifests.py; a file of
 its own so #353's edits to that file and these do not collide.
 """
@@ -42,6 +47,7 @@ KUBERNETES = REPO / "kubernetes"
 
 TENANT = "eng"
 PROJECT = "saga-agents-staging"
+ENVIRONMENT = "dev"
 NAMESPACE = f"swarm-tenant-{TENANT}"
 TENANT_GSA = f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
 SCHEDULER_UID = "117405034245659033603"
@@ -105,6 +111,8 @@ def _tenant_render(*argv: str) -> list[dict[str, Any]]:
                 SCHEDULER_UID,
                 "--reconciler-uid",
                 RECONCILER_UID,
+                "--environment",
+                ENVIRONMENT,
                 *argv,
             ]
         )
@@ -196,10 +204,61 @@ def test_a_malformed_output_is_refused_before_anything_is_rendered(output_file, 
         _tenant_render("--spec-verify-keys-file", output_file(payload))
 
 
+def _with_signing_key(key: str) -> dict[str, str]:
+    """OUTPUT re-keyed to `key`, versions included, so only the key differs."""
+    return {
+        **OUTPUT,
+        "SPEC_SIGNING_KEY": key,
+        "SPEC_VERIFY_KEYS": json.dumps({f"{key}/cryptoKeyVersions/1": PEM}),
+    }
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        # Another environment's ring: the canonical form carries no environment,
+        # so prod's specs would verify in dev's workers.
+        SIGNING_KEY.replace("swarm-dev-specs", "swarm-prod-specs"),
+        # Any other ring, or any other key in the dev ring, in the same project.
+        SIGNING_KEY.replace("swarm-dev-specs", "someone-elses-ring"),
+        SIGNING_KEY.replace("/cryptoKeys/step-spec", "/cryptoKeys/other-key"),
+        SIGNING_KEY.replace("/cryptoKeys/step-spec", "/cryptoKeys/step-spec-2"),
+    ],
+    ids=["other-environment-ring", "other-ring", "other-key", "suffixed-key"],
+)
+def test_only_the_environments_step_spec_key_is_accepted(output_file, key):
+    """#346: any ring and key in the project used to pass.
+
+    MUTATION: put `{_KMS_NAME_SEGMENT}` back for the ring or the key in
+    `spec_verify_keys_data`'s pattern; the matching case renders."""
+    with pytest.raises(render.RenderError, match="step-spec key"):
+        render.spec_verify_keys_data(output_file(_with_signing_key(key)), PROJECT, ENVIRONMENT)
+
+
+def test_the_environments_own_key_in_any_region_is_accepted(output_file):
+    key = SIGNING_KEY.replace("/locations/us-central1/", "/locations/europe-west4/")
+    data = render.spec_verify_keys_data(output_file(_with_signing_key(key)), PROJECT, ENVIRONMENT)
+    assert data["SPEC_SIGNING_KEY"] == key
+
+
+def test_prods_key_is_accepted_for_prod_and_refused_for_dev(output_file):
+    key = SIGNING_KEY.replace("swarm-dev-specs", "swarm-prod-specs")
+    path = output_file(_with_signing_key(key))
+    assert render.spec_verify_keys_data(path, PROJECT, "prod")["SPEC_SIGNING_KEY"] == key
+    with pytest.raises(render.RenderError):
+        render.spec_verify_keys_data(path, PROJECT, "dev")
+
+
+@pytest.mark.parametrize("environment", ["", "Dev", "dev/../prod", ".*"])
+def test_the_keys_are_refused_without_a_valid_environment(output_file, environment):
+    with pytest.raises(render.RenderError, match="--environment"):
+        render.spec_verify_keys_data(output_file(OUTPUT), PROJECT, environment)
+
+
 def test_apply_sh_forwards_the_output_file_to_the_renderer():
     text = (KUBERNETES / "apply.sh").read_text()
     assert "--spec-verify-keys)" in text
-    assert "--spec-verify-keys-file" in text
+    assert '--spec-verify-keys-file "${SPEC_VERIFY_KEYS_FILE}" --environment "${ENVIRONMENT}"' in text
 
 
 # ---------------------------------------------------------------------------

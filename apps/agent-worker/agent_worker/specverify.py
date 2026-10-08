@@ -41,8 +41,8 @@ not done here; a wrong-Job dispatch on GKE still fails RUNNER_PROFILE's
 comparison or the tenant-namespace boundary.
 
 OUTAGES ARE NOT REFUSALS. Verification makes no network call: the public keys
-are the Job's environment on Cloud Run and a read-only ConfigMap mount on GKE,
-both rendered by Terraform. A worker with NO keys at all is misconfigured,
+are the Job's environment on both backends (Terraform's or the scheduler's),
+with a read-only ConfigMap mount as the fallback on GKE. A worker with NO keys at all is misconfigured,
 which is CANNOT_START (`ConfigError`), never a tenant's attack.
 """
 
@@ -87,7 +87,8 @@ KNOWN_FORMATS = frozenset(specsign.SPEC_FORMATS)
 
 #: Where a GKE pod finds `swarm-spec-verify-keys`, mounted read-only by
 #: `GkeJobDispatcher._manifest` and kubernetes/worker-templates. Each key of
-#: the ConfigMap is a file here. Read only when the environment has no keys.
+#: the ConfigMap is a file here. Read only when the environment has no keys --
+#: the fallback since the GKE Job carries the scheduler's keys (2026-10-08).
 VERIFY_KEYS_MOUNT = Path("/etc/swarm/spec-verify-keys")
 
 #: The four settings, by the names both sources use: the Job's environment on
@@ -104,6 +105,28 @@ SETTING_NAMES = (
 MODES = ("enforce", "legacy")
 
 _VERSION_SUFFIX = re.compile(r"/cryptoKeyVersions/[0-9]+")
+
+#: THE LONGEST DOCUMENT VALUE A REFUSAL COPIES. `spec_format` and
+#: `spec_key_version` are fields of a document the tenant can write, and a
+#: refusal copies them into `result_summary.spec_check` and the log; unbounded,
+#: a 1 MB `spec_format` became a 1 MB task document field and log line. 256,
+#: not less, because a legitimate key version is long: the 30-character project,
+#: the longest region and `swarm-<env>-specs` already reach about 150, and a
+#: refusal that cut off the version number would hide which key was asked for.
+DOCUMENT_VALUE_LIMIT = 256
+_TRUNCATED = "...[truncated]"
+
+
+def _bounded(value: object) -> str:
+    """`str(value)` at most DOCUMENT_VALUE_LIMIT characters, marked when cut.
+
+    Every `SpecSignatureInvalid` that carries a value read from the document
+    goes through this, so no refusal can copy one unbounded.
+    """
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= DOCUMENT_VALUE_LIMIT:
+        return text
+    return text[: DOCUMENT_VALUE_LIMIT - len(_TRUNCATED)] + _TRUNCATED
 
 
 @dataclass(frozen=True)
@@ -171,7 +194,8 @@ def read_mount(mount: Path | None = None) -> dict[str, str]:
     """Each of `SETTING_NAMES` from the GKE mount; an absent file reads as "".
 
     A missing ConfigMap (the volume is `optional`) reads as four empty
-    strings: no keys, so `verify_step_spec` is CANNOT_START for every task."""
+    strings. Called only when the environment has no keys either, so that is
+    no keys at all, and `verify_step_spec` is CANNOT_START for every task."""
     mount = mount or VERIFY_KEYS_MOUNT
     values: dict[str, str] = {}
     for name in SETTING_NAMES:
@@ -384,11 +408,18 @@ def _verify_signed(doc: Mapping[str, Any], *, task_id: str, cfg: "WorkerConfig")
     signature = doc.get("spec_signature")
     version = doc.get("spec_key_version")
 
-    # 2. A format this worker knows.
-    if doc.get("spec_format") not in KNOWN_FORMATS or isinstance(doc.get("spec_format"), bool):
+    # 2. A format this worker knows. An int first: a list or a map is
+    # unhashable, and `in KNOWN_FORMATS` raised TypeError on one instead of
+    # refusing it.
+    spec_format = doc.get("spec_format")
+    if (
+        not isinstance(spec_format, int)
+        or isinstance(spec_format, bool)
+        or spec_format not in KNOWN_FORMATS
+    ):
         raise SpecSignatureInvalid(
-            "unknown_format", task_id=task_id, key_version=str(version),
-            detail=f"format {doc.get('spec_format')!r}",
+            "unknown_format", task_id=task_id, key_version=_bounded(version),
+            detail=f"format {_bounded(repr(spec_format))}",
         )
 
     # 3. The version, as a string, before any key is used (step 0 made sure
@@ -397,7 +428,9 @@ def _verify_signed(doc: Mapping[str, Any], *, task_id: str, cfg: "WorkerConfig")
         raise SpecSignatureInvalid("foreign_key_version", task_id=task_id)
     suffix = version[len(cfg.spec_signing_key):] if version.startswith(cfg.spec_signing_key) else ""
     if not _VERSION_SUFFIX.fullmatch(suffix) or version not in cfg.spec_verify_keys:
-        raise SpecSignatureInvalid("foreign_key_version", task_id=task_id, key_version=version)
+        raise SpecSignatureInvalid(
+            "foreign_key_version", task_id=task_id, key_version=_bounded(version)
+        )
 
     # 4. The signature over the canonical form. Not canonical is a refusal.
     try:
