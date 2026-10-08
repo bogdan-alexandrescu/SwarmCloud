@@ -238,7 +238,7 @@ def gcloud(world: dict, argv: list[str]) -> int:
 KIND_WORDS = {
     "namespace": "Namespace", "namespaces": "Namespace", "ns": "Namespace",
     "serviceaccount": "ServiceAccount", "serviceaccounts": "ServiceAccount", "sa": "ServiceAccount",
-    "configmap": "ConfigMap", "configmaps": "ConfigMap", "resourcequota": "ResourceQuota",
+    "resourcequota": "ResourceQuota",
     "resourcequotas": "ResourceQuota", "limitrange": "LimitRange", "limitranges": "LimitRange",
     "networkpolicy": "NetworkPolicy", "networkpolicies": "NetworkPolicy", "netpol": "NetworkPolicy",
     "role": "Role", "roles": "Role", "rolebinding": "RoleBinding", "rolebindings": "RoleBinding",
@@ -280,11 +280,12 @@ def kubectl(world: dict, argv: list[str], stdin: str) -> int:
         return 0
     if pos[:1] == ["get"]:
         kind = KIND_WORDS[pos[1]]
-        if "--field-selector" in flags:
-            wanted = flag(flags, "--field-selector").split("=", 1)[1]
-            items = [o for k, o in objects.items() if k == key(kind, namespace, wanted)]
-            sys.stdout.write(json.dumps({"items": items}))
-            return 0
+        # By name only: the workspace deployer holds `get` and no `list`
+        # (kubernetes/rbac/provisioner-rbac.yaml), so a nameless or
+        # field-selected get is a call the real cluster refuses.
+        if len(pos) < 3 or {"--field-selector", "-l", "--selector", "-A", "--all-namespaces"} & set(flags):
+            sys.stderr.write("Error from server (Forbidden): cannot list resource " + pos[1] + "\n")
+            return 1
         ns = "" if kind == "Namespace" else namespace
         found = objects.get(key(kind, ns, pos[2]))
         if found is None:

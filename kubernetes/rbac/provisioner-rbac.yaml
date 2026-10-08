@@ -25,7 +25,25 @@
 #
 # WHAT IT CANNOT DO. No `delete` on anything, and nothing at all on Secret, Pod,
 # Job, Deployment or any workload: it builds the room, it never runs anything
-# in it. No `list`/`watch`: every read the job makes names its object.
+# in it. No `list`/`watch`: every read the job makes names its object --
+# including the egress-policy parity check kubernetes/apply.sh runs after the
+# apply, which reads the one policy by name for exactly this reason.
+#
+# EXACTLY WHAT THE JOB ASKS FOR, NO MORE. Every verb below is one a
+# `register-tenant.sh --workspace` run needs, and nothing it does not:
+#   * `kubectl apply -f -` of the tenant render (A7, and its `--dry-run=server`
+#     re-run): kubectl GETs each object, then CREATEs it or PATCHes it --
+#     `get`, `create`, `patch` on each kind the render holds;
+#   * the Roles and RoleBindings among them: `escalate` and `bind` (below);
+#   * the reads A7 and A9 make, each by name: `get`;
+#   * `kubectl get --raw=/readyz`: a non-resource URL every authenticated
+#     caller may read (GKE's system:public-info-viewer), so nothing here.
+# No ConfigMap: the job renders without --spec-verify-keys, so the render holds
+# none and the job never writes or reads one. If personal namespaces are to
+# carry `swarm-spec-verify-keys`, the grant, the scope policy's name map and
+# the call guard's kinds (scripts/lib/workspace-calls.json) gain it together.
+# tests/unit/scripts/test_register_tenant_workspace.py holds this list to the
+# calls a run makes.
 #
 # `escalate` IS UNRESTRICTED BY NAME, AND THAT IS NOT A CHOICE. Creating the
 # `swarm-dispatcher` and `swarm-reaper` Roles means writing rules (create Jobs,
@@ -38,9 +56,10 @@
 # restricted to the three Roles a tenant namespace holds.
 #
 # THE RESIDUAL, so it is not mistaken for zero: `get` is cluster-wide, so this
-# identity can read, by name, a ConfigMap, ServiceAccount, quota, NetworkPolicy
-# or Role in any namespace of this cluster. Reads do not pass through admission,
-# so no policy narrows them. None of those kinds holds a secret here.
+# identity can read, by name, a Namespace, ServiceAccount, quota, LimitRange,
+# NetworkPolicy, Role or RoleBinding in any namespace of this cluster. Reads do
+# not pass through admission, so no policy narrows them. None of those kinds
+# holds a secret, and without ConfigMap none holds configuration either.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -67,7 +86,7 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "create", "patch"]
   - apiGroups: [""]
-    resources: ["serviceaccounts", "configmaps", "resourcequotas", "limitranges"]
+    resources: ["serviceaccounts", "resourcequotas", "limitranges"]
     verbs: ["get", "create", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]

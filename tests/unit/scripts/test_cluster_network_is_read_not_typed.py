@@ -171,6 +171,15 @@ case "$*" in
   *"config view"*) cat "${d}/cluster-ref" ;;
   *"get service kube-dns"*) cat "${d}/kube-dns-ip" ;;
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
+  # Scoped, the parity check reads the one policy by name: the object, or
+  # NotFound -- never the list document.
+  *"get networkpolicies swarm-allow-worker-egress"*)
+    if jq -e '.items | length > 0' "${d}/policies.json" >/dev/null; then
+      jq '.items[0]' "${d}/policies.json"
+    else
+      printf 'Error from server (NotFound): networkpolicies.networking.k8s.io "swarm-allow-worker-egress" not found\n' >&2
+      exit 1
+    fi ;;
   *"get networkpolicies"*) cat "${d}/policies.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
   # The real apply, under --confirm.
@@ -1089,6 +1098,17 @@ def test_parity_refuses_an_empty_sweep(tmp_path):
     assert "nothing was compared" in result.stdout + result.stderr, result.stdout + result.stderr
 
 
+def test_scoped_parity_refuses_a_namespace_without_the_policy(tmp_path):
+    """Scoped, a missing policy is read by name and found absent -- still
+    nothing compared, never agreement."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([])
+    result = cluster.run(PARITY, "--namespace", NAMESPACE)
+    assert result.returncode != 0, "a namespace with no egress policy passed"
+    assert "nothing was compared" in result.stdout + result.stderr, result.stdout + result.stderr
+
+
 # ---------------------------------------------------------------------------
 # kubernetes/apply.sh --confirm RUNS the parity check (#76)
 # ---------------------------------------------------------------------------
@@ -1115,6 +1135,10 @@ def test_confirm_runs_the_parity_check_on_the_namespace_it_applied(tmp_path):
     assert calls, f"--confirm did not run the parity check:\n{output}"
     # Scoped to this tenant, through the context apply.sh checked.
     assert all(f"--namespace {NAMESPACE}" in c and "--all-namespaces" not in c for c in calls), calls
+    # By name, never a list: the workspace deployer that runs this same apply
+    # holds `get` and no `list` (kubernetes/rbac/provisioner-rbac.yaml).
+    assert all("get networkpolicies swarm-allow-worker-egress " in c and "--field-selector" not in c
+               for c in calls), calls
     assert all(f"--context {CONTEXT}" in c for c in calls), calls
     assert "every applied egress policy matches" in output, output
     # The whole-cluster sweep is still offered, not run.

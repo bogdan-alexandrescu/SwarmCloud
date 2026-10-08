@@ -56,7 +56,6 @@ DEPLOYER_POLICIES = (
 RESOURCES = {
     "Namespace": ("", "namespaces"),
     "ServiceAccount": ("", "serviceaccounts"),
-    "ConfigMap": ("", "configmaps"),
     "ResourceQuota": ("", "resourcequotas"),
     "LimitRange": ("", "limitranges"),
     "NetworkPolicy": ("networking.k8s.io", "networkpolicies"),
@@ -196,8 +195,8 @@ def test_the_policys_rolebinding_subjects_equal_the_render(policy_docs, tenant_d
 
 def test_the_policys_kind_and_name_map_equals_the_render(policy_docs, tenant_docs):
     """Every namespaced object a person's render holds, and nothing else, by
-    `group/resource`. The spec-verify-keys ConfigMap is rendered only when its
-    keys are passed, so it is added by its constant rather than rendered."""
+    `group/resource`. The workspace job renders without --spec-verify-keys, so
+    the spec-verify-keys ConfigMap is not among them."""
     policy = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
     names = _variable(policy, "names")
     rendered: dict[str, set[str]] = {}
@@ -207,20 +206,7 @@ def test_the_policys_kind_and_name_map_equals_the_render(policy_docs, tenant_doc
         group, resource = RESOURCES[doc["kind"]]
         assert doc["metadata"]["namespace"] == f"{render.NAMESPACE_PREFIX}{PERSON}", doc["metadata"]
         rendered.setdefault(f"{group}/{resource}", set()).add(doc["metadata"]["name"])
-    rendered.setdefault("/configmaps", set()).add(render.SPEC_VERIFY_KEYS_CONFIG_MAP)
     assert {k: set(v) for k, v in names.items()} == rendered
-
-
-def test_the_spec_keys_configmap_is_the_one_the_render_writes():
-    """The constant above is the renderer's, not a third spelling."""
-    doc = yaml.safe_load(
-        render.render_spec_verify_keys(
-            {"SPEC_VERIFY_KEYS": "[]"},
-            {"NAMESPACE": f"{render.NAMESPACE_PREFIX}{PERSON}", "TENANT_ID": PERSON},
-        )
-    )
-    assert doc["kind"] == "ConfigMap"
-    assert doc["metadata"]["name"] == render.SPEC_VERIFY_KEYS_CONFIG_MAP
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +263,6 @@ def test_the_cluster_role_is_the_grant_section_2_3_lists(policy_docs):
     assert granted == {
         ("", "namespaces"): write,
         ("", "serviceaccounts"): write,
-        ("", "configmaps"): write,
         ("", "resourcequotas"): write,
         ("", "limitranges"): write,
         ("networking.k8s.io", "networkpolicies"): write,

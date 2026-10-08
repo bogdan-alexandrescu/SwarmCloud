@@ -86,11 +86,11 @@ spec:
           ? (has(request.name) ? request.name : '')
           : (has(request.namespace) ? request.namespace : '')
     # What the tenant render produces, by `group/resource`: render.py's
-    # TENANT_FILES and LEGACY_KSA_FILES, and the spec-verify-keys ConfigMap.
+    # TENANT_FILES and LEGACY_KSA_FILES. Not the spec-verify-keys ConfigMap:
+    # the workspace job renders without it, and the ClusterRole grants none.
     - name: names
       expression: >-
         {"/serviceaccounts": ["swarm-agent-worker", "default", "swarm-worker"],
-        "/configmaps": ["swarm-spec-verify-keys"],
         "/resourcequotas": ["swarm-tenant-quota"],
         "/limitranges": ["swarm-worker-limits"],
         "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress"],

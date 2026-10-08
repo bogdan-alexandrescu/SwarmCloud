@@ -34,12 +34,14 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 REGISTER = REPO / "scripts" / "register-tenant.sh"
 GUARD = REPO / "scripts" / "lib" / "workspace-guard.sh"
 SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
+DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
@@ -247,7 +249,13 @@ def created(tmp_path_factory) -> dict:
     once per worker. The first worker to take the lock runs it and leaves the
     result beside the lock; the others read it.
     """
-    root = tmp_path_factory.getbasetemp().parent
+    # Under xdist each worker's basetemp is popen-gwN inside the session's
+    # directory, so its parent is shared by this session's workers and no
+    # other. Without xdist the parent is pytest's root for EVERY session, and a
+    # result left there would be read back by the next run, whatever it changed.
+    root = tmp_path_factory.getbasetemp()
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        root = root.parent
     result = root / "register-tenant-workspace-created.json"
     with open(root / "register-tenant-workspace-created.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -348,6 +356,121 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
         assert "delete" not in argv and "--prune" not in argv, argv
     # Firestore writes reach exactly the three documents the guard allows.
     assert set(world["writes"]) == {f"workspaces/{TENANT}", f"tenants/{TENANT}", f"pools/tenant:{TENANT}"}
+
+
+#: kind -> (API group, resource), and kubectl's spellings of each.
+KUBE_KINDS = {
+    "Namespace": ("", "namespaces"),
+    "ServiceAccount": ("", "serviceaccounts"),
+    "ResourceQuota": ("", "resourcequotas"),
+    "LimitRange": ("", "limitranges"),
+    "NetworkPolicy": ("networking.k8s.io", "networkpolicies"),
+    "Role": ("rbac.authorization.k8s.io", "roles"),
+    "RoleBinding": ("rbac.authorization.k8s.io", "rolebindings"),
+    "Service": ("", "services"),
+    "DaemonSet": ("apps", "daemonsets"),
+}
+KUBE_WORDS = {
+    "namespace": "Namespace", "namespaces": "Namespace", "ns": "Namespace",
+    "serviceaccount": "ServiceAccount", "serviceaccounts": "ServiceAccount", "sa": "ServiceAccount",
+    "resourcequota": "ResourceQuota", "resourcequotas": "ResourceQuota", "quota": "ResourceQuota",
+    "limitrange": "LimitRange", "limitranges": "LimitRange", "limits": "LimitRange",
+    "networkpolicy": "NetworkPolicy", "networkpolicies": "NetworkPolicy", "netpol": "NetworkPolicy",
+    "role": "Role", "roles": "Role", "rolebinding": "RoleBinding", "rolebindings": "RoleBinding",
+    "service": "Service", "services": "Service", "svc": "Service",
+    "daemonset": "DaemonSet", "daemonsets": "DaemonSet", "ds": "DaemonSet",
+}
+KUBE_VALUE_FLAGS = {"--context", "-n", "--namespace", "-o", "--output", "-f", "--filename", "--dry-run",
+                    "--raw", "--field-selector", "-l", "--selector", "--validate", "--request-timeout"}
+
+
+def _kube_parse(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+    pos: list[str] = []
+    flags: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        name, eq, value = argv[i].partition("=")
+        if argv[i].startswith("-") and argv[i] != "-":
+            if not eq and name in KUBE_VALUE_FLAGS and i + 1 < len(argv):
+                value, i = argv[i + 1], i + 1
+            flags[name] = value
+        else:
+            pos.append(argv[i])
+        i += 1
+    return pos, flags
+
+
+def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None:
+    """W5's grant against W6's calls: every (group, resource, verb) the
+    ClusterRole holds is one a run needs, and every one a run needs is held.
+
+    kubectl's verbs are read off the calls the run made. `apply -f -` is a GET
+    of each object, then a CREATE (absent) or a PATCH (present: every re-run,
+    and every --mode limits) -- so each kind the run applied needs all three.
+    Creating a Role whose rules the caller does not hold needs `escalate`;
+    creating a RoleBinding needs `bind` on the Role it references, by name.
+    `get --raw=/readyz` is a non-resource URL every authenticated caller may
+    read, so it needs nothing here."""
+    assert created["returncode"] == 0, created["stderr"][-6000:]
+    world = created["world"]
+    calls = [c["argv"] for c in world["calls"] if c["tool"] == "kubectl"]
+    assert calls, "the run made no kubectl call; nothing was compared"
+
+    needed: set[tuple[str, str, str]] = set()
+    kube_system_reads: set[tuple[str, str, str]] = set()
+    applied = 0
+    for argv in calls:
+        pos, flags = _kube_parse(argv)
+        command = pos[:1]
+        if command in (["version"], ["config"]):
+            continue
+        assert command in (["get"], ["apply"]), f"a kubectl verb this test does not map to RBAC: {argv}"
+        if command == ["apply"]:
+            applied += 1
+            continue
+        if "--raw" in flags:
+            continue
+        assert len(pos) == 3 and not {"--field-selector", "-l", "--selector", "-A", "--all-namespaces"} & set(flags), (
+            f"a list, which the deployer's ClusterRole cannot make: {argv}")
+        group, resource = KUBE_KINDS[KUBE_WORDS[pos[1]]]
+        if flags.get("-n", flags.get("--namespace")) == "kube-system":
+            kube_system_reads.add((group, resource, pos[2]))
+        else:
+            needed.add((group, resource, "get"))
+    assert applied, "the run applied nothing; the apply's verbs were not compared"
+
+    bound: set[str] = set()
+    for name, obj in world["k8s"].items():
+        kind = name.split("/", 1)[0]
+        group, resource = KUBE_KINDS[kind]
+        needed |= {(group, resource, verb) for verb in ("get", "create", "patch")}
+        if kind == "Role":
+            needed.add((group, resource, "escalate"))
+        if kind == "RoleBinding":
+            assert obj["roleRef"]["kind"] == "Role", obj["roleRef"]
+            bound.add(obj["roleRef"]["name"])
+
+    docs = [d for d in yaml.safe_load_all(DEPLOYER_RBAC.read_text()) if d]
+    cluster_role = next(d for d in docs if d["kind"] == "ClusterRole")
+    granted: set[tuple[str, str, str]] = set()
+    bind_names: set[str] = set()
+    for rule in cluster_role["rules"]:
+        triples = {(g, r, v) for g in rule["apiGroups"] for r in rule["resources"] for v in rule["verbs"]}
+        if "resourceNames" in rule:
+            assert {v for _, _, v in triples} == {"bind"}, rule
+            bind_names |= set(rule["resourceNames"])
+        else:
+            granted |= triples
+    assert granted == needed, (
+        f"granted and never asked for: {sorted(granted - needed)}; "
+        f"asked for and not granted: {sorted(needed - granted)}")
+    assert bind_names == bound
+
+    dns_role = next(d for d in docs if d["kind"] == "Role" and d["metadata"]["namespace"] == "kube-system")
+    dns_granted = {(g, r, n) for rule in dns_role["rules"] for g in rule["apiGroups"]
+                   for r in rule["resources"] for n in rule["resourceNames"]}
+    assert all(rule["verbs"] == ["get"] for rule in dns_role["rules"]), dns_role["rules"]
+    assert dns_granted == kube_system_reads
 
 
 def test_a_rerun_after_a_failure_makes_only_what_is_missing(job: Job) -> None:

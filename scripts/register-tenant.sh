@@ -1168,7 +1168,6 @@ ws_a8() {
 ws_kind_word() {
   case "$1" in
     ServiceAccount) printf 'serviceaccount' ;;
-    ConfigMap) printf 'configmap' ;;
     ResourceQuota) printf 'resourcequota' ;;
     LimitRange) printf 'limitrange' ;;
     NetworkPolicy) printf 'networkpolicy' ;;
