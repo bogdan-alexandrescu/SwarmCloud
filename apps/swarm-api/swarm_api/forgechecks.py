@@ -38,6 +38,13 @@ WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
 Red wins over pending: a red required check will not turn green by waiting,
 and a fix round started now is CI time saved.
+
+WHAT THE READING ALSO COUNTS (#503). Beside the one state, a reading keeps a
+count per bucket -- passed, failed, pending, skipped -- and one entry per check
+it evaluated (`{name, state, url}`), so the run page can say "5 passed · 7
+pending · 3 skipped" and link each check, where it once said only "pending".
+These are for DISPLAY: they never decide the state, which is the rule above,
+unchanged (a `cancelled` run counts as skipped here and is still red there).
 """
 
 from __future__ import annotations
@@ -56,6 +63,17 @@ STATUS_GREEN = "success"
 STATUS_PENDING = "pending"
 
 GREEN, PENDING, RED, NONE = "green", "pending", "red", "none"
+
+#: The display buckets a reading counts its checks into (`CiReading.counts`).
+PASSED, FAILED, SKIPPED = "passed", "failed", "skipped"
+COUNT_BUCKETS = (PASSED, FAILED, PENDING, SKIPPED)
+#: Which GitHub check-run conclusions land in which bucket. A run not yet
+#: `completed` (queued, in_progress, waiting, requested) is pending, whatever
+#: its conclusion. `success` is passed; `neutral`, `skipped` and `cancelled`
+#: are skipped; every other conclusion -- `failure`, `timed_out`,
+#: `action_required`, `startup_failure`, `stale`, or none at all -- is failed.
+PASSED_CONCLUSIONS = frozenset({"success"})
+SKIPPED_CONCLUSIONS = frozenset({"neutral", "skipped", "cancelled"})
 
 
 @dataclass(frozen=True)
@@ -111,6 +129,45 @@ def status_state(status: Mapping[str, Any]) -> str:
     return RED
 
 
+def run_bucket(run: Mapping[str, Any]) -> str:
+    """The display bucket of one check run (see `PASSED_CONCLUSIONS`)."""
+    if run.get("status") != "completed":
+        return PENDING
+    conclusion = run.get("conclusion") or ""
+    if conclusion in PASSED_CONCLUSIONS:
+        return PASSED
+    if conclusion in SKIPPED_CONCLUSIONS:
+        return SKIPPED
+    return FAILED
+
+
+def status_bucket(status: Mapping[str, Any]) -> str:
+    """A commit status: `success` passed, `pending` pending, `failure`/`error` failed."""
+    return {GREEN: PASSED, PENDING: PENDING}.get(status_state(status), FAILED)
+
+
+def _url(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def run_entry(run: Mapping[str, Any]) -> dict[str, Any]:
+    """`{name, state, url}` for a check run: its `html_url`, else its `details_url`."""
+    return {
+        "name": str(run.get("name") or "check"),
+        "state": run_bucket(run),
+        "url": _url(run.get("html_url")) or _url(run.get("details_url")),
+    }
+
+
+def status_entry(status: Mapping[str, Any]) -> dict[str, Any]:
+    """`{name, state, url}` for a commit status: its `target_url`."""
+    return {
+        "name": str(status.get("context") or "status"),
+        "state": status_bucket(status),
+        "url": _url(status.get("target_url")),
+    }
+
+
 def _app_id(run: Mapping[str, Any]) -> Any:
     app = run.get("app")
     return app.get("id") if isinstance(app, Mapping) else None
@@ -128,6 +185,17 @@ class CiReading:
     failing_statuses: list[Mapping[str, Any]] = field(default_factory=list)
     #: Names of what is still pending.
     pending: list[str] = field(default_factory=list)
+    #: One `{name, state, url}` per check evaluated, `state` a display bucket
+    #: (`COUNT_BUCKETS`) and `url` None when GitHub gave none. Display only.
+    checks: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """How many evaluated checks are in each display bucket."""
+        counts = {bucket: 0 for bucket in COUNT_BUCKETS}
+        for check in self.checks:
+            counts[check["state"]] += 1
+        return counts
 
     def failing_names(self) -> list[str]:
         names = [str(run.get("name") or "check") for run in self.failing_runs]
@@ -152,6 +220,7 @@ def evaluate(
                 and (check.app_id is None or _app_id(run) == check.app_id)
             ]
             if mine:
+                reading.checks += [run_entry(run) for run in mine]
                 state = required_check_state(mine)
                 if state == RED:
                     reading.failing_runs += [
@@ -169,6 +238,10 @@ def evaluate(
                 if check.app_id is None else []
             )
             state = status_state(reported[0]) if reported else PENDING
+            reading.checks.append(
+                status_entry(reported[0]) if reported
+                else {"name": check.context, "state": PENDING, "url": None}
+            )
             if state == RED:
                 reading.failing_statuses.append(reported[0])
             elif state == PENDING:
@@ -177,12 +250,14 @@ def evaluate(
         if not runs and not statuses:
             return CiReading(state=NONE)
         for run in runs:
+            reading.checks.append(run_entry(run))
             state = other_check_state(run)
             if state == RED:
                 reading.failing_runs.append(run)
             elif state == PENDING:
                 reading.pending.append(str(run.get("name") or "check"))
         for status in statuses:
+            reading.checks.append(status_entry(status))
             state = status_state(status)
             if state == RED:
                 reading.failing_statuses.append(status)

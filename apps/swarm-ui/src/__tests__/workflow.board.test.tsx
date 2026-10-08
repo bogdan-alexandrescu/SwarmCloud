@@ -1975,6 +1975,106 @@ describe('the owner’s decisions: the open card', () => {
     expect(quiet.querySelector('.wf-band-pick')).toBeNull()
     expect(quiet.querySelector('.wf-band-toggle')!.getAttribute('aria-expanded')).toBe('false')
   })
+
+  /**
+   * OPEN IN THE SAME RENDER THE PICK ARRIVES IN (WF-10, part of #361). The
+   * stage holding a picked step used to be laid out folded on the render the
+   * pick arrived in, and opened only when an effect's `onToggleStage` came
+   * back round: for one frame the picked step was a name on a band.
+   *
+   * HOW "THE FIRST RENDER" IS SEEN: `onToggleStage` is called from the commit
+   * of the render the pick arrived in, after React has written that render to
+   * the DOM and before anything it sets has re-rendered. So the DOM read inside
+   * the handler IS the arrival render -- and that handler is the only thing
+   * here that can see it, since `render` and `rerender` flush every effect
+   * (and so the re-render the open triggers) before returning. Read before the
+   * fix, it showed the band shut and no `scan-7` node.
+   */
+  it('WF-10: a picked step in a folded stage is on the canvas in the very render the pick arrives in', () => {
+    const { w, tasks } = wideStage(13)
+    let host = document.body.appendChild(document.createElement('div'))
+    const atToggle: { node: boolean; expanded: string | null }[] = []
+    function Picked({ picked }: { picked: string | null }) {
+      const [stages, setStages] = useState<Record<string, boolean>>({})
+      return (
+        <WorkflowCard
+          workflow={w}
+          taskById={tasks}
+          usage={{ kind: 'ready', usage: null }}
+          openStages={stages}
+          onToggleStage={(key, was) => {
+            atToggle.push({
+              node: [...host.querySelectorAll('.node .node-id')].some((n) => n.textContent?.startsWith('scan-7')),
+              expanded: host.querySelector('.wf-band-toggle')?.getAttribute('aria-expanded') ?? null,
+            })
+            setStages((s) => ({ ...s, [key]: !was }))
+          }}
+          picked={picked}
+          onPick={noop}
+          loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+          reload={noop}
+        />
+      )
+    }
+    // The pick as the INITIAL prop: the mount is the arrival.
+    const first = render(<Picked picked="scan-7" />, { container: host })
+    expect(atToggle, 'the open was not recorded through onToggleStage').toHaveLength(1)
+    expect(atToggle[0], 'the arrival render drew the picked step folded in its band').toEqual({ node: true, expanded: 'true' })
+    expect(nodeNamed(first.container, 'scan-7').className).toContain('is-picked')
+    first.unmount()
+    host.remove()
+
+    // The pick arriving on a LATER render: nothing picked, then scan-7.
+    atToggle.length = 0
+    host = document.body.appendChild(document.createElement('div'))
+    const later = render(<Picked picked={null} />, { container: host })
+    expect(atToggle).toHaveLength(0)
+    expect(host.querySelector('.wf-band-toggle')!.getAttribute('aria-expanded')).toBe('false')
+    later.rerender(<Picked picked="scan-7" />)
+    expect(atToggle).toHaveLength(1)
+    expect(atToggle[0], 'the arrival render drew the picked step folded in its band').toEqual({ node: true, expanded: 'true' })
+    later.unmount()
+    host.remove()
+  })
+
+  it('WF-10: a reader who closes the picked step\'s stage again is not overruled on later renders', () => {
+    const { w, tasks } = wideStage(13)
+    function Picked({ picked, tick }: { picked: string; tick: number }) {
+      const [stages, setStages] = useState<Record<string, boolean>>({})
+      return (
+        <div data-tick={tick}>
+          <WorkflowCard
+            workflow={w}
+            taskById={tasks}
+            usage={{ kind: 'ready', usage: null }}
+            openStages={stages}
+            onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+            picked={picked}
+            onPick={noop}
+            loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+            reload={noop}
+          />
+        </div>
+      )
+    }
+    const view = render(<Picked picked="scan-7" tick={0} />)
+    const toggle = () => view.container.querySelector<HTMLButtonElement>('.wf-band-toggle')!
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(toggle())
+    const shut = () => {
+      expect(toggle().getAttribute('aria-expanded'), 'the stage the reader closed was opened again').toBe('false')
+      expect(
+        [...view.container.querySelectorAll('.node .node-id')].some((n) => n.textContent?.startsWith('scan-7')),
+        'the closed stage still draws the picked step',
+      ).toBe(false)
+    }
+    shut()
+    // Later renders with the same pick leave it shut.
+    view.rerender(<Picked picked="scan-7" tick={1} />)
+    shut()
+    view.rerender(<Picked picked="scan-7" tick={2} />)
+    shut()
+  })
 })
 
 // ---------------------------------------------------------------------------

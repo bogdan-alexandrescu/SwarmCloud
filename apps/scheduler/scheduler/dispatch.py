@@ -517,15 +517,20 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
 
 
 #: The worker's step-spec verification settings (contract request 34). Only
-#: the PLATFORM sets them -- terraform on its Jobs and in the GKE ConfigMap,
-#: this scheduler on the Jobs it creates, from its own settings. `worker_env`,
-#: shaped by a task, must never carry one: a tenant-writable document would
-#: then choose the keys it is checked against. A test holds both dispatchers.
+#: the PLATFORM sets them -- terraform on its Cloud Run Jobs and in the GKE
+#: ConfigMap, this scheduler on every Job it creates on EITHER backend, from
+#: its own settings (`spec_job_env`). `worker_env`, shaped by a task, must
+#: never carry one: a tenant-writable document would then choose the keys it is
+#: checked against. A test holds both dispatchers. They are public keys, a KMS
+#: key name, a mode and a timestamp -- no private material exists to leak.
 SPEC_SETTING_NAMES = (
     "SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY", "SPEC_SIGNATURE_MODE", "SPEC_LEGACY_CUTOVER",
 )
 #: The ConfigMap terraform renders into each tenant's namespace, and where a
 #: GKE worker pod mounts it read-only (`agent_worker.specverify.VERIFY_KEYS_MOUNT`).
+#: Since 2026-10-08 it is the FALLBACK on GKE: the pod's environment carries
+#: `spec_job_env`, and the worker reads the mount only when that environment
+#: has no SPEC_VERIFY_KEYS (a scheduler deployed without them).
 SPEC_VERIFY_KEYS_CONFIG_MAP = "swarm-spec-verify-keys"
 SPEC_VERIFY_KEYS_MOUNT = "/etc/swarm/spec-verify-keys"
 
@@ -1618,6 +1623,20 @@ class GkeJobDispatcher:
         model = profile_model(self._settings, profile)
         if model:
             env.append({"name": "MODEL", "value": model})
+        # THE STEP-SPEC VERIFICATION SETTINGS, ON THE JOB, as a Cloud Run Job
+        # carries them (contract request 34; owner decision 2026-10-08). This
+        # reverses the original GKE design, which delivered them ONLY through
+        # the `swarm-spec-verify-keys` ConfigMap mount below. That was safe
+        # while GKE ran browser alone in namespaces Terraform applied; it stopped
+        # being enough when claude-code moved to GKE (PR 866) and onboarding
+        # (#847) began creating a namespace per person -- a namespace no deploy
+        # had rendered the ConfigMap into, where every task then ended
+        # CANNOT_START. From the scheduler's OWN settings, never `worker_env`
+        # (which a task shapes), so a caller still cannot choose the keys it is
+        # verified against. The worker still fails closed on a missing or bad
+        # signature; only a missing ConfigMap stops being fatal.
+        for name, value in spec_job_env(self._settings).items():
+            env.append({"name": name, "value": value})
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
@@ -1716,9 +1735,14 @@ class GkeJobDispatcher:
                                     {"name": "dshm", "mountPath": "/dev/shm"},
                                     # The step-spec public keys (contract
                                     # request 34), terraform's ConfigMap in
-                                    # this namespace. READ-ONLY, and never in
-                                    # `env`: a template placeholder away from
-                                    # a tenant-writable copy.
+                                    # this namespace, READ-ONLY. The FALLBACK
+                                    # since 2026-10-08: `env` above carries
+                                    # the scheduler's copy, which wins, and
+                                    # the worker reads this mount only when
+                                    # `env` has no SPEC_VERIFY_KEYS. Kept so a
+                                    # scheduler deployed without the keys
+                                    # still verifies wherever Terraform
+                                    # applied the ConfigMap.
                                     {"name": "spec-verify-keys",
                                      "mountPath": SPEC_VERIFY_KEYS_MOUNT,
                                      "readOnly": True},
@@ -1741,10 +1765,11 @@ class GkeJobDispatcher:
                             {"name": "tmp", "emptyDir": {"sizeLimit": f"{disk.tmp_gib}Gi"}},
                             {"name": "home", "emptyDir": {"sizeLimit": f"{disk.home_gib}Gi"}},
                             # `optional`: a namespace whose ConfigMap has not
-                            # been applied yet still starts its pod, and the
-                            # worker then exits CANNOT_START for every task,
-                            # signed or not (no keys, and no mode or cutover
-                            # either) -- loud, and never an unverified run.
+                            # been applied (one onboarding created) still
+                            # starts its pod, and verifies with the keys in
+                            # `env`. Only when NEITHER carries keys does the
+                            # worker exit CANNOT_START for every task, signed
+                            # or not -- loud, and never an unverified run.
                             {"name": "spec-verify-keys", "configMap": {
                                 "name": SPEC_VERIFY_KEYS_CONFIG_MAP,
                                 "optional": True}},

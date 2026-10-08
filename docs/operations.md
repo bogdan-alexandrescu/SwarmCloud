@@ -476,7 +476,7 @@ Where it is waiting tells you whose task to read:
 | `PLANNING` | the planner task | `GET /tasks/<planner_task_id>`: a planner `QUEUED`/`PARKED` is capacity, not the run ([section 6](#6-investigating-one-task)) |
 | `PLANNED` | a person: approve, edit or reject | nothing is running and nothing is held (invariant 1) |
 | `RUNNING` | the compiled workflow | `GET /workflows/<workflow_id>` |
-| `CHECKING` | CI on the pull request's head | `pull_request.checks`, and `pull_request.read_error` if CI could not be read |
+| `CHECKING` | CI on the pull request's head | `pull_request.checks`; `check_counts` (passed/failed/pending/skipped), `check_list` (each check's name, state and link, capped at 50 with `check_list_truncated`) and `ci_url` say which checks; `merged`/`merged_at` once GitHub reports it merged; `pull_request.read_error` if CI could not be read. On a run stored before these were recorded each serves `null`, never `0` |
 | `FIXING` | the newest CI fix round | `GET /workflows/<last of ci_fix_workflows>` |
 
 Stuck in `PLANNING` or `CHECKING`, and `writeback_error`, are in

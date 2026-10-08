@@ -92,6 +92,7 @@ else in this file would be a copy nothing compares, so none is.
 | `artifact_name` | filename | the output artifact's file name |
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+| `artifact_before_park` | boolean | write the output artifact before the simulated rate limit parks the first attempt |
 <!-- /runner-inputs:mock -->
 
 <!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -242,6 +243,46 @@ there is one. It parked on every attempt until 2026-09-25, and a park does not
 spend an attempt, so such a task never ended. Its first bound was a count in
 the mock's own working directory, which only the checkpoint carried forward,
 so a park whose upload failed was followed by another (the review of #213).
+
+`{"quota_exhausted": true, "artifact_before_park": true}` moves the mock's
+artifact (`artifact_name`, `artifact_text`) to BEFORE that park: the parking
+attempt writes it and then parks, and the attempt after the park writes
+nothing under that name. Without `quota_exhausted` the flag changes nothing.
+It exists to prove #166's carry live (contract request 56, accepted by the
+owner 2026-10-08): a file an agent wrote before a quota park reaches the
+attempt that succeeds BY REFERENCE, and before this input the mock parked
+before writing anything, so no live run could show it. Because the finishing
+attempt never rewrites the file, the one the task ends with can only have
+arrived by the carry. The recipe is a two-step workflow:
+
+```json
+{
+  "steps": [
+    {"step_id": "a",
+     "runner_profile": "mock",
+     "input": {"prompt": "write notes.md, then meet a rate limit",
+               "quota_exhausted": true, "retry_after_seconds": 60,
+               "artifact_before_park": true,
+               "artifact_name": "notes.md", "artifact_text": "written before the park\n"}},
+
+    {"step_id": "b",
+     "runner_profile": "mock",
+     "depends_on": ["a"],
+     "input_from": {"a": "notes.md"},
+     "input": {"prompt": "stage notes.md"}}
+  ]
+}
+```
+
+Expect A to park once and finish on its second attempt, with `notes.md` in
+its `result_summary.artifacts` carrying `carried_from` = A's FIRST attempt
+and a `uri` under that attempt's prefix (the parked attempt's uploads,
+recorded by `ControlPlane._record_parked_uploads` and read back through
+`ControlPlane.parked_uploads`), and no `notes.md` object under the second
+attempt's prefix. B then stages `notes.md` from that first attempt's object:
+its `result_summary.staged_inputs` names `notes.md` with a `uri` under A's
+`attempts/<first attempt>/`. `tests/unit/worker/test_parked_uploads_carry.py`
+holds the same run offline.
 
 ## Artifacts pass by reference
 
