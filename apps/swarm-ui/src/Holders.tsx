@@ -462,7 +462,13 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
           measured zero, and the mark says so; over a partial set the same
           agreement is `partial` (or `not measured`), never `real zero`. */}
       <div className="ctl-card-foot">
-        {mark ?? (disagreeing.length === 0 && <span className="ctl-mark is-zero">real zero</span>)}{' '}
+        {mark ??
+          (disagreeing.length === 0 && (
+            <Mark
+              kind="zero"
+              say="Every live lease was read, and the units they hold agree with every pool's own counter."
+            />
+          ))}{' '}
         over {ofTotal(rowsRead, coverage)} row{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'}
         {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} live not listed`}
         {' · '}
@@ -591,7 +597,9 @@ function HolderTable({
                 <tr role="row" className="hold-empty">
                   <td role="cell" colSpan={7}>
                     No lease holds <span className="mono">{pool}</span> right now ·{' '}
-                    {coverageMark(rows.length, coverage, 'This list') ?? <span className="ctl-mark is-zero">real zero</span>}
+                    {coverageMark(rows.length, coverage, 'This list') ?? (
+                      <Mark kind="zero" say={`Every live lease was read, and none of them holds ${pool}.`} />
+                    )}
                     {' · '}
                     <button type="button" className="hold-pool-clear" onClick={() => clearPool(pool)}>
                       All pools
