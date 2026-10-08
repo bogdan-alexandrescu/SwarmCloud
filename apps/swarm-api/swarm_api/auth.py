@@ -842,16 +842,16 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # §1, lane MS2): reads the named tenant's CI_PENDING parks with that
         # tenant's token and writes only the wake marker on them.
         ("POST", "/v1/admin/merges/wake"),
-        # The `task_finished` push (#748): the scheduler's wake topic's second
-        # subscription. It opens a MERGE verdict's pull request with the
-        # finished task's own tenant's token, for that tenant's gated
-        # integrator, and moves only a step it claimed (`verdictpublish`).
-        ("POST", "/v1/admin/tasks/finished"),
         # The GitHub user-token refresh sweep (docs/onboarding.md §3.4 item 6,
         # owner decision D2; lane OB3): the swarm-forge-refresh job. It spends
         # each due connection's refresh token and writes the new pair to that
         # user's own slots; it submits nothing and moves no task.
         ("POST", "/v1/admin/forge/refresh"),
+        # The `task_finished` push (#748): the scheduler's wake topic's second
+        # subscription. It opens a MERGE verdict's pull request with the
+        # finished task's own tenant's token, for that tenant's gated
+        # integrator, and moves only a step it claimed (`verdictpublish`).
+        ("POST", "/v1/admin/tasks/finished"),
     }
 )
 

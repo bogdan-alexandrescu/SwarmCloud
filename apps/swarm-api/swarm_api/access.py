@@ -9,15 +9,24 @@ recorded), D10 (chooser A: owners, then the owner's repositories paged and
 searched, each Read or Write with push ability shown before Write).
 
 ACTING AS THE PERSON. Every GitHub read here is made with the caller's OWN
-user access token, never the tenant token and never another member's.
-swarm-api may not read the base slot the worker reads (terraform/bootstrap/
-forge_user_slots.tf; `forgeapp`'s docstring), so it gets a usable token the
-one way it may: it takes the connection's refresh lease, spends the refresh
-token, stores BOTH new values in their slots exactly as the sweep does, and
-holds the new access token in memory for the length of one request,
-registered with the redaction filter. So each access request is one refresh
--- GitHub sets no limit on refreshes, and a request that would race the
-sweep for the single-use refresh token is a 409 instead.
+user access token, never the tenant token and never another member's, held
+in memory for the length of one request and registered with the redaction
+filter.
+
+IT REUSES THE CURRENT TOKEN (owner decision 2026-10-08). The request reads
+the base slot's latest version -- the token the worker reads too -- and uses
+it while the connection says it has more than `forgeapp.REUSE_WHILE_LEFT`
+(2 hours) left. It refreshes only when the token is within that of expiry,
+or when GitHub answers 401; then once, under the connection's refresh lease,
+storing both new values exactly as the sweep does, and the read is retried
+once. MEASURED 2026-10-08 08:20Z, before this: every request refreshed, the
+owner's slot reached 35 versions in minutes, and since each refresh makes
+GitHub end the access token it replaces, a task holding the previous version
+failed 401. A refresh another holder is running is never raced: the request
+uses the still-valid current token, or answers 409 when there is none; a
+refresh another holder finished meanwhile is adopted, not repeated. Until
+the bootstrap grant that lets swarm-api read base slots is applied, the read
+is refused and the request refreshes, as it did before.
 
 DOCUMENTS (§3.1). `forge_orgs/{tenant}__{user_hash}__{owner}` is an owner
 the person enabled; `forge_grants/{tenant}__{user_hash}__{repo_id}` is a
@@ -56,7 +65,7 @@ import re
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterator
 from urllib.parse import quote, urlencode
 
@@ -70,6 +79,7 @@ from .forgeapp import (
     CONNECTIONS,
     GRANTS,
     REFRESH_FAILED,
+    REUSE_WHILE_LEFT,
     REVOKED,
     Caller,
     ForgeApp,
@@ -253,22 +263,37 @@ class _Owner:
 class _AsUser:
     """The reads one request makes with the person's token. Every answer
     that did not come back raises `_Unanswered`; the token is never in a
-    message, and is registered with the redaction filter by the caller."""
+    message, and is registered with the redaction filter by the caller.
 
-    def __init__(self, github: _GitHub, token: str) -> None:
+    A 401 is GitHub saying the token in hand has ended -- a refresh elsewhere
+    replaced it. `renew` is asked ONCE per request for a usable one, and the
+    read is made again with it; a second 401 is the answer."""
+
+    def __init__(self, github: _GitHub, token: str,
+                 renew: Callable[[], str | None] | None = None) -> None:
         self._github = github
         self._token = token
+        self._renew = renew
 
-    def _headers(self) -> dict[str, str]:
-        return {**_API_HEADERS, "Authorization": f"Bearer {self._token}"}
+    def _send(self, make: Callable[[str], HttpAnswer]) -> HttpAnswer:
+        answer = make(self._token)
+        if answer.status == 401 and self._renew is not None:
+            renew, self._renew = self._renew, None
+            fresh = renew()
+            if fresh:
+                self._token = fresh
+                answer = make(fresh)
+        return answer
 
     def get(self, path: str) -> HttpAnswer:
-        return self._github._call("GET", API + path, self._headers(), None)
+        return self._send(lambda token: self._github._call(
+            "GET", API + path, {**_API_HEADERS, "Authorization": f"Bearer {token}"}, None))
 
     def git(self, owner: str, repo: str, service: str) -> HttpAnswer:
         url = (f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}.git/"
                f"info/refs?service={service}")
-        return self._github._call("GET", url, git_basic_headers(self._token), None)
+        return self._send(lambda token: self._github._call(
+            "GET", url, git_basic_headers(token), None))
 
     def installations(self) -> list[_Owner]:
         found: list[_Owner] = []
@@ -347,6 +372,169 @@ def _sso_owner(answer: HttpAnswer) -> str | None:
 # the service
 # --------------------------------------------------------------------------
 
+def _left(doc: dict[str, Any], now: datetime) -> timedelta | None:
+    """How long the connection's access token has left, or None when unknown."""
+    expires = doc.get("access_expires_at")
+    return expires - now if isinstance(expires, datetime) else None
+
+
+def _moved(seen: dict[str, Any], current: dict[str, Any]) -> bool:
+    """True when another holder refreshed the connection since `seen` was read."""
+    return any(seen.get(name) != current.get(name)
+               for name in ("refreshed_at", "access_expires_at"))
+
+
+class _UserSession:
+    """One request's hold on the person's token (owner decision 2026-10-08).
+
+    `open` reads the base slot's current access token and uses it while it
+    has more than REUSE_WHILE_LEFT left; otherwise, or when the slot cannot
+    be read, it refreshes. `renew` is the 401 path: one refresh, never two.
+    Every value is registered with the redaction filter on `stack`, which
+    the caller closes when the request ends.
+    """
+
+    def __init__(self, service: "AccessService", caller: Caller, stack: ExitStack) -> None:
+        self._service = service
+        self._app = service._app
+        self._caller = caller
+        self._stack = stack
+        self._doc = service._require_active(caller)
+        self._suffix = provider_suffix(Scope.USER, user=caller.key)
+        self._login = str(self._doc.get("forge_login") or "")
+        self._token = ""
+        self._renewed = False
+
+    def held(self, token: str) -> HeldCredential:
+        return HeldCredential(SCOPE_USER, str(self._doc.get("secret_name") or ""), token,
+                              login=self._login)
+
+    def _hold(self, value: str) -> str:
+        if value:
+            self._stack.enter_context(redaction_literal(value))
+        return value
+
+    def _read_access(self) -> str:
+        """The base slot's latest version, or "" when it cannot be read --
+        before the bootstrap grant is applied, for one -- named by type only."""
+        try:
+            return self._hold(self._app._slots.read_access(self._caller.tenant_id,
+                                                           self._suffix))
+        except Exception as exc:
+            log.warning("access could not read the current token connection=%s (%s)",
+                        self._doc.get("connection_id"), type(exc).__name__)
+            return ""
+
+    def open(self) -> str:
+        left = _left(self._doc, self._service._now())
+        current = self._read_access() if left is not None and left > timedelta(0) else ""
+        if current and left is not None and left > REUSE_WHILE_LEFT:
+            self._token = current
+        else:
+            self._token = self._refresh(fallback=current, refused="")
+        return self._token
+
+    def renew(self) -> str | None:
+        """GitHub answered 401 to the token in hand: one usable replacement
+        for this request, or None when one was already asked for."""
+        if self._renewed:
+            return None
+        self._renewed = True
+        self._token = self._refresh(fallback="", refused=self._token)
+        return self._token
+
+    def _refresh(self, *, fallback: str, refused: str) -> str:
+        """A usable token by way of the refresh lease. `fallback` is a still
+        valid current token to use while another holder refreshes; `refused`
+        the token GitHub just answered 401 to, which is never handed back.
+
+        The refresh sequence is the sweep's (`ForgeApp._refresh_one`): the
+        lease, the refresh, both values stored -- the refresh twin first --
+        then the record. Only the outcome differs: the new access token is
+        handed to the request instead of being dropped.
+        """
+        service, app, caller = self._service, self._app, self._caller
+        conn_id = str(self._doc["connection_id"])
+        login = self._login
+        suffix = self._suffix
+        holder = uuid.uuid4().hex
+        current = app._take_lease(conn_id, holder)
+        if current is None:
+            service._require_active(caller)
+            if fallback:
+                # Another holder is refreshing a token that still works:
+                # use it, and leave the refresh to them.
+                return fallback
+            if refused:
+                latest = self._read_access()
+                if latest and latest != refused:
+                    return latest
+            raise Conflict("a refresh of your GitHub token is running; try again in a "
+                           "minute")
+        now = service._now()
+        left = _left(current, now)
+        if _moved(self._doc, current) and left is not None and left > REUSE_WHILE_LEFT:
+            # Another holder refreshed since this request read the
+            # connection: its token is the current one. Not refreshed again.
+            latest = self._read_access()
+            if latest and latest != refused:
+                app._finish(conn_id, holder, {})
+                self._doc = current
+                return latest
+        client_id = app._require_client_id()
+        client_secret = self._hold(app._client_secret())
+        refresh_expires = current.get("refresh_expires_at")
+        if isinstance(refresh_expires, datetime) and refresh_expires <= now:
+            app._mark_failed(current, holder, "the refresh token is past its expiry")
+            raise AccessRefused("REFRESH_FAILED", "your GitHub authorisation has expired",
+                                login=login)
+        try:
+            refresh_token = app._slots.read_refresh(caller.tenant_id, refresh_suffix(suffix))
+        except Exception as exc:
+            app._finish(conn_id, holder, {})
+            log.warning("access could not read the refresh slot connection=%s (%s)",
+                        conn_id, type(exc).__name__)
+            raise UpstreamUnavailable("your GitHub connection's slot could not be read "
+                                      f"({type(exc).__name__}); try again") from None
+        self._hold(refresh_token)
+        try:
+            tokens = app._github.refresh(client_id, client_secret, refresh_token, now)
+        except _Unanswered:
+            app._finish(conn_id, holder, {})
+            raise _unreachable("the token refresh") from None
+        except _Refused as refused_refresh:
+            app._mark_failed(current, holder,
+                             f"GitHub refused the refresh ({refused_refresh.error})")
+            raise AccessRefused("REFRESH_FAILED",
+                                f"GitHub refused SwarmCloud's access as {login}",
+                                login=login) from None
+        refresh_token = ""
+        self._hold(tokens.access)
+        self._hold(tokens.refresh)
+        try:
+            app._slots.add_version(caller.tenant_id, refresh_suffix(suffix), tokens.refresh)
+            version = app._slots.add_version(caller.tenant_id, suffix, tokens.access)
+        except Exception as exc:
+            log.error("access could not store the refreshed tokens connection=%s (%s)",
+                      conn_id, type(exc).__name__)
+            app._mark_failed(current, holder, "the refreshed token could not be stored "
+                                              f"({type(exc).__name__})")
+            raise UpstreamUnavailable("your refreshed GitHub token could not be stored; "
+                                      "press Reconnect") from None
+        fields = {"access_expires_at": tokens.access_expires_at,
+                  "refresh_expires_at": tokens.refresh_expires_at, "refreshed_at": now}
+        app._finish(conn_id, holder, fields)
+        self._doc = {**current, **fields, "refresh_lease": None}
+        token_id = current.get("token_id")
+        if token_id:
+            app._update_record(caller.tenant_id, token_id, {
+                "expires_at": tokens.access_expires_at, "rotated_at": now,
+                "secret_version": version or None, "verified_at": now})
+        log.info("access refreshed the GitHub token tenant=%s connection=%s",
+                 caller.tenant_id, conn_id)
+        return tokens.access
+
+
 class AccessService:
     """The access routes' logic, over one Firestore, `ForgeApp`'s connection
     and slots, and one GitHub transport."""
@@ -384,76 +572,12 @@ class AccessService:
 
     @contextmanager
     def user_token(self, caller: Caller) -> Iterator[HeldCredential]:
-        """A usable token of the caller's own connection, for one request.
-
-        The refresh sequence is the sweep's (`ForgeApp._refresh_one`): the
-        lease, the refresh, both values stored -- the refresh twin first --
-        then the record. Only the outcome differs: the new access token is
-        handed to the caller's `with` instead of being dropped.
-        """
-        doc = self._require_active(caller)
-        app = self._app
-        client_id = app._require_client_id()
-        client_secret = app._client_secret()
-        conn_id = str(doc["connection_id"])
-        login = str(doc.get("forge_login") or "")
-        suffix = provider_suffix(Scope.USER, user=caller.key)
-        holder = uuid.uuid4().hex
-        with ExitStack() as held:
-            held.enter_context(redaction_literal(client_secret))
-            current = app._take_lease(conn_id, holder)
-            if current is None:
-                self._require_active(caller)
-                raise Conflict("a refresh of your GitHub token is running; try again in a "
-                               "minute")
-            now = self._now()
-            refresh_expires = current.get("refresh_expires_at")
-            if isinstance(refresh_expires, datetime) and refresh_expires <= now:
-                app._mark_failed(current, holder, "the refresh token is past its expiry")
-                raise AccessRefused("REFRESH_FAILED", "your GitHub authorisation has expired",
-                                    login=login)
-            try:
-                refresh_token = app._slots.read_refresh(caller.tenant_id, refresh_suffix(suffix))
-            except Exception as exc:
-                app._finish(conn_id, holder, {})
-                log.warning("access could not read the refresh slot connection=%s (%s)",
-                            conn_id, type(exc).__name__)
-                raise UpstreamUnavailable("your GitHub connection's slot could not be read "
-                                          f"({type(exc).__name__}); try again") from None
-            held.enter_context(redaction_literal(refresh_token))
-            try:
-                tokens = app._github.refresh(client_id, client_secret, refresh_token, now)
-            except _Unanswered:
-                app._finish(conn_id, holder, {})
-                raise _unreachable("the token refresh") from None
-            except _Refused as refused:
-                app._mark_failed(current, holder, f"GitHub refused the refresh ({refused.error})")
-                raise AccessRefused("REFRESH_FAILED",
-                                    f"GitHub refused SwarmCloud's access as {login}",
-                                    login=login) from None
-            refresh_token = ""
-            held.enter_context(redaction_literal(tokens.access))
-            held.enter_context(redaction_literal(tokens.refresh))
-            try:
-                app._slots.add_version(caller.tenant_id, refresh_suffix(suffix), tokens.refresh)
-                version = app._slots.add_version(caller.tenant_id, suffix, tokens.access)
-            except Exception as exc:
-                log.error("access could not store the refreshed tokens connection=%s (%s)",
-                          conn_id, type(exc).__name__)
-                app._mark_failed(current, holder, "the refreshed token could not be stored "
-                                                  f"({type(exc).__name__})")
-                raise UpstreamUnavailable("your refreshed GitHub token could not be stored; "
-                                          "press Reconnect") from None
-            app._finish(conn_id, holder, {"access_expires_at": tokens.access_expires_at,
-                                          "refresh_expires_at": tokens.refresh_expires_at,
-                                          "refreshed_at": now})
-            token_id = current.get("token_id")
-            if token_id:
-                app._update_record(caller.tenant_id, token_id, {
-                    "expires_at": tokens.access_expires_at, "rotated_at": now,
-                    "secret_version": version or None, "verified_at": now})
-            yield HeldCredential(SCOPE_USER, str(doc.get("secret_name") or ""), tokens.access,
-                                 login=login)
+        """A usable token of the caller's own connection, for one request:
+        the current one while it is fresh, a refresh only when it is near
+        expiry (`_UserSession`)."""
+        with ExitStack() as stack:
+            session = _UserSession(self, caller, stack)
+            yield session.held(session.open())
 
     def credential_for(self, caller: Caller, tenant: Tenant,
                        tokens: ForgeTokens) -> CredentialSource:
@@ -477,8 +601,10 @@ class AccessService:
 
     @contextmanager
     def _as_user(self, caller: Caller) -> Iterator[tuple[_AsUser, HeldCredential]]:
-        with self.user_token(caller) as held:
-            yield _AsUser(self._github, held.value), held
+        with ExitStack() as stack:
+            session = _UserSession(self, caller, stack)
+            token = session.open()
+            yield _AsUser(self._github, token, renew=session.renew), session.held(token)
 
     # -- documents -----------------------------------------------------------
 

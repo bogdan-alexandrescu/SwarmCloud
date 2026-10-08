@@ -109,6 +109,7 @@ At step 1 only a named refusal is a 78, and every other API error is a 69
 from __future__ import annotations
 
 import base64
+import dataclasses
 import fnmatch
 import functools
 import json
@@ -199,7 +200,7 @@ from . import forge as forge_mod
 from . import merge as merge_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
-from .forge import ForgeError, probe_repository, open_pull_request
+from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
@@ -264,11 +265,14 @@ from .runners.cliagent import (
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
+    FORGE_REFUSED_TWICE,
     GIT_PROVIDER,
     CredentialMissing,
     ForgeWriteRefused,
     SecretError,
     SecretManagerClient,
+    call_reading_again,
+    forge_credential_refused,
     forge_read_only,
     forge_suffix,
     grant_refusal,
@@ -2550,18 +2554,7 @@ class Worker:
                     prefetch.wait()
             fetch_started = float(self.phases.seconds_since_start())
             try:
-                staged = issue_mod.stage_issue(
-                    number=issue_number,
-                    repository_url=self._repo_url,
-                    token=prefetch.token if prefetch is not None else self._git_token(),
-                    refusal=self._git_token_refusal(),
-                    work_dir=ws.work,
-                    scrub=self._scrub,
-                    logger=self.log,
-                    on_request=self._heartbeat,
-                    retry=self._forge_retry(),
-                    prefetched=prefetch,
-                )
+                staged = self._stage_issue(issue_number, ws.work, prefetch)
             except forge_mod.ForgeUnavailable as exc:
                 return functools.partial(
                     self._fail_issue_unreachable,
@@ -4235,21 +4228,52 @@ class Worker:
         # `gitops.PeerPin`). One for the whole clone, so a pin decided on the
         # base pin's fetch carries to the branch-tip clone of the same host.
         peers = PeerPin(self._egress, url)
+        # Whether each try handed git a token, latest last: an "Authentication
+        # failed" from a clone that held none is git asking for a credential
+        # nobody gave it, which reading the slot again cannot change.
+        held: list[bool] = []
+
+        def clone_token() -> str | None:
+            token = None if refusal else self._git_token()
+            held.append(bool(token))
+            return token
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
-            return retry_clone(
-                call,
-                destination=destination,
-                max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
-                remaining_seconds=self._remaining_seconds,
+            def tried(again: bool) -> CloneResult:
+                if again:
+                    # `call` reads the token at each try, so this one reads
+                    # the slot's latest version. git refuses a folder the
+                    # refused try left files in.
+                    gitops_mod._empty_directory(Path(destination))
+                return retry_clone(
+                    call,
+                    destination=destination,
+                    max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+                    remaining_seconds=self._remaining_seconds,
+                    logger=self.log,
+                    sleep=self.forge_sleep,
+                    # Redundant under `_clone_keeping_lease`, whose thread beats
+                    # meanwhile; kept so `_maybe_clone` called alone still beats
+                    # between tries. At worst one beat is doubled, an unfenced
+                    # refresh of a lease the thread has just checked is ours.
+                    on_retry=self._heartbeat,
+                    record=tries,
+                )
+
+            # A refused credential (git's "Authentication failed", a 401) is
+            # read again and the clone tried once more (owner decision
+            # 2026-10-08): a refresh may have ended the version first read.
+            # Never when the refused try held no token -- this worker clones
+            # without it, or the task has none -- and never for a missing
+            # repository, which `forge_credential_refused` does not match.
+            return call_reading_again(
+                tried,
                 logger=self.log,
-                sleep=self.forge_sleep,
-                # Redundant under `_clone_keeping_lease`, whose thread beats
-                # meanwhile; kept so `_maybe_clone` called alone still beats
-                # between tries. At worst one beat is doubled, an unfenced
-                # refresh of a lease the thread has just checked is ours.
-                on_retry=self._heartbeat,
-                record=tries,
+                what="the clone",
+                twice=lambda exc: GitError(f"{exc}; {FORGE_REFUSED_TWICE}"),
+                refused=lambda exc: bool(held) and held[-1]
+                and not isinstance(exc, GitTransient)
+                and forge_credential_refused(exc),
             )
 
         if pinned_sha is not None:
@@ -4263,7 +4287,7 @@ class Worker:
                     logs_dir=ws.logs,
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
-                    token=None if refusal else self._git_token(),
+                    token=clone_token(),
                     egress=self._egress,
                     peers=peers,
                 ))
@@ -4311,7 +4335,7 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=None if refusal else self._git_token(),
+                token=clone_token(),
                 egress=self._egress,
                 peers=peers,
                 # An index run reads 90 days of history (hot spots,
@@ -6036,6 +6060,84 @@ class Worker:
             )
             return None
 
+    def _stage_issue(
+        self, issue_number: int, work_dir: Path, prefetch: issue_mod.IssuePrefetch | None
+    ) -> Path:
+        """`issue_mod.stage_issue`, read again once on a 401 (owner decision 2026-10-08).
+
+        MEASURED 2026-10-08: a task failed "could not fetch issue #780: the
+        forge refused the credential (401: Bad credentials)" -- a refresh had
+        ended the version it read. The retry reads the slot's latest version
+        (`_git_token`) and fetches anew, never the failed prefetch. A second
+        401 is an `IssueUnavailable` saying the token was re-read and refused
+        again (`secrets.FORGE_REFUSED_TWICE`), ending the task as before.
+        """
+
+        def stage(again: bool) -> Path:
+            usable = None if again else prefetch
+            return issue_mod.stage_issue(
+                number=issue_number,
+                repository_url=self._repo_url,
+                token=usable.token if usable is not None else self._git_token(),
+                refusal=self._git_token_refusal(),
+                work_dir=work_dir,
+                scrub=self._scrub,
+                logger=self.log,
+                on_request=self._heartbeat,
+                retry=self._forge_retry(),
+                prefetched=usable,
+            )
+
+        return call_reading_again(
+            stage,
+            logger=self.log,
+            what="the issue fetch",
+            twice=lambda exc: issue_mod.IssueUnavailable(
+                f"{exc}; {FORGE_REFUSED_TWICE}"
+            ),
+            refused=self._refused_credential,
+        )
+
+    def _refused_credential(self, exc: BaseException) -> bool:
+        """A 401 worth a re-read: only when this worker reads a token at all."""
+        return not self._git_token_refusal() and forge_credential_refused(exc)
+
+    def _probe_reading_again(
+        self, url: str, token: str | None, what: str
+    ) -> tuple[str | None, RepoAccess | None]:
+        """`probe_repository` with `token`; on a 401, read the slot again and probe once more.
+
+        Returns the token the answer is for, which the push and the pull
+        request then use (owner decision 2026-10-08). A second 401 keeps
+        `can_push` False and says the token was re-read and refused again.
+        Raises `ForgeError` as `probe_repository` does.
+        """
+
+        def probe(with_token: str | None) -> RepoAccess | None:
+            return forge_mod.retry_transient(
+                lambda: probe_repository(url=url, token=with_token),
+                policy=self._forge_retry(),
+                what=what,
+            )
+
+        access = probe(token)
+        if not token or access is None or access.can_push \
+                or not self._refused_credential(RuntimeError(access.reason)):
+            return token, access
+        self.log.warning(
+            "the forge refused the credential; reading its secret again and retrying once",
+            call=what,
+        )
+        token = self._git_token()
+        access = probe(token)
+        if access is not None and not access.can_push \
+                and forge_credential_refused(access.reason):
+            self.log.error("the forge refused the re-read credential as well", call=what)
+            access = dataclasses.replace(
+                access, reason=f"{access.reason}; {FORGE_REFUSED_TWICE}"
+            )
+        return token, access
+
     def _forge_suffix(self) -> str:
         """The provider suffix of this task's forge secret (contract request 54).
 
@@ -7680,11 +7782,7 @@ class Worker:
         if not token:
             return "no credential"
         try:
-            access = forge_mod.retry_transient(
-                lambda: probe_repository(url=url, token=token),
-                policy=self._forge_retry(),
-                what="the carrier target probe",
-            )
+            token, access = self._probe_reading_again(url, token, "the carrier target probe")
         except ForgeError as exc:
             return f"could not reach the forge: {self._scrub(str(exc)[:300])}"
         if access is None:
@@ -7743,11 +7841,7 @@ class Worker:
                 "no git credential is registered for this tenant",
             )
         try:
-            access = forge_mod.retry_transient(
-                lambda: probe_repository(url=url, token=token),
-                policy=self._forge_retry(),
-                what="the push-scope probe",
-            )
+            token, access = self._probe_reading_again(url, token, "the push-scope probe")
         except ForgeError as exc:
             return functools.partial(
                 self._fail_forge_unreachable, url, self._scrub(str(exc)[:300])
@@ -9277,11 +9371,7 @@ class Worker:
 
         token = self._git_token()
         try:
-            access = forge_mod.retry_transient(
-                lambda: probe_repository(url=url, token=token),
-                policy=self._forge_retry(),
-                what="the publish probe",
-            )
+            token, access = self._probe_reading_again(url, token, "the publish probe")
         except ForgeError as exc:
             out = {
                 "published": False,

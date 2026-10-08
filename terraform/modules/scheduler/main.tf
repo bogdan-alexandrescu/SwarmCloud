@@ -106,7 +106,7 @@ resource "google_pubsub_subscription" "wake" {
 # the scheduler's alone.
 #
 # The rollup sweeper's identity, which swarm-api admits to this one push route
-# beside its four ticks (auth.ROLLUP_SWEEPER_ROUTES) and which already holds
+# beside its five ticks (auth.ROLLUP_SWEEPER_ROUTES) and which already holds
 # run.invoker on swarm-api (infra main.tf, rollup_sweeper_invokes_api).
 #
 # No dead-letter topic and a short retry: a lost push costs only the hold, at

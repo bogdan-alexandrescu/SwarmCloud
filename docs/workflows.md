@@ -806,7 +806,15 @@ So swarm-api can open the pull request itself
    creates `swarm/<fix task>` at the commit the implementer recorded it pushed
    (refused if the remote branch has moved since). It then opens the pull
    request, with the implementer's `pr-title.txt` and `pr-body.md` and the
-   tenant's `-git` token read at that moment. Finally it ends the step
+   token the step's own worker would read, read from Secret Manager at that
+   moment: the secret the step's `forge_credential` names (`git`,
+   `git-r-<hex>` or `git-u-<hex>`, through `gittokens.secret_name_for`), the
+   tenant's `-git` when it names none (contract request 54). It reads none
+   of those fields until the step's spec signature verifies, with the
+   workers' own keys (`SPEC_VERIFY_KEYS`), and for a `git-u-<hex>` slot it
+   reads that person's grant again, as the worker does before each push
+   (docs/onboarding.md §3.3 step 4). The token is
+   never written to the repository, a Job environment or a log. Finally it ends the step
    SUCCEEDED, in the same `result_summary.git` shape a worker writes, plus
    `published_by: "control_plane"` and `verdict_gate.agent_ran: false`. The
    step's `task_finished` wake then releases its own dependants (the merge
@@ -820,10 +828,55 @@ input, a verdict that runs the agent (NOT_YET), a verdict file that does not
 read as a verdict (the worker then refuses it by name), a finding marked minor
 (the worker files those on the wave epic), an implementer that changed nothing
 or pushed nothing, a missing title, or one the worker would refuse (two lines,
-a control character, attribution, a task id). Also declined: anything in the
-title or body that swarm-api's redaction masks or that holds the token, an
-unreadable token, and any refusal from GitHub. The body keeps the worker's
+a control character, attribution, a task id, or the `[swarm] task_`
+placeholder anywhere in it). Also declined, with code `credential`: anything
+in the title or body that swarm-api's redaction masks or that holds the
+token, a spec whose signature does not verify (unsigned, an untrusted key
+version, an unknown format, or a document rewritten since it was signed), a
+step whose `forge_access` is set and is not `write` (absent means write, as
+for the worker), a user slot whose grant was removed or is no longer `write`,
+a malformed `forge_credential`, and an unreadable token.
+
+**Why the signature is checked first.** A tenant's agents can write any task
+document of their tenant. `forge_credential`, `forge_access`,
+`repository_url` and the dispatch block are all inside the signed spec
+(`swarm_common.specsign`, format 3) for exactly that reason, and the worker
+reads them only from the verified document. Read unverified, clearing
+`forge_access: read` would buy a push with the tenant's `-git` token, and
+rewriting `forge_credential` to another member's `git-u-<hex>` a push as that
+person. The check uses the id the document was read by, never its `id`
+field. Any refusal from GitHub is declined too. The body keeps the worker's
 rules: attribution lines removed (#735), mentions neutralised, 60 KiB at most.
+
+**The refusal scans are the worker's.** #748 asks for "the same refusal scans
+the worker runs (credentials, title placeholder)". swarm-api does not import
+the worker and nothing moved into `swarm_common`, so both are restated in
+`verdictpublish.py` and held equal by
+`tests/unit/control_plane/test_verdict_publish.py`:
+
+* **The title.** `title_refusal` refuses what the worker's
+  `Worker._agent_title` refuses, with the same reasons, and everything the
+  merge step's `agent_worker.merge.title_is_placeholder` refuses. A pull
+  request so titled would sit unmergeable, so it is never opened. It also
+  refuses any task id, where the worker refuses only its own: the title was
+  written by another task. One table of titles goes through all three
+  functions (`test_the_restated_worker_rules_are_the_workers`).
+* **The credentials.** The worker's credential half is its final-tree leak
+  scan (`final_tree_leak`) plus scrubbing its pull request text. Here the
+  tree needs no scan. The branch tip is the implementer's, scanned by the
+  implementer's own worker before its push, and a tip that is not that
+  recorded commit is declined (`implementer_branch_moved`). Only the title
+  and body are new. Both come through the API's redacted artifact read,
+  which declines rather than publish masked text, and both are checked for
+  the step's token once it is read. Where the worker would scrub a
+  registered value out of a title and publish the rest, swarm-api declines
+  and the worker runs: the stricter of the two, never the looser.
+
+**What a control-plane publish records.** The step ends SUCCEEDED, without a
+lease, a pool count or an execution. `result_summary` carries the worker's
+`git` shape plus `published_by: "control_plane"`, and
+`verdict_gate.agent_ran: false`. A step published by its worker carries no
+`published_by`, so the two paths can be told apart afterwards.
 
 If swarm-api never decides (a lost push, or swarm-api down), the hold ends and
 the step goes to its worker. A claim older than 300 s is ignored too. A worker
@@ -834,7 +887,8 @@ PARKED -> SUCCEEDED edge (`swarm_common.states._ALLOWED`), and a step that
 never had a lease cannot honestly pass through RUNNING. Until the owner
 accepts the request, both swarm-api and the scheduler's hold read
 `can_transition(PARKED, SUCCEEDED)` as false and do nothing, and every MERGE
-workflow publishes through its worker.
+workflow publishes through its worker. The ~100 s and one execution per
+MERGE workflow are not saved until then.
 
 ### What is refused at submission
 
@@ -1150,7 +1204,7 @@ set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup`, to
 the issue-run tick `POST /v1/admin/runs/advance` (#454, below), and to nothing
 else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
 `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`), which also
-lists the repository poll, the merge wake and, since #748, the
+lists the repository poll, the merge wake, the forge refresh and, since #748, the
 `task_finished` push that opens a MERGE verdict's pull request without a
 worker (`POST /v1/admin/tasks/finished`, "When swarm-api opens it without a
 worker" above). It is not an admin

@@ -145,7 +145,7 @@ resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the per-tenant workflow-rollup, issue-run-advance, repo-index-poll and merge-wake jobs, and of the task_finished push to swarm-api. swarm-api admits it to those five /v1/admin routes only. No project roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, repo-index-poll, merge-wake and forge-refresh jobs and the task_finished push. swarm-api admits it to those six /v1/admin routes only. No project roles."
 }
 
 locals {

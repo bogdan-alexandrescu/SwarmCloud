@@ -28,10 +28,22 @@ a response. Every value is registered with the redaction filter
 code logs meanwhile is masked before a handler writes it.
 
 WHAT swarm-api MAY READ (terraform/bootstrap/forge_user_slots.tf). It creates
-slots and adds versions to both, and reads ONLY the `-refresh` twin -- never
-the base slot the worker reads. So the refresh sweep and disconnect start
-from the refresh token, and disconnect revokes the authorisation with an
-access token its own refresh just minted.
+slots, adds versions to both, and reads both: the `-refresh` twin, which the
+sweep spends, and -- owner decision 2026-10-08 -- the base slot, whose
+current access token every request acting as the person REUSES
+(`read_access`; `access.AccessService.user_token`).
+
+WHY IT READS THE BASE SLOT NOW. Measured 2026-10-08 08:20Z: when swarm-api
+could read only the twin, every call acting as the person refreshed, so the
+owner's slot reached 35 versions within minutes -- and each refresh makes
+GitHub end the access token it replaces, so a task holding the previous
+version failed "the forge refused the credential (401: Bad credentials)".
+Reading the access token adds no power: swarm-api already holds the refresh
+token, which mints access tokens. So a request refreshes only when the token
+is within `REUSE_WHILE_LEFT` of expiry, or GitHub answered 401, once, under
+the refresh lease; in practice only the 15-minute sweep refreshes. The worker
+re-reads the slot and retries once on a 401 for the rare token a sweep ends
+under it (agent_worker.secrets.call_reading_again).
 
 DISCONNECT revokes the user's authorisation of the App at GitHub
 (`DELETE /applications/{client_id}/grant`, which ends every token of that
@@ -128,6 +140,13 @@ DEFAULT_REFRESH_TTL = timedelta(days=184)
 #: token is taken on the tick before it would cross two hours, with a tick
 #: spare for one the forge did not answer.
 REFRESH_WHEN_LEFT = timedelta(hours=2, minutes=30)
+
+#: A request acting as the person (access.py) reuses the current access
+#: token while it has MORE than this left, and refreshes only at or under it
+#: (owner decision 2026-10-08). Under the sweep's REFRESH_WHEN_LEFT, so the
+#: sweep, ticking every 15 minutes, takes nearly every token first and a
+#: request refreshes only one the sweep did not reach.
+REUSE_WHILE_LEFT = timedelta(hours=2)
 
 #: How long one refresher holds a connection (§3.1 `refresh_lease`): a
 #: refresh token works once, so a second refresher must not spend it while
@@ -226,6 +245,10 @@ def user_hash(email: str) -> str:
 def connection_id_for(tenant_id: str, email: str, forge: str = FORGE) -> str:
     """§3.1: `conn_` + 16 hex of tenant + user + forge."""
     return "conn_" + _hex16(tenant_id + _user_key(email) + forge)
+
+
+#: A base user slot's provider suffix (`gittokens.provider_suffix` for a user).
+_BASE_USER_SLOT = re.compile(r"git-u-[0-9a-f]{16}")
 
 
 def refresh_suffix(suffix: str) -> str:
@@ -336,12 +359,15 @@ class SecretManagerAppSecrets:
 # --------------------------------------------------------------------------
 
 class UserSlots(Protocol):
-    """What swarm-api does to a user's slots, by provider suffix. No method
-    reads a base slot: swarm-api holds no accessor on one."""
+    """What swarm-api does to a user's slots, by provider suffix.
+    `read_access` reads a base user slot's current access token and nothing
+    else; `read_refresh` reads a `-refresh` twin and nothing else."""
 
     def ensure(self, tenant_id: str, suffix: str) -> bool: ...
 
     def add_version(self, tenant_id: str, suffix: str, value: str) -> str: ...
+
+    def read_access(self, tenant_id: str, suffix: str) -> str: ...
 
     def read_refresh(self, tenant_id: str, suffix: str) -> str: ...
 
@@ -392,11 +418,22 @@ class SecretManagerUserSlots:
         })
         return (getattr(version, "name", "") or "").rsplit("/", 1)[-1]
 
+    def read_access(self, tenant_id: str, suffix: str) -> str:
+        """The base user slot's latest version: the person's current access
+        token. Only a `git-u-<16 hex>` slot, never its twin, never a tenant or
+        repository slot."""
+        if not _BASE_USER_SLOT.fullmatch(suffix or ""):
+            raise SlotUnreadable("read_access reads a base user slot and nothing else")
+        return self._latest(tenant_id, suffix)
+
     def read_refresh(self, tenant_id: str, suffix: str) -> str:
+        if not suffix.endswith("-refresh"):
+            raise SlotUnreadable("read_refresh reads a user slot's -refresh twin and nothing else")
+        return self._latest(tenant_id, suffix)
+
+    def _latest(self, tenant_id: str, suffix: str) -> str:
         from google.api_core import exceptions as gexc
 
-        if not suffix.endswith("-refresh"):
-            raise SlotUnreadable("swarm-api reads a user slot's -refresh twin and nothing else")
         secret = secret_name_for(tenant_id, suffix)
         try:
             version = self._secret_client().access_secret_version(
@@ -1145,7 +1182,7 @@ class ForgeApp:
                                "disconnect again in a minute")
             with redaction_literal(client_secret):
                 github_revoked, github_said = self._revoke_at_github(
-                    caller, suffix, client_id, client_secret)
+                    caller, doc, suffix, client_id, client_secret)
         disabled = {}
         for slot in (suffix, refresh_suffix(suffix)):
             try:
@@ -1198,12 +1235,35 @@ class ForgeApp:
 
         return _apply(transaction)
 
-    def _revoke_at_github(self, caller: Caller, suffix: str, client_id: str,
-                          client_secret: str) -> tuple[bool, str]:
-        """Revoke the authorisation. swarm-api cannot read the access token,
-        so it refreshes once and revokes the grant with the token that
-        minted; the grant's revocation ends the new refresh token too."""
+    def _revoke_at_github(self, caller: Caller, doc: dict[str, Any], suffix: str,
+                          client_id: str, client_secret: str) -> tuple[bool, str]:
+        """Revoke the authorisation, with the person's CURRENT access token
+        while the connection says it is unexpired -- no refresh, so no
+        version is minted only to be revoked (owner decision 2026-10-08).
+        When it has expired, cannot be read, or GitHub no longer knows it,
+        refresh once and revoke with the token that minted; the grant's
+        revocation ends the new refresh token too."""
         manual = f"revoke it yourself at {AUTHORIZATIONS_PAGE}"
+        expires = doc.get("access_expires_at")
+        if isinstance(expires, datetime) and expires > self._now():
+            try:
+                current = self._slots.read_access(caller.tenant_id, suffix)
+            except Exception as exc:
+                log.warning("disconnect could not read the access token tenant=%s (%s); "
+                            "refreshing to revoke", caller.tenant_id, type(exc).__name__)
+                current = ""
+            if current:
+                with redaction_literal(current):
+                    try:
+                        if self._github.revoke_grant(client_id, client_secret, current):
+                            return True, ("revoked at GitHub: the authorisation and every "
+                                          "token of it")
+                    except _Unanswered:
+                        return False, f"not revoked at GitHub: GitHub did not answer; {manual}"
+                    except _Refused as refused:
+                        return False, f"not revoked at GitHub ({refused.error}); {manual}"
+                # GitHub no longer knew that token: a refresh may still hold
+                # the authorisation, so revoke with the token it mints.
         try:
             refresh_token = self._slots.read_refresh(caller.tenant_id, refresh_suffix(suffix))
         except Exception as exc:

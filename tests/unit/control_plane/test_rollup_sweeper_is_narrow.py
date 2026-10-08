@@ -62,21 +62,21 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: added on the owner's 2026-10-06 plan: it reads only the named tenant's
 #: CI_PENDING parks, with that tenant's token, and its one write is the wake
 #: marker on them -- it submits nothing and moves no task.
-#: The `task_finished` push (#748, filed by the owner 2026-10-06) was added
-#: so a MERGE verdict's pull request is opened without a worker: it acts only
-#: on the finished task's own tenant's gated integrator, with that tenant's
-#: token, and moves only a step it claimed (`swarm_api.verdictpublish`).
 #: The GitHub user-token refresh sweep (docs/onboarding.md §3.4 item 6, owner
 #: decision D2 on #780, lane OB3) was added for the swarm-forge-refresh job
 #: OB2 built: it refreshes due connections into their own users' slots, and
 #: submits nothing and moves no task.
+#: The `task_finished` push (#748, filed by the owner 2026-10-06) was added
+#: so a MERGE verdict's pull request is opened without a worker: it acts only
+#: on the finished task's own tenant's gated integrator, with that tenant's
+#: token, and moves only a step it claimed (`swarm_api.verdictpublish`).
 DECIDED = frozenset({
     ("POST", "/v1/admin/workflows/rollup"),
     ("POST", "/v1/admin/runs/advance"),
     ("POST", "/v1/admin/repositories/poll"),
     ("POST", "/v1/admin/merges/wake"),
-    ("POST", "/v1/admin/tasks/finished"),
     ("POST", "/v1/admin/forge/refresh"),
+    ("POST", "/v1/admin/tasks/finished"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
