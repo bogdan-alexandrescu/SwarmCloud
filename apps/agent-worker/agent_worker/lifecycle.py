@@ -457,6 +457,29 @@ PULL_REQUEST_REFUSED = "the forge refused the pull request"
 #: ATTEMPT retryably rather than SUCCEEDING with no pull request -- the shape
 #: that turned release 37017777271's acceptance red on 2026-10-02.
 PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
+#: The `result_summary.git` key `_publish_git` sets when git itself failed
+#: the publish -- the push, or the commit, fold or authorship check before it
+#: (#872). Read by `_publish_failed`: a pull-request step that ends with it
+#: ends FAILED naming the cause and the patch, not SUCCEEDED with a
+#: `publish_reason` nobody reads. Measured 2026-10-08 on
+#: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
+#: workflow green, and the work found in `swarm-work.patch` six hours later.
+PUBLISH_FAILED_FIELD = "publish_failed"
+#: The file whose presence makes a clean run that changed nothing a RESULT
+#: (Proposal J, owner decision 2026-10-08): the agent checked, found nothing
+#: to change, and wrote down why. Read from `$SWARM_ARTIFACTS_DIR`; its text is
+#: kept as `result_summary.no_change_reason`.
+VERIFICATION_FILE = "verification.md"
+NO_CHANGE_REASON_SUMMARY_KEY = "no_change_reason"
+#: At most this many bytes of `verification.md` are kept in the summary; the
+#: file itself is uploaded whole with the other artifacts.
+NO_CHANGE_REASON_MAX_BYTES = 4000
+#: What a pull request titled from its issue, because the agent wrote no
+#: usable `pr-title.txt` even after its follow-up turn, starts with (Proposal
+#: B, owner decision 2026-10-08). The observer counted 17 of 32 pull requests
+#: titled with the issue's title on 2026-10-08, none of them distinguishable
+#: from a title the agent chose; the prefix makes the fallback visible.
+TITLE_MISSING_PREFIX = "[title missing] "
 
 #: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
 #: request's title and body (#214), so a platform pull request can say what it
@@ -790,6 +813,9 @@ class Worker:
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
         self._expected_outputs: tuple[str, ...] = ()
+        # The names a dependant declared, before the worker added its own
+        # `pr-title.txt` request: a title a dependant stages is never excused.
+        self._declared_names: tuple[str, ...] = ()
         # Every file in the artifacts folder the last `_upload_outputs` did not
         # upload for the file cap or the name bound (#228), by its WHOLE name.
         # The summary counts them and does not list them, so a declared output
@@ -3248,6 +3274,18 @@ class Worker:
                 "nothing to change: the diff is empty and this step allows it",
                 allow_empty_diff=True,
             )
+        elif ran_clean and (verified := self._verified_no_change(summary)) is not None:
+            # Proposal J (owner decision 2026-10-08): an agent that changed
+            # nothing AND wrote verification.md checked and found the work
+            # done, which is the same result `allow_empty_diff` produces,
+            # whatever the step's flag says. Its text is the reason. Without
+            # the file, `empty_diff` / `published_nothing` fail it as before.
+            summary[expected_mod.NO_CHANGE_SUMMARY_KEY] = True
+            summary[NO_CHANGE_REASON_SUMMARY_KEY] = verified
+            self.log.info(
+                f"nothing to change: the diff is empty and the agent wrote {VERIFICATION_FILE}",
+                allow_empty_diff=self._allows_empty_diff(),
+            )
         # Before the check, which counts what is carried as present (#166).
         self._carry_parked_uploads(summary)
         # Here, where the runner ended on its own, and not on the park, cancel
@@ -3330,6 +3368,9 @@ class Worker:
             nothing = self._published_nothing(summary)
             if nothing is not None:
                 return self._fail_for_published_nothing(nothing, summary, exit_code=0)
+            push_failed = self._publish_failed(summary)
+            if push_failed is not None:
+                return self._fail_for_published_nothing(push_failed, summary, exit_code=0)
             unreachable = self._publish_unreachable(summary)
             if unreachable is not None:
                 return self._fail_for_publish_unreachable(unreachable, summary, exit_code=0)
@@ -4652,6 +4693,31 @@ class Worker:
             and expected_mod.changed_nothing(summary.get("git"))
         )
 
+    def _verified_no_change(self, summary: dict[str, Any]) -> str | None:
+        """The agent's `verification.md`, scrubbed and bounded, when this attempt
+        changed nothing and wrote one; else None (Proposal J, 2026-10-08).
+
+        The owner's rule: no change plus a written verification is the
+        `no_change` result, whatever `allow_empty_diff` says, so a step that
+        found its issue already fixed on main SUCCEEDS with the evidence
+        instead of failing `empty_diff` or `published_nothing`. Not for an
+        integrator still owed a merge (`_no_change`'s exception): its
+        deliverable is its contributors' work. A blank file, a link or an
+        unreadable one is no verification.
+        """
+        if self.ws is None or self._integration_is_pending():
+            return None
+        if not expected_mod.changed_nothing(summary.get("git")):
+            return None
+        text = self._read_agent_text(VERIFICATION_FILE, [])
+        if text is None or not text.strip():
+            return None
+        reason = str(self._scrub(text.strip()))
+        encoded = reason.encode("utf-8")
+        if len(encoded) > NO_CHANGE_REASON_MAX_BYTES:
+            reason = encoded[:NO_CHANGE_REASON_MAX_BYTES].decode("utf-8", "ignore").rstrip() + "..."
+        return reason
+
     def _upstream_left(self, task_id: str) -> str | None:
         """`expected_mod.left_nothing` of one upstream, read through the
         tenant-checked upstream read; None for one that did not SUCCEED.
@@ -5527,7 +5593,8 @@ class Worker:
                 expected_outputs=list(declared.names),
             )
         names = declared.names
-        if PR_TITLE_FILE not in names and self._title_owed(task):
+        # Owed implies requested; both are asked so either alone decides.
+        if PR_TITLE_FILE not in names and (self._title_owed(task) or self._title_requested(task)):
             # REQUIRED, NOT INVENTED (owner decision, 2026-09-28): a pull
             # request this attempt opens is titled by the agent. Owed as an
             # expected output, a CLI runner tells the agent to write it, and a
@@ -5538,6 +5605,7 @@ class Worker:
                 "this attempt opens a pull request; the agent must write its title",
                 file=PR_TITLE_FILE,
             )
+        self._declared_names = tuple(declared.names)
         self._expected_outputs = names
         return names
 
@@ -5572,6 +5640,20 @@ class Worker:
             # pull request, so neither the patch nor a title is owed; every
             # other expected output still is.
             missing = [name for name in missing if name not in (PATCH_NAME, PR_TITLE_FILE)]
+        if (
+            PR_TITLE_FILE in missing
+            and PR_TITLE_FILE not in self._declared_names
+            and not self._title_owed(self._task or {})
+        ):
+            # Requested, not owed (Proposal B, 2026-10-08): the agent had its
+            # follow-up turn, and the issue titles the pull request with the
+            # visible `[title missing] ` prefix (`_generated_pull_request_title`).
+            # A dependant that declared the file still needs it.
+            missing = [name for name in missing if name != PR_TITLE_FILE]
+            self.log.warning(
+                f"the agent wrote no {PR_TITLE_FILE}; the pull request is titled "
+                f"from its issue, prefixed {TITLE_MISSING_PREFIX.strip()!r}",
+            )
         if not missing:
             return []
         causes = self._missing_causes(summary)
@@ -5853,6 +5935,50 @@ class Worker:
                 f"branch has no commits beyond {base}"
             )
         return None
+
+    def _publish_failed(self, summary: dict[str, Any]) -> str | None:
+        """Why a pull-request step's push failed, naming the patch, or None (#872).
+
+        `_publish_git` sets `publish_failed` when git failed the publish --
+        the push itself, or the commit, fold or authorship check before it.
+        Measured 2026-10-08 (task_6a0c9afdbaea449eb53d): the push failed with
+        exit 1, the agent had exited 0, and the step and its workflow read
+        SUCCEEDED with the work only in `swarm-work.patch`. A step whose job is
+        to open a pull request (`_opens_pull_request`) has not delivered, so
+        it ends FAILED, and the error says where the work is so it can be
+        recovered with `swarm_apply`. A step that publishes nothing by design
+        -- a review, an `integrate` contributor, a `collect` step, a step with
+        no repository -- never reaches here: it is not a pull-request step.
+        """
+        if not self._opens_pull_request():
+            return None
+        git = summary.get("git")
+        if not isinstance(git, dict) or git.get(PUBLISH_FAILED_FIELD) is not True:
+            return None
+        cause = str(git.get("publish_reason") or "the push failed")
+        patch = next(
+            (
+                entry.get("uri")
+                for entry in summary.get("artifacts") or []
+                if isinstance(entry, dict) and entry.get("name") == PATCH_NAME and entry.get("uri")
+            ),
+            None,
+        )
+        if patch:
+            where = (
+                f"The work is kept in {patch}; recover it with swarm_apply "
+                f"(task {self.cfg.task_id})."
+            )
+        else:
+            where = (
+                f"No {PATCH_NAME} was uploaded for this attempt"
+                + (f" ({git['patch_note']})" if git.get("patch_note") else "")
+                + "; the work is in the attempt's final checkpoint."
+            )
+        return (
+            f"publish_failed: the step was to open a pull request and its branch "
+            f"was not pushed: {cause}. {where}"
+        )
 
     def _publish_unreachable(self, summary: dict[str, Any]) -> dict[str, Any] | None:
         """The forge outage that kept a pull-request step from opening its pull
@@ -9742,6 +9868,9 @@ class Worker:
             out["published"] = False
             out["auto_committed"] = auto_committed
             out["publish_reason"] = self._scrub(str(exc)[:500])
+            # Read at the finish (#872): a pull-request step whose push failed
+            # has not delivered, however cleanly its agent exited.
+            out[PUBLISH_FAILED_FIELD] = True
             self.log.warning("could not publish the branch", error=str(exc))
             return out
 
@@ -10113,6 +10242,9 @@ class Worker:
             return False
         if text == (self._generated_pull_request_title() or "").strip():
             return True
+        # The unprefixed issue title, as a worker before Proposal B wrote it.
+        if text == (self._title_from_issue_input(self._task or {}) or "").strip():
+            return True
         return bool(_DEFAULT_ISSUE_TITLE_RE.match(text) or _RETIRED_TITLE_RE.search(text))
 
     def _worker_commit_message(self, fallback_subject: str, explanation: str) -> str:
@@ -10283,20 +10415,34 @@ class Worker:
 
         NEVER THE TASK ID, AND NEVER INVENTED (owner decisions, 2026-09-28).
         The only title the platform writes is the one the step's `issue`
-        input names (`_title_from_issue_input`). Without it the agent's
-        `pr-title.txt` is REQUIRED: a title made up from the prompt's first
-        sentence or the runner profile described the request, not the change,
-        and `f"[swarm] {task_id}"` described nothing. None here means no pull
+        input names (`_title_from_issue_input`), and it is PREFIXED
+        `[title missing] ` (Proposal B, owner decision 2026-10-08): the agent
+        was asked for `pr-title.txt` (`_title_requested`) and given a
+        follow-up turn for it, so reaching this is a miss, and a reviewer has
+        to be able to see it. Without an issue the agent's `pr-title.txt` is
+        REQUIRED: a title made up from the prompt's first sentence or the
+        runner profile described the request, not the change, and
+        `f"[swarm] {task_id}"` described nothing. None here means no pull
         request is opened (`_publish_git`), and `_title_owed` makes a missing
         `pr-title.txt` a retryable failure of the attempt before that.
         """
-        return self._title_from_issue_input(self._task or {})
+        title = self._title_from_issue_input(self._task or {})
+        if title is None:
+            return None
+        return self._scrub_and_cap_title(f"{TITLE_MISSING_PREFIX}{title}")
 
-    def _title_owed(self, task: dict[str, Any]) -> bool:
-        """True when this attempt will open a pull request that only the agent
-        can title: it may publish, its strategy opens one (`direct-pr`, or
-        `integrate` as the integrator), it has a repository, and its `issue`
-        input names no issue to title it from.
+    def _title_requested(self, task: dict[str, Any]) -> bool:
+        """True when this attempt will open a pull request the agent is asked
+        to title: it may publish, its strategy opens one (`direct-pr`, the
+        `integrate` integrator, a `single-pr` author) and it has a repository.
+
+        WITH OR WITHOUT AN ISSUE (Proposal B, owner decision 2026-10-08).
+        Until then a step whose `issue` input named an issue was never asked:
+        `_title_owed` was false for it, and the worker silently titled its
+        pull request with the issue's title -- 17 of 32 pull requests the
+        observer read on 2026-10-08. Requested, `pr-title.txt` is an expected
+        output, so the runner tells the agent to write it and gives it a
+        follow-up turn when it did not (`cliagent`'s repair turn).
         """
         if not self.cfg.git_publish_enabled:
             return False
@@ -10305,7 +10451,15 @@ class Worker:
         # `_opens_pull_request`: `direct-pr`, the `integrate` integrator, and
         # a `single-pr` author, whose `pr-title.txt` is what the review sees
         # and the merge refuses any other title against (merge-step.md §3).
-        return self._opens_pull_request() and self._title_from_issue_input(task) is None
+        return self._opens_pull_request()
+
+    def _title_owed(self, task: dict[str, Any]) -> bool:
+        """True when the title is requested (`_title_requested`) and nothing
+        else can title the pull request: its `issue` input names no issue. A
+        missing or refused `pr-title.txt` then fails the attempt; with an
+        issue the `[title missing] ` fallback titles it instead.
+        """
+        return self._title_requested(task) and self._title_from_issue_input(task) is None
 
     def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
         """"<the issue's title> (part of #N)", else "Work on issue #N (part of #N)".
