@@ -10511,6 +10511,15 @@ span.sk-ttile { cursor: default; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
+  /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
+     no floor and no cap, a long tenant name -- a user tenant's is its email
+     -- sized the label at its full mono width and pushed the env and admin
+     tags past 390px, scrolling the whole page sideways. Capped like the
+     switchable chip (`.sk-tchip`, 40vw) and cut with an ellipsis; the whole
+     name is its `title`. The title (`flex: 1`, zero basis) yields first. */
+  .sk-pbar .sk-tn { flex: 0 1 auto; min-width: 0; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The fixed parts of the row never shrink: the menu, the mark, the env. */
+  .sk-pbar > .sk-ibtn, .sk-pbar > svg, .sk-pbar > .sk-pill { flex: none; }
   .sk-pbar .sk-pill:not(.is-prod) { background: #1f5491; color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
   /* The admin tag in the phone header (#139): a grey hairline on the
      spine's colour, unfilled, never the accent -- a fact about you, beside
