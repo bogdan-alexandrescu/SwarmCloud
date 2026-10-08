@@ -64,6 +64,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/limits': '/admin/limits',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
+  // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
+  'admin/people': '/admin/people',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }

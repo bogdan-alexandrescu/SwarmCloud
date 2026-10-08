@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import { ConnectButton, connectionOf } from './GitHubConnect'
+import { WorkspaceStepDetail } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -44,6 +45,8 @@ const SUBMIT_TASK = 'work/new'
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
 export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
   signed_in: 'Sign in',
+  workspace: 'Request your workspace',
+  claude_account: 'Add a Claude account',
   github_connected: 'Connect GitHub',
   app_installed: 'Install the App',
   orgs_enabled: 'Enable orgs',
@@ -257,6 +260,7 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              <WorkspaceStepDetail step={s} reload={reload} />
               {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
                 <p className="ur-hint ob-help">
                   Connecting authorised the App to act as you; installing it on your account or an org is what lets it

@@ -41,6 +41,7 @@ import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { OnboardingScreen, SetupCard } from './Onboarding'
 import { AccessScreen } from './Access'
+import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
@@ -427,9 +428,10 @@ export const SECTIONS: SectionDef[] = [
     id: 'admin',
     label: 'Admin',
     // The count is named here because Admin is no longer only the things an
-    // operator CHANGES: one of its three panes changes nothing and is a
+    // operator CHANGES: one of its panes changes nothing and is a
     // platform-wide read. That is a widening, said out loud rather than
-    // smuggled in by leaving the old sentence in place.
+    // smuggled in by leaving the old sentence in place. People (#847) is the
+    // fourth pane, and the question's last clause is its.
     //
     // A QUESTION, AS THE OTHER THREE ARE (AH-23). It was an instruction --
     // "Change a ceiling, see who is registered..., and count what it has
@@ -438,13 +440,17 @@ export const SECTIONS: SectionDef[] = [
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
     question:
-      'What is each ceiling set to, who is registered to use this platform, and how many tasks are in each state?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
       // The id stays `counts`, so `#counts` (LEGACY) and `#history/counts`
       // (MOVED_PANES) both land here.
       { id: 'counts', label: 'Platform counts', admin: true },
+      // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
+      // requests to approve or deny, each person's ceiling and Claude account,
+      // and who is an admin. Admin only, like the three before it.
+      { id: 'people', label: 'People', admin: true },
     ],
   },
 ]
@@ -1759,6 +1765,8 @@ function SectionBody({
       return <TenantsScreen />
     case 'admin/counts':
       return <PlatformCountsScreen />
+    case 'admin/people':
+      return <PeopleScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
