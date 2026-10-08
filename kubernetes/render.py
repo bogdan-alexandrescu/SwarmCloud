@@ -257,6 +257,19 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "RECONCILER_UID": re.compile(
         r"^([0-9]{15,25}|swarm-reconciler@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
     ),
+    # The workspace deployer, as the subject of its ClusterRoleBinding and as
+    # the caller its scope policy matches. Pinned to the account id like the
+    # two above, by email or by uniqueId: the same two spellings, for the same
+    # reason. Here a wrong name is worse than inert -- the binding would grant
+    # nothing, but a policy matching a name the binding does not hold would
+    # leave the one it does hold unscoped -- which is why both documents take
+    # the same two values.
+    "WORKSPACE_DEPLOYER_GSA": re.compile(
+        r"^swarm-workspace-deployer@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"
+    ),
+    "WORKSPACE_DEPLOYER_UID": re.compile(
+        r"^([0-9]{15,25}|swarm-workspace-deployer@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com)$"
+    ),
     "PROJECT_ID": re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"),
     "REGION": re.compile(r"^[a-z]+-[a-z]+[0-9]$"),
     "PSS_ENFORCE": re.compile(r"^(privileged|baseline|restricted)$"),
@@ -387,7 +400,21 @@ def tenant_files(bound: Iterable[str] = ()) -> tuple[str, ...]:
     return TENANT_FILES[:at] + LEGACY_KSA_FILES + TENANT_FILES[at:]
 
 
-POLICY_FILES = ("policies/pod-security.yaml",)
+#: The cluster-scoped objects `kubernetes/apply.sh --policies` applies, in
+#: apply order. The workspace deployer's scope policy comes BEFORE its RBAC:
+#: kubectl applies a render in document order, and the other way round there is
+#: a moment in which the deployer holds a ClusterRole that may create any
+#: namespace and nothing yet narrows it to `swarm-tenant-u-*`
+#: (docs/workspaces.md §2.3).
+POLICY_FILES = (
+    "policies/pod-security.yaml",
+    "policies/workspace-provisioner-scope.yaml",
+    "rbac/provisioner-rbac.yaml",
+)
+
+#: The keyless identity the `swarm-workspace-apply` Cloud Build job runs as
+#: (docs/workspaces.md §2.3). Its account id is fixed by the bootstrap layer.
+WORKSPACE_DEPLOYER_ACCOUNT = "swarm-workspace-deployer"
 
 JOB_FILES = {
     "browser": "worker-templates/worker-job-browser.yaml",
@@ -631,6 +658,45 @@ def tenant_values(args: argparse.Namespace) -> dict[str, str]:
         "QUOTA_MEMORY": args.quota_memory,
         "QUOTA_EPHEMERAL": args.quota_ephemeral,
     }
+
+
+def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
+    """The flags `render.py policies` takes: the identities its RBAC names.
+
+    No flag names an identity directly. The emails are derived from the
+    project; the uniqueIds cannot be derived (IAM assigns them), so
+    kubernetes/apply.sh looks them up and passes them, and without them each
+    falls back to its email -- an inert duplicate, never a fabricated subject.
+    """
+    parser.add_argument("--project", default="saga-agents-staging")
+    parser.add_argument("--scheduler-uid", default="")
+    parser.add_argument("--reconciler-uid", default="")
+    parser.add_argument("--workspace-deployer-uid", default="")
+
+
+def policy_values(args: argparse.Namespace) -> dict[str, str]:
+    """The values the cluster-scoped render interpolates.
+
+    The scheduler and reconciler are here because the deployer's RoleBinding
+    policy may bind the dispatcher and reaper Roles to them and nobody else;
+    they are spelled exactly as `tenant_values` spells them for the bindings
+    that policy judges.
+    """
+    project = args.project
+    scheduler = f"swarm-scheduler@{project}.iam.gserviceaccount.com"
+    reconciler = f"swarm-reconciler@{project}.iam.gserviceaccount.com"
+    deployer = f"{WORKSPACE_DEPLOYER_ACCOUNT}@{project}.iam.gserviceaccount.com"
+    return check_values(
+        {
+            "PROJECT_ID": project,
+            "SCHEDULER_GSA": scheduler,
+            "SCHEDULER_UID": args.scheduler_uid or scheduler,
+            "RECONCILER_GSA": reconciler,
+            "RECONCILER_UID": args.reconciler_uid or reconciler,
+            "WORKSPACE_DEPLOYER_GSA": deployer,
+            "WORKSPACE_DEPLOYER_UID": args.workspace_deployer_uid or deployer,
+        }
+    )
 
 
 def render_files(files: tuple[str, ...], values: dict[str, str]) -> str:
@@ -1048,7 +1114,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tenant_arguments(tenant)
 
-    sub.add_parser("policies", help="the cluster-scoped admission policies", allow_abbrev=False)
+    policies = sub.add_parser(
+        "policies",
+        help="the cluster-scoped admission policies and the workspace deployer's RBAC",
+        allow_abbrev=False,
+    )
+    add_policy_arguments(policies)
 
     # THE TENANT'S IDENTITY, AS A RENDER WOULD NAME IT: `<namespace> <gsa> <ksa>`
     # on one line. kubernetes/apply.sh reads the GSA's Workload Identity
@@ -1147,7 +1218,7 @@ def main(argv: list[str] | None = None) -> int:
         values = check_values(tenant_values(args))
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
     elif args.command == "policies":
-        sys.stdout.write(render_files(POLICY_FILES, {}))
+        sys.stdout.write(render_files(POLICY_FILES, policy_values(args)))
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0

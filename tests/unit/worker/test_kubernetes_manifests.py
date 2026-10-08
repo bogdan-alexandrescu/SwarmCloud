@@ -1052,11 +1052,26 @@ def policy_docs() -> list[dict[str, Any]]:
     return documents(buffer.getvalue())
 
 
+#: The workspace deployer's policies (policies/workspace-provisioner-scope.yaml)
+#: are scoped by CALLER, not by namespace: a namespace selector would let the
+#: deployer escape by writing a namespace without the label. Each matches only
+#: requests by the deployer, which test_workspace_provisioner_scope.py holds
+#: equal to the subjects its ClusterRoleBinding names.
+_SCOPED_BY_CALLER = re.compile(r"^swarm-workspace-deployer-")
+
+
 def test_every_policy_is_bound_and_scoped_to_swarm_namespaces(policy_docs):
     policies = {d["metadata"]["name"] for d in by_kind(policy_docs, "ValidatingAdmissionPolicy")}
     bindings = by_kind(policy_docs, "ValidatingAdmissionPolicyBinding")
     assert {b["spec"]["policyName"] for b in bindings} == policies
     for binding in bindings:
+        if _SCOPED_BY_CALLER.match(binding["spec"]["policyName"]):
+            policy = one(policy_docs, "ValidatingAdmissionPolicy", binding["spec"]["policyName"])
+            conditions = policy["spec"]["matchConditions"]
+            assert [c["expression"].split(" in ")[0].strip() for c in conditions] == [
+                "request.userInfo.username"
+            ], "an unscoped binding must be scoped by its caller instead"
+            continue
         selector = binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"]
         assert selector == {"app.kubernetes.io/part-of": "swarm"}, (
             "an unscoped binding would apply to other teams' namespaces in this "
@@ -1112,8 +1127,17 @@ def test_no_policy_in_this_directory_is_advisory_any_more(policy_docs):
 def test_each_policy_matches_exactly_one_kind(policy_docs):
     """A policy's CEL is compiled against the schema of what it matches, so an
     expression reaching `spec.template.spec` cannot also type-check against a
-    Pod. One kind per policy removes the question."""
+    Pod. One kind per policy removes the question.
+
+    The one exception reads no schema at all: a policy whose every expression
+    reads `request` and never `object` has nothing to type-check per kind
+    (swarm-workspace-deployer-scope, which must see every kind the deployer
+    writes)."""
     for policy in by_kind(policy_docs, "ValidatingAdmissionPolicy"):
+        spec = policy["spec"]
+        expressions = [v["expression"] for v in spec.get("variables", []) + spec["validations"]]
+        if not any(re.search(r"\b(object|oldObject)\b", e) for e in expressions):
+            continue
         resources = {
             resource
             for rule in policy["spec"]["matchConstraints"]["resourceRules"]
@@ -2460,10 +2484,36 @@ def test_the_gsa_check_recognises_both_spellings():
     assert not _is_tenant_gsa({"name": SCHEDULER_UID})
 
 
+#: The one cluster-scoped grant in kubernetes/, and why it exists: the
+#: workspace deployer creates a person's namespace, and RBAC can grant that only
+#: cluster-wide (docs/workspaces.md §2.3). Its scope admission policy narrows it
+#: to swarm-tenant-u-*; test_workspace_provisioner_scope.py holds the two
+#: together. Every other file stays namespaced.
+_CLUSTER_GRANT_FILE = "rbac/provisioner-rbac.yaml"
+
+
 def test_no_cluster_role_binding_exists_anywhere_in_kubernetes():
-    """The ConfigMap must not become the first exception to this invariant."""
-    kinds = set()
+    """The ConfigMap must not become the first exception to this invariant --
+    and the workspace deployer's ClusterRole, the one exception there is, binds
+    the deployer and nobody else."""
+    found: dict[str, set[tuple[str, str]]] = {}
     for path in sorted(KUBERNETES.rglob("*.yaml")):
         for doc in documents(path.read_text().replace("__", "x")):
-            kinds.add(doc.get("kind"))
-    assert "ClusterRoleBinding" not in kinds and "ClusterRole" not in kinds
+            if doc.get("kind") in ("ClusterRole", "ClusterRoleBinding"):
+                rel = str(path.relative_to(KUBERNETES))
+                found.setdefault(rel, set()).add((doc["kind"], doc["metadata"]["name"]))
+    assert found == {
+        _CLUSTER_GRANT_FILE: {
+            ("ClusterRole", "swarm-workspace-deployer"),
+            ("ClusterRoleBinding", "swarm-workspace-deployer"),
+        }
+    }
+    binding = one(
+        documents((KUBERNETES / _CLUSTER_GRANT_FILE).read_text().replace("__", "x")),
+        "ClusterRoleBinding",
+        "swarm-workspace-deployer",
+    )
+    assert {s["name"] for s in binding["subjects"]} == {
+        "xWORKSPACE_DEPLOYER_GSAx",
+        "xWORKSPACE_DEPLOYER_UIDx",
+    }

@@ -151,13 +151,30 @@ jq -n \
 # Every copy, in every namespace: a stale policy in a tenant nobody is looking
 # at is still a tenant whose workers cannot resolve a name. --namespace narrows
 # it to one, for the check after an apply.
-SCOPE=(--all-namespaces)
+#
+# SCOPED, IT IS A GET BY NAME, NEVER A LIST. The scoped form is the one
+# kubernetes/apply.sh runs after a tenant apply, and that apply is also what the
+# workspace job (`register-tenant.sh --workspace`) runs as the workspace
+# deployer, whose ClusterRole (kubernetes/rbac/provisioner-rbac.yaml) holds
+# `get` and no `list`: a field-selected list here 403'd after every object had
+# been applied, and failed the workspace at A7. A missing policy reads as an
+# empty list, so network_parity.py still says "nothing was compared".
+POLICY_NAME="swarm-allow-worker-egress"
 if [[ -n "${NAMESPACE}" ]]; then
-  SCOPE=(--namespace "${NAMESPACE}")
   info "scope    ${NAMESPACE} only"
-fi
-if ! "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies "${SCOPE[@]}" \
-      --field-selector metadata.name=swarm-allow-worker-egress -o json \
+  if "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies "${POLICY_NAME}" \
+        --namespace "${NAMESPACE}" -o json >"${WORK}/policy.json" 2>"${WORK}/policies.err"; then
+    jq '{items: [.]}' "${WORK}/policy.json" >"${WORK}/policies.json" \
+      || die "kubectl's ${NAMESPACE}/${POLICY_NAME} is not JSON; nothing was compared"
+  elif grep -q 'NotFound' "${WORK}/policies.err"; then
+    printf '{"items": []}\n' >"${WORK}/policies.json"
+  else
+    err "could not read ${NAMESPACE}/${POLICY_NAME}:"
+    redact <"${WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "nothing was compared"
+  fi
+elif ! "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies --all-namespaces \
+      --field-selector "metadata.name=${POLICY_NAME}" -o json \
       >"${WORK}/policies.json" 2>"${WORK}/policies.err"; then
   err "could not list the egress policies:"
   redact <"${WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
