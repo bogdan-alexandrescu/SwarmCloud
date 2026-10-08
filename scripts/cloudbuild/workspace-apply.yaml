@@ -27,17 +27,37 @@
 # (§2.6), because the project's other log viewers include another team. Step
 # lines name the workspace id only.
 #
+# THE IMAGE. Every step runs in ${_BUILDER_IMAGE}: W4's own image
+# (images/workspace-apply), built from this repository and pinned by digest in
+# the bootstrap variable workspace_apply_builder_image. Owner decision
+# 2026-10-08: not the stock google-cloud-cli image, because that image lacks jq,
+# which the script and the guard both need (installing one means downloading a
+# binary inside a build that holds account-IAM power), and its bundled Python
+# carries 7 HIGH CVEs. Moving the digest is a reviewed change to the bootstrap,
+# and this file is CODEOWNERS-protected for the same reason.
+#
 # THE THREE STEPS (§2.2), in one image:
 #   1. validate    -- the id and the mode, before anything else runs;
 #   2. guard       -- check the guard against its own cases on this image, then
 #                     write the expectation file that admits A1's reads only;
 #   3. apply       -- scripts/register-tenant.sh --workspace, with every gcloud,
 #                     kubectl and curl it makes passing through the guard.
+#
+# MODES. The message's mode is `create` or `limits` (§2.2), and the trigger's
+# filter in terraform/bootstrap/workspace_deployer.tf says the same. The script
+# also has `--mode verify` (A9 only, the migration check); no message asks for
+# it, so it is not run through this build.
+#
+# THE SCRIPT'S EXIT. 0 is done or nothing to do. 3 is "stopped for the platform
+# owner": not a failure of the build, since the record says needs_owner, the
+# refused call is in this build's log, and the owner decides (§2.5). Anything
+# else fails the build, and the record says why in a code, never in command
+# output.
 # Steps share nothing but /workspace (the checkout) and the `guard` volume, so
 # step 3 installs the guard on its own PATH again and checks that it took.
 #
-# `--workspace` is lane W6's (docs/workspaces.md §10); until it merges, step 3
-# ends with register-tenant.sh refusing the argument and nothing is written.
+# `--workspace` is lane W6's (docs/workspaces.md §10); a main without it ends
+# step 3 with register-tenant.sh refusing the argument, and nothing is written.
 
 timeout: 1800s
 
@@ -126,6 +146,9 @@ steps:
     env:
       - WORKSPACE_ID=${_WORKSPACE_ID}
       - MODE=${_MODE}
+      # The script records the build id on the workspace record and refuses to
+      # run without a Cloud Build one (a local-<time> id is for laptops).
+      - BUILD_ID=$BUILD_ID
     script: |
       #!/usr/bin/env bash
       set -euo pipefail
@@ -146,4 +169,10 @@ steps:
         echo "refused: the guard's expectation file is missing" >&2
         exit 1
       fi
-      exec scripts/register-tenant.sh --workspace "${WORKSPACE_ID}" --mode "${MODE}"
+      rc=0
+      scripts/register-tenant.sh --workspace "${WORKSPACE_ID}" --mode "${MODE}" || rc=$?
+      if [[ "${rc}" -eq 3 ]]; then
+        echo "workspace ${WORKSPACE_ID}: stopped for the platform owner (needs_owner); the refused call is above" >&2
+        exit 0
+      fi
+      exit "${rc}"
