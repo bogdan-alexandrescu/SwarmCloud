@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud diff viewer: five ways to make the per-file diff easier to reach and read</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell and the icon sprite are copied from onboarding.html, which
+   copied them from components.html (pick A as built). TYPE RULE (owner, 2026-10-01): 12px
+   floor, no all-caps, no tracking. Every frame follows the page's theme toggle; each variant
+   also has its own Light / Dark switch, so one variant can be read in both themes side by side
+   with the page. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+h3.sec{font-size:17px;margin:26px 0 6px}
+.lede{font-size:17px;color:var(--mute);max-width:780px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.variant{margin-top:32px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vh .themebar{margin:0 0 0 auto}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.fr{margin:14px 0 0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.pair>figure{max-width:100%;overflow-x:auto}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute)}
+.fixnote{border-left:3px solid var(--accent);padding:4px 0 4px 12px;color:var(--mute);font-size:14px}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ======== frame tokens: .fx follows the page theme; data-ftheme pins one variant ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+:root[data-theme="dark"] .fx:not([data-ftheme="light"]),.fx[data-ftheme="dark"]{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx:not([data-ftheme="light"]){--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);width:1280px;min-width:1280px;height:820px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45;overflow:hidden}
+.app button{font:inherit;color:inherit;cursor:pointer}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:16px 20px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.ct h3{margin:0;font-size:20px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sub{font-size:12.5px;color:var(--f-mu);margin:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}.sp.warn{background:var(--s-warnb);color:var(--s-warn)}.sp.park{background:var(--s-parkb);color:var(--s-park)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ctx{background:var(--f-acs);color:var(--f-ac);border:1px solid var(--f-acl);font-family:var(--f-display);font-weight:600}
+.chip.hot{outline:2px solid var(--f-ac);outline-offset:2px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.btn.on{background:var(--f-acs);color:var(--f-ac);border-color:var(--f-acl)}
+.segb{display:inline-flex;border:1px solid var(--f-bd);border-radius:8px;overflow:hidden;flex:none}
+.segb button{border:0;background:var(--f-sf);height:26px;padding:0 9px;font-size:12.5px;color:var(--f-mu)}
+.segb button[aria-pressed="true"]{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.segb button:disabled{opacity:.5;cursor:not-allowed}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln);flex:none}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs span.hot{outline:2px solid var(--f-ac);outline-offset:-3px;border-radius:6px}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.app code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.dash{color:var(--f-mu);border-bottom:1px dotted var(--f-mu);cursor:help}
+.q{display:inline-flex;width:18px;height:18px;border-radius:50%;border:1px solid var(--f-bd);font:600 12px/16px var(--f-display);justify-content:center;color:var(--f-mu);flex:none}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.32)}
+
+/* marks: the console's absence encodings (design-system.md §8.6) */
+.mk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--f-mu);white-space:nowrap}
+.mk i{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.mk.zero i{border:1.5px solid var(--f-mu)}
+.mk.unread i{border:1.5px dashed var(--s-warn)}
+.mk.partial i{background:linear-gradient(90deg,var(--f-mu) 50%,transparent 50%);border:1.5px solid var(--f-mu)}
+.mk.pend i{border:1.5px solid var(--f-ac);border-right-color:transparent}
+.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px)}
+
+/* ======== the diff: one renderer for every variant ======== */
+.dv{display:flex;min-height:0;flex:1;border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden}
+.dv-bar{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--f-ln);flex-wrap:wrap}
+.dv-bar .r{margin-left:auto;display:flex;gap:6px;align-items:center}
+.dv-tot{font:500 12.5px var(--f-mono);white-space:nowrap}
+.pl{color:var(--s-live)}.mi{color:var(--s-bad)}
+.dv-list{width:250px;flex:none;border-right:1px solid var(--f-ln);overflow:auto;display:flex;flex-direction:column}
+.dv-lh{padding:8px 10px;border-bottom:1px solid var(--f-ln);display:flex;flex-direction:column;gap:6px}
+.dv-filter{border:1px solid var(--f-bd);border-radius:7px;padding:4px 8px;font-size:12.5px;color:var(--f-mu);display:flex;gap:6px;align-items:center}
+.dv-dir{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 10px 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dv-f{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:2px 6px;align-items:center;padding:5px 10px;border:0;background:none;text-align:left;width:100%;border-left:3px solid transparent}
+.dv-f:hover{background:var(--f-hv)}
+.dv-f.on{background:var(--f-acs);border-left-color:var(--f-ac)}
+.dv-f .nm{font:12.5px var(--f-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.app s,.phone s{text-decoration:none;color:var(--f-mu);font-weight:400}
+.pbody>*{flex:none}
+.dv-lh .dv-tot{white-space:normal}
+.dv-f .ct2{font:12px var(--f-mono);white-space:nowrap;display:flex;gap:4px;align-items:center}
+.dv-f .vw{grid-column:2/4;font-size:12px;color:var(--f-mu)}
+.lt{font:600 12px/16px var(--f-mono);width:18px;height:18px;border-radius:4px;text-align:center;background:var(--f-hv);color:var(--f-mu)}
+.lt.A{background:var(--s-liveb);color:var(--s-live)}.lt.D{background:var(--s-badb);color:var(--s-bad)}.lt.R{background:var(--s-parkb);color:var(--s-park)}.lt.B{background:var(--s-warnb);color:var(--s-warn)}.lt.M{background:var(--f-acs);color:var(--f-ac)}
+.cells{display:inline-flex;gap:1px}.cells i{width:6px;height:8px;border-radius:1px;background:var(--f-ln)}
+.cells i.a{background:var(--s-live)}.cells i.d{background:var(--s-bad)}
+.dv-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+.dv-scroll{flex:1;overflow:auto;min-height:0}
+.dv-fh{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--f-sf);border-bottom:1px solid var(--f-ln);min-height:36px;flex-wrap:wrap}
+.dv-fh .tg{border:0;background:none;padding:0 2px;color:var(--f-mu);font-size:13px}
+.dv-fh .pth{font:600 12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.dv-fh .pth s{font-weight:400;color:var(--f-mu);text-decoration:none}
+.dv-fh .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.bdg{font:500 12px var(--f-mono);padding:1px 7px;border-radius:99px;border:1px solid var(--f-ln);color:var(--f-mu);white-space:nowrap}
+.bdg.A{color:var(--s-live);border-color:color-mix(in srgb,var(--s-live) 40%,transparent)}
+.bdg.D{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 40%,transparent)}
+.bdg.R{color:var(--s-park);border-color:color-mix(in srgb,var(--s-park) 40%,transparent)}
+.bdg.B{color:var(--s-warn);border-color:color-mix(in srgb,var(--s-warn) 40%,transparent)}
+.dv-file{border-bottom:1px solid var(--f-ln)}
+.dl{display:grid;grid-template-columns:44px 44px 16px max-content;font:12px/22px var(--f-mono);white-space:pre;min-width:100%}
+.dl>span{padding:0 6px}
+.dl .no{color:var(--f-mu);text-align:right;user-select:none;opacity:.8}
+.dl .sg{color:var(--f-mu);padding:0;text-align:center;user-select:none}
+.dl.a{background:color-mix(in srgb,var(--s-live) 14%,transparent)}.dl.a .sg{color:var(--s-live)}
+.dl.d{background:color-mix(in srgb,var(--s-bad) 14%,transparent)}.dl.d .sg{color:var(--s-bad)}
+.dh{font:12px/26px var(--f-mono);color:var(--f-mu);background:var(--f-hv);padding:0 10px;white-space:pre}
+.dsp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.dsp>div{overflow:hidden}
+.dsp .half{display:grid;grid-template-columns:40px 16px minmax(0,1fr);font:12px/22px var(--f-mono);white-space:pre;overflow:hidden}
+.dsp .half>span{padding:0 4px;overflow:hidden;text-overflow:clip}
+.dsp .half .no{color:var(--f-mu);text-align:right;opacity:.8}
+.dsp .half .sg{color:var(--f-mu);text-align:center}
+.dsp .half.a{background:color-mix(in srgb,var(--s-live) 14%,transparent)}.dsp .half.a .sg{color:var(--s-live)}
+.dsp .half.d{background:color-mix(in srgb,var(--s-bad) 14%,transparent)}.dsp .half.d .sg{color:var(--s-bad)}
+.dsp .half.e{background:repeating-linear-gradient(135deg,transparent 0 4px,var(--f-hv) 4px 6px)}
+.dsp .colL{border-right:1px solid var(--f-ln)}
+.dnote{font-size:12.5px;color:var(--f-mu);padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--f-bg);border-top:1px dashed var(--f-ln)}
+.dnote b{color:var(--f-ink);font-weight:600}
+.dbig{padding:14px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px}
+.dbin{padding:14px 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px}
+.thumb{width:84px;height:52px;border-radius:6px;border:1px dashed var(--f-bd);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--f-mu)}
+.fixtag{font:500 12px var(--f-mono);color:var(--s-warn);background:var(--s-warnb);padding:1px 7px;border-radius:99px;white-space:nowrap}
+.hot{outline:2px solid var(--f-ac)!important;outline-offset:2px}
+.kbd{font:500 12px var(--f-mono);border:1px solid var(--f-bd);border-bottom-width:2px;border-radius:5px;padding:0 5px;color:var(--f-mu)}
+
+/* ======== entry points strip ======== */
+.entries{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:12px}
+.ent{background:var(--f-bg);border:1px solid var(--f-ln);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;color:var(--f-ink);font:13px/1.4 var(--f-display)}
+.ent .w{font:500 12px var(--f-mono);color:var(--f-mu)}
+.ent .box{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:9px;padding:8px;display:flex;flex-direction:column;gap:6px;min-height:64px}
+.ent .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.ent .cl{font-size:12.5px;color:var(--f-mu)}.ent .cl b{color:var(--f-ac)}
+
+/* ======== phone ======== */
+.phone{width:390px;min-width:390px;height:780px;border-radius:30px;border:10px solid #0b1626;background:var(--f-bg);color:var(--f-ink);overflow:hidden;display:flex;flex-direction:column;font:13px/1.45 var(--f-display);position:relative;text-align:left}
+.phone button{font:inherit;color:inherit;cursor:pointer}
+.phd{background:linear-gradient(90deg,#0b3a7a,#06101e);color:#fff;display:flex;align-items:center;gap:10px;padding:10px 12px;flex:none}
+.phd .t{font-weight:600;font-size:14px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.phd .ibtn{color:#bcd6ee}
+.pbody{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:10px}
+.pick{display:flex;align-items:center;gap:6px;background:var(--f-sf);border:1px solid var(--f-ln);border-radius:10px;padding:6px 8px}
+.pick .mid{flex:1;min-width:0;display:flex;flex-direction:column}
+.pick .mid b{font:600 12.5px var(--f-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick .mid small{font-size:12px;color:var(--f-mu)}
+.pick button{width:44px;height:36px;border:1px solid var(--f-bd);border-radius:8px;background:var(--f-sf);font-size:16px}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--f-sf);border-radius:16px 16px 0 0;box-shadow:var(--f-sh);display:flex;flex-direction:column;min-height:0}
+.grab{width:40px;height:4px;border-radius:2px;background:var(--f-bd);margin:8px auto 4px;flex:none}
+
+/* ======== variant-specific ======== */
+.tree .dv-dir{display:flex;gap:6px;align-items:center}
+.tree .dv-dir .cnt{margin-left:auto}
+.vbox{width:14px;height:14px;border:1px solid var(--f-bd);border-radius:3px;display:inline-block;flex:none}
+.vbox.on{background:var(--f-ac);border-color:var(--f-ac);box-shadow:inset 0 0 0 2px var(--f-sf)}
+.grp{font:600 12.5px var(--f-display);padding:10px 10px 4px;display:flex;gap:6px;align-items:center}
+.grp small{font:500 12px var(--f-mono);color:var(--f-mu);margin-left:auto}
+.fnd{border:1px solid var(--f-ln);border-left:3px solid var(--s-warn);border-radius:8px;background:var(--f-sf);padding:8px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:4px;box-shadow:var(--f-sh)}
+.fnd.major{border-left-color:var(--s-bad)}
+.fnd .h{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.fnd .h b{font-size:12.5px}
+.fnd small{color:var(--f-mu);font-size:12px}
+.pin{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:0}
+.pin .gut{border-left:1px solid var(--f-ln);background:var(--f-bg);padding:6px 8px;position:relative}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:820px;background:var(--f-sf);border-left:1px solid var(--f-ln);box-shadow:var(--f-sh);display:flex;flex-direction:column;min-height:0}
+.wfg{position:relative;flex:1;border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);min-height:0}
+.node{position:absolute;width:150px;padding:7px 9px;border:1px solid var(--f-ln);border-radius:9px;background:var(--f-sf);font-size:12.5px;display:flex;flex-direction:column;gap:2px}
+.node small{color:var(--f-mu);font:12px var(--f-mono)}
+.mx{border-collapse:collapse;font:12px var(--f-mono);font-variant-numeric:tabular-nums;width:100%}
+.mx th{font:600 12px var(--f-display);color:var(--f-mu);text-align:left;padding:6px 8px;border-bottom:1px solid var(--f-ln);white-space:nowrap;position:sticky;top:0;background:var(--f-sf);z-index:1}
+.mx th.stp{text-align:center}
+.mx td{padding:0 8px;height:30px;border-bottom:1px solid var(--f-ln);white-space:nowrap}
+.mx tr.on td{background:var(--f-acs)}
+.mx tr[data-f]{cursor:pointer}
+.mx td.c{text-align:center}
+.mx .cell{display:inline-flex;gap:4px;padding:1px 6px;border-radius:6px;background:var(--f-hv)}
+.mx .cell.off{opacity:.25;background:none}
+.mx td.dim{opacity:.35}
+.stepchips{display:flex;gap:6px;flex-wrap:wrap}
+.stepchips button{white-space:nowrap;flex:none;border:1px solid var(--f-ln);background:var(--f-sf);border-radius:99px;padding:3px 10px;font-size:12.5px;color:var(--f-mu)}
+.stepchips button[aria-pressed="true"]{border-color:var(--f-ac);background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.stag{font:500 12px var(--f-mono);padding:1px 7px;border-radius:99px;background:var(--s-parkb);color:var(--s-park);white-space:nowrap}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol><symbol id="i-repo" viewBox="0 0 24 24"><path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z"/><path d="M5.5 17.5a2 2 0 0 1 2-2h11"/><path d="M9 8.5h6"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol></defs></svg>
+<div class="wrap">
+<p class="kicker">SwarmCloud · Work · design lane DIFF0 · 2026-10-08</p>
+<h1>The diff viewer: five ways to make it easier to reach and to read</h1>
+<p class="lede">The owner asked on 2026-10-08 for <q>a nicer and more easy to use and easy to get to diff viewer that will show the diff per file for any work that has done code edits/commits</q>, as five mock-ups. These are five different approaches, each a complete screen with its entry points, a phone layout, and light and dark themes. The reasoning, costs and lane plan are in <a href="../../design/diff-viewer.md">docs/design/diff-viewer.md</a>. <b>Nothing here is built.</b></p>
+<p class="fixnote"><b>Fixture data, labelled as such.</b> Every diff on this page comes from real commit <code>dbf6708</code> on main (2026-10-04, "The agent log is a full-height Logs tab, not a dock over the details", #553): 11 of its 29 files, with that commit's real <code>git show -M --numstat</code> counts and real hunks. That covers an added file, a deleted file and a rename. To keep the page small, a file holds at most 3 hunks and a hunk at most 40 lines; where one was cut, its header says <span class="fixtag">fixture: …</span>. The one binary file is real too (<code>docs/audits/2026-09-23/overflow/05-dock-route-paths-1440.png</code>, 114,775 bytes), but it is <b>not part of dbf6708</b>; it is added so the binary state has a real example. The agent, workflow, run and step names, the step attribution in variant 5 and the review findings in variant 3 are <span class="exd">example data</span>. The user is Operator and the host is <code>swarm.example.com</code>.</p>
+<div class="themebar" role="group" aria-label="Page theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#today">0 · Today</a></li><li><a href="#v1">1 · Review page</a></li><li><a href="#v2">2 · Changes tab everywhere</a></li><li><a href="#v3">3 · Review-first</a></li><li><a href="#v4">4 · Changes drawer</a></li><li><a href="#v5">5 · Workflow changes matrix</a></li><li><a href="#compare">6 · Side by side</a></li><li><a href="#rec">7 · Recommendation</a></li></ul>
+
+<h2 id="today"><span class="n">0</span>Today, measured from the code</h2>
+<p>The viewer is good at reading one patch: <code>diff/DiffView.tsx</code> has a per-file list with +/− counts and a five-cell bar, unified and split views, collapse with a large-file rule, binary, renamed and mode-change badges, find across the patch, <span class="kbd">n</span>/<span class="kbd">p</span>/<span class="kbd">j</span>/<span class="kbd">k</span> keys and windowed rows (50,000 lines cost about 300 DOM rows). The trouble is that it is hard to <em>reach</em>, cramped where it opens, and limited to one patch at a time.</p>
+<div class="tw"><table class="doc"><thead><tr><th>From</th><th>Clicks to the first file's diff today</th><th>What is in the way</th><th>Evidence</th></tr></thead><tbody>
+<tr><td>Agents list (finished agent)</td><td><b>2</b> + a scroll</td><td>Row → Details; scroll to the Code card; <b>Show the diff</b> (closed by default). Opens inside the card, in the inspector pane.</td><td class="src">AgentDetail.tsx:4176-4190 <code>AgPatchDiff</code>, <code>useState(false)</code></td></tr>
+<tr><td>Agents › Artifacts tab</td><td><b>3</b></td><td>Row → Artifacts tab → <code>swarm-work.patch</code>; the viewer opens inline under the files table.</td><td class="src">Artifacts.tsx:1146-1154, 1211-1213</td></tr>
+<tr><td>A workflow page</td><td><b>3</b> (4 for any other file)</td><td>Step → <b>Open agent →</b> (leaves the workflow) → <b>Show the diff</b>. The step inspector has no diff, patch or file list. There is no workflow-level view at all.</td><td class="src">Workflows.tsx:3638-3652, 2096-2152; WorkflowViews.tsx:1284-1295</td></tr>
+<tr><td>A workflow step that handed a diff on</td><td><b>2</b></td><td>The handed-on diff (<code>HandedFile</code>) opens by default, but only on the producing step's Details.</td><td class="src">AgentDetail.tsx:3612-3615, 3897</td></tr>
+<tr><td>An issue run (<code>/runs/&lt;id&gt;</code>)</td><td><b>2-3</b>, after guessing the step</td><td>Steps card → <b>Open agent →</b> on the step that wrote code → <b>Show the diff</b>. The run page shows "K files" only as a count, and <b>Impact</b> lists PR files with +/− but no hunks.</td><td class="src">RunSteps.tsx:180-187; RunIndex.tsx:182-222; RepoImpact.tsx:194-205</td></tr>
+<tr><td>The PR link</td><td>leaves the console</td><td>Every PR chip (workflow head, run, Decision card) is an external GitHub link. The viewer's bar has no PR link going the other way.</td><td class="src">Workflows.tsx:1385-1396; Runs.tsx:1469-1510; DecisionCard.tsx:298, 461</td></tr>
+</tbody></table></div>
+<h3 class="sec">Pain points</h3>
+<ul>
+<li><b>Too narrow for split.</b> Split needs 700px of pane (<code>SPLIT_MIN_WIDTH</code>, DiffView.tsx:137). The inspector is the viewport minus the 320px shell minus the 380px list: <b>580px at 1280</b>, and about 740px at 1440 before card padding. So split is out of reach at 1280 unless the reader drags the divider or folds the list with <span class="kbd">[</span>. These figures are computed from styles.css:6203-6215, not measured in a browser.</li>
+<li><b>One patch at a time.</b> A workflow or an issue run has one patch per step. Nothing combines them, and nothing says which step changed a given file.</li>
+<li><b>Nothing to link to.</b> The URL names the patch but never the file (App.tsx:671-675), and "viewed" is component memory that a remount clears.</li>
+<li><b>Counts need the patch read.</b> <code>result_summary.git</code> has per-commit totals (<code>files_changed</code>, <code>insertions</code>, <code>deletions</code>, <code>binary_files</code>) and the patch name. The worker's <code>git log --numstat</code> sees per-file rows and throws them away (agent_worker/gitops.py:1795-1846). So a tab count or file list needs a read of up to 512 KiB first (inspect.py:308).</li>
+<li><b>Large patches are paged.</b> Large patches are read in 512 KiB windows, and only files wholly inside a window are drawn (ArtifactViewer.tsx:690-800). The worker discards any patch over 16 MiB (<code>max_patch_bytes</code>, config.py:263) and records <code>patch_omitted</code>.</li>
+<li><b>Missing:</b> syntax highlighting (deliberately none: text reaches the DOM as React text nodes only); comments; review findings beside the lines they name (findings are stored as text in <code>verdict_gate</code>, with <code>file</code> and a free-text <code>where</code> at best, verdict.py:202); and a link to the PR from inside the viewer.</li>
+</ul>
+
+<h2 id="v1"><span class="n">1</span>Review page: every file on one full-width page</h2>
+<div class="variant">
+<div class="vh"><h3>A GitHub-style review page with a file tree</h3><span class="vn">/changes/task/&lt;id&gt;, /changes/workflow/&lt;id&gt;, /changes/run/&lt;id&gt;</span><div class="themebar" role="group" aria-label="Theme for variant 1"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>A route of its own, under Work, at full content width (960px at 1280). A file tree on the left with "viewed" ticks; on the right, every file stacked in one scroll with sticky headers. Unified or split, collapse per file and for all files, large files folded. The URL names the file, so a link in chat opens at that file.</p>
+<h3 class="sec">Where you click to get there</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">Agents › Details › Code card</span><div class="box"><div class="row"><b>Code</b><span class="exd">12 files</span><span class="pl">+886</span><span class="mi">−866</span></div><div class="row"><span class="btn sm hot">Open changes ↗</span><span class="exd">swarm-work.patch</span></div></div><span class="cl"><b>2 clicks</b>: the row, then Open changes</span></div>
+<div class="ent"><span class="w">A workflow page's head</span><div class="box"><div class="row"><b>Fix log dock overlap</b><span class="chip ctx hot">Changes · 12 files</span></div><span class="exd">opens the integrator's patch</span></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">An issue run (/runs/&lt;id&gt;)</span><div class="box"><div class="row"><b>pull request</b><span>#553 open</span><span class="chip ctx hot">Changes</span></div></div><span class="cl"><b>1 click</b>, beside the PR fact</span></div>
+<div class="ent"><span class="w">From the PR on GitHub</span><div class="box"><div class="row"><span class="exd">PR body, written by the worker:</span></div><div class="row"><span class="chip hot">Changes in SwarmCloud ↗</span></div></div><span class="cl"><b>1 click</b> from GitHub; needs the worker to write the link</span></div>
+<div class="ent"><span class="w">A link someone pasted</span><div class="box"><code>/changes/task/t-8f2c#src/paths.ts</code></div><span class="cl">opens at that file, the tree scrolled to it</span></div>
+</div>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f1" data-r="v1" tabindex="0" aria-label="Variant 1 at 1280px"></div></div><figcaption>1280 × 820. Click a file in the tree to scroll to it; ▾ collapses a file; Viewed folds it and ticks it in the tree; Unified / Split switch; AgentLogs.tsx (680 lines) and LogDock.tsx (767 deleted) open folded under the 400-line rule. <span class="kbd">j</span>/<span class="kbd">k</span> move between changes while the frame has focus.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f1p" data-r="v1p" tabindex="0" aria-label="Variant 1 at 390px"></div><figcaption>390px: the tree is a sheet behind "Files 12"; stacked, unified only.</figcaption></figure>
+<div class="idea" style="flex:1;min-width:300px;margin-top:0"><div><h4>Optimises</h4><p>Reading a large change end to end, the way a reviewer reads a PR. It is the most familiar layout, so it needs no learning.</p></div><div><h4>Costs (data that does not exist yet)</h4><ul><li>A new route and screen.</li><li>Tree counts before the read need <code>git.files</code> (path, status, +/−, binary, old path) from the worker; today they come from parsing the patch.</li><li>"Viewed" kept beyond a remount needs storage: <code>localStorage</code> per patch digest, or a per-user API.</li><li>The PR-body link is a worker change.</li></ul></div><div><h4>Risks</h4><ul><li><b>It reverses an owner decision.</b> 2026-10-01: "THERE IS NO WHOLE-PATCH READING MODE. A patch is read a file at a time" (DiffView.tsx:15).</li><li>Windowing has to span files, with sticky headers inside the window: rows.ts has to change.</li><li>A 16 MiB patch is read in 512 KiB windows, so "every file on one page" is really "every file in this window".</li></ul></div></div></div>
+</div>
+
+<h2 id="v2"><span class="n">2</span>A Changes tab wherever work happened</h2>
+<div class="variant">
+<div class="vh"><h3>Changes, a tab beside Details and Logs</h3><span class="rec">recommended</span><span class="vn">/agents/&lt;tab&gt;/&lt;id&gt;/changes · /workflows/&lt;id&gt;/changes · /runs/&lt;id&gt;/changes</span><div class="themebar" role="group" aria-label="Theme for variant 2"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>The shipped viewer, unchanged in what it does, moves from "a button inside a card" to a tab at the full height of the pane, next to the tabs a reader already uses. Opening Changes folds the agent list to its 64px strip (the shipped <span class="kbd">[</span>), so at 1280 the file gets about 850px and split is available. A summary line leads: totals, the base, the patch, and the PR, linked both ways. The tab count is the file count.</p>
+<h3 class="sec">Where you click to get there</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">Agents list → the agent</span><div class="box"><div class="tabs" style="border:0"><span>Details</span><span>Logs</span><span class="on hot">Changes <em>12</em></span><span>Attempts</span></div></div><span class="cl"><b>2 clicks</b>: row, Changes; or the address <code>…/changes</code></span></div>
+<div class="ent"><span class="w">Details › Code card</span><div class="box"><div class="row"><b>Code</b><span class="exd">12 files · +886 −866</span></div><div class="row"><span class="btn sm hot">Changes ›</span></div></div><span class="cl">replaces "Show the diff"; switches tab</span></div>
+<div class="ent"><span class="w">Workflow step inspector</span><div class="box"><div class="row"><b>implement-ui</b><span class="exd">succeeded</span></div><div class="row"><span class="btn sm hot">Changes · 7 files ›</span><span class="exd">Open agent →</span></div></div><span class="cl"><b>2 clicks</b>: step, Changes</span></div>
+<div class="ent"><span class="w">Workflow page tabs</span><div class="box"><div class="tabs" style="border:0"><span>Graph</span><span>Table</span><span>Timeline</span><span class="on hot">Changes <em>12</em></span></div></div><span class="cl"><b>1 click</b>; holds variant 5's matrix</span></div>
+<div class="ent"><span class="w">Issue run</span><div class="box"><div class="row"><b>pull request</b><span>#553 open</span></div><div class="row"><span class="btn sm hot">Changes · 12 files ›</span></div></div><span class="cl"><b>1 click</b></span></div>
+</div>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f2" data-r="v2" data-file="5" data-mode="split" tabindex="0" aria-label="Variant 2 at 1280px"></div></div><figcaption>1280 × 820, opened on Spine.tsx in split. One file at a time, as decided on 2026-10-01; files already opened read "· seen" in the list (component memory, as today). <span class="kbd">n</span>/<span class="kbd">p</span> change the file and <span class="kbd">j</span>/<span class="kbd">k</span> move between changes while the frame has focus, the shipped keys (shortcuts.ts:60-64).</figcaption></figure>
+<h3 class="sec">The tab's states: absence is never drawn as zero</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">Changed nothing</span><div class="box"><span class="mk zero"><i></i>no changes · nothing differed from the clone</span><span class="exd">tab count: 0, a measured zero</span></div></div>
+<div class="ent"><span class="w">Still running</span><div class="box"><span class="mk pend"><i></i>nothing written yet · running</span><span class="exd">tab count: a dash, not 0</span></div></div>
+<div class="ent"><span class="w">Patch over the cap</span><div class="box"><span class="mk partial"><i></i>patch discarded at 18,402,113 bytes</span><span class="exd">git.patch_omitted; the commits table still shows +/−</span></div></div>
+<div class="ent"><span class="w">Credential refusal</span><div class="box"><span class="mk unread"><i></i>withheld: a file failed the credential scan</span><span class="exd">no lines drawn (AgentDetail.tsx:3617-3620)</span></div></div>
+<div class="ent"><span class="w">Not read</span><div class="box"><span class="mk unread"><i></i>patch not read · 503</span><span class="btn sm">Retry</span></div></div>
+</div>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f2p" data-r="v2p" data-file="6" tabindex="0" aria-label="Variant 2 at 390px"></div><figcaption>390px: the tab fills the screen; a picker (file 7 of 12, ‹ ›) and "All files" sheet; unified only.</figcaption></figure>
+<div class="idea" style="flex:1;min-width:300px;margin-top:0"><div><h4>Optimises</h4><p>Reach: one consistent place, named the same everywhere, one or two clicks from every screen where work happened. It changes the least about reading, because it is the viewer the owner already approved.</p></div><div><h4>Costs (data that does not exist yet)</h4><ul><li><b>None to ship.</b> The patch artifact and the content route exist.</li><li>The tab count before a read needs <code>git.files</code>, or the count is a dash until the patch is read. A read on every agent open is up to 512 KiB, so the count comes from the summary or is not shown.</li><li>A file in the address (<code>?file=</code>) is a <code>DiffView</code> prop (<code>onFileChange</code>, <code>initialFile</code>).</li></ul></div><div><h4>Risks</h4><ul><li>Folding the list on Changes takes the list away from someone comparing agents; it must be remembered, not forced every time.</li><li>A workflow tab that just lists step patches is a list, not a diff. That is why variant 5 is the workflow content.</li><li>The credential-refusal rule has to hold in the new tab, which is a second place to keep it (it lives in <code>GitOutcome</code> today).</li></ul></div></div></div>
+</div>
+
+<h2 id="v3"><span class="n">3</span>Review-first: files by area, the review's findings beside their lines</h2>
+<div class="variant">
+<div class="vh"><h3>Read the change against its review</h3><span class="vn">/runs/&lt;id&gt;/review, /agents/&lt;tab&gt;/&lt;review-step&gt;/review</span><div class="themebar" role="group" aria-label="Theme for variant 3"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>The question a reviewer brings to a diff is "is what the review said true, and was it fixed?" So the page opens on the verdict and its findings, groups files by what kind of change they are, and pins each finding beside the line it names. A finding that names no line is listed and says so; it is never placed on a guessed line. <span class="exd">The three findings are example data.</span></p>
+<h3 class="sec">Where you click to get there</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">Decision card on a review step</span><div class="box"><div class="row"><span class="sp warn">NOT_YET</span><span class="exd">1 major · 2 minor</span></div><div class="row"><span class="btn sm hot">Review the changes ›</span></div></div><span class="cl"><b>2 clicks</b> from Agents</span></div>
+<div class="ent"><span class="w">Issue run steps card</span><div class="box"><div class="row"><b>review-1</b><span class="sp warn">NOT_YET</span><span class="chip ctx hot">Review ›</span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">Workflow head</span><div class="box"><div class="row"><b>Fix log dock overlap</b><span class="chip ctx hot">Review · NOT_YET</span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">The findings epic on GitHub</span><div class="box"><div class="row"><span class="exd">- [ ] revealTop runs on every read ·</span><span class="chip hot">ArtifactViewer.tsx:151 ↗</span></div></div><span class="cl">opens at the line</span></div>
+</div>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f3" data-r="v3" tabindex="0" aria-label="Variant 3 at 1280px"></div></div><figcaption>1280 × 820, opened on ArtifactViewer.tsx with its major finding pinned at new line 151. Click a finding card to open its file; escape.ts carries the minor. Groups are by path and change kind, never a "risk" score the console cannot measure.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f3p" data-r="v3p" data-view="list" tabindex="0" aria-label="Variant 3 at 390px"></div><figcaption>390px: findings first; a tap opens the file with the finding inline under its line.</figcaption></figure>
+<div class="idea" style="flex:1;min-width:300px;margin-top:0"><div><h4>Optimises</h4><p>Judging a change. It answers "what does the review say, where, and does the diff bear it out?" with no switching between the Decision card and the patch.</p></div><div><h4>Costs (data that does not exist yet)</h4><ul><li><b>Findings with a place.</b> <code>verdict_gate.findings</code> is stored as text (<code>findings: tuple[str]</code>, verdict.py:101). The review's own objects carry <code>file</code> and a free-text <code>where</code> (verdict.py:202) and no line. The worker would have to keep <code>{severity, file, line, side, summary}</code>, plus the patch digest the review read.</li><li>A finding read against a different patch than the one drawn must say so: a digest check.</li><li>The fix step's patch, to show "fixed by fix-1" on a finding.</li></ul></div><div><h4>Risks</h4><ul><li>A review's line numbers refer to the patch it read. After a fix round they drift, and a pinned card on the wrong line is worse than none.</li><li>"Risk" grouping invites a judgement the console cannot measure; it must stay as area and change kind.</li><li>Pins need a gutter, so split view loses its room.</li></ul></div></div></div>
+</div>
+
+<h2 id="v4"><span class="n">4</span>A changes drawer over any screen</h2>
+<div class="variant">
+<div class="vh"><h3>One Changes chip, a keyboard-driven drawer</h3><span class="vn">no route of its own; <code>?changes=…</code> on the page it opened over</span><div class="themebar" role="group" aria-label="Theme for variant 4"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>Wherever there is work (an agent's header, a workflow's head, a run's head) there is one chip: <b>Changes · 12 files +886 −866</b>. It opens an 820px drawer over the page, which stays where it was. The drawer is keyboard-first: <span class="kbd">n</span>/<span class="kbd">p</span> file, <span class="kbd">j</span>/<span class="kbd">k</span> change, <span class="kbd">/</span> find, <span class="kbd">Esc</span> close. It can be pinned open while the page underneath is navigated, and it can switch source between the integrator's patch and any one step's.</p>
+<h3 class="sec">Where you click to get there</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">An agent's header</span><div class="box"><div class="row"><span class="sp live">succeeded</span><b>implement-ui</b><span class="chip ctx hot">Changes · 7</span></div></div><span class="cl"><b>2 clicks</b>: row, chip</span></div>
+<div class="ent"><span class="w">A workflow's head</span><div class="box"><div class="row"><b>Fix log dock overlap</b><span class="chip ctx hot">Changes · 12</span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">An issue run's head</span><div class="box"><div class="row"><b>#498 Fix log dock overlap</b><span class="chip ctx hot">Changes · 12</span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">Keyboard, on any page with work</span><div class="box"><div class="row"><span class="kbd hot">c</span><span class="exd">opens the page's Changes (c is free: shortcuts.ts:49-64)</span></div></div><span class="cl"><b>0 clicks</b></span></div>
+</div>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f4" data-r="v4" data-file="2" tabindex="0" aria-label="Variant 4 at 1280px"></div></div><figcaption>1280 × 820, the drawer over a workflow's graph. Click into the frame and press <span class="kbd">n</span>/<span class="kbd">p</span>, <span class="kbd">j</span>/<span class="kbd">k</span> or <span class="kbd">Esc</span>; the chip in the head reopens it. "Pin open" keeps it across a click on the scrim. The keys are the shipped ones. The brief proposed j/k for files, but one viewer with two key maps is worse than either map.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f4p" data-r="v4p" data-file="6" tabindex="0" aria-label="Variant 4 at 390px"></div><figcaption>390px: a full-height sheet over the page; ✕ or the scrim closes it, and the page is where it was.</figcaption></figure>
+<div class="idea" style="flex:1;min-width:300px;margin-top:0"><div><h4>Optimises</h4><p>A quick look without losing your place: check what a step changed and go back to the graph, the run or the log.</p></div><div><h4>Costs (data that does not exist yet)</h4><ul><li>The chip's counts on every page need <code>git.files</code>, or at least the summary's <code>insertions</code>/<code>deletions</code> plus a file count, which the summary does not carry for uncommitted work.</li><li>A global drawer host in <code>Shell.tsx</code>, with its own Escape layer (<code>escape.ts</code>) and focus trap.</li></ul></div><div><h4>Risks</h4><ul><li>It overlaps the page, which is exactly what the owner rejected for logs on 2026-10-04 ("does not want the log component overlapping the agent details").</li><li>Inside the agent split it is an overlay on an overlay.</li><li>It is a second host for the same viewer, with a second set of Escape and focus rules to keep right.</li></ul></div></div></div>
+</div>
+
+<h2 id="v5"><span class="n">5</span>The workflow's changes as a files × steps matrix</h2>
+<div class="variant">
+<div class="vh"><h3>Every step's patch, stacked by step, with a per-file record of which step changed what</h3><span class="vn">/workflows/&lt;id&gt;/changes · /runs/&lt;id&gt;/changes</span><div class="themebar" role="group" aria-label="Theme for variant 5"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>A workflow has one patch per step, and the integrator's patch (the PR) is the sum. The matrix puts files down the side and steps across the top, with each cell showing that step's +/− on that file. A step filter narrows rows and columns. Choosing a file shows each step's hunks for it, stacked and tagged by step. A step that changed nothing is a measured zero (hollow ring), and a step whose patch could not be read is hatched; neither is drawn as an empty cell. <span class="exd">dbf6708 was one commit: the split across steps is example data.</span></p>
+<h3 class="sec">Where you click to get there</h3>
+<div class="entries fx">
+<div class="ent"><span class="w">Workflow page tabs</span><div class="box"><div class="tabs" style="border:0"><span>Graph</span><span>Table</span><span>Timeline</span><span class="on hot">Changes <em>12</em></span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">Issue run</span><div class="box"><div class="row"><b>Changes</b><span class="exd">5 steps · 12 files</span><span class="btn sm hot">Open ›</span></div></div><span class="cl"><b>1 click</b></span></div>
+<div class="ent"><span class="w">Step inspector</span><div class="box"><div class="row"><b>fix</b><span class="btn sm hot">This step's changes ›</span></div></div><span class="cl"><b>2 clicks</b>; the matrix filtered to that step</span></div>
+<div class="ent"><span class="w">The integrate column</span><div class="box"><div class="row"><span class="exd">integrate</span><span class="chip hot">PR #553 ↗</span></div></div><span class="cl">out to GitHub; the PR's link comes back here</span></div>
+</div>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f5" data-r="v5" tabindex="0" aria-label="Variant 5 at 1280px"></div></div><figcaption>1280 × 820, opened on AgentSplit.tsx, which two steps touched. Click a row to choose a file, or a step chip to filter; review's column says "changed nothing". Line-level "which step wrote this line" is shown as not recorded, because no read today can answer it honestly.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f5p" data-r="v5p" data-view="list" tabindex="0" aria-label="Variant 5 at 390px"></div><figcaption>390px: the matrix becomes file cards with step tags; a tap shows the hunks stacked by step.</figcaption></figure>
+<div class="idea" style="flex:1;min-width:300px;margin-top:0"><div><h4>Optimises</h4><p>The multi-step case that is this product's own: "which step changed this file, and what did the fix step change after the review?" It is the only variant that answers that.</p></div><div><h4>Costs (data that does not exist yet)</h4><ul><li><b>Phase 1 needs none:</b> one content read per step that wrote a patch (each step's <code>swarm-work.patch</code>), through the same tenant-scoped, redacting route, in parallel and capped.</li><li>Cell counts without reading every patch need <code>git.files</code> per step.</li><li><b>Line-level attribution</b> needs the integrator to record, per hunk, which input patch it applied (<code>integrated_from</code>). Steps diff against different bases, so their line numbers are not comparable client-side.</li></ul></div><div><h4>Risks</h4><ul><li>N reads for N steps: a 20-step workflow is 20 windows of up to 512 KiB. It needs a cap and "read on demand" for the cells.</li><li>A <code>carrier: branches</code> step that starts from its parent's branch already holds the parent's work, so the same change can appear twice (dispatch-and-integration.md, "same change twice").</li><li>Too much on a phone without the card fallback.</li></ul></div></div></div>
+</div>
+
+
+<h2 id="compare"><span class="n">6</span>Side by side</h2>
+<div class="tw"><table class="doc"><thead><tr><th></th><th>1 · Review page</th><th>2 · Changes tab</th><th>3 · Review-first</th><th>4 · Drawer</th><th>5 · Matrix</th></tr></thead><tbody>
+<tr><td>Optimises</td><td>reading a big change end to end</td><td>reaching any patch from where the work is</td><td>judging a change against its review</td><td>a quick look without leaving the page</td><td>"which step changed what" across a workflow</td></tr>
+<tr><td>Clicks from Agents</td><td>2 (row → Open changes)</td><td>2 (row → Changes)</td><td>2 (review step → Review the changes)</td><td>2 (row → chip)</td><td>n/a (a workflow view)</td></tr>
+<tr><td>Clicks from a workflow</td><td>1 (head chip)</td><td>1 (Changes tab)</td><td>1 (head chip)</td><td>1 (head chip)</td><td>1 (Changes tab)</td></tr>
+<tr><td>Clicks from an issue run</td><td>1</td><td>1</td><td>1</td><td>1</td><td>1</td></tr>
+<tr><td>Reuses DiffView as is</td><td>no: stacked files reverse the 2026-10-01 one-file decision</td><td><b>yes</b></td><td>mostly; adds a gutter</td><td>yes, in a new host</td><td>yes, per cell</td></tr>
+<tr><td>New data needed</td><td><code>git.files</code> (counts before the read)</td><td><code>git.files</code> for tab counts; works without it</td><td><code>file</code> + <code>line</code> on every finding</td><td><code>git.files</code> for the chip</td><td>per-step reads now; per-hunk step attribution needs the integrator to record it</td></tr>
+<tr><td>Phone</td><td>files sheet + stacked unified</td><td>picker + unified (as today)</td><td>findings first, then the file</td><td>full-height sheet</td><td>file cards with step chips</td></tr>
+</tbody></table></div>
+
+<h2 id="rec"><span class="n">7</span>Recommendation</h2>
+<div class="recbox"><h3>Variant 2 now, variant 5 as its workflow and run page, variant 3's pinned findings once findings carry a line</h3>
+<p><b>2 · Changes tab everywhere</b> fixes the problem the owner named, reach, without reopening the 2026-10-01 decision that a patch is read one file at a time. It reuses <code>DiffView</code> whole, needs no new API to ship, and gets room for split by folding the agent list to its strip (the shipped <span class="kbd">[</span> behaviour). On a workflow or an issue run the same tab holds <b>variant 5's matrix</b>, because those have one patch per step and a list of patches is not a diff. <b>Variant 3's</b> findings beside the lines follow once the worker keeps a <code>file</code> and <code>line</code> on each finding. Variants 1 and 4 are kept as the record: 1 reverses an owner decision, and 4 duplicates 2 in a second host with its own Escape and focus rules.</p></div>
+<p class="sub" style="color:var(--mute);margin-top:14px">The owner's choices are asked in <code>questions.json</code> (the artifacts of lane DIFF0): which variant or combination, which entry points first, the syntax-highlighting budget, and the phone behaviour.</p>
+</div>
+
+<script id="fixture" type="application/json">[{"status":"added","hunks":[{"head":"@@ -0,0 +1,680 @@","lines":[["a",null,1,"import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'"],["a",null,2,""],["a",null,3,"import { DRAWER_SETTLE_MS, Mark } from './AgentDetail'"],["a",null,4,"import { loadAttempts, loadTaskLogs, loadTranscript } from './api'"],["a",null,5,"import {"],["a",null,6,"  ARTIFACTS_POLL_MS,"],["a",null,7,"  LOG_VIEWS,"],["a",null,8,"  LogBody,"],["a",null,9,"  POLLED_STREAMS,"],["a",null,10,"  logsSettled,"],["a",null,11,"  transcriptSettled,"],["a",null,12,"  type LogFeed,"],["a",null,13,"  type LogView,"],["a",null,14,"} from './Artifacts'"],["a",null,15,"import type { Result } from './fetch'"],["a",null,16,"import {"],["a",null,17,"  ERROR_PATTERN_SAYS,"],["a",null,18,"  arrivedLines,"],["a",null,19,"  linesOf,"],["a",null,20,"  tailGap,"],["a",null,21,"  windowAt,"],["a",null,22,"  type Arrived,"],["a",null,23,"  type Gap,"],["a",null,24,"  type GapUnknown,"],["a",null,25,"  type WindowAt,"],["a",null,26,"} from './logLines'"],["a",null,27,"import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'"],["a",null,28,"import { attemptLine, useRead } from './RunFiles'"],["a",null,29,"import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'"],["a",null,30,"import { useNow } from './useNow'"],["a",null,31,"import { Button, Segmented } from './components'"],["a",null,32,""],["a",null,33,"/**"],["a",null,34," * THE LOGS TAB (owner decision 2026-10-04; replaces viewers.html pick A's"],["a",null,35," * bottom dock)."],["a",null,36," *"],["a",null,37," * The log was a dock along the bottom of the agent's column, open across"],["a",null,38," * every tab, with a strip, a resize handle and an `Open full` overlay. The"],["a",null,39," * owner's QA found it over the agent's details at every split width and"],["a",null,40," * moving the page when it was focused (D7), and its four streams scrolled"]]}],"cut":["the first 40 of 680 lines of @@ -0,0 +1,680 @@"],"path":"apps/swarm-ui/src/AgentLogs.tsx","add":680,"del":0},{"status":"modified","hunks":[{"head":"@@ -9,14 +9,14 @@ import {","lines":[["c",9,9,""],["c",10,10,"import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'"],["c",11,11,"import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy, Mark } from './AgentDetail'"],["a",null,12,"import { AgentLogs, LogLastLine } from './AgentLogs'"],["c",12,13,"import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'"],["c",13,14,"import { loadTask } from './api'"],["c",14,15,"import type { TaskPane } from './App'"],["c",15,16,"import { ArtifactsScreen } from './Artifacts'"],["c",16,17,"import { AttemptTimelineScreen } from './AttemptTimeline'"],["d",17,null,"import { CheckpointsPane } from './CheckpointsPane'"],["a",null,18,"import { CheckpointsPane, checkpointsSay, type CheckpointCount } from './CheckpointsPane'"],["c",18,19,"import { isOverlay, trapTab } from './focus'"],["d",19,null,"import { phoneWidth } from './HelpCard'"],["c",20,20,"import {"],["c",21,21,"  SNAPS,"],["c",22,22,"  SNAP_LABEL,"]]},{"head":"@@ -28,10 +28,9 @@ import {","lines":[["c",28,28,"  useListSnap,"],["c",29,29,"  type ListSnap,"],["c",30,30,"} from './listSnap'"],["d",31,null,"import { LogDock } from './LogDock'"],["c",32,31,"import { useRead } from './RunFiles'"],["c",33,32,"import { StopRun } from './StopRun'"],["d",34,null,"import { RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'"],["a",null,33,"import { CONCURRENCY_STATES, RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'"],["c",35,34,"import { AGE_TICK_MS, useNow } from './useNow'"],["c",36,35,"import './styles/agents.css'"],["c",37,36,"import { Button, CIcon, StateMark, Tabs } from './components'"]]},{"head":"@@ -42,9 +41,14 @@ import { Button, CIcon, StateMark, Tabs } from './components'","lines":[["c",42,41," *"],["c",43,42," * The list on the left, the selected agent on the right: a header row (state"],["c",44,43," * pill, the agent's name, Copy link, Stop), underline tabs with counts --"],["d",45,null," * Details, Children when the agent has any, Attempts, Artifacts, Checkpoints"],["d",46,null," * -- the open tab, and the log docked along the bottom of this column, open"],["d",47,null," * across every tab."],["a",null,44," * Details, Logs, Children when the agent has any, Attempts, Artifacts,"],["a",null,45," * Checkpoints -- and the open tab, which fills the rest of the column."],["a",null,46," *"],["a",null,47," * THE LOG IS A TAB (owner decision 2026-10-04). It was a dock along the foot"],["a",null,48," * of this column, open across every tab, and it lay over the agent's details;"],["a",null,49," * it is the Logs tab now (AgentLogs.tsx), full height under the header with"],["a",null,50," * nothing beneath it. A running agent opens on Logs, a finished one on"],["a",null,51," * Details, whose one-line last log line switches to it."],["c",48,52," *"],["c",49,53," * MOVED OUT OF App.tsx (lane U1, 2026-10-02). It was `AgentDrawer` there; the"],["c",50,54," * shell is another lane's, and this is the Agents section's own screen. App"]]}],"cut":["3 of 8 hunks"],"path":"apps/swarm-ui/src/AgentSplit.tsx","add":73,"del":28},{"status":"modified","hunks":[{"head":"@@ -138,11 +138,21 @@ export function ArtifactViewer({","lines":[["c",138,138,"  // looked like nothing happened: it is scrolled into view as it opens."],["c",139,139,"  // Escape closes it (escape.ts: before the split's own Escape, which would"],["c",140,140,"  // close the agent), and focus goes back to what opened it."],["a",null,141,"  //"],["a",null,142,"  // ITS TOP, IN ITS OWN PANE (U11a, owner QA 2026-10-04). `block: 'nearest'`"],["a",null,143,"  // brought the viewer's still-reading 200px to the foot of the window, at y"],["a",null,144,"  // 763-971 under the log strip, and the content that landed after grew below"],["a",null,145,"  // the fold; and `scrollIntoView` scrolls every ancestor, the page included."],["a",null,146,"  // Inside the agent's pane only the pane scrolls, to put the viewer's top at"],["a",null,147,"  // the pane's top, as it opens and once more when its first read lands."],["c",141,148,"  const box = useRef<HTMLDivElement>(null)"],["c",142,149,"  const opener = useRef<Element | null>(null)"],["a",null,150,"  const landed = state.kind !== 'loading'"],["a",null,151,"  useEffect(() => {"],["a",null,152,"    if (box.current !== null) revealTop(box.current)"],["a",null,153,"  }, [landed])"],["c",143,154,"  useEffect(() => {"],["c",144,155,"    opener.current = typeof document === 'undefined' ? null : document.activeElement"],["d",145,null,"    box.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })"],["c",146,156,"    return () => {"],["c",147,157,"      const back = opener.current"],["c",148,158,"      if (back instanceof HTMLElement && back.isConnected && back !== document.body) back.focus()"]]},{"head":"@@ -1440,3 +1450,17 @@ function pickText(row: Record<string, unknown>): string {","lines":[["c",1440,1450,"  }"],["c",1441,1451,"  return ''"],["c",1442,1452,"}"],["a",null,1453,""],["a",null,1454,"/**"],["a",null,1455," * Brings `el`'s top to the top of the agent pane that scrolls it, moving only"],["a",null,1456," * that pane; outside the split it falls back to `scrollIntoView`."],["a",null,1457," */"],["a",null,1458,"export function revealTop(el: HTMLElement): void {"],["a",null,1459,"  const pane = el.closest<HTMLElement>('.ag-split-pane')"],["a",null,1460,"  if (pane === null) {"],["a",null,1461,"    el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })"],["a",null,1462,"    return"],["a",null,1463,"  }"],["a",null,1464,"  const offset = el.getBoundingClientRect().top - pane.getBoundingClientRect().top"],["a",null,1465,"  pane.scrollTop = Math.max(0, pane.scrollTop + offset - 8)"],["a",null,1466,"}"]]}],"cut":[],"path":"apps/swarm-ui/src/ArtifactViewer.tsx","add":25,"del":1},{"status":"deleted","hunks":[{"head":"@@ -1,767 +0,0 @@","lines":[["d",1,null,"import {"],["d",2,null,"  useCallback,"],["d",3,null,"  useEffect,"],["d",4,null,"  useLayoutEffect,"],["d",5,null,"  useMemo,"],["d",6,null,"  useRef,"],["d",7,null,"  useState,"],["d",8,null,"  type PointerEvent as ReactPointerEvent,"],["d",9,null,"} from 'react'"],["d",10,null,"import { createPortal } from 'react-dom'"],["d",11,null,""],["d",12,null,"import { DRAWER_SETTLE_MS, Mark } from './AgentDetail'"],["d",13,null,"import { loadAttempts, loadTaskLogs, loadTranscript } from './api'"],["d",14,null,"import {"],["d",15,null,"  ARTIFACTS_POLL_MS,"],["d",16,null,"  LOG_VIEWS,"],["d",17,null,"  LogBody,"],["d",18,null,"  POLLED_STREAMS,"],["d",19,null,"  logsSettled,"],["d",20,null,"  transcriptSettled,"],["d",21,null,"  type LogFeed,"],["d",22,null,"  type LogView,"],["d",23,null,"} from './Artifacts'"],["d",24,null,"import type { Result } from './fetch'"],["d",25,null,"import { nudgePane } from './focus'"],["d",26,null,"import {"],["d",27,null,"  ERROR_PATTERN_SAYS,"],["d",28,null,"  arrivedLines,"],["d",29,null,"  linesOf,"],["d",30,null,"  tailGap,"],["d",31,null,"  windowAt,"],["d",32,null,"  type Arrived,"],["d",33,null,"  type Gap,"],["d",34,null,"  type GapUnknown,"],["d",35,null,"  type WindowAt,"],["d",36,null,"} from './logLines'"],["d",37,null,"import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'"],["d",38,null,"import { clampPane, readPane, writePane, type PaneSpec } from './panes'"],["d",39,null,"import { attemptLine, useRead } from './RunFiles'"],["d",40,null,"import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'"]]}],"cut":["the first 40 of 767 lines of @@ -1,767 +0,0 @@"],"path":"apps/swarm-ui/src/LogDock.tsx","add":0,"del":767},{"status":"modified","hunks":[{"head":"@@ -1,6 +1,7 @@","lines":[["c",1,1,"import {"],["c",2,2,"  createContext,"],["c",3,3,"  Fragment,"],["a",null,4,"  isValidElement,"],["c",4,5,"  useCallback,"],["c",5,6,"  useContext,"],["c",6,7,"  useEffect,"]]},{"head":"@@ -657,7 +658,10 @@ export function PageHead({","lines":[["c",657,658,"      <p className=\"sub\">"],["c",658,659,"        {meta !== undefined && meta !== null && meta !== '' && ("],["c",659,660,"          <>"],["d",660,null,"            <span className=\"c-meta\">{meta}<\/span>"],["a",null,661,"            {/* THE WHOLE CHIP IN ITS TITLE (U11a N10): beside an open agent"],["a",null,662,"                the chip ellipses (`200 loaded · 0 live…`), and the words it"],["a",null,663,"                cut are the scope of every figure under it. */}"],["a",null,664,"            <span className=\"c-meta\" title={textOf(meta) || undefined}>{meta}<\/span>"],["c",661,665,"            {/* The chip and the age are two facts: said as two to a reader"],["c",662,666,"                of the text, drawn apart by the row's gap. */}"],["c",663,667,"            <span className=\"sk\u002dvh\"> · <\/span>"]]},{"head":"@@ -673,6 +677,15 @@ export function PageHead({","lines":[["c",673,677,"  )"],["c",674,678,"}"],["c",675,679,""],["a",null,680,"/** The words a node draws, for a title: strings and numbers, through elements and fragments. */"],["a",null,681,"export function textOf(n: ReactNode): string {"],["a",null,682,"  if (n === null || n === undefined || typeof n === 'boolean') return ''"],["a",null,683,"  if (typeof n === 'string' || typeof n === 'number') return String(n)"],["a",null,684,"  if (Array.isArray(n)) return n.map(textOf).join('')"],["a",null,685,"  if (isValidElement<{ children?: ReactNode }>(n)) return textOf(n.props.children)"],["a",null,686,"  return ''"],["a",null,687,"}"],["a",null,688,""],["c",676,689,"/** Whether a node draws anything (a SubLine that has nothing to add returns null). */"],["c",677,690,"function hasContent(n: ReactNode): boolean {"],["c",678,691,"  return n !== null && n !== undefined && n !== false && n !== ''"]]}],"cut":["3 of 5 hunks"],"path":"apps/swarm-ui/src/Shell.tsx","add":38,"del":3},{"status":"modified","hunks":[{"head":"@@ -1550,7 +1550,12 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {","lines":[["c",1550,1550,"          >"],["c",1551,1551,"            <span className=\"sk\u002drecent-row\">"],["c",1552,1552,"              <NamedMark mark={look === null ? null : look.mark} hue={look === null ? 'neu' : look.hue} word={word} bare />"],["d",1553,null,"              <span className={RECENT_NAME_CLASS}>{w.name ?? w.id}<\/span>"],["a",null,1553,"              {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):"],["a",null,1554,"                  the ellipsis is drawn on this span, so the hover that"],["a",null,1555,"                  explains it is too, not only on the button around it. */}"],["a",null,1556,"              <span className={RECENT_NAME_CLASS} title={w.name !== null ? `${w.name} · ${w.id}` : w.id}>"],["a",null,1557,"                {w.name ?? w.id}"],["a",null,1558,"              <\/span>"],["c",1554,1559,"            <\/span>"],["c",1555,1560,"          <\/button>"],["c",1556,1561,"        )"]]}],"cut":[],"path":"apps/swarm-ui/src/Spine.tsx","add":6,"del":1},{"status":"renamed","hunks":[{"head":"@@ -1,19 +1,21 @@","lines":[["d",1,null,"// THE LOG DOCK (viewers.html, pick A, 2026-10-02)."],["a",null,1,"// THE LOGS TAB (owner decision 2026-10-04; it replaced viewers.html pick A's"],["a",null,2,"// bottom dock)."],["c",2,3,"//"],["d",3,null,"// The log docks under the agent's detail column and stays open across the"],["d",4,null,"// tabs; it reads the attempt the reader picks, by attempt_id; it follows and"],["d",5,null,"// pauses, counting what arrived while paused; it searches \"this window\","],["d",6,null,"// wraps, jumps to the next error (a transcript tool result's is_error plus a"],["d",7,null,"// console-side pattern, and says it can miss), counts what the server masked"],["d",8,null,"// and draws the mask as ********, and says when output fell out of the live"],["d",9,null,"// tail between two reads."],["a",null,4,"// The log is a tab of the agent; it reads the attempt the reader picks, by"],["a",null,5,"// attempt_id; it follows and pauses, counting what arrived while paused; it"],["a",null,6,"// searches \"this window\", wraps, jumps to the next error (a transcript tool"],["a",null,7,"// result's is_error plus a console-side pattern, and says it can miss),"],["a",null,8,"// counts what the server masked and draws the mask as ********, and says"],["a",null,9,"// when output fell out of the live tail between two reads. Details carries"],["a",null,10,"// its one newest line, which opens the tab."],["c",10,11,"//"],["d",11,null,"// MUTATIONS, one per block: drop `attemptId` from the dock's reads or from"],["d",12,null,"// the stdout view's; let a paused dock show the newest read; count hits over"],["a",null,12,"// MUTATIONS, one per block: drop `attemptId` from the tab's reads or from"],["a",null,13,"// the stdout view's; let a paused log show the newest read; count hits over"],["c",13,14,"// the whole stream; drop the transcript's `is_error` from the error targets;"],["d",14,null,"// draw the mask as plain text; compare a read with itself for the gap."],["a",null,15,"// draw the mask as plain text; compare a read with itself for the gap; drop"],["a",null,16,"// the last line or its Open logs."],["c",15,17,""],["d",16,null,"import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'"],["a",null,18,"import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'"],["c",17,19,"import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'"],["c",18,20,""],["c",19,21,"import type { Result } from '../fetch'"]]},{"head":"@@ -31,7 +33,7 @@ vi.mock('../api', async (importOriginal) => {","lines":[["c",31,33,"  return { ...actual, ...api }"],["c",32,34,"})"],["c",33,35,""],["d",34,null,"const { LogDock, defaultView } = await import('../LogDock')"],["a",null,36,"const { AgentLogs, LogLastLine, defaultView } = await import('../AgentLogs')"],["c",35,37,""],["c",36,38,"const ID = 'task_0123456789abcdef0123'"],["c",37,39,"const MASK = '*'.repeat(8)"]]},{"head":"@@ -145,14 +147,12 @@ function running(over: Partial<Task> = {}): Task {","lines":[["c",145,147,"}"],["c",146,148,""],["c",147,149,"function dock(): HTMLElement {"],["d",148,null,"  // Open full, the log is a dialog over the app (U10a D1); docked, a region."],["d",149,null,"  return screen.queryByRole('dialog', { name: 'Log' }) ?? screen.getByRole('region', { name: 'Log' })"],["a",null,150,"  return screen.getByRole('region', { name: 'Logs' })"],["c",150,151,"}"],["c",151,152,""],["c",152,153,"function chooseStream(label: string) {"],["d",153,null,"  const b = within(dock()).getAllByRole('button').find((x) => x.textContent === label)"],["d",154,null,"  expect(b, `no ${label} stream button`).toBeTruthy()"],["d",155,null,"  fireEvent.click(b!)"],["a",null,154,"  const group = within(dock()).getByRole('group', { name: 'Which log' })"],["a",null,155,"  fireEvent.click(within(group).getByRole('button', { name: label }))"],["c",156,156,"}"],["c",157,157,""],["c",158,158,"beforeEach(() => {"]]}],"cut":["3 of 16 hunks"],"old":"apps/swarm-ui/src/__tests__/logdock.test.tsx","path":"apps/swarm-ui/src/__tests__/logs.tab.test.tsx","similarity":"79%","add":52,"del":61},{"status":"modified","hunks":[{"head":"@@ -3,9 +3,9 @@ import { useEffect, useRef } from 'react'","lines":[["c",3,3,"/**"],["c",4,4," * ESCAPE CLOSES THE INNERMOST LAYER, AND ONLY IT (U10a, owner QA 2026-10-04)."],["c",5,5," *"],["d",6,null," * The agent split closes on Escape (AgentSplit's own `onKeyDown`). Two things"],["d",7,null," * open inside it and must close first: the log's full view (D1) and an"],["d",8,null," * artifact's viewer. Each registers here while it is open; one listener, in"],["a",null,6," * The agent split closes on Escape (AgentSplit's own `onKeyDown`). What opens"],["a",null,7," * inside it must close first: an artifact's viewer (the log's full view was"],["a",null,8," * the other, until the log became a tab). Each registers here while it is open; one listener, in"],["c",9,9," * the CAPTURE phase on the window, closes the most recently opened and stops"],["c",10,10," * the key there -- before React's listener at the app root, so the split"],["c",11,11," * never sees an Escape a layer above it already used."]]}],"cut":[],"path":"apps/swarm-ui/src/escape.ts","add":3,"del":3},{"status":"modified","hunks":[{"head":"@@ -66,7 +66,7 @@ export function helpGroupOf(topic: string): string | null {","lines":[["c",66,66,"  return t === undefined ? null : t.group"],["c",67,67,"}"],["c",68,68,""],["d",69,null,"export const TASK_PANES = ['children', 'attempts', 'artifacts', 'checkpoints'] as const"],["a",null,69,"export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints'] as const"],["c",70,70,""],["c",71,71,"function isAgentTab(s: string | undefined): s is AgentTab {"],["c",72,72,"  return (AGENT_TABS as readonly string[]).includes(s ?? '')"]]}],"cut":[],"path":"apps/swarm-ui/src/paths.ts","add":1,"del":1},{"status":"modified","hunks":[{"head":"@@ -10398,6 +10398,13 @@ span.sk\u002dttile { cursor: default; }","lines":[["c",10398,10398,"@media (max-width: 759px) {"],["c",10399,10399,"  .c-phead { flex-wrap: wrap; }"],["c",10400,10400,"  .c-phead > .sub { flex-wrap: wrap; }"],["a",null,10401,"  /* A `?` NEVER STANDS ALONE (U11a D39, owner QA at 390px, 2026-10-04)."],["a",null,10402,"     Where the phone header names the page, a page head whose title steps"],["a",null,10403,"     aside (Overview's, overview.css) was left holding a bare `?` that opened"],["a",null,10404,"     the section's whole explanation with nothing to say what it explained."],["a",null,10405,"     The glyph steps aside with its title; the explanation is still the rail's"],["a",null,10406,"     Help section, one tap from the menu. */"],["a",null,10407,"  .ov-page > .c-phead > .head > :not(h1) { display: none; }"],["c",10401,10408,"}"],["c",10402,10409,"/* THE SAME PILL IN BOTH THEMES (U10a D40, owner QA 2026-10-04): the fill"],["c",10403,10410,"   is `--surface-2`, which in light (#eef4fa) is all but the page's own"]]}],"cut":[],"path":"apps/swarm-ui/src/styles.css","add":7,"del":0},{"status":"modified","hunks":[{"head":"@@ -43,7 +43,7 @@ disagrees:","lines":[["c",43,43,"| timeline.html | **A swimlanes**: one lane per agent grouped under its workflow; bars are attempts holding capacity, hatched bands are parks (no capa…"],["c",44,44,"| intake-tenants.html | **1A**: a third card on /submit opens /submit/issue, with the issue previewed before submit (title, body, labels), runner, pla…"],["c",45,45,"| agent-detail-2.html | **A in the split detail**: a Children tab on a parent and a \"child of …\" link on a child; a verdict card on a review step (fin…"],["d",46,null,"| viewers.html | **A bottom log dock** under the detail, above the existing API-reads strip: follow/pause, search, wrap, jump to error, masked count, …"],["a",null,46,"| viewers.html | **The log dock is SUPERSEDED (owner decision 2026-10-04): logs are a tab.** The owner does not want the log component overlapping the…"],["c",47,47,"| wide-workflows.html | **A, extends what is live**: stage rows top to bottom, a stage never wraps; a wide stage's band gains a state-mix bar, failed …"],["c",48,48,""],["c",49,49,"The live app was audited against the batch 1-2 picks on 2026-10-02: #503."]]}],"cut":["lines over 150 characters end in … here; the viewer scrolls them whole"],"path":"docs/web-ui/mockups/PICKS.md","add":1,"del":1},{"path":"docs/audits/2026-09-23/overflow/05-dock-route-paths-1440.png","status":"added","binary":true,"bytes":114775,"add":null,"del":null,"hunks":[],"cut":[],"foreign":"a real file of this repository, NOT part of dbf6708: added so the binary state has a real example"}]</script>
+<script>
+/* Page theme: light / dark / system, remembered for this page only (as onboarding.html). */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+
+/* ================= fixture ================= */
+const FX=JSON.parse(document.getElementById('fixture').textContent);
+const LARGE_FILE_LINES=400; /* rows.ts:25, the shipped rule */
+const PATCH='swarm-work.patch';
+const PATCH_SIZE='99.6 KiB'; /* the 11 text files of dbf6708, git show -M --binary: 102,018 bytes */
+const BASE='7fb25ab';      /* dbf6708's parent */
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+const base=p=>p.slice(p.lastIndexOf('/')+1);
+const dir=p=>p.lastIndexOf('/')<0?'':p.slice(0,p.lastIndexOf('/'));
+const letter=f=>f.binary?'B':({added:'A',deleted:'D',renamed:'R'}[f.status]||'M');
+const WORD={A:'added',D:'deleted',R:'renamed',M:'modified',B:'binary'};
+const changed=f=>f.binary?0:f.add+f.del;
+const large=f=>changed(f)>LARGE_FILE_LINES;
+const TOT=FX.reduce((t,f)=>({a:t.a+(f.add||0),d:t.d+(f.del||0),b:t.b+(f.binary?1:0)}),{a:0,d:0,b:0});
+const kib=b=>(b/1024).toFixed(1)+' KiB';
+function cells(f){
+  if(f.binary)return '';
+  const t=f.add+f.del,n=Math.min(5,t),a=t?Math.round(n*f.add/t):0;
+  let h='';for(let i=0;i<5;i++)h+=`<i class="${i<a?'a':i<n?'d':''}"></i>`;
+  return `<span class="cells" aria-hidden="true">${h}</span>`;
+}
+const nums=f=>f.binary?`<span class="mk"><i style="border:1.5px solid var(--s-warn);transform:rotate(45deg);border-radius:2px;width:8px;height:8px"></i>binary</span>`:`<span class="pl">+${f.add}</span> <span class="mi">&minus;${f.del}</span>`;
+const totals=()=>`<span class="dv-tot">${FX.length} files · <span class="pl">+${TOT.a}</span> <span class="mi">&minus;${TOT.d}</span> · ${TOT.b} binary</span>`;
+const pathHtml=f=>f.status==='renamed'?`${esc(base(f.path))} <s>← ${esc(base(f.old))}</s>`:esc(base(f.path));
+
+/* ================= the diff renderer ================= */
+function unified(f,mark){
+  let h='';
+  f.hunks.forEach((hk,hi)=>{
+    h+=`<div class="dh" data-hunk="${hi}">${esc(hk.head)}</div>`;
+    hk.lines.forEach((l,li)=>{
+      const k=l[0],cls=k==='a'?' a':k==='d'?' d':'',sg=k==='a'?'+':k==='d'?'−':' ';
+      const row=`<div class="dl${cls}"><span class="no">${l[1]??''}</span><span class="no">${l[2]??''}</span><span class="sg">${sg}</span><span>${esc(l[3])}</span></div>`;
+      h+=mark?mark(hi,li,row):row;
+    });
+  });
+  return h;
+}
+function split(f){
+  let h='';
+  f.hunks.forEach((hk,hi)=>{
+    h+=`<div class="dh" data-hunk="${hi}">${esc(hk.head)}</div>`;
+    const L=hk.lines;let i=0;
+    const half=(l,side)=>l?`<div class="half ${l[0]==='c'?'':l[0]}${side==='L'?' colL':''}"><span class="no">${side==='L'?l[1]:l[2]}</span><span class="sg">${l[0]==='a'?'+':l[0]==='d'?'−':' '}</span><span>${esc(l[3])}</span></div>`:`<div class="half e${side==='L'?' colL':''}"><span></span><span></span><span></span></div>`;
+    while(i<L.length){
+      if(L[i][0]==='c'){h+=`<div class="dsp">${half(L[i],'L')}${half(L[i],'R')}</div>`;i++;continue}
+      const d=[],a=[];
+      while(i<L.length&&L[i][0]==='d')d.push(L[i++]);
+      while(i<L.length&&L[i][0]==='a')a.push(L[i++]);
+      for(let j=0;j<Math.max(d.length,a.length);j++)h+=`<div class="dsp">${half(d[j],'L')}${half(a[j],'R')}</div>`;
+    }
+  });
+  return h;
+}
+function cutNote(f){
+  const parts=[...f.cut];
+  return parts.length?`<div class="dnote"><span class="fixtag">fixture</span>this page holds ${parts.map(esc).join('; ')}. The real patch has the rest; the viewer windows it.</div>`:'';
+}
+function isOpen(st,i){const f=FX[i];return st.open[i]!==undefined?st.open[i]:!large(f)}
+function fileBody(st,i,opts={}){
+  const f=FX[i];
+  if(f.binary)return `<div class="dbin"><span class="thumb">png</span><span><b>Binary file, ${kib(f.bytes)}.</b> Not drawn as text; git counts no lines for it, which is not "changed nothing".</span><button class="btn sm">Download</button><span class="fixtag">fixture: not part of dbf6708</span></div>`;
+  if(!isOpen(st,i)){
+    return large(f)?`<div class="dbig"><span class="mk partial"><i></i>collapsed: large</span><span>${changed(f)} changed lines, over the ${LARGE_FILE_LINES}-line rule, so it opens folded. Nothing was dropped.</span><button class="btn sm" data-act="tog" data-i="${i}">Expand</button></div>`:'';
+  }
+  const mode=opts.forceUnified?'unified':st.mode;
+  const body=mode==='split'?split(f):unified(f,opts.mark);
+  return `<div class="dbody">${body}</div>${cutNote(f)}`;
+}
+function fileHead(st,i,opts={}){
+  const f=FX[i],L=letter(f),open=isOpen(st,i);
+  const badges=[`<span class="bdg ${L}">${WORD[L]}</span>`];
+  if(f.status==='renamed')badges.push(`<span class="bdg R">${esc(f.similarity)} similar</span>`);
+  if(f.binary&&f.status==='added')badges.push(`<span class="bdg A">added</span>`);
+  if(large(f))badges.push(`<span class="bdg">large</span>`);
+  const p=f.status==='renamed'?`${esc(f.path)} <s>← ${esc(base(f.old))}</s>`:esc(f.path);
+  const viewed=opts.viewed?`<button class="btn ghost sm" data-act="view" data-i="${i}" aria-pressed="${st.viewed.has(i)}"><span class="vbox${st.viewed.has(i)?' on':''}"></span>Viewed</button>`:'';
+  return `<div class="dv-fh" data-file="${i}"><button class="tg" data-act="tog" data-i="${i}" aria-expanded="${open}" aria-label="${open?'Collapse':'Expand'} ${esc(f.path)}">${open?'▾':'▸'}</button><span class="pth" title="${esc(f.path)}">${p}</span>${badges.join('')}<span class="r">${nums(f)}${cells(f)}${viewed}${opts.extra?opts.extra(i):''}</span></div>`;
+}
+function fileList(st,opts={}){
+  let h='',last=null;
+  const order=opts.order||FX.map((_,i)=>i);
+  order.forEach(i=>{
+    const f=FX[i],d=dir(f.path);
+    if(d!==last&&!opts.flat){h+=`<div class="dv-dir" title="${esc(d)}">${esc(d.replace('apps/swarm-ui/src','src'))}/</div>`;last=d}
+    const L=letter(f);
+    h+=`<button class="dv-f${st.file===i?' on':''}" data-act="file" data-i="${i}" aria-current="${st.file===i}"><span class="lt ${L}" title="${WORD[L]}">${L}</span><span class="nm" title="${esc(f.path)}">${pathHtml(f)}</span><span class="ct2">${nums(f)}</span>${opts.vw?`<span class="vw">${opts.vw(i)}</span>`:''}</button>`;
+  });
+  return h;
+}
+const modeSeg=(st,disabled)=>`<span class="segb" role="group" aria-label="Diff layout"><button data-act="mode" data-m="unified" aria-pressed="${st.mode==='unified'||disabled}">Unified</button><button data-act="mode" data-m="split" aria-pressed="${st.mode==='split'&&!disabled}" ${disabled?'disabled title="Two columns of code do not fit under 700px of pane"':''}>Split</button></span>`;
+
+/* ================= shell ================= */
+const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+function shell(cur){
+  const rail=`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE}</div><span class="ri rcta">${I('i-submit')}<small>Submit</small></span><div class="rsep"></div><span class="ri">${I('i-overview')}<small>Overview</small></span><span class="ri on">${I('i-agents')}<small>Work</small></span><span class="ri">${I('i-pools')}<small>Capacity</small></span><span class="ri">${I('i-limits')}<small>Admin</small></span><div class="rgrow"></div><span class="ri">${I('i-help')}<small>Help</small></span><span class="av">OP</span></nav>`;
+  const pg=(on,icon,label,extra)=>`<span class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span>${extra||''}</span>`;
+  const panel=`<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Work</div>${pg(cur==='Agents','i-agents','Agents','<span class="cnt">6</span>')}${pg(cur==='Workflows','i-workflows','Workflows','<span class="cnt">2</span>')}${pg(cur==='Runs','i-branch','Runs','<span class="cnt">1</span>')}${pg(false,'i-timeline','Timeline')}${pg(false,'i-repo','Repositories')}</div><div class="pfoot"><span class="pfrow"><b>Operator</b><span class="seg" role="group" aria-label="Theme"><span class="ibtn">${I('i-sun')}</span><span class="ibtn">${I('i-moon')}</span><span class="ibtn on">${I('i-monitor')}</span></span></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com</span></div></nav>`;
+  return `<div class="side">${rail}${panel}</div>`;
+}
+const okPill=`<span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>succeeded</span>`;
+const prBtn=`<span class="btn sm">PR #553 <span class="sp neu" style="padding:0 6px">open</span> ↗</span>`;
+const phoneHead=(t,back)=>`<div class="phd">${back?`<span class="ibtn" style="font-size:18px">‹</span>`:`<span class="ibtn">${I('i-menu')}</span>`}<span class="t">${t}</span><span class="ibtn">${I('i-search')}</span></div>`;
+
+/* ================= variant 1: the review page ================= */
+function v1(st){
+  const tree=fileList(st,{vw:i=>st.viewed.has(i)?"viewed":""});
+  const stacked=FX.map((_,i)=>`<section class="dv-file" id="${st.id}-f${i}">${fileHead(st,i,{viewed:true})}${fileBody(st,i)}</section>`).join('');
+  return `${shell('Agents')}<main class="ct"><div class="crumb">Work › Agents › implement-logs-tab › <b>Changes</b></div>
+  <div class="phead"><h3>Changes</h3>${okPill}<span class="r">${prBtn}<span class="btn sm">Copy patch</span><span class="btn sm">Download</span></span></div>
+  <p class="sub">agent <b style="color:var(--f-ink)">implement-logs-tab</b> · attempt 2 of 2 · base <code>${BASE}</code> → work tree · ${PATCH} · ${PATCH_SIZE} · <span class="chip">/changes/task/t-8f2c…#paths.ts</span></p>
+  <div class="dv"><aside class="dv-list tree" aria-label="Files"><div class="dv-lh">${totals()}<div class="dv-filter">${I('i-search')}Filter paths</div><span class="mk"><span class="bar" style="width:120px;height:6px;border-radius:3px;background:var(--f-ln);display:inline-flex;overflow:hidden"><i style="width:${Math.round(100*st.viewed.size/FX.length)}%;background:var(--f-ac)"></i></span>viewed ${st.viewed.size} of ${FX.length}</span></div>${tree}</aside>
+  <div class="dv-main"><div class="dv-bar">${modeSeg(st)}<span class="btn sm" data-act="all" data-v="0">Collapse all</span><span class="btn sm" data-act="all" data-v="1">Expand all</span><span class="dv-filter" style="min-width:220px">${I('i-search')}Find in the diff <span class="kbd" style="margin-left:auto">/</span></span><span class="r"><span class="exd">all ${FX.length} files, one scroll</span></span></div>
+  <div class="dv-scroll">${stacked}</div></div></div></main>`;
+}
+function v1p(st){
+  const stacked=FX.map((_,i)=>`<section class="dv-file" id="${st.id}-f${i}">${fileHead(st,i,{viewed:false})}${fileBody(st,i,{forceUnified:true})}</section>`).join('');
+  const sheet=st.sheet?`<div class="scrim" data-act="sheet"></div><div class="sheet" style="height:70%"><div class="grab"></div><div class="dv-lh">${totals()}</div><div style="overflow:auto">${fileList(st)}</div></div>`:'';
+  return `${phoneHead('Changes · implement-logs-tab',true)}<div style="display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--f-ln);background:var(--f-sf)">${totals()}<button class="btn sm" style="margin-left:auto" data-act="sheet">Files ${FX.length} ▾</button></div><div class="dv-scroll" style="background:var(--f-sf)">${stacked}</div>${sheet}`;
+}
+
+/* ================= variant 2: a Changes tab everywhere ================= */
+function strip(){
+  const dots=['live','live','park','live','bad','neu'];
+  return `<div style="width:64px;flex:none;border-right:1px solid var(--f-ln);background:var(--f-sf);display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 0" aria-label="Agent list, folded"><span class="kbd" title="[ unfolds the list">[</span>${dots.map((d,i)=>`<span class="sp ${d}" style="padding:4px;${i===0?'outline:2px solid var(--f-ac)':''}"><svg viewBox="0 0 12 12"><use href="#s-${d==='live'?'succeeded':d==='park'?'parked':d==='bad'?'failed':'queued'}"/></svg></span>`).join('')}</div>`;
+}
+function v2(st){
+  return `${shell('Agents')}<div style="display:flex;flex:1;min-width:0">${strip()}<main class="ct">
+  <div class="phead">${okPill}<h3>implement-logs-tab</h3><span class="exd">41m · attempt 2 of 2</span><span class="r"><span class="btn sm">Copy link</span><span class="ibtn">✕</span></span></div>
+  <p class="sub">claude-code · standard · workflow <a style="color:var(--f-ac)">Fix log dock overlap</a> · account eng-1</p>
+  <div class="tabs"><span>Details</span><span>Logs</span><span class="on">Changes <em>${FX.length}</em></span><span>Attempts <em>2</em></span><span>Artifacts <em>9</em></span><span>Checkpoints <em>4</em></span></div>
+  <div class="sub" style="gap:10px">${totals()}<span>base <code>${BASE}</code> → work tree</span><span>${PATCH} · ${PATCH_SIZE}</span><span class="r" style="margin-left:auto;display:flex;gap:6px">${prBtn}<span class="btn sm">Copy patch</span><span class="btn sm">Download</span></span></div>
+  <div class="dv"><aside class="dv-list" aria-label="Files"><div class="dv-lh"><div class="dv-filter">${I('i-search')}Filter paths</div></div>${fileList(st,{vw:i=>st.seen.has(i)&&st.file!==i?'· seen':''})}</aside>
+  <div class="dv-main"><div class="dv-bar">${modeSeg(st)}<span class="dv-filter" style="min-width:200px">${I('i-search')}Find in the diff</span><span class="r"><span class="exd">file ${st.file+1} of ${FX.length}</span><button class="btn sm" data-act="step" data-d="-1">‹ Prev</button><button class="btn sm" data-act="step" data-d="1">Next ›</button></span></div>
+  <div class="dv-scroll">${fileHead(st,st.file)}${fileBody(st,st.file)}</div></div></div></main></div>`;
+}
+function v2p(st){
+  const f=FX[st.file];
+  const sheet=st.sheet?`<div class="scrim" data-act="sheet"></div><div class="sheet" style="height:72%"><div class="grab"></div><div class="dv-lh">${totals()}<div class="dv-filter">${I('i-search')}Filter paths</div></div><div style="overflow:auto">${fileList(st)}</div></div>`:'';
+  return `${phoneHead('implement-logs-tab',true)}<div class="tabs" style="overflow:hidden;background:var(--f-sf);padding:0 6px"><span>Details</span><span>Logs</span><span class="on">Changes <em>${FX.length}</em></span><span>Attempts <em>2</em></span><span>Artif…</span></div>
+  <div class="pbody"><div class="sub">${totals()}</div><div class="sub">${prBtn}<button class="btn sm" data-act="sheet">All files</button></div>
+  <div class="pick"><button data-act="step" data-d="-1" aria-label="Previous file">‹</button><span class="mid"><b>${pathHtml(f)}</b><small>file ${st.file+1} of ${FX.length} · ${f.binary?'binary':`+${f.add} −${f.del}`}</small></span><button data-act="step" data-d="1" aria-label="Next file">›</button></div>
+  <div class="dv" style="flex:none;display:block"><div class="dv-scroll" style="overflow:auto">${fileHead(st,st.file)}${fileBody(st,st.file,{forceUnified:true})}</div></div></div>${sheet}`;
+}
+
+/* ================= variant 3: review-first ================= */
+const FIND=[ /* example data: a review's findings, with the file and line variant 3 needs */
+  {sev:'major',path:'apps/swarm-ui/src/ArtifactViewer.tsx',hunk:0,line:13,title:'revealTop runs on every read, not once per open',fix:'A re-read of an open artifact scrolls the pane back to the viewer\'s top while the reader is further down. Reveal once per open.'},
+  {sev:'minor',path:'apps/swarm-ui/src/escape.ts',hunk:0,line:8,title:'Comment line is 97 characters',fix:'The file keeps comments to 80; rewrap.'},
+  {sev:'minor',path:null,title:'Deleted qa.u10a.dock.test.tsx (443 lines): check each D-number moved to qa.u11a',fix:'Names no file line, so it is listed, not pinned.'},
+];
+const idx=p=>FX.findIndex(f=>f.path===p);
+function groups(){
+  const named=[...new Set(FIND.filter(x=>x.path).map(x=>idx(x.path)))];
+  const rest=FX.map((_,i)=>i).filter(i=>!named.includes(i));
+  const by=(fn)=>rest.filter(fn);
+  return [
+    ['Named by the review',named],
+    ['Removed',by(i=>FX[i].status==='deleted')],
+    ['Renamed',by(i=>FX[i].status==='renamed')],
+    ['Source',by(i=>!FX[i].binary&&FX[i].status!=='deleted'&&FX[i].status!=='renamed'&&FX[i].path.startsWith('apps/')&&!FX[i].path.includes('__tests__'))],
+    ['Tests',by(i=>FX[i].path.includes('__tests__')&&FX[i].status!=='renamed')],
+    ['Docs',by(i=>FX[i].path.startsWith('docs/')&&!FX[i].binary)],
+    ['Binary',by(i=>FX[i].binary)],
+  ].filter(g=>g[1].length);
+}
+function findCard(x,inline){
+  return `<div class="fnd ${x.sev}"${inline?'':` data-act="file" data-i="${x.path?idx(x.path):-1}"`}><span class="h"><span class="sp ${x.sev==='major'?'bad':'warn'}" style="padding:1px 8px">${x.sev}</span><b>${esc(x.title)}</b></span><small>${esc(x.fix)}</small><small>${x.path?`<code>${esc(base(x.path))}</code>`:'<span class="mk unread"><i></i>not placed: names no line</span>'}</small></div>`;
+}
+function v3(st){
+  const f=FX[st.file];
+  const mine=FIND.filter(x=>x.path===f.path);
+  const mark=(hi,li,row)=>{
+    const x=mine.find(m=>m.hunk===hi&&m.line===li);
+    return `<div class="pin"><div style="min-width:0;overflow:hidden">${row}</div><div class="gut" style="padding:0 8px">${x?`<div style="position:absolute;left:8px;right:8px;top:-4px;z-index:3">${findCard(x,true)}</div>`:''}</div></div>`;
+  };
+  const gl=groups().map(([g,ids])=>`<div class="grp">${esc(g)}<small>${ids.length}</small></div>${fileList(st,{order:ids,flat:true})}`).join('');
+  return `${shell('Runs')}<main class="ct"><div class="crumb">Work › Runs › Fix log dock overlap #498 › <b>Review</b></div>
+  <div class="phead"><h3>Review of implement-logs-tab</h3><span class="sp warn">NOT_YET</span><span class="r">${prBtn}</span></div>
+  <p class="sub">review step <b style="color:var(--f-ink)">review-1</b> · <span class="mi">1 major</span> · 2 minor · 1 not placed · fix step <b style="color:var(--f-ink)">fix-1</b> runs next · ${totals()}</p>
+  <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${FIND.map(x=>findCard(x)).join('')}</div>
+  <div class="dv"><aside class="dv-list" aria-label="Files by area" style="width:240px"><div class="dv-lh"><span class="exd">grouped by area and change kind; not a risk score</span></div>${gl}</aside>
+  <div class="dv-main"><div class="dv-bar"><span class="segb"><button aria-pressed="true">Unified</button><button disabled title="Findings sit in the right gutter; split leaves them no room">Split</button></span><span class="exd">findings pinned beside the line they name</span><span class="r"><button class="btn sm" data-act="step" data-d="-1">‹</button><button class="btn sm" data-act="step" data-d="1">›</button></span></div>
+  <div class="dv-scroll">${fileHead(st,st.file)}${fileBody(st,st.file,{forceUnified:true,mark})}</div></div></div></main>`;
+}
+function v3p(st){
+  if(st.view==='list'){
+    return `${phoneHead('Review of implement-logs-tab',true)}<div class="pbody"><div class="sub"><span class="sp warn">NOT_YET</span><span class="mi">1 major</span> · 2 minor</div><div class="sub">${totals()}</div>${FIND.map(x=>`<div data-act="open3" data-i="${x.path?idx(x.path):-1}">${findCard(x,true)}</div>`).join('')}<div class="grp">Files by area</div>${groups().map(([g,ids])=>`<div class="grp" style="padding-top:2px"><small style="margin:0">${esc(g)} · ${ids.length}</small></div><div style="background:var(--f-sf);border:1px solid var(--f-ln);border-radius:10px">${fileList(st,{order:ids,flat:true}).replace(/data-act="file"/g,'data-act="open3"')}</div>`).join('')}</div>`;
+  }
+  const f=FX[st.file],mine=FIND.filter(x=>x.path===f.path);
+  const mark=(hi,li,row)=>{const x=mine.find(m=>m.hunk===hi&&m.line===li);return row+(x?`<div style="padding:6px 8px;background:var(--f-bg)">${findCard(x,true)}</div>`:'')};
+  return `${phoneHead(esc(base(f.path)),true)}<div class="pbody"><button class="btn sm" data-act="back3">‹ Findings and files</button><div class="dv" style="flex:none;display:block">${fileHead(st,st.file)}${fileBody(st,st.file,{forceUnified:true,mark})}</div></div>`;
+}
+
+/* ================= variant 4: the changes drawer ================= */
+function wfGraph(hot){
+  const N=[['plan',20,30,'succeeded'],['implement-ui',200,10,'succeeded'],['implement-tests',200,90,'succeeded'],['review',380,50,'succeeded'],['fix',560,50,'succeeded'],['docs',560,130,'succeeded'],['integrate',740,90,'succeeded']];
+  return `<div class="wfg">${N.map(n=>`<div class="node" style="left:${n[1]}px;top:${n[2]+40}px"><b>${n[0]}</b><small>${n[3]}</small></div>`).join('')}<svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" aria-hidden="true"><g stroke="var(--f-bd)" fill="none"><path d="M170 90 L200 70M170 90 L200 150M350 70 L380 110M350 150 L380 110M530 110 L560 110M530 110 L560 190M710 110 L740 150M710 190 L740 150"/></g></svg></div>`;
+}
+function v4(st){
+  const chip=`<button class="chip ctx${st.closed?' hot':''}" data-act="drawer">${I('i-branch')}Changes · ${FX.length} files <span class="pl">+${TOT.a}</span> <span class="mi">&minus;${TOT.d}</span></button>`;
+  const page=`<main class="ct"><div class="crumb">Work › Workflows › <b>Fix log dock overlap</b></div><div class="phead"><h3>Fix log dock overlap</h3>${okPill}${chip}<span class="r">${prBtn}</span></div><p class="sub">7 steps · finished 12m ago · issue #498</p><div class="tabs"><span class="on">Graph</span><span>Table</span><span>Timeline</span></div>${wfGraph()}</main>`;
+  if(st.closed)return shell('Workflows')+page;
+  const src=`<span class="segb"><button aria-pressed="${st.src==='pr'}" data-act="src" data-s="pr">integrate · PR #553</button><button aria-pressed="${st.src==='step'}" data-act="src" data-s="step">one step ▾</button></span>`;
+  return `${shell('Workflows')}${page}<div class="scrim" data-act="drawer"></div><aside class="drawer" aria-label="Changes" role="dialog"><div class="dv-bar" style="padding:10px 12px"><b style="font-size:15px">Changes</b>${src}<span class="r"><button class="btn sm${st.pinned?' on':''}" data-act="pin" aria-pressed="${st.pinned}">${st.pinned?'Pinned':'Pin open'}</button><span class="btn sm">Open full page</span><span class="q" title="Keys: n / p file, j / k change, / find, Esc close">?</span><button class="ibtn" data-act="drawer" aria-label="Close">✕</button></span></div>
+  <div class="dv-bar">${totals()}${modeSeg(st)}<span class="r"><span class="exd">file ${st.file+1} of ${FX.length}</span></span></div>
+  <div style="display:flex;flex:1;min-height:0"><aside class="dv-list" style="width:230px" aria-label="Files">${fileList(st)}</aside><div class="dv-main"><div class="dv-scroll">${fileHead(st,st.file)}${fileBody(st,st.file)}</div></div></div></aside>`;
+}
+function v4p(st){
+  const f=FX[st.file];
+  const page=`${phoneHead('Fix log dock overlap')}<div class="pbody"><div class="sub">${okPill}<button class="chip ctx" data-act="drawer">Changes · ${FX.length} files</button></div><div style="height:150px;overflow:hidden;position:relative">${wfGraph().replace('class="wfg"','class="wfg" style="position:absolute;top:0;left:0;height:300px;width:820px;transform:scale(.42);transform-origin:0 0"')}</div></div>`;
+  if(st.closed)return page;
+  return `${page}<div class="scrim" data-act="drawer"></div><div class="sheet" style="top:56px"><div class="grab"></div><div class="dv-bar"><b>Changes</b>${totals()}<span class="r"><button class="ibtn" data-act="drawer" aria-label="Close">✕</button></span></div><div class="pbody"><div class="pick"><button data-act="step" data-d="-1" aria-label="Previous file">‹</button><span class="mid"><b>${pathHtml(f)}</b><small>file ${st.file+1} of ${FX.length} · ${f.binary?'binary':`+${f.add} −${f.del}`}</small></span><button data-act="step" data-d="1" aria-label="Next file">›</button></div><div class="dv" style="flex:none;display:block">${fileHead(st,st.file)}${fileBody(st,st.file,{forceUnified:true})}</div></div></div>`;
+}
+
+/* ================= variant 5: the workflow changes matrix ================= */
+const STEPS=['implement-ui','implement-tests','review','fix','docs'];
+/* example data: which step changed which file. dbf6708 was ONE commit; this split is illustrative. */
+const ATTR={
+  'apps/swarm-ui/src/AgentLogs.tsx':{'implement-ui':[680,0,[0]]},
+  'apps/swarm-ui/src/AgentSplit.tsx':{'implement-ui':[61,22,[0,1]],'fix':[12,6,[2]]},
+  'apps/swarm-ui/src/ArtifactViewer.tsx':{'fix':[25,1,[0,1]]},
+  'apps/swarm-ui/src/LogDock.tsx':{'implement-ui':[0,767,[0]]},
+  'apps/swarm-ui/src/Shell.tsx':{'implement-ui':[38,3,[0,1,2]]},
+  'apps/swarm-ui/src/Spine.tsx':{'fix':[6,1,[0]]},
+  'apps/swarm-ui/src/__tests__/logs.tab.test.tsx':{'implement-tests':[52,61,[0,1,2]]},
+  'apps/swarm-ui/src/escape.ts':{'fix':[3,3,[0]]},
+  'apps/swarm-ui/src/paths.ts':{'implement-ui':[1,1,[0]]},
+  'apps/swarm-ui/src/styles.css':{'fix':[7,0,[0]]},
+  'docs/web-ui/mockups/PICKS.md':{'docs':[1,1,[0]]},
+  'docs/audits/2026-09-23/overflow/05-dock-route-paths-1440.png':{'docs':['bin']},
+};
+function stepTotals(s){let a=0,d=0,n=0;FX.forEach(f=>{const c=ATTR[f.path][s];if(c){n++;if(c[0]!=='bin'){a+=c[0];d+=c[1]}}});return {a,d,n}}
+function matrix(st){
+  const head=STEPS.map(s=>{const t=stepTotals(s);return `<th class="stp${st.step!=='all'&&st.step!==s?' dim':''}">${s}<br><span class="exd">${t.n?`${t.n} files`:'<span class="mk zero"><i></i>changed nothing</span>'}</span></th>`}).join('');
+  const rows=FX.map((f,i)=>{
+    const a=ATTR[f.path];
+    if(st.step!=='all'&&!a[st.step])return '';
+    const cs=STEPS.map(s=>{const c=a[s];const dim=st.step!=='all'&&st.step!==s?' dim':'';return `<td class="c${dim}">${c?(c[0]==='bin'?'<span class="cell">binary</span>':`<span class="cell"><span class="pl">+${c[0]}</span><span class="mi">−${c[1]}</span></span>`):'<span class="cell off">·</span>'}</td>`}).join('');
+    return `<tr data-act="file" data-i="${i}" class="${st.file===i?'on':''}"><td><span class="lt ${letter(f)}" style="display:inline-block;margin-right:6px">${letter(f)}</span>${pathHtml(f)}</td>${cs}<td class="c">${nums(f)}</td></tr>`;
+  }).join('')||`<tr><td colspan="${STEPS.length+2}" style="height:44px"><span class="mk zero"><i></i>${esc(st.step)} changed no files · a measured zero: its patch is empty, not unread</span></td></tr>`;
+  return `<table class="mx"><thead><tr><th>File</th>${head}<th class="stp">integrate<br><span class="exd">PR #553</span></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function byStep(st,phone){
+  const f=FX[st.file],a=ATTR[f.path];
+  return Object.keys(a).filter(s=>st.step==='all'||st.step===s).map(s=>{
+    const c=a[s];
+    if(c[0]==='bin')return `<div class="dv-fh"><span class="stag">${s}</span><span class="pth">${esc(base(f.path))}</span><span class="r">${nums(f)}</span></div>${fileBody(st,st.file)}`;
+    const sub={...f,hunks:c[2].map(h=>f.hunks[h]).filter(Boolean),add:c[0],del:c[1],cut:[]};
+    const tmp=FX[st.file];FX[st.file]=sub;
+    const body=fileBody(st,st.file,{forceUnified:phone});FX[st.file]=tmp;
+    return `<div class="dv-fh"><span class="stag">${s}</span><span class="pth">${esc(s)}'s patch</span><span class="r"><span class="pl">+${c[0]}</span> <span class="mi">−${c[1]}</span></span></div>${body}`;
+  }).join('')+cutNote(f);
+}
+function v5(st){
+  const f=FX[st.file],who=Object.keys(ATTR[f.path]);
+  const chips=['all',...STEPS].map(s=>`<button data-act="stepf" data-s="${s}" aria-pressed="${st.step===s}">${s==='all'?'All steps':s}</button>`).join('');
+  return `${shell('Workflows')}<main class="ct"><div class="crumb">Work › Workflows › <b>Fix log dock overlap</b></div><div class="phead"><h3>Fix log dock overlap</h3>${okPill}<span class="r">${prBtn}</span></div>
+  <div class="tabs"><span>Graph</span><span>Table</span><span>Timeline</span><span class="on">Changes <em>${FX.length}</em></span></div>
+  <div class="sub" style="gap:10px"><div class="stepchips" role="group" aria-label="Steps">${chips}</div><span style="margin-left:auto">${totals()}</span></div>
+  <div class="card" style="padding:0;max-height:300px;overflow:auto;flex:none">${matrix(st)}</div>
+  <div class="dv" style="flex-direction:column"><div class="dv-bar"><span class="lt ${letter(f)}">${letter(f)}</span><b class="mono" style="background:none;padding:0">${esc(f.path)}</b><span class="exd">changed by ${who.join(', ')}</span><span class="r"><span class="mk partial"><i></i>which step wrote each line: not recorded</span></span></div><div class="dv-scroll">${byStep(st)}</div></div></main>`;
+}
+function v5p(st){
+  const chips=['all',...STEPS].map(s=>`<button data-act="stepf" data-s="${s}" aria-pressed="${st.step===s}">${s==='all'?'All':s}</button>`).join('');
+  if(st.view==='list'){
+    const cards=FX.map((f,i)=>{const a=ATTR[f.path];if(st.step!=='all'&&!a[st.step])return '';return `<button class="pick" style="text-align:left;width:100%" data-act="open3" data-i="${i}"><span class="lt ${letter(f)}">${letter(f)}</span><span class="mid"><b>${pathHtml(f)}</b><small>${Object.keys(a).map(s=>`<span class="stag">${s}</span>`).join(' ')}</small></span><span class="ct2" style="font:12px var(--f-mono)">${nums(f)}</span></button>`}).join('');
+    return `${phoneHead('Fix log dock overlap',true)}<div class="tabs" style="background:var(--f-sf);overflow:hidden"><span>Graph</span><span>Table</span><span class="on">Changes <em>${FX.length}</em></span></div><div class="pbody"><div class="stepchips" style="flex-wrap:nowrap;overflow:auto">${chips}</div><div class="sub">${totals()}</div>${cards}</div>`;
+  }
+  const f=FX[st.file];
+  return `${phoneHead(esc(base(f.path)),true)}<div class="pbody"><button class="btn sm" data-act="back3">‹ All files</button><div class="sub">changed by ${Object.keys(ATTR[f.path]).map(s=>`<span class="stag">${s}</span>`).join(' ')}</div><div class="dv" style="flex:none;display:block">${byStep(st,true)}</div></div>`;
+}
+
+/* ================= frames, state and interaction ================= */
+const R={v1,v1p,v2,v2p,v3,v3p,v4,v4p,v5,v5p};
+const S={};
+function draw(el){
+  const st=S[el.id];
+  el.innerHTML=R[el.dataset.r](st);
+}
+document.querySelectorAll('[data-r]').forEach(el=>{
+  const st={id:el.id,file:+(el.dataset.file||0),mode:el.dataset.mode||'unified',open:{},viewed:new Set(),seen:new Set([+(el.dataset.file||0)]),sheet:false,view:el.dataset.view||'file',step:'all',src:'pr',pinned:false,closed:false};
+  if(el.dataset.r==='v1'){st.viewed=new Set([7,8])}
+  if(el.dataset.r==='v3'||el.dataset.r==='v3p')st.file=idx('apps/swarm-ui/src/ArtifactViewer.tsx');
+  if(el.dataset.r==='v5'||el.dataset.r==='v5p')st.file=idx('apps/swarm-ui/src/AgentSplit.tsx');
+  S[el.id]=st;draw(el);
+});
+function jump(el,dirn){
+  const sc=el.querySelector('.dv-scroll');if(!sc)return;
+  const hs=[...sc.querySelectorAll('.dh')];if(!hs.length)return;
+  const top=sc.scrollTop+2;
+  let t=dirn>0?hs.find(h=>h.offsetTop>top+4):[...hs].reverse().find(h=>h.offsetTop<top-4);
+  if(t)sc.scrollTop=t.offsetTop;
+}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]');if(!b)return;
+  const el=b.closest('[data-r]');if(!el)return;
+  const st=S[el.id],a=b.dataset.act,i=+b.dataset.i;
+  if(a==='file'||a==='open3'){
+    if(i<0)return;
+    st.file=i;st.seen.add(i);if(a==='open3')st.view='file';
+    if(el.dataset.r==='v1'||el.dataset.r==='v1p'){st.sheet=false;st.open[i]=true;draw(el);const t=el.querySelector('#'+el.id+'-f'+i);if(t){const sc=el.querySelector('.dv-scroll');sc.scrollTop=t.offsetTop-sc.offsetTop}return}
+    st.sheet=false;
+  }
+  else if(a==='mode')st.mode=b.dataset.m;
+  else if(a==='tog')st.open[i]=!isOpen(st,i);
+  else if(a==='view'){st.viewed.has(i)?st.viewed.delete(i):st.viewed.add(i);st.open[i]=st.viewed.has(i)?false:true}
+  else if(a==='all')FX.forEach((_,k)=>st.open[k]=b.dataset.v==='1');
+  else if(a==='step'){st.file=(st.file+ +b.dataset.d+FX.length)%FX.length;st.seen.add(st.file)}
+  else if(a==='sheet')st.sheet=!st.sheet;
+  else if(a==='back3')st.view='list';
+  else if(a==='drawer'){if(!(st.pinned&&!st.closed&&b.classList.contains('scrim')))st.closed=!st.closed}
+  else if(a==='pin')st.pinned=!st.pinned;
+  else if(a==='src')st.src=b.dataset.s;
+  else if(a==='stepf'){st.step=b.dataset.s;if(st.step!=='all'&&!ATTR[FX[st.file].path][st.step]){const k=FX.findIndex(f=>ATTR[f.path][st.step]);if(k>=0)st.file=k}}
+  draw(el);
+});
+/* Keys, as the shipped viewer has them (shortcuts.ts:60-64): n / p file, j / k change, Esc closes the drawer. */
+document.addEventListener('keydown',e=>{
+  const el=e.target.closest&&e.target.closest('[data-r]');if(!el||e.metaKey||e.ctrlKey||e.altKey)return;
+  const st=S[el.id];
+  if(e.key==='n'||e.key==='p'){st.file=(st.file+(e.key==='n'?1:-1)+FX.length)%FX.length;st.seen.add(st.file);draw(el);el.focus();e.preventDefault()}
+  else if(e.key==='j'||e.key==='k'){jump(el,e.key==='j'?1:-1);e.preventDefault()}
+  else if(e.key==='Escape'&&el.dataset.r.startsWith('v4')&&!st.closed){st.closed=true;draw(el);e.preventDefault()}
+});
+/* Per-variant theme pin. */
+document.querySelectorAll('[data-vtheme]').forEach(b=>b.addEventListener('click',()=>{
+  const sec=b.closest('.variant');const m=b.dataset.vtheme;
+  sec.querySelectorAll('.fx').forEach(x=>{if(m==='page')delete x.dataset.ftheme;else x.dataset.ftheme=m});
+  sec.querySelectorAll('[data-vtheme]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+}));
+
+</script>
+</body>
+</html>
