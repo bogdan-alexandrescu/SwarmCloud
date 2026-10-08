@@ -97,7 +97,7 @@ resource "google_project_iam_custom_role" "acceptance_runner" {
   project     = var.project_id
   role_id     = "swarmAcceptanceRunner"
   title       = "Swarm Acceptance Runner"
-  description = "managed-by=swarm-terraform; start an execution of a named job and read it. No create, update, delete or IAM. Granted to the acceptance account, conditioned to swarm-verify and the worker jobs (terraform/bootstrap/acceptance.tf)."
+  description = "managed-by=swarm-terraform; start an execution of a named job, read it and cancel a running one. No create, update, delete or IAM. Granted to the acceptance account, conditioned to swarm-verify and the worker jobs (terraform/bootstrap/acceptance.tf)."
   stage       = "GA"
 
   permissions = [
@@ -105,6 +105,11 @@ resource "google_project_iam_custom_role" "acceptance_runner" {
     "run.jobs.run",
     "run.jobs.runWithOverrides",
     "run.executions.get",
+    # accept.yml cancels swarm-verify executions an earlier, cancelled run
+    # left running (a GitHub cancel does not stop Cloud Run). Cancel only
+    # stops a running execution; it cannot create or delete one. Conditioned
+    # to the same job names as the rest of this role.
+    "run.executions.cancel",
     "run.tasks.get",
   ]
 }

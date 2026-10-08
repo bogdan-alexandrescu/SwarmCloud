@@ -10,9 +10,11 @@ running:
 * release.yml no longer warms, smokes or accepts on dev, and has no
   `acceptance` job; prod still warms and smokes inside its own deploy;
 * accept.yml is triggered by `workflow_run` of release (completed, on main)
-  and by dispatch, in its own concurrency group `accept-dev` that cancels the
-  run in progress -- and a trigger that can accept nothing (a failed or a
-  prod release) is put in a group of its own, so it cannot cancel one;
+  and by dispatch. `target` (decide) has no concurrency; only the accepting
+  jobs carry `accept-dev-<job>` groups that cancel the run in progress, so a
+  trigger that can accept nothing (a failed, superseded or prod release)
+  cannot cancel one. A pre-wave job cancels the swarm-verify executions an
+  earlier run left running;
 * it judges what dev RUNS: the SHA from releases/dev/applied.json, which every
   later job checks out, and on a completed release only when that release is
   the one that applied it;
@@ -133,16 +135,33 @@ def test_it_runs_after_release_completes_on_main_and_by_dispatch():
     assert on["workflow_run"]["branches"] == ["main"]
 
 
-def _group(**context) -> str:
-    return str(_gh(_accept()["concurrency"]["group"], **context))
+ACCEPTING_JOBS = ("quiesce", "smoke", "sandbox", "acceptance", "acceptance-2", "sandbox-results", "report")
 
 
-def test_its_concurrency_group_is_accept_dev_and_cancels_the_run_in_progress():
-    concurrency = _accept()["concurrency"]
-    assert concurrency["cancel-in-progress"] is True
-    assert _group(**_run_context("workflow_run")) == "accept-dev"
-    assert _group(**_run_context("workflow_dispatch")) == "accept-dev"
-    assert _group(**_run_context("workflow_run", title="release dev main", run_event="workflow_dispatch")) == "accept-dev"
+def test_the_decide_job_has_no_concurrency_and_the_workflow_has_none_either():
+    """MUTATION: put a concurrency block back on the workflow or on `target`.
+    A completion that accepts nothing would then cancel a real in-flight
+    acceptance and decide accept=false, leaving the deployed SHA unaccepted."""
+    accept = _accept()
+    assert "concurrency" not in accept, "a workflow-level group is joined by every completion, even one that accepts nothing"
+    assert "concurrency" not in accept["jobs"]["target"]
+
+
+def test_every_accepting_job_cancels_the_run_in_progress_in_a_group_of_its_own():
+    jobs = _accept()["jobs"]
+    groups = []
+    for job_id in ACCEPTING_JOBS:
+        concurrency = jobs[job_id].get("concurrency")
+        assert concurrency, f"{job_id} is an accepting job and must cancel an older acceptance"
+        assert concurrency["cancel-in-progress"] is True
+        group = str(concurrency["group"])
+        assert group.startswith("accept-dev-"), group
+        groups.append(group)
+    # Per job, not one shared name: a shared job-level group would make this
+    # run's own smoke, sandbox and matrix jobs cancel one another.
+    assert len(set(groups)) == len(groups), groups
+    assert "matrix.group" in str(jobs["acceptance"]["concurrency"]["group"])
+    assert "matrix.group" in str(jobs["acceptance-2"]["concurrency"]["group"])
 
 
 @pytest.mark.parametrize(
@@ -154,17 +173,18 @@ def test_its_concurrency_group_is_accept_dev_and_cancels_the_run_in_progress():
     ],
     ids=["failed-release", "cancelled-release", "prod-release"],
 )
-def test_a_trigger_that_accepts_nothing_cannot_cancel_an_acceptance(context):
-    """MUTATION: make the group the constant 'accept-dev'. A prod release
-    completing would then cancel dev's acceptance in progress and accept
-    nothing in its place."""
-    assert _group(**context) != "accept-dev"
+def test_a_trigger_that_accepts_nothing_runs_no_accepting_job(context):
     assert not _gh(_accept()["jobs"]["target"]["if"], **context)
+
+
+def test_every_accepting_job_runs_only_when_the_decision_is_true():
+    jobs = _accept()["jobs"]
+    for job_id in ("quiesce", "smoke", "sandbox", *ACCEPT_JOBS):
+        assert "needs.target.outputs.accept == 'true'" in str(jobs[job_id]["if"]), job_id
 
 
 def test_a_push_whose_headline_reads_like_a_prod_dispatch_is_still_accepted():
     context = _run_context("workflow_run", run_event="push", title="release prod notes for the runbook")
-    assert _group(**context) == "accept-dev"
     assert _gh(_accept()["jobs"]["target"]["if"], **context)
 
 
@@ -211,7 +231,9 @@ def _upstream_ids(jobs: dict, job_id: str) -> set[str]:
     return seen
 
 
-def _decide(tmp_path: Path, event: str, applied_run: str, trigger_run: str) -> tuple[str, str]:
+def _decide(
+    tmp_path: Path, event: str, applied_run: str, trigger_run: str, trigger_sha: str = "b" * 40
+) -> tuple[str, str]:
     step = next(s for s in _accept()["jobs"]["target"]["steps"] if s.get("id") == "decide")
     out, summary = tmp_path / "out", tmp_path / "summary"
     env = {
@@ -223,6 +245,7 @@ def _decide(tmp_path: Path, event: str, applied_run: str, trigger_run: str) -> t
         "APPLIED_RUN": applied_run,
         "APPLIED_BY": "release",
         "TRIGGER_RUN": trigger_run,
+        "TRIGGER_SHA": trigger_sha,
     }
     proc = subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -237,6 +260,16 @@ def test_a_completed_release_is_accepted_only_when_it_applied_what_dev_runs(tmp_
     assert out == "accept=true\n"
     assert "a" * 40 in summary, "the summary must name the SHA it accepts"
     out, _ = _decide(tmp_path, "workflow_run", "40", "41")
+    assert out.endswith("accept=false\n")
+
+
+def test_a_hotfix_re_applying_the_same_sha_is_accepted_though_the_run_id_differs(tmp_path):
+    """applied.json names the hotfix run (40), the completed release run (41)
+    built the very commit dev runs. MUTATION: drop the SHA comparison from the
+    decide step; the deployed SHA would then be accepted by nobody."""
+    out, _ = _decide(tmp_path, "workflow_run", "40", "41", trigger_sha="a" * 40)
+    assert out == "accept=true\n"
+    out, _ = _decide(tmp_path, "workflow_run", "40", "41", trigger_sha="c" * 40)
     assert out.endswith("accept=false\n")
 
 
@@ -633,3 +666,45 @@ def test_the_acceptance_scripts_are_shellcheck_clean():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# accept.yml: a GitHub cancel does not stop Cloud Run
+# ---------------------------------------------------------------------------
+
+
+def _step_run(job_id: str, name_part: str) -> str:
+    step = next(s for s in _accept()["jobs"][job_id]["steps"] if name_part in str(s.get("name", "")))
+    return _code(step["run"])
+
+
+def test_the_pre_wave_step_cancels_the_running_swarm_verify_executions():
+    """MUTATION: remove the cancel. A replacement run's wave 1 would overlap
+    the cancelled run's tasks in the smoke tenant (ceiling 20)."""
+    run = _step_run("quiesce", "swarm-verify executions still running")
+    assert "gcloud run jobs executions list --job swarm-verify" in run
+    assert "status.runningCount>0" in run
+    assert "gcloud run jobs executions cancel" in run
+
+
+def test_the_pre_wave_job_also_cancels_the_other_accept_runs_and_gates_the_rest():
+    jobs = _accept()["jobs"]
+    run = _step_run("quiesce", "other in-progress accept runs")
+    assert "gh run cancel" in run and "accept.yml" in run
+    assert jobs["quiesce"]["permissions"].get("actions") == "write"
+    for job_id in ("smoke", "sandbox"):
+        assert "quiesce" in _needs(jobs[job_id]), f"{job_id} can start before the old executions are stopped"
+
+
+@pytest.mark.parametrize("job_id", ["smoke", "acceptance", "acceptance-2"])
+def test_a_job_that_runs_the_suite_cancels_its_executions_when_cancelled(job_id):
+    steps = _accept()["jobs"][job_id]["steps"]
+    cleanup = [s for s in steps if "gcloud run jobs executions cancel" in _code(s.get("run", ""))]
+    assert len(cleanup) == 1, job_id
+    assert "cancelled()" in str(cleanup[0]["if"])
+
+
+def test_the_acceptance_account_may_cancel_executions():
+    tf = (ROOT / "terraform" / "bootstrap" / "acceptance.tf").read_text()
+    runner = tf[tf.index('resource "google_project_iam_custom_role" "acceptance_runner"') : tf.index('"acceptance_lister"')]
+    assert '"run.executions.cancel"' in runner

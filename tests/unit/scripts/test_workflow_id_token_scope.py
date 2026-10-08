@@ -57,7 +57,7 @@ NEEDS_ID_TOKEN = {
     # Post-deploy acceptance (owner decision 2026-10-08, cuts A and C), as its
     # OWN account, not the deployer (terraform/bootstrap/acceptance.tf).
     # `sandbox` and `sandbox-results` talk only to GitHub.
-    "accept.yml": {"target", "smoke", "acceptance", "acceptance-2", "report"},
+    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "report"},
 }
 
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"

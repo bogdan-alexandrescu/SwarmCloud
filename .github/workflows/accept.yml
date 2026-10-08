@@ -22,12 +22,29 @@
 # superseded, or a prod release (which records nothing for dev), accepts
 # nothing. A dispatch accepts whatever dev runs now.
 #
-# ONLY THE NEWEST DEPLOYMENT IS WORTH ACCEPTING: `accept-dev` cancels the run
-# in progress. The group is computed so that a trigger which can accept
-# nothing -- a failed release, a prod release -- is put in a group of its own
-# and cannot cancel a real acceptance. A prod release is recognised by its
-# run-name (`release prod <ref>`, release.yml), the one place a workflow_run
-# event carries the dispatch's inputs.
+# ONLY THE NEWEST DEPLOYMENT IS WORTH ACCEPTING, AND ONLY A RUN THAT WILL
+# ACCEPT MAY CANCEL ONE. Deciding and accepting are split: `target` carries NO
+# concurrency, so a completion that accepts nothing (a superseded release, a
+# failed one, a prod one) runs it, decides accept=false and ends without
+# touching anything. A workflow-level `accept-dev` group used to be joined by
+# every completion, so such a run cancelled a real in-flight acceptance and
+# then accepted nothing, leaving the deployed SHA unaccepted with no signal.
+# Only the accepting jobs (those that run when accept is true) carry
+# `cancel-in-progress` groups. Each job has its OWN group, `accept-dev-<job>`:
+# one shared group would make sibling jobs of the same run cancel each other
+# (a job-level group cancels any other job in it, this run's included). A prod
+# release is recognised by its run-name (`release prod <ref>`, release.yml),
+# the one place a workflow_run event carries the dispatch's inputs.
+#
+# A GITHUB CANCEL DOES NOT STOP CLOUD RUN. Cancelling a job kills the
+# `gcloud run jobs execute --wait` client, not the swarm-verify execution,
+# which keeps submitting tasks to the smoke tenant (ceiling 20). So `quiesce`
+# runs first in every accepting run: it cancels the other in-progress accept
+# runs (so an old run cannot start a later wave under the new one) and CANCELS
+# the running swarm-verify executions. Cancel rather than wait: a wait of up to
+# a wave (~13 min) buys nothing, because the old run is about to be judged
+# stale, and its results are never reported. Each job that runs the suite also
+# has an `if: cancelled()` step that cancels the executions it started.
 #
 # A RED ACCEPTANCE IS AN ISSUE, NOT A BLOCKED DEPLOY. `report` opens -- or,
 # when one is open, retitles and comments on -- ONE issue labelled bug naming
@@ -78,10 +95,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || !startsWith(github.event.workflow_run.display_title, 'release prod ')))) && 'accept-dev' || format('accept-ignored-{0}', github.run_id) }}
-  cancel-in-progress: true
-
 env:
   ENVIRONMENT: dev
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -125,12 +138,16 @@ jobs:
           APPLIED_RUN: ${{ steps.deployed.outputs.run_id }}
           APPLIED_BY: ${{ steps.deployed.outputs.workflow }}
           TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           accept=true
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ] && [ "${APPLIED_RUN}" != "${TRIGGER_RUN}" ]; then
+          # Accept when applied.json names this very run, OR the very commit
+          # the run built: a hotfix re-applying the same SHA records a
+          # different run id, and the SHA is still unaccepted.
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ] && [ "${APPLIED_RUN}" != "${TRIGGER_RUN}" ] && [ "${SHA}" != "${TRIGGER_SHA}" ]; then
             accept=false
-            echo "::notice title=Nothing to accept::release run ${TRIGGER_RUN} did not apply what dev runs: applied.json names ${SHA}, applied by ${APPLIED_BY:-?} run ${APPLIED_RUN:-?}. That run's own completion accepts it."
+            echo "::notice title=Nothing to accept::release run ${TRIGGER_RUN} (${TRIGGER_SHA}) did not apply what dev runs: applied.json names ${SHA}, applied by ${APPLIED_BY:-?} run ${APPLIED_RUN:-?}. That run's own completion accepts it."
           fi
           echo "accept=${accept}" >> "$GITHUB_OUTPUT"
           {
@@ -144,14 +161,79 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
+  # Stop what an earlier acceptance left running, before this one starts.
+  # Runs only when `target` decided to accept. See the header: cancelling a
+  # GitHub job leaves its swarm-verify Cloud Run execution running, and two
+  # acceptances at once overlap in the smoke tenant (ceiling 20) and produce
+  # false reds.
+  # -------------------------------------------------------------------------
+  quiesce:
+    name: stop an earlier acceptance
+    runs-on: ubuntu-24.04
+    needs: [target]
+    if: needs.target.outputs.accept == 'true'
+    concurrency:
+      group: accept-dev-quiesce
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+      # Cancel the other in-progress runs of this workflow.
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: cancel the other in-progress accept runs
+        # Newest deployment wins, as the group used to say. Without this an
+        # old run's later wave would start under this run's wave 1.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for status in in_progress queued; do
+            gh run list --workflow accept.yml --status "${status}" --json databaseId --jq '.[].databaseId' --limit 50 \
+              | while read -r id; do
+                  if [ -n "${id}" ] && [ "${id}" != "${THIS_RUN}" ]; then
+                    echo "cancelling accept run ${id}"
+                    gh run cancel "${id}" || echo "::warning title=Not cancelled::accept run ${id} could not be cancelled"
+                  fi
+                done
+          done
+
+      - name: cancel the swarm-verify executions still running
+        run: |
+          set -euo pipefail
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name)' > running.txt
+          n=0
+          while read -r name; do
+            [ -n "${name}" ] || continue
+            echo "cancelling swarm-verify execution ${name}"
+            gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet
+            n=$((n + 1))
+          done < running.txt
+          echo "cancelled ${n} running swarm-verify execution(s)"
+
+  # -------------------------------------------------------------------------
   # Warm, smoke and the GKE proof: release.yml's dev deploy steps until
   # 2026-10-08, unchanged but for where they run and the commit they read.
   # -------------------------------------------------------------------------
   smoke:
     name: warm, smoke and GKE proof (dev)
     runs-on: ubuntu-24.04
-    needs: [target]
+    needs: [target, quiesce]
     if: needs.target.outputs.accept == 'true'
+    concurrency:
+      group: accept-dev-smoke
+      cancel-in-progress: true
     permissions:
       contents: read
       id-token: write
@@ -166,6 +248,10 @@ jobs:
           service_account: ${{ vars.GCP_ACCEPT_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
+
+      - name: note when this job starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: warm each Cloud Run worker job once on its new digest
         # #363: the first execution of each Cloud Run job after a new digest
@@ -202,6 +288,23 @@ jobs:
           fi
           ./scripts/verify-remote.sh prove-gke-dispatch
 
+      - name: cancel the executions this job started
+        # A cancel stops the client, not the Cloud Run execution (header).
+        # Cancels the swarm-verify executions created since this job started.
+        if: ${{ cancelled() }}
+        continue-on-error: true
+        env:
+          STARTED: ${{ steps.started.outputs.at }}
+        run: |
+          [ -n "${STARTED}" ] || exit 0
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            | while read -r name created; do
+                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
+                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
+                fi
+              done
+
   # -------------------------------------------------------------------------
   # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
   # handed to the sync, the read-back and the sweep only, and never to the
@@ -214,8 +317,11 @@ jobs:
   sandbox:
     name: put the deployed commit's fixtures on the sandbox
     runs-on: ubuntu-24.04
-    needs: [target]
+    needs: [target, quiesce]
     if: needs.target.outputs.accept == 'true'
+    concurrency:
+      group: accept-dev-sandbox
+      cancel-in-progress: true
     outputs:
       since: ${{ steps.started.outputs.at }}
     steps:
@@ -251,6 +357,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [target, smoke, sandbox]
     if: ${{ !cancelled() && needs.target.outputs.accept == 'true' && needs.smoke.result == 'success' && needs.sandbox.result == 'success' }}
+    concurrency:
+      group: accept-dev-acceptance-${{ matrix.group }}
+      cancel-in-progress: true
     permissions:
       contents: read
       id-token: write
@@ -270,10 +379,31 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
+      - name: note when this job starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: acceptance suite, one group (inside the VPC)
         env:
           GROUP: ${{ matrix.group }}
         run: ./scripts/verify-remote.sh "acceptance/${GROUP}"
+
+      - name: cancel the executions this job started
+        # A cancel stops the client, not the Cloud Run execution (header).
+        # Cancels the swarm-verify executions created since this job started.
+        if: ${{ cancelled() }}
+        continue-on-error: true
+        env:
+          STARTED: ${{ steps.started.outputs.at }}
+        run: |
+          [ -n "${STARTED}" ] || exit 0
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            | while read -r name created; do
+                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
+                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
+                fi
+              done
 
   # Wave 2: starts when wave 1 has finished, whatever it concluded, so a red
   # group in wave 1 still lets wave 2 report its own.
@@ -282,6 +412,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [target, smoke, sandbox, acceptance]
     if: ${{ !cancelled() && needs.target.outputs.accept == 'true' && needs.smoke.result == 'success' && needs.sandbox.result == 'success' }}
+    concurrency:
+      group: accept-dev-acceptance-2-${{ matrix.group }}
+      cancel-in-progress: true
     permissions:
       contents: read
       id-token: write
@@ -301,10 +434,31 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
+      - name: note when this job starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: acceptance suite, one group (inside the VPC)
         env:
           GROUP: ${{ matrix.group }}
         run: ./scripts/verify-remote.sh "acceptance/${GROUP}"
+
+      - name: cancel the executions this job started
+        # A cancel stops the client, not the Cloud Run execution (header).
+        # Cancels the swarm-verify executions created since this job started.
+        if: ${{ cancelled() }}
+        continue-on-error: true
+        env:
+          STARTED: ${{ steps.started.outputs.at }}
+        run: |
+          [ -n "${STARTED}" ] || exit 0
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            | while read -r name created; do
+                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
+                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
+                fi
+              done
 
   # -------------------------------------------------------------------------
   # The suite cannot read the private sandbox back (swarm-verify holds no
@@ -319,6 +473,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [target, sandbox, acceptance, acceptance-2]
     if: ${{ !cancelled() && needs.sandbox.result == 'success' }}
+    concurrency:
+      group: accept-dev-sandbox-results
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
         with:
@@ -350,8 +507,13 @@ jobs:
   report:
     name: report what was accepted
     runs-on: ubuntu-24.04
-    needs: [target, smoke, sandbox, acceptance, acceptance-2, sandbox-results]
-    if: ${{ !cancelled() && (needs.target.result == 'failure' || needs.target.outputs.accept == 'true') }}
+    needs: [target, quiesce, smoke, sandbox, acceptance, acceptance-2, sandbox-results]
+    # A job a newer acceptance cancelled (its group above) is not a red one:
+    # no report from a run whose jobs were replaced.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.target.result == 'failure' || needs.target.outputs.accept == 'true') }}
+    concurrency:
+      group: accept-dev-report
+      cancel-in-progress: true
     permissions:
       contents: read
       id-token: write
