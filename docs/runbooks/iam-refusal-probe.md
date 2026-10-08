@@ -55,7 +55,8 @@ project ones, and this project has no organisation or folder.
 
    Expect one line per chunk and nothing else: since #275 the grant is one
    conditioned binding per chunk of at most 10 roles, because `hasOnly()`
-   refuses a longer list, so fifteen roles read as
+   refuses a longer list, so the 14 grantable roles (15 until #150 took
+   `swarmSecretLister` off) read as
    `only the roles terraform infra grants (chunk 1 of 2)` and
    `... (chunk 2 of 2)`. Preflight checks every one of them, not the first. A
    `NO CONDITION` line means the apply has not landed, or has been reverted.
