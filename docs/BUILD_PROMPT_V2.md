@@ -4,8 +4,8 @@
 2026-10-01). The control plane, the account pool (`apps/quota-broker`), the
 `/swarm` bridge (`apps/swarm-mcp`) and the dashboard (`apps/swarm-ui`) exist in
 this repository. The substrate did NOT move: Cloud Run Jobs stay the primary
-execution backend and GKE Autopilot runs only the browser runner — §2.1 says
-why. What is deployed is a different, dated question: read
+execution backend and GKE Autopilot runs the browser runner and, since
+contract request 53 (applied 2026-10-08), `claude-code` — §2.1 says why. What is deployed is a different, dated question: read
 [`DEPLOY_STATE.md`](DEPLOY_STATE.md), not this line.
 **Supersedes:** `gcp_zero_idle_agent_swarm_build_prompt.md` (v1). v2 keeps v1's
 control plane and its execution substrate, and adds to them.
@@ -49,14 +49,13 @@ disabled for every tenant; no Job exists for them yet):
 |---|---|---|
 | `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::_GENERIC_PROFILE` |
-| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `claude-code` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 53, applied 2026-10-08; its tenants' Cloud Run Jobs are kept, idle, until 2026-10-15 as the rollback) |
 | `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `indexer` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`) |
-| `claude-code-gke` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 55, accepted by the owner 2026-10-07; TEMPORARY: claude-code on GKE Autopilot, the canary for contract request 53, removed when claude-code itself moves) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
@@ -81,9 +80,19 @@ chose to keep the proven path.
 
 **Why the browser runner is on GKE.** Chromium needs a large `/dev/shm`, and GKE
 gives direct control over it (`apps/scheduler/scheduler/dispatch.py` (`Chromium needs a large /dev/shm and GKE gives direct control over it.`)). That is
-the only profile on GKE today. GPU work and anything over 32 GiB would also need
+the first profile on GKE. GPU work and anything over 32 GiB would also need
 GKE, but no such profile exists: `ResourceClass` refuses more than 8 vCPU or
 32 GiB at import (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`).
+
+**Why `claude-code` moved to GKE (contract request 53, applied 2026-10-08).**
+Start latency. On Cloud Run its DISPATCHED -> STARTING wait was p50 128 s /
+p90 212 s (874 attempts), 90-95 % of it in Cloud Run's own provisioning, with
+the lease held throughout. Contract request 55's canary ran the same profile on
+Autopilot for five real steps: DISPATCHED -> RUNNING p50 ~23 s, max 44 s. The
+reliability argument above is not withdrawn for it: claude-code now has the
+node-side ways to lose an attempt (auto-repair, pressure eviction) that Cloud
+Run does not, and mandatory periodic checkpointing is what makes those cost
+minutes.
 
 **What this costs, plainly.** Two backends means two dispatchers, two reap
 paths and two log paths, and a dashboard that has to say which one a task ran
@@ -879,13 +888,15 @@ compared to discovering the answer halfway through.
 > * row 5: Autopilot cold start for short agent tasks.
 >
 > The work to take them, the GKE benchmark lane, was removed when the owner
-> kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` runs on Cloud
-> Run Jobs, and no profile renders the gVisor template by default
+> kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` ran on Cloud
+> Run Jobs until contract request 53 moved it to Autopilot on 2026-10-08, and
+> no profile renders the gVisor template by default
 > (`kubernetes/render.py::JOB_FILES_GVISOR`). Row 5 is scoped to `claude-code` and the agent
 > fleets: the `browser` profile does run on Autopilot today
 > (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`), for its `/dev/shm`, and accepts
-> its cold start, which is not what row 5 asked. If an agent profile ever moves
-> to GKE, these rows come back with it.
+> its cold start, which is not what row 5 asked. An agent profile has now moved
+> to GKE (`claude-code`, request 53), so these rows are open again; row 5 was
+> answered for claude-code by request 53's probe and request 55's canary.
 
 | # | Question | Invalidates if wrong |
 |---|---|---|
@@ -958,8 +969,9 @@ Ordered by what unblocks what, not by what is most interesting.
 2. **Autopilot substrate** — cluster, gVisor, namespaces, RBAC, NetworkPolicies.
 3. **Pod dispatcher**, with the existing profile catalogue unchanged.
 4. ~~**One real `claude-code` agent in a pod**, end to end.~~ Withdrawn
-   2026-10-01: `claude-code` stays on Cloud Run Jobs, where v1 already reached
-   this milestone (§2.1).
+   2026-10-01: `claude-code` stayed on Cloud Run Jobs, where v1 already reached
+   this milestone (§2.1). It moved to GKE Autopilot on 2026-10-08 (contract
+   request 53), as a pod of the existing dispatcher, not this plan's.
 5. **Structured events** — the dashboard and two stall signals both need them.
 6. **Internal LB + IAP** — prerequisite for the dashboard and for any second user.
 7. **Dashboard.**

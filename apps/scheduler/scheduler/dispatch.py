@@ -7,6 +7,8 @@ container that will never exist.
 
 Cloud Run Jobs is the primary backend. GKE Autopilot takes browser work, because
 Chromium needs a large /dev/shm and GKE gives direct control over it.
+It also takes claude-code since contract request 53 (2026-10-08), for its start
+latency: about 23 s there against Cloud Run's 128 s median.
 
 Per-tenant-per-profile Job resources exist because of a Cloud Run constraint,
 not a preference: Cloud Run sets the service account on the JOB resource and it

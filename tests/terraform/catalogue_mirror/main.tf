@@ -72,9 +72,10 @@ locals {
   # on the constructor and element 0 (everything before the first one) dropped.
   #
   # Each chunk is cut at the first `\n}\n`, the end of a top-level dict
-  # literal, so the last entry of RUNNER_PROFILES does not run on into the
-  # statements after the dict -- the `replace(...)` assignment below, whose
-  # `name=` and `backend=` would otherwise sit in the indexer's chunk.
+  # literal, so the last entry of RUNNER_PROFILES does not run on into any
+  # statement after the dict, whose `name=` or `backend=` would otherwise sit
+  # in the last entry's chunk. (Contract request 55's temporary canary was
+  # such a statement; it was removed on 2026-10-08, the cut stays.)
   runner_chunks = local.runner_section == "" ? [] : [
     for c in slice(
       split("RunnerProfile(", local.runner_section),
@@ -83,21 +84,6 @@ locals {
     ) : split("\n}\n", c)[0]
   ]
 
-  # A profile BUILT FROM ANOTHER after the dict (contract request 55's
-  # temporary claude-code-gke):
-  #
-  #   RUNNER_PROFILES["claude-code-gke"] = replace(
-  #       RUNNER_PROFILES["claude-code"], name="claude-code-gke", backend=Backend.GKE_AUTOPILOT
-  #   )
-  #
-  # It takes every field from the entry it names and overrides only the
-  # backend, which is the statement the Python makes. Any other override shape
-  # is not read, and the profile count the caller asserts catches that.
-  derived_matches = regexall(
-    "RUNNER_PROFILES\\[\"([a-z0-9-]+)\"\\] = replace\\(\\s*RUNNER_PROFILES\\[\"([a-z0-9-]+)\"\\],\\s*name=\"([a-z0-9-]+)\",\\s*backend=Backend\\.([A-Z_]+),?\\s*\\)",
-    local.source,
-  )
-
   # `timeout_seconds: int = 3600` on the dataclass. Read rather than assumed: a
   # profile that states no timeout takes this, and hard-coding it here would put
   # back exactly the hand-copied number this module exists to remove.
@@ -105,7 +91,7 @@ locals {
 
   default_timeout = length(local.default_timeout_matches) > 0 ? tonumber(local.default_timeout_matches[0][0]) : 0
 
-  literal_profiles = {
+  runner_profiles = {
     for c in local.runner_chunks :
     regexall("name=\"([a-z0-9-]+)\"", c)[0][0] => {
       image          = regexall("image=\"([a-z0-9-]+)\"", c)[0][0]
@@ -136,12 +122,4 @@ locals {
       ])
     }
   }
-
-  # Only a derived entry whose key and name agree, and whose base the literal
-  # entries hold: a mismatch leaves it out, and the caller's count fails.
-  runner_profiles = merge(local.literal_profiles, {
-    for m in local.derived_matches :
-    m[0] => merge(local.literal_profiles[m[1]], { backend = m[3] })
-    if m[0] == m[2] && contains(keys(local.literal_profiles), m[1])
-  })
 }

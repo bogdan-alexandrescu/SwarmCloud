@@ -223,10 +223,10 @@ spec:
             # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
             # mounts both on EVERY GKE pod, not only browser's, and this
             # template is the reference for what it sends. Unread while browser
-            # was the only GKE profile; contract request 55's claude-code-gke
-            # made it a second one, and test_kubernetes_manifests.py compares
-            # the two. Shared memory counts against the memory limit only when
-            # something writes to it.
+            # was the only GKE profile; claude-code joined it (contract request
+            # 55's canary, then request 53 itself, 2026-10-08), and
+            # test_kubernetes_manifests.py compares the two. Shared memory
+            # counts against the memory limit only when something writes to it.
             - name: dshm
               mountPath: /dev/shm
             # The step-spec public keys (contract request 34): terraform's

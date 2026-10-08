@@ -829,7 +829,8 @@ def test_router_sends_each_profile_to_its_resolved_backend(settings, tenant):
         settings=settings,
     )
 
-    for profile_name in ("claude-code", "browser"):
+    # mock stands for Cloud Run: claude-code is on GKE since contract request 53.
+    for profile_name in ("mock", "browser"):
         profile = RUNNER_PROFILES[profile_name]
         task = make_task(profile_name)
         router.dispatch(
