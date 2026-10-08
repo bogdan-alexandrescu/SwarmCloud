@@ -82,8 +82,15 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
   that role, with exactly the version adder's condition,
   `resource.name.startsWith("projects/<n>/secrets/swarm-tenant-<t>-git-u-")`;
 * `google_project_iam_member.forge_refresh_reader["<t>"]` -- swarm-api,
-  `roles/secretmanager.secretAccessor`, on that prefix **and** a `-refresh`
-  twin;
+  `roles/secretmanager.secretAccessor`, on that prefix: the `-refresh` twins
+  **and** the base slots (owner decision 2026-10-08). swarm-api reuses the
+  person's current access token instead of refreshing on every call -- each
+  refresh makes GitHub end the access token a running task holds, which then
+  fails 401 -- and reading it adds no power, since swarm-api already reads
+  the refresh token that mints access tokens. Changing the condition replaces
+  the binding; the resource carries `create_before_destroy`, so the new
+  binding exists before the old one goes. Until this is applied swarm-api
+  falls back to refreshing per call, as before;
 * `google_project_iam_member.forge_slot_reader["<t>"]` -- the tenant's
   worker, `swarm-agent-worker-<t>`, `roles/secretmanager.secretAccessor`, on
   that prefix and **not** a `-refresh` twin.
@@ -262,7 +269,7 @@ gcloud policy-intelligence troubleshoot-policy iam \
 ```
 
 Expected: access **granted** for `<slot>` and **denied** for `<slot>-refresh`;
-for `swarm-api@` the opposite pair. Any other answer means a condition does
+for `swarm-api@`, **granted** for both. Any other answer means a condition does
 not match the resource-name form IAM evaluates: set
 `enable_forge_user_slots = false` and apply bootstrap before anything else.
 

@@ -51,6 +51,7 @@ from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
+from agent_worker.runners import cliagent
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
@@ -936,10 +937,14 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     appended = prompt[len(json.dumps(plan)):]
     lines = [line for line in appended.splitlines() if line.strip()]
     # The line, then the questions sentence (2026-10-05), which is about a
-    # decision for the owner, not about where the deliverable goes.
-    assert len(lines) == 2, appended
+    # decision for the owner, not about where the deliverable goes; then the
+    # publish paragraph (Proposal A, 2026-10-08), which says the worker
+    # publishes the committed branch -- the deliverable stays the diff, and
+    # only the pull request's title and body go to the artifacts folder.
+    assert len(lines) == 3, appended
     assert lines[0].startswith(LINE_START) and lines[0].endswith(LINE_END), lines[0]
     assert lines[1] == QUESTIONS_LINE, lines[1]
+    assert lines[2] == cliagent.PUBLISH_PARAGRAPH, lines[2]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 

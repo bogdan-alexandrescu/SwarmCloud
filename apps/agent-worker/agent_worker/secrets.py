@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 from swarm_common.models import FORGE_CREDENTIAL, Tenant, utcnow
 
@@ -286,6 +286,81 @@ def resolve_git_token(
     logger.register_secret(token)
     logger.info("tenant git credential resolved", secret=secret_name)
     return token
+
+
+# --------------------------------------------------------------------------
+# A forge 401: read the slot again and retry once (owner decision 2026-10-08)
+# --------------------------------------------------------------------------
+#
+# MEASURED 2026-10-08 08:20Z: a claude-code task failed "could not fetch issue
+# #780: the forge refused the credential (401: Bad credentials)" while the
+# owner's user slot gained 35 versions within minutes. Every refresh makes
+# GitHub end the access token it replaces, so a version this worker read a
+# moment ago can be dead by the time it is used. swarm-api now reuses the
+# current token rather than refreshing per call, but the sweep still
+# refreshes: the worker reads the slot's latest version again and retries the
+# call ONCE. A second refusal is the token being dead, not stale.
+
+#: What the forge says when it refuses the credential itself: the HTTP 401 of
+#: an API call -- as the issue fetch ("(401: Bad credentials)") and the push
+#: probe ("the token was rejected (401)") word it -- and git's own words for a
+#: refused https credential. Not a 403 or a 404: a token that cannot see or
+#: push to a repository is not fixed by reading it again.
+_FORGE_UNAUTHORIZED = re.compile(
+    r"\(401\b|returned error: 401\b|authentication failed|invalid username or "
+    r"(?:password|token)|bad credentials",
+    re.IGNORECASE,
+)
+
+#: Appended to the error of a call refused twice. Constant text: no value.
+FORGE_REFUSED_TWICE = (
+    "the forge refused the credential again after the worker re-read the latest "
+    "version of the task's forge secret, so the token itself has ended, not just "
+    "the copy this attempt held; reconnect GitHub in SwarmCloud's onboarding "
+    "page (or replace the tenant's git token) and run the step again"
+)
+
+_T = TypeVar("_T")
+
+
+def forge_credential_refused(error: BaseException | str) -> bool:
+    """True when `error` is the forge refusing the credential (a 401)."""
+    return bool(_FORGE_UNAUTHORIZED.search(str(error or "")))
+
+
+def call_reading_again(
+    call: Callable[[bool], _T],
+    *,
+    logger: Any,
+    what: str,
+    twice: Callable[[BaseException], BaseException],
+    refused: Callable[[BaseException], bool] = forge_credential_refused,
+) -> _T:
+    """`call(False)`; on a refused credential, `call(True)` once.
+
+    `call` reads the task's forge token itself -- `again` tells it this is the
+    retry, so it reads the secret's latest version afresh and drops anything
+    it held from the first try. Anything `refused` does not recognise is
+    raised at once. A second refusal raises `twice(error)`, which the caller
+    builds in its own exception type so its existing handling applies, with
+    FORGE_REFUSED_TWICE in the message.
+    """
+    try:
+        return call(False)
+    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+        if not refused(exc):
+            raise
+        logger.warning(
+            "the forge refused the credential; reading its secret again and retrying once",
+            call=what,
+        )
+    try:
+        return call(True)
+    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+        if not refused(exc):
+            raise
+        logger.error("the forge refused the re-read credential as well", call=what)
+        raise twice(exc) from None
 
 
 # --------------------------------------------------------------------------

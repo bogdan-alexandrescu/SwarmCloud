@@ -224,6 +224,25 @@ def test_the_temporary_patch_file_never_survives_the_apply(repo):
     assert not (repo / ".git" / "swarm-incoming.patch").exists()
 
 
+def test_a_patch_applies_in_a_linked_worktree_whose_git_is_a_file(repo, tmp_path):
+    """#872's side finding: in a `git worktree add` checkout `.git` is a file,
+    and writing the incoming patch under it raised NotADirectoryError. The
+    git dir comes from `git rev-parse --git-dir`."""
+    patch = _patch_for(repo, lambda r: (r / "types.ts").write_text(
+        "export interface A {\n  x: number\n  z: boolean\n}\n"
+    ))
+    tree = tmp_path / "linked"
+    _git(repo, "worktree", "add", "--quiet", "-b", "side", str(tree))
+    assert (tree / ".git").is_file()
+
+    result = apply_patch(patch, tree, task_id="task_a")
+
+    assert result.clean, result.detail
+    assert "z: boolean" in (tree / "types.ts").read_text()
+    leftovers = list((repo / ".git" / "worktrees").rglob("swarm-incoming.patch"))
+    assert leftovers == []
+
+
 # -- integrating -----------------------------------------------------------
 
 

@@ -315,6 +315,12 @@ make build push deploy
 make smoke
 ```
 
+**A new swarm-api refusal deploys switched off.** It logs `refusal report-only`
+with the code it would have refused, and lets the request through until
+`api_refusals` in the environment's tfvars turns it on. On 2026-10-07 a
+refusal deployed ahead of the change that let callers satisfy it locked out
+submissions for two hours. See [api-refusals.md](api-refusals.md).
+
 Images are tagged with the immutable git SHA; `push` promotes a **digest** to the
 channel tag after a trivy scan. Nothing downstream deploys a mutable tag, so
 "what is running" is always a digest that was actually built and scanned.

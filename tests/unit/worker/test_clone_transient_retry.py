@@ -15,7 +15,11 @@ Pinned here:
 * the bounded in-attempt retry: a transient failure then a success clones;
   a transient failure that outlasts the tries ends the ATTEMPT retryably, so
   the task's attempt budget applies and its capacity is released;
-* a permanent failure is terminal at once, with no retry and no wait.
+* a permanent failure is terminal at once, with no retry and no wait --
+  with one exception (owner decision 2026-10-08): git refusing the task's
+  forge credential re-reads the slot and clones once more, and fails after
+  that second call. A missing repository, or a clone that held no token,
+  still fails on the first call.
 
 The fake git is a real executable: it fails the network steps the way curl
 fails them for the first N calls, then hands over to real git, so the clone
@@ -36,12 +40,14 @@ from pathlib import Path
 import pytest
 
 from agent_worker import forge, gitops, lifecycle
+from agent_worker import secrets as secrets_mod
 from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from worker_seeds import seed_attempt
+from fakes import FakeSecretClient
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -361,13 +367,15 @@ def origin(tmp_path: Path, monkeypatch) -> str:
     return f"file://{bare}"
 
 
-def _flaky_worker(worker_factory, monkeypatch, tmp_path, origin, *, failures, message=CLONE_CONNECT):
+def _flaky_worker(
+    worker_factory, monkeypatch, tmp_path, origin, *, failures, message=CLONE_CONNECT, **kwargs
+):
     git, counter = _fake_git(tmp_path, failures=failures, message=message)
     real_clone = gitops.shallow_clone
     monkeypatch.setattr(
         lifecycle, "shallow_clone", lambda **kwargs: real_clone(**kwargs, git_binary=str(git))
     )
-    worker, _, _ = worker_factory(repository_url=origin)
+    worker, _, _ = worker_factory(repository_url=origin, **kwargs)
     slept: list[float] = []
     worker.forge_sleep = slept.append
     return worker, counter, slept
@@ -436,18 +444,36 @@ def test_a_clone_that_never_connects_on_the_last_attempt_ends_cannot_start(
     assert _capacity_released(db)
 
 
-@needs_git
-@pytest.mark.parametrize(
-    "message",
-    [
-        "remote: Repository not found.\n"
-        "fatal: repository 'https://github.com/octo/gone.git/' not found",
-        "fatal: Authentication failed for 'https://github.com/octo/private.git/'",
-    ],
+#: git's answers for a repository that is not there, and for a refused credential.
+MISSING_REPOSITORY = (
+    "remote: Repository not found.\n"
+    "fatal: repository 'https://github.com/octo/gone.git/' not found"
 )
-def test_a_missing_repository_or_refused_authentication_fails_at_once(
+AUTHENTICATION_FAILED = "fatal: Authentication failed for 'https://github.com/octo/private.git/'"
+
+
+def _with_forge_credential(db) -> FakeSecretClient:
+    """The tenant's own git token registered, so the clone hands git a token."""
+    seed_tenant(db, credentials=["git"])
+    # Built at runtime: never one credential-shaped literal.
+    return FakeSecretClient({f"swarm-tenant-{TENANT}-git": "ghp_" + "c" * 36})
+
+
+def _failed_at_once_or_after(db, counter, slept, calls: int) -> str:
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task
+    error = task.get("last_error") or ""
+    assert error.startswith("repository clone failed"), task
+    assert _network_calls(counter) == calls and slept == []
+    return error
+
+
+@needs_git
+@pytest.mark.parametrize("message", [MISSING_REPOSITORY, AUTHENTICATION_FAILED])
+def test_a_clone_without_a_token_fails_at_once_whatever_git_says(
     db, store, worker_factory, monkeypatch, tmp_path, origin, message
 ):
+    """No token was handed to git, so reading the slot again cannot change the answer."""
     seed_attempt(db)
     worker, counter, slept = _flaky_worker(
         worker_factory, monkeypatch, tmp_path, origin, failures=99, message=message
@@ -455,7 +481,43 @@ def test_a_missing_repository_or_refused_authentication_fails_at_once(
 
     worker.run()
 
-    task = db.doc("tasks/task_1")
-    assert task["state"] == TaskState.FAILED.value, task
-    assert (task.get("last_error") or "").startswith("repository clone failed"), task
-    assert _network_calls(counter) == 1 and slept == []
+    error = _failed_at_once_or_after(db, counter, slept, calls=1)
+    assert secrets_mod.FORGE_REFUSED_TWICE not in error
+
+
+@needs_git
+def test_a_missing_repository_fails_at_once_even_with_a_forge_credential(
+    db, store, worker_factory, monkeypatch, tmp_path, origin
+):
+    """A 404 is the token's reach, not a stale version: no re-read, one call."""
+    seed_attempt(db)
+    worker, counter, slept = _flaky_worker(
+        worker_factory, monkeypatch, tmp_path, origin, failures=99,
+        message=MISSING_REPOSITORY, secret_client=_with_forge_credential(db),
+    )
+
+    worker.run()
+
+    error = _failed_at_once_or_after(db, counter, slept, calls=1)
+    assert secrets_mod.FORGE_REFUSED_TWICE not in error
+
+
+@needs_git
+def test_a_refused_forge_credential_is_read_again_and_tried_once_more_then_fails(
+    db, store, worker_factory, monkeypatch, tmp_path, origin
+):
+    """Owner decision 2026-10-08: a 401 re-reads the slot and clones ONCE more.
+
+    Refused again, the task fails at once -- no transient wait, no third call
+    -- and says the re-read token was refused too.
+    """
+    seed_attempt(db)
+    worker, counter, slept = _flaky_worker(
+        worker_factory, monkeypatch, tmp_path, origin, failures=99,
+        message=AUTHENTICATION_FAILED, secret_client=_with_forge_credential(db),
+    )
+
+    worker.run()
+
+    error = _failed_at_once_or_after(db, counter, slept, calls=2)
+    assert secrets_mod.FORGE_REFUSED_TWICE in error, error

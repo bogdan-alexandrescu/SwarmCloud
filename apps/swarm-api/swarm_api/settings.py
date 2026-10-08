@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
 
+from .refusals import validate_environment as validate_refusal_switches
+
 
 def _csv(name: str, default: str = "") -> tuple[str, ...]:
     raw = os.environ.get(name, default)
@@ -360,6 +362,16 @@ class ApiSettings:
     #: (`specsigning.signer_from_settings`).
     spec_signing_key_version: str = ""
 
+    #: {full version name: PEM} over the step-spec key's ENABLED versions, as
+    #: JSON: the SPEC_VERIFY_KEYS every worker carries (terraform/infra/
+    #: spec_signing.tf). Read by `verdictpublish.spec_refusal` only, which
+    #: verifies a gated step's signed spec before it reads the step's forge
+    #: credential, as the worker does (#748). Empty, or not a JSON object of
+    #: strings, verifies nothing: every control-plane publish is declined and
+    #: the worker publishes, so a missing value costs the saving, never a
+    #: push from an unverified document.
+    spec_verify_keys: str = ""
+
     #: Whether the deployment actually SAID which environment this is.
     #:
     #: The frozen `Settings.from_env` defaults ENVIRONMENT to "dev" when the
@@ -460,6 +472,9 @@ class ApiSettings:
                 "tenant from a verified Google ID token, and without one there is no "
                 "tenant to attribute work to. Remove the variable."
             )
+        # REFUSAL_<CODE> switches are read where each refusal is made
+        # (swarm_api.refusals); a misspelt one is refused here, at start.
+        validate_refusal_switches()
         admin_users = _csv("ADMIN_USERS")
         admin_pool_users = _csv("ADMIN_POOL_USERS")
         secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")
@@ -541,6 +556,7 @@ class ApiSettings:
             ).strip()
             or "swarm-tenant-",
             spec_signing_key_version=os.environ.get("SPEC_SIGNING_KEY_VERSION", "").strip(),
+            spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             # Read beside `Settings.from_env`, which reads the same variable and
             # substitutes "dev" when it is absent. Blank counts as absent: a
             # variable that exists and says nothing has declared nothing.

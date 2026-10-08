@@ -276,8 +276,10 @@ for history.
 
 The build file has three build steps, all in one image pinned by digest that
 carries bash, gcloud, kubectl with `gke-gcloud-auth-plugin`, jq, curl and
-python3 (W0 confirms the stock `google-cloud-cli` image has them all; if not,
-the release builds a small one).
+python3: W4's own `images/workspace-apply`, passed to the build as the trigger
+substitution `${_BUILDER_IMAGE}`. Owner decision 2026-10-08: not the stock
+`google-cloud-cli` image, which lacks jq and whose bundled Python carries 7 HIGH
+CVEs.
 
 1. **Validate.** `_WORKSPACE_ID` must match `^w-[0-9a-f]{6}$` and `_MODE` must
    be `create` or `limits`, before anything else runs. A malformed message ends
@@ -370,15 +372,23 @@ the database role to the other team's 12 accounts and is refused. **Fallback**,
 if W0 says no: the conditioned `projectIamAdmin` row above, plus the alert on
 any member not named `swarm-agent-worker-*` (§2.4 R4).
 
-**In the cluster**, the user is the identity's email. The files are new:
-`rbac/workspace-deployer-rbac.yaml` and `policies/workspace-deployer-scope.yaml`
-under kubernetes/.
+**In the cluster**, the user is the identity's email **and its numeric
+uniqueId**, both bound and both matched, for the reason
+`kubernetes/rbac/dispatcher-rbac.yaml` records: GKE presents a service account
+holding an access token by its uniqueId. Built in W5 as
+`kubernetes/rbac/provisioner-rbac.yaml` and
+`kubernetes/policies/workspace-provisioner-scope.yaml`, rendered by
+`kubernetes/render.py policies` (`POLICY_FILES`, the policy before the RBAC)
+and applied by `kubernetes/apply.sh --policies`, which looks the uniqueIds up.
+Until the bootstrap apply has created the account, that lookup fails and the
+render binds and matches the email alone, in both files, so the deployer is
+never bound without being scoped.
 
 | object | grants | why it is not enough on its own |
 |---|---|---|
-| ClusterRole `swarm-workspace-deployer` + ClusterRoleBinding | `namespaces`: `get`, `create`, `patch`. `serviceaccounts`, `configmaps`, `resourcequotas`, `limitranges`, `networking.k8s.io/networkpolicies`, `rbac.authorization.k8s.io/roles`, `rolebindings`: `get`, `create`, `patch`. `roles`: `escalate`, and `bind` with `resourceNames: [swarm-worker, swarm-dispatcher, swarm-reaper]`. **No `delete`, and nothing on `Secret`, `Pod` or `Job`** | RBAC cannot restrict `create` by name, so a ClusterRole that creates namespaces creates *any* namespace |
+| ClusterRole `swarm-workspace-deployer` + ClusterRoleBinding | `namespaces`: `get`, `create`, `patch`. `serviceaccounts`, `resourcequotas`, `limitranges`, `networking.k8s.io/networkpolicies`, `rbac.authorization.k8s.io/roles`, `rolebindings`: `get`, `create`, `patch`. `roles`: `escalate`, and `bind` with `resourceNames: [swarm-worker, swarm-dispatcher, swarm-reaper]`. **No `delete`, no `list`, and nothing on `Secret`, `Pod`, `Job` or `ConfigMap`**: exactly the verbs a `--workspace` run's kubectl calls need (the apply's get-then-create-or-patch, `escalate`/`bind` for the tenant Roles, reads by name), held there by a test over a run's calls. The job renders without `--spec-verify-keys`, so a personal namespace holds no `swarm-spec-verify-keys` ConfigMap | RBAC cannot restrict `create` by name, so a ClusterRole that creates namespaces creates *any* namespace |
 | Role `swarm-workspace-deployer-dns` in `kube-system` | `get` on `services` `kube-dns` and `daemonsets` `node-local-dns` (`resourceNames`) | the two reads `kubernetes/cluster-network.sh` makes |
-| **ValidatingAdmissionPolicy `swarm-workspace-deployer-scope`** + binding | for any request by this user: a `Namespace` must be named `swarm-tenant-u-*`, and a namespaced object must be in a `swarm-tenant-u-*` namespace. A `Role` must be one of the three names, with the rules `kubernetes/render.py` renders (a parity test holds the literal to the render). A `RoleBinding` may only reference those Roles | this turns "any namespace" into "`swarm-tenant-u-*` only". `kubernetes/policies/pod-security.yaml` is the precedent |
+| **ValidatingAdmissionPolicy `swarm-workspace-deployer-scope`** + binding, and three per-kind companions (`-namespaces`, `-roles`, `-rolebindings`) | for any request by this user (`matchConditions` on the caller; no namespace selector, which the deployer could escape by writing an unlabelled namespace): only `CREATE` and `UPDATE`, no subresource; a `Namespace` must be named `swarm-tenant-u-*` and carry `app.kubernetes.io/part-of=swarm`, its own `swarm-tenant` label and PSA `restricted`; a namespaced object must be in a `swarm-tenant-u-*` namespace and be a kind and name the tenant render produces. A `Role` must be one of the three names, with the rules `kubernetes/render.py` renders. A `RoleBinding` may only reference those Roles, binding `swarm-dispatcher` only to the scheduler, `swarm-reaper` only to the reconciler and `swarm-worker` only to ServiceAccounts in its namespace. `tests/unit/worker/test_workspace_provisioner_scope.py` holds every literal to the render, and the matched users to the bound subjects | this turns "any namespace" into "`swarm-tenant-u-*` only". `kubernetes/policies/pod-security.yaml` is the precedent |
 
 **What it can never touch on the shared deny-list** (`scripts/lib/common.sh`,
 `SHARED_DENY_LIST`): it holds no `compute.*`; its only `container.*` grant is
@@ -1323,7 +1333,7 @@ phases. New files are named without their root.
 | W2 | 1 | admin roles in Firestore (§6.5): `admin_roles/`, `admin_audit/`, `PLATFORM_OWNER`, the one-time migration of `admin_users`, the grant and remove routes with the owner and last-admin safeguards | new `swarm_api/admins.py`, new `swarm_api/routes/people.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/settings.py` | W0 |
 | W3 | 1 | **the call guard**: `scripts/lib/workspace-guard.sh` with C0–C9 in `scripts/lib/workspace-calls.json`, the three shims, `--report-only`, its self-test cases (every rule refusing a call built to trip it), the no-absolute-path test, and the guard-aware `kubectl_bin` and `prefer_local_bin`; `.github/CODEOWNERS` on the guard, the script, `common.sh` and the build file | new `lib/workspace-guard.sh`, `lib/workspace-calls.json`, `lib/workspace-guard-cases.json` and `lib/guard-bin/` in scripts/, `scripts/lib/common.sh`, `.github/CODEOWNERS`, new `tests/unit/scripts/test_workspace_guard.py` | W0 |
 | W4 | 2 | **Terraform, owner-approved once**: in bootstrap, `swarm-workspace-deployer` (no key, no WIF, no `actAs` member), its custom roles and conditioned grants, the `swarm-workspace-apply` topic with swarm-api as its only publisher, the Pub/Sub Cloud Build trigger building `main` only, the restricted log bucket and sink, the `swarm-tenant-u-` slot bindings for swarm-api, **the WD9 principal-set grant** (or, on the fallback, the conditioned `projectIamAdmin`), and the validation of the identity's role list; the alerts of §2.4; in infra, the validation refusing a human user tenant; `terraform test` assertions, including `personal_workspaces_absent` (§3.2) | new `workspace_deployer.tf` in terraform/bootstrap, `terraform/bootstrap/forge_user_slots.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/`, `terraform/infra/variables.tf`, new `personal_workspaces_absent.tftest.hcl` and `workspace_deployer.tftest.hcl` in tests/terraform | W0 |
-| W5 | 2 | **cluster, owner-applied once**: the deployer's ClusterRole, binding and kube-system Role, and the scope ValidatingAdmissionPolicy, plus the parity test that the policy's Role literals equal the render | new `rbac/workspace-deployer-rbac.yaml` and `policies/workspace-deployer-scope.yaml` in kubernetes/, `kubernetes/render.py` (`POLICY_FILES`) | W0 |
+| W5 | 2 | **cluster, owner-applied once**: the deployer's ClusterRole, binding and kube-system Role, and the scope ValidatingAdmissionPolicy, plus the parity test that the policy's Role literals equal the render | new `rbac/provisioner-rbac.yaml` and `policies/workspace-provisioner-scope.yaml` in kubernetes/, `kubernetes/render.py` (`POLICY_FILES`), `kubernetes/apply.sh` (`--policies` looks up the uniqueIds) | W0 |
 | W6 | 2 | **`register-tenant.sh --workspace`** (§4.1): the record read, the derived-id check, `--mode create`, `limits` and `verify`, A1–A9 with progress writes, **the act-as grant**, the narrowed squat inspection, the forge slot, the refusal to start without the guard; and **the build file** `scripts/cloudbuild/workspace-apply.yaml` (validate, install the guard, run) | `scripts/register-tenant.sh`, new `cloudbuild/workspace-apply.yaml` in scripts/, `tests/unit/scripts/` (new `test_register_tenant_workspace.py`) | W3 |
 | W7 | 2 | People and the approval flow in swarm-api: the admin list, approve, deny, retry, limits, loan, the Pub/Sub publish and the sweep route | `swarm_api/routes/people.py` (W2's new file, extended), new `swarm_api/publish_workspace.py`, `apps/swarm-api/swarm_api/routes/accounts.py` | W1, W2 |
 | W8 | 3 | the console: the checklist steps, the progress view, the Submit banners, Admin → People; the plugin: `sc setup`, `swarm_setup_workspace`, `/sc:setup`; the issue forms' "Where" list | `apps/swarm-ui/src/GitHubConnect.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/SubmitWorkflow.tsx`, `apps/swarm-ui/src/App.tsx`, new `People.tsx` in apps/swarm-ui/src, `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/commands/setup.md`, `.github/ISSUE_TEMPLATE/` | W1, W7 |

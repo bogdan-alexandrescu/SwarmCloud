@@ -129,6 +129,10 @@ class GitHubWrites:
         self.fetched: list[tuple[str, dict[str, str]]] = []
         self.calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
         self._next = 9000
+        #: The repository itself and its branches by name -> sha (#748): what
+        #: a pull request opened from an already-pushed branch reads and makes.
+        self.default_branch = "main"
+        self.branches: dict[str, str] = {}
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -187,6 +191,36 @@ class GitHubWrites:
                     if key in payload:
                         self.pulls[number][key] = payload[key]
             return 200, json.dumps(self.pulls[number]).encode()
+        if not rest and method == "GET":
+            return 200, json.dumps({"full_name": "/".join(parts[1:3]),
+                                    "default_branch": self.default_branch}).encode()
+        if rest[:3] == ["git", "ref", "heads"] and method == "GET":
+            name = "/".join(rest[3:])
+            if name not in self.branches:
+                return 404, b"{}"
+            return 200, json.dumps({"ref": f"refs/heads/{name}",
+                                    "object": {"sha": self.branches[name]}}).encode()
+        if rest == ["git", "refs"] and method == "POST":
+            name = payload["ref"].removeprefix("refs/heads/")
+            if name in self.branches:
+                return 422, json.dumps({"message": "Reference already exists"}).encode()
+            self.branches[name] = payload["sha"]
+            return 201, json.dumps({"ref": payload["ref"], "object": {"sha": payload["sha"]}}).encode()
+        if rest == ["pulls"]:
+            if method == "POST":
+                if any(p["head"]["ref"] == payload["head"] and p["state"] == "open"
+                       for p in self.pulls.values()):
+                    return 422, json.dumps({"message": "A pull request already exists"}).encode()
+                self._next += 1
+                self.open_pull(self._next, self.branches.get(payload["head"], ""),
+                               ref=payload["head"], body=payload["body"])
+                self.pulls[self._next].update(title=payload["title"],
+                                              base={"ref": payload["base"]})
+                return 201, json.dumps(self.pulls[self._next]).encode()
+            head = parse_qs(parsed.query).get("head", [""])[0].partition(":")[2]
+            listed = [p for p in self.pulls.values()
+                      if p["head"]["ref"] == head and p["state"] == "open"]
+            return 200, json.dumps(listed[:1]).encode()
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0])
         per_page = int(query.get("per_page", ["30"])[0])

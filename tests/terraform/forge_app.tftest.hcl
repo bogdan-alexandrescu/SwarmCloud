@@ -12,9 +12,11 @@
 #     `projects/<number>/secrets/` form: swarm-api creates (a custom role with
 #     secrets.create and nothing else), adds versions, disables and re-enables
 #     them (a custom role with versions.disable and versions.enable and
-#     nothing else, so Disconnect leaves no usable token, OB3), and reads only
-#     the `-refresh` twins; the tenant's worker reads only the base slots (D7,
-#     U1);
+#     nothing else, so Disconnect leaves no usable token, OB3), and reads
+#     both the base slots and their `-refresh` twins (owner decision
+#     2026-10-08: it reuses the person's current access token instead of
+#     refreshing on every call); the tenant's worker reads only the base
+#     slots (D7, U1);
 #   * a tenant id whose user-slot prefix would start with another tenant's is
 #     refused, because a prefix condition would hand that tenant's slots over;
 #   * the refresher job (D2) is `swarm-forge-refresh`, every 15 minutes, OIDC,
@@ -257,17 +259,34 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
     error_message = "a tenant's worker reads only its own tenant's base user slots, never a -refresh twin (decision D7, U1)"
   }
 
-  # swarm-api reads the -refresh twins and never a base slot: the refresher
-  # writes access tokens it has no reason to read back.
+  # swarm-api reads the base slots AND their -refresh twins, on the tenant's
+  # prefix and nothing narrower (owner decision 2026-10-08). It reuses the
+  # person's current access token rather than refreshing on every call --
+  # each refresh made GitHub drop the token a running task held, which then
+  # failed 401. It already held the refresh token, which mints access
+  # tokens, so reading the access token adds no power. Exactly the version
+  # adder's condition: the slots it writes, and no other secret.
   assert {
     condition = alltrue([
       for t, m in google_project_iam_member.forge_refresh_reader :
       m.role == "roles/secretmanager.secretAccessor" &&
       m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com" &&
-      startswith(m.condition[0].expression, "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\") && (") &&
-      strcontains(m.condition[0].expression, "resource.name.endsWith(\"-refresh\") || resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")")
+      m.condition[0].expression == "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-${t}-git-u-\")" &&
+      m.condition[0].expression == google_project_iam_member.forge_slot_version_adder[t].condition[0].expression
     ]) && length(google_project_iam_member.forge_refresh_reader) > 0
-    error_message = "swarm-api reads only -refresh twins of user slots (D2), never a base slot"
+    error_message = "swarm-api reads each tenant's user slots, base and -refresh twin alike, on that tenant's prefix and nothing wider (owner decision 2026-10-08)"
+  }
+
+  # The binding's title names what it reads now. A condition is part of an
+  # IAM binding's identity, so this change replaces the binding; the resource
+  # carries create_before_destroy so the sweep never loses the twins mid-apply
+  # (the mock provider cannot assert that; the plan shows it).
+  assert {
+    condition = alltrue([
+      for t, m in google_project_iam_member.forge_refresh_reader :
+      m.condition[0].title == "swarm forge user slots api ${t}"
+    ])
+    error_message = "swarm-api's user-slot reader binding is titled for what it reads now: the base slots and their twins"
   }
 
   # The same tenants on every per-tenant grant, and exactly the fixture's.
