@@ -5006,3 +5006,189 @@ export interface OnboardingDoc {
   complete: boolean
   source: string
 }
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4; read by OB8's Access page)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/access.py and `access.py`
+// (`org_to_api`, `grant_to_api`, `owners`, `repositories`, `verify`,
+// `members`). Like the connection above, NO FIELD HOLDS A VALUE: the person's
+// token is in hand for one request inside swarm-api and no answer carries it.
+
+/** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
+export type AccessMode = 'read' | 'write'
+
+/** The checks verify runs (`access.CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request'
+
+/** A check's answer. `not_required` is push and pull request on a read grant. */
+export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
+
+export interface AccessCheck {
+  state: AccessCheckState
+  /** The §2.3 code a check that did not pass carries. */
+  code: string | null
+  checked_at: string | null
+}
+
+/** `access.org_to_api`: an owner the person enabled. */
+export interface AccessOrg {
+  owner: string
+  owner_type: 'User' | 'Organization' | null
+  installation_id: number | null
+  /** GitHub's `all` or `selected`. */
+  repository_selection: string | null
+  install_state: string | null
+  /** `ok`, `required` or `unknown`: what the last listing found about SAML SSO. */
+  sso: string | null
+  enabled: boolean
+  enabled_at: string | null
+  checked_at: string | null
+}
+
+/** `access.grant_to_api`: one repository the person chose. */
+export interface AccessGrant {
+  repo_id: string
+  repository: string
+  owner: string
+  mode: AccessMode
+  can_push: boolean | null
+  archived: boolean | null
+  granted_at: string | null
+  granted_by: string | null
+  checks: Partial<Record<AccessCheckName, AccessCheck>>
+  verified_at: string | null
+}
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants. No forge read. */
+export interface AccessOverview {
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+  tenant_id: string
+}
+
+/** One owner `GET /v1/access/orgs` found: the account, an installation, or an org with none. */
+export interface AccessOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  installation_id: number | null
+  repository_selection: string | null
+  install_state: 'installed' | 'not_installed'
+  sso: string
+  enabled: boolean
+  /** The App's install page, for an owner it is not installed on. */
+  install_url: string | null
+}
+
+/** `GET /v1/access/orgs`. */
+export interface AccessOwners {
+  owners: AccessOwner[]
+  /** False when GitHub did not list the person's orgs; installations are still listed. */
+  orgs_listed: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** One repository of an owner's installation, as `access._entries` serves it. */
+export interface AccessRepository {
+  repository: string
+  owner: string
+  repo: string
+  repo_id: string
+  visibility: string | null
+  archived: boolean
+  default_branch: string | null
+  /** Whether GitHub lets the person push: shown before Write is chosen (chooser A). */
+  can_push: boolean | null
+  registered: boolean
+  granted: boolean
+  mode: AccessMode | null
+}
+
+/** `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: one page. */
+export interface AccessRepositoryPage {
+  owner: string
+  repositories: AccessRepository[]
+  page: number
+  per_page: number
+  max_pages: number
+  next_page: number | null
+  /** The listing stopped at `max_pages`; past it a person types owner/repo. */
+  capped: boolean
+  q: string | null
+  /** GitHub's count for the installation; null under a search. */
+  total_count: number | null
+  tenant_id: string
+}
+
+/** `POST /v1/access/orgs`. */
+export interface AccessEnableResponse {
+  org: AccessOrg
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/orgs/{owner}`. */
+export interface AccessDisableResponse {
+  owner: string
+  grants_deleted: number
+  unregistered: string[]
+  /** Where an org owner uninstalls the App: SwarmCloud cannot narrow the person's token (§2.4). */
+  installation_settings_url: string | null
+  tenant_id: string
+}
+
+/** `PUT /v1/access/grants/{repo_id}`. */
+export interface AccessGrantResponse {
+  grant: AccessGrant
+  /** True when this grant registered the repository for the tenant. */
+  registered: boolean
+  registration_repo_id: string | null
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`. */
+export interface AccessRevokeResponse {
+  repo_id: string
+  revoked: boolean
+  unregistered: boolean
+  tenant_id: string
+}
+
+/** One check verify could not pass, with its §2.3 copy filled in. */
+export interface AccessVerifyFailure {
+  check: string
+  code: string
+  copy: string
+  url?: string | null
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`. */
+export interface AccessVerifyResponse {
+  grant: AccessGrant
+  failures: AccessVerifyFailure[]
+  passed: boolean
+  tenant_id: string
+}
+
+/** The `detail` of a refused access request (`access.AccessRefused`). */
+export interface AccessRefusalDetail {
+  failure_code: string
+  recovery: string
+  url: string | null
+}
+
+/** One member in `GET /v1/access/members` (admin): states and names, never a value. */
+export interface AccessMember {
+  user: string
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+}
+
+/** `GET /v1/access/members`. */
+export interface AccessMembers {
+  members: AccessMember[]
+  tenant_id: string
+}

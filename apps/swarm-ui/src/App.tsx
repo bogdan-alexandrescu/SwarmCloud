@@ -39,6 +39,8 @@ import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
+import { OnboardingScreen, SetupCard } from './Onboarding'
+import { AccessScreen } from './Access'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
@@ -296,8 +298,16 @@ export const SECTIONS: SectionDef[] = [
       // with its TAIL INTACT through SECTION_ALIASES rather than landing on
       // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
       { id: 'timeline', label: 'Timeline' },
-      // repositories.html §1: Work › Repositories, after Runs; the shell draws it last.
+      // repositories.html §1: Work › Repositories, after Runs; the shell draws it after
+      // Timeline, ahead of OB8's Setup and Access below.
       { id: 'repositories', label: 'Repositories' },
+      // ONBOARDING (#780, OB8; onboarding.html Entry A and Access A, owner pick
+      // D10). Setup is the six-step checklist Overview carries as a card until
+      // it is done -- a tab too, so it is still reachable once the card is
+      // hidden; Access is the steady state: the orgs and repositories
+      // SwarmCloud may reach as the person, Read or Write, verified.
+      { id: 'setup', label: 'Setup' },
+      { id: 'access', label: 'Access' },
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
       // panel it renders on success, "That is not a running agent" -- because
@@ -1707,7 +1717,7 @@ function SectionBody({
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
-      return <OverviewScreen />
+      return <OverviewScreen setup={<SetupCard />} />
 
     case 'work/running':
       return <AgentsScreen {...agentsProps} />
@@ -1725,6 +1735,10 @@ function SectionBody({
       return <RunsScreen view={view} go={go} />
     case 'work/repositories':
       return <RepositoriesScreen view={view} go={go} />
+    case 'work/setup':
+      return <OnboardingScreen />
+    case 'work/access':
+      return <AccessScreen />
 
     case 'capacity/pools':
       return <CapacityScreen />
