@@ -22,6 +22,12 @@ back to 8/2/4, or point the workspace volume back at `rc.disk_gib`, and the
 every-class test fails for browser; raise any class's total past 10 and it
 fails too; shrink claude-code's workspace below Cloud Run's and the workspace
 test fails.
+
+#893 (2026-10-08): claude-code's /tmp was 2 GiB, exactly the checkpoint cap,
+and an agent that cloned and installed a project under a literal /tmp was
+evicted three times. Put `standard` back to 4/2/4 and the layout test and the
+/tmp-headroom test fail; point the agent's TMPDIR off the workspace volume and
+the TMPDIR test fails.
 """
 
 from __future__ import annotations
@@ -241,3 +247,43 @@ def test_the_tenant_jobs_quota_defaults_to_200():
 
     src = (Path(__file__).resolve().parents[3] / "kubernetes" / "render.py").read_text()
     assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)
+
+
+def test_a_claude_code_pod_has_the_layout_of_893(tenant):
+    """workspace 5 + /tmp 4 + HOME 1 = Autopilot's 10 GiB (#893): what each holds is GKE_DISK's."""
+    pod = _pod(tenant, "claude-code")
+
+    assert _disk_volumes(pod) == {"workspace": 5, "tmp": 4, "home": 1}
+    assert _worker(pod)["resources"]["limits"]["ephemeral-storage"] == "10Gi"
+
+
+def test_tmp_has_room_for_an_agents_files_beside_a_checkpoint_in_flight():
+    """The checkpoint archive is built in /tmp WHILE the agent runs, so /tmp is
+    the cap plus room for a literal /tmp write -- at least as much again."""
+    from agent_worker.config import WorkerConfig
+
+    cap = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}["max_checkpoint_bytes"]
+    standard = GKE_DISK[RUNNER_PROFILES["claude-code"].resource_class]
+
+    assert standard.tmp_gib * GIB - cap >= cap
+
+
+def test_the_agents_tmpdir_and_home_are_on_the_workspace_volume(tmp_path):
+    """Why /tmp is not where the agent's TMPDIR and caches go (#893, option a).
+
+    The runner child's TMPDIR and HOME are the attempt's own directories under
+    WORKSPACE_ROOT, so `mkdtemp` and npm/uv/pip caches fill the workspace
+    volume. The worker's root is the volume the GKE manifest mounts there.
+    """
+    from agent_worker.config import WorkerConfig
+    from agent_worker.workspace import create
+
+    from scheduler.dispatch import WORKSPACE_MOUNT
+
+    root = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}["workspace_root"]
+    assert str(root) == WORKSPACE_MOUNT
+
+    ws = create(tmp_path, "att_tmpdir")
+    env = ws.child_env()
+    assert env["TMPDIR"] == str(ws.tmp) and env["HOME"] == str(ws.work)
+    assert ws.tmp.is_relative_to(tmp_path) and ws.work.is_relative_to(tmp_path)

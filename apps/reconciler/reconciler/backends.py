@@ -410,6 +410,27 @@ def job_finished_at(job: Any) -> datetime | None:
     return None
 
 
+def pod_eviction(pod: Any) -> str | None:
+    """kubelet's message on a pod it EVICTED, one bounded line; None if it was not.
+
+    `status.reason == "Evicted"` is kubelet's own marker, set by its eviction
+    manager for a volume or container past its limit and for node pressure
+    alike. The message is kubelet's, not the tenant's, but it is bounded like
+    any backend text before it goes near a task. An evicted pod with no
+    message still reads as evicted.
+    """
+    status = getattr(pod, "status", None)
+    if status is None and isinstance(pod, dict):
+        status = pod.get("status")
+    reason = getattr(status, "reason", None)
+    message = getattr(status, "message", None)
+    if reason is None and isinstance(status, dict):
+        reason, message = status.get("reason"), status.get("message")
+    if str(reason or "") != "Evicted":
+        return None
+    return _short(message) or "Evicted"
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(value)
@@ -1460,8 +1481,10 @@ class GkeBackend:
         newest terminated worker container would be the one read.
 
         Nothing outside the tenant namespace prefix is read, by the same rule
-        `list_executions_in` keeps. None when no terminated worker container
-        is found: a pod already collected (the Job's TTL is an hour), or a
+        `list_executions_in` keeps. A pod kubelet EVICTED carries its
+        message in `Termination.eviction` (`pod_eviction`, #893), with or
+        without a terminated container beside it. None when neither is
+        found: a pod already collected (the Job's TTL is an hour), or a
         container that never started. Raises when a call fails, and the
         caller then concludes nothing.
         """
@@ -1478,7 +1501,11 @@ class GkeBackend:
             if pods:
                 break
         found: list[tuple[Any, Any, Any]] = []
+        evictions: list[tuple[Any, str]] = []
         for pod in pods:
+            evicted = pod_eviction(pod)
+            if evicted is not None:
+                evictions.append((pod, evicted))
             statuses = list(getattr(getattr(pod, "status", None), "container_statuses", None) or [])
             chosen = [s for s in statuses if getattr(s, "name", None) == WORKER_CONTAINER]
             if not chosen and len(statuses) == 1:
@@ -1489,8 +1516,28 @@ class GkeBackend:
                     terminated = getattr(getattr(status, "last_state", None), "terminated", None)
                 if terminated is not None:
                     found.append((pod, status, terminated))
+        # The pod kubelet EVICTED, in its own words (#893). An evicted pod's
+        # worker container reads `ContainerStatusUnknown`, exit 137 -- true,
+        # and no help: the cause is on the pod, `status.reason: Evicted` and
+        # `status.message` ("Usage of EmptyDir volume \"tmp\" exceeds the
+        # limit \"2Gi\". "). Read from the same `pods list` as the exit code,
+        # so it needs no grant the `swarm-reaper` Role does not already hold.
+        # With `backoffLimit: 0` there is one pod; the newest eviction wins.
+        eviction = (
+            max(
+                evictions,
+                key=lambda item: _ensure_utc(
+                    getattr(getattr(item[0], "metadata", None), "creation_timestamp", None)
+                )
+                or datetime.min.replace(tzinfo=timezone.utc),
+            )[1]
+            if evictions
+            else None
+        )
         if not found:
-            return None
+            if eviction is None:
+                return None
+            return Termination(exit_code=None, detail="pod evicted", eviction=eviction)
         _, status, terminated = max(
             found,
             key=lambda item: _ensure_utc(getattr(item[2], "finished_at", None))
@@ -1504,6 +1551,7 @@ class GkeBackend:
                 f"container {getattr(status, 'name', '?')}: "
                 f"{getattr(terminated, 'reason', None) or 'terminated'}"
             ),
+            eviction=eviction,
         )
 
     def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:
@@ -1539,6 +1587,18 @@ class GkeBackend:
             generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
             namespace=namespace,
             completed_at=job_finished_at(job),
+            # The Job controller's own Complete or Failed condition (#893).
+            # Left False, a Failed Job was listed and then counted for
+            # nothing: `ended_executions_by_attempt` skipped it, and
+            # `detect_missing_executions` reported the attempt as having "no
+            # backend execution" at all -- task_22e763906edd4edcb630, evicted
+            # three times on 2026-10-08, ended FAILED with exactly that. With
+            # `backoffLimit: 0` and `restartPolicy: Never` a Job is Failed only
+            # once its one pod has, and `job_phase` reads only these two
+            # conditions, so a Job with neither (still running, or reporting
+            # `FailureTarget` while its pod terminates) stays not ended -- the
+            # direction that holds the lease.
+            ended=job_phase(job) in (ExecutionPhase.SUCCEEDED, ExecutionPhase.FAILED),
         )
 
     def list_job_resources(self) -> list[JobResourceView]:
