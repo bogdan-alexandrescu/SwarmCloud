@@ -69,6 +69,10 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: The personal-workspace dispatch sweep (docs/workspaces.md §2.2, lane W7
 #: of #847) is called by swarm-tick every 5 minutes: it publishes again the
 #: opaque id of a workspace an admin already approved, and approves nothing.
+#: The `task_finished` push (#748, filed by the owner 2026-10-06) was added
+#: so a MERGE verdict's pull request is opened without a worker: it acts only
+#: on the finished task's own tenant's gated integrator, with that tenant's
+#: token, and moves only a step it claimed (`swarm_api.verdictpublish`).
 DECIDED = frozenset({
     ("POST", "/v1/admin/workflows/rollup"),
     ("POST", "/v1/admin/runs/advance"),
@@ -76,6 +80,7 @@ DECIDED = frozenset({
     ("POST", "/v1/admin/merges/wake"),
     ("POST", "/v1/admin/forge/refresh"),
     ("POST", "/v1/admin/workspaces/sweep"),
+    ("POST", "/v1/admin/tasks/finished"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]

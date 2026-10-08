@@ -852,6 +852,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # record whose build never claimed it. It decides nothing: only a
         # record an admin already approved is published, by its opaque id.
         ("POST", "/v1/admin/workspaces/sweep"),
+        # The `task_finished` push (#748): the scheduler's wake topic's second
+        # subscription. It opens a MERGE verdict's pull request with the
+        # finished task's own tenant's token, for that tenant's gated
+        # integrator, and moves only a step it claimed (`verdictpublish`).
+        ("POST", "/v1/admin/tasks/finished"),
     }
 )
 
