@@ -56,8 +56,10 @@ def signer() -> LocalSpecSigner:
 
 @pytest.fixture
 def context(db, tokens, group_map, signer):
+    # The refusal is behind REPOSITORY_GRANTS_ENFORCED (off by default, owner
+    # 2026-10-08); every test in this file but the switch-off ones runs it on.
     return build_context(
-        settings=api_settings(),
+        settings=api_settings(repository_grants_enforced=True),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -380,3 +382,49 @@ def test_a_workflow_or_batch_naming_a_forge_field_is_refused(client, db, where):
     response = client.post(path, headers=auth_header("alice"), json=body)
     assert response.status_code == 422, response.text
     assert not _tasks(db)
+
+
+# --- the switch, off (owner decision 2026-10-08) -----------------------------
+# #845 shipped the refusal before anyone could connect GitHub, so it refused
+# every person's task. With REPOSITORY_GRANTS_ENFORCED off -- the default -- a
+# person with no grant runs with the tenant token, as before #780.
+
+
+@pytest.fixture
+def lenient_client(db, tokens, group_map, signer) -> TestClient:
+    context = build_context(
+        settings=api_settings(),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=InMemoryObjectReader(bucket=f"swarm-artifacts-{PROJECT}"),
+        signer=signer,
+    )
+    return TestClient(create_app(context), raise_server_exceptions=False)
+
+
+def test_the_switch_is_off_by_default():
+    assert api_settings().repository_grants_enforced is False
+
+
+def test_with_the_switch_off_an_ungranted_person_runs_with_the_tenant_token(
+        lenient_client, db, signer):
+    response = lenient_client.post("/v1/tasks", headers=auth_header("alice"), json=_task())
+    assert response.status_code in (200, 201, 202), response.text
+    stored = list(_tasks(db).values())
+    assert len(stored) == 1
+    assert stored[0]["forge_credential"] == "git"
+    assert stored[0]["forge_access"] == "write"
+    # Still signed, so the worker can trust the tenant-token choice too.
+    assert signer.signed
+
+
+def test_with_the_switch_off_an_ungranted_workflow_is_accepted(lenient_client, db):
+    response = lenient_client.post("/v1/workflows", headers=auth_header("alice"),
+                                   json=_workflow())
+    assert response.status_code in (200, 201, 202), response.text
+    for doc in _tasks(db).values():
+        assert doc["forge_credential"] == "git"

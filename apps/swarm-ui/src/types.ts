@@ -2071,8 +2071,21 @@ export interface DispatchControl {
 /** `SubmissionService.providers`, service.py:334-350. */
 export interface ProviderEntry {
   provider: string
-  /** Provider NAMES only, from tenants/{id}.credentials. Never key material. */
+  /**
+   * True when the tenant's own key OR a pool account it owns or is lent
+   * serves this provider -- admission's rule (#76). Never key material.
+   */
   credential_registered: boolean
+  /**
+   * Which one: `tenant_key` (asked first, as admission does) or
+   * `account_pool`; null when neither. Optional: served after #76.
+   */
+  credential_source?: 'tenant_key' | 'account_pool' | null
+  /**
+   * The profiles that credential can run. A pool account runs only a profile
+   * that takes a subscription token, so it can be fewer than runner_profiles.
+   */
+  runnable_profiles?: string[]
   runner_profiles: string[]
   /** null when no quota document exists for this tenant yet. Not zeros. */
   quota: QuotaState | null
@@ -2081,6 +2094,11 @@ export interface ProviderEntry {
 export interface ProvidersPage {
   tenant_id: string
   providers: ProviderEntry[]
+  /**
+   * How the account pool was read for this page: `unreadable` means a false
+   * credential_registered may still be served by a lent account.
+   */
+  account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
   generated_at: string
 }
 

@@ -27,6 +27,7 @@ main that holds id-token can still present a token the deployer accepts.
 from __future__ import annotations
 
 from .test_release_reuses_ci_images import _workflow
+from .test_workflow_id_token_scope import ID_TOKEN_REQUEST_VARS, _auth_steps
 
 NEEDS_ID_TOKEN = {"build", "promote", "infrastructure", "infrastructure-iam", "deploy", "acceptance"}
 
@@ -49,19 +50,42 @@ def test_id_token_is_on_exactly_the_jobs_that_authenticate_to_google():
     assert have == NEEDS_ID_TOKEN, f"id-token: write on {sorted(have)}, expected {sorted(NEEDS_ID_TOKEN)}"
 
 
+def _undeclared_auth(jobs: dict) -> list[str]:
+    """Jobs that authenticate to Google but do not hold id-token: write and contents.
+
+    "Authenticate" is `_auth_steps`: the google-github-actions/auth action, or a
+    `run:` (or `with:`/`env:`) step that reads ACTIONS_ID_TOKEN_REQUEST_URL or
+    _TOKEN and mints the OIDC token by hand. Matching only the action let a
+    hand-rolled `curl` job through unchecked (#453, the #455 review).
+    """
+    problems = []
+    for job_id, job in jobs.items():
+        if not any(_auth_steps(job)):
+            continue
+        permissions = job.get("permissions") or {}
+        if permissions.get("id-token") != "write":
+            problems.append(f"{job_id} authenticates to Google without declaring id-token: write")
+        if not permissions.get("contents"):
+            problems.append(f"{job_id}'s permissions block drops contents (a block replaces the workflow's)")
+    return problems
+
+
 def test_every_job_using_workload_identity_declares_id_token():
-    for job_id, job in _jobs().items():
-        uses_auth = any(
-            str(step.get("uses", "")).startswith("google-github-actions/auth@")
-            for step in job.get("steps") or []
-        )
-        if uses_auth:
-            assert (job.get("permissions") or {}).get("id-token") == "write", (
-                f"release.yml's {job_id} job authenticates to Google without declaring id-token: write"
-            )
-            assert (job.get("permissions") or {}).get("contents"), (
-                f"release.yml's {job_id} job's permissions block drops contents (a block replaces the workflow's)"
-            )
+    problems = _undeclared_auth(_jobs())
+    assert not problems, f"release.yml: {problems}"
+
+
+def test_a_run_step_minting_the_token_by_hand_must_declare_id_token():
+    """The check above reads `run:` steps, not only the auth action."""
+    url, tok = ID_TOKEN_REQUEST_VARS
+    by_hand = {"run": f'curl -sH "Authorization: bearer ${tok}" "${url}&audience=x"'}
+    undeclared = {"steps": [by_hand], "permissions": {"contents": "read"}}
+    declared = {"steps": [by_hand], "permissions": {"contents": "read", "id-token": "write"}}
+    plain = {"steps": [{"run": "pytest tests/unit"}], "permissions": {"contents": "read"}}
+    assert _undeclared_auth({"mint": undeclared}) == [
+        "mint authenticates to Google without declaring id-token: write"
+    ]
+    assert _undeclared_auth({"mint": declared, "test": plain}) == []
 
 
 def test_permissions_are_never_a_string():

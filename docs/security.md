@@ -116,6 +116,10 @@ reaching admission webhooks.
 An agent clones a repository and reads it. The repository may be hostile.
 
 * Clones are **shallow and single-branch** — the working tree, not the history.
+  Single-branch is the transfer only: the clone's `origin` is then set to track
+  every branch (`gitops.TRACK_EVERY_BRANCH`), because with the clone's
+  one-branch refspec `git fetch origin main` never moved an existing
+  `origin/main`, and an agent merged a stale main (#453).
 * The URL comes from an authenticated caller and is still not trusted: the scheme
   must be `https` or `ssh`. `file://` and `ext::` are refused, because
   `ext::sh -c ...` is a git URL that executes a command.

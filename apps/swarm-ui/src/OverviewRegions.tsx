@@ -31,7 +31,7 @@ import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
-import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
+import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
  * The path of one agent, under the list it actually sits in (browser QA,
@@ -390,10 +390,18 @@ export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; n
  * the time of the last write.
  */
 function EndedAgo({ task: t, now }: { task: Task; now: number }) {
-  if (t.completed_at === null || !Number.isFinite(new Date(t.completed_at).getTime())) {
+  const at = clockTime(t.completed_at, now)
+  if (t.completed_at === null || at === null) {
     return <Dash why={`No end time was recorded for this task; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
   }
-  return <>{timeAgo(t.completed_at, now)}</>
+  // THE INSTANT UNDER THE AGE (#503): "25m ago" is what a reader scans for,
+  // and the time it ended -- `clockTime`'s ISO UTC, the hover every other
+  // start and end in this console carries -- is what they match to a log.
+  return (
+    <time dateTime={t.completed_at} title={`ended ${at.title}`}>
+      {timeAgo(t.completed_at, now)}
+    </time>
+  )
 }
 
 /** "Recent failures": mark, agent and why, age, Open (O1). */

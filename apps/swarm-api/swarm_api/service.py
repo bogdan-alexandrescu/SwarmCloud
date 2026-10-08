@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from swarm_common.models import (
     Task,
@@ -66,6 +66,7 @@ from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
+from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
@@ -208,6 +209,13 @@ class SubmissionService:
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
             if mode is None:
+                if not getattr(self._settings, "repository_grants_enforced", False):
+                    # The switch is off (REPOSITORY_GRANTS_ENFORCED, owner
+                    # 2026-10-08): no grant runs with the tenant token, as
+                    # before #780, until the migration turns refusal on.
+                    task.forge_credential = GIT_PROVIDER
+                    task.forge_access = SERVICE_FORGE_ACCESS
+                    continue
                 refused.append((task.step_id, f"{owner}/{repo}"))
                 continue
             task.forge_credential = provider_suffix(Scope.USER, user=task.submitted_by)
@@ -1164,28 +1172,119 @@ class SubmissionService:
             "generated_at": self._now(),
         }
 
-    def providers(self, ctx: AuthContext) -> dict[str, Any]:
+    def providers(
+        self,
+        ctx: AuthContext,
+        accounts: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Which providers this tenant can run on, and on which credential.
+
+        A KEY OR A POOL ACCOUNT, the way admission reads it (#76, from #171's
+        second review). `credential_registered` used to be `name in
+        tenant.credentials` alone, so a keyless tenant that an account LENT to
+        it serves read "no credential" while admission
+        (`scheduler.credentials.credential_for`) admitted its tasks and they
+        ran. It is now true when either serves, and `credential_source` says
+        which, in admission's own words: `tenant_key` (asked first, as there)
+        or `account_pool`. `runnable_profiles` narrows it the same way: an
+        account is a Claude subscription and runs only a profile whose
+        `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, so `browser` is not runnable
+        on one however many a tenant is lent.
+
+        WHICH ACCOUNTS COUNT: one this tenant owns or is lent, for this
+        provider, in any state -- `quota_broker.accounts.accounts_serving`,
+        which admission asks. A paused or spent account is a wait the worker
+        parks on, not a missing credential. A withdrawn loan counts for
+        nothing: the account no longer names this tenant in `lend_to`.
+
+        `accounts` is the broker's `list_accounts`, or None on a deployment
+        with no broker -- where, as in admission, the pool serves nobody. It
+        is asked only when some provider has no key. `account_pool` on the
+        page says what was read, so a `false` beside a broker that could not
+        be reached is not read as "nobody lent you anything".
+        """
         tenant = self.tenant_for(ctx)
         quota_by_provider = {q.provider: q for q in self._store.list_quota(ctx.tenant_id)}
-        entries = []
         # Never a retired #295 App key (`git-review`, which the frozen
         # catalogue's disabled post-verdict entry still names): nothing reads
         # one, so listing it would offer a tenant a credential to register
         # that no route accepts and no Job reads.
         named = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
-        for name in sorted(named - APP_CREDENTIAL_PROVIDERS):
+        listed = sorted(named - APP_CREDENTIAL_PROVIDERS)
+        keyed = set(tenant.credentials or ())
+        pool_read, served = self._pool_providers(
+            tenant.tenant_id, accounts, any(name not in keyed for name in listed)
+        )
+        entries = []
+        for name in listed:
             quota = quota_by_provider.get(name)
+            profiles = sorted(p.name for p in RUNNER_PROFILES.values() if p.provider == name)
+            on_account = sorted(
+                p.name
+                for p in RUNNER_PROFILES.values()
+                if p.provider == name and ACCOUNT_TOKEN_ENV in (p.secrets or ())
+            )
+            if name in keyed:
+                source, runnable = "tenant_key", profiles
+            elif name in served and on_account:
+                source, runnable = "account_pool", on_account
+            else:
+                source, runnable = None, []
             entries.append(
                 {
                     "provider": name,
-                    "credential_registered": name in tenant.credentials,
-                    "runner_profiles": sorted(
-                        p.name for p in RUNNER_PROFILES.values() if p.provider == name
-                    ),
+                    "credential_registered": source is not None,
+                    "credential_source": source,
+                    "runnable_profiles": runnable,
+                    "runner_profiles": profiles,
                     "quota": quota_to_api(quota) if quota else None,
                 }
             )
-        return {"tenant_id": ctx.tenant_id, "providers": entries, "generated_at": self._now()}
+        return {
+            "tenant_id": ctx.tenant_id,
+            "providers": entries,
+            "account_pool": pool_read,
+            "generated_at": self._now(),
+        }
+
+    def _pool_providers(
+        self,
+        tenant_id: str,
+        accounts: Callable[[str], dict[str, Any]] | None,
+        needed: bool,
+    ) -> tuple[str, set[str]]:
+        """What the account pool was read as, and the providers it serves this tenant.
+
+        `not_asked` when every provider has a key, `not_configured` with no
+        broker, `unreadable` when the broker could not answer, `read`
+        otherwise. A failed read degrades the page, never fails it: the key
+        half of the answer needs no broker.
+        """
+        if not needed:
+            return "not_asked", set()
+        if accounts is None:
+            return "not_configured", set()
+        try:
+            listing = accounts(tenant_id)
+        except Exception as exc:
+            log.warning(
+                "providers: the account pool could not be read",
+                extra={"tenant_id": tenant_id, "error": type(exc).__name__},
+            )
+            return "unreadable", set()
+        served: set[str] = set()
+        for account in listing.get("accounts") or []:
+            if not isinstance(account, dict):
+                continue
+            # `Account.may_serve`, on the served shape: owned, or lent and not
+            # withdrawn. The broker narrows its listing the same way; this
+            # holds it to that rather than trusting a listing's scope.
+            lend_to = account.get("lend_to") or ()
+            if account.get("owner_tenant") == tenant_id or tenant_id in lend_to:
+                provider = account.get("provider")
+                if isinstance(provider, str) and provider:
+                    served.add(provider)
+        return "read", served
 
     # -- plumbing ---------------------------------------------------------
 
