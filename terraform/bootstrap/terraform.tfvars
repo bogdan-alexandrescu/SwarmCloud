@@ -56,27 +56,33 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 # (rules 1 and 2 in deployer_conditions.tf, the ones the IAP condition broke),
 # only which roles a policy change modifies -- modifiedGrantsByRole with
 # hasOnly, zero logical operators. A read modifies nothing and passes. What CI
-# may still modify is the 15 roles terraform/infra grants: measured 2026-09-24
-# from the code (8 grant resources) and from the live policy (43 grants to
-# terraform/infra's identities, the same 15 roles), and held by
+# may still modify is the 14 roles terraform/infra grants
+# (deployer_grantable_project_roles in deployer_conditions.tf), held by
 # tests/terraform/deployer_iam.tftest.hcl for every project grant CI applies.
+# The list was measured 2026-09-24 at 15 from the code (8 grant resources) and
+# from the live policy (43 grants to terraform/infra's identities); it was 15
+# until #150 took swarmSecretLister off, because bootstrap now makes that grant.
 #
 # NOT CLOSED BY IT -- so #68's goal, no route from CI to roles/owner, is NOT
 # reached by this line alone:
 #
-#   * roles/iam.roleAdmin BYPASSES THIS CONDITION while it is on the deployer
-#     (#79). One iam.roles.update adds resourcemanager.projects.setIamPolicy,
-#     which custom roles accept (measured 2026-09-25), to a custom role CI
-#     already holds unconditioned: swarmSecretProvisioner today (wif.tf,
-#     deployer_secrets; scoped, its type guard still admits the project), or
-#     swarmDeployerProjectBuckets once bootstrap applies it. Every later
-#     project setIamPolicy, roles/owner included, is then authorised by THAT
-#     binding, and modifiedGrantsByRole is never evaluated. The six custom
-#     roles on the list work the same way, granted through this condition
-#     after being widened (docs/ci.md, route 2). This scoping stops a direct
-#     grant, not one made through a custom-role update.
+#   * roles/iam.roleAdmin bypassed this condition while it was on the deployer:
+#     one iam.roles.update adds resourcemanager.projects.setIamPolicy, which
+#     custom roles accept (measured 2026-09-25), to a custom role CI holds
+#     unconditioned, and every later project setIamPolicy, roles/owner
+#     included, is then authorised by THAT binding -- modifiedGrantsByRole is
+#     never evaluated. roleAdmin came off deployer_roles on 2026-09-25 (owner
+#     decision, #79), and a validation in variables.tf refuses it there, so
+#     the bypass is CLOSED IN CODE. Live, it held until the owner's bootstrap
+#     apply destroyed the deployer's roleAdmin binding, which
+#     docs/runbooks/custom-roles-to-bootstrap.md ("What actually happened")
+#     records on 2026-09-28 at 23:21Z. A live fact read on a date goes stale:
+#     a get-iam-policy read-back of the deployer's roles, showing no
+#     roles/iam.roleAdmin, is how to confirm it still holds. This is route 2
+#     in docs/ci.md -- including widening one of the grantable custom roles
+#     and granting it through this condition.
 #   * hasOnly limits which roles, never whose or with what condition, so CI
-#     can still grant ITSELF any of the 15 (#69).
+#     can still grant ITSELF any of the 14 (#69); nothing above closes that.
 #
 # APPLY, in this exact order (owner decision 2026-09-28, after #275): create
 # the chunks FIRST, prove they are live, and ONLY THEN remove the live

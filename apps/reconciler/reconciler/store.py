@@ -41,6 +41,7 @@ from swarm_common.states import (
 )
 
 from .model import (
+    DISK_EVICTIONS_KEY,
     STARTUP_REFUNDS_KEY,
     AttemptView,
     ControlSnapshot,
@@ -50,7 +51,9 @@ from .model import (
     WorkflowRead,
     WorkflowView,
     cancel_end_cause,
+    count_disk_eviction,
     count_startup_end,
+    disk_evictions_used,
     startup_refunds_used,
 )
 from .model import as_datetime as _as_datetime
@@ -153,6 +156,10 @@ class RepairPlan:
     #: The ended-at-startup refund (#67), judged against this transaction's
     #: own fence. None: no refund.
     startup_refund_limit: int | None = None
+    #: The attempt was evicted for passing its pod's own disk limit (#893):
+    #: counted in `metadata.disk_evictions`, and FAILED past
+    #: `DISK_EVICTION_RETRIES` (`count_disk_eviction`).
+    disk_eviction: bool = False
 
 
 @dataclass(frozen=True)
@@ -983,6 +990,7 @@ class ControlStore:
         failed_cause: EndCause = EndCause.LOST_WORKER,
         startup_refund_limit: int | None = None,
         fenced_generation: int | None = None,
+        disk_eviction: bool = False,
     ) -> TaskState | None:
         """Move a task out of a concurrency state it can no longer justify.
 
@@ -1029,6 +1037,11 @@ class ControlStore:
         somebody else's decision, and its attempt is counted as before
         (invariant 5). `error` then gets the counting's tail appended, so
         `last_error` says what this transaction decided, not the snapshot.
+
+        `disk_eviction` is the eviction rule's requeue (#893): the eviction is
+        counted in `metadata.disk_evictions` from this transaction's re-read,
+        and a count past `DISK_EVICTION_RETRIES` -- or spent attempts --
+        FAILS the task. `error` gets the decision appended, as above.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -1048,6 +1061,7 @@ class ControlStore:
                 failed_cause=failed_cause,
                 startup_refund_limit=startup_refund_limit,
                 fenced_generation=fenced_generation,
+                disk_eviction=disk_eviction,
             )
             if decided is None:
                 return None
@@ -1070,6 +1084,7 @@ class ControlStore:
         failed_cause: EndCause,
         startup_refund_limit: int | None,
         fenced_generation: int | None,
+        disk_eviction: bool = False,
     ) -> tuple[TaskState, dict[str, Any]] | None:
         """`repair_task_state`'s judgement on a document read in the caller's
         transaction: the state it moves to and the payload, or None to refuse.
@@ -1133,6 +1148,23 @@ class ControlStore:
             if counted.exhausted:
                 target = TaskState.FAILED
             message = f"{error}; {counted.tail}" if error else counted.tail
+        elif target is TaskState.READY and disk_eviction:
+            # The disk-eviction requeue (#893): count it, from the same
+            # re-read, then decide. `count_disk_eviction` applies the frozen
+            # `retries_exhausted` too, so this only ever fails a task sooner.
+            metadata = data.get("metadata")
+            evicted = count_disk_eviction(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+                disk_evictions_used(metadata),
+            )
+            counting["metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                DISK_EVICTIONS_KEY: evicted.evictions,
+            }
+            if evicted.exhausted:
+                target = TaskState.FAILED
+            message = f"{error}; {evicted.tail}" if error else evicted.tail
         elif target is TaskState.READY:
             # ONLY a READY target is ever downgraded. A CANCELLED target is
             # the user's decision and survives exhausted attempts: recording
@@ -1301,6 +1333,7 @@ class ControlStore:
                     fenced_generation=(
                         new_generation if repair.startup_refund_limit is not None else None
                     ),
+                    disk_eviction=repair.disk_eviction,
                 )
 
             # ---- writes --------------------------------------------------

@@ -1,0 +1,86 @@
+# release-verify: prove every service, job and worker image runs the digests
+# the apply pinned -- unless a newer commit has reached dev meanwhile.
+#
+# THE STEPS ARE SHARED, THE GATES ARE NOT. This composite action is one stage
+# of a dev or prod release, run by BOTH release lanes: release.yml (the
+# normal release) and hotfix.yml (the hotfix lane, owner decision 2026-10-08,
+# observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
+# cannot drift. Each caller's JOB keeps its permissions, its checkout and
+# Google authentication, its `needs:` and its `if:` -- every gate stays in the
+# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
+# with this action's steps inlined (test_release_reuses_ci_images.py,
+# `_workflow`).
+#
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
+# workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, #457), and
+# for a reusable workflow that names the CALLED file -- which would have to be
+# pinned and callable at once, so any workflow on main that grants id-token
+# could call it and mint the deployer
+# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# A composite action runs inside the caller's job, so the token still names
+# release.yml or hotfix.yml.
+#
+# The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
+# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
+# below must be the same value as ENVIRONMENT.
+#
+# The caller checks out with fetch-depth: 0: the order guard reads history.
+
+name: release-verify
+description: Verify the deployment runs the pinned digests; on dev, stop green if a newer commit superseded it.
+inputs:
+  environment:
+    description: "dev | prod"
+    required: true
+outputs:
+  superseded:
+    description: "'true' when a newer commit reached dev before or during the verification"
+    value: ${{ steps.order.outputs.superseded == 'true' || steps.verify.outputs.superseded == 'true' }}
+runs:
+  using: composite
+  steps:
+    - name: is a newer commit already out
+      id: order
+      # Read-only: no lock. Dev only.
+      if: inputs.environment != 'prod'
+      shell: bash
+      run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
+
+    - name: fetch the digests the apply pinned
+      # The manifest the apply job pinned and applied, not a second
+      # resolution of the channel: the two would differ if the tag moved in
+      # between, and then this job would be verifying something that was
+      # never applied. (This step used to reconstruct the manifest itself,
+      # from a hand-kept list of six images that omitted swarm-ui and
+      # swarm-verify.)
+      if: steps.order.outputs.superseded != 'true'
+      uses: actions/download-artifact@v7
+      with:
+        name: pinned-images-${{ inputs.environment }}
+        path: build/
+
+    - name: verify every service, job and worker image runs the pinned digests
+      id: verify
+      # The apply IS the deploy; this proves it. A service serving an
+      # older digest reported healthy through every check the pipeline had
+      # (docs/audits/2026-09-20/tag-vs-digest.md). --verify-only compares
+      # every service's template, every terraform-managed job, and the
+      # scheduler's WORKER_IMAGE_REFS against the manifest, digest to digest.
+      #
+      # --no-health: the /readyz probe cannot run from this runner. It needs an
+      # ID token (the auth step no longer mints one -- see its comment) and the
+      # services' ingress refuses a runner anyway, which deploy.sh already
+      # records as "not reachable from here". Release 36036058352 failed right
+      # here with "no ID token available" once #36 dropped the token. Health is
+      # proven by the smoke step, which runs the suite INSIDE the VPC.
+      #
+      # `unless-superseded`: on dev, a mismatch because the OTHER lane applied
+      # a newer commit meanwhile is not this release failing. It re-checks
+      # the order after a failure, and only that case turns green (writing
+      # superseded=true, which stops every step below). On prod it is the
+      # command alone.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        ./scripts/lib/release-order.sh unless-superseded --environment "${ENVIRONMENT}" -- \
+          ./scripts/lib/deploy.sh --verify-only --no-health --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"

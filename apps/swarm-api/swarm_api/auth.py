@@ -847,6 +847,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # each due connection's refresh token and writes the new pair to that
         # user's own slots; it submits nothing and moves no task.
         ("POST", "/v1/admin/forge/refresh"),
+        # The personal-workspace dispatch sweep (docs/workspaces.md §2.2, lane
+        # W7 of #847): publishes again the workspace id of an `approved`
+        # record whose build never claimed it. It decides nothing: only a
+        # record an admin already approved is published, by its opaque id.
+        ("POST", "/v1/admin/workspaces/sweep"),
         # The `task_finished` push (#748): the scheduler's wake topic's second
         # subscription. It opens a MERGE verdict's pull request with the
         # finished task's own tenant's token, for that tenant's gated

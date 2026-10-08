@@ -20,7 +20,11 @@ PATH serving a job listing:
   * a failed warm execution, or a listing that failed, is a WARNING and the
     script still exits 0: a cold start is a slower first task, not a broken
     release;
-  * it prints how many jobs it visited, so an empty run cannot read as a pass.
+  * it prints how many jobs it visited, so an empty run cannot read as a pass;
+  * (observer proposal H, 2026-10-08) nothing is warmed when --previous names
+    a release whose three runner digests equal this one's, and a listed job
+    that already ran its current digest successfully is skipped by name -- a
+    job new to this release is still warmed.
 """
 
 from __future__ import annotations
@@ -55,6 +59,14 @@ if args[:3] == ["run", "jobs", "list"]:
         sys.exit(1)
     print(open(os.environ["FAKE_LISTING"]).read())
     sys.exit(0)
+if args[:4] == ["run", "jobs", "executions", "list"]:
+    job = args[args.index("--job") + 1]
+    executions = json.load(open(os.environ["FAKE_EXECUTIONS"])) if os.environ.get("FAKE_EXECUTIONS") else None
+    if executions is None:
+        print("fake gcloud: no executions served", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(executions.get(job, [])))
+    sys.exit(0)
 if args[:3] == ["run", "jobs", "execute"]:
     job = args[3]
     if job in os.environ.get("FAKE_FAIL_JOBS", "").split(","):
@@ -68,11 +80,16 @@ sys.exit(2)
 '''
 
 
-def _job(name: str, *, managed: str = "swarm-terraform", tenant: str | None = "acme") -> dict:
+def _job(name: str, *, managed: str = "swarm-terraform", tenant: str | None = "acme",
+         image: str | None = None) -> dict:
     labels = {"managed-by": managed}
     if tenant is not None:
         labels["swarm-tenant"] = tenant
-    return {"metadata": {"name": name, "labels": labels}}
+    job = {"metadata": {"name": name, "labels": labels}}
+    if image:
+        # The shape `gcloud run jobs list --format=json` gives a v1 Job.
+        job["spec"] = {"template": {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}}
+    return job
 
 
 LISTING = [
@@ -208,9 +225,11 @@ def test_a_parallelism_that_is_not_a_positive_integer_is_refused(world):
 
 
 def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
-    import yaml
+    from .test_release_reuses_ci_images import _workflow
 
-    workflow = yaml.safe_load((REPO / ".github" / "workflows" / "release.yml").read_text())
+    # Composite actions flattened into the steps they run (the verify step is
+    # .github/actions/release-verify).
+    workflow = _workflow("release.yml")
     steps = workflow["jobs"]["deploy"]["steps"]
     runs = [str(s.get("run", "")) for s in steps]
     warm = [i for i, r in enumerate(runs) if "scripts/warm-jobs.sh" in r]
@@ -225,3 +244,100 @@ def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
     assert "!cancelled()" in step["if"]
     # Acceptance is a later job that needs deploy, so it runs after the warm step.
     assert "deploy" in workflow["jobs"]["acceptance"]["needs"]
+
+
+# ---------------------------------------------------------------------------
+# Nothing to warm when the runner digests did not change (observer proposal H).
+# ---------------------------------------------------------------------------
+RUNNERS = ["agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"]
+WORKER_REPO = "us-central1-docker.pkg.dev/p/swarm-images/agent-runtime-base"
+
+
+def _digest(seed: str) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _deployed(path: Path, digests: dict[str, str]) -> Path:
+    path.write_text(json.dumps({"images": [
+        {"name": n, "digest": d} for n, d in {**{"swarm-api": _digest("api")}, **digests}.items()
+    ]}))
+    return path
+
+
+def test_unchanged_runner_digests_against_the_previous_release_warm_nothing(world):
+    same = {n: _digest(n) for n in RUNNERS}
+    current = _deployed(world["tmp"] / "now.json", same)
+    before = _deployed(world["tmp"] / "before.json", same)
+    proc = _run(world, "--previous", str(before), "--manifest", str(current))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped warming" in proc.stderr and "same digests" in proc.stderr, proc.stderr
+
+
+def test_one_changed_runner_digest_warms_every_job(world):
+    current = _deployed(world["tmp"] / "now.json", {n: _digest(n) for n in RUNNERS})
+    before = _deployed(world["tmp"] / "before.json",
+                       {**{n: _digest(n) for n in RUNNERS}, "agent-runtime-browser": _digest("older")})
+    proc = _run(world, "--previous", str(before), "--manifest", str(current))
+    assert proc.returncode == 0, proc.stderr
+    assert len(_executed(world)) == 3
+    assert "2 of 3 runner image digest(s) unchanged" in proc.stderr, proc.stderr
+
+
+def test_a_previous_manifest_that_is_missing_warms_every_job(world):
+    proc = _run(world, "--previous", str(world["tmp"] / "absent.json"),
+                "--manifest", str(world["tmp"] / "also-absent.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert len(_executed(world)) == 3
+    assert "cannot compare" in proc.stderr
+
+
+def _execution(image: str, succeeded: int = 1) -> dict:
+    return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}},
+            "status": {"succeededCount": succeeded}}
+
+
+def test_a_job_that_already_ran_its_current_digest_is_skipped_and_a_new_one_is_warmed(world):
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([
+        # Warmed by the previous release on the digest it still runs.
+        _job("swarm-job-acme-mock", image=current),
+        # Its last execution ran the digest before this release's.
+        _job("swarm-job-acme-claude-code", image=current),
+        # New in this release: never executed.
+        _job("swarm-job-globex-mock", tenant="globex", image=current),
+        # Ran this digest, but the execution failed: the import may not be paid.
+        _job("swarm-job-initech-mock", tenant="initech", image=current),
+    ]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({
+        "swarm-job-acme-mock": [_execution(current)],
+        "swarm-job-acme-claude-code": [_execution(f"{WORKER_REPO}@{_digest('before')}")],
+        "swarm-job-initech-mock": [_execution(current, succeeded=0)],
+    }))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(c[3] for c in _executed(world)) == [
+        "swarm-job-acme-claude-code", "swarm-job-globex-mock", "swarm-job-initech-mock"]
+    assert "skipped swarm-job-acme-mock" in proc.stderr
+    assert "3 of 3" in proc.stderr and "skipped 1" in proc.stderr, proc.stderr
+
+
+def test_a_job_pinned_by_tag_is_warmed_whatever_ran_before(world):
+    tagged = f"{WORKER_REPO}:dev"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-mock", image=tagged)]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-mock": [_execution(tagged)]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert [c[3] for c in _executed(world)] == ["swarm-job-acme-mock"]
+
+
+def test_every_job_already_on_its_digest_says_it_skipped_warming(world):
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-mock", image=current)]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-mock": [_execution(current)]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped warming: all 1 worker job(s)" in proc.stderr, proc.stderr

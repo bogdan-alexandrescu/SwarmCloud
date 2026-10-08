@@ -53,7 +53,7 @@ from .. import issue as issue_mod
 from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
-from ..redact import collect_secrets, scrub_file, scrub_text
+from ..redact import collect_secrets, replace_lone_surrogates, scrub_file, scrub_text
 from .base import (
     SPEND_KEYS,
     CredentialRevokedSignal,
@@ -1958,11 +1958,18 @@ def _spend_of(parsed: Any) -> dict[str, Any]:
 
 
 def _scrub_json(value: Any, secrets: Sequence[str]) -> Any:
-    """Redact every string in a JSON-able structure, keys included."""
+    """Redact every string in a JSON-able structure, keys included, and replace
+    every lone surrogate in one with U+FFFD (#227): the CLI's JSON can carry a
+    `\\ud800` escape, and the worker writes this structure toward a Firestore
+    document, which cannot carry one. The worker counts what reaches the
+    summary (`result_summary.runner.surrogates_replaced`)."""
     if isinstance(value, str):
-        return scrub_text(value, secrets)
+        return replace_lone_surrogates(scrub_text(value, secrets))[0]
     if isinstance(value, dict):
-        return {scrub_text(str(k), secrets): _scrub_json(v, secrets) for k, v in value.items()}
+        return {
+            replace_lone_surrogates(scrub_text(str(k), secrets))[0]: _scrub_json(v, secrets)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_scrub_json(v, secrets) for v in value]
     return value

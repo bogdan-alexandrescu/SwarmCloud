@@ -1947,7 +1947,7 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     """What `swarm_result` says of one read task: `describe_task`, `failure`
     on a failure, and `outputs`. One function for `swarm_result` and
     `swarm_collect`, so a collected result is a result."""
-    described = describe_task(task)
+    described = describe_task(task, client)
     # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
     # round trip to the attempts route, which is where the exit code, the
     # backend that actually ran and the earlier attempts' errors live --
@@ -2806,7 +2806,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]))
+                task["result"] = describe_task(client.task(task["task_id"]), client)
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -2854,7 +2854,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             for task_id in list(pending):
                 task = client.task(task_id)
                 if task.get("state") in TERMINAL:
-                    finished[task_id] = describe_task(task)
+                    finished[task_id] = describe_task(task, client)
                     pending.remove(task_id)
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
@@ -2871,13 +2871,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(out, indent=2)
 
     if name == "swarm_profiles":
-        # NO CLIENT CALL. The catalogue is the frozen contract, which this
-        # process already holds, so this is the one tool that answers without a
-        # round trip -- and, usefully, the one tool that still answers when the
-        # cluster cannot be reached at all. A session can at least tell the
-        # developer which names exist while `swarm doctor` works out why
-        # nothing else does.
-        return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
+        # The PLATFORM's catalogue (`GET /v1/runtimes`), because this
+        # bridge's copy is as old as the installed plugin. Still answers when
+        # the cluster cannot be reached, from the copy, labelled
+        # `catalogue_source` -- see `catalogue.served_catalogue`.
+        return json.dumps(catalogue.served_catalogue(client), indent=2)
 
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
@@ -3067,7 +3065,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             because it returns None on the state check before touching the
             client.
             """
-            out = describe_task(task)
+            out = describe_task(task, client)
             failure = explain_failure(client, task)
             if failure is not None:
                 out["failure"] = failure
