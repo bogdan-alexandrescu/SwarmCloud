@@ -127,6 +127,31 @@ CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
+#: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
+#: and by the scheduler's `_promote_ci_waits`, which wakes on it.
+#: tests/unit/worker/test_merge_action.py holds the three restatements equal.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+
+#: Where a park records its uploads for the attempt that finishes the task
+#: (#166): `tasks/{task}/carry/{attempt}` per park, and the index of the parks
+#: at `tasks/{task}/carry/parks`. Known ids, because the tenant worker role can
+#: get a document by id and cannot list or query (`ControlPlane.parked_uploads`
+#: says why). `parks` cannot collide with an attempt id, which is `att_...`.
+CARRY_COLLECTION = "carry"
+CARRY_INDEX_ID = "parks"
+
+
+def _is_carry_attempt_id(value: str) -> bool:
+    """An index entry usable as a record's document id under this task's `carry`."""
+    return (
+        bool(value)
+        and "/" not in value
+        and value != CARRY_INDEX_ID
+        and not value.startswith("__")
+    )
+
 
 def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
     """Why a cancelled task ended: CHILD_CASCADE when its parent's cancel, end
@@ -160,6 +185,16 @@ def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
 #:   event       30 s. An event is an audit record; the loop does not wait on it.
 #:   attempt     30 s for this attempt's own document (its end, its usage, its
 #:               spend), written on the way out, when the exit is waiting.
+#:   tenant      30 s for the tenant read of a credential reload, made between
+#:               one runner and the next with nothing beating. It kept the
+#:               library's 300 s; it is now one read like the poll's, and an
+#:               outage past it leaves through the same exit 69.
+#:
+#: LIBRARY DEFAULTS, ON PURPOSE: the terminal transitions (`finish`, through
+#: `transition`) and the lease release. Each is made once, on the way out, by
+#: an attempt whose agent has stopped, and is the write that ends the task;
+#: cutting it short would leave the reconciler to repair what one longer
+#: retry would have written.
 #:
 #: What happens when a budget is spent is the lifecycle's: a failed beat or
 #: poll is logged and the loop goes on while the lease is live, and once the
@@ -172,6 +207,7 @@ MID_RUN_BUDGETS: dict[str, tuple[float, float]] = {
     "checkpoint": (60.0, 10.0),
     "event": (30.0, 10.0),
     "attempt": (30.0, 10.0),
+    "tenant": (30.0, 10.0),
 }
 
 
@@ -262,6 +298,11 @@ def _as_state(value: Any) -> TaskState:
         return TaskState(value)
     except (ValueError, TypeError) as exc:
         raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
+
+
+def _count(value: Any) -> int:
+    """A non-negative count from the tenant-writable task document, else 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -608,6 +649,7 @@ class ControlPlane:
         heartbeat_interval_seconds: int | None = None,
         startup_call_options: Mapping[str, Any] | None = None,
         quota_reporter: QuotaReporter | None = None,
+        finish_announcer: Any | None = None,
     ) -> None:
         self._db = db
         self.task_id = task_id
@@ -639,6 +681,10 @@ class ControlPlane:
         # means this deployment has no broker; outcomes are then logged and
         # not recorded.
         self._quota_reporter: QuotaReporter | None = quota_reporter
+        # Publishes the `task_finished` wake once this attempt has ENDED its
+        # task (`finishwake.PubSubFinishAnnouncer`, #636). None means no wake:
+        # the scheduler's safety tick releases the dependants, as before.
+        self._finish_announcer = finish_announcer
         # The mid-run budgets, built once (`MID_RUN_BUDGETS`).
         self._mid_run: dict[str, dict[str, Any]] = {}
         # provider -> until when the broker already knows of a rate limit,
@@ -838,34 +884,118 @@ class ControlPlane:
     def parked_uploads(self) -> list[tuple[str, list[Any]]]:
         """What each earlier PARKED attempt of this task uploaded, oldest first (#166).
 
-        Read off the task's PARKED events: a park writes the attempt's upload
-        manifest into the event's detail (`detail.artifacts`, the summary
-        `_upload_outputs` returned). `(attempt_id, artifacts)` per event, in
-        the order the parks happened, this attempt's own excluded. Every event
-        is checked against this worker's tenant, as every read here is.
+        READ BY ID, NEVER BY QUERY (#166, reopened 2026-10-06). The first
+        version read the parks off a query on the task's PARKED events, which
+        needs `datastore.entities.list`. The tenant worker role
+        (`swarmTenantWorkerFirestore`, terraform/bootstrap/platform_roles.tf)
+        drops that permission on purpose, so a worker cannot enumerate another
+        tenant's documents: the query 403'd on every attempt in dev and nothing
+        was ever carried. A park now writes its uploads to
+        `tasks/{task}/carry/{attempt}` and lists itself on
+        `tasks/{task}/carry/parks`, in its own fenced transaction
+        (`_record_parked_uploads`); this reads the index and then each record,
+        each with a plain get.
 
-        One query on the task's own `events` subcollection, by type, which the
-        single-field index Firestore keeps on `type` serves. Called once, as
-        the finishing attempt describes its result; outside the startup window,
-        so it keeps the library's defaults like the rest of that epilogue.
+        `(attempt_id, artifacts)` per park, in the order the parks happened,
+        this attempt's own excluded. Every document is checked against this
+        worker's tenant, as every read here is, and a record that names
+        another task or another attempt than its id is refused the same way:
+        it is not this task's park. Called once, as the finishing attempt
+        describes its result; outside the startup window, so it keeps the
+        library's defaults like the rest of that epilogue.
         """
-        query = (
-            self._task_ref()
-            .collection("events")
-            .where("type", "==", EventType.PARKED.value)
+        carry = self._task_ref().collection(CARRY_COLLECTION)
+        index_snap = carry.document(CARRY_INDEX_ID).get()
+        if not index_snap.exists:
+            return []
+        index = self._assert_tenant(
+            index_snap.to_dict() or {}, kind="carry index", document_id=CARRY_INDEX_ID
         )
+        listed = index.get("attempts")
+        attempt_ids: list[str] = []
+        for item in listed if isinstance(listed, list) else []:
+            attempt_id = item.get("attempt_id") if isinstance(item, dict) else None
+            if (
+                isinstance(attempt_id, str)
+                and _is_carry_attempt_id(attempt_id)
+                and attempt_id != self.attempt_id
+                and attempt_id not in attempt_ids
+            ):
+                attempt_ids.append(attempt_id)
         found: list[tuple[Any, str, list[Any]]] = []
-        for snap in query.stream():
-            event = self._assert_tenant(snap.to_dict() or {}, kind="event", document_id=snap.id)
-            attempt_id = event.get("attempt_id")
-            detail = event.get("detail")
-            if not isinstance(attempt_id, str) or attempt_id == self.attempt_id:
+        for attempt_id in attempt_ids:
+            snap = carry.document(attempt_id).get()
+            if not snap.exists:
                 continue
-            if not isinstance(detail, dict) or not isinstance(detail.get("artifacts"), list):
+            record = self._assert_tenant(
+                snap.to_dict() or {}, kind="carry record", document_id=attempt_id
+            )
+            if record.get("task_id") != self.task_id or record.get("attempt_id") != attempt_id:
+                raise TenantMismatchError(
+                    kind="carry record",
+                    document_id=attempt_id,
+                    expected=f"{self.task_id}/{attempt_id}",
+                    actual=f"{record.get('task_id')}/{record.get('attempt_id')}",
+                )
+            artifacts = record.get("artifacts")
+            if not isinstance(artifacts, list):
                 continue
-            found.append((_as_datetime(event.get("at")), attempt_id, detail["artifacts"]))
+            found.append((_as_datetime(record.get("at")), attempt_id, artifacts))
         found.sort(key=lambda item: (item[0] is None, item[0] or datetime.min))
         return [(attempt_id, artifacts) for _, attempt_id, artifacts in found]
+
+    def _read_carry_index(self, txn: Any) -> dict[str, Any] | None:
+        """The task's carry index as `txn` reads it, for `_record_parked_uploads`.
+
+        A READ, so it is made before the transaction's first write, which
+        Firestore requires. None when there is none yet.
+        """
+        ref = self._task_ref().collection(CARRY_COLLECTION).document(CARRY_INDEX_ID)
+        snap = _snapshot(txn.get(ref, **self.call_options()))
+        if not snap.exists:
+            return None
+        return self._assert_tenant(
+            snap.to_dict() or {}, kind="carry index", document_id=CARRY_INDEX_ID
+        )
+
+    def _record_parked_uploads(
+        self, txn: Any, index: dict[str, Any] | None, artifacts: list[Any], *, at: datetime
+    ) -> None:
+        """Write this park's uploads where the next attempt gets them by id (#166).
+
+        Two documents under the task's own: `carry/{attempt}`, the upload
+        manifest, and `carry/parks`, the index of the attempts that parked.
+        One record per attempt keeps each document the size of one manifest,
+        well under Firestore's 1 MiB, however many times a task parks. Written
+        in the park's own transaction, after its fence read: a superseded
+        attempt is refused before this, so it records nothing (invariant 5).
+        """
+        carry = self._task_ref().collection(CARRY_COLLECTION)
+        txn.set(
+            carry.document(self.attempt_id),
+            {
+                "tenant_id": self.tenant_id,
+                "task_id": self.task_id,
+                "attempt_id": self.attempt_id,
+                "at": at,
+                "artifacts": list(artifacts),
+            },
+        )
+        listed = (index or {}).get("attempts")
+        attempts = [
+            item for item in (listed if isinstance(listed, list) else [])
+            if isinstance(item, dict) and item.get("attempt_id") != self.attempt_id
+        ]
+        attempts.append({"attempt_id": self.attempt_id, "at": at})
+        txn.set(
+            carry.document(CARRY_INDEX_ID),
+            {
+                "tenant_id": self.tenant_id,
+                "task_id": self.task_id,
+                "attempts": attempts,
+                "updated_at": at,
+            },
+        )
 
     # -- fencing -----------------------------------------------------------
     def validate_generation(self) -> ControlSignals:
@@ -994,7 +1124,7 @@ class ControlPlane:
 
         The quota preflight makes the one poll that comes before the runner,
         inside `startup_budget()`, and so under the budget. The supervision
-        loop's polls keep the library's defaults.
+        loop's polls carry `MID_RUN_BUDGETS["poll"]` (#70) on each read.
         """
         try:
             task = self.fetch_task()
@@ -1109,6 +1239,7 @@ class ControlPlane:
         *,
         fields: dict[str, Any] | None = None,
         events: Sequence[tuple[EventType, dict[str, Any]]] = (),
+        parked_uploads: list[Any] | None = None,
     ) -> None:
         """Move the task to `to_state`, ONLY while this attempt still owns it.
 
@@ -1124,6 +1255,10 @@ class ControlPlane:
         announcement lands even when the write it announces is refused, in a
         stream that by then belongs to a newer generation.
 
+        `parked_uploads`, from `park` only, is the parking attempt's upload
+        manifest, recorded in the same transaction for the attempt that
+        finishes the task (`_record_parked_uploads`, #166).
+
         Raises `FencedWriteRefused` with nothing written, events included.
         """
         write = f"transition to {to_state.value}"
@@ -1137,8 +1272,11 @@ class ControlPlane:
             current = _as_state(task.get("state"))
             if current is not to_state:
                 assert_transition(current, to_state)
+            index = self._read_carry_index(txn) if parked_uploads else None
             for ref, document in announced:
                 txn.set(ref, document)
+            if parked_uploads:
+                self._record_parked_uploads(txn, index, parked_uploads, at=utcnow())
             if current is to_state:
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
@@ -1617,7 +1755,13 @@ class ControlPlane:
         document kept `completed_at: None` and read as still running, in the
         timeline and to the checkpoint collector. A fenced park raises in the
         transition, so it closes no document.
+
+        THE UPLOADS ARE RECORDED IN THE SAME TRANSACTION (#166): a park that
+        uploaded passes its manifest as `detail["artifacts"]`, and it is
+        written where the finishing attempt reads it by id
+        (`parked_uploads`). A fenced park records nothing.
         """
+        uploads = (detail or {}).get("artifacts")
         self.transition(
             TaskState.PARKED,
             fields={
@@ -1627,6 +1771,7 @@ class ControlPlane:
                 "blocked_by": [{"reason": reason.value, **(detail or {})}],
             },
             events=announce,
+            parked_uploads=uploads if isinstance(uploads, list) else None,
         )
         # Best effort: the park has landed, and a failure here must not stop
         # the event and the lease release below, which give the slot back.
@@ -1648,6 +1793,7 @@ class ControlPlane:
         *,
         max_resumes: int,
         detail: dict[str, Any] | None = None,
+        uploads: list[Any] | None = None,
     ) -> bool:
         """The await park (docs/design/child-tasks.md §3.3): checkpointed and
         uploaded already; now PARKED on CHILDREN_INCOMPLETE, slot given back.
@@ -1664,6 +1810,17 @@ class ControlPlane:
         scheduler's sweep, not a clock, promotes it.
 
         Returns whether the attempt was refunded.
+
+        THE ATTEMPT'S END IS WRITTEN AFTER THE TRANSACTION, as `park` writes
+        it (#163): exit 75 and CHILDREN_INCOMPLETE as its `error`. A refund
+        gives back the attempt's COUNT, not the attempt: a resume is a new
+        attempt document, so this one has ended. Without it a parent cancelled
+        while it waited read as one attempt still running. A fenced await park
+        raises in the transaction and closes no document.
+
+        `uploads`, the manifest of what this attempt uploaded before the park,
+        is recorded in the same transaction, as `park` records it (#166), for
+        the attempt that resumes the parent and finishes it.
         """
         write = "await park"
         reason = ParkReason.CHILDREN_INCOMPLETE
@@ -1673,6 +1830,7 @@ class ControlPlane:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             assert_transition(current, TaskState.PARKED)
+            index = self._read_carry_index(txn) if uploads else None
             metadata = dict(task.get("metadata") or {})
             used = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
             used = used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else 0
@@ -1691,9 +1849,20 @@ class ControlPlane:
                 payload["metadata"] = metadata
                 payload["attempt_count"] = attempt_count - 1
             txn.update(self._task_ref(), payload)
+            if uploads:
+                self._record_parked_uploads(txn, index, uploads, at=now)
             return refund, used + (1 if refund else 0)
 
         refunded, resumes = self._run_transaction(_apply)
+        # Best effort, as in `park`: the park has landed, and the event and
+        # the release below are what give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the await park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
         self.emit(
             EventType.PARKED,
             {
@@ -1702,6 +1871,114 @@ class ControlPlane:
                 "attempt_refunded": refunded,
                 CHILD_AWAIT_RESUMES_METADATA_KEY: resumes,
                 **(detail or {}),
+            },
+        )
+        self.release_lease(f"parked:{reason.value}")
+        return refunded
+
+    def park_ci_pending(
+        self,
+        *,
+        code: str,
+        head: str,
+        pull_request: int,
+        pending: Sequence[str],
+        max_wakes: int,
+        fallback_seconds: int,
+    ) -> bool:
+        """A merge step's CI wait: PARKED on CI_PENDING, slot given back.
+
+        docs/merge-step.md "Revised 2026-10-06" §1, the await park's shape
+        exactly (`park_awaiting_children`). ONE FENCED TRANSACTION: a
+        superseded attempt gets `FencedWriteRefused` with nothing written, so
+        it can neither park the task nor refund an attempt (invariant 5).
+        Inside it:
+
+          * the attempt admission counted is refunded -- `attempt_count` down
+            by one, `merge_wait.wakes` up by one -- while fewer than
+            `max_wakes` have been, so a slow CI does not use up the step's
+            attempts; past the bound the park counts like any attempt, and a
+            pull request whose CI never settles still ends at `max_attempts`;
+          * `metadata.merge_wait` records what is waited on: the head the
+            checks were read at, the pull request, the code and the pending
+            names; `first_parked_at` and `updates` are carried over from the
+            last park, and `wake_requested_at` is NOT -- this park waits for a
+            mark made after it;
+          * `next_eligible_at` is the park instant plus `fallback_seconds`:
+            the scheduler wakes the park then even if swarm-api's tick never
+            marks it, so a dead tick or a broken token never strands a merge.
+
+        There is no checkpoint and no upload: a worker action keeps no
+        workspace (invariant 8's exception, CR 36), and its durable state is
+        this record plus GitHub, which the next attempt reads again.
+
+        Returns whether the attempt was refunded. The attempt's end, the event
+        and the release follow the transaction, as in every park.
+        """
+        write = "ci park"
+        reason = ParkReason.CI_PENDING
+        now = utcnow()
+        names = [str(name) for name in pending]
+
+        def _apply(txn: Any) -> tuple[bool, int]:
+            task = self._fenced_task(txn, write=write)
+            current = _as_state(task.get("state"))
+            assert_transition(current, TaskState.PARKED)
+            metadata = dict(task.get("metadata") or {})
+            last = metadata.get(MERGE_WAIT_METADATA_KEY)
+            last = last if isinstance(last, Mapping) else {}
+            wakes = _count(last.get("wakes"))
+            attempt_count = int(task.get("attempt_count", 0))
+            refund = wakes < max_wakes and attempt_count > 0
+            if refund:
+                wakes += 1
+            first = last.get("first_parked_at")
+            metadata[MERGE_WAIT_METADATA_KEY] = {
+                "code": code,
+                "head": head,
+                "pull_request": pull_request,
+                "pending": names,
+                "wakes": wakes,
+                "updates": _count(last.get("updates")),
+                "first_parked_at": first if isinstance(first, datetime) else now,
+                "parked_at": now,
+            }
+            payload: dict[str, Any] = {
+                "state": TaskState.PARKED.value,
+                "park_reason": reason.value,
+                "next_eligible_at": now + timedelta(seconds=fallback_seconds),
+                "current_lease_id": None,
+                "blocked_by": [
+                    {"reason": reason.value, "code": code, "head": head, "pending": names}
+                ],
+                "metadata": metadata,
+                "updated_at": now,
+            }
+            if refund:
+                payload["attempt_count"] = attempt_count - 1
+            txn.update(self._task_ref(), payload)
+            return refund, wakes
+
+        refunded, wakes = self._run_transaction(_apply)
+        # Best effort, as in `park`: the park has landed, and the event and
+        # the release below are what give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the CI park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+        self.emit(
+            EventType.PARKED,
+            {
+                "reason": reason.value,
+                "next_eligible_at": now + timedelta(seconds=fallback_seconds),
+                "attempt_refunded": refunded,
+                "wakes": wakes,
+                "code": code,
+                "head": head,
+                "pending": names,
             },
         )
         self.release_lease(f"parked:{reason.value}")
@@ -1747,6 +2024,29 @@ class ControlPlane:
         }[state]
         self.emit(event, {"exit_code": exit_code, "error": error})
         self.release_lease(f"terminal:{state.value}")
+        self._announce_finished(state)
+
+    def _announce_finished(self, state: TaskState) -> None:
+        """Ring the scheduler: this task has ended, its dependants may run (#636).
+
+        Last, after the terminal write and the lease release, so the
+        scheduler that wakes sees the parent ended and the capacity back. A
+        wake that fails is logged and nothing else -- the safety tick releases
+        the dependants as it always has -- so this never raises.
+        """
+        if self._finish_announcer is None:
+            return
+        try:
+            published = bool(
+                self._finish_announcer.announce(
+                    task_id=self.task_id, tenant_id=self.tenant_id, state=state
+                )
+            )
+            outcome = "published" if published else "refused"
+        except Exception as exc:
+            # The type only: a transport error's text can name the request.
+            outcome = f"error:{type(exc).__name__}"
+        self._log.info("finish wake", state=state.value, outcome=outcome)
 
     def fail_retryably(
         self,
@@ -1856,4 +2156,6 @@ class ControlPlane:
         self.release_lease(
             f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
         )
+        if target is not TaskState.READY:
+            self._announce_finished(target)
         return target

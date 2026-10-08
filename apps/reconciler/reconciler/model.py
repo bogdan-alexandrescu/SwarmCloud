@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from swarm_common.models import EndCause, retries_exhausted, utcnow
+from swarm_common.models import EndCause, WorkflowStep, retries_exhausted, utcnow
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, TaskState
 
 
@@ -189,6 +189,10 @@ class TaskView:
     attempt_count: int = 0
     max_attempts: int = 3
     cancel_requested: bool = False
+    #: When the task's FIRST cancel was requested (`swarm_api.store`'s cancel
+    #: transaction writes it). The clock `detect_cancel_overdue` measures its
+    #: bound from; None on a task cancelled before it was written (#627).
+    cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
     #: The resume pointer `agent_worker.lifecycle._restore_checkpoint` reads
     #: first. Carried here because checkpoint retention has to know which
@@ -225,6 +229,7 @@ class TaskView:
             attempt_count=int(doc.get("attempt_count", 0)),
             max_attempts=int(doc.get("max_attempts", 3)),
             cancel_requested=bool(doc.get("cancel_requested")),
+            cancel_requested_at=as_datetime(doc.get("cancel_requested_at")),
             started_at=as_datetime(doc.get("started_at")),
             latest_checkpoint=doc.get("latest_checkpoint"),
             completed_at=as_datetime(doc.get("completed_at")),
@@ -468,3 +473,109 @@ class ControlSnapshot:
 
     def attempt_for_lease(self, lease: LeaseView) -> AttemptView | None:
         return self.attempts.get(lease.attempt_id)
+
+
+# ---------------------------------------------------------------------------
+# Workflows (#616): what the workflow stall check reads
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StepTaskView:
+    """A workflow step's task, as the stall check needs it.
+
+    `task` is the same `TaskView` every other rule reads, so a step task is
+    decoded by the one task decoder this service has. The three fields beside
+    it are the ones only the stall check asks about: why the step is parked,
+    which tasks it waits on, and its `result_summary` (for the derivation's
+    SKIPPED rule, `swarm_rollup.skipped_task_ids`, which reads it by name).
+    """
+
+    task: TaskView
+    park_reason: str | None = None
+    #: The TASK ids this step waits on: what the scheduler's dependency sweep
+    #: (`scheduler.loop._promote_dependencies`) gates a promotion on.
+    depends_on: tuple[str, ...] = ()
+    result_summary: dict[str, Any] | None = None
+
+    @property
+    def id(self) -> str:
+        return self.task.task_id
+
+    @property
+    def state(self) -> TaskState:
+        return self.task.state
+
+    @classmethod
+    def from_doc(cls, doc: dict[str, Any], task_id: str) -> "StepTaskView":
+        summary = doc.get("result_summary")
+        return cls(
+            task=TaskView.from_doc(doc, task_id),
+            park_reason=doc.get("park_reason") or None,
+            depends_on=tuple(str(t) for t in (doc.get("depends_on") or [])),
+            result_summary=dict(summary) if isinstance(summary, dict) else None,
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowView:
+    """One workflow document, decoded strictly.
+
+    STRICT, unlike `TaskView`'s state, which falls back to QUEUED: the stall
+    check compares this state against the derived one and may WRITE the
+    derived one over it, so a state it cannot decode must make the workflow a
+    finding (`unreadable`), never a QUEUED it would then "repair".
+
+    `steps` are the frozen contract's `WorkflowStep`, carrying only what the
+    derivation and the dependency rule read (`step_id`, `task_id`,
+    `depends_on`), so `swarm_rollup.read_steps` takes them unchanged.
+    """
+
+    workflow_id: str
+    tenant_id: str
+    state: TaskState
+    steps: tuple[WorkflowStep, ...]
+    updated_at: datetime | None = None
+    on_step_failure: str = "fail_workflow"
+    cancel_requested: bool = False
+
+    @classmethod
+    def from_doc(cls, doc: dict[str, Any], workflow_id: str) -> "WorkflowView":
+        steps = tuple(
+            WorkflowStep(
+                step_id=str(step["step_id"]),
+                runner_profile=str(step.get("runner_profile") or ""),
+                input={},
+                depends_on=[str(s) for s in (step.get("depends_on") or [])],
+                task_id=step.get("task_id") or None,
+            )
+            for step in (doc.get("steps") or [])
+        )
+        return cls(
+            workflow_id=str(doc.get("workflow_id") or workflow_id),
+            tenant_id=str(doc.get("tenant_id") or ""),
+            state=TaskState(doc["state"]),
+            steps=steps,
+            updated_at=as_datetime(doc.get("updated_at")),
+            on_step_failure=str(doc.get("on_step_failure") or "fail_workflow"),
+            cancel_requested=bool(doc.get("cancel_requested")),
+        )
+
+
+@dataclass
+class WorkflowRead:
+    """What one pass read for the stall check. Truncation is said, not hidden."""
+
+    workflows: list[WorkflowView] = field(default_factory=list)
+    #: task id -> the step task, for every step task that was read.
+    tasks: dict[str, StepTaskView] = field(default_factory=dict)
+    #: Step task ids read and found missing: a data fault, which the
+    #: derivation reports as `step_tasks_missing`.
+    absent: set[str] = field(default_factory=set)
+    #: Step task ids whose document could not be decoded.
+    unreadable_tasks: set[str] = field(default_factory=set)
+    #: Workflow documents that could not be decoded:
+    #: {"workflow_id", "tenant_id", "error"}.
+    malformed: list[dict[str, Any]] = field(default_factory=list)
+    #: The read stopped at its limit, so these are not every live workflow.
+    truncated: bool = False

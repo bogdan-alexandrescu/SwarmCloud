@@ -231,9 +231,12 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
     expect(rowOf('global').querySelector('.cap-links a')!.textContent).toBe('holders')
   })
 
+  // The summary is the count note over the first card since #138 (owner
+  // ruling 2026-10-07), where it was the line under the title.
+  // MUTATION: drop any of the four clauses from Pools' `summary`.
   it('says how many families are full or lowered, and whose pools these are', async () => {
     await renderPools()
-    const summary = document.querySelector('p.sub')?.textContent ?? ''
+    const summary = document.querySelector('p.c-count-note')?.textContent ?? ''
     expect(summary).toContain('5 pools')
     expect(summary).toContain('2 full')
     expect(summary).toContain('1 lowered')
@@ -417,7 +420,9 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
     render(<HoldersScreen />)
     const table = (await screen.findByText('Every holder', undefined, WAIT)).closest('section')!
     fireEvent.click(screen.getByRole('button', { name: 'research' }))
-    expect(table.querySelectorAll('tbody tr')).toHaveLength(1)
+    // Through the address since QA G5-23 (`?tenant=`), which a browser
+    // announces with a `hashchange` after the click, not inside it.
+    await waitFor(() => expect(table.querySelectorAll('tbody tr')).toHaveLength(1), WAIT)
   })
 })
 

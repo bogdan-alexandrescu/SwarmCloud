@@ -41,7 +41,7 @@ from agent_worker.specverify import (
     gke_job_name,
     verify_step_spec,
 )
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from fakes import FakeSecretClient
 from swarm_common import specsign
 from swarm_common.profiles import RUNNER_PROFILES
@@ -351,7 +351,7 @@ def test_a_task_signed_at_format_1_still_runs(db, worker_factory):
 def test_an_unknown_format_is_refused(db, worker_factory, witness):
     seed_attempt(db, task_id=TASK)
     doc = spec_keys.sign_document(db.doc(f"tasks/{TASK}"), TASK)
-    doc["spec_format"] = 3
+    doc["spec_format"] = max(specsign.SPEC_FORMATS) + 1
     worker, _, _ = worker_factory(task_id=TASK)
     _assert_refused(db, witness, "unknown_format", rc=worker.run())
 

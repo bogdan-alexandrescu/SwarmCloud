@@ -43,6 +43,9 @@ _DEPLOYMENT_VARS = (
     "SWARM_PLUGIN_OAUTH_CLIENT_ID",
     "SWARM_PLUGIN_OAUTH_CLIENT_SECRET",
     "SWARM_PLUGIN_DEFAULT_TARGET",
+    # Which of the caller's tenants to act as (#447): set on the machine, it
+    # would put X-Swarm-Tenant on every request a test makes.
+    "SWARM_TENANT",
     "XDG_CONFIG_HOME",
 )
 
@@ -68,3 +71,22 @@ def _isolated_deployment_config(monkeypatch, tmp_path_factory):
     # inference refuses -- so every test starts in an empty directory that is
     # no checkout at all, and the tests about inference build their own.
     monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path_factory.mktemp("not-a-checkout")))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_since_handles():
+    """A fresh store of `since` handles for every test.
+
+    The bridge keeps each follower's position for the life of its process
+    (`progress.HANDLES`), and a follow WITHOUT `since` for tasks it already
+    reported holds instead of answering at once. Shared across tests, one
+    test's `task_a` would turn the next test's first call into a hold.
+    """
+    from swarm_mcp import progress
+
+    handles = getattr(progress, "HANDLES", None)
+    if handles is not None:
+        handles.clear()
+    yield
+    if handles is not None:
+        handles.clear()

@@ -182,16 +182,17 @@ describe('the header is two lines: state, name and the elapsed headline; then on
       return h!
     })
     const lines = [...head.children].filter((c) => !c.classList.contains('ag-parent'))
-    expect(lines.map((l) => l.className.split(' ')[0])).toEqual(['ag-head-row', 'ag-head-facts'])
+    expect(lines.map((l) => l.className.split(' ')[0])).toEqual(['ag-head-row', 'ag-head-id', 'ag-head-facts'])
     const row = head.querySelector('.ag-head-row')!
     expect(row.querySelector('.ag-head-title')?.textContent).toBe('refactor-backoff')
     expect(row.querySelector('.ag-head-actions'), 'the actions share line 1').not.toBeNull()
     const hl = row.querySelector('.ag-head-hl')!
     expect(hl.textContent).toMatch(/^1[34]m \d+s · attempt 1 of 3$/)
     expect(hl.querySelector('b')?.textContent).toMatch(/^1[34]m \d+s$/)
-    // The id is not printed: a button carries it in its title and copies it.
-    expect(head.textContent).not.toContain(ID)
-    const copy = head.querySelector<HTMLButtonElement>('.ag-head-facts .ag-head-idcopy')!
+    // The id is printed once, on its own line under the name, with its copy (#94).
+    expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(ID)
+    expect(head.querySelector('.ag-head-facts')!.textContent).not.toContain(ID)
+    const copy = head.querySelector<HTMLButtonElement>('.ag-head-id .tid-copy')!
     expect(copy.title).toContain(ID)
     // Plain-language dispatch chips, in STRATEGY_LABEL's words.
     const chips = [...head.querySelectorAll('.ag-head-dchip')].map((c) => seen(c))
@@ -348,14 +349,17 @@ describe('Progress | Resources: two columns from a 640px pane, one below', () =>
     expect(Number(painted(strip, 'order', { width: 1440, container: 700 }) ?? '0')).toBe(0)
   })
 
-  it('below 640px the strip sticks to the top of the pane; at 640 and over it scrolls with the rest', () => {
+  it('from 480 to 639px the strip sticks to the top of the pane; at 640 and over, and under 480, it scrolls with the rest', () => {
     const el = host(runOf())
     const strip = el.querySelector<HTMLElement>('.dt-strip')!
-    for (const container of [380, 600]) {
+    for (const container of [480, 600]) {
       expect(painted(strip, 'position', { width: 1440, container }), `the strip does not stick in a ${container}px pane`).toBe('sticky')
       expect(painted(strip, 'top', { width: 1440, container })).toBe('0')
     }
     expect(painted(strip, 'position', { width: 1440, container: 700 }) ?? 'static').toBe('static')
+    // A phone-narrow pane (G2-01, QA 2026-10-07): stuck there, the two-column
+    // strip left about 150px of a 390x844 screen to scroll.
+    expect(painted(strip, 'position', { width: 1440, container: 380 }) ?? 'static').toBe('static')
   })
 })
 

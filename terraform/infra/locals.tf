@@ -61,8 +61,12 @@ locals {
     "claude-code" = {
       image          = "agent-runtime-base"
       resource_class = "standard"
-      backend        = "CLOUD_RUN_JOB"
-      provider       = "anthropic"
+      # GKE Autopilot since contract request 53 (applied 2026-10-08): it starts
+      # in about 23 s there against Cloud Run's 128 s median. Its tenants'
+      # Cloud Run Jobs are still created, as the rollback, by
+      # `cloud_run_fallback_profiles` below.
+      backend  = "GKE_AUTOPILOT"
+      provider = "anthropic"
       # Both names map to the SAME tenant secret, and that is deliberate: a
       # tenant holds one credential per provider and it is either metered API
       # access or a Claude subscription token from `claude setup-token`. The
@@ -99,11 +103,10 @@ locals {
     #
     # Mirrored so the catalogue comparison holds, and so their pools exist
     # (evaluate_capacity reads a missing pool as unlimited). post-verdict and
-    # claude-code-review each get a Job only for a tenant that registers the
-    # provider its own account is keyed on, and that Job runs as that account,
-    # never the worker's: see `action_profiles` below. merge and post-verdict
-    # mount no secret -- the worker reads its credential at action time -- so
-    # their secret_env is empty.
+    # claude-code-review are RETIRED and get no Job: see
+    # `profiles_without_a_job` below. merge and post-verdict mount no secret
+    # -- the worker reads its credential at action time -- so their
+    # secret_env is empty.
     #
     # merge reads the tenant's `-git` token since contract request 47 (owner,
     # 2026-10-04): its Job exists for a tenant that registers `git`, and runs
@@ -136,48 +139,55 @@ locals {
       }
       timeout_seconds = 7200
     }
+    # Contract request 48, accepted by the owner 2026-10-05 (#625): claude-code
+    # on the image that carries the repository index's toolchain, and nothing
+    # else different. Its Job exists for a tenant that registers anthropic and
+    # runs as the tenant's worker account, as claude-code's does; listing it
+    # here also puts agent-runtime-indexer in runner_images, so its digest is
+    # pinned and handed to the scheduler with the others.
+    "indexer" = {
+      image          = "agent-runtime-indexer"
+      resource_class = "standard"
+      backend        = "CLOUD_RUN_JOB"
+      provider       = "anthropic"
+      # claude-code's two env-var names, each mapped to the provider id (not a
+      # credential), written as a comprehension so no line here has the shape
+      # of an assignment of one.
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+    }
   }
 
-  # --- profiles that run as their own account (#295) -----------------------
+  # --- the retired #295 profiles: no Job for any tenant ----------------------
   #
-  # Every other Job below runs as `module.tenancy.worker_service_accounts`.
-  # These three each run as their OWN per-tenant service account
-  # (`swarm-<tenant>-merge`, `-post-verdict`, `-review`; docs/merge-step.md
-  # §1.3, §10 item 4), because a Job running one of them as the worker account
-  # is the hole contract requests 33, 35 and 36 exist to close: any agent of
-  # the tenant can mint that account's token. So a Job exists for one of them
-  # only where its account does -- for a tenant registering the provider
-  # modules/service_account_ids keys it on -- and names that account.
-  #
-  # The profiles stay `available=False` in the catalogue until #342 is
-  # enforced and the owner has created the review and merge Apps, so nothing
-  # can be dispatched to these Jobs meanwhile; no tenant in any tfvars
-  # registers git-merge or git-review, so none exists yet either.
-  #
-  # EXCEPT merge (contract request 47, owner 2026-10-04): it reads the tenant's
-  # existing `-git` token, which the worker account already reads, so its Job
-  # runs as the worker account like an agent profile's. The owner accepted on
-  # #476 that an agent holding `-git` can therefore also merge. post-verdict
-  # and claude-code-review stay here. modules/service_account_ids still lists
-  # a merge account for a tenant registering the retired git-merge provider;
-  # this root no longer runs a Job as it.
-  action_profiles = {
-    for name, profile in module.tenancy.action_profiles : name => profile
-    if name != "merge"
-  }
+  # post-verdict and claude-code-review were to run as their own per-tenant
+  # accounts (`swarm-<tenant>-post-verdict`, `-review`), because a Job running
+  # one as the worker account is the hole contract requests 35 and 36 existed
+  # to close. Those accounts are retired (owner decision MS0-Q4, 2026-10-06):
+  # the merge runs as the worker on the tenant's `-git` token (contract request
+  # 47) and trusts the review's verdict file, not an App's review. The frozen
+  # catalogue still holds both entries, disabled (`available=False`), until
+  # contract request 50 is decided, so they stay mirrored above -- and listed
+  # here, so no tenant gets a Job for either. Without this, every tenant holding
+  # anthropic would get a claude-code-review Job running as its worker account.
+  # apps/common/swarm_common/profiles.py names this list.
+  profiles_without_a_job = ["post-verdict", "claude-code-review"]
 
-  # The forge record the post-verdict Job reads instead of a task's
-  # repository_url (merge-step.md §2.1b, decided 2026-09-29): the host, owner
-  # and repo, and the App id to check the key it read against. On the Job,
-  # where only the platform writes, never in the dispatcher's per-execution
-  # overrides, which a task shapes. None of these is a credential.
+  # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
-  # merge has none since contract request 47 (owner, 2026-10-04): it acts on
-  # the workflow's own repository_url, which the signed spec covers, so it
-  # works in any repository a workflow runs on.
-  forge_env_names = {
-    "post-verdict" = ["FORGE_HOST", "FORGE_OWNER", "FORGE_REPO", "REVIEW_APP_ID"]
-  }
+  # Kept until 2026-10-15 as the request 53 rollback; remove then.
+  #
+  # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
+  # profile, so moving claude-code to GKE Autopilot (contract request 53,
+  # applied 2026-10-08) would otherwise have DESTROYED every tenant's
+  # `swarm-job-<tenant>-claude-code`. The owner kept them for one week of clean
+  # GKE runs (request 53, condition 3): while they exist, rolling back is one
+  # line in profiles.py (backend back to CLOUD_RUN_JOB) and a release, with no
+  # Terraform apply. A Job listed here is idle: the scheduler routes by the
+  # catalogue's backend, so nothing dispatches to it while the profile names
+  # GKE_AUTOPILOT. tests/terraform/catalogue.tftest.hcl holds that the Jobs are
+  # still planned.
+  cloud_run_fallback_profiles = ["claude-code"]
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
@@ -199,12 +209,21 @@ locals {
   # catalogue has no model, and giving it one is a contract request.
   # Only claude-code: codex is an OpenAI CLI, where this name would fail every
   # run, and mock, generic and browser start no model.
-  # claude-code-review is claude-code under its own account (contract request
-  # 36), so it runs the same model: a review agent on the CLI's default would
-  # judge with a different model than the one that wrote the change.
+  # claude-code-review is claude-code under another name (contract request
+  # 36), so it names the same model: a review agent on the CLI's default would
+  # judge with a different model than the one that wrote the change. It is
+  # retired and has no Job here (`profiles_without_a_job`); the entry stays
+  # while the frozen catalogue holds the profile (contract request 50).
+  # indexer is claude-code on the indexer image (contract request 48), so an
+  # index run keeps the model it ran with as claude-code.
+  # claude-code runs on GKE Autopilot (contract request 53), where no Job of
+  # this root exists to carry MODEL: the scheduler's WORKER_MODELS sets it on
+  # each pod. Its Cloud Run fallback Jobs (`cloud_run_fallback_profiles`)
+  # carry the same model from this map.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
+    "indexer"            = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -220,6 +239,10 @@ locals {
   # the topic name in its environment, and the scheduler module needs the API's
   # service account, so one of the two dependencies has to be a plain string.
   wake_topic = "${var.name_prefix}-scheduler-wake"
+
+  # The same, for the topic swarm-api publishes a cancelled task's attempt to
+  # and the reconciler stops its execution from (#627).
+  execution_cancel_topic = "${var.name_prefix}-execution-cancel"
 
   image_base = "${var.region}-docker.pkg.dev/${var.project_id}/${var.artifact_registry_repository}"
 
@@ -381,24 +404,10 @@ locals {
           for env_name, provider in profile.secret_env :
           env_name => "swarm-tenant-${tenant_id}-${provider}"
         }
-        # "" for a Job that runs as the tenant's worker account.
-        action_key = contains(keys(local.action_profiles), profile_name) ? "${tenant_id}:${profile_name}" : ""
-        forge_env = cfg.forge == null ? {} : {
-          for name, value in {
-            FORGE_HOST        = cfg.forge.host
-            FORGE_OWNER       = cfg.forge.owner
-            FORGE_REPO        = cfg.forge.repo
-            REVIEW_APP_ID     = cfg.forge.review_app_id == null ? null : format("%d", cfg.forge.review_app_id)
-            REVIEW_APP_BOT_ID = cfg.forge.review_app_bot_id == null ? null : format("%d", cfg.forge.review_app_bot_id)
-          } : name => value
-          if value != null && contains(lookup(local.forge_env_names, profile_name, []), name)
-        }
       }
-      if profile.backend == "CLOUD_RUN_JOB" && (
+      if(profile.backend == "CLOUD_RUN_JOB" || contains(local.cloud_run_fallback_profiles, profile_name)) && (
         profile.provider == null || contains(cfg.providers, profile.provider)
-        ) && (
-        !contains(keys(local.action_profiles), profile_name) || contains(cfg.providers, try(local.action_profiles[profile_name].provider, ""))
-      )
+      ) && !contains(local.profiles_without_a_job, profile_name)
     ]
   ])
 
@@ -407,9 +416,9 @@ locals {
       tenant_id      = job.tenant_id
       runner_profile = job.runner_profile
       resource_class = job.resource_class
-      # The #295 profiles run as their own account; every other profile as
-      # the tenant's worker account.
-      service_account_email = job.action_key == "" ? module.tenancy.worker_service_accounts[job.tenant_id] : module.tenancy.action_service_accounts[job.action_key]
+      # Every profile, merge included (contract request 47), runs as the
+      # tenant's worker account.
+      service_account_email = module.tenancy.worker_service_accounts[job.tenant_id]
       image                 = job.image
       timeout_seconds       = job.timeout_seconds
       secret_env            = job.secret_env
@@ -450,9 +459,6 @@ locals {
         # there. Absent, not empty, on a profile with none: the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
-        # The forge record, on the merge and post-verdict Jobs only; see
-        # `forge_env_names`.
-        job.forge_env,
         # The step-spec verification settings (contract request 34,
         # spec_signing.tf): the public keys, the key, the rollout mode. On the
         # Job, where only the platform writes; never in the dispatcher's
@@ -518,6 +524,12 @@ locals {
       # alerts on. Renaming the env key is the whole fix -- the topic, the IAM
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
+
+      # Where a cancel asks for its task's execution to be stopped now rather
+      # than at the worker's next poll or the reconciler's next pass (#627).
+      # The reconciler stops it: swarm-api holds no compute permission, by
+      # design (modules/scheduler/execution_cancel.tf says why).
+      EXECUTION_CANCEL_TOPIC = local.execution_cancel_topic
 
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
@@ -590,6 +602,7 @@ locals {
       # docs/audits/2026-09-22/race-test-needs-a-write.md.
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
+      PLATFORM_OWNER          = var.platform_owner
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
@@ -667,6 +680,17 @@ locals {
       # audience this service accepts, and the value the scheduler hands each
       # worker below. Harmless while child tasks are off: no worker calls.
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The SwarmCloud GitHub App's PUBLIC settings (github_app.tf; #780).
+      # swarm_api.forgeapp reads exactly these three names; without them every
+      # /v1/onboarding/github call answers 503 "the App is not configured".
+      # Until 2026-10-07 they reached only the `github_app` output, so the
+      # App registered that day was invisible to swarm-api (found by the
+      # owner's test 1). Empty strings when no App is registered, which
+      # forgeapp reads as "not configured".
+      GITHUB_APP_ID        = var.github_app_id
+      GITHUB_APP_CLIENT_ID = var.github_app_client_id
+      GITHUB_APP_SLUG      = var.github_app_slug
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings
@@ -853,6 +877,14 @@ locals {
       # scheduler's copy above; the quota_broker_url_is_wired check covers both.
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # Where the reconciler rings `task_finished` for a task a repair ended
+      # (#636, `reconciler.finishwake`), so its dependants are released at once
+      # rather than on the next safety tick. The same name and topic as
+      # swarm-api's above; publish is already granted (the reconciler is one
+      # of the wake topic's publisher_members in main.tf). Unset, the
+      # reconciler logs a warning at start and the tick does the release.
+      DISPATCH_TOPIC = local.wake_topic
     })
   }
 }

@@ -153,6 +153,16 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
+`indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
+the repository index's toolchain (contract request 48, #625). swarm-api runs
+index runs on it; it declares what `claude-code` does:
+
+<!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the indexer runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:indexer -->
+
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
 It names an issue in the task's own `repository_url` (a workflow's, for a
 step), and a submission that sends it without a repository is refused with
@@ -398,6 +408,74 @@ relative filename, with no empty, `.` or `..` segment, and the API refuses any
 other shape at submission (HTTP 422 `invalid_dag`, naming the step, the parents
 and the file) rather than letting the worker refuse it after every parent has run.
 
+## An agent asks the owner: `questions.json`
+
+**A remote agent that meets a decision that is the owner's asks, in a file,
+instead of guessing.** Owner decision, 2026-10-05. Until then the agent had one
+place for such a question: its answer. It wrote the question into prose and
+shipped `part of #N` (I310, W532), and a workflow row cuts that answer to 500
+characters, so the question could be cut off with the rest. Now every
+claude-code and codex prompt says, in one sentence after the line naming
+`$SWARM_ARTIFACTS_DIR`, that the agent may write `questions.json` there
+(`expected_outputs.questions_line`). Both runners get it, because both are
+told about the folder in the same place.
+
+The file is a JSON list:
+
+```json
+[
+  {
+    "question": "Should the retry budget be per task or per workflow?",
+    "options": [
+      {"label": "per task", "description": "Each step keeps its own three attempts."},
+      {"label": "per workflow", "description": "One budget shared by every step."}
+    ],
+    "recommended": "per task",
+    "context": "CONTRACT.md fixes three attempts per task; a shared budget changes it."
+  }
+]
+```
+
+**The worker checks the shape and the size, and the task never depends on
+it** (`agent_worker/questions.py`). The file is at most 64 KiB and holds at most 20
+questions. Each question has exactly these four keys, and `recommended` and
+`context` may be null or left out. `options` holds 1 to 10 `{label,
+description}` objects with distinct labels, and `recommended` is one of those
+labels or null. Every text has a length bound. The file is uploaded like any
+other artifact, and it comes first in the 500-file cap, so the cap never drops
+it. The attempt's `result_summary` then says one of three things:
+
+| the file | `result_summary` |
+|---|---|
+| valid, and uploaded | `questions: N` |
+| any other shape, too large, not JSON, a link, or not uploaded | `questions: 0`, `questions_rejected: <why>` |
+| absent | `questions: 0` |
+
+A rejected file is still an ordinary artifact, so the operator can read what
+the agent wrote, but it is not counted, so nothing shows it as questions. It is
+a WARNING line and a summary field, not a failed attempt: the task finishes
+exactly as it would have without the file. The reason names a position and a
+key (``question 2: `recommended` is not one of its options' labels``) and never
+quotes the file.
+
+**The bridge shows them to whoever reads the result.** When `questions` is
+above 0, `swarm_result` and the follow outcome read the file back through the
+artifacts route. That route looks it up by name in the task's own manifest and
+redacts it, and the bridge returns it as `questions`, a list. A task that asked
+nothing has `questions: []` and costs no extra read. A counted file that cannot
+be read has `[]` with `questions_unavailable_because`, so "asked nothing" and
+"asked something nobody could read" never look the same. The final progress
+line of a `format: "progress"` row says `? N question(s) for the owner`, and a
+`format: "lines"` row gets that as a line of its own. The `sc:step` result
+carries `questions` with `""` for a missing text, keeping its no-null rule, and
+`plugin/agents/step.md` tells the row to put them in its result as given.
+
+**Data for the operator, never a channel to the platform.** Nothing executes,
+answers or acts on the file. No state, retry, dispatch, merge or verdict reads
+it, and no part of the platform takes an instruction from it. The agent asks,
+and a person decides. If the answer changes the work, that is a new task,
+dispatched by a person.
+
 ## Dependencies and state
 
 A step with unmet dependencies is `PARKED(DEPENDENCY_INCOMPLETE)`. Parked costs
@@ -524,7 +602,9 @@ upstream's change when it:
 * integrates it, and every step it integrates changed nothing or was skipped.
   An integrator with at least one contributor that changed something runs, and
   merges only those; the others are listed under `git.integrated.no_change`,
-  not as `missing`.
+  not as `missing`. A contributor that SUCCEEDED having published nothing (a
+  read-only review) is left out the same way, under
+  `git.integrated.read_only`; see the review shape below.
 
 **A skip is transitive**: a step that stages anything from a SKIPPED step is
 skipped too, because a skipped step wrote nothing. A step that stages only the
@@ -653,6 +733,24 @@ What each step does, and why each field is there:
   integrator would otherwise report it "not found" on the PR as an incomplete
   integration. If it did edit the repository, those edits are unreviewed
   work, which is what the gate keeps out.
+* **A contributor that published nothing by design is not "missing"**
+  (#760). A review with no `when` gate reading it -- the implement -> review
+  -> fix chain in `scripts/acceptance/groups/workflow.sh` -- stays in the
+  integrator's `integrates`. If it ends SUCCEEDED with
+  `result_summary.git.published: false`, `commit_count: 0` and nothing left
+  uncommitted (it wrote only `verdict.json`), the integrator does not fetch
+  it and the pull request does not list it under "NOT included". The worker
+  decides this (`Worker._integrates_with_changes`), not swarm-api, because
+  only the worker reads the contributor's finished result: the `integrates`
+  list is fixed when the workflow is submitted, before any step has run. The
+  pull request names such a step on its own neutral line,
+  `read-only, nothing to merge: ...`, under the merged list, and the run
+  result lists it under `git.integrated.read_only`. `- missing:` keeps its
+  meaning, a step that should have pushed and did not: a FAILED contributor,
+  one whose result cannot be read, and one that says it published but whose
+  branch is not on the remote are still merged, and still listed missing
+  when the branch is absent. Release acceptance fails on any `- missing:`
+  line, so the distinction is what lets that check stay strict.
 
 ### What a MERGE verdict publishes
 
@@ -735,6 +833,65 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
 * **It does not check the verdict where it is written.** A malformed verdict
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
+
+### Minor findings are filed on the tenant's wave epic
+
+CLAUDE.md's rule is that minor findings go to a wave epic, one comment per
+finding. Until #638 that depended on an operator copying them out of
+`verdict.json` by hand, and the 2026-10-05 history analysis counted 530 minors
+across 122 reviews that never left the file. Now the gated step files them.
+
+* **What a minor is.** A finding that is an object with `"severity":
+  "minor"` (any case) and a `summary`, `title`, `message`, `problem` or
+  `what`. It may also name `file`, a call site (`call_site`, or `where`) and
+  how it was found (`evidence`; failing that, a `fix` trails the comment as
+  "suggested fix: ..."). Both of these are read:
+  `{"severity": "minor", "summary": "...", "file": "apps/x/a.py", "call_site":
+  "run()", "evidence": "..."}` and the shape the review briefs prescribe,
+  `{"severity": "minor", "file": "apps/x/a.py", "where": "run()", "problem":
+  "...", "fix": "..."}`. The second is the shape of the 530 minors #638
+  counted; reading only the first filed none of them. A string finding, or a `blocker` or `major`, is
+  the fix step's and is **never** filed: blockers and majors are what the fix
+  agent fixes, and a NOT_YET with only minors would otherwise be filed and
+  fixed twice. Every finding, minor or not, still reaches the pull request
+  body and the fix agent exactly as before.
+* **Where.** The tenant's `findings_epic`, an issue number in the repository
+  the run works on, set by an admin with `PUT
+  /v1/admin/tenants/{tenant}/findings-epic {"findings_epic": 638}` (`null`
+  stops it; `GET` reads it). It is a field of the tenant document beside the
+  frozen `Tenant` fields, not one of them. swarm-api copies it at submission
+  into the GATED step's `dispatch.findings_epic`, inside the block the spec
+  signature covers, so no agent of the tenant can point the worker at another
+  issue, and a change reaches workflows submitted after it.
+* **Who posts.** The gated step's WORKER, after the agent ended (or, on
+  MERGE, where no agent ran) and after its publish, with the tenant's own
+  `swarm-tenant-<tenant>-git` token: never the agent, which never sees the
+  token, and never another tenant's. The token goes only to github.com
+  (#307); it is registered with the log redaction and appears in no log line,
+  event or result. Each comment is one line in the epic shape, the agent's
+  text scrubbed of registered secrets and with every `@`-mention broken:
+
+      - [ ] **<the defect>** · `<file>` `<call site>` · found by review `<task>` of workflow `<wf>`; <evidence>
+
+* **Once.** Every comment already on the epic is read first (at most 30 pages
+  of 100), and a finding whose (text, file, call site) is already there, filed
+  by an earlier run or by a person in the same shape, ticked or not, is not
+  posted again. An epic that cannot be read whole files nothing: a partial
+  read taken as whole would file duplicates.
+* **The result says what happened.** `result_summary.findings_epic` on the
+  gated step: `epic`, `repository`, `minors` (how many the verdict marked),
+  `filed` (`text`, `file`, `call_site`, `comment_id` of each posted),
+  `already_filed`, and `not_filed` with the reason when anything was not
+  posted. With no epic configured, `epic` is null, nothing is posted and
+  `not_filed` says so.
+* **It never fails the step.** The step's pull request is already open when
+  this runs. A forge that refuses or is down is recorded in `not_filed`; the
+  comment POST is not retried (one whose answer was lost may have landed), and
+  the next run's dedup posts what this one did not.
+* **What it does not cover.** A review with no gated step after it (a review
+  whose verdict nothing reads), and the `single-pr` chain's `review.json`,
+  whose `summary` is free text with no per-finding severity: neither files
+  anything.
 
 ## `metadata.input_from` belongs to the service, not the caller
 
@@ -990,6 +1147,21 @@ tenant's existing `-git` token, in the workflow's own repository, and then
 closes the issues the pull request closes. The design and every refusal are
 in [merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
 
+**Revised 2026-10-06 (owner), design only -- lane MS0, part of #352.** The
+step becomes the last of implement → review → fix → merge on any repository
+a workflow runs on, and replaces `auto-merge.yml` for SwarmCloud's own pull
+requests once it has merged about ten cleanly. While the pull request's
+checks run it will park as `CI_PENDING`, holding nothing, instead of failing
+attempts. A per-tenant tick in swarm-api re-reads the checks with the
+tenant's `-git` token and marks it for wake. If the base requires an
+up-to-date branch and the branch is behind, the step updates it and parks
+again. Every refusal ends `MERGE_REFUSED` with its code. The lifecycle, the
+token's permissions, the invariants, the retirement and the lanes MS1-MS7
+that build it are in
+[merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs).
+Until MS2 lands, the step waits as described below
+(`MERGE_STEP_MAX_ATTEMPTS`, READY between attempts).
+
 The review shape above, ending in a merge:
 
 ```bash
@@ -1046,6 +1218,38 @@ is green and its `Closes #N` block is written, and only when its review said
 merges that task's pull request at the head that task pushed, with every
 check below except the verdict (it has no review). A tenant member's only.
 
+**A merge of a pull request no workflow opened** (#352, owner decision
+2026-10-07, MS0 question 2) is the same one-`merge`-step `direct-pr`
+workflow with `merge_pr: {number, head_sha}` in place of `continues_task`:
+
+```json
+{"strategy": "direct-pr",
+ "merge_pr": {"number": 41, "head_sha": "<the full 40-character head sha>"},
+ "steps": [{"step_id": "merge", "runner_profile": "merge"}]}
+```
+
+From the bridge it is `swarm merge 41 --sha <head>` (or `owner/repo#41`, or
+the pull request's URL), or `swarm_workflow` with `merge_pr`. Which
+repository: the one `repository_url` names, which must be one the caller's
+tenant registered (`/v1/repositories`), or -- when it names none -- the
+tenant's ONLY registration. Several registrations and none named is refused
+rather than guessed, because pull request numbers repeat across
+repositories, and an unregistered repository is refused even when the
+token could reach it, because the registration is the tenant's statement
+that its `-git` token is meant to act there. At submission swarm-api reads
+the pull request once with the tenant's `-git` token and refuses, writing
+nothing: a `head_sha` that is not its head now (the answer names the current
+head), a pull request that is closed or already merged, one not in that
+repository or from a fork, one on another base than the registered default
+branch, any step besides the one merge step, a `continues_task`,
+`repository_ref` or `merge_fix_rounds` beside it, and any strategy but
+`direct-pr`. A continuation-scoped account is refused before any read. The
+merge step's signed `merge_target` is then `{number, head_sha, base}` instead
+of a task id, and the worker merges through the gate every merge step uses:
+only at that head (or GitHub's own update of it onto the base), only with
+every required check green there. The console's Submit forms do not offer it
+yet; that is a follow-up.
+
 What swarm-api appends, before it signs anything:
 
 * **`depends_on` the step that opens the pull request and the review.**
@@ -1063,7 +1267,42 @@ What swarm-api appends, before it signs anything:
   nothing (invariants 1 and 4), then reads every fact again.
 * **Its signed dispatch block names its target by task id**
   (`merge_target: {pull_request, review, verdict_file}`), so the worker never
-  follows a pointer the signed spec does not name.
+  follows a pointer the signed spec does not name. A `merge_pr` workflow's
+  names the pull request instead (`merge_target: {number, head_sha}`),
+  because no task opened it.
+* **`merge_target.base`, the default branch the tenant registered the
+  repository with** (`/v1/repositories`, [repo-index.md](repo-index.md) §1),
+  read once at submission from the tenant's OWN registration, and absent when
+  it registered none. It is there so the worker can refuse a pull request on
+  any other base (`base_not_default`, lane MS3) without reading the registry,
+  inside the block the spec signature covers. Another tenant's registration
+  of the same repository never names it. Built 2026-10-06 (lane MS1); until
+  MS3 the worker carries it and does not act on it.
+
+**Lane MS1 (2026-10-06): the step's knobs.** Two more things are settled at
+submission, from the workflow's own `metadata`:
+
+* **`metadata.merge_fix_rounds`**, a whole number from 0 to 5, absent
+  meaning 0: how many CI-fix rounds a red required check may hand the pull
+  request to before the step refuses `checks_failed`
+  ([merge-step.md](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
+  §1, "The CI-fix loop"). Anything else -- a negative, more than 5, a string,
+  a bool, a float -- is a 422 naming the bounds. So is the key on a workflow
+  that ends with no merge step, whatever its value: rounds nothing would
+  spend are a request that would silently not happen, as `metadata.merge`
+  `"on"` there is refused. It is stored as written; lane MS7 spends it, and
+  until then it is accepted and changes nothing.
+* **The workflow's label is its pull request's fallback title, merge step
+  or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
+  the dispatch block's `pr_label`, which the worker uses only as title and
+  body text when no agent wrote `pr-title.txt`; it never becomes a GitHub
+  label. So a label that reads `ready` is kept as written beside a merge step
+  too. Lane MS1 had dropped it there, recording
+  `metadata.merge_label_dropped`; the owner reverted that on 2026-10-06
+  (#352) because it was aimed at the wrong thing: what races the merge step
+  is the GitHub `ready` label `auto-merge.yml` merges on, which an operator's
+  watcher or brief adds, not this title. `metadata.merge_label_dropped` is
+  no longer reserved or written.
 
 What the merge step checks, in order, and refuses with a plain reason
 (`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is

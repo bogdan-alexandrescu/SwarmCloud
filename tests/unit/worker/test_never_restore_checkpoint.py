@@ -25,7 +25,7 @@ from agent_worker.checkpoint import CheckpointManager
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import EventType
 
-from conftest import TENANT, record_as_earlier_attempt, seed_attempt
+from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 
 class _Quiet:

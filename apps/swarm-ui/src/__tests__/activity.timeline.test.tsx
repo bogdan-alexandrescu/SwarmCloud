@@ -50,7 +50,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type { Result } from '../fetch'
 import { HELP } from '../help'
 import { ledgerFixture } from '../outcomes.fixture'
-import type { Outcomes, OutcomeBucket } from '../outcomes'
+import { outcomesQuery, parseView, rowsQuery, serializeView, type EndedRow, type EndedRows, type Outcomes, type OutcomeBucket } from '../outcomes'
 import type { Me, Stats, Task, TaskPage, Tenant } from '../types'
 
 const api = vi.hoisted(() => ({
@@ -69,7 +69,6 @@ vi.mock('../api', async (importOriginal) => {
 
 const { ActivityScreen, TenantsScreen } = await import('../Activity')
 const { IDLE_POLL_MS } = await import('../Agents')
-const { TASK_PAGE_LIMIT } = await import('../api')
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -232,13 +231,21 @@ function bucketMarks(root: HTMLElement, i: number, key: 'wide' | 'mid' | 'narrow
 }
 
 /**
- * The readout's figures, in order: rate, succeeded, failed, dead-lettered,
+ * The readout's figures, in order: rate, succeeded, failed (FAILED +
+ * DEAD_LETTERED, #123; dead-lettered is its qualifier, not a figure),
  * cancelled (all causes, no key), requested or other (the flat bars' key),
  * after a failure (the outline's key), after a cancel (the outlined bars' key,
  * #185 decision 2), submitted, finished.
  */
 function readout(root: HTMLElement): string[] {
   return [...root.querySelectorAll('.ol-legend .ol-n')].map((n) => (n.textContent ?? '').trim())
+}
+
+/** The figure of the readout entry whose key carries `key`: the number that key's mark draws. */
+function keyed(root: HTMLElement, key: string): string {
+  const li = [...root.querySelectorAll('.ol-legend .ol-li')].find((x) => x.querySelector(`.ol-k.${key}`) !== null)
+  expect(li, `no legend entry keyed ${key}`).toBeTruthy()
+  return (li!.querySelector('.ol-n')?.textContent ?? '').trim()
 }
 
 function card(root: HTMLElement, title: RegExp): HTMLElement {
@@ -658,7 +665,7 @@ describe('the ledger', () => {
 describe('the readout', () => {
   it('reads out the span’s totals by default, with every cancel cause and the submitted count', async () => {
     const root = await timeline()
-    expect(readout(root)).toEqual(['90.7 %', '272', '28', '0', '416', '401', '15', '0', '730', '716'])
+    expect(readout(root)).toEqual(['90.7 %', '272', '28', '416', '401', '15', '0', '730', '716'])
     const legend = root.querySelector<HTMLElement>('.ol-legend')!
     expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
     expect(legend.textContent).toContain('requested 401 · other 0')
@@ -673,7 +680,7 @@ describe('the readout', () => {
     const root = await timeline()
     const c = cols(root)
     fireEvent.mouseEnter(c[10]!)
-    expect(readout(root)).toEqual(['75.8 %', '25', '8', '0', '305', '297', '8', '0', '338', '338'])
+    expect(readout(root)).toEqual(['75.8 %', '25', '8', '305', '297', '8', '0', '338', '338'])
     expect(root.querySelector('.ol-at')!.textContent).toContain(DAY('2026-09-22T00:00:00+03:00'))
     expect(c[10]!.classList.contains('is-picked')).toBe(true)
     fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: 'all' }))
@@ -696,11 +703,6 @@ describe('the readout', () => {
     // and the flat bars requested + other (297 + 0); the readout printed 5
     // beside the outline and 305 beside the flat bars, while the column's name
     // and the Table said 8.
-    const keyed = (root: HTMLElement, key: string): string => {
-      const li = [...root.querySelectorAll('.ol-legend .ol-li')].find((x) => x.querySelector(`.ol-k.${key}`) !== null)
-      expect(li, `no legend entry keyed ${key}`).toBeTruthy()
-      return (li!.querySelector('.ol-n')?.textContent ?? '').trim()
-    }
     const root = await timeline(ledgerFixture(), { view: '' })
     const b = ledgerFixture().buckets[10]!
     fireEvent.mouseEnter(cols(root)[10]!)
@@ -767,13 +769,15 @@ describe('the readout', () => {
     expect(q.has('back')).toBe(true)
   })
 
-  it('links a day’s failures to the Agents list, saying it is not limited to that day', async () => {
+  it('links a day’s failures to that day’s failed tasks on this page, not to the Agents list (#116)', async () => {
     const root = await timeline()
     fireEvent.mouseEnter(cols(root)[10]!)
-    const link = root.querySelector<HTMLAnchorElement>('.ol-drill')!
-    expect(link.getAttribute('href')).toBe('#work/running/recent/failed')
+    const link = root.querySelector<HTMLAnchorElement>('.ol-actions .ol-drill')!
+    const q = new URLSearchParams(link.getAttribute('href')!.replace(/^#work\/timeline\/outcomes\?/, ''))
+    expect(q.get('rows')).toBe('failed')
+    expect(q.get('at')).toBe('2026-09-22T00:00:00+03:00')
     expect(link.textContent).toContain('8 failed that day')
-    expect(link.textContent).toContain(`not limited to ${DAY('2026-09-22T00:00:00+03:00')}`)
+    expect(link.textContent).not.toMatch(/not limited to/)
   })
 })
 
@@ -1037,10 +1041,10 @@ describe('the eight cards', () => {
     expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
       'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
       'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
-      'merge failed', 'publish refused', 'other', 'no reason recorded',
+      'merge failed', 'publish refused', 'other', 'no reason recorded', 'failed on purpose',
     ])
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
-      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0',
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '6', '0', '0',
     ])
     const timeout = rows[1]!
     expect(timeout.querySelector('.ctl-util-track.is-zero'), 'a zero class is an empty bar, not a real zero').not.toBeNull()
@@ -1136,14 +1140,18 @@ describe('the eight cards', () => {
     const root = await timeline()
     const c = card(root, /^Not finished yet/)
     await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
-    // A LIVE READ CARRIES ITS AGE: the stats were generated 40 s before the
-    // page asked, and "now" would have said so for as long as the page stayed open.
-    expect(c.querySelector('.ctl-card-note')!.textContent).toMatch(/^read (\d+s ago|just now) · span not applied$/)
+    // A FRESH READ IS SILENT ABOUT ITS AGE (#98, owner ruling 2026-10-07): the
+    // stats were generated 40 s before the page asked, which is fresh, so the
+    // note says only what it does not apply; the head's refresh carries the age.
+    // MUTATION: print `read 40s ago` here again.
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('span not applied')
     expect(c.querySelector('.ol-open-counts')!.textContent).toContain('3 parked · 3 running · 2 queued · 1 ready')
     const person = c.querySelector('.ol-person')!
     expect(person.classList.contains('is-warn')).toBe(true)
-    expect(person.textContent).toContain('CREDENTIAL_MISSING 2')
-    expect(c.textContent).toContain('clears itself PROVIDER_QUOTA_EXHAUSTED 1')
+    // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
+    expect(person.textContent).toContain('No provider key is registered for this tenant 2')
+    expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
+    expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
   })
 
   it('Not finished yet: says its counts are not filtered by profile when a profile filter is set', async () => {
@@ -1194,13 +1202,14 @@ describe('the eight cards', () => {
   it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why tasks failed/).querySelectorAll('.ol-strip')]
-    // One per class in the route's vocabulary: fifteen since "publish
+    // One per class in the route's vocabulary: sixteen since "failed on
+    // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
     // four (contract requests 33 and 35), ten since "spec signature invalid"
     // (contract request 34), nine since "inputs unavailable" (#185,
     // decision 4).
     expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
-    expect(strips).toHaveLength(15)
+    expect(strips).toHaveLength(16)
     for (const s of strips) {
       expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
       expect(Number(s.getAttribute('width'))).toBe(30 * 6)
@@ -1232,17 +1241,17 @@ describe('the eight cards', () => {
 // ---------------------------------------------------------------------------
 
 describe('timeline figures open the rows behind them (#116) and add up (#123)', () => {
-  it('links a day’s cancels to the Agents list too, and every drill-down states the window it shows', async () => {
+  it('links each of a day’s segments -- failed, cancelled, succeeded -- to that day’s tasks in that state', async () => {
     const d = ledgerFixture()
-    const cancelled = d.buckets[10]!.cancelled!.total
+    const b = d.buckets[10]!
     const root = await timeline(d)
     fireEvent.mouseEnter(cols(root)[10]!)
     const links = [...root.querySelectorAll<HTMLAnchorElement>('.ol-actions .ol-drill')]
-    const hrefs = links.map((a) => a.getAttribute('href'))
-    expect(hrefs).toEqual(['#work/running/recent/failed', '#work/running/recent/cancelled'])
-    expect(links[1]!.textContent).toContain(`${cancelled} cancelled that day`)
-    // The Agents list reads its own window, not the ledger's span: each link says which.
-    for (const a of links) expect(a.textContent).toContain(`newest ${TASK_PAGE_LIMIT} agents`)
+    const asked = links.map((a) => new URLSearchParams(a.getAttribute('href')!.split('?')[1]))
+    expect(asked.map((q) => q.get('rows'))).toEqual(['failed', 'cancelled', 'succeeded'])
+    for (const q of asked) expect(q.get('at')).toBe(b.start)
+    expect(links[1]!.textContent).toContain(`${b.cancelled!.total} cancelled that day`)
+    expect(links[2]!.textContent).toContain(`${b.succeeded} succeeded that day`)
   })
 
   it('counts dead-lettered as failed on the drill-down, the one definition the drawing uses', async () => {
@@ -1306,17 +1315,49 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     }
   })
 
-  it('reads out succeeded, failed, dead-lettered and cancelled that sum to finished, for the span and for one bucket', async () => {
+  it('reads out succeeded, failed (dead-lettered included) and cancelled that sum to finished, for the span and for one bucket', async () => {
     const root = await timeline()
     const sum = () => {
       const r = readout(root).map(Number)
-      return { parts: r[1]! + r[2]! + r[3]! + r[4]!, finished: r[9]! }
+      return { parts: r[1]! + r[2]! + r[3]!, finished: r[8]! }
     }
     const span = sum()
     expect(span.parts).toBe(span.finished)
     fireEvent.mouseEnter(cols(root)[10]!)
     const day = sum()
     expect(day.parts).toBe(day.finished)
+  })
+
+  it('keys failed as FAILED + DEAD_LETTERED in the readout, the number its mark draws, so the parts sum to finished', async () => {
+    // Bucket 10 ends 25 succeeded, 8 failed and 305 cancelled: 338. Three of
+    // the 8 are dead-lettered, which the drawing already counts as failed.
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    expect(keyed(root, 'is-bad'), 'the failed key prints FAILED alone').toBe('8')
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('incl. dead-lettered 3')
+    const r = readout(root).map(Number)
+    expect(r[1]! + r[2]! + r[3]!, 'succeeded + failed + cancelled').toBe(r[8])
+  })
+
+  it('prints one Failed column in the Table, FAILED + DEAD_LETTERED, so every bucket row adds up to Finished', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d, { view: 'table=1' })
+    const heads = [...root.querySelectorAll('.ol-table thead th')].map((th) => (th.textContent ?? '').trim())
+    const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed · incl\. dead-lettered$/, /^Cancelled/, /^Finished$/].map(at)
+    expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
+    const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
+      const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
+      expect(n(succeeded!) + n(failed!) + n(cancelled!), `${cells[0]} does not add up`).toBe(n(finished!))
+    }
+    const row = root.querySelectorAll('.ol-table tbody tr')[10]!
+    expect((row.children[failed!]!.textContent ?? '').trim()).toBe('8 · 3 dead-lettered')
   })
 
   it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {
@@ -1336,6 +1377,223 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')!
     fireEvent.click(link, { ctrlKey: true })
     expect(onView).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// One click on "Failed 21" shows those 21 tasks (#116)
+// ---------------------------------------------------------------------------
+
+/** One ended task as `rows=` serves it. Ids are built, never copied from a real run. */
+function endedRow(i: number, over: Partial<EndedRow> = {}): EndedRow {
+  return {
+    id: `task_${String(i).padStart(4, '0')}${'a'.repeat(20)}`,
+    tenant_id: 'eng',
+    state: 'FAILED',
+    completed_at: '2026-09-22T13:00:00+03:00',
+    runner_profile: 'claude-code',
+    submitted_by: 'a@saga.xyz',
+    workflow_id: null,
+    step_id: null,
+    failure_class: 'timeout',
+    cancel_cause: null,
+    ...over,
+  }
+}
+
+function endedRows(over: Partial<EndedRows> = {}): EndedRows {
+  return {
+    outcome: 'failed',
+    at: '2026-09-22T00:00:00+03:00',
+    end: '2026-09-23T00:00:00+03:00',
+    unread_reason: null,
+    group: 'runner_profile',
+    key: null,
+    total: 0,
+    rows_max: 500,
+    rows: [],
+    ...over,
+  }
+}
+
+/** The ledger for the page's read, and `rows` for any read that asks for a figure's rows. */
+function serveRows(d: Outcomes, rows: EndedRows | Result<Outcomes>): void {
+  serve(d)
+  api.loadOutcomes.mockImplementation((q: URLSearchParams) =>
+    Promise.resolve(
+      q.has('rows') ? ('status' in rows ? rows : ok({ ...d, ended_rows: rows } as Outcomes)) : ok(d),
+    ),
+  )
+}
+
+/** The reads that asked for a figure's rows. */
+function rowReads(): URLSearchParams[] {
+  return api.loadOutcomes.mock.calls.map((c) => c[0] as URLSearchParams).filter((q) => q.has('rows'))
+}
+
+/** The sections each figure's-rows read named beside it. */
+function rowSections(): unknown[] {
+  return api.loadOutcomes.mock.calls.filter((c) => (c[0] as URLSearchParams).has('rows')).map((c) => c[1])
+}
+
+async function rowsCard(root: HTMLElement): Promise<HTMLElement> {
+  await waitFor(() => expect(root.querySelector('.ol-rows tbody, .ol-rows [role="status"]')).not.toBeNull())
+  return root.querySelector<HTMLElement>('.ol-rows')!
+}
+
+describe('a figure lists the tasks behind it (#116)', () => {
+  it('one click on a day’s "21 failed" shows those 21 tasks, each a link to its agent', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 21, dead_lettered: 0 }
+    const rows = Array.from({ length: 21 }, (_, i) => endedRow(i))
+    const root = await timeline(d)
+    serveRows(d, endedRows({ total: 21, rows }))
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const link = [...root.querySelectorAll<HTMLAnchorElement>('.ol-actions .ol-drill')].find((a) => /21 failed/.test(a.textContent ?? ''))
+    expect(link, 'no "21 failed" link').toBeTruthy()
+    fireEvent.click(link!)
+    const c = await rowsCard(root)
+    const listed = [...c.querySelectorAll('tbody tr')]
+    expect(listed).toHaveLength(21)
+    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`#work/task/${encodeURIComponent(rows[0]!.id)}`)
+    expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^21 failed · /)
+    // The read asked for exactly that figure, under the page's own filters.
+    const q = rowReads().at(-1)!
+    expect(q.get('rows')).toBe('failed')
+    expect(q.get('rows_at')).toBe(d.buckets[10]!.start)
+    expect(q.get('tz')).toBe((api.loadOutcomes.mock.calls[0]![0] as URLSearchParams).get('tz'))
+    expect(rowSections().at(-1)).toEqual(['totals'])
+  })
+
+  it('states the window it lists, and says when the list is the newest part of a longer one', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 740, rows_max: 2, rows: [endedRow(1), endedRow(2)] }))
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    const note = c.querySelector('.ol-rows-note')!.textContent ?? ''
+    expect(note).toMatch(/every task that ended failed in /)
+    expect(note).toMatch(/completed_at/)
+    expect(note).toMatch(/newest 2 of 740 listed/)
+    expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^740 failed/)
+  })
+
+  it('opens from the address, so the list behind a figure is a link', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(7, { state: 'DEAD_LETTERED' })] }))
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    expect(c.querySelectorAll('tbody tr')).toHaveLength(1)
+    expect(c.textContent).toContain('dead-lettered')
+    expect(rowReads().at(-1)!.get('rows_at')).toBe('2026-09-22T00:00:00+03:00')
+  })
+
+  it('links the span’s failed figure too, when no bucket is picked', async () => {
+    const d = ledgerFixture()
+    const failed = d.totals.failed + d.totals.dead_lettered
+    const root = await timeline(d)
+    const link = root.querySelector<HTMLAnchorElement>('.ol-span-drill .ol-drill')!
+    expect(link.textContent).toContain(`${failed} failed in the span`)
+    const q = new URLSearchParams(link.getAttribute('href')!.split('?')[1])
+    expect(q.get('rows')).toBe('failed')
+    expect(q.has('at')).toBe(false)
+  })
+
+  it('makes a person’s Failed cell a link to that person’s failed tasks', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'a@saga.xyz', failed: 3, dead_lettered: 1 }] }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    const cell = c.querySelector<HTMLAnchorElement>('tbody tr[data-key="a@saga.xyz"] .ol-cell-link[href*="rows=failed"]')
+    expect(cell, 'the Failed cell is static').not.toBeNull()
+    expect(cell!.textContent).toBe('4')
+    const q = new URLSearchParams(cell!.getAttribute('href')!.split('?')[1])
+    expect(q.get('rows_key')).toBe('a@saga.xyz')
+    expect(q.get('group')).toBe('submitted_by')
+    expect(q.has('at')).toBe(false)
+  })
+
+  it('draws no cell link for the work with no submitter recorded, nor for a zero', async () => {
+    const d = ledgerFixture()
+    d.groups = {
+      ...d.groups,
+      by: 'submitted_by',
+      rows_total: 2,
+      rows: [{ ...d.groups.rows[0]!, key: '' }, { ...d.groups.rows[1]!, key: 'b@saga.xyz', failed: 0, dead_lettered: 0 }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    expect(c.querySelector('tbody tr[data-key=""] .ol-cell-link')).toBeNull()
+    expect(c.querySelector('tbody tr[data-key="b@saga.xyz"] .ol-cell-link[href*="rows=failed"]')).toBeNull()
+  })
+
+  it('says a bucket that left the span is gone, rather than drawing nothing', async () => {
+    const d = ledgerFixture()
+    const refused: Result<Outcomes> = {
+      status: 'error',
+      error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed', message: 'rows_at must be the start of one of this span’s buckets', detail: { parameter: 'rows_at', reason: 'not_a_bucket' } },
+    }
+    serveRows(d, refused)
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-08-01T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    expect(c.textContent).toMatch(/not in this span any more/)
+  })
+
+  it('remembers the filters but not an open figure, so a bare Timeline does not reopen it', async () => {
+    const d = ledgerFixture()
+    const root = await timeline(d, { view: 'span=7d' })
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    fireEvent.click(root.querySelector<HTMLAnchorElement>('.ol-span-drill .ol-drill')!)
+    await rowsCard(root)
+    expect(window.localStorage.getItem('swarm.timeline.view')).toBe('span=7d')
+  })
+
+  it('closes an open bucket’s rows on a zoom, since the zoomed buckets no longer start there', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    const onView = vi.fn()
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
+    const root = container as HTMLElement
+    await rowsCard(root)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: /^zoom to / }))
+    const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
+    expect(q.has('since')).toBe(true)
+    expect(q.has('rows') || q.has('at')).toBe(false)
+  })
+
+  it('closes, and the address forgets the figure', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    const onView = vi.fn()
+    const { container } = render(<ActivityScreen view="span=7d&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
+    const c = await rowsCard(container as HTMLElement)
+    fireEvent.click(within(c).getByRole('button', { name: 'close' }))
+    const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
+    expect(q.get('span')).toBe('7d')
+    expect(q.has('rows') || q.has('at') || q.has('rows_key')).toBe(false)
+  })
+})
+
+describe('the rows address (#116)', () => {
+  it('round-trips the figure, and drops a bucket or row named without one', () => {
+    const v = parseView('rows=cancelled&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=a%40saga.xyz&group=submitted_by')
+    expect([v.rows, v.at, v.rowsKey]).toEqual(['cancelled', '2026-09-22T00:00:00+03:00', 'a@saga.xyz'])
+    expect(parseView(serializeView(v))).toEqual(v)
+    const bare = parseView('at=2026-09-22&rows_key=x&rows=dead')
+    expect([bare.rows, bare.at, bare.rowsKey]).toEqual([null, null, null])
+    expect(serializeView(bare)).toBe('')
+  })
+
+  it('asks the route for the figure on top of the page’s own query, and nothing when none is open', () => {
+    const v = parseView('span=7d&profile=codex&rows=succeeded&rows_key=codex')
+    const q = rowsQuery(v, 'Europe/Bucharest')!
+    expect(q.get('rows')).toBe('succeeded')
+    expect(q.get('rows_key')).toBe('codex')
+    expect(q.has('rows_at')).toBe(false)
+    const page = outcomesQuery(v, 'Europe/Bucharest')
+    for (const [k, val] of page) expect(q.getAll(k)).toContain(val)
+    expect(page.has('rows'), 'the page’s own read carries the figure, so every card would re-read').toBe(false)
+    expect(rowsQuery(parseView('span=7d'), 'UTC')).toBeNull()
   })
 })
 
@@ -1391,7 +1649,8 @@ describe('the tenants table', () => {
       fetchedAt: Date.now(),
     } satisfies Result<{ tenants: Tenant[] }>)
     const { container } = render(<TenantsScreen />)
-    await screen.findByText('eng@saga.xyz')
+    // The tenant's row head: the principal is drawn in pieces since G5-12.
+    await screen.findByRole('rowheader', { name: 'eng' }, { timeout: 5000 })
     const cell = container.querySelector('td[data-label="Credentials"]')!
     expect(cell.querySelectorAll('.tags > .tag'), 'two tags with nothing spacing them').toHaveLength(2)
   })

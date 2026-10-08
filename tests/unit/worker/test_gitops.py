@@ -19,6 +19,8 @@ agent starts. Same uid, so the mode bits are not a boundary either way.
 from __future__ import annotations
 
 import io
+import os
+import subprocess
 
 import pytest
 
@@ -28,7 +30,7 @@ from agent_worker.logs import build_logger
 from agent_worker.secrets import GIT_PROVIDER, resolve_git_token
 from swarm_common.models import Tenant, utcnow
 
-from conftest import TENANT
+from worker_seeds import TENANT
 from fakes import FakeSecretClient
 
 
@@ -220,6 +222,87 @@ def test_a_sha_ref_uses_fetch_because_a_shallow_clone_cannot_target_a_commit(
     assert {"init", "remote", "fetch", "checkout"} <= verbs
     assert "clone" not in verbs
     assert result.commit == "9f3a1c2b4d5e6f70819a2b3c4d5e6f7081920304"
+
+
+def test_a_branch_clone_tracks_every_branch_after_its_single_branch_transfer(
+    tmp_path, monkeypatch
+):
+    """The clone moves one ref; the step after it widens `remote.origin.fetch`
+    (`TRACK_EVERY_BRANCH`), so a later `git fetch origin main` moves origin/main."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    calls: list[list[str]] = []
+
+    class _Result:
+        exit_code = 0
+        timed_out = False
+        duration_seconds = 0.1
+
+    def fake_run_child(argv, **kwargs):
+        calls.append(list(argv))
+        kwargs["stdout_path"].parent.mkdir(parents=True, exist_ok=True)
+        kwargs["stdout_path"].write_text("9f3a1c2b4d5e6f70819a2b3c4d5e6f7081920304\n")
+        kwargs["stderr_path"].write_text("")
+        return _Result()
+
+    monkeypatch.setattr(gitops, "run_child", fake_run_child)
+    destination = ws.work / "repo"
+    gitops.shallow_clone(
+        url="https://github.com/saga/repo.git",
+        ref="lane/x",
+        destination=destination,
+        private_dir=ws.private,
+        logs_dir=ws.logs,
+        timeout_seconds=30,
+        logger=_logger(),
+    )
+    clone = next(i for i, argv in enumerate(calls) if "clone" in argv)
+    assert "--single-branch" in calls[clone]
+    widen = calls[clone + 1]
+    assert widen[-len(gitops.TRACK_EVERY_BRANCH):] == list(gitops.TRACK_EVERY_BRANCH)
+    assert widen[widen.index("-C") + 1] == str(destination)
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"},
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("widened", [False, True], ids=["single-branch", "track-every-branch"])
+def test_fetching_main_by_name_moves_origin_main_only_once_widened(tmp_path, widened):
+    """F571b (#453): a lane clone held an `origin/main` older than main, and
+    `git fetch origin main && git merge origin/main` merged the old one. With
+    the single-branch refspec the fetch leaves origin/main where it was (the
+    control: this test can come out the other way); widened, it moves."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    (origin / "f").write_text("1\n")
+    _git(origin, "add", "f")
+    _git(origin, "commit", "-q", "-m", "one")
+    _git(origin, "checkout", "-q", "-b", "lane/x")
+    _git(origin, "checkout", "-q", "main")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--depth", "1", "--no-tags", "--single-branch",
+         "--branch", "lane/x", origin.resolve().as_uri(), str(clone))
+    if widened:
+        _git(clone, *gitops.TRACK_EVERY_BRANCH)
+    # An origin/main that exists before main moves on: an earlier explicit
+    # fetch, or a checkpoint restored from an earlier attempt.
+    _git(clone, "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    stale = _git(clone, "rev-parse", "origin/main")
+
+    (origin / "f").write_text("2\n")
+    _git(origin, "commit", "-q", "-am", "two")
+    tip = _git(origin, "rev-parse", "main")
+
+    _git(clone, "fetch", "-q", "origin", "main")
+    assert _git(clone, "rev-parse", "FETCH_HEAD") == tip
+    assert _git(clone, "rev-parse", "origin/main") == (tip if widened else stale)
 
 
 # ---------------------------------------------------------------------------

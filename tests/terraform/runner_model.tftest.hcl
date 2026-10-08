@@ -49,6 +49,7 @@ variables {
     "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
 
@@ -64,20 +65,27 @@ run "the_claude_code_job_runs_the_pinned_model" {
     error_message = "the claude-code Job must set MODEL=claude-opus-5-5; without it the CLI runs its own default model"
   }
 
-  # The control: the output covers every Job, so "no MODEL on the others" below
-  # is a statement about six Jobs and not about an empty map.
+  # indexer is claude-code on the indexer image (contract request 48), so an
+  # index run keeps claude-code's model.
   assert {
-    condition     = length(output.job_models) == length(output.job_names) && length(output.job_names) == 6
-    error_message = "job_models must have one entry per Job: 4 Cloud-Run profiles for eng plus 2 credential-free ones for smoke"
+    condition     = output.job_models["swarm-job-eng-indexer"] == output.job_models["swarm-job-eng-claude-code"]
+    error_message = "the indexer Job must run claude-code's model: it is claude-code on another image"
+  }
+
+  # The control: the output covers every Job, so "no MODEL on the others" below
+  # is a statement about seven Jobs and not about an empty map.
+  assert {
+    condition     = length(output.job_models) == length(output.job_names) && length(output.job_names) == 7
+    error_message = "job_models must have one entry per Job: 5 Cloud-Run profiles for eng (indexer included) plus 2 credential-free ones for smoke"
   }
 
   # codex is an OpenAI CLI, where an Anthropic model name would fail every run;
   # mock and generic start no model at all.
   assert {
     condition = alltrue([
-      for job, model in output.job_models : model == null if job != "swarm-job-eng-claude-code"
+      for job, model in output.job_models : model == null if !contains(["swarm-job-eng-claude-code", "swarm-job-eng-indexer"], job)
     ])
-    error_message = "only the claude-code Job carries MODEL"
+    error_message = "only the claude-code and indexer Jobs carry MODEL"
   }
 }
 
@@ -89,7 +97,7 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
   }
 
   assert {
-    condition     = length(output.worker_models) == 2 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5"
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's (the same: it is claude-code under its own account, #295), so a Job the scheduler creates runs what a Terraform Job runs"
+    condition     = length(output.worker_models) == 3 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5" && output.worker_models["indexer"] == "claude-opus-5-5"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's and indexer's (the same: claude-code under its own account, #295; on the indexer image, contract request 48). claude-code runs on GKE Autopilot (contract request 53), so WORKER_MODELS is the only way its MODEL reaches a pod"
   }
 }

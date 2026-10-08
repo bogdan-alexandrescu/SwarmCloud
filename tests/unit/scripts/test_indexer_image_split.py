@@ -1,14 +1,14 @@
 """The repository-index toolchain ships in its own image, agent-runtime-indexer,
 and not in agent-runtime-base, which every claude-code and codex start pulls (#625).
 
-WHY. Claude-code container start on Cloud Run Jobs went from a 71 s p50 on
-2026-09-24 to ~115 s after the 10-01 toolbox and 166-168 s on 10-04/10-05,
-the days the repo-index toolchain landed in agent-runtime-base: the Go
-toolchain gopls runs `go list` with, gopls, terraform-ls, pyright and
-typescript-language-server, and the tree-sitter environment. Measured from
-the pinned artifacts on 2026-10-05 (docs/worker-images.md): about 133 MB
-compressed and 409 MB unpacked, all of it pulled by every agent start and
-used only by an index run.
+WHY. Every claude-code and codex start pulls agent-runtime-base, and the
+repo-index toolchain -- the Go toolchain gopls runs `go list` with, gopls,
+pyright, typescript-language-server and the tree-sitter environment -- is
+used only by an index run. The operator's registry bisect of 2026-10-05
+(scripts/image-sizes.sh, 101 releases) put it at +188 MB compressed
+(726 -> 916 MB). The same bisect showed the ~115 -> ~167 s start step of
+10-04/05 happened with no change in the base's size (#667), so the move
+keeps the weight off every start without being that step's cause.
 
 The properties asserted here, read from the files that ship:
 
@@ -19,6 +19,9 @@ The properties asserted here, read from the files that ship:
     resolves the digest, and the Dockerfile refuses a base given by tag;
   * every other FROM in it is pinned by digest, to the SAME Python the base
     is built on;
+  * gopls is compiled from module source with the golang.org/x pins of #661,
+    and terraform-ls (owner, 2026-10-05) and HashiCorp's zip are not in it;
+  * every build arg its build config passes is one the Dockerfile declares;
   * the build and the promotion both carry it, and the scheduled scan reads it.
 
 WHAT THIS CANNOT PROVE: that the image builds, or what it weighs in the
@@ -46,7 +49,6 @@ TOOLCHAIN = (
     "swarm-repo-index",
     "swarm-repo-graph",
     "gopls",
-    "terraform-ls",
     "/usr/local/go",
     "GO_VERSION",
     "npm ci",
@@ -81,6 +83,32 @@ def test_the_indexer_image_carries_the_whole_toolchain():
     assert "COPY images/agent-runtime-indexer/repo-index/" in code
     assert (INDEXER_DIR / "repo-index" / "repo_index_extract.py").is_file()
     assert not (REPO / "images" / "agent-runtime-base" / "repo-index").exists()
+
+
+def test_gopls_is_compiled_from_source_with_the_raised_x_modules():
+    """#661 moved with the toolchain: release 37289476429's trivy scan refused
+    the vendor binaries, so gopls is built from its module with x/mod and
+    x/text raised, and the build reads its own module list to prove it."""
+    code = _code(INDEXER)
+    assert "build_server golang.org/x/tools/gopls" in code
+    for arg in ("X_MOD_VERSION", "X_TEXT_VERSION"):
+        assert arg in _args(code), arg
+    assert 'go version -m "${out}"' in code
+    assert "go install" not in code
+    assert "releases.hashicorp.com" not in code
+    assert "terraform-ls" not in code
+    assert "unzip" not in code
+
+
+def test_every_build_arg_the_config_passes_is_declared():
+    """A --build-arg the Dockerfile never declares is dropped with a warning,
+    so a value someone meant to land in the image silently does not."""
+    config = yaml.safe_load(CLOUDBUILD.read_text(encoding="utf-8"))
+    build = "\n".join(next(s for s in config["steps"] if s["id"] == "build")["args"])
+    passed = set(re.findall(r'--build-arg "?(\w+)=', build))
+    assert passed >= {"BASE_IMAGE", "GIT_SHA"}, passed
+    declared = set(re.findall(r"^ARG (\w+)", _code(INDEXER), re.M))
+    assert passed <= declared, f"passed but never declared: {sorted(passed - declared)}"
 
 
 def test_the_indexer_proves_every_tool_runs_as_the_agent_user():

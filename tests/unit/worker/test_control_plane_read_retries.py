@@ -48,7 +48,7 @@ from agent_worker import lifecycle
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 #: The worker's exits, restated: the numbers are the contract with whoever
 #: reads the execution's exit status.

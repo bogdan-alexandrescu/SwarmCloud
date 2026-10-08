@@ -26,6 +26,7 @@ import type { Capacity, Pool, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {

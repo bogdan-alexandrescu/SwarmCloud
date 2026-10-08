@@ -179,6 +179,11 @@ load_env() {
   # teardown depend on their retention policy.
   TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
   TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
+  # terraform/bootstrap's state, in the same bucket (#827). Not overridable and
+  # not per-environment: there is one bootstrap layer per project, and its
+  # prefix is written in terraform/bootstrap/backend.tf, which this must equal
+  # (tests/unit/scripts/test_bootstrap_remote_state.py holds them together).
+  TF_BOOTSTRAP_STATE_PREFIX="bootstrap"
 
   # The swarm's own Autopilot cluster. agents-staging belongs to another team and
   # is deny-listed below; nothing here may ever target it.
@@ -210,7 +215,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
@@ -427,7 +432,19 @@ _semver_minor() {
 KUBECTL=""
 # Resolve a kubectl new enough for a 1.35 control plane. The old binaries on this
 # machine win $PATH, so PATH order is deliberately consulted LAST.
+#
+# UNDER THE WORKSPACE CALL GUARD (SWARM_CALL_GUARD set; docs/workspaces.md
+# §2.5) this returns the guard's shim and nothing else, ahead of the cache and
+# the candidates below: they name kubectl by absolute path, which is exactly how
+# a call would step around a guard installed on PATH. The shim judges the call
+# and then runs the real kubectl ($SWARM_KUBECTL, else PATH outside guard-bin/).
 kubectl_bin() {
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    local shim="${SWARM_LIB_DIR}/guard-bin/kubectl"
+    [[ -x "${shim}" ]] || die "SWARM_CALL_GUARD is set but ${shim} is missing; refusing to run kubectl unguarded"
+    printf '%s' "${shim}"
+    return 0
+  fi
   if [[ -n "${KUBECTL}" ]]; then printf '%s' "${KUBECTL}"; return 0; fi
 
   local candidates=() c parsed major minor
@@ -463,8 +480,18 @@ kc() {
 # $PATH. This is not cosmetic: on this workstation Homebrew's checkov 3.3.10 is
 # broken (it raises on import) and shadows the working 3.3.17 in ~/.local/bin,
 # exactly as three old kubectl binaries shadow 1.36.3.
+#
+# Under the workspace call guard only the three guarded tools resolve, each to
+# its shim; anything else has no guard, so it does not run at all.
 prefer_local_bin() {
   local name="$1" override="${2:-}"
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    case "${name}" in
+      gcloud|kubectl|curl) printf '%s' "${SWARM_LIB_DIR}/guard-bin/${name}"; return 0 ;;
+      *) err "under the workspace call guard only gcloud, kubectl and curl run (through scripts/lib/guard-bin/); ${name} has no guard"
+         return 1 ;;
+    esac
+  fi
   if [[ -n "${override}" ]]; then printf '%s' "${override}"; return 0; fi
   if [[ -x "${HOME}/.local/bin/${name}" ]]; then printf '%s' "${HOME}/.local/bin/${name}"; return 0; fi
   command -v "${name}" 2>/dev/null || return 1
@@ -1117,23 +1144,32 @@ _api_explain_iap() {
 }
 
 # api_request METHOD PATH [BODY] -> body on stdout, HTTP status in API_STATUS
+#
+# SWARM_API_TENANT, when set, is sent as `X-Swarm-Tenant`: the tenant switcher
+# swarm-api honours for a caller in several registered groups. It SELECTS
+# among the caller's verified memberships and never grants (403 otherwise).
+# The acceptance suite sets it to run in `smoke` rather than the caller's
+# default tenant (scripts/acceptance/config.sh, #628). Unset, nothing changes.
 API_STATUS=0
 api_request() {
   local method="$1" path="$2" body="${3:-}"
   local url token response
+  local tenant_header=()
   url="$(api_url)${path}"
   token="$(api_credential)"
+  [[ -z "${SWARM_API_TENANT:-}" ]] || tenant_header=(-H "X-Swarm-Tenant: ${SWARM_API_TENANT}")
 
   # -K - : the Authorization header arrives on stdin, never in argv. See
   # auth_config above for why that distinction matters for an ID token.
   if [[ -n "${body}" ]]; then
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
       -w $'\n%{http_code}' -X "${method}" \
-      -H "Content-Type: application/json" \
+      -H "Content-Type: application/json" ${tenant_header[@]+"${tenant_header[@]}"} \
       --data-binary "${body}" "${url}")" || { API_STATUS=0; return 1; }
   else
     response="$(auth_config "${token}" | curl -sS -m "${HTTP_TIMEOUT}" -K - \
-      -w $'\n%{http_code}' -X "${method}" "${url}")" || { API_STATUS=0; return 1; }
+      -w $'\n%{http_code}' -X "${method}" ${tenant_header[@]+"${tenant_header[@]}"} \
+      "${url}")" || { API_STATUS=0; return 1; }
   fi
 
   API_STATUS="${response##*$'\n'}"
@@ -1533,12 +1569,19 @@ def fv:
 def doc: { id: (.name | split("/") | last) }
          + ( (.fields // {}) | with_entries(.value |= fv) );
 # Mirrors swarm_common.models.SlotPool.effective_limit exactly: the minimum of
-# the hard limit and any adaptive or quota-derived cap, floored at zero.
+# the hard limit and any adaptive or quota-derived cap, floored at zero. A pool
+# with no hard_limit (absent or null) has NO effective limit: null, not 0 and not
+# unlimited -- admission refuses through it as POOL_LIMIT_UNSET (contract
+# request 38, #374). A caller that compares against this must handle null; in jq
+# every number is greater than null.
 def effective_limit:
-  [ (.hard_limit // 0) ]
-  + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
-  + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
-  | min | if . < 0 then 0 else . end;
+  if .hard_limit == null then null
+  else
+    [ .hard_limit ]
+    + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
+    + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
+    | min | if . < 0 then 0 else . end
+  end;
 '
 
 # fs_query COLLECTION WHERE_JSON [LIMIT] -> one document JSON per line
@@ -1748,9 +1791,11 @@ require_fs_database() {
 iam_policy_binds_member() {
   local policy_file="$1" role="$2" member="$3"
   [[ -s "${policy_file}" ]] || return 1
+  # Exactly 0 or 1: jq's own non-zero code for an unparseable file is
+  # version-dependent (4 under jq-1.6, 2026-10-05), and "not bound" is one answer.
   jq -e --arg role "${role}" --arg member "${member}" \
     'any((.bindings? // [])[]; .role == $role and any(.members[]?; . == $member))' \
-    "${policy_file}" >/dev/null 2>&1
+    "${policy_file}" >/dev/null 2>&1 || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1791,6 +1836,103 @@ git_dirty() {
 }
 
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ---------------------------------------------------------------------------
+# What a Dockerfile copies in from its build context.
+# ---------------------------------------------------------------------------
+# dockerfile_copy_sources FILE prints the context paths every COPY and ADD in
+# FILE names, one per line, as written. `COPY --from=<stage>` is skipped: its
+# sources are paths inside another stage, not files in the repository.
+#
+# It exists for build-images.sh --affected-by (#650): a pull request builds the
+# images whose inputs it changed, and those inputs are READ from here rather
+# than listed by hand, so a COPY added to a Dockerfile is an input the day it
+# lands.
+#
+# A form it cannot read is REFUSED, never skipped: the JSON form
+# (`COPY ["a", "b"]`), a heredoc (`COPY <<EOF`), a source built from a
+# variable, an ADD of a URL. A skipped source is a file whose change would not
+# build the image that copies it -- the green-but-broken check #650 is about.
+# Continuation lines are joined and comment lines dropped, as Docker does, and
+# a RUN heredoc's body is skipped so a line inside it cannot read as an
+# instruction.
+#
+# THE HEREDOC IS IN A FUNCTION, NOT IN $( ) (#825). bash 3.2 -- macOS's
+# /bin/bash -- scans a heredoc body written inside $( ) for quotes, and the
+# lone apostrophe in the `["']` classes below opened a quote that swallowed
+# the rest of this file: every script sourcing it failed to parse, reported
+# hundreds of lines later inside redact(). The program text is unchanged; the
+# function prints it and $( ) strips its trailing newline exactly as before.
+_dockerfile_copy_awk_program() {
+  cat <<'AWK'
+function refuse(msg) {
+  printf "%s:%d: %s\n", FILENAME, start, msg > "/dev/stderr"
+  bad = 1
+}
+{
+  if (hd != "") {
+    s = $0
+    if (hd_strip) sub(/^\t+/, "", s)
+    if (s == hd) hd = ""
+    next
+  }
+  if (cont == "") {
+    if ($0 ~ /^[ \t]*(#.*)?$/) next
+    start = FNR
+  } else if ($0 ~ /^[ \t]*#/) {
+    next
+  }
+  line = $0
+  if (line ~ /\\[ \t]*$/) {
+    sub(/\\[ \t]*$/, "", line)
+    cont = cont line " "
+    next
+  }
+  logical = cont line
+  cont = ""
+
+  heredoc = 0
+  if (match(logical, /<<-?["']?[A-Za-z_][A-Za-z0-9_]*/)) {
+    word = substr(logical, RSTART + 2, RLENGTH - 2)
+    hd_strip = 0
+    if (substr(word, 1, 1) == "-") { hd_strip = 1; word = substr(word, 2) }
+    gsub(/["']/, "", word)
+    hd = word
+    heredoc = 1
+  }
+
+  n = split(logical, t, " ")
+  ins = toupper(t[1])
+  if (ins != "COPY" && ins != "ADD") next
+  if (heredoc) { refuse(ins " from a heredoc: its content is not a file this reader can map"); next }
+
+  from = 0; k = 0; json = 0
+  for (i = 2; i <= n; i++) {
+    if (k == 0 && t[i] ~ /^--/) {
+      if (t[i] ~ /^--from=/) from = 1
+      continue
+    }
+    if (k == 0 && substr(t[i], 1, 1) == "[") json = 1
+    a[++k] = t[i]
+  }
+  if (from) next
+  if (json) { refuse(ins " in JSON form: write it as `" ins " <src>... <dest>`"); next }
+  if (k < 2) { refuse(ins " with no source"); next }
+  for (i = 1; i < k; i++) {
+    if (a[i] ~ /\$/) { refuse(ins " source " a[i] " is built from a variable"); continue }
+    if (a[i] ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) { refuse(ins " of a URL, " a[i]); continue }
+    print a[i]
+  }
+}
+END { exit bad }
+AWK
+}
+DOCKERFILE_COPY_AWK="$(_dockerfile_copy_awk_program)"
+unset -f _dockerfile_copy_awk_program
+
+dockerfile_copy_sources() {
+  awk "${DOCKERFILE_COPY_AWK}" "$1"
+}
 
 # Mask anything that looks like a credential before it reaches a terminal or a
 # CI log.

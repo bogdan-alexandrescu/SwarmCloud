@@ -99,10 +99,14 @@ def test_the_scan_sees_the_keys_the_worker_is_known_to_read():
 
 def test_every_metadata_key_the_worker_reads_is_signed():
     # The two child counters/markers the worker reads are written after
-    # submission by design, so they are named here and nowhere else.
+    # submission by design, so they are named here and nowhere else. So is a
+    # merge step's CI wait (lane MS2), written by its own park and the wake
+    # tick: reserved from callers, and read only to count refunds and carry
+    # `first_parked_at` from park to park.
     unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS) - {
         "child_await_resumes",
         "child_cascade",
+        "merge_wait",
     }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
@@ -114,13 +118,15 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: The platform's metadata keys that change AFTER submission, or that no
 #: worker acts on, and so cannot be inside a signature made at submission:
 #: the reconciler's refund counter, the worker's await-refund counter and the
-#: cascade marker (written on a running child), and the child's request id,
-#: which only swarm-api's dedupe reads (docs/design/child-tasks.md §6.4).
+#: cascade marker (written on a running child), the child's request id,
+#: which only swarm-api's dedupe reads (docs/design/child-tasks.md §6.4), and
+#: a merge step's CI wait, written by its park and its wake tick (lane MS2).
 UNSIGNED_PLATFORM_KEYS = {
     "startup_refunds",
     "child_await_resumes",
     "child_cascade",
     "child_request_id",
+    "merge_wait",
 }
 
 
@@ -129,6 +135,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         CHILD_AWAIT_RESUMES_METADATA_KEY,
         CHILD_CASCADE_METADATA_KEY,
         CHILD_REQUEST_ID_METADATA_KEY,
+        MERGE_WAIT_METADATA_KEY,
         RESERVED_METADATA_KEYS,
         STARTUP_REFUNDS_METADATA_KEY,
     )
@@ -139,4 +146,5 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         CHILD_AWAIT_RESUMES_METADATA_KEY,
         CHILD_CASCADE_METADATA_KEY,
         CHILD_REQUEST_ID_METADATA_KEY,
+        MERGE_WAIT_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS

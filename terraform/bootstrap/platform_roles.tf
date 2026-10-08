@@ -391,7 +391,7 @@ resource "google_project_iam_member" "broker_secret_lister" {
 # Every infra state the roles are adopted from -- terraform/infra's remote state
 # in the bucket this root creates, at the prefix scripts/bootstrap.sh gives it
 # (infra/<environment>). Only its outputs are read; the data source stores them
-# in this root's local state, and none of terraform/infra's outputs is sensitive.
+# in this root's state, and none of terraform/infra's outputs is sensitive.
 data "terraform_remote_state" "infra" {
   for_each = toset(var.adopt_from_infra_states)
 

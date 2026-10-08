@@ -23,8 +23,9 @@ The owner's requirement, recorded on 2026-09-24 next to that annotation:
 > without progress or that were left open and running after the agent work
 > was finished.
 
-The reconciler does that with two rules. Both act only on GKE Jobs, and today
-the `browser` profile is the only profile that runs on GKE.
+The reconciler does that with two rules. Both act only on GKE Jobs, which since
+2026-10-08 means `claude-code` pods as well as `browser` ones: contract request
+53 moved `claude-code` to GKE Autopilot.
 
 | Rule | Finding | What the reconciler does |
 |---|---|---|

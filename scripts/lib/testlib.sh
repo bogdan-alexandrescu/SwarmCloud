@@ -280,8 +280,8 @@ require_platform() {
 # `actions` ("browser runner needs input.url or at least one action",
 # apps/agent-worker/agent_worker/runners/browser.py), so the `{message, run_id}`
 # every suite used to send fails at the runner with dispatch working perfectly.
-# That made the smoke suite's GKE_AUTOPILOT row -- browser is its only profile
-# -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
+# That made the smoke suite's GKE_AUTOPILOT row -- browser was its only profile
+# then -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
 # that could not prove anything.
 #
 # One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the
@@ -560,14 +560,31 @@ t_check_browser_fixture() {
 # SWARM_SMOKE_FIXTURE_REPOSITORY and SWARM_SMOKE_FIXTURE_REF point it at a
 # fork or a branch. No dispatch block: the default strategy, collect, keeps
 # the diff and pushes nothing.
+#
+# THE FIXTURE IS ECHOED, on stderr (stdout is the JSON the caller merges), with
+# where each value came from (#346, #345 review): an override left exported in
+# an operator's shell used to make the smoke clone a stale fork or branch with
+# nothing in the run to say so. Through `redact`, as any URL an operator
+# supplies could carry userinfo.
 SMOKE_FIXTURE_REPOSITORY_DEFAULT="https://github.com/bogdan-alexandrescu/SwarmCloud.git"
 profile_extra() {
   local profile="$1"
+  local url="${SMOKE_FIXTURE_REPOSITORY_DEFAULT}" url_from="the default"
+  local ref="main" ref_from="the default"
   case "${profile}" in
     generic)
+      if [[ -n "${SWARM_SMOKE_FIXTURE_REPOSITORY:-}" ]]; then
+        url="${SWARM_SMOKE_FIXTURE_REPOSITORY}"
+        url_from="from SWARM_SMOKE_FIXTURE_REPOSITORY"
+      fi
+      if [[ -n "${SWARM_SMOKE_FIXTURE_REF:-}" ]]; then
+        ref="${SWARM_SMOKE_FIXTURE_REF}"
+        ref_from="from SWARM_SMOKE_FIXTURE_REF"
+      fi
+      info "generic smoke fixture: ${url} (${url_from}) at ref ${ref} (${ref_from})" 2>&1 | redact >&2
       jq -nc \
-        --arg u "${SWARM_SMOKE_FIXTURE_REPOSITORY:-${SMOKE_FIXTURE_REPOSITORY_DEFAULT}}" \
-        --arg r "${SWARM_SMOKE_FIXTURE_REF:-main}" \
+        --arg u "${url}" \
+        --arg r "${ref}" \
         '{repository_url: $u, repository_ref: $r}'
       ;;
     *)

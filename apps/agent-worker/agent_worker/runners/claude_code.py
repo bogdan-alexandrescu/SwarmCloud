@@ -3,12 +3,26 @@
 The CLI is started in print mode with STREAMED JSON output (one event per line,
 `--output-format stream-json --verbose`), in the repository checkout when the
 task has one and in the attempt's isolated work directory when it has none,
-with HOME the work directory either way, `--model` the Job's `MODEL`, the
-tenant's credential in its environment and nothing else from the worker's own
-environment. That credential is either `ANTHROPIC_API_KEY`
-(metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
-from `claude setup-token`) -- whichever the tenant's secret supplies. Only the
-one that is present is passed to the child.
+with HOME the work directory either way and `--model` the Job's `MODEL`.
+
+Its environment is built from scratch by `cliagent.run_cli_agent`, not
+inherited. It holds the platform's own values (`PATH`, `HOME`, the locale,
+`TERM`, `CI`, `NO_COLOR`, `SWARM_ARTIFACTS_DIR`, `SWARM_WORK_DIR`, and this
+runner's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), one provider credential,
+and exactly these from the worker's own environment: `TMPDIR`; `HTTPS_PROXY`,
+`HTTP_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` when set (the two proxy
+URLs registered for redaction, since one can embed a password); and, when set,
+the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
+which the worker sets from the task so an agent's `git commit` names that
+person. Nothing else crosses. The credential is the tenant's secret, or a pool
+account's OAuth token when the attempt holds an account, and it is passed in
+exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
+`CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
+`claude setup-token`). The tenant's one secret is projected into both, so
+`cliagent._credential_env` picks by the value's shape -- the subscription
+token's prefix, `_OAUTH_TOKEN_PREFIX`, means the OAuth variable -- and the
+other variable is dropped.
 
 About permissions: an interactive permission prompt in a non-interactive
 container is a hang, not a safety feature -- nobody is there to answer it, and
@@ -55,6 +69,23 @@ that refuses any call asking for `run_in_background` and tells the agent to run
 it in the foreground. The hook is the layer that holds when a CLI release
 renames or ignores the variable. And when an answer still announces pending
 work, `cliagent` resumes the session once to finish (`finish_on_pending`).
+
+WHY REPAIR TURNS (#624, owner decision 2026-10-05, history I1). About $201 --
+14.9% of all spend -- went to agents that finished and then failed a check
+they were never shown: an expected output not written, or a credential-shaped
+line in the final tree, both checked by the worker only after the agent had
+exited. So after the turn ends (and after any finish pass) `cliagent` runs the
+same expected-outputs check and the same publish credential scan
+(`agent_worker.publish_scan`) against the tree, and when either fails resumes
+the session for up to two repair turns, naming each missing file's path or
+each flagged `path:line rule` -- never the matched text (`repair_checks`).
+
+WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
+that read stdin with nothing attached sat until the Bash timeout killed it:
+the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
+redirect. A second PreToolUse hook in the same settings file
+(`stdin_hook.py`, shipped in this package) wraps each Bash command so its
+outer stdin is /dev/null, leaving pipes and redirects inside it alone.
 """
 
 from __future__ import annotations
@@ -62,6 +93,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -79,6 +111,14 @@ SETTINGS_DIR_NAME = ".swarm-claude-code"
 
 #: The tools whose calls can ask to run in the background.
 _BACKGROUND_TOOLS = "Bash|Task|Agent"
+
+#: The PreToolUse hook that runs every Bash command with its outer stdin from
+#: /dev/null (#750; the why is in its docstring). Unlike the background
+#: refusal it is not generated into `work/`: it ships in this package and is
+#: named by absolute path, so an agent cannot edit the copy a later attempt
+#: runs, and it is the file the tests run.
+STDIN_HOOK_NAME = "stdin_hook.py"
+STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
 #: interpreter. Exit 2 is the CLI's "block this tool call", and what it writes
@@ -126,7 +166,25 @@ def write_headless_settings(directory: Path) -> Path:
     hook = directory / "refuse-background.py"
     _write_private(hook, _HOOK)
     settings = {
-        "env": {NO_BACKGROUND_ENV: "1"},
+        "env": {
+            NO_BACKGROUND_ENV: "1",
+            # Observer P21, owner decision 2026-10-06: the CLI's 2-minute
+            # default Bash timeout killed a foreground command in 3 of 19
+            # chunk-2 steps, while the lane briefs allow any command up to 10
+            # minutes. Both at 10 minutes, so the default and the most a call
+            # may ask for match the briefs. Strings: the settings' env is.
+            "BASH_DEFAULT_TIMEOUT_MS": "600000",
+            "BASH_MAX_TIMEOUT_MS": "600000",
+        },
+        # #735, owner decision 2026-10-06: no attribution written at all, so
+        # no "Generated with" footer reaches a pr-body.md and no
+        # Co-Authored-By trailer a commit. The object form is the pinned
+        # CLI's (2.1.283) documented spelling of "hide all attribution";
+        # `includeCoAuthoredBy` is its deprecated predecessor, for a CLI that
+        # predates `attribution`. The worker still strips what gets through
+        # (`lifecycle.strip_attribution`).
+        "attribution": {"commit": "", "pr": "", "sessionUrl": False},
+        "includeCoAuthoredBy": False,
         "hooks": {
             "PreToolUse": [
                 {
@@ -138,7 +196,20 @@ def write_headless_settings(directory: Path) -> Path:
                             "timeout": 30,
                         }
                     ],
-                }
+                },
+                {
+                    # Its own entry, so it runs beside the refusal above. It
+                    # sets no permission decision, only `updatedInput`, and
+                    # fails open: an error lets the command run unchanged.
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(STDIN_HOOK))}",
+                            "timeout": 30,
+                        }
+                    ],
+                },
             ]
         },
     }
@@ -175,6 +246,26 @@ SPEC = CliAgentSpec(
     # An answer that announces pending work is resumed once to finish it
     # (owner decision 2026-10-05; `cliagent.pending_work`).
     finish_on_pending=True,
+    # After the turn ends, the expected-outputs check and the publish
+    # credential scan run against the tree, and a failure is resumed for up
+    # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
+    repair_checks=True,
+    # The CLI warns on EVERY headless run that it ignores the settings' allow
+    # list because the workspace is untrusted ("Ignoring 23 permissions.allow
+    # entries from .claude/settings.json: this workspace has not been trusted.
+    # Run Claude Code interactively ..."). It is benign -- the platform runs
+    # with --dangerously-skip-permissions -- and was recorded as the error of a
+    # run SIGTERM killed (owner decision 2026-10-06). Matched by its stable
+    # prefix, with the entry count as a number, plus the advice should the CLI
+    # wrap it onto a line of its own. The workspace is NOT marked trusted: the
+    # owner chose filtering only.
+    benign_stderr=(
+        re.compile(
+            r"\s*Ignoring \d+ permissions\.allow entries from \S*: "
+            r"this workspace has not been trusted"
+        ),
+        re.compile(r"\s*Run Claude Code interactively"),
+    ),
 )
 
 

@@ -1138,7 +1138,16 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="claude-code",
         image="agent-runtime-base",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 53 (applied 2026-10-08, after
+        # request 55's canary): DISPATCHED -> RUNNING p50 ~23 s / max 44 s on
+        # five real steps, against Cloud Run's DISPATCHED -> STARTING p50
+        # 128 s / p90 212 s, 90-95 % of it in Cloud Run's own provisioning
+        # (#363, #625, #667). Extended run time is what keeps a two-hour agent
+        # from being consolidated away, and it is on-demand only: no Spot
+        # (invariant 6). The tenants' Cloud Run Jobs for this profile are kept
+        # until 2026-10-15 as the rollback (terraform/infra/locals.tf
+        # `cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
         provider="anthropic",
         # BOTH are accepted, and a tenant supplies exactly one. Claude Code runs
@@ -1251,7 +1260,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         disabled_reason=_DISABLED_UNTIL_342,
     ),
     # Identical to claude-code except its name -- and so its Job and service
-    # account, `swarm-<tenant>-review` -- and never_restore_checkpoint.
+    # account, `swarm-<tenant>-review` -- and never_restore_checkpoint, and,
+    # since contract request 53 moved claude-code to GKE Autopilot, its
+    # backend: this profile is retired (no Job for any tenant,
+    # `profiles_without_a_job`), so request 53 did not move it.
     "claude-code-review": RunnerProfile(
         name="claude-code-review",
         image="agent-runtime-base",
@@ -1267,6 +1279,24 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
     ),
+    # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
+    # on agent-runtime-indexer, the image that carries the repository index's
+    # toolchain once it left agent-runtime-base. Identical to claude-code in
+    # every field but its name and its image, by that decision. swarm-api names
+    # it for its own index runs (`swarm_api.repoindex.INDEXER_PROFILE`); a
+    # caller picks it by name like any other and sends no image (invariant 10).
+    "indexer": RunnerProfile(
+        name="indexer",
+        image="agent-runtime-indexer",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+    ),
 }
 
 
@@ -1275,7 +1305,8 @@ def resolve_backend(profile: RunnerProfile) -> Backend:
 
     Cloud Run Jobs is preferred for everything it can hold, because it has no
     nodes, no autoscaler and no node upgrades -- far fewer ways for the platform
-    to kill a task. GKE Autopilot takes what does not fit.
+    to kill a task. GKE Autopilot takes what does not fit, and claude-code,
+    which names it for its start latency (contract request 53).
     """
     if profile.backend is not Backend.AUTO:
         return profile.backend

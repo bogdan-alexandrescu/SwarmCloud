@@ -52,14 +52,14 @@ import pytest
 
 from agent_worker import gitops
 from agent_worker import workspace as workspace_mod
-from agent_worker.checkpoint import CheckpointManager
+from agent_worker.checkpoint import CheckpointManager, CheckpointRecord
 from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -100,10 +100,21 @@ def _warnings_naming(log_stream: io.StringIO, name: str) -> list[dict[str, Any]]
     ]
 
 
+#: The sentence that follows the deliverables line (owner decision,
+#: 2026-10-05): the agent may ask the owner in `questions.json` instead of
+#: guessing. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
+
+
 def _deliverables_line(artifacts: Path) -> str:
     return (
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) "
-        "are uploaded and shown in Artifacts."
+        f"are uploaded and shown in Artifacts.\n{QUESTIONS_LINE}"
     )
 
 
@@ -118,8 +129,8 @@ def _deliverables_line(artifacts: Path) -> str:
 RECORDING_CLI = r"""#!/usr/bin/env python3
 import json, os, sys
 record = {
-    "argv": sys.argv[1:-1],
-    "prompt": sys.argv[-1],
+    "argv": sys.argv[1:],
+    "prompt": sys.stdin.read(),
     "cwd": os.getcwd(),
     "home": os.environ.get("HOME"),
     "claude_md": open("CLAUDE.md").read() if os.path.exists("CLAUDE.md") else None,
@@ -469,8 +480,9 @@ def test_a_repository_that_unignores_the_name_is_reported_not_hidden(tmp_path):
 LANE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
+prompt = sys.stdin.read()
 try:
-    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(prompt)
 except (ValueError, IndexError):
     plan = {}
 
@@ -482,9 +494,9 @@ out = {
     "cwd": os.getcwd(),
     "home": os.environ.get("HOME"),
     "work_dir": os.environ.get("SWARM_WORK_DIR"),
-    "flags": sys.argv[1:-1],
+    "flags": sys.argv[1:],
     "claude_md": open("CLAUDE.md").read() if os.path.exists("CLAUDE.md") else None,
-    "prompt_tail": sys.argv[-1][-600:],
+    "prompt_tail": prompt[-600:],
 }
 for name, text in sorted((plan.get("write_relative") or {}).items()):
     path = pathlib.Path(name)
@@ -568,6 +580,45 @@ def _final_archive(store: LocalObjectStore) -> tarfile.TarFile:
     return tarfile.open(fileobj=io.BytesIO(store.download_bytes(keys[-1])), mode="r:gz")
 
 
+def _every_archive(store: LocalObjectStore) -> list[list[str]]:
+    """The member names of every checkpoint archive att_1 wrote, oldest first."""
+    keys = sorted(
+        key
+        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/")
+        if key.endswith("/archive.tar.gz")
+    )
+    names = []
+    for key in keys:
+        with tarfile.open(fileobj=io.BytesIO(store.download_bytes(key)), mode="r:gz") as tar:
+            names.append(tar.getnames())
+    return names
+
+
+def _restored_final(store: LocalObjectStore, tmp_path: Path) -> Path:
+    """`work/` as a resume would get it from att_1's last checkpoint.
+
+    After an attempt's first checkpoint each archive holds only what changed
+    (#637), so what the checkpoint HOLDS is what replaying its chain restores.
+    """
+    keys = sorted(
+        key
+        for key in store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/")
+        if key.endswith("/manifest.json")
+    )
+    assert keys, "the attempt wrote no checkpoint"
+    record = CheckpointRecord.from_dict(json.loads(store.download_bytes(keys[-1])))
+    logger = build_logger(
+        task_id="task_1", attempt_id="att_check", tenant_id=TENANT, generation=1,
+        runner_profile="claude-code", stream=io.StringIO(),
+    )
+    ws = workspace_mod.create(tmp_path / "restored", "att_check")
+    CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_check",
+        generation=1, logger=logger,
+    ).restore(record, ws)
+    return ws.work
+
+
 def _artifact(store: LocalObjectStore, name: str) -> str:
     return store.download_bytes(
         f"tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/{name}"
@@ -585,7 +636,7 @@ def _run_lane(worker_factory: Any, monkeypatch: pytest.MonkeyPatch, **config: An
 @needs_git
 def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
     db, store, worker_factory, lane_agent, origin, local_urls, monkeypatch, runner_inputs,
-    recheck_bypassed,
+    recheck_bypassed, tmp_path,
 ):
     # `recheck_bypassed`: this lane is seeded with a caller's `input.model`,
     # which the worker's re-check now refuses before the runner step
@@ -633,14 +684,15 @@ def test_a_repository_step_runs_in_its_checkout_like_a_local_lane(
     #    link, and not the link -- and no input.json (owner decision
     #    2026-09-27, #229): no checkpoint archive holds the task's input,
     #    under any label.
-    with _final_archive(store) as archive:
-        members = archive.getnames()
-        assert "repo/CLAUDE.md" in members
+    restored = _restored_final(store, tmp_path)
+    assert (restored / "repo" / "CLAUDE.md").is_file()
+    assert not os.path.lexists(restored / "repo" / "artifacts")
+    assert not os.path.lexists(restored / "input.json")
+    for members in _every_archive(store):
         assert "repo/artifacts" not in members
         assert "input.json" not in members
-        exclude = archive.extractfile("repo/.git/info/exclude")
-        assert exclude is not None
-        assert "/artifacts" in exclude.read().decode("utf-8").splitlines()
+    exclude = (restored / "repo" / ".git" / "info" / "exclude").read_text()
+    assert "/artifacts" in exclude.splitlines()
     # The runner's own input, as the worker wrote it for this attempt,
     # captured at the moment of each checkpoint (`runner_inputs`,
     # `tests/unit/worker/conftest.py`) -- there is no archived input.json to

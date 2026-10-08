@@ -48,7 +48,7 @@ import pytest
 
 from agent_worker import workspace as workspace_mod
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 REPO = Path(__file__).resolve().parents[3]

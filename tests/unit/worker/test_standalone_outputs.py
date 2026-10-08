@@ -54,7 +54,7 @@ from agent_worker.objectstore import LocalObjectStore
 from agent_worker.runners.base import RunnerContext
 from swarm_common.states import TaskState
 
-from conftest import TENANT, record_as_earlier_attempt, seed_attempt
+from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
 
@@ -99,6 +99,17 @@ def deliverables_line(artifacts_dir: Path | str) -> str:
     )
 
 
+#: The sentence that follows the deliverables line (owner decision,
+#: 2026-10-05): the agent may ask the owner in `questions.json` instead of
+#: guessing. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
+
+
 #: How every copy of the line starts, and ends once the directory is named.
 LINE_START = "Files written to "
 LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
@@ -111,7 +122,7 @@ LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifact
 FAKE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
-prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+prompt = sys.stdin.read()
 try:
     plan, _end = json.JSONDecoder().raw_decode(prompt)
 except ValueError:
@@ -324,6 +335,8 @@ def _recording_cli(tmp_path: Path) -> Path:
         "import json, os, sys\n"
         "with open(os.path.join(os.environ['SWARM_WORK_DIR'], '.argv.json'), 'w') as fh:\n"
         "    json.dump(sys.argv, fh)\n"
+        "with open(os.path.join(os.environ['SWARM_WORK_DIR'], '.prompt.txt'), 'w') as fh:\n"
+        "    fh.write(sys.stdin.read())\n"
         "print(json.dumps({'type': 'result', 'result': 'ok'}))\n"
     )
     binary.chmod(0o755)
@@ -368,14 +381,19 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
 
     ctx = _ctx(tmp_path, dict(payload))
     run_cli_agent(ctx, spec)
-    prompt = json.loads((ctx.work_dir / ".argv.json").read_text())[-1]
+    prompt = (ctx.work_dir / ".prompt.txt").read_text()
+    argv = json.loads((ctx.work_dir / ".argv.json").read_text())
+    assert "compute primes" not in json.dumps(argv), argv
 
     assert prompt.startswith("compute primes\n\n"), prompt
     assert prompt.count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
     assert prompt.count("$SWARM_ARTIFACTS_DIR") == 1, prompt
     if "expected_outputs" not in payload:
-        # Nothing else is appended when no later step expects a file.
-        assert prompt == f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}"
+        # Nothing else is appended when no later step expects a file: the
+        # line, and the questions sentence after it (2026-10-05).
+        assert prompt == (
+            f"compute primes\n\n{deliverables_line(ctx.artifacts_dir)}\n{QUESTIONS_LINE}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -917,8 +935,11 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     assert prompt.startswith(json.dumps(plan)), prompt
     appended = prompt[len(json.dumps(plan)):]
     lines = [line for line in appended.splitlines() if line.strip()]
-    assert len(lines) == 1, appended
+    # The line, then the questions sentence (2026-10-05), which is about a
+    # decision for the owner, not about where the deliverable goes.
+    assert len(lines) == 2, appended
     assert lines[0].startswith(LINE_START) and lines[0].endswith(LINE_END), lines[0]
+    assert lines[1] == QUESTIONS_LINE, lines[1]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 

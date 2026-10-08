@@ -13,8 +13,10 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
 * scrubbed of every registered secret BEFORE it is cut, as every other text
   the worker shows;
 * refused, falling back to the generated text, when it is not UTF-8, is empty,
-  is a title of more than one line, or carries attribution (the owner's rule:
-  none on GitHub);
+  is a title of more than one line, or is a title carrying attribution (the
+  owner's rule: none on GitHub);
+* a body carrying attribution has those lines removed and the rest published
+  (#735); only a body with nothing left falls back to the generated text;
 * read without following a link, like every other file the worker takes out
   of the artifacts folder;
 * with the platform's metadata block still in the body, after the agent's.
@@ -49,7 +51,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.forge import RepoAccess, RepoRef
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
     assert_no_attribution_in,
@@ -246,11 +248,11 @@ def test_a_title_that_cannot_be_used_opens_no_pull_request(
 @pytest.mark.parametrize(
     "body",
     [
-        b"Closes #4\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
-        b"Closes #4\n\n\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"\n---\n\n\xf0\x9f\xa4\x96\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
         b"\xff\xfe not utf-8",
     ],
-    ids=["co-author-trailer", "generated-footer", "not-utf8"],
+    ids=["only-a-footer", "only-attribution-and-a-rule", "not-utf8"],
 )
 def test_a_body_that_cannot_be_used_falls_back_to_the_generated_one(
     worker_factory, monkeypatch, origin, local_urls, forge, body
@@ -264,6 +266,82 @@ def test_a_body_that_cannot_be_used_falls_back_to_the_generated_one(
     assert_no_attribution_in(pull["body"], "pull request body")
     assert out["pull_request_text"]["body"] == "platform", out
     assert out.get("pull_request_text_refused"), out
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"Closes #322\n\nThe last item, 9c.\n\n"
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n",
+        b"Closes #322\n\nThe last item, 9c.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
+        b"Closes #322\n\nThe last item, 9c.\n\n"
+        b"\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+        b"Co-Authored-By: Claude Opus <noreply@anthropic.com>\n",
+    ],
+    ids=["generated-footer", "co-author-trailer", "both"],
+)
+def test_an_attributed_body_loses_the_attribution_and_keeps_the_rest(
+    worker_factory, monkeypatch, origin, local_urls, forge, body
+):
+    """#735: the attribution lines are removed and the agent's body, its
+    `Closes #N` included, is published -- not swapped for the fallback."""
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-attributed",
+        files={"pr-body.md": body},
+    )
+    pull = _only_pull(forge)
+    assert pull["body"].startswith("Closes #322\n\nThe last item, 9c.\n\n"), pull["body"]
+    assert_no_attribution_in(pull["body"], "pull request body")
+    assert "\U0001f916" not in pull["body"], pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
+    assert not out.get("pull_request_text_refused"), out
+
+
+def test_strip_attribution_keeps_every_other_line():
+    text = (
+        "Closes #322\n\nWhat changed.\n\n"
+        "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+        "Co-Authored-By: Claude <noreply@anthropic.com>\n"
+    )
+    assert lifecycle.strip_attribution(text) == "Closes #322\n\nWhat changed."
+
+
+def test_strip_attribution_removes_a_bare_robot_line():
+    assert lifecycle.strip_attribution("Closes #9\n\n\U0001f916\n") == "Closes #9"
+
+
+def test_strip_attribution_leaves_nothing_of_a_body_that_is_only_a_footer():
+    footer = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    assert lifecycle.strip_attribution(footer) == ""
+    assert lifecycle.strip_attribution("---\n\n" + footer) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Closes #12\n\nThe widget accepted -1.\n",
+        "  leading space\n\n\n\ntrailing blank lines\n\n\n",
+        "a claude-code runner profile, `@decorator`, \u00e9\r\nCRLF\n---\n",
+        "",
+    ],
+    ids=["plain", "whitespace", "mixed", "empty"],
+)
+def test_strip_attribution_returns_a_body_without_attribution_byte_for_byte(text):
+    assert lifecycle.strip_attribution(text) is text
+
+
+def test_a_body_without_attribution_is_published_byte_for_byte(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    agent_body = "Closes #12\n\n\n\nTwo blank lines above, `x  ` and a rule:\n\n---\n\ndone."
+    _, _, out = _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-plain",
+        files={"pr-body.md": (agent_body + "\n").encode()},
+    )
+    pull = _only_pull(forge)
+    # The agent's text, exactly, then the platform's separator.
+    assert pull["body"].startswith(agent_body + "\n\n---\n\n"), pull["body"]
+    assert out["pull_request_text"]["body"] == "agent", out
 
 
 def test_a_body_that_is_a_link_is_not_followed(
@@ -296,10 +374,11 @@ def _access() -> RepoAccess:
     )
 
 
-def test_an_adopted_pull_request_is_updated_when_asked(monkeypatch):
+def test_an_adopted_pull_request_gains_the_amendment_and_keeps_its_body(monkeypatch):
     """A retried attempt pushes the same branch and adopts the open pull
-    request. Asked to (the agent wrote its own text), the worker updates that
-    pull request's title and body, so `Closes #N` reaches it."""
+    request. Its body is KEPT and the attempt's section appended (#807), so a
+    new `Closes #N` reaches it without the old ones being lost; its title is
+    kept unless `retitle_if` says it is the worker's own."""
     seen = []
 
     def fake(url, *, token, method="GET", payload=None):
@@ -310,18 +389,19 @@ def test_an_adopted_pull_request_is_updated_when_asked(monkeypatch):
             return 200, {"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
                          "state": "open"}
         return 200, [{"number": 47, "html_url": "https://github.com/acme/widgets/pull/47",
-                      "state": "open"}]
+                      "state": "open", "title": "Old title", "body": "Closes #3"}]
 
     monkeypatch.setattr(forge_mod, "_request", fake)
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
-        title="New title", body="Closes #12", update_existing=True,
+        title="New title", body="Closes #12", amendment="## Republished (attempt 2): `t`\n\nCloses #12",
+        retitle_if=lambda t: False,
     )
-    assert pr.number == 47 and pr.created is False and pr.updated is True
+    assert pr.number == 47 and pr.created is False and pr.updated is True and pr.appended is True
     assert [m for m, _, _ in seen] == ["POST", "GET", "PATCH"], seen
     method, url, payload = seen[-1]
     assert url.endswith("/repos/acme/widgets/pulls/47"), url
-    assert payload == {"title": "New title", "body": "Closes #12"}, payload
+    assert payload == {"body": "Closes #3\n\n## Republished (attempt 2): `t`\n\nCloses #12\n"}, payload
 
 
 def test_a_failed_update_still_adopts_the_pull_request(monkeypatch):
@@ -336,16 +416,17 @@ def test_a_failed_update_still_adopts_the_pull_request(monkeypatch):
     monkeypatch.setattr(forge_mod, "_request", fake)
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
-        title="New title", body="Closes #12", update_existing=True,
+        title="New title", body="Closes #12", amendment="## Republished (attempt 2): `t`",
     )
     assert pr.number == 47 and pr.created is False and pr.updated is False
 
 
-def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
+def test_the_worker_always_offers_an_amendment_never_a_replacement(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """A human may have edited a generated title or body by hand; a retry that
-    has nothing of the agent's to say must not overwrite that."""
+    """A human may have edited the body by hand, and it holds the closing
+    keywords: an adopting publish appends to it whether or not the agent
+    wrote text (#807), and the agent's body is inside the section when it did."""
     _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-upd-none", files={},
         task_input={"issue": 5}, with_title=False,
@@ -354,7 +435,11 @@ def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
         worker_factory, monkeypatch, origin, task_id="t-pr-upd-agent",
         files={"pr-body.md": b"Closes #5\n"},
     )
-    assert [bool(p.get("update_existing")) for p in forge.pulls] == [False, True], forge.pulls
+    assert all("update_existing" not in p for p in forge.pulls), forge.pulls
+    none, agent = (p["amendment"] for p in forge.pulls)
+    assert none.startswith("## Republished (attempt `att-t-pr-upd-none`): `t-pr-upd-none`"), none
+    assert "Closes #5" not in none
+    assert "Closes #5" in agent.splitlines(), agent
 
 
 # -- the generated title never carries the task id (owner rule, 2026-09-28) ---
@@ -506,7 +591,6 @@ def test_an_adopted_pull_request_with_the_retired_title_is_retitled_only(monkeyp
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
         title="Make the widget refuse negatives.", body="generated",
-        update_existing=False,
         retitle_if=lambda t: "task_" in t.lower(),
     )
     assert pr.updated is True, pr
@@ -520,7 +604,6 @@ def test_an_adopted_pull_request_with_a_human_title_is_left_alone(monkeypatch):
     pr = forge_mod.open_pull_request(
         access=_access(), token="t", head="swarm/task_1", base="main",
         title="Make the widget refuse negatives.", body="generated",
-        update_existing=False,
         retitle_if=lambda t: "task_" in t.lower(),
     )
     assert pr.updated is False, pr

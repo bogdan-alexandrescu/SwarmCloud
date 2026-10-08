@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -30,18 +30,22 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { GitHubCallbackScreen } from './GitHubConnect'
 import { NotFound, nearestPath } from './NotFound'
+import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
+import { OnboardingScreen, SetupCard } from './Onboarding'
+import { AccessScreen } from './Access'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
+import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
@@ -294,8 +298,16 @@ export const SECTIONS: SectionDef[] = [
       // with its TAIL INTACT through SECTION_ALIASES rather than landing on
       // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
       { id: 'timeline', label: 'Timeline' },
-      // repositories.html §1: Work › Repositories, after Runs; the shell draws it last.
+      // repositories.html §1: Work › Repositories, after Runs; the shell draws it after
+      // Timeline, ahead of OB8's Setup and Access below.
       { id: 'repositories', label: 'Repositories' },
+      // ONBOARDING (#780, OB8; onboarding.html Entry A and Access A, owner pick
+      // D10). Setup is the six-step checklist Overview carries as a card until
+      // it is done -- a tab too, so it is still reachable once the card is
+      // hidden; Access is the steady state: the orgs and repositories
+      // SwarmCloud may reach as the person, Read or Write, verified.
+      { id: 'setup', label: 'Setup' },
+      { id: 'access', label: 'Access' },
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
       // panel it renders on success, "That is not a running agent" -- because
@@ -448,6 +460,13 @@ const REFERENCE = 'reference'
 
 /** The Submit chooser's address (`/submit`). Not a section, like Help. */
 const SUBMIT = SUBMIT_ADDRESS
+
+/**
+ * The GitHub App's callback page (`/onboarding/github/callback`, #780 OB3).
+ * Not a section and not a tab -- GitHub sends the browser here, nothing in the
+ * nav does -- so no nav tab, and no issue-form "Where" entry, follows it.
+ */
+const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -717,7 +736,9 @@ export function fromLocation(): Route {
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return { ...fromAddress(''), missing: pathname }
   const r = fromAddress(p.address)
-  return p.agentTab === null || r.taskId === null ? r : { ...r, list: { tab: p.agentTab, state: null } }
+  // The list an agent was opened from, with its state and toggles when the
+  // path's query names them (G2-22), so a reload closes to the same list.
+  return p.agentTab === null || r.taskId === null ? r : { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
 }
 
 /**
@@ -757,6 +778,7 @@ export function fromAddress(full: string): Route {
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+  if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
   if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
@@ -805,7 +827,8 @@ export function fromAddress(full: string): Route {
   // addresses (`running/bogus`, `running/live/failed`, `running/recent/faild`)
   // is the plain list, never a drawer and never a guessed tab.
   if (head === WORK && tail[0] === 'running' && tail.length > 1) {
-    const list = parseAgentList(tail.slice(1))
+    // The list's toggles ride on its query (G2-22): `running/recent?group=wf`.
+    const list = parseAgentList(tail.slice(1), query)
     return list === null
       ? { sectionId: WORK, tab: 'running', ...blank }
       : { sectionId: WORK, tab: 'running', ...blank, list }
@@ -833,9 +856,11 @@ export function fromAddress(full: string): Route {
     // link opened the page at no row at all. Only `pool` is kept.
     // Pools and Holders keep it too (#125, #128): a Pools row links to
     // Holders filtered by its pool, and Provider quota to the pool's row.
-    if (tab && keepsPool(section.id, tab.id)) {
-      const pool = new URLSearchParams(query).get('pool')
-      if (pool) return { sectionId: section.id, tab: tab.id, ...blank, view: poolQuery(pool) }
+    // Holders' tenant chip and Accounts' chosen account ride the same way
+    // (QA G5-23): `?tenant=` and `?account=`, so either can be linked to.
+    if (tab && keptKeys(section.id, tab.id).length > 0) {
+      const kept = keptQuery(keptKeys(section.id, tab.id), query)
+      if (kept !== '') return { sectionId: section.id, tab: tab.id, ...blank, view: kept }
     }
     if (tab) return { sectionId: section.id, tab: tab.id, ...blank }
     // A Work tail that matches no tab is a task id from the old nav.
@@ -857,17 +882,29 @@ export function fromAddress(full: string): Route {
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
 
-/** The panes whose address carries the `?pool=` a link named, and no other. */
-function keepsPool(sectionId: string, tab: string): boolean {
-  return (
-    (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) ||
-    (sectionId === CAPACITY && (tab === 'pools' || tab === 'holders'))
-  )
+/**
+ * The query keys a pane's address carries, and no other: the `?pool=` a link
+ * named on Pool limits, Pools and Holders (#125, #128, #134), Holders' tenant
+ * chip and Accounts' chosen account (QA G5-23).
+ */
+function keptKeys(sectionId: string, tab: string): readonly string[] {
+  if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
+  if (sectionId !== CAPACITY) return []
+  if (tab === 'pools') return ['pool']
+  if (tab === 'holders') return ['pool', 'tenant']
+  if (tab === 'accounts') return ['account']
+  return []
 }
 
-/** Pool limits' query for one pool: `pool=tenant%3Aeng`. */
-function poolQuery(pool: string): string {
-  return new URLSearchParams({ pool }).toString()
+/** `query` cut to `keys`, in that order: `pool=tenant%3Aeng&tenant=eng`. */
+function keptQuery(keys: readonly string[], query: string): string {
+  const from = new URLSearchParams(query)
+  const out = new URLSearchParams()
+  for (const k of keys) {
+    const v = from.get(k)
+    if (v) out.set(k, v)
+  }
+  return out.toString()
 }
 
 /** The one spelling of a route. What the address bar is rewritten to. */
@@ -879,11 +916,13 @@ export function canonical(r: Route): string {
   }
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
+  if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
   if (r.sectionId === WORK && r.tab === 'running' && r.list) {
-    return `${WORK}/running/${agentListPath(r.list)}`
+    const flags = agentListQuery(r.list)
+    return `${WORK}/running/${agentListPath(r.list)}${flags === '' ? '' : `?${flags}`}`
   }
   // The Timeline's view rides on its address, so a copied link reproduces the
   // page (#185). Written only for that route: no other screen reads a query.
@@ -896,7 +935,7 @@ export function canonical(r: Route): string {
   }
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
   // Holders' (#125, #128).
-  if (keepsPool(r.sectionId, r.tab) && r.view) {
+  if (keptKeys(r.sectionId, r.tab).length > 0 && r.view) {
     return `${r.sectionId}/${r.tab}?${r.view}`
   }
   return `${r.sectionId}/${r.tab}`
@@ -947,7 +986,15 @@ export function App() {
 
   /** The path a route is written as: an open agent sits under its list's tab. */
   const pathFor = useCallback(
-    (r: Route) => r.missing ?? addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
+    (r: Route) => {
+      if (r.missing != null) return r.missing
+      const list = r.list ?? lastList.current
+      const path = addressToPath(canonical(r), list?.tab ?? 'live')
+      // AN OPEN AGENT KEEPS ITS LIST'S STATE AND TOGGLES in its query (G2-22),
+      // so a reload or a shared link closes to the same filtered list.
+      const search = r.taskId !== null && list !== null ? agentListSearch(list) : ''
+      return search === '' ? path : `${path}?${search}`
+    },
     [],
   )
 
@@ -961,7 +1008,7 @@ export function App() {
         const u = new URL(to, window.location.origin)
         const p = pathToAddress(u.pathname, u.search, u.hash)
         r = p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
-        if (p !== null && p.agentTab !== null) r = { ...r, list: { tab: p.agentTab, state: null } }
+        if (p !== null && p.agentTab !== null) r = { ...r, list: p.list ?? { tab: p.agentTab, state: null } }
       } else {
         r = fromAddress(to.replace(/^#/, ''))
       }
@@ -1052,14 +1099,23 @@ export function App() {
     list: lastList.current,
   })
   const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const title =
-    at.sectionId === SUBMIT
+  // A 404 is titled as one (QA G1-11): the phone header said "Overview" over
+  // a page that is not Overview, because the spine lights the nearest section.
+  const title = at.missing
+    ? NOT_FOUND_TITLE
+    : at.sectionId === SUBMIT
       ? 'Submit'
       : at.sectionId === HELP
         ? 'Help'
         : at.sectionId === REFERENCE
           ? REFERENCE_LABEL
-          : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+          : at.sectionId === GITHUB_CALLBACK
+            ? 'Connect GitHub'
+            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+  const object = at.missing ? null : openObjectOf(at)
+  useEffect(() => {
+    document.title = documentTitleOf(title, object)
+  }, [title, object])
 
   return (
     // THE FRAME: the spine and the panel, and beside them the content column
@@ -1073,6 +1129,7 @@ export function App() {
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
+          missing={Boolean(at.missing)}
           go={go}
           helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
@@ -1114,8 +1171,9 @@ export function App() {
             </div>
           }
         >
-          {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
-              inside it prints none of its own while its read is fresh. */}
+          {/* THE FRAME'S HEAD CAN TIME THE SCREEN'S READS (CH-2), for a page
+              head with no age of its own; a `Screen` carries its own on its
+              refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
           <HeadAgeProvider at={at}>
@@ -1128,6 +1186,8 @@ export function App() {
                   <HelpScreen topic={at.tab} />
                 ) : at.sectionId === SUBMIT ? (
                   <SubmitChooser go={go} />
+                ) : at.sectionId === GITHUB_CALLBACK ? (
+                  <GitHubCallbackScreen go={go} />
                 ) : (
                   <ReferenceScreen failuresOnly={apiFailuresOnly} />
                 )
@@ -1135,9 +1195,9 @@ export function App() {
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
                 // agent is open beside it (`RoutedPage` in Shell.tsx). And so
                 // does its AGE (#98): with an agent open the head times the
-                // inspector (`shownBy` in fetch.ts), so the list under it
-                // keeps its own `read Ns ago` -- otherwise it would be shown
-                // nowhere but the dock's tab-wide age.
+                // inspector (`shownBy` in fetch.ts), so a page head under it
+                // does not take the frame's age; a `Screen` there carries its
+                // own on its refresh control in any case.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
                   {at.missing ? <NotFound path={at.missing} go={go} /> : <SectionBody
@@ -1199,6 +1259,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return 'help'
     case REFERENCE:
       return 'api'
+    case GITHUB_CALLBACK:
+      return 'work'
     default:
       return null
   }
@@ -1231,9 +1293,11 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
  *      admin only          every read it made met the admin gate
  *
  *    Help and API reads issue no reads of their own and say so. A screen
- *    that prints its own data's age claims it (`useClaimPageAge`, #98) and
- *    the head prints none; a `Screen` defers its fresh age to this one
- *    (`FrameAge` in Shell.tsx). One age per screen.
+ *    that prints its own age claims it (`useClaimPageAge`, #98) and the head
+ *    prints none: every `Screen`, Overview and the Timeline carry theirs on
+ *    their head's refresh control (#98, owner ruling 2026-10-07), and
+ *    Platform counts prints the count's. One age per screen; the dock keeps
+ *    the tab-wide one.
  *
  *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
  *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
@@ -1342,8 +1406,8 @@ function HeadAgeProvider({ at, children }: { at: Route; children: ReactNode }) {
   const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
   // The age is the point, so it moves on its own rather than only when a
   // fetch happens to land -- on the SHARED clock, the one every screen's
-  // sub-line and the dock read, so the head and the provenance line under a
-  // screen title can no longer disagree by up to a tick (CH-1).
+  // refresh control and the dock read, so the head and a screen's own age
+  // can no longer disagree by up to a tick (CH-1).
   const now = useNow(AGE_TICK_MS)
   // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
   // claimed it, and the head prints none: one age per screen.
@@ -1399,6 +1463,22 @@ export function crumbsOf({
   return out
 }
 
+/** The title of a path this console has no page for: the phone header's and the tab's. */
+export const NOT_FOUND_TITLE = 'Not found'
+
+/**
+ * THE TAB'S TITLE (QA G1-12, 2026-10-07): the page, then the console, and
+ * inside an open object its id first -- the part that tells two tabs apart.
+ * Every page was "SwarmCloud", so a row of tabs, the history menu and a
+ * bookmark could not say which was which. Set here, once, from the title the
+ * phone header draws, rather than in each `PageHead`: the 404 and an open
+ * agent draw no head of their own, and a page with an inspector draws two.
+ */
+export function documentTitleOf(title: string, object: string | null): string {
+  const page = title === 'SwarmCloud' ? 'SwarmCloud' : `${title} · SwarmCloud`
+  return object === null ? page : `${object} · ${page}`
+}
+
 /**
  * THE OBJECT AN ADDRESS HAS OPEN, if any (#503, Q2): an agent (`taskId`), a
  * workflow (`/workflows/<id>`, `wf=<id>` on the list's query) or an issue run
@@ -1422,9 +1502,11 @@ export function openObjectOf(at: Route): string | null {
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help, API reads and the Submit chooser draw from nothing they fetch, so
-  // there is no age -- and no "reading…" that never resolves (#503).
-  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
+  // Help and API reads draw from nothing they fetch, so there is no age --
+  // and no "reading…" that never resolves (#503). The Submit chooser is not
+  // one of them: it reads your recent submissions and carries that read's age
+  // on its own refresh (QA G1-05/G4-23).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -1635,7 +1717,7 @@ function SectionBody({
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
-      return <OverviewScreen />
+      return <OverviewScreen setup={<SetupCard />} />
 
     case 'work/running':
       return <AgentsScreen {...agentsProps} />
@@ -1653,6 +1735,10 @@ function SectionBody({
       return <RunsScreen view={view} go={go} />
     case 'work/repositories':
       return <RepositoriesScreen view={view} go={go} />
+    case 'work/setup':
+      return <OnboardingScreen />
+    case 'work/access':
+      return <AccessScreen />
 
     case 'capacity/pools':
       return <CapacityScreen />
@@ -1721,6 +1807,11 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
   useEffect(() => setFailuresOnly(asked), [asked])
   const ordered = referenceOrder(probes)
   const shown = failuresOnly ? ordered.filter(failing) : ordered
+  // THE 403 CAVEAT EXPLAINS A ROW, SO IT IS DRAWN WITH ONE (G1-15). An
+  // administrator gets 200 on /v1/admin and never has such a row; read off
+  // the rows rather than off `/v1/tenants/me`, because this page issues no
+  // read of its own and the rows are what the caveat is about.
+  const adminGated = shown.some((p) => p.lastKind === 'admin_required')
 
   return (
     <>
@@ -1729,15 +1820,18 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
           belongs to the thing it qualifies -- the page's own title -- so it is
           a `.ctl-card-note` beside it, in the slot §8.4.2 reserves for exactly
           this, and the argument is one click away in `#help/api-reads`.
+          The head is title left, actions right (#138), so the caveat is the
+          note over the page's first card (`CountNote`).
 
           `ctl-link` (CH-5): this anchor carried no class, so it fell back to
           the browser's own blue -- visited purple once followed -- in a
           product whose links are ink plus an underline. */}
-      <PageHead title={REFERENCE_LABEL} meta="this tab only · not the API surface">
+      <PageHead title={REFERENCE_LABEL}>
         <a className="ctl-link" href={`#${HELP}/api-reads`}>
           What these mean &rarr;
         </a>
       </PageHead>
+      <CountNote>this tab only · not the API surface</CountNote>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by
@@ -1792,7 +1886,9 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
                         it is about says so instead, and `describeProbe` already
                         draws that row with the neutral flat bar (`is-info`,
                         grey since CH-17) rather than in `--bad`. */}
-                    <th role="columnheader" scope="col">Outcome (403 on /v1/admin is expected)</th>
+                    <th role="columnheader" scope="col">
+                      {adminGated ? 'Outcome (403 on /v1/admin is expected)' : 'Outcome'}
+                    </th>
                     <th role="columnheader" scope="col" className="is-num">Took</th>
                     <th role="columnheader" scope="col">Newest payload</th>
                   </tr>
@@ -1833,7 +1929,7 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
       <td role="cell" data-label="Outcome">
         <ToneMark tone={outcome.tone}>{outcome.label}</ToneMark>
       </td>
-      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
+      <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{fmtLatency(probe.lastLatencyMs)}</td>
       <td role="cell" data-label="Newest payload">
         {/* THE COLUMN THAT MATTERS. A panel showing a figure from four minutes
             ago while its route has been failing for three of them looks

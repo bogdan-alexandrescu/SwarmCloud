@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # The sc plugin's SessionStart hook: tell a new session which SwarmCloud
-# workflows are running, so its first action is `/sc attach --all`.
+# workflows, and which of the caller's single tasks, are running, so its first
+# action is `/sc attach --all`.
 #
 # Owner decision, 2026-10-02: running SwarmCloud workflows show in Claude Code
 # AUTOMATICALLY, as live [SwarmCloud] rows, without attaching each by id. A
@@ -23,8 +24,22 @@
 #   * the bridge answers anything but the hook's JSON -- including nothing,
 #     which is what `sc workflows --session-start` prints when none run.
 #
-# READ-ONLY. `sc workflows` reads GET /v1/workflows and each running workflow;
-# it submits, attaches and cancels nothing.
+# SINGLE TASKS TOO (#830, owner 2026-10-07). The same one bridge call also
+# lists the caller's running tasks that belong to no workflow (sent with
+# swarm_dispatch), and the context names them: `/sc attach --all` gives each a
+# row. Both reads run inside the bridge, at once, under this script's one
+# timeout -- the hook still launches exactly one process.
+#
+# NOT ON A PLUGIN RELOAD. Claude Code has no hook event for /reload-plugins
+# (SessionStart matches startup, resume, clear, compact and fork; ConfigChange
+# fires on settings and skill files and cannot add context), so nothing here
+# can run then. The README says so: after a reload, `/sc attach --all` by hand
+# covers workflows and single tasks alike, and a task this session dispatches
+# gets its row from swarm_dispatch's reply.
+#
+# READ-ONLY. `sc workflows` reads GET /v1/workflows and each running workflow,
+# and GET /v1/tasks?state=<s>&submitted_by=me for the single tasks; it submits,
+# attaches and cancels nothing.
 #
 # THE BRIDGE IS THE PLUGIN'S OWN, from the pin in plugin.json -- the same
 # `${SWARM_MCP_FROM:-<pinned requirement>}` the MCP server runs, read out of the

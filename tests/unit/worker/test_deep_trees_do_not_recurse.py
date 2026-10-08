@@ -29,15 +29,31 @@ import os
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from agent_worker import standalone_outputs, workspace as workspace_mod
 from agent_worker.checkpoint import CHECKPOINT_MAX_DEPTH, CheckpointManager, CheckpointRecord
 from agent_worker.logs import build_logger
 
-from conftest import TENANT
+from worker_seeds import TENANT
 
 DEPTH = 1100
 LINK_AT = 600
 OUTSIDE_BYTES = 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _no_deep_tree_left_behind(tmp_path):
+    """Remove what each test built, pass or fail, without recursion.
+
+    pytest keeps the last three runs' `tmp_path`s under TMPDIR, which in a
+    SwarmCloud run is the attempt's own `tmp/`: a tree this deep left there
+    was what `workspace.destroy` met at the end of the attempt (#737), and
+    pytest's own pruning of old runs is a recursive `rmtree` that raises
+    `RecursionError` on it."""
+    yield
+    for entry in list(tmp_path.iterdir()):
+        workspace_mod._remove_tree(entry)
 
 
 def _logger(log_stream):
@@ -100,6 +116,49 @@ def test_walk_tree_reaches_the_bottom_and_never_enters_a_link(tmp_path):
     # The root and every one of the DEPTH folders, and not the linked one.
     assert seen == DEPTH + 1, seen
     assert bottom, "the walk never reached the bottom folder"
+
+
+#: Deeper than the 2,048-level bound `walk_tree` used to stop at, and deeper
+#: than any path to it can be named: 2,100 `d/` is past PATH_MAX on its own.
+PAST_PATH_MAX = 2100
+BOTTOM_BYTES = 256 * 1024
+
+
+def test_disk_bytes_counts_a_file_below_path_max_and_the_old_depth_bound(tmp_path):
+    """#346: `walk_tree` stopped entering folders 2,048 levels down, and a walk
+    by path cannot list a folder past PATH_MAX at all, so a large file at the
+    bottom of a deeper tree was left out of `disk_bytes`. The disk check walks
+    by descriptor now and counts it. The control: the file's bytes are most of
+    what the tree holds, so leaving it out cannot pass."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    rel = _deep_tree(ws.work, _outside(tmp_path), depth=PAST_PATH_MAX)
+    assert len(str(ws.work / rel)) > 4096, "the control: the bottom is past PATH_MAX"
+    # Write the large file through descriptors too: its path cannot be opened.
+    fd = os.open(ws.work, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(PAST_PATH_MAX):
+            child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        big = os.open("big-at-the-bottom.bin", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=fd)
+        os.write(big, b"y" * BOTTOM_BYTES)
+        os.close(big)
+    finally:
+        os.close(fd)
+
+    total = ws.disk_bytes()
+
+    assert total >= BOTTOM_BYTES, f"{total} bytes: the file at the bottom was not counted"
+    assert total < OUTSIDE_BYTES, f"{total} bytes: the link's target was counted"
+
+
+def test_walk_tree_has_no_depth_bound():
+    """The bound is gone, not raised: a walk that reaches PATH_MAX stops where
+    the kernel stops it, and nowhere earlier by its own choice."""
+    import inspect
+
+    assert "max_depth" not in inspect.signature(workspace_mod.walk_tree).parameters
+    assert not hasattr(workspace_mod, "MAX_WALK_DEPTH")
 
 
 def test_disk_bytes_counts_a_deep_tree_and_not_a_link_target(tmp_path):

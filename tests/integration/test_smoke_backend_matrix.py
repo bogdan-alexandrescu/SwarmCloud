@@ -388,9 +388,16 @@ def test_an_unreadable_pool_is_a_failure_not_a_skip(tmp_path):
 
 
 def test_a_backend_with_no_available_profile_fails(tmp_path):
-    """Disable browser in the SERVED catalogue: GKE_AUTOPILOT must fail, not vanish."""
+    """Disable GKE_AUTOPILOT in the SERVED catalogue: it must fail, not vanish."""
     served = copy.deepcopy(_catalogue())
-    served["runtimes"]["browser"]["available"] = False
+    # Every profile on the backend, not only browser: claude-code resolves
+    # there too (contract request 53), and the matrix rightly falls back to it
+    # while it is available.
+    gke = [name for name, row in served["runtimes"].items()
+           if row["resolved_backend"] == "GKE_AUTOPILOT"]
+    assert "browser" in gke, gke
+    for name in gke:
+        served["runtimes"][name]["available"] = False
     proc = _run(tmp_path, catalogue=served)
     assert any("GKE_AUTOPILOT: no AVAILABLE profile" in line for line in _lines(proc, "FAIL")), (
         _explain(proc)

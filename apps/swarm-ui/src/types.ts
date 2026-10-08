@@ -30,6 +30,26 @@ export interface Pool {
   updated_at: string
 }
 
+/** One field of a pool's last admin change: the value before and after (#133). */
+export interface PoolChangeEntry<T> {
+  /** null when the pool did not exist, or carried no value, before the write. */
+  from: T | null
+  to: T
+}
+
+/**
+ * A pool as `GET /v1/admin/pools` serves it: the `/v1/capacity` shape plus
+ * who last changed it through an admin route, when, and what changed (#133).
+ * ADMIN-ONLY: `/v1/capacity` serves pools to every tenant member and never
+ * carries these, because an admin's email is not tenant data. All three are
+ * null for a pool no admin route has changed.
+ */
+export interface AdminPool extends Pool {
+  admin_changed_by: string | null
+  admin_changed_at: string | null
+  admin_change: { hard_limit?: PoolChangeEntry<number>; enabled?: PoolChangeEntry<boolean> } | null
+}
+
 /** `service.capacity()`. */
 export interface Capacity {
   pools: Pool[]
@@ -544,6 +564,12 @@ export interface Task {
    */
   parent_task_id?: string | null
   parent_attempt_id?: string | null
+  /** #780 OB7: the slot the task's GitHub token is read from, by name. */
+  forge_credential?: string | null
+  /** `read` or `write`; null when the task names no GitHub credential. */
+  forge_access?: 'read' | 'write' | null
+  /** "the submitter's GitHub credential", "tenant token, service submission", or null. */
+  forge_credential_source?: string | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -613,6 +639,43 @@ export interface Task {
    * read it sends null. Read it through `accountText`, never raw.
    */
   account?: TaskAccount | null
+  /**
+   * #179. The worker's last beat, from the task's current LEASE (the worker
+   * never writes it to the task), read by `swarm_api/heartbeats.py` on
+   * `GET /v1/tasks` and `GET /v1/tasks/{id}` for LEASED, DISPATCHED, STARTING
+   * and RUNNING. Null when the lease has NEVER beaten -- never the lease's
+   * creation time -- and null for every other state. OPTIONAL because an
+   * older API does not send it. Read it through `silentWorkerLine`
+   * (Agents.tsx), and only when `heartbeat` is `'read'`.
+   */
+  heartbeat_at?: string | null
+  /** The reconciler's grace, resolved server-side; null where `heartbeat` is. */
+  heartbeat_grace_seconds?: number | null
+  /**
+   * What the reading is: `'read'` (the lease was read), `'not read'` (the
+   * read failed -- a null `heartbeat_at` then means unknown, never silent),
+   * `'no lease'`, or null for a task that holds no lease.
+   */
+  heartbeat?: 'read' | 'not read' | 'no lease' | string | null
+  /**
+   * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
+   * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
+   * read. `result_summary` and `started_at` describe only the LAST attempt;
+   * these sum all of them. OPTIONAL because an older API and the list routes
+   * do not send them. `cost_usd_total` null is NOT MEASURED, never $0;
+   * `cost_incomplete` true makes it a floor ("at least"). `attempts_read:
+   * 'failed'` means the attempts were not read and every figure is null.
+   */
+  attempts?: number | null
+  attempts_with_cost?: number | null
+  cost_usd_total?: number | null
+  cost_incomplete?: boolean | null
+  duration_s_total?: number | null
+  duration_incomplete?: boolean | null
+  first_started_at?: string | null
+  last_attempt_cost_usd?: number | null
+  last_attempt_duration_s?: number | null
+  attempts_read?: 'ok' | 'failed'
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
@@ -792,6 +855,8 @@ export interface DispatchConsequence {
 export function consequenceOf(
   strategy: DispatchStrategy,
   steps: number,
+  /** The form it is said on (QA G4-29): a lone task has no steps to count. */
+  scale: 'task' | 'workflow' = 'workflow',
 ): DispatchConsequence {
   const n = Math.max(1, steps)
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
@@ -819,6 +884,23 @@ export function consequenceOf(
         'no pull request and pushes nothing',
       )
     case 'direct-pr':
+      // ONE TASK, ONE BRANCH (QA G4-29): the task form read "Up to 1 pull
+      // request — one per step." on a form that has no steps. Still a ceiling:
+      // an agent that changed nothing opens none.
+      if (scale === 'task') {
+        return withOpens(
+          {
+            pullRequests: 1,
+            atMost: true,
+            pushes: true,
+            headline: 'One pull request, from this task’s branch — none if it changed nothing.',
+            detail:
+              'The task pushes its own branch and opens one pull request from it. An agent that ' +
+              'changed nothing opens none, which is why this is a ceiling and not a count.',
+          },
+          '1 pull request, from this task’s branch',
+        )
+      }
       return withOpens(
         {
           pullRequests: n,
@@ -860,6 +942,16 @@ export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
   collect: 'Collect',
   'direct-pr': 'A PR per step',
   integrate: 'One PR for all steps',
+}
+
+/**
+ * A strategy's label on the form it is offered on (QA G4-29). On the task
+ * form `direct-pr` is one pull request, so "A PR per step" named steps the
+ * form does not have; everywhere else -- a workflow, a task's read-back --
+ * the label is `STRATEGY_LABEL`'s.
+ */
+export function strategyLabel(strategy: DispatchStrategy, scale: 'task' | 'workflow'): string {
+  return scale === 'task' && strategy === 'direct-pr' ? 'Open a pull request' : STRATEGY_LABEL[strategy]
 }
 
 /**
@@ -1391,6 +1483,8 @@ export interface LeaseRow {
  */
 export interface LeasePage {
   leases: LeaseRow[]
+  /** The next page's token, or null on the last page (#632 F8: leases page past 200). */
+  next_page_token?: string | null
   thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
   evaluated_at: string
   active_only: boolean
@@ -1425,13 +1519,36 @@ export interface LeasePage {
   examined: number
 }
 
-/** How a lease row reads, given the thresholds the API just sent. */
-export type Liveliness = 'alive' | 'silent' | 'presumed-dead'
+/**
+ * How a lease row reads, given the thresholds the API just sent. `starting`
+ * is a lease whose worker has not beaten yet and is still inside its dispatch
+ * deadline: booting, not silent, and not a reason for anyone to act.
+ */
+export type Liveliness = 'alive' | 'starting' | 'silent' | 'presumed-dead'
 
 export function leaseLiveliness(
   row: LeaseRow,
   thresholds: LeasePage['thresholds'],
 ): { kind: Liveliness; copy: string } {
+  // A BOOTING AGENT IS NOT A SILENT ONE (G5-01, QA 2026-10-07). Before the
+  // first beat the reconciler judges the lease by `dispatch_overdue` alone, as
+  // `LeaseHeartbeat` below says. Checking `expired` first drew two Cloud Run
+  // cold starts red "presumed dead" at 2m 38s: their 120 s TTL had run out,
+  // their 8-minute dispatch deadline had not, and both were RUNNING by the
+  // next read. A never-beaten lease is never `silent` either -- its
+  // `silent_seconds` counts from creation, not from a beat that went quiet.
+  if (!row.heartbeat_ever) {
+    if (row.dispatch_overdue) {
+      return {
+        kind: 'presumed-dead',
+        copy: 'Never beat, and its dispatch deadline has passed. The reconciler will reclaim this lease on its next pass.',
+      }
+    }
+    return {
+      kind: 'starting',
+      copy: 'No heartbeat yet: the worker is still starting. Until the first beat the reconciler judges this lease by its dispatch deadline alone.',
+    }
+  }
   // Past expires_at is a SECOND, INDEPENDENT signal, not a later stage of the
   // first: the lease TTL has run out as well as the heartbeat going quiet.
   if (row.expired) {
@@ -1954,8 +2071,21 @@ export interface DispatchControl {
 /** `SubmissionService.providers`, service.py:334-350. */
 export interface ProviderEntry {
   provider: string
-  /** Provider NAMES only, from tenants/{id}.credentials. Never key material. */
+  /**
+   * True when the tenant's own key OR a pool account it owns or is lent
+   * serves this provider -- admission's rule (#76). Never key material.
+   */
   credential_registered: boolean
+  /**
+   * Which one: `tenant_key` (asked first, as admission does) or
+   * `account_pool`; null when neither. Optional: served after #76.
+   */
+  credential_source?: 'tenant_key' | 'account_pool' | null
+  /**
+   * The profiles that credential can run. A pool account runs only a profile
+   * that takes a subscription token, so it can be fewer than runner_profiles.
+   */
+  runnable_profiles?: string[]
   runner_profiles: string[]
   /** null when no quota document exists for this tenant yet. Not zeros. */
   quota: QuotaState | null
@@ -1964,6 +2094,11 @@ export interface ProviderEntry {
 export interface ProvidersPage {
   tenant_id: string
   providers: ProviderEntry[]
+  /**
+   * How the account pool was read for this page: `unreadable` means a false
+   * credential_registered may still be served by a lent account.
+   */
+  account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
   generated_at: string
 }
 
@@ -2066,6 +2201,14 @@ export interface QuotaState {
   success_count: number
   rate_limit_count: number
   effective_limit: number
+  /**
+   * The pool this row's cap feeds, `provider:<provider>:tenant:<tenant>`, as
+   * `/v1/capacity` serves it, read in the same request (G5-02). Its
+   * `effective_limit` is what admission enforces; this row's own
+   * `effective_limit` is one input to it. null: no such pool document exists.
+   * Absent: an API older than the one that serves it -- not the same as null.
+   */
+  feeds_pool?: Pool | null
 }
 
 /**
@@ -2293,15 +2436,17 @@ export const END_CAUSES: readonly EndCause[] = [
 /**
  * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a
  * parent whose agent awaits the child tasks it submitted
- * (docs/design/child-tasks.md).
+ * (docs/design/child-tasks.md). CI_PENDING is contract request 49: a merge
+ * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
+  | 'CI_PENDING'
 
 /**
- * The same nine as a value, so a test can compare the list against
+ * The same ten as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2322,6 +2467,7 @@ export const PARK_REASONS = [
   'BUDGET_EXHAUSTED',
   'CREDENTIAL_MISSING',
   'CHILDREN_INCOMPLETE',
+  'CI_PENDING',
 ] as const
 
 /**
@@ -2368,6 +2514,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   // past `child_await_max_seconds` (a day) it cancels the outstanding ones and
   // promotes it anyway (docs/design/child-tasks.md §5 F7).
   'CHILDREN_INCOMPLETE',
+  // A merge step waiting for the checks on its pull request (contract request
+  // 49). It ends on its own: the swarm-api wake tick marks it once the checks
+  // settle, and past its fallback instant the scheduler wakes it anyway
+  // (docs/merge-step.md, 2026-10-06, §1).
+  'CI_PENDING',
 ])
 
 /**
@@ -2387,7 +2538,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the nine ParkReasons.
+ * admission plus the ten ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2413,6 +2564,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
   CHILDREN_INCOMPLETE: 'Waiting for the child tasks its agent submitted. Holds no capacity.',
+  CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
@@ -2701,8 +2853,9 @@ export function whyAgent(task: Task, units: number | null = null): string {
  * document and a worker's silence is not on it: `whyAgent` writes nothing for
  * a task that holds a slot, and the heartbeat is written to the lease. The
  * inspector, which reads the task's events, writes its own `--warn` line for
- * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx). The
- * Agents list cannot until a tenant-scoped route serves the heartbeat (#179).
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx); the
+ * Agents list draws its own from the lease heartbeat `GET /v1/tasks` carries
+ * on each slot-holding row (#179, `silentWorkerLine` in Agents.tsx).
  *
  * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
  * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
@@ -4699,6 +4852,13 @@ export interface IssueRun {
   requirements_met?: boolean | null
   requirements_unmet?: string[]
   requirements_note?: string | null
+  /**
+   * True once the write-back closed the issue (`issuesync`): only an
+   * `already_on_main` run with every requirement met is closed by the run
+   * itself. Null or absent: this run did not close it, which says nothing of
+   * a merge's `Closes #N`.
+   */
+  issue_closed?: boolean | null
 }
 
 /** `IssueRun.to_api().pull_request`. */
@@ -4728,4 +4888,348 @@ export interface RunCreateBody {
   plan_approval: 'required' | 'auto'
   auto_merge: boolean
   fix_rounds: number
+}
+
+// ---------------------------------------------------------------------------
+// Connect GitHub: the SwarmCloud GitHub App's user authorisation (#780, OB3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/forgeapp.py and
+// `forgeapp.connection_to_api`. NO FIELD HERE HOLDS A VALUE: the server never
+// answers the user access token, the refresh token, the `code` or the `state`
+// after `authorize` issued it, so there is nothing to declare for any of them.
+
+/** Where the authorisation was started from (`forgeapp.SURFACES`). */
+export type GitHubAuthorizeSurface = 'console' | 'plugin'
+
+/** `POST /v1/onboarding/github/authorize`. The `state` rides inside the URL and is never read here. */
+export interface GitHubAuthorization {
+  /** github.com's authorise page, carrying the App's client id and a single-use state. */
+  authorize_url: string
+  /** How long the state lasts (ten minutes, `forgeapp.STATE_TTL`). */
+  expires_in_seconds: number
+}
+
+/** `forgeapp.ExchangeBody`: the callback's `state` with its `code`, or with GitHub's `error`. */
+export type GitHubExchangeBody = { state: string; code: string } | { state: string; error: string } | { state: string }
+
+/** `forgeapp.connection_to_api`: names, times and states. */
+export interface GitHubConnection {
+  connection_id: string | null
+  forge: string | null
+  /** `app_user` for a connection made through the App. */
+  method: string | null
+  forge_login: string | null
+  forge_user_id: number | null
+  token_id: string | null
+  secret_name: string | null
+  /** `active`, `refresh_failed` or `revoked` (`forgeapp.ACTIVE`, `REFRESH_FAILED`, `REVOKED`). */
+  state: string | null
+  failure: string | null
+  access_expires_at: string | null
+  refresh_expires_at: string | null
+  refreshed_at: string | null
+  refreshing: boolean
+  created_at: string | null
+  connected_at: string | null
+  revoked_at: string | null
+}
+
+/** `POST /v1/onboarding/github/exchange`. */
+export interface GitHubExchangeResponse {
+  connection: GitHubConnection
+}
+
+/** `DELETE /v1/onboarding/github`. */
+export interface GitHubDisconnectResponse {
+  connection: GitHubConnection
+  /** Whether GitHub confirmed the authorisation ended; the local half disconnects either way. */
+  github_revoked: boolean
+  /** What GitHub said, in a sentence, with the page to revoke it by hand when it did not answer. */
+  github: string
+  /** Secret name -> versions disabled, or a sentence when they were not. */
+  slot_versions_disabled: Record<string, number | string>
+  grants_deleted: number
+}
+
+/** The `detail` of a refused exchange (`forgeapp.AuthorisationRefused`): a §2.3 code and its copy. */
+export interface GitHubRefusalDetail {
+  failure_code: string
+  recovery: string
+}
+
+// The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
+// `derive`): six steps, each derived on every read, never set.
+
+export type OnboardingStepName = 'signed_in' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+
+export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
+
+/** One §2.3 problem a step found, with its copy word for word. */
+export interface OnboardingIssue {
+  code: string
+  copy: string
+  owner?: string
+  repository?: string
+  url?: string
+  store_command?: string
+}
+
+export interface OnboardingStep {
+  step: OnboardingStepName
+  state: OnboardingStepState
+  code: string | null
+  copy: string | null
+  checked_at: string | null
+  /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
+  evidence: Record<string, unknown>
+  issues: OnboardingIssue[]
+}
+
+/**
+ * `app_installed`'s evidence (`onboarding._installed_step`, #780 2026-10-08):
+ * whether the GitHub App is installed on any owner the person reaches.
+ * `needed` is false for a connection that is a token, not the App.
+ */
+export interface AppInstalledEvidence {
+  needed: boolean
+  /** False when the installations could not be read: never "installed nowhere". */
+  read?: boolean
+  source?: 'enabled' | 'github' | null
+  login?: string | null
+  installed?: string[]
+  not_installed?: string[]
+  install_url?: string | null
+}
+
+/** `github_connected`'s evidence: the record the caller acts through, or none. */
+export interface GitHubConnectedEvidence {
+  /** `user` is the caller's own slot, `tenant` the tenant token, null neither. */
+  via: 'user' | 'tenant' | null
+  token_id?: string | null
+  secret_name?: string | null
+  /** `app_user` for the App's connection; a PAT kind for a stored token. */
+  kind?: string | null
+  forge_login?: string | null
+  token_state?: string | null
+  verified_at?: string | null
+  probe_attempted_at?: string | null
+  probe_complete?: boolean | null
+  probe_error?: string | null
+  expires_at?: string | null
+}
+
+/** One owner `orgs_enabled` found: the account, an org it reads, or one that refused it. */
+export interface OnboardingOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  source: 'account' | 'orgs' | 'refusal' | 'registration'
+  reach: 'reachable' | 'sso_required' | 'classic_blocked'
+  registered: number
+}
+
+export interface OrgsEnabledEvidence {
+  owners: OnboardingOwner[]
+  orgs_read: boolean
+  orgs_capped: boolean
+  sso_hidden_orgs: number
+  read_at: string | null
+}
+
+/** `GET /v1/onboarding`. */
+export interface OnboardingDoc {
+  tenant_id: string
+  user: string
+  user_hash: string
+  derived_at: string
+  steps: OnboardingStep[]
+  next_step: OnboardingStepName | null
+  complete: boolean
+  source: string
+}
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4; read by OB8's Access page)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/access.py and `access.py`
+// (`org_to_api`, `grant_to_api`, `owners`, `repositories`, `verify`,
+// `members`). Like the connection above, NO FIELD HOLDS A VALUE: the person's
+// token is in hand for one request inside swarm-api and no answer carries it.
+
+/** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
+export type AccessMode = 'read' | 'write'
+
+/** The checks verify runs (`access.CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request'
+
+/** A check's answer. `not_required` is push and pull request on a read grant. */
+export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
+
+export interface AccessCheck {
+  state: AccessCheckState
+  /** The §2.3 code a check that did not pass carries. */
+  code: string | null
+  checked_at: string | null
+}
+
+/** `access.org_to_api`: an owner the person enabled. */
+export interface AccessOrg {
+  owner: string
+  owner_type: 'User' | 'Organization' | null
+  installation_id: number | null
+  /** GitHub's `all` or `selected`. */
+  repository_selection: string | null
+  install_state: string | null
+  /** `ok`, `required` or `unknown`: what the last listing found about SAML SSO. */
+  sso: string | null
+  enabled: boolean
+  enabled_at: string | null
+  checked_at: string | null
+}
+
+/** `access.grant_to_api`: one repository the person chose. */
+export interface AccessGrant {
+  repo_id: string
+  repository: string
+  owner: string
+  mode: AccessMode
+  can_push: boolean | null
+  archived: boolean | null
+  granted_at: string | null
+  granted_by: string | null
+  checks: Partial<Record<AccessCheckName, AccessCheck>>
+  verified_at: string | null
+}
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants. No forge read. */
+export interface AccessOverview {
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+  tenant_id: string
+}
+
+/** One owner `GET /v1/access/orgs` found: the account, an installation, or an org with none. */
+export interface AccessOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  installation_id: number | null
+  repository_selection: string | null
+  install_state: 'installed' | 'not_installed'
+  sso: string
+  enabled: boolean
+  /** The App's install page, for an owner it is not installed on. */
+  install_url: string | null
+}
+
+/** `GET /v1/access/orgs`. */
+export interface AccessOwners {
+  owners: AccessOwner[]
+  /** False when GitHub did not list the person's orgs; installations are still listed. */
+  orgs_listed: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** One repository of an owner's installation, as `access._entries` serves it. */
+export interface AccessRepository {
+  repository: string
+  owner: string
+  repo: string
+  repo_id: string
+  visibility: string | null
+  archived: boolean
+  default_branch: string | null
+  /** Whether GitHub lets the person push: shown before Write is chosen (chooser A). */
+  can_push: boolean | null
+  registered: boolean
+  granted: boolean
+  mode: AccessMode | null
+}
+
+/** `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: one page. */
+export interface AccessRepositoryPage {
+  owner: string
+  repositories: AccessRepository[]
+  page: number
+  per_page: number
+  max_pages: number
+  next_page: number | null
+  /** The listing stopped at `max_pages`; past it a person types owner/repo. */
+  capped: boolean
+  q: string | null
+  /** GitHub's count for the installation; null under a search. */
+  total_count: number | null
+  tenant_id: string
+}
+
+/** `POST /v1/access/orgs`. */
+export interface AccessEnableResponse {
+  org: AccessOrg
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/orgs/{owner}`. */
+export interface AccessDisableResponse {
+  owner: string
+  grants_deleted: number
+  unregistered: string[]
+  /** Where an org owner uninstalls the App: SwarmCloud cannot narrow the person's token (§2.4). */
+  installation_settings_url: string | null
+  tenant_id: string
+}
+
+/** `PUT /v1/access/grants/{repo_id}`. */
+export interface AccessGrantResponse {
+  grant: AccessGrant
+  /** True when this grant registered the repository for the tenant. */
+  registered: boolean
+  registration_repo_id: string | null
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`. */
+export interface AccessRevokeResponse {
+  repo_id: string
+  revoked: boolean
+  unregistered: boolean
+  tenant_id: string
+}
+
+/** One check verify could not pass, with its §2.3 copy filled in. */
+export interface AccessVerifyFailure {
+  check: string
+  code: string
+  copy: string
+  url?: string | null
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`. */
+export interface AccessVerifyResponse {
+  grant: AccessGrant
+  failures: AccessVerifyFailure[]
+  passed: boolean
+  tenant_id: string
+}
+
+/** The `detail` of a refused access request (`access.AccessRefused`). */
+export interface AccessRefusalDetail {
+  failure_code: string
+  recovery: string
+  url: string | null
+}
+
+/** One member in `GET /v1/access/members` (admin): states and names, never a value. */
+export interface AccessMember {
+  user: string
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+}
+
+/** `GET /v1/access/members`. */
+export interface AccessMembers {
+  members: AccessMember[]
+  tenant_id: string
 }

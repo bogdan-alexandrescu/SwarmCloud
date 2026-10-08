@@ -73,6 +73,9 @@ an expiry.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -503,6 +506,46 @@ def account_holders(
 #: at most three digits (the broker's page is at most 500). The broker enforces
 #: the value; this refuses a forged one before a broker call is made.
 _CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
+_CURSOR_RE = re.compile(_CURSOR_SHAPE)
+
+
+def _opaque_cursor(raw: str | None) -> str | None:
+    """The broker's cursor as this route serves it: base64url, unpadded (F12).
+
+    The raw form carries the instant's `+00:00`, and a client that put it in
+    a URL unencoded sent a `+`, which a query string decodes as a space -- so
+    the route refused the very cursor it had served. base64url has no `+`,
+    `/`, `=`, `|` or space, and nothing in it is new: it is the instant and
+    skip of a row the caller was already shown.
+    """
+    if not raw:
+        return None
+    return base64.urlsafe_b64encode(raw.encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _broker_cursor(served: str | None) -> str | None:
+    """The broker's cursor inside one this route served, or a 422.
+
+    THE RAW FORM IS STILL ACCEPTED FOR ONE RELEASE (owner decision 2026-10-05),
+    so a client holding a cursor from before the change keeps paging. It
+    contains `|`, which base64url never does, so the two cannot be confused.
+    Either way the result must have the broker cursor's shape, so a forged
+    value is refused before any broker call, exactly as before.
+    """
+    if not served:
+        return None
+    if "|" in served:
+        raw = served
+    else:
+        try:
+            raw = base64.urlsafe_b64decode(
+                served.encode("ascii") + b"=" * (-len(served) % 4)
+            ).decode("ascii")
+        except (binascii.Error, UnicodeError, ValueError):
+            raw = ""
+    if not _CURSOR_RE.match(raw):
+        raise ValidationFailed("the cursor is not one this route issued")
+    return raw
 
 
 #: The broker's HOLD_LOG_RETENTION (90 days), restated because this service does
@@ -587,7 +630,7 @@ def account_history(
     account_id: str,
     start: str | None = Query(default=None, alias="from", max_length=64),
     end: str | None = Query(default=None, alias="to", max_length=64),
-    cursor: str | None = Query(default=None, max_length=80, pattern=_CURSOR_SHAPE),
+    cursor: str | None = Query(default=None, max_length=80),
     scope: str | None = Query(default=None, description="tenant | platform"),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -599,7 +642,12 @@ def account_history(
     every borrower's spans with times, outcome and tenant; a borrower sees only
     its own, and a count of everyone else's. The broker validates
     the window and the cursor and answers a bad one with a 422 that names it.
+
+    `next_cursor` is OPAQUE (base64url, F12): send it back as served. The raw
+    `<instant>|<skip>` form is still accepted for one release.
     """
+    # First, as the Query pattern used to: a forged cursor reaches no broker call.
+    cursor = _broker_cursor(cursor)
     viewer, tenant_id, visible = _viewer(
         scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE
     )
@@ -633,7 +681,7 @@ def account_history(
     payload = fetch(cursor)
     if viewer == "borrower":
         payload = own_page(payload, tenant_id=tenant_id, cursor=cursor, fetch=fetch)
-    return history_view(
+    served = history_view(
         payload,
         viewer=viewer,
         tenant_id=tenant_id,
@@ -642,3 +690,5 @@ def account_history(
         continued=bool(cursor),
         visible=visible,
     )
+    served["next_cursor"] = _opaque_cursor(served.get("next_cursor"))
+    return served

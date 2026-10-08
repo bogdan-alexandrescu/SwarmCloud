@@ -79,6 +79,15 @@ class _Secrets:
                 self.accessors[name].append(m)
         return created
 
+    def set_worker_readers(self, name, *, readers, manages, revoke=True):
+        # The lending sync (SecretManagerStore.set_worker_readers), modelled
+        # on the same accessor list `ensure_secret` writes.
+        present = self.accessors.setdefault(name, [])
+        added = [m for m in readers if m not in present]
+        removed = [m for m in present if manages(m) and m not in readers] if revoke else []
+        present[:] = [m for m in present if m not in removed] + added
+        return added, removed
+
     def add_version(self, name: str, payload: str) -> None:
         if name not in self.created:
             raise KeyError(f"{name} was never created")
@@ -486,7 +495,7 @@ class _SweepRefresher:
         reason = self.on_second.get(label, self.reasons.get(label, "refreshed"))
         return RefreshOutcome(label, "account", reason == "refreshed", reason)
 
-    def sweep_accounts(self, secrets, keep_going=None):
+    def sweep_accounts(self, secrets, keep_going=None, held=()):
         from quota_broker.credentials import RefreshOutcome
 
         self.seen.append(list(secrets))
@@ -636,7 +645,7 @@ def test_an_account_removed_mid_sweep_does_not_stall_the_tick(client):
     from quota_broker.credentials import RefreshOutcome
 
     refresher = _SweepRefresher()
-    refresher.sweep_accounts = lambda secrets, keep_going=None: [
+    refresher.sweep_accounts = lambda secrets, keep_going=None, held=(): [
         RefreshOutcome(f"{TENANT}:gone", "account", False, "reauth_required")
     ]
 

@@ -80,7 +80,18 @@ SERVERS: dict[str, ServerSpec] = {
                       ".tsx": "typescriptreact", ".js": "javascript", ".mjs": "javascript",
                       ".cjs": "javascript", ".jsx": "javascriptreact"},
         # No automatic type acquisition: it downloads @types packages.
+        #
+        # useSyntaxServer "never": typescript-language-server's default
+        # ("auto") starts a second, partial-semantic tsserver and routes
+        # definition, references and the like to it for as long as the
+        # semantic server is still loading the project (its first-start
+        # state, until a projectLoadingFinish or diagnostics event). This
+        # driver asks for a definition right after didOpen, so every answer
+        # came from the syntax server, which cannot follow an import to
+        # another file: the build's LSP self-test got "typescript: ok, 0 lsp
+        # edge(s)" (main, 2026-10-05). "never" runs one full server.
         initialization_options={"disableAutomaticTypingAcquisition": True,
+                                "tsserver": {"useSyntaxServer": "never"},
                                 "preferences": {"includeCompletionsForModuleExports": False}},
     ),
     "gopls": ServerSpec(
@@ -109,3 +120,11 @@ SERVERS: dict[str, ServerSpec] = {
                                 "validation": {"enableEnhancedValidation": False}},
     ),
 }
+
+# terraform-ls is NOT in the image for now (owner decision 2026-10-05). The
+# vendor zip carried HIGH CVEs (release 37289476429), and a source build with
+# the golang.org/x modules raised answered 0 references in the image's LSP
+# self-test (main a3621325, "hcl: ok, 0 lsp edge(s)"). So HCL is indexed by
+# tree-sitter alone and reports `unsupported` in the LSP pass. The spec is kept
+# here so lane IDX can re-enable it in agent-runtime-indexer once it resolves.
+DISABLED_SERVERS: dict[str, ServerSpec] = {"terraform-ls": SERVERS.pop("terraform-ls")}

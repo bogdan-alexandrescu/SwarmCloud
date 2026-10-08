@@ -46,6 +46,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   publish_refused: 0,
   other: 0,
   no_reason: 0,
+  intended: 0,
 }
 
 interface Day {
@@ -153,6 +154,7 @@ export function ledgerFixture(): Outcomes {
         { key: 'publish_refused', label: 'publish refused' },
         { key: 'other', label: 'other' },
         { key: 'no_reason', label: 'no reason recorded' },
+        { key: 'intended', label: 'failed on purpose' },
       ],
       cancel_causes: [
         { key: 'requested', label: 'requested' },

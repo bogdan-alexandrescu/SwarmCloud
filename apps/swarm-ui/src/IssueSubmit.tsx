@@ -6,8 +6,9 @@ import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
-import { clockTime, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
+import { timeAgo, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
+import { useNow } from './useNow'
 import './styles/submit.css'
 import './styles/intake.css'
 
@@ -100,6 +101,33 @@ type Sending =
   /** A 2xx whose answer named no run: something may exist that this page cannot name. */
   | { kind: 'unnamed' }
 
+/**
+ * AN ISSUE REFERENCE, PARSED HERE BEFORE ANYTHING IS SENT (QA G4-25), in the
+ * two shapes `validation.parse_issue_ref` takes: `owner/repo#N`, or an https
+ * URL on github.com naming `/owner/repo/issues/N`. "foo bar" went to the
+ * server, came back as a sentence about `repository_url` -- a field this form
+ * does not have -- and the dock counted a failed read. Null for anything the
+ * API would refuse as malformed; a `/pull/N` URL parses, because the server's
+ * answer to it is its own refusal, which points at the task form. The server
+ * stays the decider: this only keeps a reference that cannot parse unsent.
+ */
+export function parseIssueRef(typed: string): { owner: string; repo: string; number: number } | null {
+  const text = typed.trim()
+  const m =
+    /^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#([0-9]{1,7})$/.exec(text) ??
+    /^https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})\/(?:issues|pull|pulls)\/([0-9]{1,7})\/?(?:[?#].*)?$/i.exec(text)
+  const [owner, repo, raw] = [m?.[1], m?.[2], m?.[3]]
+  if (owner === undefined || repo === undefined || raw === undefined) return null
+  const name = repo.toLowerCase().endsWith('.git') ? repo.slice(0, -4) : repo
+  if (name === '' || name.startsWith('.')) return null
+  const number = Number(raw)
+  if (number < 1 || number > MAX_ISSUE_NUMBER) return null
+  return { owner, repo: name, number }
+}
+
+/** `validation.MAX_ISSUE_NUMBER`: the catalogue's ceiling on an issue number. */
+const MAX_ISSUE_NUMBER = 999_999
+
 /** The issue number out of what was typed, for a refusal's sentence; null when none is legible. */
 function issueNumber(ref: string): string | null {
   const m = /(?:#|\/issues\/)(\d+)\/?$/.exec(ref.trim())
@@ -158,9 +186,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const mergeOffered = mergeServed?.available === true
   const mergeOn = mergeOffered && merge
 
+  const parses = parseIssueRef(typed) !== null
+
   async function readIssue() {
     const ref = typed.trim()
-    if (ref === '') return
+    if (ref === '' || parseIssueRef(ref) === null) return
     setPreview({ kind: 'reading', ref })
     setClosedOk(false)
     const r = await loadIssuePreview(ref)
@@ -220,6 +250,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               value={typed}
               spellCheck={false}
               autoComplete="off"
+              aria-invalid={(typed.trim() !== '' && !parses) || undefined}
+              aria-describedby={typed.trim() !== '' && !parses ? 'in-ref-say' : undefined}
               onChange={(e) => retype(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -228,12 +260,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                 }
               }}
             />
-            <Button disabled={typed.trim() === '' || preview.kind === 'reading'}
+            <Button disabled={!parses || preview.kind === 'reading'}
               onClick={() => void readIssue()}>
               Read
             </Button>
           </div>
-          {preview.kind === 'idle' && (
+          {preview.kind === 'idle' && typed.trim() !== '' && !parses && (
+            <p id="in-ref-say" className="sb-note sbf-bad">
+              Not an issue reference yet: name it as <code>owner/repo#N</code> or paste its URL,{' '}
+              <code>https://github.com/owner/repo/issues/N</code>.
+            </p>
+          )}
+          {preview.kind === 'idle' && (typed.trim() === '' || parses) && (
             <p className="sb-note">
               Read with this tenant&rsquo;s own forge credential: only repositories it can read are reachable from
               here. Nothing is created by reading.
@@ -257,7 +295,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
         <Move n={2} title="The runner it plans and builds with" dim={read === null}>
           <RunnerPicker group="issue-runner" label="runner" profiles={catalogue} chosen={ISSUE_RUN_PROFILE}
-            keys={keys} onPick={() => {}} onlyUsable />
+            keys={keys} onPick={() => {}} onlyUsable heldAs="not used for issue runs" />
           {runner === null && (
             <p className="warn-text" role="alert">
               {ISSUE_RUN_PROFILE} is not in this tenant&rsquo;s catalogue, so the API would have no runner to plan with.
@@ -412,6 +450,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 }
 
 
+/**
+ * When the preview was read, as an age (`just now`, `3m ago`) with the
+ * absolute instant -- `2026-10-07 04:29:44 UTC` -- for its title. An instant
+ * that is not a number is `at an unknown time` with no title: never a made-up
+ * clock.
+ */
+export function readAtText(at: number, now: number): { text: string; title: string | undefined } {
+  if (!Number.isFinite(at)) return { text: 'at an unknown time', title: undefined }
+  const iso = new Date(at).toISOString()
+  return { text: timeAgo(at, now), title: `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC` }
+}
+
 /** What was read, as served: title, state, comments, labels, the body, the link. */
 export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
@@ -419,9 +469,13 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   const { issue } = read
   const [whole, setWhole] = useState(false)
   const closed = issue.state === 'closed'
-  // THE CONSOLE'S ONE CLOCK (browser QA N20, 2026-10-04): this said
-  // "11:45 PM" where every other screen says 23:45:10 (`clockTime`).
-  const time = clockTime(new Date(at).toISOString(), at)
+  // AN AGE, LIKE EVERYTHING ELSE IN THE AREA (QA G4-34, 2026-10-07). It
+  // printed the local wall clock -- "read 21:29:44", no date and no zone --
+  // beside relative ages; before that "11:45 PM" (N20). It reads "read just
+  // now" and moves on the console's shared age tick, and the absolute instant,
+  // in UTC and saying so, is the line's title.
+  const now = useNow()
+  const time = readAtText(at, now)
   return (
     <section className="in-preview" aria-label="The issue as read">
       <h3>{issue.title === '' ? <i className="ctl-em">&mdash; untitled</i> : <InlineText text={issue.title} />}</h3>
@@ -439,7 +493,7 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
         </span>
         <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}</span>
       </p>
-      <p className="in-meta in-read-at" title={time?.title}>read {time?.text ?? 'at an unknown time'} with this tenant&rsquo;s forge credential</p>
+      <p className="in-meta in-read-at" title={time.title}>read {time.text} with this tenant&rsquo;s forge credential</p>
       {issue.labels.length > 0 ? (
         <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>
       ) : (
@@ -561,7 +615,10 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
       <WarnMark />
       <div className="in-refusal-t">
         <p>{words}</p>
-        <p className="sb-note">{error.message}</p>
+        {/* The server's sentence names the tenant and the secret -- except a
+            malformed reference's, which names the API's own fields
+            (`repository_url`, QA G4-25) and nothing the reader typed into. */}
+        {error.code !== 'validation_failed' && <p className="sb-note">{error.message}</p>}
         {action}
       </div>
     </div>

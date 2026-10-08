@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
-import { loadCapacity, loadMe, setPoolLimit } from './api'
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
@@ -9,6 +10,7 @@ import {
   poolKind,
   poolLabel,
   setBy,
+  type AdminPool,
   type Capacity,
   type Me,
   type Pool,
@@ -72,6 +74,8 @@ export function AdminSettingsScreen() {
    */
   const [fresh, setFresh] = useState<{ over: Capacity; data: Capacity } | null>(null)
   const [saved, setSaved] = useState<Readonly<Record<string, SaveMark>>>({})
+  /** What each pool's last save's RESPONSE said the ceiling became, against what was asked. */
+  const [outcomes, setOutcomes] = useState<Readonly<Record<string, SaveOutcome>>>({})
   /**
    * WHO IS ASKING, from the session read the frame already makes (a `frame`
    * read, so it does not stand in for this screen's own newest read). A
@@ -101,9 +105,11 @@ export function AdminSettingsScreen() {
       return next
     })
 
-  const reread = async (over: Capacity, pool: string): Promise<boolean> => {
+  const reread = async (over: Capacity, pool: string, outcome: SaveOutcome): Promise<boolean> => {
+    setOutcomes((all) => ({ ...all, [pool]: outcome }))
     mark(pool, 'rereading')
-    const r = await loadCapacity()
+    // With the record (#133), so the row names the change just made.
+    const r = await loadLimits()
     if (r.status === 'ok' || r.status === 'stale') {
       setFresh({ over, data: r.data })
       mark(pool, 'saved')
@@ -121,7 +127,7 @@ export function AdminSettingsScreen() {
       // that does not exist, and it restated the section it already sits under
       // ("Admin") instead of naming the thing on the screen.
       title="Pool limits"
-      load={loadCapacity}
+      load={loadLimits}
       // A count, not a promise. "changes take effect immediately" was a
       // rationale in the one slot on this screen a reader cannot skip.
       summary={(d) =>
@@ -137,12 +143,76 @@ export function AdminSettingsScreen() {
           capacity={fresh !== null && fresh.over === d ? fresh.data : d}
           admin={admin}
           saved={saved}
-          onSaved={(pool) => reread(d, pool)}
-          onEdit={(pool) => mark(pool, null)}
+          outcomes={outcomes}
+          onSaved={(pool, outcome) => reread(d, pool, outcome)}
+          onEdit={(pool) => {
+            mark(pool, null)
+            setOutcomes((all) => {
+              const next = { ...all }
+              delete next[pool]
+              return next
+            })
+          }}
         />
       )}
     </Screen>
   )
+}
+
+/**
+ * WHERE THE RECORD OF WHO CHANGED A POOL CAME FROM (#133), per pool.
+ *
+ *   served       the admin pool read answered: the pool's record is what it
+ *                served, and null fields mean no admin route has changed it
+ *   admins-only  the admin pool read refused (403): the record exists for
+ *                admins, and saying "not recorded" would be untrue
+ *   unread       the admin pool read failed, or this pool was not in it
+ */
+type RecordRead = 'served' | 'admins-only' | 'unread'
+
+/** A pool as this screen draws it: `/v1/capacity`'s, with the admin record joined on. */
+type LimitPool = Pool & Partial<Pick<AdminPool, 'admin_changed_by' | 'admin_changed_at' | 'admin_change'>> & {
+  record?: RecordRead
+}
+
+/**
+ * `/v1/capacity`, WITH WHO CHANGED EACH POOL JOINED ON FROM `/v1/admin/pools`
+ * (#133), by pool name.
+ *
+ * TWO READS, NOT ONE. The record is served on the admin read only, because
+ * `/v1/capacity` serves pools to every tenant member and an admin's email is
+ * not tenant data. Reading `/v1/capacity` alone is why every row once said
+ * "not recorded" against an API that held the record. The figures stay
+ * `/v1/capacity`'s -- the profiles' arithmetic is taken over them -- and the
+ * admin read contributes the three record fields and nothing else.
+ *
+ * The admin read failing never fails the screen: the ceilings are still
+ * editable, and the rows say the record was not read.
+ */
+export async function loadLimits(): Promise<Result<Capacity>> {
+  const [cap, admin] = await Promise.all([
+    loadCapacity(),
+    Promise.resolve(loadAdminPools()).catch(() => undefined),
+  ])
+  if (cap === undefined || (cap.status !== 'ok' && cap.status !== 'stale')) return cap
+  const served = admin !== undefined && (admin.status === 'ok' || admin.status === 'stale' || admin.status === 'empty')
+  const refused = admin !== undefined && admin.status === 'error' && admin.error.kind === 'admin_required'
+  const byName = new Map(
+    admin !== undefined && (admin.status === 'ok' || admin.status === 'stale') ? admin.data.pools.map((p) => [p.name, p]) : [],
+  )
+  const pools = cap.data.pools.map((p): LimitPool => {
+    if (refused) return { ...p, record: 'admins-only' }
+    const found = byName.get(p.name)
+    if (found === undefined) return { ...p, record: served && byName.size === 0 ? 'served' : 'unread' }
+    return {
+      ...p,
+      admin_changed_by: found.admin_changed_by,
+      admin_changed_at: found.admin_changed_at,
+      admin_change: found.admin_change,
+      record: 'served',
+    }
+  })
+  return { ...cap, data: { ...cap.data, pools } }
 }
 
 /**
@@ -155,6 +225,56 @@ export function AdminSettingsScreen() {
  *              ones from before the write, and it says so
  */
 type SaveMark = 'rereading' | 'saved' | 'unread'
+
+/**
+ * What a save's RESPONSE said, against what was asked: `moved` only when the
+ * pool it returned has the hard limit that was typed.
+ *
+ * WHY THE RESPONSE IS COMPARED (2026-10-07). The owner raised tenant smoke's
+ * ceiling 8 -> 20 here. The route answered 200 with the pool still at 8 --
+ * `capacity_units` held it there -- and this screen said saved, because a 200
+ * was all it read. Every pool kind `setPoolLimit` routes returns the pool, so
+ * every save is checked, not only a tenant's. A response that carries no pool
+ * cannot confirm anything and is not a success either.
+ */
+export interface SaveOutcome {
+  moved: boolean
+  /** `tenant:smoke ceiling 8 → 20`, or `Saved, but the ceiling is still 8: …`. */
+  text: string
+}
+
+/** The response's own words for what held a pool below the limit (`capped_by`, routes/admin.py). */
+const CAPPED_BY: Readonly<Record<string, string>> = {
+  capacity_units: "the tenant's capacity_units",
+  max_active: "the tenant's max_active",
+  unknown: 'something the API could not name',
+}
+
+export function saveOutcome(name: string, from: number | null, asked: number, data: unknown): SaveOutcome {
+  const body = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {}
+  const pool = typeof body.pool === 'object' && body.pool !== null ? (body.pool as Record<string, unknown>) : null
+  const now = pool === null ? undefined : pool.hard_limit
+  if (now === asked) {
+    return { moved: true, text: `${name} ceiling ${from === null ? 'no limit set' : from} → ${asked}` }
+  }
+  if (typeof now !== 'number') {
+    return {
+      moved: false,
+      text:
+        pool === null
+          ? `Saved, but the response did not return ${name}, so the new ceiling is not confirmed`
+          : `Saved, but ${name} has no ceiling set`,
+    }
+  }
+  const cap = typeof body.capped_by === 'string' ? body.capped_by : null
+  const tenant = typeof body.tenant === 'object' && body.tenant !== null ? (body.tenant as Record<string, unknown>) : {}
+  const held = cap === null ? null : tenant[cap]
+  const reason =
+    cap === null
+      ? 'the response gave no reason'
+      : `capped by ${CAPPED_BY[cap] ?? cap}${typeof held === 'number' ? ` (${held})` : ''}`
+  return { moved: false, text: `Saved, but the ceiling is still ${now}: ${reason}` }
+}
 
 /**
  * One profile's ceiling, with the numbers it was taken over.
@@ -224,13 +344,15 @@ function Body({
   capacity,
   admin,
   saved,
+  outcomes,
   onSaved,
   onEdit,
 }: {
   capacity: Capacity
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
-  onSaved: (pool: string) => Promise<boolean>
+  outcomes: Readonly<Record<string, SaveOutcome>>
+  onSaved: (pool: string, outcome: SaveOutcome) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
   // THE PER-PROFILE "BINDING POOL" CARDS ARE GONE (owner decision,
@@ -241,7 +363,9 @@ function Body({
   // runs out first, and the side editor here says what a new limit does to
   // each profile's ceiling (`impactOf`, which still reads `arithmetic`). The
   // cards held no control, so nothing a person could do went with them.
-  return <PoolEditor capacity={capacity} admin={admin} saved={saved} onSaved={onSaved} onEdit={onEdit} />
+  return (
+    <PoolEditor capacity={capacity} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
+  )
 }
 
 /**
@@ -438,31 +562,74 @@ function deltaWords(from: number | null, to: number): string {
 }
 
 /**
- * WHY "not recorded". Who changed a ceiling and when needs `admin_changed_by`
- * and `admin_changed_at` on the pool, which the store writes on every admin
- * write (`Store.upsert_pool`) and `/v1/capacity` does not serve yet. The pool's
- * `updated_at` is NOT that: admission rewrites the pool document on every
- * lease, so it moves with traffic, and printing it as "last changed" would
- * name a time nobody changed anything.
+ * WHY A POOL SHOWS NO RECORD, by where the record came from (#133). Never the
+ * pool's `updated_at` in its place: admission rewrites the pool document on
+ * every lease, so it moves with traffic, and printing it as "last changed"
+ * would name a time nobody changed anything.
  */
-const NOT_RECORDED_WHY =
-  'Not recorded: the API does not serve admin_changed_by or admin_changed_at for this pool, so who changed this ceiling, and when, is not known here.'
+function notRecordedWhy(pool: Pool): string {
+  const record = (pool as LimitPool).record
+  if (record === 'served')
+    return 'Not recorded: no admin has changed this ceiling through the API since changes began to be recorded, so admin_changed_by and admin_changed_at are empty for this pool.'
+  if (record === 'admins-only')
+    return 'Visible to admins only: who changed a ceiling, and when (admin_changed_by, admin_changed_at), is served on the admin pool read, which needs the platform admin group.'
+  return 'Not known here: the admin pool read (/v1/admin/pools), which serves admin_changed_by and admin_changed_at, did not answer for this pool, so who changed this ceiling, and when, is not known.'
+}
+
+/** The last admin write to a pool: who, when, what, and whether the pool still holds it. */
+interface Change {
+  by: string
+  at: string
+  /** `20 → 10`, `drained`; null when the record names no field (written before #133 recorded one). */
+  what: string | null
+  /** Set when the pool no longer holds what this change wrote: why, in a sentence. */
+  since: string | null
+}
 
 /**
  * The last admin write to a pool, when the response carries it (#133).
  *
- * READ DEFENSIVELY, OFF THE POOL AS SERVED. `Pool` in types.ts mirrors what
- * `/v1/capacity` serves today, which is neither field; the moment the API
- * serves them they are printed, and until then a pool without both reads
- * "not recorded". Both or nothing: a name with no time, or a time with no
- * name, is half a record and is not drawn as a whole one.
+ * READ DEFENSIVELY, OFF THE POOL AS SERVED: `loadLimits` joins the record on
+ * from the admin read, and a pool without both `admin_changed_by` and
+ * `admin_changed_at` reads "not recorded". Both or nothing: a name with no
+ * time, or a time with no name, is half a record and is not drawn as a whole
+ * one.
+ *
+ * A CEILING WRITTEN SINCE IS NOT CREDITED TO THE LAST ADMIN. The record is the
+ * newest change made through the API. `scripts/pool-limit.sh` writes Firestore
+ * directly and records nothing, so when the pool's hard limit is no longer the
+ * `to` of the record, the record is drawn with `changed since` and the
+ * sentence why, rather than as the reason for the value on screen.
  */
-function changeOf(pool: Pool): { by: string; at: string } | null {
-  const served = pool as Pool & { admin_changed_by?: unknown; admin_changed_at?: unknown }
+function changeOf(pool: Pool): Change | null {
+  const served = pool as LimitPool & { admin_changed_by?: unknown; admin_changed_at?: unknown }
   const by = served.admin_changed_by
   const at = served.admin_changed_at
   if (typeof by !== 'string' || by === '' || typeof at !== 'string' || Number.isNaN(Date.parse(at))) return null
-  return { by, at }
+  const limit = served.admin_change?.hard_limit
+  const enabled = served.admin_change?.enabled
+  const what: string[] = []
+  const since: string[] = []
+  if (limit !== undefined) {
+    what.push(`${limit.from === null ? 'no limit set' : limit.from} → ${limit.to}`)
+    if (pool.hard_limit !== limit.to)
+      since.push(
+        `The hard limit is ${pool.hard_limit === null ? 'not set' : pool.hard_limit} now, not the ${limit.to} this change wrote.`,
+      )
+  }
+  if (enabled !== undefined) {
+    what.push(enabled.to ? 'reopened' : 'drained')
+    if (pool.enabled !== enabled.to) since.push(`The pool is ${pool.enabled ? 'open' : 'drained'} now, not ${enabled.to ? 'open' : 'drained'}.`)
+  }
+  return {
+    by,
+    at,
+    what: what.length === 0 ? null : what.join(' · '),
+    since:
+      since.length === 0
+        ? null
+        : `${since.join(' ')} It was written since by something that records nothing -- scripts/pool-limit.sh writes Firestore directly -- so this record is not why the pool reads as it does.`,
+  }
 }
 
 /** "1 unit", "3 units" (browser QA D32: the editor said "1 units"). */
@@ -474,18 +641,53 @@ export function unitsWord(n: number): string {
  * WHAT SET A POOL'S CEILING, NEVER A BLANK CELL (browser QA D32, 2026-10-04).
  * #132 left the configured case empty so the column would not restate the
  * Ceiling, and every row then read as a cell nobody filled in. The configured
- * case is the word, faint; AIMD and provider quota stand out in ink.
+ * case is a faint dot (G5-19), named for a screen reader; AIMD and provider
+ * quota stand out in ink.
  */
 export function AdmSetBy({ pool }: { pool: Pool }) {
   const by = setBy(pool)
-  return by.term === 'configured' ? <span className="adm-setby-cfg">configured</span> : <>{by.term}</>
+  // A faint dot, not the word (QA G5-19, capacity.html §G): `configured` on
+  // nearly every row hid the rows where something else set the ceiling.
+  return by.term === 'configured' ? (
+    <span className="adm-setby-cfg" role="img" aria-label="configured">·</span>
+  ) : (
+    <>{by.term}</>
+  )
 }
 
-/** `ops@… · 3h ago`, with the instant on the `time` element. */
-function Changed({ change, now, as: Tag }: { change: { by: string; at: string }; now: number; as: 'dd' | 'p' | 'span' }) {
+/**
+ * A pool key that breaks only after a colon (QA G5-11): the family tables
+ * wrap anywhere, and `provider:anthropic:tenant:smok / e` is not a key anyone
+ * can read or paste. The text is unchanged; `<wbr>` only offers the break.
+ */
+export function keyBreaks(name: string): ReactNode {
+  const parts = name.split(':')
+  return parts.map((part, i) =>
+    i < parts.length - 1 ? (
+      <Fragment key={i}>
+        {`${part}:`}
+        <wbr />
+      </Fragment>
+    ) : (
+      <Fragment key={i}>{part}</Fragment>
+    ),
+  )
+}
+
+/** `ops@… · 20 → 10 · 3h ago`, with the instant on the `time` element. */
+function Changed({ change, now, as: Tag }: { change: Change; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
-      {change.by} · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.by} · {change.what !== null && <span className="mono">{change.what} · </span>}
+      <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+      {change.since !== null && (
+        <>
+          {' · '}
+          <span className="adm-changed-since" title={change.since} aria-label={`changed since. ${change.since}`}>
+            changed since
+          </span>
+        </>
+      )}
     </Tag>
   )
 }
@@ -494,6 +696,7 @@ function PoolEditor({
   capacity,
   admin,
   saved,
+  outcomes,
   onSaved,
   onEdit,
 }: {
@@ -501,7 +704,8 @@ function PoolEditor({
   /** From the session read. null: not known (yet), and treated as allowed. */
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
-  onSaved: (pool: string) => Promise<boolean>
+  outcomes: Readonly<Record<string, SaveOutcome>>
+  onSaved: (pool: string, outcome: SaveOutcome) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
   const pools = capacity.pools
@@ -524,10 +728,14 @@ function PoolEditor({
     poolLabel(p.name).toLowerCase().includes(needle) ||
     // The open editor's row is never filtered away from under what was typed.
     p.name === editing?.pool
+  // ONE POOL ORDER (QA G5-22): Pools' -- family, problems first, this
+  // tenant, name (`comparePools`). It was alphabetical here, so `standard`
+  // sat third on this screen and first on Pools.
+  const order = comparePools(poolViewer(capacity))
   const families = POOL_FAMILY_ORDER.flatMap((kind) => {
     const rows = pools
       .filter((p) => poolKind(p.name) === kind && matches(p))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort(order)
     return rows.length === 0 ? [] : [{ kind, rows }]
   })
 
@@ -616,6 +824,7 @@ function PoolEditor({
               kind={kind}
               pools={rows}
               saved={saved}
+              outcomes={outcomes}
               editing={editing?.pool ?? null}
               target={target}
               held={held}
@@ -639,7 +848,7 @@ function PoolEditor({
             }}
             onClose={() => close(open.name)}
             onWriting={(on) => onWriting(open.name, on)}
-            onSaved={() => onSaved(open.name)}
+            onSaved={(outcome) => onSaved(open.name, outcome)}
           />
         )}
       </div>
@@ -666,6 +875,7 @@ function Family({
   kind,
   pools,
   saved,
+  outcomes,
   editing,
   target,
   held,
@@ -675,6 +885,7 @@ function Family({
   kind: PoolKind
   pools: Pool[]
   saved: Readonly<Record<string, SaveMark>>
+  outcomes: Readonly<Record<string, SaveOutcome>>
   /** The pool whose side editor is open, if one is. */
   editing: string | null
   target: string | null
@@ -683,13 +894,16 @@ function Family({
   admin: boolean | null
   onOpen: (pool: string) => void
 }) {
+  // A RECORD PER POOL ON A PHONE (QA G5-08): at 390 the table ran 553-626px in
+  // a 356px box and cut `edit` to `edi`.
+  const phone = usePhoneTables()
   return (
     <section className="ctl-card adm-family">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <div className="ctl-table is-scroll">
+        <div className={`ctl-table ${tableMode(phone)}`}>
           {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
               SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
               family where some pool was not at its configured value, so the
@@ -721,6 +935,7 @@ function Family({
                   key={p.name}
                   pool={p}
                   mark={saved[p.name] ?? null}
+                  outcome={outcomes[p.name] ?? null}
                   open={editing === p.name}
                   target={target === p.name}
                   locked={held !== null && held !== p.name}
@@ -739,6 +954,7 @@ function Family({
 function PoolRow({
   pool,
   mark,
+  outcome,
   open,
   target,
   locked,
@@ -748,6 +964,8 @@ function PoolRow({
   pool: Pool
   /** What the last save of this row said. Held by the screen, not the row (AH-7). */
   mark: SaveMark | null
+  /** What the last save's response said the ceiling became. Held by the screen too. */
+  outcome: SaveOutcome | null
   /** This pool's side editor is the one open. */
   open: boolean
   /** The row a link named (#134). */
@@ -774,7 +992,7 @@ function PoolRow({
         {poolLabel(pool.name)}
         {/* The raw name, because it is what you paste into pool-limit.sh and a
             prettified label is not. */}
-        <span className="ctl-sub">{pool.name}</span>
+        <span className="ctl-sub">{keyBreaks(pool.name)}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="adm-ceiling-cell">
@@ -791,6 +1009,18 @@ function PoolRow({
         ) : (
           <span className="adm-ceiling">{pool.effective_limit}</span>
         )}
+        {/* THE CONFIGURED HARD LIMIT BESIDE THE EFFECTIVE ONE, AS POOLS DRAWS
+            IT (G5-21, QA 2026-10-07): a quota-held pool read "50" here and
+            "50/100" on Pools, and its editor then prefilled 100. A slot of its
+            own and a fixed width, drawn empty when the two agree, so `edit`
+            still starts at one x in every row. */}
+        <span className="adm-was">
+          {pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit && (
+            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+              /{pool.hard_limit}
+            </span>
+          )}
+        </span>
         <span className="limit-edit">
           {/* A pool nothing can write gets no editor to open: an enabled
               control that silently does nothing is worse than none. The
@@ -833,7 +1063,18 @@ function PoolRow({
             </span>
           )}
           {!editable && <span className="client-side">read-only</span>}
-          {mark !== null && <span className="tag ok">saved</span>}
+          {/* A SAVE IS A SUCCESS ONLY WHEN THE POOL MOVED TO WHAT WAS ASKED
+              (2026-10-07): tenant smoke was raised 8 -> 20, the route answered
+              200 with a pool still at 8, and this tag said saved. The
+              response's pool is compared with the request (`saveOutcome`);
+              a pool that did not move says so, with the reason the response
+              gave, and never wears the success tag. */}
+          {mark !== null && (outcome === null || outcome.moved) && <span className="tag ok">saved</span>}
+          {mark !== null && outcome !== null && (
+            <span className={outcome.moved ? 'adm-saved-what' : 'adm-saved-what warn-text'} role="status">
+              {outcome.text}
+            </span>
+          )}
           {mark === 'unread' && (
             <span className="warn-text" title="The write succeeded; reading the pools back afterwards did not, so the figures in this row are from before it.">
               not re-read
@@ -849,9 +1090,9 @@ function PoolRow({
       </td>
       <td role="cell" data-label="Last changed">
         {/* THE LAST ADMIN WRITE, OR A DASH WITH ITS REASON. Never `updated_at`,
-            which admission rewrites on every lease (NOT_RECORDED_WHY). */}
+            which admission rewrites on every lease (notRecordedWhy). */}
         {change === null ? (
-          <i className="ctl-em adm-changed-none" title={NOT_RECORDED_WHY} aria-label={NOT_RECORDED_WHY}>
+          <i className="ctl-em adm-changed-none" title={notRecordedWhy(pool)} aria-label={notRecordedWhy(pool)}>
             —
           </i>
         ) : (
@@ -886,7 +1127,7 @@ function SideEditor({
   /** From the click on Save until the read-back settles, or the write fails. */
   onWriting: (on: boolean) => void
   /** Resolves true once the pools have been read back after the write. */
-  onSaved: () => Promise<boolean>
+  onSaved: (outcome: SaveOutcome) => Promise<boolean>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
@@ -929,7 +1170,7 @@ function SideEditor({
         // field never flicks back to the old limit in between. If the
         // read-back fails the editor stays open on what was written, and the
         // row says `not re-read`.
-        const reread = await onSaved()
+        const reread = await onSaved(saveOutcome(pool.name, pool.hard_limit, next, r.data))
         onWriting(false)
         if (reread) onClose()
       } else {
@@ -969,12 +1210,12 @@ function SideEditor({
         {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>
-            <dd>{pool.hard_limit}</dd>
+            <dd>{unitsWord(pool.hard_limit)}</dd>
           </>
         )}
         <dt>Last changed</dt>
         {change === null ? (
-          <dd className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+          <dd className="adm-not-recorded" title={notRecordedWhy(pool)}>
             not recorded
           </dd>
         ) : (
@@ -983,8 +1224,12 @@ function SideEditor({
       </dl>
 
       <div className="adm-side-field">
+        {/* THE FIELD SAYS WHAT IT EDITS AND WHAT IT HOLDS (G5-21): the write
+            sets the HARD limit, and the prefill is that hard limit -- not the
+            effective ceiling printed above it when a quota or an adaptive
+            target holds the pool lower. */}
         <label className="adm-side-k" htmlFor={`${titleId}-new`}>
-          New ceiling
+          {pool.hard_limit === null ? 'New hard limit' : `New hard limit (now ${pool.hard_limit})`}
         </label>
         <input
           id={`${titleId}-new`}
@@ -1067,11 +1312,12 @@ function SideEditor({
       </div>
 
       {/* THE NEWEST WRITE IS ALL THE API CAN SERVE: the pool document holds
-          the last admin change and no earlier one, so History is that entry
-          and says nothing about the ones before it. */}
+          the last admin change -- who, when, and the value before and after
+          (#133) -- and no earlier one, so History is that entry and says
+          nothing about the ones before it. */}
       <span className="adm-side-k">History</span>
       {change === null ? (
-        <p className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+        <p className="adm-not-recorded" title={notRecordedWhy(pool)}>
           not recorded
         </p>
       ) : (

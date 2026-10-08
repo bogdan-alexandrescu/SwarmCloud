@@ -82,7 +82,7 @@ from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
-from .settings import BrokerSettings
+from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
     SWEEP_ERROR,
     SWEEP_OK,
@@ -129,6 +129,13 @@ def worker_sa_pattern(project_id: str) -> re.Pattern[str]:
         rf"^(?:{alternatives})-(?P<tenant>[a-z0-9-]+)@"
         rf"{re.escape(project_id)}\.iam\.gserviceaccount\.com$"
     )
+
+
+#: What a borrowing tenant id must look like before its worker service account
+#: is named in an IAM policy: the same `[a-z0-9-]+` `worker_sa_pattern` reads
+#: back out of a token. A `lend_to` entry outside it could only produce a member
+#: nothing provisions, or one that re-points the template's domain.
+LENDABLE_TENANT = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 class BrokerAuthError(Exception):
@@ -456,8 +463,19 @@ def _flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+#: The retired #295 GitHub App keys (owner decision MS0-Q4, 2026-10-06).
+#: The frozen catalogue still names `git-review` on its disabled post-verdict
+#: entry, but nothing reads either key and neither has a quota to keep: a
+#: quota route naming one is refused like any unknown provider. swarm-api
+#: keeps the same pair in `validation.APP_CREDENTIAL_PROVIDERS`; the broker
+#: does not import swarm-api.
+RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
+
+
 def _known_provider(provider: str) -> str:
-    providers = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+    providers = {
+        p.provider for p in RUNNER_PROFILES.values() if p.provider
+    } - RETIRED_APP_PROVIDERS
     name = provider.strip().lower()
     if name not in providers:
         raise BrokerValidationError(
@@ -1564,9 +1582,15 @@ def _sweep_account_pool(
     """
     try:
         due = due_for_refresh(store.list(), now)
+        # WHICH OF THEM AN AGENT IS ON NOW (#626): refreshing revokes the token
+        # that agent runs with, so the refresher defers a held account until
+        # its token nears expiry. A LIVE hold only -- an expired one is a
+        # worker that died without releasing, and nothing is running on it.
+        held = {a.account_id for a in due if a.live_holds(now)}
         outcomes = refresher.sweep_accounts(
             [(store.secret_for(a), a.account_id) for a in due],
             keep_going=keep_going,
+            held=held,
         )
     except Exception as exc:
         log.error(
@@ -1676,13 +1700,17 @@ def _sweep_account_pool(
         #: listing will not show.
         "marked_reauth_required": marked,
         #: The same write-cadence counters `_sweep_block` reports, and for the
-        #: same reason: the account secrets carried 1,741 and 1,698 identical
-        #: versions while every tick of this sweep reported success.
+        #: same reason: secrets this broker writes piled up identical versions
+        #: while every tick reported success. The figures are in
+        #: `quota_broker.credentials` (`_BaseState`), and only there: a second
+        #: copy of a count is how this one drifted.
         "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
         "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
         "unverified_skipped": [
             o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
         ],
+        #: ACCOUNT IDS a running agent held, left unrefreshed this tick (#626).
+        "held_deferred": [o.tenant_id for o in outcomes if o.reason == "held_deferred"],
     }
 
 
@@ -1875,6 +1903,7 @@ def create_app(
                 HttpTokenEndpoint(),
                 logger=log,
                 ledger=app.state.publish_ledger,
+                held_margin=held_refresh_margin(),
             )
             if tenants is None:
                 tenants = store.subscription_tenants
@@ -1940,7 +1969,25 @@ def create_app(
             )
         return f"serviceAccount:{template.format(tenant=tenant_id)}"
 
+    def _is_worker_sa(member: str) -> bool:
+        # The SAME template, read the other way: which accessor-binding members
+        # a lending sync owns and may therefore revoke. Anything else on an
+        # account secret -- the broker, a human, terraform's grants -- is not
+        # this code's to remove.
+        if not template or "{tenant}" not in template:
+            return False
+        head, _, tail = template.partition("{tenant}")
+        return (
+            re.fullmatch(
+                rf"serviceAccount:{re.escape(head)}{LENDABLE_TENANT.pattern}"
+                rf"{re.escape(tail)}",
+                member,
+            )
+            is not None
+        )
+
     app.state.worker_service_account = _worker_sa
+    app.state.is_worker_service_account = _is_worker_sa
 
     # The usage poller needs the same Secret Manager store the refresher uses --
     # it reads each account's CURRENT access token, which the refresh above has
@@ -2251,6 +2298,92 @@ def create_app(
             return {"last_completed_at": None, "last_outcome": None, "readable": False}
         return {**liveness(data), "readable": True}
 
+    def _lending_readers(request: Request, owner_tenant: str, lend_to: list[str]) -> list[str]:
+        """The worker service accounts that must read an account's access token.
+
+        The owner's, always, and one per borrower -- filtered exactly as
+        `AccountStore.register` filters `lend_to`, so the policy and the
+        document can never disagree about who is lent the account. A borrower
+        that is not a tenant id is refused here, before any policy is touched.
+        """
+        borrowers = list(dict.fromkeys(t for t in lend_to if t and t != owner_tenant))
+        bad = [t for t in borrowers if not LENDABLE_TENANT.fullmatch(t)]
+        if bad:
+            raise BrokerValidationError(
+                f"lend_to names {len(bad)} entr{'y' if len(bad) == 1 else 'ies'} "
+                "that are not tenant ids (lowercase letters, digits and dashes)"
+            )
+        worker_sa = request.app.state.worker_service_account
+        return [worker_sa(owner_tenant), *(worker_sa(t) for t in borrowers)]
+
+    def _sync_lending(
+        request: Request,
+        secrets: Any,
+        *,
+        secret: str,
+        owner_tenant: str,
+        lend_to: list[str],
+        revoke: bool,
+    ) -> None:
+        """Make `secret`'s worker readers follow `lend_to`. Raises on failure.
+
+        Called twice per lending change: grants only BEFORE the account
+        document is written, the full sync -- revokes included -- after it.
+        So a borrower is never listed while its worker cannot read the secret
+        (the 2026-10-06 failure), and a dropped borrower is never left
+        reading a secret the document says it may not use for longer than
+        the one write in between.
+        """
+        added, removed = secrets.set_worker_readers(
+            secret,
+            readers=_lending_readers(request, owner_tenant, lend_to),
+            manages=request.app.state.is_worker_service_account,
+            revoke=revoke,
+        )
+        if added or removed:
+            log.info(
+                "an account's secret readers now follow its lending",
+                extra={
+                    "secret": secret,
+                    "owner_tenant": owner_tenant,
+                    "granted": added,
+                    "revoked": removed,
+                },
+            )
+
+    def _revoke_unlent(request: Request, secrets: Any, *, secret: str, account: Any) -> None:
+        """The second half of a lending change, after the document is written.
+
+        The document already says who may use the account, so a failure here
+        cannot assign anyone an account they cannot read -- it leaves a
+        dropped borrower able to READ a secret it is no longer assigned. That
+        is a grant nobody intends, so it is refused loudly rather than
+        logged: the caller is told, and repeating the same request finishes
+        it, because the sync recomputes from the live policy.
+        """
+        try:
+            _sync_lending(
+                request,
+                secrets,
+                secret=secret,
+                owner_tenant=account.owner_tenant,
+                lend_to=list(account.lend_to),
+                revoke=True,
+            )
+        except BrokerValidationError:
+            raise
+        except Exception as exc:
+            log.error(
+                "an account's lending was recorded but a dropped borrower's "
+                "read access to its secret could not be revoked",
+                extra={"secret": secret, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"{account.account_id}'s lending was recorded, but revoking a "
+                f"dropped borrower's access to its secret failed: "
+                f"{type(exc).__name__}. Repeat the same request to finish it."
+            ) from None
+
     def _provision_and_register(
         request: Request,
         *,
@@ -2308,8 +2441,22 @@ def create_app(
                 accessors=[sa for sa in (broker_sa, worker_sa) if sa],
                 region=region,
             )
+            # EVERY BORROWER TOO, on `{base}` only -- `-refresh` above stays
+            # the broker's alone. Before 2026-10-06 only the owner's worker
+            # was bound here, and every borrower was assigned an account it
+            # got PermissionDenied reading.
+            _sync_lending(
+                request,
+                secrets,
+                secret=base,
+                owner_tenant=owner_tenant,
+                lend_to=lend_to,
+                revoke=False,
+            )
             secrets.add_version(f"{base}{REFRESH_SUFFIX}", credential_payload)
             secrets.add_version(base, access_token)
+        except BrokerValidationError:
+            raise
         except Exception as exc:
             log.error(
                 "could not provision an account's secrets",
@@ -2346,6 +2493,9 @@ def create_app(
         account = store.register(
             owner_tenant, label, provider=provider, lend_to=lend_to
         )
+        # Re-registering is also how lending changes (`AccountStore.register`),
+        # so a borrower dropped from the list loses the secret here.
+        _revoke_unlent(request, secrets, secret=base, account=account)
 
         # THE WAY BACK, for the way people actually recover an account.
         #
@@ -2627,12 +2777,49 @@ def create_app(
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
+        secrets = getattr(request.app.state, "secret_store", None)
+        secret = store.secret_for(account)
+        if secrets is not None:
+            # GRANT FIRST: until this lands, the document must not list a
+            # borrower, or the pool assigns it an account it cannot read.
+            try:
+                _sync_lending(
+                    request,
+                    secrets,
+                    secret=secret,
+                    owner_tenant=account.owner_tenant,
+                    lend_to=body.lend_to,
+                    revoke=False,
+                )
+            except BrokerValidationError:
+                raise
+            except Exception as exc:
+                log.error(
+                    "could not grant a borrower its account's secret; lending unchanged",
+                    extra={"secret": secret, "error": type(exc).__name__},
+                )
+                raise BrokerValidationError(
+                    f"could not grant the borrowers of {account_id} read access "
+                    f"to its secret: {type(exc).__name__}. Lending is unchanged."
+                ) from None
+        else:
+            # A deployment with no PROJECT_ID has no secret store, and its
+            # account secrets were bound by hand if at all. Said once per
+            # change, so a missing grant is not a silent one.
+            log.warning(
+                "no secret store is configured, so a lending change was "
+                "recorded without granting or revoking any borrower's read "
+                "access to the account's secret",
+                extra={"account_id": account_id},
+            )
         updated = store.register(
             account.owner_tenant,
             account.label,
             provider=account.provider,
             lend_to=body.lend_to,
         )
+        if secrets is not None:
+            _revoke_unlent(request, secrets, secret=secret, account=updated)
         return {"account": account_to_api(updated)}
 
     @app.put("/v1/accounts/{account_id}/state")

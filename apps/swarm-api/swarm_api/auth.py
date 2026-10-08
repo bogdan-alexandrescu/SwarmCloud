@@ -27,6 +27,7 @@ from swarm_common.identity import (
 )
 
 from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
+from .gitidentity import clean_name
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 
@@ -135,6 +136,15 @@ class AuthContext:
     #: personal fallback the frozen `resolve_tenant` derives, which no route
     #: it can reach reads -- the rollup route takes its tenant as a parameter.
     is_rollup_sweeper: bool = False
+    #: The verified token's `name` claim, cleaned for a commit identity
+    #: (`gitidentity.clean_name`); "" when the token carries none -- an IAP
+    #: assertion never does. Read from claims already verified, never asked of
+    #: a directory: what a person's commits are named (`gitidentity`).
+    display_name: str = ""
+    #: The caller is `ApiSettings.platform_owner` (docs/workspaces.md §6.5).
+    #: Always also `is_admin`. Read by the admin-role routes, which let only
+    #: the owner change the owner's role.
+    is_owner: bool = False
 
     @property
     def email(self) -> str:
@@ -343,11 +353,16 @@ class Authenticator:
         verifier: TokenVerifier,
         groups: MembershipResolver,
         iap: Any = None,
+        admin_roles: Any = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
         self._groups = groups
         self._iap = iap
+        # `swarm_api.admins.AdminRoles`, the `admin_roles/` documents. None
+        # (a hand-built authenticator in a test) means configuration alone
+        # decides admin, which is exactly the behaviour before §6.5.
+        self.admin_roles = admin_roles
 
     def authenticate(
         self,
@@ -572,6 +587,23 @@ class Authenticator:
             ) from None
 
         admin_users = {u.lower() for u in self._settings.admin_users}
+        owner = (getattr(self._settings, "platform_owner", "") or "").lower()
+        is_owner = bool(owner) and email == owner
+        # The `admin_roles/` documents (docs/workspaces.md §6.5). The
+        # configuration is the fallback and is never skipped for them: the
+        # owner and ADMIN_USERS are admins whatever Firestore says or fails to
+        # say, which is what keeps admin reachable before the migration has
+        # run and after admin documents are lost. A failed read is the same
+        # third state as a failed group lookup -- unresolved, a 503 on an
+        # admin route, never a grant and never a "no".
+        role_admin = False
+        roles_unresolved = False
+        if self.admin_roles is not None and not is_owner and email not in admin_users:
+            try:
+                role_admin = self.admin_roles.holds_admin(email)
+            except Exception as exc:  # noqa: BLE001 - any Firestore failure
+                log.warning("admin role unresolved (%s)", type(exc).__name__)
+                roles_unresolved = True
         admin_candidates = tuple(dict.fromkeys(self._settings.admin_groups))
         admin_groups_held: tuple[str, ...] = ()
         admin_unresolved = False
@@ -584,6 +616,11 @@ class Authenticator:
         # for deployments where the Groups API cannot be read AT ALL (see
         # ApiSettings.admin_users), so making it depend on a group lookup would
         # break it in the one situation it was added for.
+        #
+        # NOT skipped for the owner or a Firestore admin: their
+        # `principal.groups` would lose the admin groups `GET /v1/tenants/mine`
+        # reports, and a failed lookup cannot hurt them -- `admin_unresolved`
+        # is dropped below for anyone already an admin.
         if admin_candidates and email not in admin_users:
             try:
                 admin_groups_held = self._groups.groups_for(email, admin_candidates)
@@ -610,6 +647,8 @@ class Authenticator:
         is_admin = (
             any(g.lower() in admin_set for g in member_groups)
             or email.lower() in admin_users
+            or is_owner
+            or role_admin
         )
         # The NARROW capability, deliberately kept out of `is_admin`: that flag
         # is read by the operator screens and by service.py's cross-tenant
@@ -627,9 +666,11 @@ class Authenticator:
             tenant_principal=tenant_principal,
             # A confirmed membership settles the question; the doubt only
             # survives while the answer is still False.
-            admin_unresolved=admin_unresolved and not is_admin,
+            admin_unresolved=(admin_unresolved or roles_unresolved) and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
             tenant_choices=self._tenant_choices(member_groups),
+            display_name=clean_name(claims.get("name")),
+            is_owner=is_owner,
         )
 
     def is_tenant_member(self, email: str, tenant: Any) -> bool:
@@ -797,6 +838,15 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/v1/admin/workflows/rollup"),
         ("POST", "/v1/admin/runs/advance"),
         ("POST", "/v1/admin/repositories/poll"),
+        # The merge step's wake tick (docs/merge-step.md "Revised 2026-10-06"
+        # §1, lane MS2): reads the named tenant's CI_PENDING parks with that
+        # tenant's token and writes only the wake marker on them.
+        ("POST", "/v1/admin/merges/wake"),
+        # The GitHub user-token refresh sweep (docs/onboarding.md §3.4 item 6,
+        # owner decision D2; lane OB3): the swarm-forge-refresh job. It spends
+        # each due connection's refresh token and writes the new pair to that
+        # user's own slots; it submits nothing and moves no task.
+        ("POST", "/v1/admin/forge/refresh"),
     }
 )
 
@@ -916,6 +966,7 @@ def require_admin(
         granted = ", ".join(f"{method} {path}" for method, path in sorted(POOL_ADMIN_ROUTES))
         raise Forbidden(
             "this route is not in the ADMIN_POOL_USERS allow-list "
-            f"({granted}); it needs an admin (ADMIN_GROUPS membership or ADMIN_USERS)"
+            f"({granted}); it needs an admin (an admin role, ADMIN_GROUPS membership "
+            "or ADMIN_USERS)"
         )
     raise Forbidden("admin group membership is required for this operation")

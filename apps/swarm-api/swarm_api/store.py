@@ -16,6 +16,8 @@ immediately -- an index with any other field in between does NOT satisfy it:
     tasks-tenant-runner-created     tenant_id ASC, runner_profile ASC, created_at DESC
     tasks-tenant-parent-created     tenant_id ASC, parent_task_id ASC, created_at DESC
     workflows-tenant-created        tenant_id ASC, created_at DESC
+    workflows-tenant-state-created  tenant_id ASC, state ASC, created_at DESC
+                                    (`state IN`, for a filtered workflow list)
 
 Only the first exists in terraform/modules/firestore/indexes.tf today. See the
 handover note in this track's report: the other four are required before
@@ -24,20 +26,18 @@ and `GET /v1/workflows` will work against a real Firestore. `count_tasks_by_stat
 uses equality filters with no ordering, which Firestore serves by merge join from
 single-field indexes, so it needs nothing added.
 
-Pagination uses an inequality on `created_at` rather than a Firestore cursor
-token so a page token stays a plain, opaque timestamp the caller can hold across
-processes. Two tasks created in the same microsecond would collapse a page
-boundary; ids are generated with microsecond-resolution timestamps and random
-suffixes, so that is a theoretical rather than an operational concern, and the
-`id` tiebreak below makes it deterministic anyway.
-
-The EVENTS and cross-task ATTEMPTS pages use a (timestamp, document id) keyset
-instead -- `_keyset_page` -- because for them a collapsed boundary is not
-theoretical to their callers: `swarm_mcp.follow` gave up on a timestamp cursor
-precisely because "two events written in the same microsecond ... a timestamp
-cursor would either duplicate or drop". Both still order on ONE field, so both
-are served by the single-field index on it (events) or by the composite index
-already declared (`attempts-tenant-created`); no index is added.
+Every paged listing here -- tasks, failures, workflows, leases, events and
+cross-task attempts -- pages on a (timestamp, document id) keyset through
+`_keyset_page`, never on a timestamp alone. Tasks, failures and workflows used
+to page on `created_at < before`, on the theory that two rows sharing a
+microsecond were theoretical. They are not: a workflow's steps are created in
+one batch with one `created_at`, and a page that ended inside such a batch
+skipped the rest of it -- 39 of 2,258 eng tasks, whole workflows' steps, were
+unreachable by listing (#622, history analysis 2026-10-05). `swarm_mcp.follow`
+had given up on a timestamp cursor for events for the same reason ("a
+timestamp cursor would either duplicate or drop"). Every keyset still orders
+on ONE field, so each is served by the index the old query already used; no
+index is added.
 """
 
 from __future__ import annotations
@@ -74,7 +74,9 @@ from swarm_common.states import (
     EventType,
     TaskState,
     assert_transition,
+    can_transition,
 )
+from swarm_rollup import _TERMINAL_SEVERITY
 
 from .codec import (
     attempt_from_dict,
@@ -91,12 +93,15 @@ from .codec import (
     workflow_to_firestore,
 )
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
+from .executioncancel import ExecutionTarget
 
 log = logging.getLogger(__name__)
 
 TASKS = "tasks"
 WORKFLOWS = "workflows"
 TENANTS = "tenants"
+#: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
+TENANT_FINDINGS_EPIC = "findings_epic"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
@@ -155,6 +160,51 @@ FENCED_SILENCE_SECONDS = 90
 #: reconciler's, which kills before it releases.
 _WORKER_AWAITED_STATES = frozenset({TaskState.DISPATCHED, TaskState.STARTING})
 
+#: The states in which a task's attempt may have an execution running: the
+#: capacity-holding ones (invariant 1). The first cancel of a task in one of
+#: them names that execution for the route to stop (#627).
+_EXECUTION_STATES = frozenset(
+    {TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING}
+)
+
+
+def first_cancel_target(
+    db: Any, txn: Any, data: dict[str, Any], *, tenant_id: str, task_id: str
+) -> ExecutionTarget | None:
+    """The execution a task's first cancel should stop, read inside `txn` (#627).
+
+    For a caller whose transaction has not yet set `cancel_requested` -- the
+    child cascade -- and which must call this before any write. None when the
+    flag is already set (a cancel already asked), when the task holds no
+    capacity, or when its attempt recorded no execution or has ended.
+    """
+    if data.get("cancel_requested"):
+        return None
+    try:
+        state = TaskState(data.get("state"))
+    except ValueError:
+        return None
+    lease_id = data.get("current_lease_id")
+    if state not in _EXECUTION_STATES or not lease_id:
+        return None
+    lease_snap = _snapshot(txn.get(db.collection(LEASES).document(lease_id)))
+    lease = (lease_snap.to_dict() or {}) if lease_snap.exists else {}
+    attempt_id = lease.get("attempt_id")
+    if not attempt_id:
+        return None
+    attempt_snap = _snapshot(txn.get(db.collection(ATTEMPTS).document(attempt_id)))
+    attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else {}
+    execution = attempt.get("execution_name")
+    if not isinstance(execution, str) or not execution or attempt.get("completed_at") is not None:
+        return None
+    return ExecutionTarget(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        attempt_id=str(attempt_id),
+        backend=str(attempt.get("backend") or ""),
+        execution_name=execution,
+    )
+
 
 def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
@@ -199,12 +249,54 @@ def _no_live_worker(
     return "its worker never started"
 
 
-#: Step-task point reads one list request may spend deriving workflow states.
-#: A page of `max_page_size` workflows at `max_workflow_steps` each would be
-#: 10,000 documents, which is not a cost a list route may incur on a caller's
-#: behalf. Past this the remaining steps come back UNREAD and the workflows that
-#: needed them derive as UNKNOWN -- slower to answer, never wrong.
-_STEP_READ_BUDGET = 500
+#: Step-task point reads EACH workflow may spend deriving its state: the
+#: default of `max_workflow_steps` (swarm_common.config), so every step of any
+#: workflow the submission validation admits is read.
+#:
+#: WHY PER WORKFLOW, NOT PER REQUEST (owner decision 2026-10-05, F9). It was
+#: one shared budget of 500 reads per request, and a page that listed a few
+#: large workflows first spent it all: the rows after them derived UNKNOWN --
+#: 20 of 343 in the history analysis -- with nothing wrong with any of them.
+#: Per workflow, the cost follows the page: one read per step of a workflow
+#: the page serves, whose steps the response already carries, bounded by the
+#: caller's `limit` (at most `max_page_size`). A workflow with more steps than
+#: this -- only data written outside the validation -- derives UNKNOWN on its
+#: own and cannot spend a neighbour's reads.
+_STEP_READS_PER_WORKFLOW = 50
+
+
+def _final_workflow_states() -> frozenset[TaskState]:
+    """The stored workflow states no later derivation can change.
+
+    WHY NOT "EVERY TERMINAL STATE". A workflow's stored `state` is a cache of
+    `swarm_rollup.derive`, which reports a finished workflow as its WORST
+    step (`_TERMINAL_SEVERITY`). A stored T therefore says every step was
+    terminal and no worse than T when it was written -- and that stays true
+    only if none of those step states has a way out. The frozen state machine
+    allows FAILED -> READY (a retry), so a stored FAILED, and a stored
+    DEAD_LETTERED with a FAILED sibling, can come back to life; a stored
+    SUCCEEDED or CANCELLED cannot. Computed from `can_transition` rather than
+    listed, so this cannot drift from the contract.
+
+    It goes by severity rank, not by the steps a workflow actually has, so a
+    stored DEAD_LETTERED workflow whose steps are all DEAD_LETTERED, CANCELLED
+    or SUCCEEDED -- truly final -- is still fetched by every filtered list and
+    dropped after deriving. That costs a row read, never a wrong answer; ruling
+    it out in the query needs a "finished" marker written back with the
+    rollup, which is a document-shape change of its own.
+    """
+    final: set[TaskState] = set()
+    for rank, state in enumerate(_TERMINAL_SEVERITY):
+        possible = _TERMINAL_SEVERITY[rank:]
+        if not any(can_transition(step, to) for step in possible for to in TaskState):
+            final.add(state)
+    return frozenset(final)
+
+
+#: Stored workflow states that are the derivation's last word (SUCCEEDED,
+#: CANCELLED today). The only ones a filtered workflow listing may leave out
+#: of its query: every other stored state can be stale behind the steps.
+FINAL_WORKFLOW_STATES: frozenset[TaskState] = _final_workflow_states()
 
 #: `evaluate_capacity` treats a MISSING pool as unlimited, but a Firestore
 #: document has no "absent integer" -- so a pool created only to carry an
@@ -259,6 +351,12 @@ def derived_service_account(
 
 
 def encode_cursor(moment: datetime) -> str:
+    """The OLD timestamp-only page token, which nothing here mints any more.
+
+    Kept so `decode_listing_token` -- and a test of it -- can name the format a
+    client may still hold from before the keyset change. Remove both with the
+    release after the one that stopped minting it.
+    """
     return base64.urlsafe_b64encode(moment.isoformat().encode("utf-8")).decode("ascii")
 
 
@@ -333,6 +431,43 @@ def decode_keyset(token: str | None, *, scope: str, order: str) -> KeysetCursor 
     )
 
 
+#: Sorts after every real document id, so a keyset mark of (t, this) admits
+#: every row AT instant t: the reading an old timestamp token is given.
+_PAST_EVERY_ID = "\U0010ffff"
+
+
+def decode_listing_token(token: str | None, *, scope: str) -> KeysetCursor | None:
+    """A newest-first listing's token: a keyset token, or the old timestamp one.
+
+    THE OLD TOKEN IS ACCEPTED FOR ONE RELEASE (owner decision 2026-10-05), so
+    a client paging across the deploy is not answered 422 mid-listing. It
+    named only an instant and meant `created_at < instant`, which is the
+    reading that lost the rest of a same-instant batch. So it is read
+    INCLUSIVELY here -- every row at its instant, then older: the boundary
+    batch's rows the client already has are served again, and none it lacked
+    is skipped. A duplicate a client can see; a skip it cannot.
+
+    A keyset token carries its scope, so a workflow token sent to the task
+    listing is refused rather than read as a position among tasks. The old
+    token carried none and is accepted by each of the three listings that
+    minted it.
+    """
+    if not token:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+    except (binascii.Error, UnicodeError, ValueError):
+        raise ValidationFailed("page_token is not a valid cursor") from None
+    if not raw.startswith("{"):
+        legacy = decode_cursor(token)
+        return None if legacy is None else KeysetCursor(at=legacy, doc_id=_PAST_EVERY_ID)
+    return decode_keyset(token, scope=scope, order="desc")
+
+
+def _listing_mint(scope: str) -> Callable[[datetime, str], str]:
+    return lambda at, doc_id: encode_keyset(scope=scope, order="desc", at=at, doc_id=doc_id)
+
+
 @dataclass(frozen=True)
 class Page:
     items: list[Any]
@@ -356,7 +491,8 @@ class LeaseScan:
     history read it means older documents exist, which after an
     environment's 201st admission is true for ever -- lease documents are
     never deleted and carry no TTL. It is kept for a pager, not for the
-    drift check.
+    drift check, and `next_page_token` is what the pager follows (F8): it is
+    set exactly when `truncated` is true.
 
     `examined` is how many rows the route's `state` and `overdue_only`
     filters ran over.
@@ -370,6 +506,20 @@ class LeaseScan:
     examined: int
     truncated: bool
     active_beyond_window: int
+    next_page_token: str | None = None
+
+
+@dataclass(frozen=True)
+class QuotaScan:
+    """A quota listing plus whether its window left documents out.
+
+    `truncated` is true exactly when more quota documents match than `limit`
+    returned, so an operator panel can say "not every provider x tenant pair
+    is shown" instead of presenting a cut set as the whole.
+    """
+
+    states: list[QuotaState]
+    truncated: bool
 
 
 def _skipped_entries(value: Any) -> list[dict[str, Any]]:
@@ -560,7 +710,8 @@ class Store:
 
         `lower` (inclusive) and `upper` (exclusive) bound `field`, so windows
         with a shared edge tile without overlap. `base` must carry EQUALITY
-        filters only: the run reads add an equality on `field` to it.
+        (or IN, a disjunction of equalities) filters only: the run reads add an
+        equality on `field` to it.
         """
         mark = (after.at, after.doc_id) if after is not None else None
 
@@ -808,6 +959,29 @@ class Store:
         tenant.credentials = providers
         return tenant
 
+    def get_findings_epic(self, tenant_id: str) -> int | None:
+        """The tenant's wave epic (#638): the issue a review's minors are filed on.
+
+        A field of the tenant DOCUMENT, beside the frozen `Tenant` type's
+        fields rather than one of them (rule 1), so `tenant_from_dict` never
+        sees it. None when unset, cleared, or not an issue number.
+        """
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        if not snap.exists:
+            return None
+        value = (snap.to_dict() or {}).get(TENANT_FINDINGS_EPIC)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
+
+    def set_findings_epic(self, tenant_id: str, epic: int | None) -> int | None:
+        """Set (or, with None, clear) the tenant's wave epic. NotFound for no tenant."""
+        ref = self._db.collection(TENANTS).document(tenant_id)
+        if not ref.get().exists:
+            raise NotFound(f"tenant {tenant_id!r} does not exist")
+        ref.update({TENANT_FINDINGS_EPIC: epic})
+        return epic
+
     # -- tasks ------------------------------------------------------------
 
     def create_tasks(self, tasks: Sequence[Task], *, tenant_member: str = "") -> list[Task]:
@@ -934,6 +1108,10 @@ class Store:
             dropped AFTER the cursor is taken from the unfiltered page. Paging
             stays correct, but a page may be short (even empty with a
             `next_page_token`), which is today's behaviour for that case.
+
+        Paged on (created_at, id) by `_keyset_page` (#622): the steps of one
+        workflow share a `created_at`, and the old `created_at < before`
+        cursor skipped the rest of such a batch at a page boundary.
         """
         owner_in_query = (
             submitted_by is not None
@@ -957,21 +1135,22 @@ class Store:
             # A parent's children (contract request 14), served by the
             # `tasks-tenant-parent-created` composite index.
             query = query.where(filter=FieldFilter("parent_task_id", "==", parent_task_id))
-        before = decode_cursor(page_token)
-        if before is not None:
-            query = query.where(filter=FieldFilter("created_at", "<", before))
-        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit + 1)
-
-        rows = [task_from_dict(snap.to_dict()) for snap in query.stream()]
-        rows.sort(key=lambda t: (t.created_at, t.id), reverse=True)
-        next_token = None
-        if len(rows) > limit:
-            rows = rows[:limit]
-            next_token = encode_cursor(rows[-1].created_at)
+        page = self._keyset_page(
+            query,
+            field="created_at",
+            decode=task_from_dict,
+            key=lambda task: (task.created_at, task.id),
+            limit=limit,
+            after=decode_listing_token(page_token, scope="tasks"),
+            descending=True,
+            mint=_listing_mint("tasks"),
+        )
         if submitted_by is not None and not owner_in_query:
-            rows = [t for t in rows if t.submitted_by == submitted_by]
-        return Page(items=rows, next_page_token=next_token)
+            return Page(
+                items=[t for t in page.items if t.submitted_by == submitted_by],
+                next_page_token=page.next_page_token,
+            )
+        return page
 
     def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
         """One page of FAILED tasks across EVERY tenant, newest first (U19).
@@ -981,28 +1160,41 @@ class Store:
         answers -- what is failing on the platform -- has no tenant. Every
         tenant-scoped index leads with tenant_id, so it runs on its own
         collection-scope index, tasks-state-created (state ASC, created_at
-        DESC). Paged exactly as `list_tasks` is, by `created_at`.
+        DESC). Paged exactly as `list_tasks` is, on (created_at, id).
         """
-        query = self._db.collection(TASKS).where(
-            filter=FieldFilter("state", "==", TaskState.FAILED.value)
+        return self._keyset_page(
+            self._db.collection(TASKS).where(
+                filter=FieldFilter("state", "==", TaskState.FAILED.value)
+            ),
+            field="created_at",
+            decode=task_from_dict,
+            key=lambda task: (task.created_at, task.id),
+            limit=limit,
+            after=decode_listing_token(page_token, scope="failures"),
+            descending=True,
+            mint=_listing_mint("failures"),
         )
-        before = decode_cursor(page_token)
-        if before is not None:
-            query = query.where(filter=FieldFilter("created_at", "<", before))
-        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit + 1)
-        rows = [task_from_dict(snap.to_dict()) for snap in query.stream()]
-        rows.sort(key=lambda t: (t.created_at, t.id), reverse=True)
-        next_token = None
-        if len(rows) > limit:
-            rows = rows[:limit]
-            next_token = encode_cursor(rows[-1].created_at)
-        return Page(items=rows, next_page_token=next_token)
 
     def request_cancel(
         self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
     ) -> Task:
+        """`request_cancel_with_target`, for a caller that stops no execution."""
+        return self.request_cancel_with_target(
+            tenant_id, task_id, by=by, tenant_member=tenant_member
+        )[0]
+
+    def request_cancel_with_target(
+        self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
+    ) -> tuple[Task, ExecutionTarget | None]:
         """Flag the task for cancellation, terminating it immediately if no worker can act.
+
+        Returns the task as this call left it and, on the FIRST cancel of a
+        task whose attempt may still be executing, that attempt's execution
+        (#627), for the route to ask the backend to stop. None on every later
+        cancel of the same task -- the flag was already set -- so pressing
+        cancel twice asks the backend once; and None for a task with no
+        execution recorded. Read in this transaction, so the execution named
+        is the attempt of the lease the task held when the flag was written.
 
         A task that holds no capacity (SUBMITTED / QUEUED / READY / PARKED) goes
         straight to CANCELLED. So does a task that holds capacity with NO LIVE
@@ -1065,12 +1257,18 @@ class Store:
                 )
 
             # Every read before any write. The lease and its attempt are read
-            # only for a task that holds capacity, to decide whether a worker
-            # can still be acting on it (`_no_live_worker`).
+            # for a task a worker may not have reached yet, to decide whether
+            # one can still be acting on it (`_no_live_worker`), and on the
+            # FIRST cancel of any task that holds capacity, to name the
+            # execution the route asks to be stopped (#627).
             lease_id = data.get("current_lease_id") or None
             lease: dict[str, Any] | None = None
             attempt: dict[str, Any] | None = None
-            if task.state in _WORKER_AWAITED_STATES and lease_id:
+            first_request = not data.get("cancel_requested")
+            if lease_id and (
+                task.state in _WORKER_AWAITED_STATES
+                or (first_request and task.state in _EXECUTION_STATES)
+            ):
                 lease_snap = _snapshot(txn.get(self._db.collection(LEASES).document(lease_id)))
                 lease = (lease_snap.to_dict() or {}) if lease_snap.exists else None
                 attempt_id = (lease or {}).get("attempt_id")
@@ -1082,6 +1280,13 @@ class Store:
 
             now = self._now()
             patch: dict[str, Any] = {"cancel_requested": True, "updated_at": now}
+            if first_request:
+                # The clock the reconciler's cancel bound runs from
+                # (`reconciler.detect.detect_cancel_overdue`, #627). Not
+                # `updated_at`: a worker's checkpoint writes move that, so a
+                # worker ignoring the cancel would keep it looking fresh.
+                # Written once; a second press does not restart the bound.
+                patch["cancel_requested_at"] = now
             nobody = (
                 _no_live_worker(data, lease, attempt, now)
                 if task.state in _WORKER_AWAITED_STATES
@@ -1183,7 +1388,23 @@ class Store:
             # What THIS call committed, not a re-read afterwards: the route
             # derives `released_immediately` from the returned state, and a
             # re-read would report a worker's later CANCELLED as ours.
-            return task_from_dict({**data, **patch})
+            target: ExecutionTarget | None = None
+            execution = (attempt or {}).get("execution_name")
+            if (
+                first_request
+                and task.state in _EXECUTION_STATES
+                and isinstance(execution, str)
+                and execution
+                and (attempt or {}).get("completed_at") is None
+            ):
+                target = ExecutionTarget(
+                    tenant_id=tenant_id,
+                    task_id=task_id,
+                    attempt_id=str((lease or {}).get("attempt_id") or ""),
+                    backend=str((attempt or {}).get("backend") or ""),
+                    execution_name=execution,
+                )
+            return task_from_dict({**data, **patch}), target
 
         return _apply(transaction)
 
@@ -1378,6 +1599,40 @@ class Store:
             raise NotFound(f"workflow {workflow_id!r} not found")
         return workflow
 
+    @staticmethod
+    def stored_states_for(
+        *, active: bool, states: Sequence[str] | None
+    ) -> list[str] | None:
+        """The STORED states a workflow listing filtered this way must query.
+
+        The caller filters on the DERIVED state, which is what the API serves;
+        the stored one is a cache that can lag the steps (`swarm_api.rollup`).
+        So this never asks for the state the caller named. It asks for every
+        stored state a workflow that DERIVES it could still carry: every state
+        but the final ones (`FINAL_WORKFLOW_STATES`), plus any final state the
+        caller named, whose own cache is right. The route then derives each
+        row and filters on that, so a stale cache costs a row read, never a
+        wrong answer -- and the read repairs it, so the next query skips it.
+
+        None means "no stored filter": nothing was asked, or a name was given
+        that no stored state can rule out -- UNKNOWN, which is derived when a
+        step cannot be read whatever the cache says, or a name that is not a
+        state at all.
+        """
+        live = [s.value for s in TaskState if s not in FINAL_WORKFLOW_STATES]
+        if active:
+            # Not terminal (UNKNOWN included): a final stored state is never
+            # active, so the live set is the whole answer, and a `states`
+            # filter beside it can only narrow the rows, not the query.
+            return live
+        if not states:
+            return None
+        known = {s.value for s in TaskState}
+        if any(name not in known for name in states):
+            return None
+        named_final = {s.value for s in FINAL_WORKFLOW_STATES} & set(states)
+        return live + sorted(named_final)
+
     def list_workflows(
         self,
         tenant_id: str,
@@ -1385,26 +1640,40 @@ class Store:
         limit: int = 50,
         page_token: str | None = None,
         submitted_by: str | None,
+        stored_states: Sequence[str] | None = None,
     ) -> Page:
         """One page of this tenant's workflows; `submitted_by` exactly as on
-        `list_tasks` (filtered after the cursor is taken)."""
-        query = self._db.collection(WORKFLOWS).where(
+        `list_tasks` (filtered after the cursor is taken), and paged on
+        (created_at, workflow_id) like it.
+
+        `stored_states` (from `stored_states_for`) narrows the QUERY to those
+        stored states -- `tenant_id ==, state IN, ORDER BY created_at DESC`,
+        served by `workflows-tenant-state-created` -- so a tenant's running
+        workflows are one page however long its finished history is. At most
+        ten values, inside Firestore's limit of 30 for IN. The keyset is the
+        same (created_at, workflow_id) one, so a token stays a position.
+        """
+        base = self._db.collection(WORKFLOWS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
-        before = decode_cursor(page_token)
-        if before is not None:
-            query = query.where(filter=FieldFilter("created_at", "<", before))
-        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit + 1)
-        rows = [workflow_from_dict(snap.to_dict()) for snap in query.stream()]
-        rows.sort(key=lambda w: (w.created_at, w.workflow_id), reverse=True)
-        next_token = None
-        if len(rows) > limit:
-            rows = rows[:limit]
-            next_token = encode_cursor(rows[-1].created_at)
+        if stored_states is not None:
+            base = base.where(filter=FieldFilter("state", "in", list(stored_states)))
+        page = self._keyset_page(
+            base,
+            field="created_at",
+            decode=workflow_from_dict,
+            key=lambda workflow: (workflow.created_at, workflow.workflow_id),
+            limit=limit,
+            after=decode_listing_token(page_token, scope="workflows"),
+            descending=True,
+            mint=_listing_mint("workflows"),
+        )
         if submitted_by is not None:
-            rows = [w for w in rows if w.submitted_by == submitted_by]
-        return Page(items=rows, next_page_token=next_token)
+            return Page(
+                items=[w for w in page.items if w.submitted_by == submitted_by],
+                next_page_token=page.next_page_token,
+            )
+        return page
 
     def workflow_step_states(
         self,
@@ -1426,25 +1695,36 @@ class Store:
         someone else reads as ABSENT rather than being returned. Invariant 9 does
         not get an exception for a derived field.
 
-        BOUNDED, because a page of 200 workflows at 50 steps each is 10,000
-        documents and a list route must not be able to cost that. When the budget
-        runs out the remaining ids come back in `unread`, which makes every
-        workflow that needed one derive as UNKNOWN. That is the correct
-        degradation: the answer gets slower to appear, never wrong.
+        BOUNDED PER WORKFLOW (F9): each workflow reads at most
+        `_STEP_READS_PER_WORKFLOW` of its steps, which is all of them for any
+        workflow the submission validation admits, so the read cost follows
+        the page rather than a fixed cap the page can outgrow. A `budget`
+        given by the caller is instead ONE shared cap across every workflow,
+        as before. Ids past either bound come back in `unread`, and only the
+        workflows that needed them derive as UNKNOWN -- slower to answer,
+        never wrong.
         """
-        limit = _STEP_READ_BUDGET if budget is None else max(0, budget)
         wanted: list[str] = []
+        unread: list[str] = []
+        seen: set[str] = set()
         for workflow in workflows:
-            for step in workflow.steps:
-                if step.task_id:
-                    wanted.append(step.task_id)
-        wanted = list(dict.fromkeys(wanted))
+            ids = [s.task_id for s in workflow.steps if s.task_id and s.task_id not in seen]
+            ids = list(dict.fromkeys(ids))
+            seen.update(ids)
+            if budget is None:
+                wanted.extend(ids[:_STEP_READS_PER_WORKFLOW])
+                unread.extend(ids[_STEP_READS_PER_WORKFLOW:])
+            else:
+                wanted.extend(ids)
+        if budget is not None:
+            cap = max(0, budget)
+            wanted, unread = wanted[:cap], wanted[cap:]
 
         states: dict[str, TaskState] = {}
         tasks: dict[str, Task] = {}
         absent: list[str] = []
         reads = 0
-        for task_id in wanted[:limit]:
+        for task_id in wanted:
             snap = self._db.collection(TASKS).document(task_id).get()
             reads += 1
             if not snap.exists:
@@ -1462,7 +1742,7 @@ class Store:
                 # without it, and the codec then uses a sibling's masker.
                 pass
         return StepStateRead(
-            states=states, absent=absent, unread=wanted[limit:], reads=reads, tasks=tasks
+            states=states, absent=absent, unread=unread, reads=reads, tasks=tasks
         )
 
     def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
@@ -1486,8 +1766,17 @@ class Store:
         )
 
     def cancel_workflow(
-        self, tenant_id: str, workflow_id: str, *, by: str, tenant_member: str = ""
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        by: str,
+        tenant_member: str = "",
+        targets: list[ExecutionTarget] | None = None,
     ) -> dict[str, Any]:
+        # `targets`, when given, collects each step's execution to stop
+        # (`request_cancel_with_target`, #627); the result dict stays the
+        # response body and carries none of them.
         # Unfiltered: cancel is not in CONTINUATION_ROUTES, so only a full
         # member reaches this, and a full member may cancel any of its
         # tenant's workflows.
@@ -1502,10 +1791,12 @@ class Store:
             if not step.task_id:
                 continue
             try:
-                self.request_cancel(
+                _task, target = self.request_cancel_with_target(
                     tenant_id, step.task_id, by=by, tenant_member=tenant_member
                 )
                 cancelled.append(step.task_id)
+                if target is not None and targets is not None:
+                    targets.append(target)
             except Conflict:
                 already_terminal.append(step.task_id)
             except NotFound:
@@ -1552,13 +1843,32 @@ class Store:
 
         Internal writers (tenant creation, the quota broker) pass nothing, and
         leave the last admin's name in place.
+
+        WHAT CHANGED RIDES WITH WHO (#133): `admin_change` holds each field the
+        admin write named -- `hard_limit`, `enabled` -- with the value before
+        and after, so the record says "20 -> 10" and not only "ops@, 3h ago".
+        It is the newest admin change and replaces the one before it. A reader
+        compares its `to` against the pool's live value: a ceiling written
+        since by something that records nothing (scripts/pool-limit.sh writes
+        Firestore directly) shows as a mismatch rather than being credited to
+        the last admin.
         """
         ref = self._db.collection(POOLS).document(name)
         snap = ref.get()
         now = self._now()
-        attribution: dict[str, Any] = (
-            {"admin_changed_by": by, "admin_changed_at": now} if by else {}
-        )
+        before = (snap.to_dict() or {}) if snap.exists else {}
+        attribution: dict[str, Any] = {}
+        if by:
+            asked = {"hard_limit": hard_limit, "enabled": enabled}
+            attribution = {
+                "admin_changed_by": by,
+                "admin_changed_at": now,
+                "admin_change": {
+                    field: {"from": before.get(field), "to": value}
+                    for field, value in asked.items()
+                    if value is not None
+                },
+            }
         if not snap.exists:
             pool = SlotPool(
                 name=name,
@@ -1597,11 +1907,31 @@ class Store:
         return pool_from_dict(name, ref.get().to_dict())
 
     def list_quota(self, tenant_id: str | None = None, limit: int = 500) -> list[QuotaState]:
+        return self.scan_quota(tenant_id, limit=limit).states
+
+    def scan_quota(self, tenant_id: str | None = None, *, limit: int = 500) -> QuotaScan:
+        """Quota documents in document-id order, and whether `limit` cut them.
+
+        This used to read `limit` documents with no `order_by` and no signal,
+        so past 500 provider x tenant pairs `/v1/admin/quota` served an
+        arbitrary subset that could change between calls, and a missing row
+        looked exactly like a pair the broker never wrote (#76).
+
+        Ordered by DOCUMENT ID (`{provider}:{tenant_id}`, swarm_common.models)
+        because it needs no composite index with or without the tenant
+        equality filter, it is unique, and it is the order the route already
+        presents rows in, so the cut falls at the end of what is shown.
+
+        One extra document is read so `truncated` is a fact -- more documents
+        exist -- rather than `len(rows) == limit`, which is also true of a
+        read that happened to fit exactly.
+        """
         query: Any = self._db.collection(QUOTA)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
-        query = query.limit(limit)
-        return [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+        query = query.order_by("__name__").limit(limit + 1)
+        states = [quota_from_dict(snap.to_dict()) for snap in query.stream()]
+        return QuotaScan(states=states[:limit], truncated=len(states) > limit)
 
     def list_leases(
         self,
@@ -1609,6 +1939,7 @@ class Store:
         *,
         active_only: bool = True,
         limit: int = 200,
+        page_token: str | None = None,
     ) -> list[Lease]:
         """Leases, newest first.
 
@@ -1636,7 +1967,9 @@ class Store:
         `scan_leases` returns the same rows with that answer, and is what the
         admin route uses.
         """
-        return self.scan_leases(tenant_id, active_only=active_only, limit=limit).leases
+        return self.scan_leases(
+            tenant_id, active_only=active_only, limit=limit, page_token=page_token
+        ).leases
 
     def _live_leases(self, tenant_id: str | None) -> list[Lease]:
         """Every unreleased lease, under the tenant filter, newest first.
@@ -1687,6 +2020,7 @@ class Store:
         *,
         active_only: bool = True,
         limit: int = 200,
+        page_token: str | None = None,
     ) -> LeaseScan:
         """`list_leases`, plus how many live leases the rows left out.
 
@@ -1705,25 +2039,59 @@ class Store:
         window's live rows would instead undercount whenever a lease in the
         window was released between the reads -- turning a real cut into
         "nothing was cut", the one wrong answer the drift check cannot absorb.
+
+        PAGED (F8, history analysis 2026-10-05). The route used to say
+        `truncated: true` at its window and offer no way past it. Both modes
+        now page on (created_at, lease_id) and return `next_page_token`; the
+        token carries the mode, so an active-only token is refused by a
+        history read instead of being read as a position in a different set.
+        The live set is already read whole for `active_beyond_window`, so its
+        pages are cut from that read rather than queried again; the history
+        pages go through `_keyset_page`, on the index the window already used.
+        `active_beyond_window` stays "live leases not in THESE rows", per page.
         """
         if active_only:
+            scope = "leases:active"
+            after = decode_keyset(page_token, scope=scope, order="desc")
             live = self._live_leases(tenant_id)
-            window = live[:limit]
+            rest = live
+            if after is not None:
+                mark = (after.at, after.doc_id)
+                rest = [x for x in live if (x.created_at, x.lease_id) < mark]
+            window = rest[:limit]
+            more = len(rest) > limit
             return LeaseScan(
                 leases=window,
                 examined=len(window),
-                truncated=len(live) > limit,
+                truncated=more,
                 active_beyond_window=len(live) - len(window),
+                next_page_token=(
+                    encode_keyset(
+                        scope=scope, order="desc",
+                        at=window[-1].created_at, doc_id=window[-1].lease_id,
+                    )
+                    if more
+                    else None
+                ),
             )
 
+        scope = "leases:history"
         query: Any = self._db.collection(LEASES)
         if tenant_id is not None:
             query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
-        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
-        query = query.limit(limit + 1)
-        documents = [lease_from_dict(snap.to_dict()) for snap in query.stream()]
-        truncated = len(documents) > limit
-        documents = documents[:limit]
+        page = self._keyset_page(
+            query,
+            field="created_at",
+            decode=lease_from_dict,
+            key=lambda lease: (lease.created_at, lease.lease_id),
+            limit=limit,
+            after=decode_keyset(page_token, scope=scope, order="desc"),
+            descending=True,
+            mint=lambda at, doc_id: encode_keyset(
+                scope=scope, order="desc", at=at, doc_id=doc_id
+            ),
+        )
+        documents = page.items
         in_window = {lease.lease_id for lease in documents}
         beyond = sum(
             1 for lease in self._live_leases(tenant_id) if lease.lease_id not in in_window
@@ -1731,8 +2099,9 @@ class Store:
         return LeaseScan(
             leases=documents,
             examined=len(documents),
-            truncated=truncated,
+            truncated=page.next_page_token is not None,
             active_beyond_window=beyond,
+            next_page_token=page.next_page_token,
         )
 
     def list_attempts(

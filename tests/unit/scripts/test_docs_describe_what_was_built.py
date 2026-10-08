@@ -31,6 +31,8 @@ import pytest
 
 from swarm_common.profiles import RUNNER_PROFILES, RunnerProfile
 
+from .test_docs_spec_amendments import _assert_cites_resolve, _cited_anchor, _cited_symbol
+
 REPO = Path(__file__).resolve().parents[3]
 DOCS = REPO / "docs"
 BUILD_PROMPT = DOCS / "BUILD_PROMPT_V2.md"
@@ -60,19 +62,9 @@ def _section(text: str, heading: str) -> str:
     return rest[: nxt.start()] if nxt else rest
 
 
-_CITE_WINDOW = 150
-
-
-def _line(path: str, number: int) -> str:
-    """The lines within _CITE_WINDOW of the cited line, joined.
-
-    A doc cites `path:N` and a test asserts the cited code says what the doc
-    claims. A merge above the code moves N by a few lines; an exact-line check
-    turned main red each time. Text found within +/-150 lines still proves the
-    doc points at the right code, and text found nowhere near it still fails."""
-    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
-    lo = max(0, number - 1 - _CITE_WINDOW)
-    return "\n".join(lines[lo : number + _CITE_WINDOW])
+#: dispatch.py, as the docs cite it: `path::qualname` (#647, lane CITD).
+DISPATCH_PY = "apps/scheduler/scheduler/dispatch.py"
+MANIFEST = "GkeJobDispatcher._manifest"
 
 
 def _heading(text: str, prefix: str) -> str:
@@ -101,18 +93,16 @@ def test_d8_the_gke_pod_annotation_is_the_one_the_dispatcher_sets():
     assert "`cloud.google.com/gke-extended-run-time: \"true\"`" not in text
     assert "is not a real annotation" in _flat(text)
     assert '`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`' in text
-    assert "`apps/scheduler/scheduler/dispatch.py:1526`" in text
+    assert f"`{DISPATCH_PY}::{MANIFEST}`" in text
     # The annotation IS the extended-run-time request (the reason Spot is
     # impossible, invariant 6): the doc must not say the platform lacks it.
     flat = _flat(text)
     assert "This annotation IS Autopilot's extended-run-time request" in flat
     assert "node auto-upgrade for up to seven days" in flat
     assert "only on on-demand capacity" in flat
-    assert "Autopilot extended run time" in _line("apps/scheduler/scheduler/dispatch.py", 1513)
+    assert "Autopilot extended run time" in _cited_symbol(DISPATCH_PY, MANIFEST)
     assert "and this platform sets it" in flat
-    assert '"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"' in _line(
-        "apps/scheduler/scheduler/dispatch.py", 1526
-    )
+    assert '"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"' in _cited_symbol(DISPATCH_PY, MANIFEST)
 
 
 def _dshm_gib() -> int:
@@ -130,8 +120,8 @@ def test_d10_dev_shm_is_the_size_the_dispatcher_renders():
     size = _dshm_gib()
     assert "1 GiB tmpfs" not in text
     assert f"{size} GiB tmpfs" in text
-    assert "`apps/scheduler/scheduler/dispatch.py:1618`" in text
-    assert f'"sizeLimit": "{size}Gi"' in _line("apps/scheduler/scheduler/dispatch.py", 1618)
+    assert f"`{DISPATCH_PY}::{MANIFEST}`" in text
+    assert f'"sizeLimit": "{size}Gi"' in _cited_symbol(DISPATCH_PY, MANIFEST)
 
 
 # --------------------------------------------------------------------------
@@ -144,8 +134,8 @@ def test_d10_the_compute_row_names_the_namespace_the_dispatcher_uses():
     assert "namespace `swarm-<id>`" not in compute
     assert "namespace `swarm-tenant-<id>`" in compute
     assert '"swarm-tenant-{tenant}"' in _text(DISPATCH)
-    assert "`apps/scheduler/scheduler/dispatch.py:1463`" in compute
-    assert "swarm-tenant-{tenant}" in _line("apps/scheduler/scheduler/dispatch.py", 1463)
+    assert f"`{DISPATCH_PY}::GkeJobDispatcher.namespace_for`" in compute
+    assert "swarm-tenant-{tenant}" in _cited_symbol(DISPATCH_PY, "GkeJobDispatcher.namespace_for")
 
 
 # --------------------------------------------------------------------------
@@ -168,12 +158,11 @@ def test_d10_the_checkpoint_interval_is_the_catalogues_not_sixty():
         if profile.checkpoint_interval_seconds != default:
             assert f"`{name}`" in text and f"{profile.checkpoint_interval_seconds} s" in text, name
     # The worker's own fallback agrees with the catalogue, and the doc cites both.
-    assert f"checkpoint_interval_seconds: int = {default}" in _line(
-        "apps/agent-worker/agent_worker/config.py", 83
-    )
-    assert "`apps/agent-worker/agent_worker/config.py:83`" in text
-    assert '"CHECKPOINT_INTERVAL_SECONDS"' in _line("apps/scheduler/scheduler/dispatch.py", 479)
-    assert "`apps/scheduler/scheduler/dispatch.py:479`" in text
+    config, field = "apps/agent-worker/agent_worker/config.py", "WorkerConfig.checkpoint_interval_seconds"
+    assert f"checkpoint_interval_seconds: int = {default}" in _cited_symbol(config, field)
+    assert f"`{config}::{field}`" in text
+    assert '"CHECKPOINT_INTERVAL_SECONDS"' in _cited_symbol(DISPATCH_PY, "worker_env")
+    assert f"`{DISPATCH_PY}::worker_env`" in text
 
 
 # --------------------------------------------------------------------------
@@ -186,11 +175,10 @@ def test_d10_design_section_6_names_the_route_that_serves_the_topology():
     assert "neither of which any route" not in body
     assert "`GET /v1/runtimes`" in body
     assert "`GET /v1/resource-classes`" in body
-    assert '@router.get("/runtimes")' in _line("apps/swarm-api/swarm_api/routes/platform.py", 130)
-    assert '@router.get("/resource-classes")' in _line(
-        "apps/swarm-api/swarm_api/routes/platform.py", 82
-    )
-    assert "`apps/swarm-api/swarm_api/routes/platform.py:130`" in body
+    platform = "apps/swarm-api/swarm_api/routes/platform.py"
+    assert _cited_symbol(platform, "runtimes").startswith('@router.get("/runtimes")')
+    assert _cited_symbol(platform, "resource_classes").startswith('@router.get("/resource-classes")')
+    assert f"`{platform}::runtimes`" in body
     assert "apps/swarm-ui/src/Runtimes.tsx" in body
     assert (REPO / "apps" / "swarm-ui" / "src" / "Runtimes.tsx").is_file()
     assert STAMP in body
@@ -206,16 +194,16 @@ def test_d10_web_ui_blocked_list_carries_a_dated_recheck():
     assert f"Re-checked {STAMP}" in body
     # Rows that shipped are marked so, each with the route that unblocked it.
     for row, route, cite, needle in (
-        ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", 410), "/leases"),
-        ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", 283), "/authorize"),
-        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", 337), "/attempts"),
+        ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", "list_leases"), "/leases"),
+        ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", "begin_sign_in"), "/authorize"),
+        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", "list_attempts"), "/attempts"),
     ):
         line = next((ln for ln in body.splitlines() if ln.startswith(f"| {row}")), None)
         assert line is not None, row
         assert "shipped" in line.lower(), line
         assert route in line, line
-        assert f"`{cite[0]}:{cite[1]}`" in body
-        assert needle in _line(*cite), cite
+        assert f"`{cite[0]}::{cite[1]}`" in body
+        assert needle in _cited_symbol(*cite).splitlines()[0], cite
     # And what is still blocked says so: nothing persists a reconciler pass.
     assert "reconciler_runs" not in _text(REPO / "apps" / "reconciler" / "reconciler" / "service.py")
     reconciler = next(ln for ln in body.splitlines() if ln.startswith("| Screen G"))
@@ -252,26 +240,27 @@ def test_s7_a_remote_step_is_an_sc_remote_agent_call():
     assert "schema" in body
     assert "plugin/agents/remote.md" in body
     assert "name: remote" in _text(REPO / "plugin" / "agents" / "remote.md")
-    assert "agentType: 'sc:remote'" in _line("plugin/README.md", 623)
-    assert "`plugin/README.md:622`" in body
+    anchor = "and its prompt is what the remote agent is told"
+    assert "agentType: 'sc:remote'" in _cited_anchor("plugin/README.md", anchor)
+    assert f"`plugin/README.md` (`{anchor}`)" in body
     # The batch and collect half that does exist is cited.
-    assert "def _dispatch_batch(" in _line("apps/swarm-mcp/swarm_mcp/server.py", 1520)
-    assert "`apps/swarm-mcp/swarm_mcp/server.py:1520`" in body
+    server = "apps/swarm-mcp/swarm_mcp/server.py"
+    assert _cited_symbol(server, "_dispatch_batch").startswith("def _dispatch_batch(")
+    assert f"`{server}::_dispatch_batch`" in body
 
 
 def test_s10_account_add_is_the_apis_oauth_flow_not_claudeswitch():
     body = _spec("#### 2.6.1 ")
     assert f"Amended {STAMP}" in body
     assert "/v1/accounts/authorize" in body and "/v1/accounts/exchange" in body
-    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1112)
-    assert '@router.post("/authorize")' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 283)
-    assert '@router.post("/exchange"' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 310)
-    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:1112",
-                 "apps/swarm-api/swarm_api/routes/accounts.py:283",
-                 "apps/swarm-api/swarm_api/routes/accounts.py:310"):
+    sc, accounts = "apps/swarm-mcp/swarm_mcp/sc.py", "apps/swarm-api/swarm_api/routes/accounts.py"
+    assert _cited_symbol(sc, "cmd_account_add").startswith("def cmd_account_add(")
+    assert _cited_symbol(accounts, "begin_sign_in").startswith('@router.post("/authorize")')
+    assert _cited_symbol(accounts, "finish_sign_in").startswith('@router.post("/exchange"')
+    for cite in (f"{sc}::cmd_account_add", f"{accounts}::begin_sign_in", f"{accounts}::finish_sign_in"):
         assert f"`{cite}`" in body, cite
     # The command really is `sc account add --label`, and it is what the spec shows.
-    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 2156)
+    assert 'ac_sub.add_parser("add"' in _cited_symbol(sc, "build_parser")
     assert "sc account add --label" in body
 
 
@@ -292,8 +281,10 @@ def test_accounts_section_says_no_pod_runs_claudeswitch():
     assert f"Amended {STAMP}" in body
     assert "claudeswitch" not in _text(REPO / "images" / "agent-runtime-base" / "Dockerfile")
     assert "No pod and no service runs claudeswitch" in body
-    assert "TOKEN_ENDPOINT" in _line("apps/quota-broker/quota_broker/oauth.py", 54)
-    assert "`apps/quota-broker/quota_broker/oauth.py:54`" in body
+    oauth = "apps/quota-broker/quota_broker/oauth.py"
+    # The cited source opens with the name's `#:` block; the assignment is its last line.
+    assert _cited_symbol(oauth, "TOKEN_ENDPOINT").splitlines()[-1].startswith("TOKEN_ENDPOINT = ")
+    assert f"`{oauth}::TOKEN_ENDPOINT`" in body
 
 
 def test_dispatch_section_records_the_hold_not_the_lease():
@@ -302,13 +293,13 @@ def test_dispatch_section_records_the_hold_not_the_lease():
     from swarm_common.models import Lease
 
     assert not any("account" in f.name for f in dataclasses.fields(Lease))
-    assert "holds:" in _line("apps/quota-broker/quota_broker/accounts.py", 352)
+    broker, accountlease = "apps/quota-broker/quota_broker/accounts.py", "apps/agent-worker/agent_worker/accountlease.py"
+    assert "holds:" in _cited_symbol(broker, "Account")
     # The variable's NAME, built from pieces: no value is involved here.
     variable = "CLAUDE_CODE_OAUTH_" + "TOK" + "EN"
-    cited = _line("apps/agent-worker/agent_worker/accountlease.py", 131)
-    assert any(ln.startswith("ACCOUNT_") and f'"{variable}"' in ln for ln in cited.splitlines())
-    for cite in ("apps/quota-broker/quota_broker/accounts.py:352",
-                 "apps/agent-worker/agent_worker/accountlease.py:131"):
+    name = "ACCOUNT_" + "TOK" + "EN_ENV"
+    assert _cited_symbol(accountlease, name).splitlines()[-1] == f'{name} = "{variable}"'
+    for cite in (f"{broker}::Account", f"{accountlease}::{name}"):
         assert f"`{cite}`" in body, cite
     assert "HOLD" in body and "request 13" in body
     assert variable in body
@@ -317,10 +308,13 @@ def test_dispatch_section_records_the_hold_not_the_lease():
 def test_dashboard_section_says_it_polls_through_an_external_alb():
     body = _spec("### 2.8 ")
     assert f"Amended {STAMP}" in body
-    assert "POOLS_POLL_MS" in _line("apps/swarm-ui/src/capacityPoll.ts", 15)
-    assert "external Application Load Balancer" in _line("terraform/modules/frontend/main.tf", 1)
-    for cite in ("apps/swarm-ui/src/capacityPoll.ts:15", "terraform/modules/frontend/main.tf:1"):
-        assert f"`{cite}`" in body, cite
+    cites = (
+        ("apps/swarm-ui/src/capacityPoll.ts", "export const POOLS_POLL_MS"),
+        ("terraform/modules/frontend/main.tf", "An external Application Load Balancer"),
+    )
+    for path, anchor in cites:
+        _cited_anchor(path, anchor)
+        assert f"`{path}` (`{anchor}`)" in body, path
     assert "no server-sent events" in body
     assert "Kubernetes API" in body
 
@@ -328,8 +322,9 @@ def test_dashboard_section_says_it_polls_through_an_external_alb():
 def test_scale_section_says_the_counters_are_not_sharded():
     body = _spec("### 2.11 ")
     assert f"Amended {STAMP}" in body
-    assert "def pool_names_for(" in _line("apps/common/swarm_common/models.py", 82)
-    assert "`apps/common/swarm_common/models.py:82`" in body
+    models = "apps/common/swarm_common/models.py"
+    assert _cited_symbol(models, "pool_names_for").startswith("def pool_names_for(")
+    assert f"`{models}::pool_names_for`" in body
     assert "not sharded" in body
     assert "docs/scaling.md" in body
 
@@ -356,12 +351,16 @@ def test_contract_amendments_section_records_gvisor_and_the_account_pool():
     body = _spec("## 9. CONTRACT.md amendments required")
     assert f"Amended {STAMP}" in body
     # gVisor: not requested, because nothing runs as root.
-    assert "USER swarm:swarm" in _line("images/agent-runtime-base/Dockerfile", 658)
-    assert '"runAsNonRoot": True' in _line("apps/scheduler/scheduler/dispatch.py", 193)
-    assert "`images/agent-runtime-base/Dockerfile:658`" in body
-    assert "`apps/scheduler/scheduler/dispatch.py:192`" in body
+    dockerfile = "images/agent-runtime-base/Dockerfile"
+    assert _cited_anchor(dockerfile, "USER swarm:swarm").strip() == "USER swarm:swarm"
+    assert '"runAsNonRoot": True' in _cited_symbol(DISPATCH_PY, "POD_SECURITY_CONTEXT")
+    assert f"`{dockerfile}` (`USER swarm:swarm`)" in body
+    assert f"`{DISPATCH_PY}::POD_SECURITY_CONTEXT`" in body
     # The account pool: one account held per attempt, no mid-run swap in the worker.
-    assert "`apps/agent-worker/agent_worker/accountlease.py:3`" in body
+    # A module docstring has no symbol to name, so it is cited by its anchor.
+    accountlease = "apps/agent-worker/agent_worker/accountlease.py"
+    assert "exactly one secret" in _cited_anchor(accountlease, "WHAT CHANGES HERE. Until now a worker read")
+    assert f"`{accountlease}` (`WHAT CHANGES HERE. Until now a worker read`)" in body
     assert "lend" in body
 
 
@@ -400,16 +399,11 @@ def test_ui_audit_attempts_coverage_shape_matches_the_route():
 
 
 # --------------------------------------------------------------------------
-# every file:line these documents cite resolves
+# every citation these documents make resolves, and none is a line number
 # --------------------------------------------------------------------------
-
-_CITE = re.compile(r"`((?:apps|terraform|kubernetes|scripts|tests|images|plugin)/[\w./-]+\.\w+):(\d+)`")
 
 
 @pytest.mark.parametrize("doc", TOUCHED, ids=lambda p: p.name)
-def test_every_cited_line_exists(doc: Path):
-    for path, line in _CITE.findall(_text(doc)):
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        lines = target.read_text(encoding="utf-8").count("\n") + 1
-        assert int(line) <= lines, f"{doc.name} cites {path}:{line}, past its end ({lines})"
+def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
+    """No `path:N` (a merge above the code moves it); every `path::qualname` and `path` (`text`) resolves."""
+    _assert_cites_resolve(doc)

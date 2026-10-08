@@ -17,6 +17,7 @@ from fastapi import Depends, Header, Request
 
 from swarm_common.models import utcnow
 
+from .admins import build_admin_roles
 from .auth import (
     TENANT_HEADER,
     TENANT_QUERY,
@@ -31,6 +32,11 @@ from .auth import (
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
+from .executioncancel import (
+    ExecutionCanceller,
+    NoExecutionCanceller,
+    PubSubExecutionCanceller,
+)
 from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
@@ -44,7 +50,7 @@ from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
 from .settings import ApiSettings
 from .store import Store
-from .waker import NullWaker, PubSubWaker, SchedulerWaker
+from .waker import SchedulerWaker, waker_for
 
 #: Sentinel for "the caller did not pass this", kept distinct from None because
 #: None is a real value for `objects` -- it is how a deployment says it has no
@@ -89,6 +95,9 @@ class AppContext:
     #: its pull request's keyword block (`issuesync`) -- with the same
     #: tenant token, the same pinned host and no redirects.
     forge_writer: GitHubWriter | None = None
+    #: Asks the reconciler to stop a cancelled task's execution (#627). Builds
+    #: no client until a cancel needs it; tests inject a recorder.
+    executions: ExecutionCanceller = NoExecutionCanceller()
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -142,6 +151,7 @@ def build_context(
     forge_tokens: ForgeTokens | None = None,
     forge: GitHubIssues | None = None,
     forge_writer: GitHubWriter | None = None,
+    executions: ExecutionCanceller | None = None,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -162,18 +172,28 @@ def build_context(
         ttl_seconds=settings.group_cache_ttl_seconds,
     )
     credentials = credentials or SecretManagerCredentials(settings.project_id)
-    waker = waker or (PubSubWaker(settings.dispatch_topic)
-                      if settings.dispatch_topic else NullWaker())
+    waker = waker or waker_for(settings)
     # OFF unless an audience is pinned. A verifier that accepts an assertion
     # without checking which backend minted it would accept one issued to any
     # IAP-protected resource anywhere, so "not configured" must mean "not used"
     # rather than "used without the check".
     iap = IapAssertionVerifier(settings.iap_audiences)
-    authenticator = Authenticator(settings, verifier, groups, iap=iap)
+    # Admin roles in Firestore (docs/workspaces.md §6.5), beside the
+    # configuration fallback the authenticator still reads.
+    authenticator = Authenticator(
+        settings, verifier, groups, iap=iap,
+        admin_roles=build_admin_roles(db, settings, now=now),
+    )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
+    # Built before the submissions service, which reads a `merge_pr` workflow's
+    # pull request with them (#352), and handed to the context as the same two.
+    forge_tokens = forge_tokens or SecretManagerForgeTokens(settings.project_id)
+    forge_writer = forge_writer or GitHubWriter()
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now,
         signer=spec_signer,  # type: ignore[arg-type]
+        forge_tokens=forge_tokens,
+        forge_writer=forge_writer,
     )
     limiter = TokenBucketLimiter(
         rate_per_second=settings.core.requests_per_second,
@@ -211,11 +231,18 @@ def build_context(
         inspection=inspection,
         rollups=rollups,
         outcomes=outcomes,
-        forge_tokens=forge_tokens or SecretManagerForgeTokens(settings.project_id),
+        forge_tokens=forge_tokens,
         forge=forge or GitHubIssues(),
-        forge_writer=forge_writer or GitHubWriter(),
+        forge_writer=forge_writer,
+        executions=executions or _execution_canceller(settings),
         now=now,
     )
+
+
+def _execution_canceller(settings: ApiSettings) -> ExecutionCanceller:
+    if not settings.execution_cancel_enabled or not settings.execution_cancel_topic:
+        return NoExecutionCanceller()
+    return PubSubExecutionCanceller(settings.execution_cancel_topic)
 
 
 # --------------------------------------------------------------------------

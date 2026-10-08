@@ -22,8 +22,10 @@
 #      no credentials, no emulator, no network, a global `fetch` that throws --
 #      which is the property `make test` promises. Resolving a lockfile is not.
 #
-# The test run itself passes `--run` so a terminal never drops into Vitest's
-# watcher: a gate that waits for a keypress is a gate that hangs CI.
+# The npm `test` script starts Vitest as `vitest run`, so a terminal never
+# drops into Vitest's watcher: a gate that waits for a keypress is a gate that
+# hangs CI. This script passes no `--run` of its own; the comment above the
+# test run below says why.
 #
 # NAMED `ui-component-test`, NOT `ui-test`. Another lane is building the
 # in-browser visual QA runner and has taken `scripts/ui-test.sh` for it (it was

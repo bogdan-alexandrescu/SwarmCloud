@@ -414,7 +414,10 @@ def test_run_js_prints_the_console_links_on_submit_step_and_result_lines(tmp_pat
     assert join.endswith("console: " + _served("task_3")), join
     schemas = {c["agentType"] + ":" + c["prompt"].split("\n")[0]: c["schema"] for c in got["calls"]}
     assert "console" in schemas["sc:workflow:SUBMIT"] and "console" in schemas["sc:workflow:STATUS"]
-    assert all("console" in c["schema"] for c in got["calls"] if c["agentType"] == "sc:step")
+    # The row answers `{state, result}` (B2, 2026-10-05); the link is in `result`.
+    assert all(c["schema"] == ["state", "result"] for c in got["calls"] if c["agentType"] == "sc:step")
+    source = plugin._RUN_JS.read_text()
+    assert "    console: { type: 'string' }," in source[source.index("const STEP_FIELDS = {"):source.index("const STEP_RESULT = {")]
 
 
 def test_run_js_prints_no_console_link_when_none_was_served(tmp_path):

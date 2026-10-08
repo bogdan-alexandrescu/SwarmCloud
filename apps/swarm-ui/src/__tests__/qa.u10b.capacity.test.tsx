@@ -25,7 +25,7 @@ import type { Capacity, Pool, Runtime } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
-const api = vi.hoisted(() => ({ loadCapacity: vi.fn() }))
+const api = vi.hoisted(() => ({ loadCapacity: vi.fn(), loadAdminPools: vi.fn() }))
 vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), ...api }))
 
 const { CapacityScreen } = await import('../Capacity')
@@ -96,7 +96,9 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
     expect(cells.length).toBeGreaterThanOrEqual(2)
     for (const c of cells) expect((c.textContent ?? '').trim(), 'a blank Set by').not.toBe('')
     const texts = cells.map((c) => c.textContent)
-    expect(texts).toContain('configured')
+    // The configured case is a faint dot named `configured` (QA G5-19).
+    expect(texts).toContain('·')
+    expect(document.querySelector('.cap-families td[data-label="Set by"] [aria-label="configured"]')).not.toBeNull()
     expect(texts).toContain('AIMD back-off')
     const heads = [...document.querySelectorAll('.cap-families thead th')].map((th) => (th.textContent ?? '').trim())
     for (const h of heads) expect(h, 'a column with no visible head').not.toBe('')
@@ -104,7 +106,8 @@ describe('D32: Set by is never blank, and a unit is a unit', () => {
 
   it('says configured on a Pool limits row too', () => {
     const { container } = render(<AdmSetBy pool={pool('global', 1, 40)} />)
-    expect(container.textContent).toBe('configured')
+    expect(container.textContent).toBe('·')
+    expect(container.querySelector('[aria-label="configured"]')).not.toBeNull()
     const { container: c2 } = render(<AdmSetBy pool={pool('runner:a', 1, 10, { hard_limit: 20, adaptive_target: 10 })} />)
     expect(c2.textContent).toBe('AIMD back-off')
   })

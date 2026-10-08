@@ -20,6 +20,7 @@ database stays free for other teams):
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -52,10 +53,16 @@ class SlotPool:
     `effective_limit` is the real ceiling and is always the minimum of the
     configured hard limit, the adaptive target, and any quota-derived cap.
     Adaptive logic may lower it; nothing may raise it above `hard_limit`.
+
+    `hard_limit` is None when the pool's document carries none: nobody set the
+    ceiling (contract request 38, #374). That is UNKNOWN -- not 0, which says
+    an operator chose zero, and not unlimited. `effective_limit` and
+    `available` are then None too, and `has_capacity` is False, so admission
+    refuses through the pool (`BlockedReason.POOL_LIMIT_UNSET`).
     """
 
     name: str
-    hard_limit: int
+    hard_limit: int | None
     adaptive_target: int | None = None
     quota_derived_limit: int | None = None
     active: int = 0
@@ -63,7 +70,9 @@ class SlotPool:
     updated_at: datetime = field(default_factory=utcnow)
 
     @property
-    def effective_limit(self) -> int:
+    def effective_limit(self) -> int | None:
+        if self.hard_limit is None:
+            return None
         candidates = [self.hard_limit]
         if self.adaptive_target is not None:
             candidates.append(self.adaptive_target)
@@ -72,11 +81,15 @@ class SlotPool:
         return max(0, min(candidates))
 
     @property
-    def available(self) -> int:
-        return max(0, self.effective_limit - self.active)
+    def available(self) -> int | None:
+        limit = self.effective_limit
+        if limit is None:
+            return None
+        return max(0, limit - self.active)
 
     def has_capacity(self, units: int = 1) -> bool:
-        return self.enabled and self.active + units <= self.effective_limit
+        limit = self.effective_limit
+        return self.enabled and limit is not None and self.active + units <= limit
 
 
 def pool_names_for(
@@ -275,6 +288,16 @@ class EndCause(str, Enum):
     CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
 
 
+#: The shape of `Task.forge_credential`: a provider suffix for
+#: `Tenant.secret_name`, never a secret name or a value. Anchored by
+#: `fullmatch`, so it can name no other tenant's secret and no `-refresh` twin.
+#: Contract request 54.
+FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")
+
+#: The values of `Task.forge_access`. None on a task means "write".
+FORGE_ACCESS = ("write", "read")
+
+
 @dataclass
 class Task:
     id: str
@@ -338,6 +361,35 @@ class Task:
     #: The parent's ATTEMPT. A parent can be retried, and the children of attempt 1
     #: and attempt 2 are different work -- the second may re-create the first's.
     parent_attempt_id: str | None = None
+    #: The forge secret this task's worker reads, as the provider suffix
+    #: `Tenant.secret_name` places under the task's OWN tenant: "git" (the
+    #: tenant token), "git-r-<16 hex>" (a repository token) or "git-u-<16 hex>"
+    #: (a user's slot). Shape: `FORGE_CREDENTIAL`. Contract request 54 (request
+    #: E, docs/onboarding.md §3.3), accepted by the owner 2026-10-07: WRITTEN BY
+    #: swarm-api ONLY, at submission, from its resolution of the task's
+    #: repository and `submitted_by` against the grants; never accepted from a
+    #: caller. Covered by the spec signature (specsign format 3). None is
+    #: today's behaviour, "git", and every document written before it decodes
+    #: exactly as it did.
+    forge_credential: str | None = None
+    #: What the worker may do on the forge with it, one of `FORGE_ACCESS`
+    #: (write or read). A "read" task is never given a push credential.
+    #: Written by swarm-api only, in the same write, and signed with it. None is
+    #: "write", today's behaviour, for backward compatibility.
+    forge_access: str | None = None
+
+    def __post_init__(self) -> None:
+        # Only the two fields of request 54: a document decoded before them is
+        # never refused here, and a writer cannot construct a malformed one.
+        if self.forge_credential is not None and not (
+            isinstance(self.forge_credential, str)
+            and FORGE_CREDENTIAL.fullmatch(self.forge_credential)
+        ):
+            raise ValueError(
+                "forge_credential is 'git', 'git-r-<16 hex>' or 'git-u-<16 hex>'"
+            )
+        if self.forge_access is not None and self.forge_access not in FORGE_ACCESS:
+            raise ValueError(f"forge_access is one of {FORGE_ACCESS}")
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""

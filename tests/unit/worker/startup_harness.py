@@ -71,7 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_worker.__main__ as entrypoint  # noqa: E402
 import agent_worker.control as control_mod  # noqa: E402
 import agent_worker.startup as startup_mod  # noqa: E402
-from conftest import seed_attempt  # noqa: E402
+from worker_seeds import seed_attempt  # noqa: E402
 import spec_keys  # noqa: E402
 from fakes import (  # noqa: E402
     FakeCollectionRef,

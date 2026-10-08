@@ -14,7 +14,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from swarm_common.models import ProviderState, QuotaState, SlotPool, Task, Tenant
+from swarm_common.models import (
+    FORGE_ACCESS,
+    FORGE_CREDENTIAL,
+    ProviderState,
+    QuotaState,
+    SlotPool,
+    Task,
+    Tenant,
+)
 from swarm_common.states import ParkReason, TaskState
 
 
@@ -76,47 +84,31 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # read to find a parent's children (docs/design/child-tasks.md).
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
+        # Contract request 54: the forge secret and access swarm-api resolved,
+        # which `credentials.needs_user_slot` reads at admission. A value of
+        # another shape decodes as None rather than failing the whole drain
+        # on `Task.__post_init__`: it cannot have been signed, so the worker's
+        # spec check refuses the task before any credential is read.
+        forge_credential=_shaped(data.get("forge_credential"), FORGE_CREDENTIAL.fullmatch),
+        forge_access=_shaped(data.get("forge_access"), FORGE_ACCESS.__contains__),
     )
 
 
-#: The blocker reason for a pool whose document carries no `hard_limit` (#374).
-#: Not a `BlockedReason`: that enum is frozen, and none of its values is true
-#: here -- TENANT_LIMIT / RESOURCE_CLASS_LIMIT "at 0" says somebody set the
-#: pool to zero, and nobody did. The UI reads the same string
-#: (`apps/swarm-ui/src/types.ts`, `blockerCeiling`).
-POOL_LIMIT_UNSET = "POOL_LIMIT_UNSET"
-
-
-class UnsetLimitPool(SlotPool):
-    """A pool whose document has no `hard_limit`: its ceiling is UNKNOWN (#374).
-
-    Not a new type of pool and not a restatement of `SlotPool`: it adds no
-    field and overrides nothing, so every reader that takes a `SlotPool` reads
-    it exactly as the frozen admission transaction reads the same document --
-    `d.get("hard_limit", 0)`, a ceiling of 0, so admission refuses. What it
-    adds is that the 0 is KNOWN to be a stand-in, so `hard_limit_known` can
-    tell "never set" from "set to 0" wherever the difference is said aloud.
-    """
-
-
-def hard_limit_known(pool: SlotPool) -> bool:
-    """False for a pool whose document carried no `hard_limit` (`UnsetLimitPool`)."""
-    return not isinstance(pool, UnsetLimitPool)
+def _shaped(value: Any, ok: Any) -> str | None:
+    return value if isinstance(value, str) and ok(value) else None
 
 
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
-    """A pool document as a `SlotPool`; an `UnsetLimitPool` when no `hard_limit` was written.
+    """A pool document as a `SlotPool`.
 
-    A missing (or null) `hard_limit` is UNKNOWN, never 0 (#374). The value it
-    carries is the 0 the frozen admission transaction reads for the same
-    document, so arithmetic agrees with admission; `hard_limit_known` is what
-    says it was never set.
+    A missing (or null) `hard_limit` is None -- no ceiling set, UNKNOWN, never
+    0 -- exactly as the frozen admission transaction reads the same document
+    (contract request 38, #374).
     """
     raw_limit = data.get("hard_limit")
-    cls = SlotPool if raw_limit is not None else UnsetLimitPool
-    return cls(
+    return SlotPool(
         name=name,
-        hard_limit=int(raw_limit) if raw_limit is not None else 0,
+        hard_limit=int(raw_limit) if raw_limit is not None else None,
         adaptive_target=data.get("adaptive_target"),
         quota_derived_limit=data.get("quota_derived_limit"),
         active=int(data.get("active", 0)),
@@ -150,7 +142,11 @@ def tenant_from_dict(data: dict[str, Any]) -> Tenant:
         tenant_id=data["tenant_id"],
         kind=data.get("kind", "user"),
         principal=data.get("principal", ""),
-        created_at=as_datetime(data.get("created_at")) or datetime.now(timezone.utc),
+        # None when the document holds none (F10): the read time here was a
+        # fabricated creation date that moved on every read. The frozen
+        # `Tenant.created_at` is typed `datetime`; nothing in the scheduler
+        # reads it, and the API's tenant view serves a None as null.
+        created_at=as_datetime(data.get("created_at")),  # type: ignore[arg-type]
         display_name=data.get("display_name"),
         max_active=int(data.get("max_active", 20)),
         capacity_units=int(data.get("capacity_units", 40)),

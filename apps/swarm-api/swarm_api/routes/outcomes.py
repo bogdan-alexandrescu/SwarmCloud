@@ -27,6 +27,11 @@ string is not a parameter and is ignored.
 and only after the gate: naming a section never changes who may read what.
 With no `section` the response is exactly what it was before the parameter
 existed; `Outcomes.read` says what a single section still reads.
+
+`rows` (#116) lists the tasks behind one figure -- an outcome, optionally one
+bucket (`rows_at`) and one group row (`rows_key`) -- as `ended_rows`, from the
+same fold the figures came from. It is validated with the rest, after the gate,
+and reaches no tenant the gate did not already allow.
 """
 
 from __future__ import annotations
@@ -63,6 +68,10 @@ def get_outcomes(
         default=[],
         description="repeatable; the response keys wanted (outcomes.SECTIONS); none is all of them",
     ),
+    # The tasks behind one figure (#116), as `ended_rows`, beside the sections.
+    rows: str | None = Query(default=None, description="failed | cancelled | succeeded"),
+    rows_at: str | None = Query(default=None, description="one bucket, by its start as served"),
+    rows_key: str | None = Query(default=None, description="one row of `group`, by its key"),
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -82,6 +91,9 @@ def get_outcomes(
         "group": group,
         "compare": compare,
         "section": section,
+        "rows": rows,
+        "rows_at": rows_at,
+        "rows_key": rows_key,
     }
     if platform_requested(raw):
         require_admin(auth, PLATFORM_ROUTE)

@@ -21,10 +21,12 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Depends, Query
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState
+from swarm_common.models import ProviderState, SlotPool, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
+from ..attempt_totals import totals_for, with_totals
 from ..auth import AuthContext
+from ..cifix import postback_tenant as postback_ci_fixes
 from ..codec import (
     lease_to_api,
     pool_attribution,
@@ -36,6 +38,7 @@ from ..codec import (
 from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
+from ..mergewake import wake_tenant
 from ..repoindex import RepoIndex
 from ..schemas import (
     DrainRequest,
@@ -43,6 +46,7 @@ from ..schemas import (
     PauseRequest,
     PlatformSettingsRequest,
     ProviderEnableRequest,
+    TenantFindingsEpicRequest,
     TenantLimitsRequest,
 )
 from ..task_accounts import accounts_for
@@ -292,11 +296,45 @@ def set_tenant_concurrency(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = ctx.store.set_tenant_limits(tenant_id, max_active=body.limit, by=auth.email)
+    """The tenant's ceiling: ONE number, the one the admin typed.
+
+    Both `max_active` and `capacity_units` are written to `body.limit`, so the
+    pool -- the smaller of the two, `Store.set_tenant_limits` -- becomes exactly
+    the limit. Writing `max_active` alone is what held tenant `smoke` at 8 on
+    2026-10-07: the owner raised it 8 -> 20 in the console, `capacity_units`
+    stayed 8, the pool stayed 8, and this route answered 200 with a pool of 8
+    that the console reported as saved (owner decision, same day: the ceiling
+    is one number). PUT /v1/admin/tenants/{id}/limits still sets the two
+    separately and keeps the min() rule.
+
+    `capped_by` names what held the pool below the limit, for the console to
+    say instead of a success: null when the pool is the limit. With both
+    fields written it is null unless something wrote the tenant between the
+    write and the read-back.
+    """
+    tenant = ctx.store.set_tenant_limits(
+        tenant_id, max_active=body.limit, capacity_units=body.limit, by=auth.email
+    )
     ctx.metrics.admin_actions.labels(action="limit_tenant").inc()
-    return {"tenant": tenant_to_api(tenant), "pool": pool_to_api(
-        ctx.store.get_pool(f"tenant:{tenant_id}")
-    )}
+    pool = ctx.store.get_pool(f"tenant:{tenant_id}")
+    return {
+        "tenant": tenant_to_api(tenant),
+        "pool": pool_to_api(pool) if pool is not None else None,
+        "capped_by": _tenant_capped_by(tenant, pool, body.limit),
+    }
+
+
+def _tenant_capped_by(tenant: Tenant, pool: SlotPool | None, limit: int) -> str | None:
+    """Why `tenant:<id>` is not at `limit` after a ceiling write, or None if it is."""
+    if pool is not None and pool.hard_limit == limit:
+        return None
+    if pool is None:
+        return "pool_missing"
+    if tenant.capacity_units < limit:
+        return "capacity_units"
+    if tenant.max_active < limit:
+        return "max_active"
+    return "unknown"
 
 
 @router.put("/tenants/{tenant_id}/limits")
@@ -347,6 +385,38 @@ def set_tenant_limits(
         "tenant": tenant_to_api(tenant),
         "pool": pool_to_api(pool) if pool is not None else None,
     }
+
+
+@router.get("/tenants/{tenant_id}/findings-epic")
+def get_findings_epic(
+    tenant_id: str,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The tenant's wave epic (#638), or null when none is set."""
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} does not exist")
+    return {"tenant_id": tenant_id, "findings_epic": ctx.store.get_findings_epic(tenant_id)}
+
+
+@router.put("/tenants/{tenant_id}/findings-epic")
+def set_findings_epic(
+    tenant_id: str,
+    body: TenantFindingsEpicRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Set the issue a review's MINOR findings are filed on, per tenant (#638).
+
+    Read at workflow submission and copied into the gated step's signed
+    dispatch block (`DispatchOptions.findings_epic`), so a change reaches the
+    workflows submitted after it, never one already running. The number names
+    an issue in the repository each run works on; the worker posts with the
+    tenant's own git token. Null stops the filing.
+    """
+    epic = ctx.store.set_findings_epic(tenant_id, body.findings_epic)
+    ctx.metrics.admin_actions.labels(action="findings_epic").inc()
+    return {"tenant_id": tenant_id, "findings_epic": epic}
 
 
 # -- drains and provider switches ----------------------------------------
@@ -455,6 +525,7 @@ def list_leases(
     state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
     overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
     limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -507,9 +578,15 @@ def list_leases(
     ran over. Those two filters narrow the window; they do not change
     `active_beyond_window`, so with either set `units_held` is a filtered sum
     and not the drift check's input.
+
+    PAGED (F8). `truncated: true` used to be a dead end at the window; the
+    page now carries `next_page_token`, set exactly when `truncated` is, and
+    the rows behind it are the next page. `active_beyond_window` is per page:
+    live leases not in THESE rows.
     """
     scan = ctx.store.scan_leases(
-        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
+        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit),
+        page_token=page_token,
     )
     leases = scan.leases
     now = ctx.now()
@@ -568,6 +645,8 @@ def list_leases(
         "truncated": scan.truncated,
         # Rows state / overdue_only ran over.
         "examined": scan.examined,
+        # The rows behind this page; null on the last one.
+        "next_page_token": scan.next_page_token,
     }
 
 
@@ -590,21 +669,29 @@ def list_failures(
     own masker, `tenant_id` included, which says whose it is -- with its
     account read per tenant on the page (`accounts_for` never reads across
     tenants). A FAILED task holds no lease, so `waiting_for` and the heartbeat
-    fields are null. Paged by the same `created_at` cursor as `GET /v1/tasks`.
+    fields are null. Paged by the same (created_at, id) keyset as `GET /v1/tasks`.
     """
     page = ctx.store.list_failures(limit=paged_limit(ctx, limit), page_token=page_token)
     by_tenant: dict[str, list] = {}
     for task in page.items:
         by_tenant.setdefault(task.tenant_id, []).append(task)
     accounts: dict[str, dict] = {}
+    totals: dict[str, dict] = {}
     for tenant_id, tasks in by_tenant.items():
         accounts.update(accounts_for(ctx.db, tenant_id, tasks))
+        # Every attempt's spend and time, per tenant like the accounts, so the
+        # row carries the same fields a member's task row does
+        # (`swarm_api.attempt_totals`).
+        totals.update(totals_for(ctx.db, tenant_id, [t.id for t in tasks]))
     return {
         "tasks": [
-            task_to_api(
-                task,
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
+            with_totals(
+                task_to_api(
+                    task,
+                    account=accounts.get(task.id),
+                    console_url=ctx.settings.console_url,
+                ),
+                totals,
             )
             for task in page.items
         ],
@@ -633,13 +720,60 @@ def list_quota(
     platform computed them (docs/audits/2026-09-20/data-gaps-found-by-fanout.md
     section 2). Each row's own `updated_at` is a different fact -- when the
     broker last wrote that document -- and is not a substitute.
+
+    `truncated` says the store's window (500 documents, in document-id
+    order) left matching documents out. Without it a cut set and the whole
+    set were the same response (#76).
+
+    `feeds_pool` (G5-02, QA 2026-10-07) is the pool each row's cap feeds,
+    `provider:<provider>:tenant:<tenant>`, as `/v1/capacity` serves it, or
+    null when no such pool document exists. The row's own `effective_limit`
+    is the QUOTA DOCUMENT's (`QuotaState.effective_limit`) and is one input to
+    that pool; the pool's `effective_limit` is what admission enforces
+    (`SlotPool.has_capacity`). The live console drew `Quota cap 50` for a pool
+    Pools showed at 40, and nothing on this route could say which binds.
+    Served here rather than joined in the client so the two figures come
+    from one request and cannot be of different ages. Additive: no existing
+    key changed.
     """
-    states = ctx.store.list_quota(tenant_id)
+    scan = ctx.store.scan_quota(tenant_id)
+    pools = _provider_pools(ctx, {(q.provider, q.tenant_id) for q in scan.states})
     return {
-        "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
+        "quota": [
+            {**quota_to_api(q), "feeds_pool": pools.get(_provider_pool_name(q.provider, q.tenant_id))}
+            for q in sorted(scan.states, key=lambda q: (q.provider, q.tenant_id))
+        ],
+        "truncated": scan.truncated,
         "tenant_id": tenant_id,
         "generated_at": ctx.now(),
     }
+
+
+def _provider_pool_name(provider: str, tenant_id: str) -> str:
+    # The name `swarm_common.models.pool_names_for` gives a profile's
+    # per-tenant provider pool.
+    return f"provider:{provider}:tenant:{tenant_id}"
+
+
+def _provider_pools(ctx: AppContext, pairs: set[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+    """The provider pools the quota rows feed, by name, as `pool_to_api` serves them.
+
+    One listing read, as `/v1/capacity` does. A listing that filled its window
+    is not evidence a name outside it is absent, so only then is each missing
+    name read by itself; a name absent after that has no pool document.
+    """
+    if not pairs:
+        return {}
+    page = 500
+    listed = ctx.store.list_pools(limit=page)
+    by_name = {pool.name: pool for pool in listed}
+    wanted = {_provider_pool_name(provider, tenant) for provider, tenant in pairs}
+    if len(listed) >= page:
+        for name in sorted(wanted - set(by_name)):
+            pool = ctx.store.get_pool(name)
+            if pool is not None:
+                by_name[name] = pool
+    return {name: pool_to_api(by_name[name]) for name in wanted if name in by_name}
 
 
 @router.get("/tenants")
@@ -730,6 +864,50 @@ def advance_runs(
         # Only the runs that could not be advanced, by id and error code. A
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
+    }
+
+
+@router.post("/merges/wake")
+def wake_merges(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Mark one tenant's CI-waiting merge steps whose checks have settled (lane MS2).
+
+    Called every minute by the per-tenant Cloud Scheduler job `merge_wake`
+    (terraform/modules/scheduler/jobs.tf), as the rollup sweeper, admitted
+    to this route by `auth.ROLLUP_SWEEPER_ROUTES`; an admin may call it too,
+    as the other ticks, to wake a merge now. docs/merge-step.md "Revised
+    2026-10-06" §1: a merge step whose pull request's checks are still
+    running parks CI_PENDING, holding nothing. For each such park of the
+    named tenant this reads the pull request and its checks at the recorded
+    head with that tenant's `-git` token, at most once per
+    `issueci.CI_READ_SECONDS`, and writes the wake marker on the ones with
+    nothing left pending (`mergewake.wake_tenant`). It never moves a task:
+    the scheduler's `_promote_ci_waits` returns a marked park to READY, and
+    only admission takes capacity (invariant 1).
+
+    TENANT IS EXPLICIT, as on the other ticks. `limit` is the page of parks
+    read per tick; truncation is reported.
+    """
+    report = wake_tenant(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="merge_wake").inc()
+    # The CI fixer's post-back (#263) rides this tick: the same tenant, the
+    # same `-git` token and writer, the same minute, and no second Scheduler
+    # job to keep in step with this one. It comments on a red pull request
+    # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
+    postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the parks that could not be read, by id and code. A healthy
+        # tick returns an empty list, which is an answer.
+        "failures": report.failures,
+        "ci_fix": postback.to_api(),
+        "ci_fix_failures": postback.failures,
     }
 
 

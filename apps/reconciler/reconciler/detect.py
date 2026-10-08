@@ -52,6 +52,15 @@ And two about how a worker ENDED, on either backend:
                        execution in `last_error`, instead of waiting for the
                        dispatch deadline (#198; `detect_ended_at_startup`)
 
+And one about a cancel nobody honoured, on either backend:
+
+    cancel overdue     the task's cancel was requested longer ago than
+                       `cancel_enforce_after_seconds` and its current
+                       attempt's execution is still active -> terminate it
+                       through the backend, then fence, release and end the
+                       task CANCELLED in one transaction (#627;
+                       `detect_cancel_overdue`)
+
 And one about a worker that ended its task and not its attempt:
 
     lost after finish  the task is terminal at the attempt's generation, the
@@ -68,7 +77,7 @@ import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 #: The slug character class is IMPORTED, never restated. `sanitised()` below
 #: undoes what the dispatcher's `sanitize_name` did, so the two escaping
@@ -79,7 +88,8 @@ from typing import Any, Iterable
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import utcnow
 from swarm_common.profiles import Backend
-from swarm_common.states import TaskState
+from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, ParkReason, TaskState
+from swarm_rollup import UNKNOWN, derive, read_steps, skipped_task_ids
 
 from .config import ReconcilerConfig
 from .model import (
@@ -89,7 +99,10 @@ from .model import (
     ExecutionView,
     JobResourceView,
     LeaseView,
+    StepTaskView,
     TaskView,
+    WorkflowRead,
+    WorkflowView,
     count_startup_end,
 )
 
@@ -149,6 +162,10 @@ class FindingKind(str, Enum):
     #: A terminal task whose current attempt never recorded its end and has no
     #: live execution, past a grace: see `detect_lost_after_finish` (#380).
     LOST_AFTER_FINISH = "lost_after_finish"
+    #: A task whose cancel was requested more than `cancel_enforce_after_seconds`
+    #: ago and whose current attempt's execution is still active: see
+    #: `detect_cancel_overdue` (#627).
+    CANCEL_OVERDUE = "cancel_overdue"
 
 
 @dataclass(frozen=True)
@@ -179,6 +196,7 @@ class Finding:
             FindingKind.OBSOLETE_GENERATION,
             FindingKind.STUCK_NO_PROGRESS,
             FindingKind.LEFT_RUNNING,
+            FindingKind.CANCEL_OVERDUE,
         ) or (self.execution is not None and self.execution.is_active)
 
 
@@ -1206,6 +1224,106 @@ def detect_left_running(
     return findings
 
 
+def _cancel_reference(task: TaskView) -> datetime | None:
+    """When the task's cancel was requested, or the latest moment it can have been.
+
+    `cancel_requested_at` is written by the API's first cancel. A task cancelled
+    before that field existed has only `updated_at`, which the cancel itself
+    set and later writes only move forward -- so it is never EARLIER than the
+    cancel, and measuring from it can only wait longer, never kill early.
+    """
+    return task.cancel_requested_at or task.updated_at
+
+
+def detect_cancel_overdue(
+    snapshot: ControlSnapshot,
+    executions_by_attempt: dict[str, ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Cancelled tasks whose current execution is still running past the bound (#627).
+
+    WHY A RULE IS NEEDED AT ALL. A cancelled task with a live worker keeps its
+    lease heartbeating -- the beat runs on its own thread and is deliberately
+    not stopped by the cancel, so the cancellation checkpoint has a live lease
+    under it -- and so no absence rule ever fires on it. The worker acts on the
+    flag only from its control poll, and a worker blocked anywhere else never
+    does. The API's direct stop (`/stop-execution`) is one attempt, acked
+    whatever its outcome. Before this rule, the 2026-10-04 cancels ran 12.8 h
+    and ended only when a generation mismatch was noticed.
+
+    Only the precise case, so no other rule is second-guessed: a task holding
+    capacity with `cancel_requested`, on its CURRENT generation and CURRENT
+    unreleased lease, whose attempt's execution is in the listing and active,
+    with the cancel older than `cancel_enforce_after_seconds`. An execution of
+    an older generation is the obsolete-generation rule's; a silent lease is
+    `detect_stale_leases`'; an execution nobody can see is held, as ever.
+
+    The repair is the ordinary one (`Reconciler._repair`): terminate first,
+    and only on a confirmed kill fence, release through the frozen
+    `release_lease_in_transaction` and write CANCELLED, all in one
+    transaction, so no slot is returned while the execution may still run
+    and a worker that outlives the kill exits at its next fence check
+    without touching the lease (invariants 1-3 and 5).
+    """
+    now = now or utcnow()
+    bound = config.cancel_enforce_after_seconds
+    findings: list[Finding] = []
+    for attempt_id, execution in executions_by_attempt.items():
+        if not execution.is_active or execution.claim_refused or not execution.task_id:
+            continue
+        task = snapshot.tasks.get(execution.task_id)
+        if task is None or not task.cancel_requested or not task.holds_capacity:
+            continue
+        lease = next(
+            (
+                candidate
+                for candidate in snapshot.leases.values()
+                if candidate.attempt_id == attempt_id and not candidate.is_released
+            ),
+            None,
+        )
+        if lease is None or lease.task_id != task.task_id:
+            continue
+        if lease.generation != task.generation:
+            continue
+        if execution.generation is not None and execution.generation != lease.generation:
+            continue
+        if task.lease_id not in (None, lease.lease_id):
+            continue
+        reference = _cancel_reference(task)
+        if reference is None:
+            continue  # nothing says when; the other rules still apply
+        waited = (now - _as_utc(reference)).total_seconds()
+        if waited < bound:
+            continue  # the worker's own cancel path, cost and all, is still in time
+        findings.append(
+            Finding(
+                kind=FindingKind.CANCEL_OVERDUE,
+                reason=(
+                    f"cancel requested {waited:.0f}s ago and execution {execution.name} "
+                    f"is still active (bound {bound}s)"
+                ),
+                task_id=task.task_id,
+                lease_id=lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=task.tenant_id or execution.tenant_id,
+                generation=lease.generation,
+                execution=execution,
+                detail={
+                    "task_state": task.state.value,
+                    "cancel_requested_at": reference.isoformat(),
+                    "cancel_age_seconds": round(waited, 1),
+                    "measured_from": (
+                        "cancel_requested_at" if task.cancel_requested_at else "updated_at"
+                    ),
+                    "namespace": execution.namespace,
+                },
+            )
+        )
+    return findings
+
+
 @dataclass(frozen=True)
 class CannotStartSubject:
     """A finished execution whose attempt still holds its task's current lease."""
@@ -1819,6 +1937,17 @@ def detect_all(
             and (f.lease_id in left or (f.attempt_id is not None and f.attempt_id in deferred))
         )
     ]
+    # The cancel bound only ever adds, like the stuck rule below, and comes
+    # first: a cancelled attempt is stopped and CANCELLED, never merely
+    # fenced as stuck. A lease another rule already terminates is that
+    # rule's -- its repair ends a cancelled task CANCELLED too -- and an
+    # execution the orphan rule deferred is a later judgement's.
+    covered = {f.lease_id for f in findings if f.lease_id}
+    findings.extend(
+        f
+        for f in detect_cancel_overdue(snapshot, by_attempt, config, now)
+        if f.lease_id not in covered and f.attempt_id not in deferred
+    )
     # The stuck rule only ever adds. A lease another rule already acts on --
     # a dead worker, a superseded generation -- is that rule's, and repairing
     # it twice would count one termination twice in the pass report.
@@ -1842,3 +1971,396 @@ def detect_all(
         unique.append(finding)
     unique.sort(key=lambda f: (not f.requires_termination, f.kind.value))
     return unique[: config.max_findings_per_pass]
+
+
+# ---------------------------------------------------------------------------
+# Workflows that stop making progress (#616)
+# ---------------------------------------------------------------------------
+
+
+class WorkflowStallKind(str, Enum):
+    """What the workflow stall check found. Owner decision, 2026-10-05.
+
+    Two are REPAIRED by the pass, because the repair is the write another
+    component already makes and is safe to make twice: DEPENDENCIES_MET is
+    the scheduler's dependency promotion, and STATE_DRIFT is the API's
+    rollup write-back. The rest are REPORTED: the task-level rules own what
+    can be done about a step that will not start or a worker gone quiet.
+    """
+
+    #: A RUNNING workflow none of whose steps has changed state for
+    #: `workflow_no_progress_minutes`, and none of whose live steps holds a
+    #: heartbeat younger than `heartbeat_grace_seconds`.
+    NO_PROGRESS = "no_progress"
+    #: A step DISPATCHED or STARTING for longer than
+    #: `workflow_start_budget_seconds`.
+    START_OVERDUE = "start_overdue"
+    #: The workflow's state could not be derived: its document, or a step's
+    #: task, could not be read. Nothing about it was judged or written.
+    UNREADABLE = "unreadable"
+    #: A step PARKED on DEPENDENCY_INCOMPLETE whose parents all SUCCEEDED,
+    #: `workflow_promote_grace_seconds` after the last of them finished.
+    DEPENDENCIES_MET = "dependencies_met"
+    #: The stored workflow state disagrees with the one its steps derive.
+    STATE_DRIFT = "state_drift"
+
+
+#: Worst first. A workflow that has stopped outright, then a step that will
+#: not start, then a workflow nobody could judge; the two the pass repairs
+#: come last. Within a kind, the oldest first. The order is decided HERE,
+#: once, and every surface (the API, the console, `sc trouble`) keeps it.
+_STALL_ORDER: tuple[WorkflowStallKind, ...] = (
+    WorkflowStallKind.NO_PROGRESS,
+    WorkflowStallKind.START_OVERDUE,
+    WorkflowStallKind.UNREADABLE,
+    WorkflowStallKind.DEPENDENCIES_MET,
+    WorkflowStallKind.STATE_DRIFT,
+)
+
+#: The step states the start budget applies to: handed to a backend, and
+#: no worker has yet reported its runner started.
+_STARTING_STATES = frozenset({TaskState.DISPATCHED, TaskState.STARTING})
+
+#: A failed step ends a `fail_workflow` workflow: the scheduler cancels every
+#: step that has not started (`scheduler.loop._stop_for_failed_workflow`), so
+#: promoting one of them here would run work the workflow has abandoned.
+_FAILED_STEP_STATES = frozenset({TaskState.FAILED, TaskState.DEAD_LETTERED})
+
+
+@dataclass(frozen=True)
+class WorkflowStall:
+    kind: WorkflowStallKind
+    workflow_id: str
+    tenant_id: str | None
+    reason: str
+    step_id: str | None = None
+    task_id: str | None = None
+    age_seconds: float | None = None
+    #: DEPENDENCIES_MET: the step task's generation as read, and the parent
+    #: task ids the promotion re-reads. The repair is refused if either moved.
+    generation: int | None = None
+    parents: tuple[str, ...] = ()
+    #: STATE_DRIFT: the stored state as read, and the derived one to write.
+    stored_state: TaskState | None = None
+    derived_state: TaskState | None = None
+
+    def entry(self, *, repaired: bool, repair: str | None) -> dict[str, Any]:
+        """The pass report's row for this finding, as `held_past_ttl` has one.
+
+        `severity` is decided here so the console and `sc trouble` grade a
+        finding alike without restating which kinds are worse: `bad` for a
+        workflow that is not moving, `warn` for one nobody could judge or a
+        repair that did not land, `note` for a repair that did.
+        """
+        if self.kind in (WorkflowStallKind.NO_PROGRESS, WorkflowStallKind.START_OVERDUE):
+            severity = "bad"
+        elif self.kind is WorkflowStallKind.UNREADABLE or not repaired:
+            severity = "warn"
+        else:
+            severity = "note"
+        return {
+            "workflow_id": self.workflow_id,
+            "tenant_id": self.tenant_id,
+            "step_id": self.step_id,
+            "task_id": self.task_id,
+            "kind": self.kind.value,
+            "severity": severity,
+            "age_seconds": None if self.age_seconds is None else round(self.age_seconds, 1),
+            "reason": self.reason,
+            "repaired": repaired,
+            "repair": repair,
+        }
+
+
+def _age(now: datetime, at: datetime | None) -> float | None:
+    if at is None:
+        return None
+    return max(0.0, (now - _as_utc(at)).total_seconds())
+
+
+def _latest(*values: datetime | None) -> datetime | None:
+    present = [_as_utc(v) for v in values if v is not None]
+    return max(present) if present else None
+
+
+def _heartbeat_is_fresh(
+    task: TaskView,
+    leases: Mapping[str, LeaseView],
+    config: ReconcilerConfig,
+    now: datetime,
+) -> bool:
+    """True when the step's current lease has heartbeated within the grace.
+
+    The grace is `heartbeat_grace_seconds`, the clock every lease rule here
+    already presumes a worker dead by, so "fresh" means the same thing to
+    this check as to the rules that may reclaim the lease.
+    """
+    lease = leases.get(task.lease_id) if task.lease_id else None
+    if lease is None:
+        lease = next(
+            (
+                candidate
+                for candidate in leases.values()
+                if candidate.task_id == task.task_id and not candidate.is_released
+            ),
+            None,
+        )
+    if lease is None or lease.heartbeat_at is None:
+        return False
+    age = _age(now, lease.heartbeat_at)
+    return age is not None and age <= config.heartbeat_grace_seconds
+
+
+def detect_stalled_workflows(
+    read: WorkflowRead,
+    leases: Mapping[str, LeaseView],
+    config: ReconcilerConfig,
+    now: datetime,
+) -> list[WorkflowStall]:
+    """Every non-terminal workflow that has stopped making progress, worst first.
+
+    Pure, like every rule in this module: the workflows and step tasks the
+    store read, the unreleased leases the snapshot already holds (for
+    heartbeats), and a clock. The state a workflow is in is DERIVED by
+    `swarm_rollup.derive`, the rule the API serves, never restated here.
+    """
+    stalls: list[WorkflowStall] = []
+    for bad in read.malformed:
+        stalls.append(
+            WorkflowStall(
+                kind=WorkflowStallKind.UNREADABLE,
+                workflow_id=str(bad.get("workflow_id") or ""),
+                tenant_id=bad.get("tenant_id"),
+                reason=(
+                    f"the workflow document could not be decoded ({bad.get('error')}); "
+                    "nothing about it was judged or written"
+                ),
+            )
+        )
+    for workflow in read.workflows:
+        if workflow.state in TERMINAL_STATES:
+            continue
+        stalls.extend(_stalls_of(workflow, read, leases, config, now))
+    stalls.sort(
+        key=lambda s: (
+            _STALL_ORDER.index(s.kind),
+            -(s.age_seconds or 0.0),
+            s.workflow_id,
+            s.step_id or "",
+        )
+    )
+    return stalls
+
+
+def _stalls_of(
+    workflow: WorkflowView,
+    read: WorkflowRead,
+    leases: Mapping[str, LeaseView],
+    config: ReconcilerConfig,
+    now: datetime,
+) -> list[WorkflowStall]:
+    # The join. A step task that belongs to another tenant is not this
+    # workflow's to judge, and is treated as the API's read treats it: absent.
+    own: dict[str, StepTaskView] = {}
+    absent: set[str] = set()
+    for step in workflow.steps:
+        if not step.task_id:
+            continue
+        task = read.tasks.get(step.task_id)
+        if task is not None and task.task.tenant_id == workflow.tenant_id:
+            own[step.task_id] = task
+        elif task is not None or step.task_id in read.absent:
+            absent.add(step.task_id)
+    rollup = derive(
+        read_steps(
+            workflow.steps,
+            {task_id: task.state for task_id, task in own.items()},
+            absent=absent,
+            skipped=skipped_task_ids(own.values()),
+        )
+    )
+    if not rollup.complete or rollup.state == UNKNOWN:
+        # A partial read is not evidence: no rule below runs over it, and the
+        # stored state is not touched (the API's `_persist` refuses the same).
+        unread = list(rollup.unreadable_steps)
+        return [
+            WorkflowStall(
+                kind=WorkflowStallKind.UNREADABLE,
+                workflow_id=workflow.workflow_id,
+                tenant_id=workflow.tenant_id,
+                step_id=unread[0] if unread else None,
+                task_id=next(
+                    (s.task_id for s in workflow.steps if unread and s.step_id == unread[0]), None
+                ),
+                age_seconds=_age(now, workflow.updated_at),
+                reason=(
+                    f"its state could not be derived ({rollup.reason}); unreadable steps: "
+                    f"{', '.join(unread) or 'none'}. Nothing about it was judged or written"
+                ),
+            )
+        ]
+
+    out: list[WorkflowStall] = []
+    derived = TaskState(rollup.state)
+    if derived is not workflow.state:
+        out.append(
+            WorkflowStall(
+                kind=WorkflowStallKind.STATE_DRIFT,
+                workflow_id=workflow.workflow_id,
+                tenant_id=workflow.tenant_id,
+                age_seconds=_age(now, workflow.updated_at),
+                reason=(
+                    f"stored state {workflow.state.value}, but its steps derive "
+                    f"{derived.value} ({rollup.reason})"
+                ),
+                stored_state=workflow.state,
+                derived_state=derived,
+            )
+        )
+
+    step_of_task = {s.task_id: s.step_id for s in workflow.steps if s.task_id}
+    by_step = {s.step_id: s for s in workflow.steps}
+    failed = workflow.on_step_failure == "fail_workflow" and any(
+        task.state in _FAILED_STEP_STATES for task in own.values()
+    )
+    for step in workflow.steps:
+        task = own.get(step.task_id) if step.task_id else None
+        if task is None:
+            continue
+        if (
+            task.state is TaskState.PARKED
+            and task.park_reason == ParkReason.DEPENDENCY_INCOMPLETE.value
+            and not workflow.cancel_requested
+            and not failed
+        ):
+            stall = _dependencies_met(workflow, step.step_id, task, by_step, step_of_task, read, config, now)
+            if stall is not None:
+                out.append(stall)
+        if task.state in _STARTING_STATES:
+            age = _age(now, task.task.updated_at)
+            if age is not None and age >= config.workflow_start_budget_seconds:
+                out.append(
+                    WorkflowStall(
+                        kind=WorkflowStallKind.START_OVERDUE,
+                        workflow_id=workflow.workflow_id,
+                        tenant_id=workflow.tenant_id,
+                        step_id=step.step_id,
+                        task_id=task.id,
+                        age_seconds=age,
+                        reason=(
+                            f"{task.state.value} for {age:.0f}s, past the "
+                            f"{config.workflow_start_budget_seconds}s start budget; "
+                            "no worker has reported its runner started"
+                        ),
+                    )
+                )
+
+    if derived is TaskState.RUNNING and not workflow.cancel_requested:
+        # A cancelled workflow not advancing is what was asked for.
+        stall = _no_progress(workflow, own, leases, config, now, step_of_task)
+        if stall is not None:
+            out.append(stall)
+    return out
+
+
+def _dependencies_met(
+    workflow: WorkflowView,
+    step_id: str,
+    task: StepTaskView,
+    by_step: Mapping[str, Any],
+    step_of_task: Mapping[str, str],
+    read: WorkflowRead,
+    config: ReconcilerConfig,
+    now: datetime,
+) -> WorkflowStall | None:
+    """Rule (a): the scheduler's promotion condition, judged from this read.
+
+    The parents are the task's own `depends_on` -- the list the scheduler's
+    sweep gates on -- or, for a task that carries none, its step's parents
+    in the workflow. A parent this pass did not read, or that belongs to
+    another tenant, is not a satisfied one.
+    """
+    parents = task.depends_on or tuple(
+        by_step[name].task_id
+        for name in by_step[step_id].depends_on
+        if name in by_step and by_step[name].task_id
+    )
+    finished: list[datetime | None] = []
+    for parent in parents:
+        parent_task = read.tasks.get(parent)
+        if (
+            parent_task is None
+            or parent_task.task.tenant_id != workflow.tenant_id
+            or parent_task.state is not TaskState.SUCCEEDED
+        ):
+            return None
+        finished.append(_latest(parent_task.task.completed_at, parent_task.task.updated_at))
+    satisfied_at = _latest(*finished) if parents else task.task.updated_at
+    age = _age(now, satisfied_at)
+    if age is not None and age < config.workflow_promote_grace_seconds:
+        return None
+    names = [step_of_task.get(parent, parent) for parent in parents]
+    return WorkflowStall(
+        kind=WorkflowStallKind.DEPENDENCIES_MET,
+        workflow_id=workflow.workflow_id,
+        tenant_id=workflow.tenant_id,
+        step_id=step_id,
+        task_id=task.id,
+        age_seconds=age,
+        reason=(
+            "PARKED on DEPENDENCY_INCOMPLETE, but "
+            + (
+                f"every parent SUCCEEDED ({', '.join(names)})"
+                if names
+                else "it depends on no step"
+            )
+            + (f" {age:.0f}s ago" if age is not None else "")
+        ),
+        generation=task.task.generation,
+        parents=tuple(parents),
+    )
+
+
+def _no_progress(
+    workflow: WorkflowView,
+    own: Mapping[str, StepTaskView],
+    leases: Mapping[str, LeaseView],
+    config: ReconcilerConfig,
+    now: datetime,
+    step_of_task: Mapping[str, str],
+) -> WorkflowStall | None:
+    """Rule (c): no step state change for N minutes, and no fresh heartbeat.
+
+    A step's last change is the latest of its task's `updated_at`,
+    `started_at` and `completed_at`. A step RUNNING with a heartbeat younger
+    than the grace is progress, however long ago its state last changed: an
+    agent working for an hour has not stalled.
+    """
+    live = [task for task in own.values() if task.state in CONCURRENCY_STATES]
+    if any(_heartbeat_is_fresh(task.task, leases, config, now) for task in live):
+        return None
+    last = _latest(
+        *(
+            moment
+            for task in own.values()
+            for moment in (task.task.updated_at, task.task.started_at, task.task.completed_at)
+        )
+    )
+    age = _age(now, last)
+    window = config.workflow_no_progress_minutes * 60
+    if age is None or age < window:
+        return None
+    subject = live[0] if live else None
+    return WorkflowStall(
+        kind=WorkflowStallKind.NO_PROGRESS,
+        workflow_id=workflow.workflow_id,
+        tenant_id=workflow.tenant_id,
+        step_id=step_of_task.get(subject.id) if subject else None,
+        task_id=subject.id if subject else None,
+        age_seconds=age,
+        reason=(
+            f"no step has changed state for {age / 60:.0f}m (the window is "
+            f"{config.workflow_no_progress_minutes}m) and no live step has heartbeated "
+            f"within {config.heartbeat_grace_seconds}s"
+        ),
+    )

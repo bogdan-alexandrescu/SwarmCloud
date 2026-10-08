@@ -135,8 +135,9 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(text).toContain('claude-code · sonnet')
     expect(text).toContain('alex')
     expect(text).toContain('try 1/3')
-    // The step is the name, so the task id rides on line two.
-    expect(sub!.querySelector('.id')?.getAttribute('title')).toBe(STEP.id)
+    // The whole task id is printed under the name (#94), not on line two.
+    expect(sub!.querySelector('.id')).toBeNull()
+    expect(rowOf(c, 'fix-heartbeat').querySelector('.cr-name .tid-text')?.textContent).toBe(STEP.id)
   })
 
   it('gives a waiting row its reason in place of the try', async () => {
@@ -277,29 +278,33 @@ describe('at 390 the section’s pages are a sticky strip', () => {
   })
 })
 
-// The phone header is sticky at top 0 above the strip, so a strip stuck at 0
-// is hidden behind it once the page scrolls. Asked of both header heights.
-// MUTATION: set the phone rule's `top` back to 0.
-describe('at 390 the strip sticks below the phone header, not behind it', () => {
+// THE STRIP STICKS AT THE SCROLLER'S TOP EDGE, WHICH IS THE HEADER'S FOOT
+// (#139). The phone header is a row of the frame above `.ctl-scroll`, not
+// inside it, so a sticky `top` is measured from the header's foot already:
+// `top: 44px` pinned the strip a header-height BELOW the header, rows showing
+// through the gap, and its 36px twin moved it when the header compacted. This
+// asked the old, wrong question (a strip and a header sharing one scroller)
+// and passed. Asked of both header heights, in the frame's real nesting.
+// MUTATION: set the phone rule's `top` back to 44px, or bring back the
+// `.sk-app.is-scrolled` override.
+describe('at 390 the strip sticks flush under the phone header, in either height', () => {
   it.each([
     ['at the top of the page', ''],
     ['once the page is scrolled', ' is-scrolled'],
-  ])('clears the header %s', (_label, cls) => {
+  ])('sits at the scroller top %s', (_label, cls) => {
     const host = document.createElement('div')
-    host.innerHTML = `<div class="sk-app${cls}"><header class="sk-pbar"></header><div role="tablist" class="ag-list-tabs"></div></div>`
+    host.innerHTML =
+      `<div class="sk-app${cls}"><header class="sk-pbar"></header>` +
+      '<div class="sk-main"><div class="ctl-scroll"><div class="app"><main class="work">' +
+      '<div role="tablist" class="ag-list-tabs"></div></main></div></div></div></div>'
     document.body.appendChild(host)
     try {
       const sheets = AGENTS_CSS + '\n' + STYLES
       const bar = host.querySelector('.sk-pbar')!
       const strip = host.querySelector('.ag-list-tabs')!
-      const px = (v: string | undefined) => {
-        expect(v, 'no value in the cascade').toMatch(/^\d+px$/)
-        return parseInt(v!, 10)
-      }
-      expect(cascade(sheets, bar, 'position', { width: 390 }).winner?.value).toBe('sticky')
-      const barHeight = px(cascade(sheets, bar, 'height', { width: 390 }).winner?.value)
-      const stripTop = px(cascade(sheets, strip, 'top', { width: 390 }).winner?.value)
-      expect(stripTop, 'the strip sticks behind the phone header').toBeGreaterThanOrEqual(barHeight)
+      expect(bar.closest('.ctl-scroll'), 'the header moved into the scroller; the strip would need its height').toBeNull()
+      expect(cascade(sheets, strip, 'position', { width: 390 }).winner?.value).toBe('sticky')
+      expect(cascade(sheets, strip, 'top', { width: 390 }).winner?.value, 'the strip sticks below a gap under the header').toBe('0')
     } finally {
       host.remove()
     }

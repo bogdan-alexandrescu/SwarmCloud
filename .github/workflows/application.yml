@@ -14,57 +14,23 @@ on:
   # on main had never run its own tests once.
   push:
     branches: [main]
+  # EVERY PULL REQUEST, WITH NO PATH FILTER (owner request 2026-10-07, docs/ci.md
+  # "The merge pipeline's wall time"). The `ci-gate` job at the bottom of this
+  # file is the check ruleset 24160219 requires, and GitHub holds a required
+  # check whose workflow was filtered out as pending forever -- so this
+  # workflow must start on every pull request. Which jobs a change reaches is
+  # decided inside it, by the `changes` job: a job it does not reach is skipped
+  # by its own `if:`, which reads as a pass. The list that used to be this
+  # trigger's `paths:` is that job's APP_PATHS, comments and all.
   pull_request:
-    paths:
-      - "apps/**"
-      - "images/**"
-      - "kubernetes/**"
-      - "scripts/**"
-      - "tests/**"
-      - "docs/**"
-      # test_reconciler_gke_namespaced.py holds the reconciler's log-metric
-      # filters in this file to the lines repair.py writes. Without this, a PR
-      # touching only alerts.tf never ran that pin. (Other unit tests read other
-      # terraform files and are not triggered by them either; not widened here.)
-      - "terraform/modules/monitoring/alerts.tf"
-      # tests/unit/mcp reads the plugin and the marketplace manifest -- its
-      # skills, its server declaration, the version its bridge is pinned to.
-      # Without these, a PR that changed only plugin.json ran none of that.
-      - "plugin/**"
-      - ".claude-plugin/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "Makefile"
-      - "README.md"
-      - "CLAUDE.md"
-      - "CONTRACT.md"
-      - ".github/workflows/application.yml"
-      # tests/unit/scripts/test_release_reuses_ci_images.py reads release.yml
-      # to hold it to reusing this workflow's build. release.yml never runs on
-      # a pull request, so without this a PR touching only it ran nothing.
-      - ".github/workflows/release.yml"
-      # tests/unit/scripts/test_issue_forms.py validates the issue forms and
-      # the label declaration. Without these a PR editing only a form would run
-      # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/labels.yml"
-      # The IAM refusal probe runs only when the owner dispatches it, so a pull
-      # request is the only place it is linted (actionlint below) and held to
-      # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
-      - ".github/workflows/iam-refusal-probe.yml"
-      # The CI fixer runs only after a red CI on a swarm branch, so a PR is the
-      # only place it is linted and held to its shape (test_ci_fix.py).
-      - ".github/workflows/ci-fix.yml"
-      # auto-merge.yml runs only on pull_request_target, from main's copy, so
-      # a pull request changing it never runs it: this is the one place it is
-      # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
-      - ".github/workflows/auto-merge.yml"
-      # ci-gate is the check the ruleset requires in place of this workflow
-      # and terraform.yml. A pull request changing only its workflow would
-      # otherwise run neither actionlint below nor tests/unit/scripts/test_ci_gate.py
-      # (scripts/ci-gate.sh is already under scripts/**; named for the record).
-      - ".github/workflows/ci-gate.yml"
-      - "scripts/ci-gate.sh"
+  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Main merges
+  # through a merge queue"). ci-gate is required and is a job of this
+  # workflow, so it runs there with NO filter -- a run that never starts is a
+  # required check that never reports, and the queue drops the entry at its
+  # timeout (tests/unit/scripts/test_merge_queue_workflows.py).
+  # Never raised while the queue is off.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 # Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
@@ -116,6 +82,9 @@ jobs:
   shell:
     name: shellcheck
     runs-on: ubuntu-24.04
+    # Skipped when the change reaches nothing in this workflow (`changes`).
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     # Job-level permissions REPLACE the workflow's, so contents: read is
     # restated. actions: read is for the plugin-tag check's `gh run list` of
     # release.yml; nothing here mints a cloud token, so no id-token.
@@ -130,7 +99,7 @@ jobs:
         # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
         # every group file, so the group files are analysed in that context
         # as well as on their own.
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
 
       - name: scripts are executable and strict
         # The property is "strict mode is on before anything runs", so the check
@@ -146,13 +115,34 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
+          for f in scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
             [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
             first="$(awk 'NR==1 && /^#!/ {next} /^[[:space:]]*#/ {next} /^[[:space:]]*$/ {next} {print; exit}' "$f")"
             [ "$first" = "set -euo pipefail" ] \
               || { echo "::error file=$f::first effective line is '$first', expected 'set -euo pipefail'"; fail=1; }
           done
           exit "$fail"
+
+      - name: every script parses under bash 3.2
+        # macOS ships bash 3.2.57 as /bin/bash, and CLAUDE.md names it as the
+        # bash these scripts target. The runner's bash is 5.x, so shellcheck and
+        # every other step here passed while lib/common.sh did not parse at all
+        # under 3.2 (#825) -- and every script sources it. 3.2 scans the body of
+        # a heredoc inside $( ) for quotes, so one apostrophe in an awk program
+        # there swallowed the rest of the file. Only the parser can catch that,
+        # so this runs the real 3.2 parser over every script and lists them all
+        # rather than stopping at the first.
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/w" -w /w bash:3.2.57 bash -c '
+            n=0; fail=0
+            for f in scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
+              n=$((n+1))
+              bash -n "$f" || { echo "::error file=$f::does not parse under bash $BASH_VERSION"; fail=1; }
+            done
+            echo "parsed $n files under bash $BASH_VERSION"
+            [ "$n" -gt 0 ] || { echo "::error::no scripts visited"; exit 1; }
+            exit "$fail"'
 
       - name: the shell restatements of the frozen contract still match it
         # A bash script cannot import Python, so SlotPool.effective_limit and
@@ -190,6 +180,13 @@ jobs:
         # resources aged 133 days; the next command in that sequence was an
         # apply. It takes no arguments and reaches no network.
         run: ./scripts/lib/kubectl-guard.sh --self-test
+
+      - name: the workspace call guard still refuses what is not named for one workspace
+        # docs/workspaces.md §2.5. The guard is code, not IAM (residual risk R1):
+        # it is all that bounds swarm-workspace-deployer's project-wide account
+        # IAM, so every rule's refusal and allowance is proven on every change.
+        # Offline: it builds its expectation from a fixture record.
+        run: ./scripts/lib/workspace-guard.sh self-test
 
       - name: the auth guard still tells an expired session from an absent resource
         # Same gap, same reason. This is the predicate every script uses to
@@ -338,6 +335,9 @@ jobs:
   workflows:
     name: release workflow wiring (actionlint)
     runs-on: ubuntu-24.04
+    # Skipped when the change reaches nothing in this workflow (`changes`).
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     # release.yml runs only on main, so NOTHING on a pull request ever parses
     # it: a mistyped `needs.` reference, a step output that does not exist or
     # an input an action does not take would first fail during a release. Now
@@ -356,14 +356,15 @@ jobs:
     # expression in its revert gate would otherwise first show on that run.
     # auto-merge.yml likewise: a pull request that changes it runs main's
     # copy, not its own, so a broken expression would first show on the first
-    # `ready` label after it merged. ci-gate.yml is linted because main's ruleset
-    # is to require its one job: a broken expression there holds every pull request.
+    # `ready` label after it merged. application.yml carries `ci-gate`, the
+    # check main's ruleset requires: a broken expression there holds every pull
+    # request.
     env:
       ACTIONLINT_VERSION: "1.7.7"
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml, auto-merge.yml and ci-gate.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -373,11 +374,218 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
-            .github/workflows/auto-merge.yml .github/workflows/ci-gate.yml
+            .github/workflows/auto-merge.yml
 
-  python:
-    name: format / unit tests
+  changes:
+    # WHAT THIS CHANGE CAN REACH, decided once for every job below (owner
+    # request 2026-10-07; it grew out of the swarm-ui gate of #605, which it
+    # still is). On a push to main, a queue entry or a dispatch, everything:
+    # main is the build release.yml promotes, so it is tested whole. On a pull
+    # request it diffs `base...head` and writes four outputs:
+    #
+    #   app     any changed file matches APP_PATHS -- the list that was this
+    #           workflow's `on.pull_request.paths` until 2026-10-07. When false,
+    #           every job but this one and `ci-gate` is skipped, exactly as the
+    #           whole workflow used to be filtered out.
+    #   python  `all` when a changed file in APP_PATHS lies outside docs/ and
+    #           apps/swarm-ui/; `subset` when every one is under those two, and
+    #           then the unit shards run only the test files that read them
+    #           (`areas` says which; the pick step finds the files); `none`
+    #           when app is false. A docs-only change still runs the unit tests
+    #           that read docs/ -- test_docs_describe_what_was_built and ~130
+    #           others hold docs/ to the code, and skipping them would let a
+    #           docs-only pull request break main.
+    #   areas   `docs`, `swarm-ui`, or both, for `subset`.
+    #   ui      the change is in apps/swarm-ui/**, the API's route surface
+    #           (apps/swarm-api/swarm_api/routes/** and swarm_api/main.py, which
+    #           the UI's reads are written against), or this file. #601 -- a
+    #           scheduler-only change -- ran ~9 minutes of jsdom and went red on
+    #           a load flake in code it never touched.
+    #
+    # A GATE JOB, NOT `on.pull_request.paths`: a path filter skips the WHOLE
+    # workflow, and `ci-gate` below must report on every pull request. A job
+    # skipped by its own `if:` reports `skipped`, which GitHub counts as
+    # passing and which every aggregating job below counts as a pass. If THIS
+    # job fails, every job that reads it is skipped, and the aggregators and
+    # `ci-gate` fail because its own result is not `success` -- a broken gate
+    # is never read as "nothing changed". Any doubt -- a base it cannot diff
+    # against -- runs everything.
+    #
+    # tests/unit/scripts/test_ui_changes_gate.py runs this step over the
+    # path-filter matrix (docs-only, UI-only, both, neither, a near miss).
+    name: what this change reaches
     runs-on: ubuntu-24.04
+    outputs:
+      app: ${{ steps.diff.outputs.app }}
+      python: ${{ steps.diff.outputs.python }}
+      areas: ${{ steps.diff.outputs.areas }}
+      ui: ${{ steps.diff.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # `base...head` needs both commits and their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: diff the pull request against its base
+        id: diff
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # One pattern per line: a path, or `<dir>/**` for everything under
+          # it. `#` lines are the reasons, kept beside what they explain. Any
+          # other glob shape is refused rather than matched with rules GitHub's
+          # filter did not share. scripts/ci-gate.sh reads terraform.yml's
+          # `paths:`, not this list: this workflow always runs.
+          APP_PATHS: |
+            apps/**
+            images/**
+            kubernetes/**
+            scripts/**
+            tests/**
+            docs/**
+            # test_reconciler_gke_namespaced.py holds the reconciler's log-metric
+            # filters in this file to the lines repair.py writes. Without this, a PR
+            # touching only alerts.tf never ran that pin. (Other unit tests read other
+            # terraform files and are not triggered by them either; not widened here.)
+            terraform/modules/monitoring/alerts.tf
+            # tests/unit/mcp reads the plugin and the marketplace manifest -- its
+            # skills, its server declaration, the version its bridge is pinned to.
+            # Without these, a PR that changed only plugin.json ran none of that.
+            plugin/**
+            .claude-plugin/**
+            pyproject.toml
+            uv.lock
+            Makefile
+            README.md
+            CLAUDE.md
+            CONTRACT.md
+            .github/workflows/application.yml
+            # tests/unit/scripts/test_release_reuses_ci_images.py reads release.yml
+            # to hold it to reusing this workflow's build. release.yml never runs on
+            # a pull request, so without this a PR touching only it ran nothing.
+            .github/workflows/release.yml
+            # tests/unit/scripts/test_issue_forms.py validates the issue forms and
+            # the label declaration. Without these a PR editing only a form would run
+            # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
+            .github/ISSUE_TEMPLATE/**
+            .github/labels.yml
+            # The IAM refusal probe runs only when the owner dispatches it, so a pull
+            # request is the only place it is linted (actionlint below) and held to
+            # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
+            .github/workflows/iam-refusal-probe.yml
+            # The CI fixer runs only after a red CI on a swarm branch, so a PR is the
+            # only place it is linted and held to its shape (test_ci_fix.py).
+            .github/workflows/ci-fix.yml
+            # auto-merge.yml runs only on pull_request_target, from main's copy, so
+            # a pull request changing it never runs it: this is the one place it is
+            # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
+            .github/workflows/auto-merge.yml
+            # ci-gate is the check the ruleset requires; since 2026-10-07 it is the
+            # last job of this workflow, and scripts/ci-gate.sh is what it runs for
+            # terraform.yml (already under scripts/**; named for the record).
+            scripts/ci-gate.sh
+            # What every image build's context is filtered through, so an input of
+            # every image (`build-images.sh --inputs`). Without these a pull request
+            # changing only one started no run, and `build changed images without
+            # pushing` never saw it (tests/unit/scripts/test_build_images_pr_check.py
+            # holds every image input to this list).
+            .dockerignore
+            .gcloudignore
+        run: |
+          set -euo pipefail
+          emit() {
+            { echo "app=$1"; echo "python=$2"; echo "areas=$3"; echo "ui=$4"; } >> "$GITHUB_OUTPUT"
+            echo "app=$1 python=$2 areas=${3:-(none)} ui=$4"
+          }
+          if [ "${EVENT}" != "pull_request" ]; then
+            echo "${EVENT}: every job runs"
+            emit true all "" true
+            exit 0
+          fi
+          prefixes=()
+          exact=()
+          while IFS= read -r line; do
+            line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            case "$line" in ""|"#"*) continue ;; esac
+            case "$line" in
+              */\*\*) stem="${line%\*\*}" ;;
+              *) stem="" ;;
+            esac
+            if [ -n "$stem" ]; then
+              case "$stem" in *'*'*|*'?'*|*'['*) echo "::error::APP_PATHS: ${line} is neither a path nor <dir>/**"; exit 1 ;; esac
+              prefixes+=("$stem")
+            else
+              case "$line" in *'*'*|*'?'*|*'['*) echo "::error::APP_PATHS: ${line} is neither a path nor <dir>/**"; exit 1 ;; esac
+              exact+=("$line")
+            fi
+          done <<< "${APP_PATHS}"
+          if [ "${#prefixes[@]}" -eq 0 ]; then
+            echo "::error::APP_PATHS is empty: nothing would ever run"
+            exit 1
+          fi
+          # Three dots: the change since the merge base, which is what the pull
+          # request merges. base.sha does not move when main moves, so two dots
+          # would also count everything main gained since the PR was opened.
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; running every job rather than guessing"
+            emit true all "" true
+            exit 0
+          fi
+          app=0 others=0 docs=0 ui_src=0
+          : > "${RUNNER_TEMP}/app"
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            hit=0
+            for stem in "${prefixes[@]}"; do
+              case "$file" in "$stem"?*) hit=1; break ;; esac
+            done
+            if [ "$hit" -eq 0 ] && [ "${#exact[@]}" -gt 0 ]; then
+              for name in "${exact[@]}"; do
+                if [ "$file" = "$name" ]; then hit=1; break; fi
+              done
+            fi
+            [ "$hit" -eq 1 ] || continue
+            app=$((app + 1))
+            printf '%s\n' "$file" >> "${RUNNER_TEMP}/app"
+            case "$file" in
+              docs/*) docs=1 ;;
+              apps/swarm-ui/*) ui_src=1 ;;
+              *) others=$((others + 1)) ;;
+            esac
+          done < "${RUNNER_TEMP}/changed"
+          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
+          grep -E '^(apps/swarm-ui/|apps/swarm-api/swarm_api/routes/|apps/swarm-api/swarm_api/main\.py$|\.github/workflows/application\.yml$)' \
+            "${RUNNER_TEMP}/app" > "${RUNNER_TEMP}/ui" || true
+          hits="$(grep -c . "${RUNNER_TEMP}/ui" || true)"
+          echo "${total} changed file(s): ${app} reach this workflow, ${hits} of them swarm-ui"
+          sed 's/^/  /' "${RUNNER_TEMP}/app"
+          ui=false
+          if [ "${hits}" -gt 0 ]; then ui=true; fi
+          if [ "${app}" -eq 0 ]; then
+            emit false none "" false
+          elif [ "${others}" -gt 0 ]; then
+            emit true all "" "${ui}"
+          else
+            areas=""
+            if [ "${docs}" -eq 1 ]; then areas="docs"; fi
+            if [ "${ui_src}" -eq 1 ]; then areas="${areas:+${areas} }swarm-ui"; fi
+            emit true subset "${areas}" "${ui}"
+          fi
+
+  python-checks:
+    # Everything `format / unit tests` checked besides the unit suite: the lock,
+    # the frozen contract, the format pass, the plugin bridge's install from
+    # git, the destroy-guard self-test. Its own job so it runs BESIDE the
+    # shards instead of in front of them; it never ran longer than ~2 minutes.
+    # None of it can be reached by a change confined to docs/ or
+    # apps/swarm-ui/, so it runs only when `changes` says python=all.
+    name: lock / contract / format / bridge install
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.python == 'all'
     steps:
       - uses: actions/checkout@v5
 
@@ -389,36 +597,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: read the platform's Node major for the WHATWG URL table
-        id: node
-        # tests/unit/control_plane/test_url_refusal_whatwg.py drives Node's own
-        # `URL` class to measure which host a browser opens for each URL the
-        # browser profile's `url_refusal` judges (contract request 32, #345),
-        # and it FAILS under CI without `node` rather than skipping. This job
-        # never installed Node; it passed on the runner image's own, which is
-        # someone else's choice. The major comes from the one place the
-        # platform states it, `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
-        # read exactly as the ui job reads it -- not a third literal here.
-        # Unlike the ui job there is no step comparing the running Node with
-        # it: nothing here is built or bundled, and WHATWG `URL` is the same
-        # on every supported line, so a fallback to the runner's Node (what an
-        # empty version would mean) changes no result. The table's own
-        # fail-under-CI is the guard that matters.
-        # tests/unit/scripts/test_python_job_node.py holds this step here.
-        run: |
-          set -euo pipefail
-          dockerfile=images/swarm-ui/Dockerfile
-          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
-          count="$(printf '%s' "$majors" | grep -c . || true)"
-          if [ "$count" -ne 1 ]; then
-            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
-            exit 1
-          fi
-          echo "major=${majors}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: ${{ steps.node.outputs.major }}
+      - name: the lock agrees with every pyproject.toml
+        # `uv sync --frozen` installs what uv.lock says without checking it
+        # against the pyproject files, so a stale or hand-edited lock passed
+        # every job here (#76). One check is enough: every job reads this one
+        # lock. tests/unit/scripts/test_uv_lock_check_step.py holds it here.
+        run: uv lock --check
 
       - name: sync
         run: uv sync --frozen --all-extras --dev
@@ -478,6 +662,111 @@ jobs:
           print("ok")
           PY
 
+      - name: the plugin's bridge installs from git, the way the plugin fetches it
+        # A marketplace install copies ONLY plugin/, so the bridge reaches a
+        # user one way: plugin.json's `uv tool run --from 'swarm-mcp @
+        # git+https://github.com/...#subdirectory=apps/swarm-mcp'`, with
+        # swarm-common arriving because uv rewrites swarm-mcp's relative path
+        # source into the same commit. The unit run above holds the
+        # declaration's shape offline and skips this; here the same file
+        # installs it -- at THIS commit, since the release tag it pins does not
+        # exist until the merge is tagged -- from a cold uv cache, outside the
+        # checkout, and talks MCP to it. Network: github.com and pypi.org.
+        #
+        # RUN EVEN WHEN THE UNIT STEP FAILED. It is an independent answer --
+        # "does a marketplace install start" -- and skipping it behind any
+        # unrelated unit failure hid that answer in the one run that proved a
+        # test red (#62, run 36091955032).
+        #
+        # THE MERGE COMMIT, NOT THE PR HEAD. The test compares what it installs
+        # with the checkout's TOOLS, and a pull_request checkout is
+        # refs/pull/<n>/merge, which carries main. Installing the head instead
+        # compared a branch behind main with main merged into it: #775 went red
+        # on `swarm_tenants`, which main's #770 added and the head predates.
+        # github.sha is the commit this job checked out; GitHub serves it by
+        # sha while the pull request's merge ref exists.
+        if: ${{ !cancelled() }}
+        env:
+          SWARM_BRIDGE_INSTALL_REF: ${{ github.sha }}
+        run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s
+
+      - name: destroy-guard self-test
+        # The guard is the only thing between `make destroy` and another team's
+        # production cluster, so it is verified on every run, not before use.
+        run: ./scripts/destroy.sh --self-test
+
+  python-unit:
+    # THE UNIT SUITE, SHARDED BY FILE (owner request 2026-10-07). As one job it
+    # was the longest required job at ~673 s, and with strict up-to-date
+    # merging every merge waits for a full CI run at main+PR, so its wall time
+    # was most of the time between merges (82 % on the night of 2026-10-07).
+    # The `pick` step splits tests/unit's files into `strategy.job-total`
+    # shards: longest-first onto the lightest shard (LPT), weighted by
+    # tests/unit/scripts/unit_test_durations.json, a file it has no weight for
+    # at the median. Deterministic, so every shard computes the same split and
+    # takes its own part: every file runs exactly once
+    # (tests/unit/scripts/test_unit_shards.py runs the step for every shard).
+    #
+    # FOUR SHARDS: ~2,950 s of measured test time is ~740 s a shard, ~130 s of
+    # wall on a 4-vCPU runner under -n auto, plus ~60 s of setup -- about three
+    # minutes. More shards buy less each and cost a runner apiece when twelve
+    # pull requests arrive together. The matrix is the only place the count is
+    # written; the step reads `strategy.job-total`.
+    name: unit tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.python != 'none'
+    strategy:
+      # One red shard must not cancel the others: the next push wants every
+      # failure, not the first.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: read the platform's Node major for the WHATWG URL table
+        id: node
+        # tests/unit/control_plane/test_url_refusal_whatwg.py drives Node's own
+        # `URL` class to measure which host a browser opens for each URL the
+        # browser profile's `url_refusal` judges (contract request 32, #345),
+        # and it FAILS under CI without `node` rather than skipping. This job
+        # never installed Node; it passed on the runner image's own, which is
+        # someone else's choice. The major comes from the one place the
+        # platform states it, `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
+        # read exactly as the ui job reads it -- not a third literal here.
+        # Unlike the ui job there is no step comparing the running Node with
+        # it: nothing here is built or bundled, and WHATWG `URL` is the same
+        # on every supported line, so a fallback to the runner's Node (what an
+        # empty version would mean) changes no result. The table's own
+        # fail-under-CI is the guard that matters.
+        # tests/unit/scripts/test_python_job_node.py holds this step here.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.node.outputs.major }}
+
+      - name: sync
+        run: uv sync --frozen --all-extras --dev
+
       - name: allow unprivileged user namespaces, so the real-kill reap test runs
         # tests/unit/worker/test_procman_reap.py runs the worker's REAL
         # `os.kill(-1, SIGKILL)` -- the pre-publish reap (procman.py) -- inside
@@ -497,6 +786,98 @@ jobs:
             echo "no $knob on this image; nothing to relax"
           fi
 
+      - name: pick this shard's test files
+        id: pick
+        # python=subset (a change confined to docs/ and apps/swarm-ui/) runs
+        # only the files that read those areas: a module whose source builds a
+        # path through the directory -- `REPO / "docs"`, "docs/ci.md",
+        # "apps/swarm-ui/src", `/ "swarm-ui"` -- then every module that imports one
+        # of those (a helper, or a test module used as one: test_issue_forms
+        # imports test_nav_headings_agree), and everything under a conftest
+        # that reads it, until nothing is added.
+        # A mention in prose -- "(docs/ci.md)" in a docstring -- is not a
+        # read, nor is a dict key named "docs": matching those pulled in 496
+        # of 551 files. Over-inclusion is the safe direction; a test that
+        # builds the path some other way is missed here and caught by main's
+        # push run, which runs everything.
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          PYTHON_MODE: ${{ needs.changes.outputs.python }}
+          PYTHON_AREAS: ${{ needs.changes.outputs.areas }}
+          DURATIONS: tests/unit/scripts/unit_test_durations.json
+          SHARD_FILES: ${{ runner.temp }}/shard-files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+
+          shard, shards = int(os.environ["SHARD"]), int(os.environ["SHARDS"])
+          mode, areas = os.environ["PYTHON_MODE"], os.environ.get("PYTHON_AREAS", "").split()
+          if not 1 <= shard <= shards:
+              sys.exit(f"::error::shard {shard} of {shards} does not exist")
+          modules = sorted(p for p in Path("tests/unit").rglob("*.py") if "__pycache__" not in p.parts)
+
+          def is_test(path):
+              # pytest's default python_files; pyproject.toml does not change it.
+              return path.name.startswith("test_") or path.name.endswith("_test.py")
+
+          tests = [p for p in modules if is_test(p)]
+          if not tests:
+              sys.exit("::error::no test files under tests/unit: the checkout is not the repository")
+          if mode == "subset":
+              def names_dir(d):
+                  # `REPO / "docs"`, "docs/ci.md", Path("docs"), joinpath(.., "docs") --
+                  # a path, not the word: `state["docs"]` is a Firestore fake.
+                  q = "[\"']"
+                  return rf"/\s*{q}{d}{q}|{q}(?:\./)?{d}/|(?:Path|joinpath)\(\s*{q}{d}{q}|,\s*{q}{d}{q}\s*[,)]"
+              reads = {"docs": names_dir("docs"), "swarm-ui": names_dir("swarm-ui") + r"|[\"'](?:\./)?apps/swarm-ui/"}
+              if not areas or any(a not in reads for a in areas):
+                  sys.exit(f"::error::python=subset with areas {areas!r}; known: {sorted(reads)}")
+              pattern = re.compile("|".join(reads[a] for a in areas))
+              text = {p: p.read_text(errors="replace") for p in modules}
+              # The names each module imports: every word of its import
+              # statements, so `from .fakes import X`, `from control_plane.
+              # test_nav_headings_agree import Y` and `from . import fakes` all
+              # name their module. A word in prose names nothing.
+              imports = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)|import[ \t]+([^\n]+))", re.M)
+              words = {p: {w for m in imports.finditer(text[p]) for g in m.groups() if g for w in re.findall(r"\w+", g)}
+                       for p in modules}
+              reach = {p for p in modules if pattern.search(text[p])}
+              todo = sorted(reach)
+              while todo:
+                  module = todo.pop()
+                  if module.name == "conftest.py":
+                      more = {p for p in modules if module.parent in p.parents}
+                  elif module.name == "__init__.py":
+                      more = set()
+                  else:
+                      more = {p for p in modules if module.stem in words[p]}
+                  todo.extend(sorted(more - reach))
+                  reach |= more
+              tests = [p for p in tests if p in reach]
+          elif mode != "all":
+              sys.exit(f"::error::python={mode!r}: this job runs only on all or subset")
+          weights = json.loads(Path(os.environ["DURATIONS"]).read_text())
+          known = sorted(weights.values())
+          default = known[len(known) // 2] if known else 1.0
+          load = [0.0] * shards
+          mine = []
+          for path in sorted(tests, key=lambda p: (-weights.get(str(p), default), str(p))):
+              k = min(range(shards), key=lambda i: (load[i], i))
+              load[k] += weights.get(str(path), default)
+              if k == shard - 1:
+                  mine.append(str(path))
+          Path(os.environ["SHARD_FILES"]).write_text("".join(f"{f}\n" for f in sorted(mine)))
+          print(f"{mode}: {len(tests)} test file(s) in {shards} shard(s); shard {shard} runs {len(mine)}, "
+                f"~{load[shard - 1]:.0f} s of measured test time (shards: {', '.join(f'{x:.0f}' for x in load)})")
+          for f in sorted(mine):
+              print(f"  {f}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"count={len(mine)}\n")
+          PY
+
       - name: unit tests
         # No emulator, no credentials. The admission logic is pure so the
         # concurrency invariant can be tested exhaustively and fast.
@@ -504,103 +885,97 @@ jobs:
         # SWARM_REQUIRE_REAL_REAP: the step above made private PID namespaces
         # possible, so the real-kill test must run here, never skip
         # (tests/unit/worker/test_procman_reap.py says why).
+        #
+        # AN EMPTY SHARD RUNS NOTHING. `pytest` with no file arguments runs its
+        # testpaths -- the whole suite -- so a subset that left this shard no
+        # file must not reach it.
+        #
+        # xunit1 puts each test's `file` in the report, which the next step
+        # sums into this shard's measured weights.
+        if: steps.pick.outputs.count != '0'
         env:
           SWARM_REQUIRE_REAL_REAP: "1"
-        run: uv run pytest tests/unit -q -n auto
-
-      - name: the plugin's bridge installs from git, the way the plugin fetches it
-        # A marketplace install copies ONLY plugin/, so the bridge reaches a
-        # user one way: plugin.json's `uv tool run --from 'swarm-mcp @
-        # git+https://github.com/...#subdirectory=apps/swarm-mcp'`, with
-        # swarm-common arriving because uv rewrites swarm-mcp's relative path
-        # source into the same commit. The unit run above holds the
-        # declaration's shape offline and skips this; here the same file
-        # installs it -- at THIS commit, since the release tag it pins does not
-        # exist until the merge is tagged -- from a cold uv cache, outside the
-        # checkout, and talks MCP to it. Network: github.com and pypi.org.
-        #
-        # RUN EVEN WHEN THE UNIT STEP FAILED. It is an independent answer --
-        # "does a marketplace install start" -- and skipping it behind any
-        # unrelated unit failure hid that answer in the one run that proved a
-        # test red (#62, run 36091955032).
-        if: ${{ !cancelled() }}
-        env:
-          SWARM_BRIDGE_INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: uv run pytest tests/unit/mcp/test_plugin_bridge_install.py -q -s
-
-      - name: destroy-guard self-test
-        # The guard is the only thing between `make destroy` and another team's
-        # production cluster, so it is verified on every run, not before use.
-        run: ./scripts/destroy.sh --self-test
-
-  ui-changes:
-    # WHETHER THIS CHANGE CAN REACH swarm-ui (owner decision 2026-10-05, #605).
-    # The ui job below runs ~9 minutes of jsdom; a pull request that changes
-    # only the scheduler (#601) ran it, and went red on a load flake in code it
-    # never touched. It now runs on a pull request only when the change is in
-    # apps/swarm-ui/**, the API's route surface (apps/swarm-api/swarm_api/routes/**
-    # and swarm_api/main.py, which the UI's reads are written against), or this
-    # file. On a push to main and on a dispatch it always runs: main is the
-    # build release.yml promotes, so it is tested whole.
-    #
-    # A GATE JOB, NOT `on.pull_request.paths`: a path filter skips the WHOLE
-    # workflow, and this workflow's other jobs must still run. Skipped by its
-    # `if:`, the ui job reports `skipped`, which GitHub counts as passing for a
-    # required check and which scripts/ci-gate.sh counts as a pass inside a run
-    # that concluded `success` (its "WHAT `skipped` MEANS"). If THIS job fails,
-    # the ui job is skipped as a dependant and the run concludes `failure`, so
-    # ci-gate fails closed rather than reading a broken gate as "no UI change".
-    # Any doubt -- a base it cannot diff against -- runs the ui job.
-    name: does this change reach swarm-ui
-    runs-on: ubuntu-24.04
-    outputs:
-      ui: ${{ steps.diff.outputs.ui }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          # `base...head` needs both commits and their merge base.
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: diff the pull request against its base
-        id: diff
-        # Values reach the shell through env:, never through an expression in run:.
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SHARD_FILES: ${{ runner.temp }}/shard-files
+          JUNIT: ${{ runner.temp }}/unit.xml
         run: |
           set -euo pipefail
-          if [ "${EVENT}" != "pull_request" ]; then
-            echo "ui=true" >> "$GITHUB_OUTPUT"
-            echo "${EVENT}: the ui job always runs"
-            exit 0
-          fi
-          # Three dots: the change since the merge base, which is what the pull
-          # request merges. base.sha does not move when main moves, so two dots
-          # would also count everything main gained since the PR was opened.
-          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
-            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; running the ui job rather than guessing"
-            echo "ui=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
-          grep -E '^(apps/swarm-ui/|apps/swarm-api/swarm_api/routes/|apps/swarm-api/swarm_api/main\.py$|\.github/workflows/application\.yml$)' \
-            "${RUNNER_TEMP}/changed" > "${RUNNER_TEMP}/ui" || true
-          hits="$(grep -c . "${RUNNER_TEMP}/ui" || true)"
-          echo "${total} changed file(s), ${hits} of them reach swarm-ui"
-          if [ "${hits}" -gt 0 ]; then
-            sed 's/^/  /' "${RUNNER_TEMP}/ui"
-            echo "ui=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ui=false" >> "$GITHUB_OUTPUT"
-          fi
+          mapfile -t files < "${SHARD_FILES}"
+          uv run pytest -q -n auto -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
 
-  ui:
-    name: swarm-ui typecheck / component tests
+      - name: record this shard's measured durations
+        # The weights the pick step splits by go stale as tests are added and
+        # change. Every shard on main uploads what it measured, per file, so a
+        # refresh is a download and a merge (docs/ci.md, "Refreshing the shard
+        # weights"), never a full local run.
+        if: ${{ !cancelled() && steps.pick.outputs.count != '0' && github.ref == 'refs/heads/main' }}
+        env:
+          JUNIT: ${{ runner.temp }}/unit.xml
+          OUT: ${{ runner.temp }}/durations/unit-durations.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${OUT}")"
+          python3 - <<'PY'
+          import collections, json, os
+          import xml.etree.ElementTree as ET
+          weights = collections.Counter()
+          for case in ET.parse(os.environ["JUNIT"]).iter("testcase"):
+              if case.get("file"):
+                  weights[case.get("file")] += float(case.get("time") or 0)
+          with open(os.environ["OUT"], "w") as out:
+              json.dump({k: round(max(v, 0.1), 1) for k, v in sorted(weights.items())}, out, indent=1, sort_keys=True)
+              out.write("\n")
+          print(f"{len(weights)} file(s), {sum(weights.values()):.0f} s")
+          PY
+
+      - name: upload this shard's measured durations
+        if: ${{ !cancelled() && steps.pick.outputs.count != '0' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-durations-${{ matrix.shard }}
+          path: ${{ runner.temp }}/durations/unit-durations.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  python:
+    # THE CHECK NAME `format / unit tests` IS KEPT, on a job that holds no
+    # runner while the work runs: it starts when the shards and the checks
+    # have finished, and passes only when each of them passed or was skipped
+    # by its own `if:` and `changes` itself succeeded. Before 2026-10-07 this
+    # was the one job doing all of it; auto-merge.yml's comments, ci-fix.yml's
+    # log reads and every doc name it, and `build` below still needs it.
+    name: format / unit tests
     runs-on: ubuntu-24.04
-    needs: ui-changes
-    if: needs.ui-changes.outputs.ui == 'true'
+    needs: [changes, python-checks, python-unit]
+    if: always()
+    steps:
+      - name: every job this check stands for passed, or was skipped by its own if
+        # `needs.<job>.result` is success, failure, cancelled or skipped. A job
+        # skipped because something it needs failed is skipped too -- but what
+        # failed is in this list as well, so it fails here by its own name.
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${NEEDS}" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          failed="$(printf '%s\n' "${NEEDS}" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"] | join(", ")')"
+          if [ -n "${failed}" ]; then
+            echo "::error::not passed: ${failed}"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "${NEEDS}" | jq -r '.changes.result // "absent"')" != "success" ]; then
+            echo "::error::the changes job did not succeed, so a skip below it means nothing"
+            exit 1
+          fi
+          echo "every job passed or was skipped by its own if"
+
+  ui-build:
+    # The half of `swarm-ui typecheck / component tests` that is one process
+    # each: the typecheck, the node:test runners and the production build. It
+    # runs beside the vitest shards rather than in front of them.
+    name: swarm-ui typecheck / build
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -677,34 +1052,12 @@ jobs:
         working-directory: apps/swarm-ui
         run: npm run typecheck
 
-      - name: component tests
-        # Offline by construction: setup.ts replaces the global `fetch` with
-        # one that throws, so a test that forgets to stub a response fails by
-        # name instead of reaching a machine.
+      - name: node test runners
+        # The two runners `npm test` chains after vitest: node:test over
+        # tests/*.test.ts(x) and over test/*.test.mjs. Seconds, not minutes,
+        # so they are not sharded; vitest is, in the job below.
         working-directory: apps/swarm-ui
-        # `npm test` now chains TWO runners: vitest over src/**/*.test.ts(x),
-        # then node:test over tests/*.test.ts(x). The suites cannot share a
-        # runner -- one uses vitest's API, the other node:test's -- and vitest's
-        # include glob is scoped to src/ so neither swallows the other.
-        #
-        # NOT `npm test -- --run`: the trailing argument would be appended to
-        # the LAST command in the chain, not to vitest, so node tests/run.mjs
-        # would receive a flag it never asked for. `vitest run` is already
-        # non-watching.
-        #
-        # WORKERS STAY AT VITEST'S DEFAULT, and that is a measured choice
-        # (#605). vitest 3.2's forks pool runs `availableParallelism() - 1`
-        # workers outside watch mode: 3 on this 4-vCPU runner, one core left
-        # for the main process. That is not oversubscription, and the issue's
-        # own numbers agree -- 946 s of tests in a 517 s run is ~1.8 files at
-        # a time, under the 3 allowed; a 2-worker run of the whole suite on
-        # 2026-10-05 took 526 s, the same. The flakes were waits, not
-        # starvation: each `*ByRole` poll over the agent split cost ~850 ms of
-        # `getComputedStyle` even on an idle machine, so a 1000 ms `findBy`
-        # held one poll. The tests now wait on their read instead
-        # (src/__tests__/reads.ts); in that 526 s run no wait took over
-        # 1000 ms, and setup.ts's asyncUtilTimeout is 2000 ms.
-        run: npm test
+        run: npm run test:node
 
       - name: production build
         # `npm run build` -- `tsc -b && vite build`, the command the swarm-ui
@@ -715,9 +1068,141 @@ jobs:
         working-directory: apps/swarm-ui
         run: npm run build
 
+  ui-tests:
+    # THE VITEST SUITE, SHARDED (owner request 2026-10-07). ~520 s of jsdom in
+    # one job was the other long pole beside the Python unit suite. vitest's
+    # own `--shard=k/N` splits the test files; every file runs in exactly one
+    # shard. Four, as for Python: ~130 s of tests and ~60 s of install each.
+    #
+    # WORKERS STAY AT VITEST'S DEFAULT, and that is a measured choice (#605).
+    # vitest 3.2's forks pool runs `availableParallelism() - 1` workers outside
+    # watch mode: 3 on this 4-vCPU runner, one core left for the main process.
+    # The flakes were waits, not starvation: the tests now wait on their read
+    # instead (src/__tests__/reads.ts), and setup.ts's asyncUtilTimeout is
+    # 2000 ms.
+    #
+    # Offline by construction: setup.ts replaces the global `fetch` with one
+    # that throws, so a test that forgets to stub a response fails by name
+    # instead of reaching a machine.
+    name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: read the Node major the swarm-ui image builds with
+        id: node
+        # ONE PLACE STATES IT: `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
+        # the Node that compiles the bundle that ships. This job used to pin
+        # `node-version: "20"` on its own -- a second copy, and by 2026-09 a copy
+        # of a line that reached end of life in April 2026 (docs/versions.md).
+        # Reading it from the Dockerfile means the typecheck, the tests and the
+        # build below run on the line the image uses, and a bump there moves
+        # this job with it. tests/unit/scripts/test_ui_node_line.py fails if a
+        # literal comes back.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+          echo "swarm-ui builds with Node ${majors} (${dockerfile})"
+
+      - uses: actions/setup-node@v5
+        with:
+          # From the step above, not a literal. vitest 3.2 and jsdom 25 both
+          # support Node 24. `cache: npm` needs the lockfile path because the
+          # package is not at the repository root.
+          node-version: ${{ steps.node.outputs.major }}
+          cache: npm
+          cache-dependency-path: apps/swarm-ui/package-lock.json
+
+      - name: the Node that runs is the Node the image builds with
+        # setup-node@v5 treats an EMPTY node-version as "no version": its
+        # src/main.ts sets Node up only `if (version)`, so it installs
+        # nothing and says nothing, and every step below would run -- and go
+        # green -- on the runner image's own Node. That is what happens if the
+        # output name the step above writes and the one setup-node reads ever
+        # drift apart. So compare the Node actually on PATH with the major
+        # setup-node was asked for, through the SAME expression, and stop on a
+        # mismatch or an empty value. Passed through env, not spliced into the
+        # script. tests/unit/scripts/test_ui_node_line.py runs this step
+        # against a stand-in `node`; keep it a step of its own for that.
+        env:
+          WANT_NODE_MAJOR: ${{ steps.node.outputs.major }}
+        run: |
+          set -euo pipefail
+          got="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ -z "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::setup-node was given no Node major (steps.node.outputs.major is empty), so it installed nothing; this job would run on the runner's Node ${got}"
+            exit 1
+          fi
+          if [ "${got}" != "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::the ui job runs Node ${got}, but images/swarm-ui/Dockerfile builds with Node ${WANT_NODE_MAJOR}"
+            exit 1
+          fi
+          echo "running Node ${got}, the major images/swarm-ui/Dockerfile builds with"
+
+      - name: install
+        working-directory: apps/swarm-ui
+        run: |
+          set -euo pipefail
+          echo "node $(node --version), npm $(npm --version)"
+          npm ci --no-audit --no-fund
+
+      - name: component tests
+        # `npm run test:components` is `vitest run`; the arguments after `--`
+        # reach vitest because it is the only command in that script (`npm
+        # test` chains three, and a trailing argument would reach the last).
+        working-directory: apps/swarm-ui
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: npm run test:components -- --shard="${SHARD}/${SHARDS}"
+
+  ui:
+    # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job
+    # that only reads the others' results, as `format / unit tests` is above.
+    name: swarm-ui typecheck / component tests
+    runs-on: ubuntu-24.04
+    needs: [changes, ui-build, ui-tests]
+    if: always()
+    steps:
+      - name: every job this check stands for passed, or was skipped by its own if
+        # `needs.<job>.result` is success, failure, cancelled or skipped. A job
+        # skipped because something it needs failed is skipped too -- but what
+        # failed is in this list as well, so it fails here by its own name.
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${NEEDS}" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          failed="$(printf '%s\n' "${NEEDS}" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"] | join(", ")')"
+          if [ -n "${failed}" ]; then
+            echo "::error::not passed: ${failed}"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "${NEEDS}" | jq -r '.changes.result // "absent"')" != "success" ]; then
+            echo "::error::the changes job did not succeed, so a skip below it means nothing"
+            exit 1
+          fi
+          echo "every job passed or was skipped by its own if"
+
   integration:
     name: integration tests (emulator)
     runs-on: ubuntu-24.04
+    # Skipped when the change reaches nothing in this workflow (`changes`).
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -813,6 +1298,9 @@ jobs:
   manifests:
     name: kubernetes manifests
     runs-on: ubuntu-24.04
+    # Skipped when the change reaches nothing in this workflow (`changes`).
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     steps:
       - uses: actions/checkout@v5
 
@@ -853,31 +1341,163 @@ jobs:
       # runs, which is also what `make lint` runs. There is nothing left to
       # restate here, so this step is gone rather than reduced to a call.
 
-  build-not-run:
-    # NOT a no-op, for the reason this repository keeps relearning: a skipped
-    # job is invisible in the checks list, and silence here has meant "did not
-    # run" far more often than "nothing to report".
-    name: build images (not run on a pull request)
+  build-check:
+    # A PULL REQUEST BUILDS THE IMAGES IT CHANGES, AND PUSHES NOTHING (#650,
+    # owner decision 2026-10-05). Until then images were built only on main, so
+    # #641 -- which changed agent-runtime-base's Dockerfile and its repo-index
+    # LSP package -- was green here and broke main after merge, when
+    # `swarm-repo-index --lsp-self-test` failed in the first build of it.
+    #
+    # WHICH IMAGES: `build-images.sh --affected-by` reads the pull request's
+    # changed paths against every image's inputs -- its recipe's directory,
+    # every COPY/ADD source its Dockerfile names, .dockerignore and
+    # .gcloudignore -- and adds every image built FROM one it reached. Read
+    # from the Dockerfiles, never listed here: a list here is a second copy,
+    # and the second copy is the one that drifts.
+    #
+    # WHERE: ON THIS RUNNER, with `docker buildx`, and with NO Google identity.
+    # The owner chose not to create one for pull requests: a pull request's
+    # checkout chooses what runs, so whatever that identity could do -- run
+    # Cloud Build in the shared project -- anyone able to push a branch could
+    # do. So this job authenticates to nothing, logs in to no registry, reads
+    # no secret and holds no id-token, and `build-images.sh --build-only
+    # --local` exports to the build cache or a local OCI layout only. The
+    # configs it builds are the ones --build-only would submit to Cloud Build
+    # -- main's Dockerfiles, main's build args -- so the Dockerfiles' RUN
+    # self-tests run here as they run on main, and the script reads the list
+    # of them from the Dockerfiles into this job's summary. Nothing here names
+    # one. Main's `build images` below is unchanged.
+    #
+    # SKIPPED STEPS, NOT A SKIPPED JOB. The job runs on every pull request the
+    # `changes` job says reaches this workflow, so ci-gate sees it and fails
+    # when it fails. It concludes `success` in
+    # seconds when no image input changed, and on a pull request from a fork,
+    # which the owner's brief (2026-10-05) says skips. A maintainer who wants a
+    # fork's images built pushes its branch here. Either way the summary says
+    # why.
+    name: build changed images without pushing
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    # Not after the other checks, as `build` is: this spends no cloud money,
+    # and the image build is the slowest check, so it starts at once.
+    timeout-minutes: 120
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'
+    permissions:
+      contents: read
+    env:
+      # As main builds it: swarm-ui bakes its environment in at build time.
+      ENVIRONMENT: dev
     steps:
-      - name: say what was not built
+      # Before the checkout, so a fork's pull request is done in seconds.
+      - name: is this pull request built here
+        id: scope
+        # Values reach the shell through env:, never through an expression in run:.
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          if [ "${HEAD_REPO}" != "${REPOSITORY}" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Images built without pushing"
+              echo
+              echo "**Not built:** a pull request from a fork (${HEAD_REPO}) is not built here; push the branch to ${REPOSITORY} to build its images."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "a pull request from a fork: no image is built"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.scope.outputs.build == 'true'
+        with:
+          # `base...head` needs both commits and their merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: which images does this pull request reach
+        id: plan
+        if: steps.scope.outputs.build == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Three dots: the change since the merge base, which is what the pull
+          # request merges.
+          if git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/changed"; then
+            ./scripts/build-images.sh --affected-by "${RUNNER_TEMP}/changed" > "${RUNNER_TEMP}/images"
+          else
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; building every image rather than guessing"
+            ./scripts/build-images.sh --inputs | cut -f1 | uniq > "${RUNNER_TEMP}/images"
+          fi
+          total="$(grep -c . "${RUNNER_TEMP}/changed" || true)"
+          count="$(grep -c . "${RUNNER_TEMP}/images" || true)"
+          images="$(paste -sd' ' "${RUNNER_TEMP}/images")"
+          echo "${total:-0} changed file(s) reach ${count} image(s): ${images:-none}"
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+          build=true
+          [ "${count}" -gt 0 ] || build=false
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
           {
-            echo "### Images were not built"
+            echo "### Images built without pushing"
             echo
-            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
-            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token is"
-            echo "minted here. That pin is the security boundary, not a misconfiguration:"
-            echo "\`build-images.sh\` runs a checked-in \`cloudbuild.yaml\` from this branch,"
-            echo "as an identity holding \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo "Changed files reach: \`${images:-none}\`."
             echo
-            echo "**Checked on this pull request:** every test, lint and manifest job above."
-            echo "**Not checked here:** that the images build. They are built once per commit"
-            echo "on \`main\`, by this workflow's \`build images\` job, and \`release.yml\`"
-            echo "promotes exactly the digests that job recorded."
+            if [ "${build}" = true ]; then
+              echo "Each is built on this runner with docker buildx, uncached, with its Dockerfile's self-tests, and nothing is pushed."
+            else
+              echo "**Not built:** no image input changed, so there is nothing to build."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # agent-runtime-base is ~900 MB compressed and several GB unpacked, and
+      # BuildKit holds its builder stage, its runtime and the exported OCI
+      # layout at once, before the browser and the indexer (a Go toolchain and
+      # two compiled language servers) are built on it. The runner's free disk
+      # before and after is written to the summary, so the first run records
+      # what was there and what this freed.
+      - name: free runner disk
+        if: steps.plan.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          before="$(df -h --output=avail / | tail -n 1 | tr -d ' ')"
+          # Toolchains this job never uses.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          docker image prune --all --force > /dev/null
+          after="$(df -h --output=avail / | tail -n 1 | tr -d ' ')"
+          echo "free disk on /: ${before} before, ${after} after"
+          echo "Free disk on \`/\`: ${before} before freeing, ${after} after." >> "$GITHUB_STEP_SUMMARY"
+
+      # build-images.sh reads each build config with PyYAML to replay it.
+      - uses: actions/setup-python@v6
+        if: steps.plan.outputs.build == 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: install PyYAML
+        if: steps.plan.outputs.build == 'true'
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: build with docker buildx, pushing nothing
+        if: steps.plan.outputs.build == 'true'
+        env:
+          IMAGES: ${{ steps.plan.outputs.images }}
+        run: |
+          set -euo pipefail
+          read -r -a images <<<"${IMAGES}"
+          ./scripts/build-images.sh --build-only --local "${images[@]}"
+
+      - name: what each build ran
+        if: always() && steps.plan.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          if [ -f build/build-only/local-report.md ]; then
+            cat build/build-only/local-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          df -h /
 
   build:
     name: build images
@@ -933,9 +1553,15 @@ jobs:
     # standing pressure to "fix CI" by adding refs/pull/* to github_allowed_refs
     # -- which is the one change that must never be made. Leaving it red does not
     # protect anything; it only makes the protection look like a bug.
-    # `build-not-run` above says so in the run summary, so a green pull request
-    # is not mistaken for a built one.
-    if: github.event_name != 'pull_request'
+    # A pull request builds the images it changes in `build-check` above, on
+    # the runner, with no identity at all, and pushes nothing.
+    #
+    # NOR ON A MERGE QUEUE ENTRY, for the same reason: its OIDC ref is
+    # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects as it
+    # rejects refs/pull/*. Left to run, it would fail every entry's run and so
+    # ci-gate on every entry. The commit is built once it is on main, by the
+    # push run, as every commit is.
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
@@ -986,3 +1612,103 @@ jobs:
           # release dispatched later for this commit can still reuse it. Past
           # that a dispatched release builds the commit again.
           retention-days: 30
+
+  ci-gate:
+    # THE ONE CHECK MAIN'S RULESET REQUIRES FOR THIS WORKFLOW AND terraform.yml
+    # (ruleset main-protection, id 24160219; owner decision 2026-09-29). Its
+    # context is this job's name, so it stays exactly `ci-gate`: a rename
+    # un-requires the gate without a word.
+    #
+    # A JOB THAT `needs:` EVERY OTHER JOB, NOT A WORKFLOW THAT POLLS (owner
+    # request 2026-10-07). Until then ci-gate was its own workflow,
+    # ci-gate.yml, whose one job started with the pull request and polled the
+    # Actions API every 60 s until this workflow's run finished -- a runner held
+    # for the whole ~12 minutes of CI, on every pull request, while twelve pull
+    # requests opened together queued their jobs 400-600 s for runners. Now
+    # GitHub starts it when the last job here has finished, and it holds a
+    # runner for seconds.
+    #
+    # WHAT IT MEANS IS UNCHANGED: pass only when everything this workflow and
+    # terraform.yml ran for the commit passed.
+    #   * this workflow: every job in `needs` concluded success, or skipped by
+    #     its own `if:` (a job skipped because something it needs failed is
+    #     skipped too, but what failed is in the list and fails it by name),
+    #     and `changes` itself succeeded;
+    #   * terraform.yml, still path-filtered, still its own run:
+    #     scripts/ci-gate.sh waits for it at this commit -- told to gate only
+    #     terraform.yml (CI_GATE_WORKFLOWS), since waiting here for this
+    #     workflow's own run would wait for itself.
+    #
+    # `if: always()` so it reports when something it needs failed -- skipped
+    # would read as passed. If this workflow fails to start at all, no
+    # `ci-gate` check exists and the ruleset holds the pull request: closed,
+    # not open.
+    name: ci-gate
+    runs-on: ubuntu-24.04
+    needs: [shell, workflows, changes, python-checks, python-unit, python, ui-build, ui-tests, ui, integration, manifests, build-check, build]
+    if: always()
+    # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
+    # pending; this is only the backstop behind it.
+    timeout-minutes: 100
+    # Read-only. `actions: read` lists terraform.yml's runs and their jobs;
+    # `contents: read` checks out the repository to read terraform.yml's path
+    # list and diff the change. Nothing here writes anything.
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: every job of this workflow passed, or was skipped by its own if
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${NEEDS}" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          failed="$(printf '%s\n' "${NEEDS}" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key) (\(.value.result))"] | join(", ")')"
+          if [ -n "${failed}" ]; then
+            echo "::error::not passed: ${failed}"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "${NEEDS}" | jq -r '.changes.result // "absent"')" != "success" ]; then
+            echo "::error::the changes job did not succeed, so a skip below it means nothing"
+            exit 1
+          fi
+          echo "every job passed or was skipped by its own if"
+
+      - uses: actions/checkout@v5
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          # The changed files are `git diff base...head`; a shallow clone has
+          # neither the base nor the merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: wait for terraform.yml at this commit
+        # A dispatch has no pull request, push or queue entry to compare, and
+        # terraform.yml is not dispatched with it: there is nothing to wait for.
+        if: github.event_name != 'workflow_dispatch'
+        # Every value reaches the shell through env:, never through an
+        # expression inside run:.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          # A pull request's runs carry its HEAD sha, not the merge commit's.
+          # A queue entry's carry `github.sha`, the entry's own commit.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The pull request's base, a queue entry's base, or a push's `before`.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          # The workflows the script waits on. Not this one: its jobs are
+          # judged by the step above, and its own run cannot finish before
+          # this job does.
+          CI_GATE_WORKFLOWS: terraform.yml
+          # NO SETTLE WINDOW. It exists to see a run the path model did not
+          # predict before passing, because the gate used to start on the
+          # event, often before the other runs existed. This step starts after
+          # `changes` -- a job of a run created by the same event -- finished,
+          # and the runs of one event are created together, so any
+          # terraform.yml run for this commit already exists. A 60 s settle
+          # would add 60 s to every pull request's wall time for nothing.
+          CI_GATE_SETTLE: "0"
+          # terraform.yml takes ~80 s and usually finished long ago; when it
+          # has not, look again in 20 s rather than 60.
+          CI_GATE_POLL: "20"
+        run: scripts/ci-gate.sh wait --event "$EVENT" --sha "$HEAD_SHA" --base "$BASE_SHA"

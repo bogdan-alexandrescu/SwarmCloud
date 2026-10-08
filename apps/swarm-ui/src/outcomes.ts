@@ -81,6 +81,8 @@ export type FailureClassKey =
   | 'publish_refused'
   | 'other'
   | 'no_reason'
+  /** #631: the caller asked for this failure (the mock's `fail: true`). */
+  | 'intended'
 
 export type CancelCauseKey =
   | 'requested'
@@ -303,6 +305,51 @@ export interface Outcomes {
 }
 
 // ---------------------------------------------------------------------------
+// The tasks behind one figure (#116): `rows=…` on the same route
+// ---------------------------------------------------------------------------
+
+/**
+ * WHAT A FIGURE'S ROWS MAY BE, `swarm_api.outcomes.ROW_OUTCOMES` (held there
+ * by `test_outcomes_rows.py`). Failed is FAILED + DEAD_LETTERED, the one
+ * definition the drawing and the Reliability table use.
+ */
+export type RowOutcome = 'failed' | 'cancelled' | 'succeeded'
+export const ROW_OUTCOMES: readonly RowOutcome[] = ['failed', 'cancelled', 'succeeded']
+
+/** One ended task, as the ledger placed it: by `completed_at`, in the viewer's zone. */
+export interface EndedRow {
+  id: string
+  tenant_id: string
+  state: 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTERED' | 'CANCELLED'
+  completed_at: string
+  runner_profile: string | null
+  /** Lower case; '' when the task recorded no submitter. */
+  submitted_by: string
+  workflow_id: string | null
+  step_id: string | null
+  failure_class: FailureClassKey | null
+  cancel_cause: CancelCauseKey | null
+}
+
+/**
+ * THE ROWS BEHIND ONE FIGURE, from the fold the figure was counted from, so
+ * `total` is the figure and `rows` are the tasks in it (newest end first, at
+ * most `rows_max`). `at`/`end` name the bucket, or are null for the span;
+ * `key` is the group row under `group`, or null for every row.
+ */
+export interface EndedRows {
+  outcome: RowOutcome
+  at: string | null
+  end: string | null
+  unread_reason: UnreadReason | null
+  group: GroupBy
+  key: string | null
+  total: number
+  rows_max: number
+  rows: EndedRow[]
+}
+
+// ---------------------------------------------------------------------------
 // The view: every filter, as the hash carries it
 // ---------------------------------------------------------------------------
 
@@ -368,6 +415,15 @@ export interface LedgerView {
   table: boolean
   /** The view a zoom came from, as its own query string, so the chip can go back. */
   back: string | null
+  /**
+   * THE FIGURE WHOSE TASKS ARE OPEN (#116), or null: an outcome, the bucket
+   * it was in (its start, as `buckets[i].start` serves it) or null for the
+   * span, and the Reliability row (its key under `group`) or null for all.
+   * In the address, so the list behind "Failed 21" is a link.
+   */
+  rows: RowOutcome | null
+  at: string | null
+  rowsKey: string | null
 }
 
 export const DEFAULT_VIEW: LedgerView = {
@@ -384,12 +440,16 @@ export const DEFAULT_VIEW: LedgerView = {
   group: 'runner_profile',
   table: false,
   back: null,
+  rows: null,
+  at: null,
+  rowsKey: null,
 }
 
 const isSpan = (s: string | null): s is Span => (SPANS as readonly string[]).includes(s ?? '')
 const isBucket = (s: string | null): s is BucketChoice => (BUCKET_CHOICES as readonly string[]).includes(s ?? '')
 const isKind = (s: string | null): s is Kind => (KINDS as readonly string[]).includes(s ?? '')
 const isGroup = (s: string | null): s is GroupBy => (GROUPS as readonly string[]).includes(s ?? '')
+const isRowOutcome = (s: string | null): s is RowOutcome => (ROW_OUTCOMES as readonly string[]).includes(s ?? '')
 
 /** A tenant id is [a-z0-9-] (identity._TENANT_SAFE); anything else never reaches the route. */
 const TENANT_ID = /^[a-z0-9-]{1,63}$/
@@ -413,6 +473,9 @@ export function parseView(query: string | null | undefined): LedgerView {
   const bucket = q.get('bucket')
   const kind = q.get('kind')
   const group = q.get('group')
+  const rows = q.get('rows')
+  const at = q.get('at')
+  const rowsKey = q.get('rows_key')
   const tenant = uniq(q.getAll('tenant').filter((t) => TENANT_ID.test(t)))
   const exclude = uniq(q.getAll('exclude_tenant').filter((t) => TENANT_ID.test(t)))
   // Tenant and exclude_tenant are mutually exclusive in the contract; an
@@ -432,6 +495,10 @@ export function parseView(query: string | null | undefined): LedgerView {
     group: isGroup(group) && (group !== 'tenant_id' || platform) ? group : 'runner_profile',
     table: q.get('table') === '1',
     back: q.get('back'),
+    // A bucket or a row narrows a figure's rows; without the figure there is nothing to narrow.
+    rows: isRowOutcome(rows) ? rows : null,
+    at: isRowOutcome(rows) && at !== null && at !== '' ? at : null,
+    rowsKey: isRowOutcome(rows) && rowsKey !== null ? rowsKey : null,
   }
   return monthAllowed(view) ? view : { ...view, bucket: 'auto' }
 }
@@ -459,6 +526,11 @@ export function serializeView(v: LedgerView): string {
   if (v.group !== 'runner_profile') q.set('group', v.group)
   if (v.table) q.set('table', '1')
   if (v.back !== null) q.set('back', v.back)
+  if (v.rows !== null) {
+    q.set('rows', v.rows)
+    if (v.at !== null) q.set('at', v.at)
+    if (v.rowsKey !== null) q.set('rows_key', v.rowsKey)
+  }
   return q.toString()
 }
 
@@ -530,6 +602,26 @@ export function outcomesQuery(v: LedgerView, tz: string): URLSearchParams {
   q.set('group', v.platform || v.group !== 'tenant_id' ? v.group : 'runner_profile')
   q.set('compare', 'previous')
   return q
+}
+
+/**
+ * The route's query for the open figure's rows (#116), or null when none is
+ * open: the page's own query -- the same filters, span and grouping, so the
+ * route serves it from the fold the figures came from -- plus the figure.
+ * Only `totals` is asked for beside it, the cheapest section, already folded.
+ */
+export function rowsQuery(v: LedgerView, tz: string): URLSearchParams | null {
+  if (v.rows === null) return null
+  const q = outcomesQuery(v, tz)
+  q.set('rows', v.rows)
+  if (v.at !== null) q.set('rows_at', v.at)
+  if (v.rowsKey !== null) q.set('rows_key', v.rowsKey)
+  return q
+}
+
+/** The view with one figure's rows open: an outcome, in a bucket or the span, in a row or all. */
+export function withRows(v: LedgerView, rows: RowOutcome, at: string | null, rowsKey: string | null = null): LedgerView {
+  return { ...v, rows, at, rowsKey }
 }
 
 /** The number of secondary filters set, for the phone's `Filters · N`. */
@@ -671,6 +763,33 @@ export function bucketName(iso: string, bucket: LedgerBucketSize, tz: string): s
 /** A short instant for the facts line: `Sep 12, 00:00`. */
 export function instantLabel(iso: string, tz: string): string {
   return fmt(iso, tz, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+}
+
+/** `Sep 12, 00:00 → now`: the range the server resolved and bucketed, in its zone. */
+export function ledgerRange(d: Pick<Outcomes, 'since' | 'until' | 'generated_at' | 'tz'>): string {
+  const toNow = Math.abs(Date.parse(d.until) - Date.parse(d.generated_at)) < 2_000
+  return `${instantLabel(d.since, d.tz)} → ${toNow ? 'now' : instantLabel(d.until, d.tz)}`
+}
+
+/** A named span's length, `24h` or `30d`, in ms; null for anything else. */
+export function spanLengthMs(span: string): number | null {
+  const m = /^(\d+)([hd])$/.exec(span)
+  return m === null ? null : Number(m[1]) * (m[2] === 'h' ? 3_600_000 : 86_400_000)
+}
+
+/**
+ * HOW A NAMED SPAN WAS ALIGNED (QA G3-08, 2026-10-07). The route starts a
+ * span on a bucket boundary, so Outcomes' `24h` is whole hours from 22:00
+ * while Lanes' `24h` is the last 24 hours to the minute -- one label, two
+ * spans, two sets of numbers on one page. Null for a from–to range and for a
+ * span the route did not move.
+ */
+export function alignedWords(d: Pick<Outcomes, 'requested' | 'since' | 'until' | 'generated_at' | 'tz' | 'bucket'>): string | null {
+  const span = d.requested.span
+  const ms = span === null ? null : spanLengthMs(span)
+  if (span === null || ms === null) return null
+  if (Math.abs(Date.parse(d.generated_at) - ms - Date.parse(d.since)) < 60_000) return null
+  return `${span} · ${d.bucket}-aligned from ${instantLabel(d.since, d.tz)}`
 }
 
 /**

@@ -20,6 +20,7 @@ from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
 from . import artifact_manifest, standalone_outputs
+from .checkpoint import CHECKPOINT_BACKOFF_CAP_SECONDS
 from .errors import ConfigError
 
 
@@ -161,6 +162,14 @@ class WorkerConfig:
     #: `RUNNER_NICENESS_DEFAULT`: the runner child runs this far below the worker.
     runner_niceness: int = RUNNER_NICENESS_DEFAULT
     checkpoint_interval_seconds: int = 120
+    #: The longest the PERIODIC checkpoint backs off to while the working tree
+    #: is unchanged: 2 -> 4 -> 8 -> 10 minutes at the default interval, reset
+    #: by the first change (#637, owner decision 2026-10-05). 600 s because
+    #: an unchanged tree has nothing a checkpoint would save, and a look every
+    #: ten minutes bounds what a change made just after a look can lose. It
+    #: never shortens `checkpoint_interval_seconds`, and the final, park,
+    #: cancellation and interruption checkpoints ignore it (invariant 8).
+    checkpoint_max_interval_seconds: int = CHECKPOINT_BACKOFF_CAP_SECONDS
     max_in_worker_retry_delay_seconds: int = 45
     #: How many times one forge call the worker makes before or after the
     #: agent (the issue fetch, the push-scope probe, the publish's probe and
@@ -277,6 +286,14 @@ class WorkerConfig:
     #: explicitly rather than inferred, and falls back to the URL.
     quota_broker_audience: str | None = None
 
+    # --- the finish wake (#636) ----------------------------------------------
+    #: The scheduler's wake topic (DISPATCH_TOPIC), passed through by the
+    #: scheduler's `worker_env` from its own settings. The worker publishes a
+    #: `task_finished` wake on it after ending its task, so the task's
+    #: dependants are released at once instead of on the next safety tick.
+    #: None means no wake; the tick still releases them.
+    wake_topic: str | None = None
+
     # --- pull request console links -------------------------------------------
     #: The console's origin (SWARM_CONSOLE_URL), passed through by the
     #: scheduler's `worker_env` from its own settings -- never from a caller.
@@ -336,6 +353,8 @@ class WorkerConfig:
     #: unsigned; the default is what the platform returns to after the window.
     spec_signature_mode: str = "enforce"
     #: The moment the signing swarm-api revision took all traffic (RFC 3339).
+    #: Never later than `specverify.SPEC_SIGNING_RELEASED_AT` in effect: the
+    #: check caps it there (#355), whatever terraform renders.
     spec_legacy_cutover: datetime | None = None
     #: The crypto key whose versions the worker trusts: projects/.../cryptoKeys/<k>.
     spec_signing_key: str = ""
@@ -437,6 +456,10 @@ class WorkerConfig:
             raise ConfigError(
                 "checkpointing is mandatory; a non-positive interval would disable it"
             )
+        if self.checkpoint_max_interval_seconds <= 0:
+            raise ConfigError(
+                "checkpointing is mandatory; a non-positive backoff cap would disable it"
+            )
         if self.timeout_seconds <= 0:
             raise ConfigError("timeout must be positive")
         if self.termination_grace_seconds < 0:
@@ -495,6 +518,9 @@ class WorkerConfig:
             checkpoint_interval_seconds=_int_env(
                 "CHECKPOINT_INTERVAL_SECONDS", profile.checkpoint_interval_seconds
             ),
+            checkpoint_max_interval_seconds=_int_env(
+                "CHECKPOINT_MAX_INTERVAL_SECONDS", CHECKPOINT_BACKOFF_CAP_SECONDS
+            ),
             max_in_worker_retry_delay_seconds=settings.max_in_worker_retry_delay_seconds,
             forge_read_attempts=max(1, _int_env("FORGE_READ_ATTEMPTS", 4)),
             timeout_seconds=_int_env("TASK_TIMEOUT_SECONDS", profile.timeout_seconds),
@@ -515,6 +541,7 @@ class WorkerConfig:
             quota_broker_audience=(
                 os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
             ),
+            wake_topic=os.environ.get("DISPATCH_TOPIC", "").strip() or None,
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip() or None,
             pr_console_links=_bool_env("SWARM_PR_CONSOLE_LINKS", False),
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,

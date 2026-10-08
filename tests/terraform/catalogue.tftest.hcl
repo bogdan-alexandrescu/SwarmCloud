@@ -51,6 +51,7 @@ variables {
     "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
 
@@ -102,7 +103,7 @@ run "runner_backends_match_resolve_backend" {
   # /dev/shm that only GKE lets us control, so browser work stays on Autopilot.
   assert {
     condition = alltrue([
-      for profile in ["mock", "generic", "claude-code", "codex"] :
+      for profile in ["mock", "generic", "codex", "indexer"] :
       output.runner_backends[profile] == "CLOUD_RUN_JOB"
     ])
     error_message = "every profile Cloud Run can hold must run on Cloud Run Jobs"
@@ -113,9 +114,22 @@ run "runner_backends_match_resolve_backend" {
     error_message = "the browser profile runs on Autopilot: Chromium needs a /dev/shm size Cloud Run does not expose"
   }
 
+  # Contract request 53 (applied 2026-10-08): claude-code runs on Autopilot,
+  # where it starts in about 23 s against Cloud Run's 128 s median.
   assert {
-    condition     = length(output.runner_backends) == 8
-    error_message = "eight runner profiles: mock, generic, claude-code, codex, browser, and #295's merge, post-verdict, claude-code-review"
+    condition     = output.runner_backends["claude-code"] == "GKE_AUTOPILOT"
+    error_message = "claude-code runs on GKE Autopilot (contract request 53)"
+  }
+
+  # Contract request 55's canary is gone: the switch replaced it.
+  assert {
+    condition     = !contains(keys(output.runner_backends), "claude-code-gke")
+    error_message = "claude-code-gke was the temporary request 55 canary; it is removed with the switch of claude-code itself"
+  }
+
+  assert {
+    condition     = length(output.runner_backends) == 9
+    error_message = "nine runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review and contract request 48's indexer"
   }
 }
 
@@ -153,6 +167,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
+        "runner:indexer",
       ] :
       contains(output.pool_names, r)
     ])
@@ -206,7 +221,7 @@ run "jobs_exist_only_where_a_credential_does" {
   # as CREDENTIAL_MISSING and cost nothing.
   assert {
     condition = alltrue([
-      for name in ["swarm-job-eng-mock", "swarm-job-eng-generic", "swarm-job-eng-claude-code", "swarm-job-eng-codex"] :
+      for name in ["swarm-job-eng-mock", "swarm-job-eng-generic", "swarm-job-eng-claude-code", "swarm-job-eng-codex", "swarm-job-eng-indexer"] :
       contains(output.job_names, name)
     ])
     error_message = "a tenant with anthropic and openai keys gets every Cloud Run profile"
@@ -218,7 +233,7 @@ run "jobs_exist_only_where_a_credential_does" {
   }
 
   assert {
-    condition     = !contains(output.job_names, "swarm-job-smoke-claude-code")
+    condition     = !contains(output.job_names, "swarm-job-smoke-claude-code") && !contains(output.job_names, "swarm-job-smoke-indexer")
     error_message = "a tenant with no anthropic key must not get a claude-code Job resource"
   }
 
@@ -229,24 +244,42 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "the browser profile runs on Autopilot; it has no Cloud Run Job"
   }
 
+  # Contract request 53 moved claude-code to GKE Autopilot, and the Job loop
+  # makes Jobs only for CLOUD_RUN_JOB profiles -- so without
+  # `cloud_run_fallback_profiles` the switch would have destroyed every
+  # tenant's claude-code Job. The owner kept them as the rollback until
+  # 2026-10-15; this assertion goes with that list.
   assert {
-    condition     = length(output.job_names) == 6
-    error_message = "4 Cloud-Run profiles for eng plus 2 credential-free ones for smoke"
+    condition     = contains(output.job_names, "swarm-job-eng-claude-code")
+    error_message = "the claude-code Cloud Run Jobs are kept until 2026-10-15 as the request 53 rollback; the backend switch must not destroy them"
   }
 
-  # #295: post-verdict and claude-code-review each run as their own
-  # per-tenant account, which exists only for a tenant registering
-  # git-review. eng holds anthropic and not it, so it gets no
-  # claude-code-review Job: one keyed on anthropic alone would run as exactly
-  # the worker identity that profile exists to avoid. merge (contract request
-  # 47) is keyed on `git`, the tenant's forge token, which eng does not list
-  # here either (merge_step_iam.tftest.hcl holds a tenant that registers all).
+  # The fallback keeps exactly what it names: browser, on GKE too, still gets
+  # no Cloud Run Job (asserted above), and nor does the removed canary.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-claude-code-gke")
+    ])
+    error_message = "claude-code-gke is removed; no Job may carry its name"
+  }
+
+  assert {
+    condition     = length(output.job_names) == 7
+    error_message = "4 Cloud-Run profiles for eng (mock, generic, codex, indexer) and claude-code's rollback Job, plus 2 credential-free ones for smoke"
+  }
+
+  # #295: post-verdict and claude-code-review are retired (owner decision
+  # MS0-Q4, 2026-10-06) but still in the frozen catalogue, so neither gets a
+  # Job for any tenant (`profiles_without_a_job`): eng holds anthropic, and a
+  # claude-code-review Job keyed on it would run as the worker account. merge
+  # (contract request 47) is keyed on `git`, the tenant's forge token, which
+  # eng does not list here (merge_step_iam.tftest.hcl holds one that does).
   assert {
     condition = !anytrue([
       for name in output.job_names :
       endswith(name, "-merge") || endswith(name, "-post-verdict") || endswith(name, "-claude-code-review")
     ])
-    error_message = "a #295 profile got a Cloud Run Job for a tenant that registers no App provider, so it has no account of its own to run as"
+    error_message = "a retired #295 profile, or merge for a tenant without git, got a Cloud Run Job"
   }
 
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
@@ -326,8 +359,15 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 8
-    error_message = "expected 8 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review); the parser read a different number"
+    condition     = length(output.runner_profiles) == 9
+    error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
+  }
+
+  # claude-code's entry carries a comment above its backend; the parser must
+  # read the field, and the last entry (indexer) must not run on past the dict.
+  assert {
+    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "CLOUD_RUN_JOB"
+    error_message = "the parser misread profiles.py: claude-code must read GKE_AUTOPILOT (contract request 53), and indexer must keep CLOUD_RUN_JOB"
   }
 
   assert {

@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import repograph
+from swarm_api import repograph, repoindex
 from swarm_api.errors import UpstreamUnavailable
 from swarm_api.objects import InMemoryObjectReader
 
@@ -93,7 +93,8 @@ def graph_doc(commit: str) -> dict:
     return {
         "schema": "swarm.repo-graph/v1", "kind": "full", "commit_sha": commit,
         "branch": "main", "base_sha": None, "languages": [], "truncated": [],
-        "extractor": {"name": "swarm-repo-index", "version": "1"},
+        "extractor": {"name": "swarm-repo-index",
+                      "version": repoindex.INDEXER_EXTRACTOR_VERSION},
         "symbols": [sym("src/api/users.py", "get_user"), sym("src/api/users.py", "load_user"),
                     sym("src/store/db.py", "fetch"),
                     sym("tests/api/test_users.py", "test_get_user")],
@@ -159,6 +160,13 @@ def test_promotion_records_the_graph_manifest_and_its_digest(
     )
     assert version["graph_manifest"] == report["manifest"]
     assert version["graph_digest"] == report["manifest_digest"]
+    # Lane IX2 review: what the next run's `choose_kind` reads. This graph's
+    # files carry no blob id (it is shaped like one promoted before IX2), so
+    # the next run is submitted full, with the full timeout.
+    assert version["graph_extractor"] == {"version": repoindex.INDEXER_EXTRACTOR_VERSION,
+                                          "blob_ids": False,
+                                          "files_not_listed": 0, "truncated": []}
+    assert "blob id" in repoindex.graph_carry_refusal(version["graph_extractor"])
     run = db.docs[f"repo_index_runs/{task_id}"]
     assert run["promotion"]["outcome"] == "promoted"
     assert db.docs[f"repositories/{repo_id}"]["index"]["current_sha"] == ONE
@@ -170,6 +178,7 @@ def test_an_index_with_no_graph_promotes_with_no_graph_fields(client, db, object
     assert _settle(client, repo_id).status_code == 200
     version = db.docs[f"repositories/{repo_id}/index_versions/{ONE}"]
     assert version["graph_manifest"] is None and version["graph_digest"] is None
+    assert version["graph_extractor"] is None
 
 
 def _refused(db, repo_id: str, task_id: str) -> str:
@@ -330,6 +339,64 @@ def test_a_rewritten_blob_is_refused_before_it_is_decompressed(objects, promoted
     objects.put(key, gzip.compress(b'{"from":"x","to":"src/store/db.py#fetch"}\n'))
     with pytest.raises(repograph.GraphDigestMismatch):
         graph.callers("src/store/db.py#fetch")
+
+
+def test_prefetch_reads_every_shard_of_a_layer_and_answers_from_them(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    graph.prefetch(("symbols", "callers"))
+    # Read once: the shards are served from memory, so a removed blob is not re-read.
+    for key in [k for k in objects.objects if "/graph/blobs/" in k]:
+        del objects.objects[key]
+    assert [s["id"] for s in graph.symbols("src/api")] == [
+        "src/api/users.py#get_user", "src/api/users.py#load_user"
+    ]
+    assert [e["from"] for e in graph.callers("src/store/db.py#fetch")] == [
+        "src/api/users.py#load_user"
+    ]
+    # The control: a layer not prefetched is still read on demand, and is gone.
+    with pytest.raises(repograph.GraphUnavailable):
+        graph.tests_for("src/store/db.py#fetch")
+    with pytest.raises(repograph.InvalidGraph):
+        graph.prefetch(("nonsense",))
+
+
+def test_prefetch_refuses_a_rewritten_blob_as_a_single_read_does(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    entry = graph.manifest["shards"]["callers"]["src/store"]
+    key = repograph.blob_key(promoted["tenant"], promoted["repo_id"], entry["blob"])
+    objects.put(key, gzip.compress(b'{"from":"x","to":"src/store/db.py#fetch"}\n'))
+    with pytest.raises(repograph.GraphDigestMismatch):
+        graph.prefetch(("symbols", "callers"))
+
+
+def test_prefetch_says_an_unreadable_store_is_unavailable(objects, promoted):
+    graph = repograph.RepoGraph(lambda: objects).open(
+        promoted["tenant"], promoted["repo_id"], promoted["version"]
+    )
+    objects.fail_on(f"tenants/{promoted['tenant']}/repos/{promoted['repo_id']}/graph/blobs/")
+    with pytest.raises(UpstreamUnavailable):
+        graph.prefetch(("callees",))
+
+
+def test_a_cached_view_is_kept_per_store_and_per_key(objects, promoted):
+    graphs = repograph.RepoGraph(lambda: objects)
+    calls: list[str] = []
+
+    def compute(name: str):
+        return lambda: calls.append(name) or {"name": name}
+
+    key = (promoted["tenant"], promoted["repo_id"], "sha256:" + "a" * 64, "module")
+    assert graphs.view(key, compute("one")) == {"name": "one"}
+    assert graphs.view(key, compute("two")) == {"name": "one"}
+    assert graphs.view(key[:3] + ("package",), compute("three")) == {"name": "three"}
+    # Another store (another deployment's bucket, another test) has its own views.
+    assert repograph.RepoGraph(lambda: InMemoryObjectReader()).view(key, compute("four")) \
+        == {"name": "four"}
+    assert calls == ["one", "three", "four"]
 
 
 def test_a_version_with_no_graph_says_so(objects, promoted):

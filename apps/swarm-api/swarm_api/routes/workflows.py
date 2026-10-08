@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from swarm_common.states import TERMINAL_STATES
 
 from ..auth import AuthContext
+from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
@@ -39,8 +41,12 @@ from ..deps import (
     tenant_scope,
 )
 from ..schemas import WorkflowCreate
+from ..stalls import stalled_workflows
+from ..waker import ring
 
 log = logging.getLogger(__name__)
+
+_TERMINAL = frozenset(s.value for s in TERMINAL_STATES)
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
 
@@ -93,6 +99,7 @@ def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     state: list[str] | None = Query(default=None),
+    active: bool = Query(default=False),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
@@ -100,20 +107,35 @@ def list_workflows(
     """One page of the tenant's workflows, newest first.
 
     `state` (repeatable) keeps only the workflows whose DERIVED state is one of
-    those named -- the bridge's `sc workflows` asks for the unfinished ones
-    (owner decision 2026-10-02: running workflows show in Claude Code without
-    attaching each by id). It filters THIS page after the rollup, because the
-    stored state is the cache this module exists not to trust, so a filtered
-    page can be short or empty and still carry a `next_page_token`; page on
-    until the token is null.
+    those named, and `active=true` only those whose derived state is not
+    terminal (UNKNOWN included) -- the bridge's `sc workflows` asks for the
+    unfinished ones (owner decision 2026-10-02: running workflows show in
+    Claude Code without attaching each by id).
+
+    TWO FILTERS, ONE ON EACH RECORD (owner decision 2026-10-06, P4). The QUERY
+    filters on the stored state (`Store.stored_states_for`): it leaves out only
+    the stored states no derivation can change (SUCCEEDED, CANCELLED), so a
+    workflow whose cache is stale is still fetched. Then each row is derived
+    and filtered on the derived state, which is still the only one served, and
+    the read repairs a stale cache. Before this the filter ran on the derived
+    state alone, over a page of the tenant's whole history: 4 pages of 50 to
+    find 7 running workflows. Now the running set is one page, newest first,
+    paged on the same (created_at, workflow_id) keyset. A page can still come
+    back short when stale rows derived terminal; page on until the token is
+    null. `filter.stored_states` says which stored states the query asked
+    for, and null when it could not narrow it (UNKNOWN named, or no filter).
     """
+    stored_states = ctx.store.stored_states_for(active=active, states=state)
     page = ctx.store.list_workflows(
         tenant_id,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
         submitted_by=submitted_by,
+        stored_states=stored_states,
     )
     results, report = ctx.rollups.for_workflows(tenant_id, page.items)
+    if active:
+        results = [r for r in results if r.to_api().get("state") not in _TERMINAL]
     if state:
         wanted = set(state)
         results = [r for r in results if r.to_api().get("state") in wanted]
@@ -133,11 +155,25 @@ def list_workflows(
         ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
+        # What was filtered and where. A client that sees `stored_states` knows
+        # the running set came from the indexed query, not a walk through
+        # history, and that one page holds it unless a token says otherwise; a
+        # deployment older than this serves no `filter` at all.
+        "filter": {
+            "active": active,
+            "states": list(state) if state else None,
+            "stored_states": stored_states,
+        },
         # What deriving this page cost and whether it was complete. A caller
         # that saw `step_read_budget_exhausted` knows some rows below read
         # UNKNOWN because this route stopped reading, not because anything is
         # wrong with those workflows.
         "rollup_report": report.to_api(),
+        # What the reconciler's workflow stall check last found for this
+        # tenant (#616): the console's Overview "Needs a look" and `sc trouble`
+        # read it here. `count` is null, with `check_error` saying why, when
+        # the check's result is not known -- never zero (swarm_api.stalls).
+        "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
 
 
@@ -165,6 +201,7 @@ def get_workflow(
         workflow, tasks.items, complete=tasks.next_page_token is None
     )
     accounts = accounts_for(ctx.db, tenant_id, tasks.items)
+    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks.items])
 
     return {
         # The step copies of each input are masked by the tasks' own maskers,
@@ -180,9 +217,15 @@ def get_workflow(
         # frozen `Workflow` dataclass has no metadata field to hold them. The
         # list route has no equivalent because it loads no tasks.
         "dispatch": workflow_dispatch(tasks.items),
-        # #379: each step's account, one bounded query per 30 steps.
+        # #379: each step's account, one bounded query per 30 steps. And each
+        # step's totals across every attempt (lane review P1), which the
+        # console's Workflows cost columns show, read the same bounded way
+        # (`attempt_totals.totals_for`).
         "tasks": [
-            task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url)
+            with_totals(
+                task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url),
+                totals,
+            )
             for t in tasks.items
         ],
     }
@@ -192,22 +235,48 @@ def get_workflow(
 def cancel_workflow(
     workflow_id: str,
     # The scope decides whose workflow may be cancelled; `auth` records who did.
+    background: BackgroundTasks,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    targets: list = []
     result = ctx.store.cancel_workflow(
-        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member
+        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
+        targets=targets,
     )
+    # Each running step's execution is asked to stop now, as the task route
+    # does (#627); a step cancelled before names none.
+    for target in targets:
+        background.add_task(ctx.executions.cancel, target)
     # A cancelled step's children are cancelled with it (OD-B15-4,
     # docs/design/child-tasks.md §3.4); the scheduler's sweep makes it certain.
     service = ChildService(
         settings=ctx.settings, db=ctx.db, store=ctx.store, submissions=ctx.submissions,
         verifier=None, now=ctx.now,
     )
+    children: list = []
     for task_id in result.get("tasks_cancelled") or []:
         try:
-            service.cascade(tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email)
+            service.cascade(
+                tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email, targets=children
+            )
         except Exception:
             log.exception("child cascade of step %s failed; the scheduler sweep retries it", task_id)
+    for child_target in children:
+        background.add_task(ctx.executions.cancel, child_target)
+    # ONE DRAIN, NOT ONE FINISH WAKE PER STEP (#636). Every step of this
+    # workflow is cancelled here, so no dependant inside it waits to be
+    # released; what a cancel can free is capacity -- a step with no live
+    # worker gives its lease back in its cancel -- and READY work elsewhere
+    # waited a safety tick for it. A drain admits that work and runs the
+    # dependency sweep too, which also resolves the dependants of the children
+    # the cascade above cancelled -- so unlike the task route, those children
+    # ring no `task_finished` of their own. After the response, as the task
+    # route does.
+    if result.get("tasks_cancelled"):
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, "workflow_cancelled",
+            tenant_id=tenant_id, workflow_id=workflow_id,
+        )
     return result

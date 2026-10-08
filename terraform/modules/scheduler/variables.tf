@@ -56,6 +56,28 @@ variable "reconciler_path" {
   default = "/reconcile"
 }
 
+variable "execution_cancel_path" {
+  description = "MUST match the route reconciler/service.py serves for a stop request (#627)."
+  type        = string
+  default     = "/stop-execution"
+}
+
+variable "execution_cancel_topic_name" {
+  description = <<-EOT
+    Name of the execution-cancel topic (#627). Passed in for the wake topic's
+    reason: the root puts the same string in swarm-api's environment
+    (EXECUTION_CANCEL_TOPIC) without a dependency on this module.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "execution_cancel_publisher_members" {
+  description = "Identities allowed to publish a stop request, keyed by component name. Only swarm-api writes a cancel."
+  type        = map(string)
+  default     = {}
+}
+
 variable "quota_broker_endpoint" {
   description = "HTTPS base URL of the swarm-quota-broker service."
   type        = string
@@ -116,6 +138,37 @@ variable "rollup_tenant_ids" {
   EOT
   type        = set(string)
   default     = []
+}
+
+variable "enable_forge_refresh" {
+  description = <<-EOT
+    Create swarm-forge-refresh, the 15-minute sweep that refreshes GitHub user
+    access tokens (docs/onboarding.md §3.4 item 6, decision D2). Off until
+    swarm-api serves the route (lane OB3): see jobs.tf.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "forge_refresh_path" {
+  description = "swarm-api's refresh-sweep route, which the forge_refresh job POSTs."
+  type        = string
+  default     = "/v1/admin/forge/refresh"
+
+  validation {
+    condition     = startswith(var.forge_refresh_path, "/v1/admin/")
+    error_message = "the refresh sweep is an admin route under /v1/admin/, which swarm-api admits the rollup-sweeper account to by name."
+  }
+}
+
+variable "forge_refresh_schedule" {
+  description = <<-EOT
+    How often the GitHub user-token refresh sweep runs. Every 15 minutes: a
+    user access token lives 8 hours and is refreshed with at least two left,
+    so eight ticks fall inside that margin and a missed one costs nothing.
+  EOT
+  type        = string
+  default     = "*/15 * * * *"
 }
 
 variable "workflow_rollup_schedule" {
@@ -181,6 +234,24 @@ variable "publisher_members" {
     A map keyed by component rather than a list of members: the members are
     service account emails that are unknown until apply, and terraform cannot
     plan a for_each whose keys it cannot compute.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
+variable "worker_publisher_members" {
+  description = <<-EOT
+    The identities tasks run as -- each tenant's worker account and its #295
+    per-profile accounts -- allowed to publish a wake message, keyed by a name
+    known at plan time ("worker:<tenant>", "action:<tenant>:<profile>").
+
+    The worker publishes `task_finished` once it has ended its task, so the
+    scheduler releases that task's dependants at once instead of on the next
+    safety tick (#636; agent_worker/finishwake.py). A wake is a doorbell: it
+    carries ids, the scheduler re-reads everything it acts on, and these
+    accounts can already write task documents directly, which is more than a
+    wake can do. Kept apart from `publisher_members` so the platform services
+    and the task identities stay separately visible in a plan.
   EOT
   type        = map(string)
   default     = {}

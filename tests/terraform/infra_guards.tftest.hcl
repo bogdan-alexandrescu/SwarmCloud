@@ -29,6 +29,7 @@ variables {
     "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
 
@@ -472,6 +473,27 @@ run "the_reconciler_can_reach_the_broker_to_release_fenced_holds" {
       contains(keys(local.service_env["swarm-reconciler"]), key)
     ])
     error_message = "swarm-reconciler has no QUOTA_BROKER_URL/QUOTA_BROKER_AUDIENCE, so a fenced attempt's account holds are never released early (#380)"
+  }
+}
+
+# #636: the reconciler rings `task_finished` for a task a repair ended.
+# `PubSubFinishAnnouncer.from_env` reads DISPATCH_TOPIC; without it the
+# announcer is None and every wake is silently skipped, leaving the
+# dependants to the safety tick.
+run "the_reconciler_can_ring_the_finish_wake" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {}
+  }
+
+  assert {
+    condition     = lookup(local.service_env["swarm-reconciler"], "DISPATCH_TOPIC", "") == local.wake_topic
+    error_message = "swarm-reconciler has no DISPATCH_TOPIC naming the wake topic, so a task the reconciler ends rings no task_finished wake (#636)"
   }
 }
 

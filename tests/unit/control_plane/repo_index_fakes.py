@@ -133,9 +133,17 @@ def fixture_index(commit_sha: str, **overrides: Any) -> dict[str, Any]:
     return document
 
 
+def kept_index_key(db, task_id: str) -> str:
+    """Where the worker copies the task's repo-index.json under repos/ (lane IX3)."""
+    doc = db.docs[f"tasks/{task_id}"]
+    return (f"tenants/{doc['tenant_id']}/repos/{doc['metadata']['repo_index']}/index/"
+            f"{doc['repository_ref']}/repo-index.json")
+
+
 def finish_index_task(db, objects, task_id: str, document: Any, *, state: str = "SUCCEEDED",
-                      attempt: str = "att_1") -> str:
-    """The index task ends, leaving repo-index.json exactly as a worker uploads it."""
+                      attempt: str = "att_1", copy: bool = False) -> str:
+    """The index task ends, leaving repo-index.json exactly as a worker uploads it,
+    and with `copy` its copy under repos/ too, as the worker writes it since IX3."""
     doc = db.docs[f"tasks/{task_id}"]
     doc["state"] = state
     if document is None:
@@ -145,6 +153,8 @@ def finish_index_task(db, objects, task_id: str, document: Any, *, state: str = 
     key = (f"tenants/{doc['tenant_id']}/tasks/{task_id}/attempts/{attempt}"
            "/artifacts/repo-index.json")
     objects.put(key, raw)
+    if copy:
+        objects.put(kept_index_key(db, task_id), raw)
     doc["result_summary"] = {"artifacts": [
         {"name": "repo-index.json", "bytes": len(raw.encode()), "uri": f"gs://{BUCKET}/{key}"}
     ]}

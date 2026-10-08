@@ -3,7 +3,8 @@ import { Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from '
 import { Count, ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
-import { eventKind, isTerminalEvent } from './events'
+import { isTerminalEvent } from './events'
+import { backendWord, eventWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
@@ -257,9 +258,9 @@ function Body({ t }: { t: AttemptTimeline }) {
                 {' · '}
                 <Mark
                   kind="partial"
-                  say={`The task is ${t.task.state.toLowerCase()} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
+                  say={`The task is ${stateWord(t.task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
                 />{' '}
-                {lastEvent === undefined ? 'ends early' : `ends at ${eventKind(lastEvent)}`}
+                {lastEvent === undefined ? 'ends early' : `ends at ${eventWord(lastEvent)}`}
               </>
             )}
           </span>
@@ -322,7 +323,7 @@ function AttemptCard({
           {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         <span className="ctl-card-note">
-          {g.events.length} ev{a !== null && ` · ${a.backend}`}
+          {g.events.length} ev{a !== null && ` · ${backendWord(a.backend)}`}
         </span>
       </div>
 
@@ -380,8 +381,10 @@ function AttemptCard({
               <b>exit</b>
               {a.exit_code === null ? <Em /> : num(a.exit_code)}
             </li>
+            {/* `peak rss` (G2-11): the figure is the sampled high-water mark,
+                written at exit -- `rss` alone read as the value at exit. */}
             <li className={`ctl-fact${a.peak_rss_bytes === null ? ' is-absent' : ''}`}>
-              <b>rss</b>
+              <b>peak rss</b>
               {a.peak_rss_bytes === null ? (
                 <>
                   <Em />{' '}
@@ -429,9 +432,14 @@ function AttemptCard({
           <ol className="timeline">
             {g.events.map((e) => (
               <li key={e.event_id}>
-                {/* `eventKind`, as Details names it: a stored `cancelled` that
-                    was only the request reads `cancel_requested`. */}
-                <span className="ev-type">{eventKind(e)}</span>
+                {/* `eventWord`, as Details names it (QA G2-25, G2-29): words,
+                    not `lease_acquired`; a stored `cancelled` that was only
+                    the request reads `cancel requested`; and the account the
+                    worker gives back, which rides `lease_released` because
+                    the frozen type has no account event, reads `account
+                    released` rather than a second `lease released`. The type
+                    as stored stays on the row as `data-kind`. */}
+                <span className="ev-type" data-kind={e.type}>{eventWord(e)}</span>
                 <EventWhen e={e} prev={prev.get(e.event_id) ?? null} />
                 {/* The fencing generation the event was written under. A stale
                     worker's events carry the OLD one -- that is how a reclaim

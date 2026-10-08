@@ -41,9 +41,37 @@ dropped first (`call_edges:below_0.4` in `truncated`); still over, every
 symbol edge goes and the module-level `import` edges stay
 (`call_edges:symbol`); still over, nothing is written and the run says why.
 
-ORDER OF WRITES. Blobs first, never overwriting one that exists (`--no-clobber`
-on GCS: a blob's name is its content, so an existing one is already right);
-the manifest last, so a manifest never names a blob that is not there yet.
+ORDER OF WRITES, AND A RE-RUN (lane IX1, 2026-10-06). Blobs first, the
+manifest last, so a manifest never names a blob that is not there yet. A
+blob's name is the sha256 of its bytes, so a blob already at its path is
+WRITTEN when its content is ours -- checked against the listing's MD5, or by
+reading it back when the listing has none -- and a run interrupted after any
+number of blobs completes when it is run again. A path holding DIFFERENT
+bytes is a hard error (`ConflictError`): nothing overwrites it, and no
+manifest is written over it. Measured on task_209ba9e0c9c948e284e9: a
+write killed after 150 blobs, and the retry failed with a 412 on its first
+blob, because `GcsStore.list` kept the `#<generation>` a versioned bucket
+appends to every listed url, so no listed key ever matched a blob key, every
+blob read as absent and was put again with `--no-clobber`. The listing now
+names each object by its name, without the generation.
+
+IN BATCHES. One `gcloud storage cp --no-clobber` of many files per batch
+(`GcsStore.put_many`), which gcloud uploads in parallel, and only the blobs
+not already there. The serial writer it replaced started one process per
+blob at ~3.9 s each: a full graph of ~370 blobs took ~24 minutes, more than
+the 30-minute index run has once the extractor's ~6 minutes are spent.
+After the upload every blob is checked again, so a blob that appeared
+between the listing and the upload (a 412 in the batch) is accepted when it
+holds our bytes and refused when it does not.
+
+READING ONE BACK (lane IX2). `read --commit <sha> --manifest-digest <d>`
+rebuilds a stored commit's graph document from its manifest -- symbols,
+the edges by caller module, the test map and the files -- for an incremental
+run's base (§3.4). The manifest is checked against the digest promotion
+recorded and every blob against its name before it is decompressed, so a
+rewritten graph is refused, never built on. `write --base-commit <sha>`
+counts the shards whose blob the base manifest already names
+(`shards_carried`): the unchanged modules, which it does not upload again.
 
 THE SWEEP. `sweep` lists every manifest of one registration and every blob,
 and deletes a blob only when (a) no manifest names it -- a promoted manifest
@@ -56,13 +84,26 @@ references it cannot see. Run as the tenant's own worker account, which may
 delete under `tenants/<tenant>/` and nowhere else (invariant 9); swarm-api
 reads the bucket and cannot delete, by design (`objects.py`).
 
-WHERE IT WRITES (lane RI9b). The indexer prompt (swarm_api.repoindex) runs
-`swarm-repo-graph write --graph <file> --repo-id <r> --destination
-tenants/<t>/repos/<r>/graph --index <repo-index.json>` and names no bucket and
-no tenant: both are the step's own configuration (`TENANT_ID`,
-`ARTIFACT_BUCKET`, set by dispatch), read by `resolve_target`. A destination,
-`--tenant` or `gs://` store that configuration contradicts is refused before
-anything is read or written (invariant 9).
+RETENTION (lane IX3, owner decision 2026-10-06). The bucket's lifecycle no
+longer touches `tenants/<t>/repos/` (terraform/modules/storage), so this
+sweep is the only thing that deletes there. Given `--keep-commit` for every
+commit whose index version swarm-api still holds (the last 20, §2.3; the
+worker reads them and adds them to its `write`), it first deletes the
+manifest `graph/<sha>/manifest.json` and the index copy
+`index/<sha>/repo-index.json` of every other commit older than a day, then
+sweeps the blobs no remaining manifest names. At most `MAX_SWEEP_DELETES`
+objects go per sweep, in batched `gcloud storage rm` calls; whatever is past
+the bound waits for the next run. Without `--keep-commit` it retires nothing.
+
+WHERE IT WRITES (lane RI9b; run by the worker since lane IX1). The worker
+runs `swarm-repo-graph write --graph <file> --repo-id <r> --destination
+tenants/<t>/repos/<r>/graph --tenant <t> --store gs://<bucket> --index
+<repo-index.json>` after the agent (agent_worker/indexrun.py), no longer the
+agent through its shell. The tenant and the bucket are the step's own
+configuration (`TENANT_ID`, `ARTIFACT_BUCKET`, set by dispatch), read by
+`resolve_target`. A destination, `--tenant` or `gs://` store that
+configuration contradicts is refused before anything is read or written
+(invariant 9).
 
 Standard library only: it runs with the image's python3.11, outside the
 extractor's tree-sitter environment, and on GCS through the image's `gcloud`
@@ -72,6 +113,7 @@ with the account the step already has. No credential passes through it.
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import hashlib
 import json
@@ -101,6 +143,14 @@ CEILING_MIN_CONFIDENCE = 0.4
 #: The sweep keeps an unreferenced blob younger than this: a writer may be
 #: between its blobs and its manifest. Far above §3.5's longest timeout (2 h).
 SWEEP_GRACE = timedelta(days=1)
+#: Objects one sweep may delete, manifests, index copies and blobs together.
+#: A version retired by the 20-version rule (§2.3) is one manifest, one index
+#: copy and the few blobs no other manifest shares, so one run's sweep keeps
+#: up with one promotion many times over; a backlog is worked off over the
+#: next runs instead of by one sweep that outlives the graph write's budget.
+MAX_SWEEP_DELETES = 2000
+#: The name of the index copy under `index/<commit_sha>/` (§2).
+INDEX_NAME = "repo-index.json"
 
 #: The layers a manifest names, in the order they are written.
 LAYERS = ("symbols", "callers", "callees", "tests", "files")
@@ -108,6 +158,14 @@ LAYERS = ("symbols", "callers", "callees", "tests", "files")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _BLOB_NAME = re.compile(r"^([0-9a-f]{64})" + re.escape(BLOB_SUFFIX) + r"$")
+#: The `#<generation>` a versioned bucket's listing appends to an object's url.
+_GENERATION = re.compile(r"#\d+$")
+#: Files per `gcloud storage cp`: far below any argv limit (a blob path is
+#: about 120 bytes), and a full graph's ~370 blobs go up in one call.
+BATCH_FILES = 500
+#: Upload rounds: a round whose batch stopped on a blob that appeared
+#: meanwhile (a 412) is followed by one for what is still absent.
+UPLOAD_ROUNDS = 3
 
 
 # --- naming -------------------------------------------------------------------
@@ -119,9 +177,21 @@ def _segment(value: str, what: str) -> str:
     return value
 
 
+def repo_root(tenant_id: str, repo_id: str) -> str:
+    """`tenants/<tenant>/repos/<repo_id>`: the registration's own prefix (§2)."""
+    return f"tenants/{_segment(tenant_id, 'tenant_id')}/repos/{_segment(repo_id, 'repo_id')}"
+
+
 def graph_root(tenant_id: str, repo_id: str) -> str:
-    return (f"tenants/{_segment(tenant_id, 'tenant_id')}/repos/"
-            f"{_segment(repo_id, 'repo_id')}/graph")
+    return f"{repo_root(tenant_id, repo_id)}/graph"
+
+
+def index_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
+    """Where the worker keeps a commit's repo-index.json beside its graph (§2,
+    `agent_worker.indexrun.index_key`, `swarm_api.repoindex.index_key`)."""
+    if not _SHA.match(commit_sha or ""):
+        raise ValueError(f"commit_sha {commit_sha!r} is not a 40-hex commit sha")
+    return f"{repo_root(tenant_id, repo_id)}/index/{commit_sha}/{INDEX_NAME}"
 
 
 def manifest_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
@@ -156,6 +226,10 @@ class StoreError(Exception):
     """The store could not do what was asked. Never read as "absent"."""
 
 
+class ConflictError(StoreError):
+    """A write-once path already holds different bytes. Never overwritten."""
+
+
 class Store(Protocol):
     def list(self, prefix: str) -> list[tuple[str, datetime | None]]: ...
 
@@ -164,6 +238,18 @@ class Store(Protocol):
     def put(self, key: str, data: bytes, *, no_clobber: bool) -> None: ...
 
     def delete(self, key: str) -> None: ...
+
+
+#: Optional on a store, with a fallback for one that lacks it (`_md5s`,
+#: `_get_many`, `_put_many`):
+#:   md5s(prefix) -> {key: base64 MD5 or None}   what a listing says of each object
+#:   get_many(keys) -> {key: bytes}              several reads in one call
+#:   put_many({key: bytes}, no_clobber=...)      several writes in one call
+
+
+def md5_of(data: bytes) -> str:
+    """The base64 MD5 GCS reports for an object's bytes (`md5Hash`)."""
+    return base64.b64encode(hashlib.md5(data).digest()).decode("ascii")
 
 
 class LocalStore:
@@ -211,6 +297,20 @@ class LocalStore:
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
+    def delete_many(self, keys: Iterable[str]) -> None:
+        for key in sorted(keys):
+            self.delete(key)
+
+    def md5s(self, prefix: str) -> dict[str, str | None]:
+        return {key: md5_of(self._path(key).read_bytes()) for key, _ in self.list(prefix)}
+
+    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
+        return {key: self.get(key) for key in keys}
+
+    def put_many(self, items: dict[str, bytes], *, no_clobber: bool) -> None:
+        for key in sorted(items):
+            self.put(key, items[key], no_clobber=no_clobber)
+
 
 def _gcloud(argv: list[str], data: bytes | None = None) -> bytes:
     """Run `gcloud storage ...`. stderr is kept short and carries no object data."""
@@ -247,7 +347,8 @@ class GcsStore:
     def _url(self, key: str) -> str:
         return f"gs://{self.bucket}/{key}"
 
-    def list(self, prefix: str) -> list[tuple[str, datetime | None]]:
+    def _rows(self, prefix: str) -> list[tuple[str, datetime | None, str | None]]:
+        """(key, created, base64 MD5) for every live object under `prefix`."""
         try:
             raw = self._run(["gcloud", "storage", "ls", "--json", self._url(prefix) + "**"])
         except StoreError as exc:
@@ -259,18 +360,46 @@ class GcsStore:
         except ValueError:
             raise StoreError(f"gcloud storage ls answered something that is not JSON for "
                              f"{prefix}") from None
-        out: list[tuple[str, datetime | None]] = []
-        head = f"gs://{self.bucket}/"
+        out: list[tuple[str, datetime | None, str | None]] = []
         for row in rows if isinstance(rows, list) else []:
-            url = row.get("url") if isinstance(row, dict) else None
-            if not isinstance(url, str) or not url.startswith(head):
+            key = self._key_of(row)
+            if key is None or not key.startswith(prefix):
                 continue
             meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             # A time that cannot be read is None, which the sweep treats as young.
             created = _parse_time(row.get("creation_time") or meta.get("timeCreated")
                                   or meta.get("creation_time"))
-            out.append((url[len(head):], created))
-        return sorted(out)
+            md5 = meta.get("md5Hash") or meta.get("md5_hash") or row.get("md5_hash")
+            out.append((key, created, md5 if isinstance(md5, str) and md5 else None))
+        return sorted(out, key=lambda r: r[0])
+
+    def _key_of(self, row: Any) -> str | None:
+        """The object's name, WITHOUT the generation.
+
+        On a versioned bucket `ls --json` gives every url as
+        `gs://<bucket>/<name>#<generation>`. Kept, that suffix made every
+        listed key differ from the key it was compared with (lane IX1): the
+        writer re-put blobs that existed, and the sweep never saw a manifest.
+        The name in `metadata` is the object's own; the url, less its
+        `#<digits>`, is the fallback.
+        """
+        if not isinstance(row, dict):
+            return None
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        name = meta.get("name")
+        if isinstance(name, str) and name and meta.get("bucket") in (None, self.bucket):
+            return name
+        url = row.get("url")
+        head = f"gs://{self.bucket}/"
+        if not isinstance(url, str) or not url.startswith(head):
+            return None
+        return _GENERATION.sub("", url[len(head):]) or None
+
+    def list(self, prefix: str) -> list[tuple[str, datetime | None]]:
+        return [(key, created) for key, created, _md5 in self._rows(prefix)]
+
+    def md5s(self, prefix: str) -> dict[str, str | None]:
+        return {key: md5 for key, _created, md5 in self._rows(prefix)}
 
     def get(self, key: str) -> bytes:
         try:
@@ -284,8 +413,76 @@ class GcsStore:
             argv.append("--no-clobber")
         self._run(argv + ["-", self._url(key)], data)
 
+    def put_many(self, items: dict[str, bytes], *, no_clobber: bool) -> None:
+        """One `gcloud storage cp` of up to BATCH_FILES files per directory.
+
+        Each object goes to `<its directory>/<its name>`, so the files are
+        staged under their own names and copied into their directory. gcloud
+        uploads a multi-file copy in parallel. A batch that fails is raised
+        after every batch has been tried: the caller checks each object
+        afterwards (`write_graph`), so one 412 costs no other blob.
+        """
+        failed: StoreError | None = None
+        with tempfile.TemporaryDirectory(prefix="repo-graph-put-") as scratch:
+            for n, (directory, names) in enumerate(sorted(_by_directory(items).items())):
+                staged = Path(scratch) / str(n)
+                staged.mkdir()
+                for name in names:
+                    (staged / name).write_bytes(items[f"{directory}/{name}"])
+                for start in range(0, len(names), BATCH_FILES):
+                    argv = ["gcloud", "storage", "cp"]
+                    if no_clobber:
+                        argv.append("--no-clobber")
+                    argv += [str(staged / name) for name in names[start:start + BATCH_FILES]]
+                    try:
+                        self._run(argv + [self._url(directory) + "/"])
+                    except StoreError as exc:
+                        failed = exc
+        if failed is not None:
+            raise failed
+
+    def get_many(self, keys: Iterable[str]) -> dict[str, bytes]:
+        """One `gcloud storage cp` of up to BATCH_FILES objects per directory, into scratch."""
+        wanted = {key: b"" for key in keys}
+        out: dict[str, bytes] = {}
+        with tempfile.TemporaryDirectory(prefix="repo-graph-get-") as scratch:
+            for n, (directory, names) in enumerate(sorted(_by_directory(wanted).items())):
+                staged = Path(scratch) / str(n)
+                staged.mkdir()
+                for start in range(0, len(names), BATCH_FILES):
+                    batch = names[start:start + BATCH_FILES]
+                    try:
+                        self._run(["gcloud", "storage", "cp"]
+                                  + [self._url(f"{directory}/{name}") for name in batch]
+                                  + [str(staged) + "/"])
+                    except FileNotFoundError:
+                        raise StoreError(f"{directory}: not found") from None
+                for name in names:
+                    try:
+                        out[f"{directory}/{name}"] = (staged / name).read_bytes()
+                    except OSError:
+                        raise StoreError(f"{directory}/{name}: not read") from None
+        return out
+
     def delete(self, key: str) -> None:
         self._run(["gcloud", "storage", "rm", self._url(key)])
+
+    def delete_many(self, keys: Iterable[str]) -> None:
+        """One `gcloud storage rm` of up to BATCH_FILES objects: one process per
+        object took ~3.9 s each, which no sweep inside the graph write's budget
+        could afford. A batch that fails is raised; the sweep stops there."""
+        ordered = sorted(keys)
+        for start in range(0, len(ordered), BATCH_FILES):
+            self._run(["gcloud", "storage", "rm"]
+                      + [self._url(key) for key in ordered[start:start + BATCH_FILES]])
+
+
+def _by_directory(items: Iterable[str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for key in items:
+        directory, _, name = key.rpartition("/")
+        grouped.setdefault(directory, []).append(name)
+    return {directory: sorted(names) for directory, names in grouped.items()}
 
 
 def open_store(spec: str) -> Store:
@@ -412,30 +609,224 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
     return key, canonical(manifest) + b"\n", blobs
 
 
+def _md5s(store: Store, prefix: str) -> dict[str, str | None]:
+    md5s = getattr(store, "md5s", None)
+    if callable(md5s):
+        return md5s(prefix)
+    return {key: None for key, _ in store.list(prefix)}
+
+
+def _get_many(store: Store, keys: list[str]) -> dict[str, bytes]:
+    get_many = getattr(store, "get_many", None)
+    if callable(get_many):
+        return get_many(keys)
+    return {key: store.get(key) for key in keys}
+
+
+def _put_many(store: Store, items: dict[str, bytes]) -> None:
+    put_many = getattr(store, "put_many", None)
+    if callable(put_many):
+        put_many(items, no_clobber=True)
+        return
+    for key in sorted(items):
+        store.put(key, items[key], no_clobber=True)
+
+
+def _check_present(store: Store, expected: dict[str, bytes], listed: dict[str, str | None]
+                   ) -> list[str]:
+    """The keys of `expected` that are NOT in the store; raises on any holding other bytes.
+
+    By the listing's MD5 where it gives one, else by reading the object back:
+    a blob's name is the sha256 of its bytes, so one that reads back as ours
+    is ours, whoever put it.
+    """
+    absent = sorted(key for key in expected if key not in listed)
+    unknown = sorted(key for key in expected if key in listed and listed[key] is None)
+    conflicts = sorted(key for key in expected if listed.get(key) is not None
+                       and listed[key] != md5_of(expected[key]))
+    if unknown:
+        fetched = _get_many(store, unknown)
+        conflicts += [key for key in unknown if fetched.get(key) != expected[key]]
+    if conflicts:
+        raise ConflictError(
+            f"{len(conflicts)} write-once path(s) already hold different content, first "
+            f"{sorted(conflicts)[0]}; nothing was overwritten and no manifest was written"
+        )
+    return absent
+
+
+def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: str,
+                    base_commit: str) -> tuple[int, int, set[str]]:
+    """(shards carried, shards rewritten, the base's blob digests) against a base commit.
+
+    A shard is CARRIED when the base manifest names the same blob for the
+    same layer and module: an incremental run's unchanged modules (§2.5).
+    A base manifest that cannot be read carries nothing; the write itself
+    never depends on it.
+    """
+    try:
+        base = json.loads(store.get(manifest_key(tenant_id, repo_id, base_commit)))
+        base_blobs = referenced_blobs(base)
+    except (StoreError, ValueError):
+        return 0, 0, set()
+    ours = json.loads(manifest)["shards"]
+    carried = rewritten = 0
+    for layer, modules in ours.items():
+        before = base["shards"].get(layer) or {}
+        for module, entry in modules.items():
+            if (before.get(module) or {}).get("blob") == entry["blob"]:
+                carried += 1
+            else:
+                rewritten += 1
+    return carried, rewritten, base_blobs
+
+
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
                 max_commit_bytes: int = MAX_COMMIT_BYTES,
-                graph_digest: str | None = None) -> dict:
-    """Shard `document` into `store`: blobs first (never clobbered), manifest last."""
+                graph_digest: str | None = None, base_commit: str | None = None) -> dict:
+    """Shard `document` into `store`: blobs first (never clobbered), manifest last.
+
+    RESUMABLE: a blob already at its path with our bytes counts as written
+    (`blobs_reused`), so a run interrupted after any number of blobs
+    completes when it is run again; one with other bytes raises
+    `ConflictError` and the manifest is not written.
+
+    INCREMENTAL (`base_commit`, §2.5): the shards whose blob the base
+    manifest already names are the unchanged modules' and are counted
+    `shards_carried`; a listed blob the base names is taken as ours without
+    reading it back, since a manifest is written only after its blobs and
+    the sweep never deletes a blob a manifest names. Only the rest is
+    checked and uploaded.
+    """
     key, manifest, blobs = build(document, tenant_id=tenant_id, repo_id=repo_id,
                                  max_commit_bytes=max_commit_bytes, graph_digest=graph_digest)
-    present = {k for k, _ in store.list(f"{graph_root(tenant_id, repo_id)}/blobs/")}
-    written = reused = 0
-    for hexdigest in sorted(blobs):
-        target = blob_key(tenant_id, repo_id, hexdigest)
-        if target in present:
-            reused += 1
-            continue
-        store.put(target, blobs[hexdigest], no_clobber=True)
-        written += 1
-    store.put(key, manifest, no_clobber=False)
-    return {
+    blob_prefix = f"{graph_root(tenant_id, repo_id)}/blobs/"
+    expected = {blob_key(tenant_id, repo_id, hexdigest): data
+                for hexdigest, data in blobs.items()}
+    carried = rewritten = 0
+    base_blobs: set[str] = set()
+    if base_commit is not None:
+        carried, rewritten, base_blobs = _carried_shards(
+            store, manifest, tenant_id=tenant_id, repo_id=repo_id, base_commit=base_commit)
+    listed = _md5s(store, blob_prefix)
+    known = {blob_key(tenant_id, repo_id, hexdigest) for hexdigest in base_blobs}
+    missing = _check_present(
+        store, {k: v for k, v in expected.items() if not (k in known and k in listed)}, listed)
+    reused = len(expected) - len(missing)
+    todo = missing
+    upload_error: StoreError | None = None
+    for _round in range(UPLOAD_ROUNDS):
+        if not todo:
+            break
+        upload_error = None
+        try:
+            _put_many(store, {k: expected[k] for k in todo})
+        except StoreError as exc:
+            # A 412 here is a blob that appeared since the listing, and it may
+            # have stopped the rest of its batch: the check accepts it if it
+            # is ours, and the next round puts what is still absent.
+            upload_error = exc
+        todo = _check_present(store, {k: expected[k] for k in todo}, _md5s(store, blob_prefix))
+    if todo:
+        raise StoreError(f"{len(todo)} blob(s) were not written, first {todo[0]}"
+                         + (f": {upload_error}" if upload_error else ""))
+    # The manifest is per commit and not write-once: a re-index of the same
+    # commit may describe it differently. The same bytes are not put twice.
+    current = _md5s(store, key)
+    if current.get(key) is None or current[key] != md5_of(manifest):
+        store.put(key, manifest, no_clobber=False)
+    report = {
         "manifest": key,
         "manifest_digest": digest_of(manifest),
-        "blobs_written": written,
+        "blobs_written": len(missing),
         "blobs_reused": reused,
         "stored_bytes": sum(len(b) for b in blobs.values()),
         "manifest_bytes": len(manifest),
     }
+    if base_commit is not None:
+        report.update(base_commit=base_commit, shards_carried=carried,
+                      shards_rewritten=rewritten)
+    return report
+
+
+# --- reading a stored graph back (an incremental run's base, §3.4) ------------
+
+#: The layers a graph document is rebuilt from, and the list each one fills.
+#: Every edge is in `callees` exactly once (sharded by its caller's module),
+#: so `callers`, the same edges by callee, is not read.
+READ_LAYERS = {"symbols": "symbols", "callees": "call_edges", "tests": "symbol_test_map",
+               "files": "files"}
+
+
+def decode_shard(data: bytes) -> list[dict]:
+    """A blob's rows: gzip, then one canonical JSON object per line."""
+    rows = []
+    for line in gzip.decompress(data).splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("a shard line is not a JSON object")
+            rows.append(row)
+    return rows
+
+
+def read_manifest(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+                  manifest_digest: str | None = None) -> dict:
+    """The commit's manifest, checked against the digest promotion recorded, when given."""
+    if not _SHA.match(commit_sha or ""):
+        raise ValueError("the commit to read is not a 40-hex commit sha")
+    raw = store.get(manifest_key(tenant_id, repo_id, commit_sha))
+    if manifest_digest is not None and digest_of(raw) != manifest_digest:
+        raise ValueError(f"the manifest of {commit_sha} does not match the digest promotion "
+                         "recorded for it; it was rewritten, so it is not read")
+    manifest = json.loads(raw)
+    referenced_blobs(manifest)
+    for name, want in (("tenant_id", tenant_id), ("repo_id", repo_id),
+                       ("commit_sha", commit_sha)):
+        if manifest.get(name) != want:
+            raise ValueError(f"the manifest at {commit_sha}'s path names another {name}")
+    return manifest
+
+
+def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+               manifest_digest: str | None = None) -> dict:
+    """The `swarm.repo-graph/v1` document a commit's shards hold.
+
+    Every blob is checked against the digest its name is BEFORE it is
+    decompressed, so a rewritten blob is refused, not read.
+    """
+    manifest = read_manifest(store, tenant_id=tenant_id, repo_id=repo_id,
+                             commit_sha=commit_sha, manifest_digest=manifest_digest)
+    wanted: dict[str, list[str]] = {}
+    for layer in READ_LAYERS:
+        for entry in (manifest["shards"].get(layer) or {}).values():
+            hexdigest = entry["blob"].split(":", 1)[1]
+            wanted.setdefault(layer, []).append(hexdigest)
+    keys = sorted({blob_key(tenant_id, repo_id, h) for hs in wanted.values() for h in hs})
+    fetched = _get_many(store, keys)
+    document: dict[str, Any] = {
+        "schema": GRAPH_SCHEMA, "kind": manifest.get("kind"), "commit_sha": commit_sha,
+        "branch": manifest.get("branch"), "base_sha": manifest.get("base_sha"),
+        "languages": manifest.get("languages") or [],
+        "truncated": list(manifest.get("truncated") or []),
+        "extractor": manifest.get("extractor") or {},
+    }
+    for layer, target in READ_LAYERS.items():
+        rows: list[dict] = []
+        for hexdigest in wanted.get(layer, []):
+            data = fetched.get(blob_key(tenant_id, repo_id, hexdigest))
+            if data is None or hashlib.sha256(data).hexdigest() != hexdigest:
+                raise ValueError(f"blob {hexdigest} does not hold the bytes its name is the "
+                                 "digest of; the graph is not read")
+            rows.extend(decode_shard(data))
+        document[target] = rows
+    document["symbols"].sort(key=lambda s: (str(s.get("path")), s.get("start_line") or 0,
+                                            str(s.get("id"))))
+    document["call_edges"].sort(key=lambda e: (str(e.get("from")), str(e.get("to")),
+                                               str(e.get("kind"))))
+    document["symbol_test_map"].sort(key=lambda t: (str(t.get("symbol")), str(t.get("test"))))
+    document["files"].sort(key=lambda f: str(f.get("path")))
+    return document
 
 
 # --- the sweep ----------------------------------------------------------------
@@ -459,42 +850,132 @@ def referenced_blobs(manifest: dict) -> set[str]:
     return found
 
 
-def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = None,
-          grace: timedelta = SWEEP_GRACE) -> dict:
-    """Delete the registration's blobs no manifest names and older than `grace`.
+def _delete_many(store: Store, keys: list[str]) -> None:
+    """One batched delete when the store has one (`GcsStore.delete_many`), else one by one."""
+    if not keys:
+        return
+    many = getattr(store, "delete_many", None)
+    if many is not None:
+        many(keys)
+        return
+    for key in sorted(keys):
+        store.delete(key)
 
-    Deletes nothing, and says why in `refused`, if any manifest is unreadable.
+
+def _commit_in(key: str, prefix: str, name: str) -> str | None:
+    """The commit of `<prefix><commit_sha>/<name>`, or None for any other key."""
+    if not key.startswith(prefix):
+        return None
+    commit, _, rest = key[len(prefix):].partition("/")
+    return commit if rest == name and _SHA.match(commit) else None
+
+
+def check_keep(commits: Iterable[str]) -> frozenset[str]:
+    """`--keep-commit` values, each a 40-hex sha. Raises ValueError on any other."""
+    kept = frozenset(commits)
+    for commit in kept:
+        if not _SHA.match(commit or ""):
+            raise ValueError(f"--keep-commit {commit!r} is not a 40-hex commit sha")
+    return kept
+
+
+def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = None,
+          grace: timedelta = SWEEP_GRACE, keep: Iterable[str] | None = None,
+          max_deletes: int = MAX_SWEEP_DELETES) -> dict:
+    """Retire what no kept version names, then delete the blobs no manifest names.
+
+    `keep` is the set of commits whose index versions swarm-api still holds
+    (the last 20, §2.3), which the worker reads and passes as `--keep-commit`.
+    With it, every manifest and every index copy of a commit NOT in `keep` and
+    older than `grace` is deleted first, and its references stop counting.
+    Without it (None) no manifest or index copy is deleted: what the sweep did
+    before lane IX3, and what a run that could not read the versions gets.
+
+    Blobs: deleted only when no remaining manifest names them and older than
+    `grace`. Deletes nothing at all, and says why in `refused`, if any
+    manifest it keeps cannot be read. At most `max_deletes` objects go per
+    sweep; a retired manifest past the bound is kept for the next sweep and
+    its references still count, so the bound can only delay a deletion.
     """
     now = now or datetime.now(timezone.utc)
+    kept = None if keep is None else check_keep(keep)
     root = graph_root(tenant_id, repo_id)
     blob_prefix = f"{root}/blobs/"
-    referenced: set[str] = set()
-    manifests = 0
-    for key, _created in store.list(f"{root}/"):
+    index_prefix = f"{repo_root(tenant_id, repo_id)}/index/"
+
+    def old(created: datetime | None) -> bool:
+        return created is not None and now - created >= grace
+
+    retire: list[str] = []
+    readable: list[str] = []
+    for key, created in store.list(f"{root}/"):
         if key.startswith(blob_prefix) or not key.endswith("/manifest.json"):
             continue
-        manifests += 1
+        commit = _commit_in(key, f"{root}/", "manifest.json")
+        if kept is not None and commit is not None and commit not in kept and old(created):
+            retire.append(key)
+        else:
+            readable.append(key)
+    retire_index: list[str] = []
+    kept_indexes = 0
+    if kept is not None:
+        for key, created in store.list(index_prefix):
+            commit = _commit_in(key, index_prefix, INDEX_NAME)
+            if commit is None:
+                continue
+            if commit in kept or not old(created):
+                kept_indexes += 1
+            else:
+                retire_index.append(key)
+    budget = max(0, max_deletes)
+    retiring = retire[:budget]
+    readable += retire[budget:]
+    budget -= len(retiring)
+    retiring_index = retire_index[:budget]
+    budget -= len(retiring_index)
+    truncated = len(retiring) < len(retire) or len(retiring_index) < len(retire_index)
+    report = {"manifests": len(readable), "retired_manifests": 0, "retired_indexes": 0,
+              "kept_indexes": kept_indexes, "deleted": 0, "kept_referenced": 0,
+              "kept_young": 0, "truncated": truncated, "refused": None}
+    # Every manifest that stays is read BEFORE anything is deleted.
+    referenced: set[str] = set()
+    for key in readable:
         try:
             referenced |= referenced_blobs(json.loads(store.get(key).decode("utf-8")))
         except (StoreError, ValueError, UnicodeDecodeError) as exc:
-            return {"manifests": manifests, "deleted": 0, "kept_referenced": 0,
-                    "kept_young": 0, "refused": f"{key} could not be read ({exc}); "
-                    "a manifest the sweep cannot read is references it cannot see"}
-    deleted = kept_referenced = kept_young = 0
+            report["refused"] = (f"{key} could not be read ({exc}); a manifest the sweep "
+                                 "cannot read is references it cannot see")
+            return report
+    try:
+        _delete_many(store, retiring + retiring_index)
+    except StoreError as exc:
+        report["refused"] = (f"retiring {len(retiring)} manifests and {len(retiring_index)} "
+                             f"index copies failed ({exc}); no blob was swept")
+        return report
+    report["retired_manifests"] = len(retiring)
+    report["retired_indexes"] = len(retiring_index)
+    doomed: list[str] = []
     for key, created in store.list(blob_prefix):
         match = _BLOB_NAME.match(key[len(blob_prefix):])
         if match is None:
             continue
         if match.group(1) in referenced:
-            kept_referenced += 1
+            report["kept_referenced"] += 1
             continue
-        if created is None or now - created < grace:
-            kept_young += 1
+        if not old(created):
+            report["kept_young"] += 1
             continue
-        store.delete(key)
-        deleted += 1
-    return {"manifests": manifests, "deleted": deleted, "kept_referenced": kept_referenced,
-            "kept_young": kept_young, "refused": None}
+        if len(doomed) >= budget:
+            report["truncated"] = True
+            continue
+        doomed.append(key)
+    try:
+        _delete_many(store, doomed)
+    except StoreError as exc:
+        report["refused"] = f"deleting {len(doomed)} unreferenced blobs failed ({exc})"
+        return report
+    report["deleted"] = len(doomed)
+    return report
 
 
 # --- the CLI ------------------------------------------------------------------
@@ -599,7 +1080,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     write = sub.add_parser("write", help="shard a swarm-repo-index --graph-out document")
     sweeper = sub.add_parser("sweep", help="delete blobs no manifest names")
-    for command in (write, sweeper):
+    reader = sub.add_parser("read", help="rebuild a stored commit's graph document "
+                                         "(an incremental run's base)")
+    for command in (write, sweeper, reader):
         command.add_argument("--store",
                              help="gs://<bucket>, or a local directory standing in for it "
                                   f"(default: gs://${BUCKET_ENV} from the step's configuration)")
@@ -614,6 +1097,17 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--index", help="repo-index.json: its graph.manifest_digest is set")
     write.add_argument("--max-commit-bytes", type=int, default=MAX_COMMIT_BYTES)
     write.add_argument("--no-sweep", action="store_true", help="skip the sweep after writing")
+    write.add_argument("--base-commit",
+                       help="incremental: the base's commit, to count the shards carried")
+    for command in (write, sweeper):
+        command.add_argument("--keep-commit", action="append", metavar="SHA",
+                             help="a commit whose index version is kept (repeat it); with any, "
+                                  "the sweep retires every other commit's manifest and index "
+                                  "copy older than a day (§2.3). The written commit is kept too")
+    reader.add_argument("--commit", required=True, help="the commit whose graph to read")
+    reader.add_argument("--manifest-digest",
+                        help="sha256:<hex> promotion recorded; a manifest that differs is refused")
+    reader.add_argument("--out", required=True, help="where to write the graph document")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -624,13 +1118,25 @@ def main(argv: list[str] | None = None) -> int:
         tenant, spec = resolve_target(tenant=args.tenant, store=args.store,
                                       repo_id=args.repo_id, destination=args.destination)
         store = open_store(spec)
+        keep = None if args.command == "read" or args.keep_commit is None \
+            else check_keep(args.keep_commit)
         if args.command == "sweep":
-            report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id)}
+            report: dict = {"sweep": sweep(store, tenant_id=tenant, repo_id=args.repo_id,
+                                           keep=keep)}
+        elif args.command == "read":
+            graph = read_graph(store, tenant_id=tenant, repo_id=args.repo_id,
+                               commit_sha=args.commit, manifest_digest=args.manifest_digest)
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(canonical(graph) + b"\n")
+            report = {"read": args.commit, "symbols": len(graph["symbols"]),
+                      "call_edges": len(graph["call_edges"]), "files": len(graph["files"])}
         else:
             raw = Path(args.graph).read_bytes()
-            report = write_graph(json.loads(raw), store, tenant_id=tenant,
+            document = json.loads(raw)
+            report = write_graph(document, store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
-                                 graph_digest=digest_of(raw))
+                                 graph_digest=digest_of(raw), base_commit=args.base_commit)
             if args.index:
                 index_path = Path(args.index)
                 index = json.loads(index_path.read_bytes())
@@ -639,7 +1145,11 @@ def main(argv: list[str] | None = None) -> int:
                 index["graph"] = graph
                 index_path.write_bytes(canonical(index) + b"\n")
             if not args.no_sweep:
-                report["sweep"] = sweep(store, tenant_id=tenant, repo_id=args.repo_id)
+                if keep is not None:
+                    # The commit just written is never retired by its own run.
+                    keep = keep | {document["commit_sha"]}
+                report["sweep"] = sweep(store, tenant_id=tenant, repo_id=args.repo_id,
+                                        keep=keep)
     except (ValueError, StoreError, OSError) as exc:
         print(f"{TOOL_NAME}: {exc}", file=sys.stderr)
         return 1

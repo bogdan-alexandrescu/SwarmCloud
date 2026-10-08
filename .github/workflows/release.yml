@@ -903,10 +903,47 @@ jobs:
         # proven by the next step, which runs the smoke suite INSIDE the VPC.
         run: ./scripts/lib/deploy.sh --verify-only --no-health --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
 
+      - name: warm each Cloud Run worker job once on its new digest
+        # #363, measured 2026-10-07: the first execution of each Cloud Run job
+        # after a new image digest spends 30-59 s importing the image; every
+        # later start pays 1-3 s. One `--self-test` execution per per-tenant
+        # worker job pays that import here, before the smoke test and before
+        # acceptance, instead of in the first tenant task. The worker exits 0
+        # on that flag before reading its configuration: no lease, no Firestore,
+        # no task state (agent_worker.__main__.self_test).
+        #
+        # ONLY AFTER the verify step proved every job runs the promoted digest:
+        # warming the old digest would warm nothing. A failed warm run is a
+        # slower first task, not a broken release, so the script warns and
+        # exits 0; continue-on-error keeps even a refused name (the only
+        # non-zero exit) from failing the release. !cancelled(), not always():
+        # it executes jobs in the environment, and a cancel stops it.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 30
+        run: ./scripts/warm-jobs.sh
+
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+
+      # kubernetes/render.py, which apply.sh runs in the step below, imports
+      # quota_broker, scheduler and swarm_common from apps/. Their import chain
+      # is stdlib-only today, but nothing holds it there: the first module-level
+      # third-party import in any of the three would fail this apply with
+      # ModuleNotFoundError on the runner's bare python3 (#346, #354 review).
+      # So it runs on the project's own interpreter, synced from the lockfile
+      # as `verify` syncs it, and only when the apply runs.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for kubernetes/render.py
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        run: uv sync --frozen --all-extras
 
       - name: apply each tenant namespace with its step-spec public keys
         # CONTRACT REQUEST 34 (#342), owner decision 2026-09-29 on #353: a GKE
@@ -960,6 +997,12 @@ jobs:
           gcloud container clusters get-credentials "${GKE_CLUSTER}" \
             --project "${PROJECT_ID}" --location "${GKE_LOCATION}"
           context="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
+          # apply.sh runs render.py with ${PYTHON_BIN:-python3}: the project's
+          # synced interpreter, never the runner's bare one (see above). Its
+          # imports are checked once here, before any tenant is applied, so a
+          # missing package fails the step before it writes to the cluster.
+          export PYTHON_BIN="${GITHUB_WORKSPACE}/.venv/bin/python"
+          "${PYTHON_BIN}" kubernetes/render.py --help >/dev/null
           jq -r 'keys[]' build/tenant-namespaces.json > build/tenants.txt
           # A while-read over a file, not `for t in $(...)`: see CLAUDE.md,
           # "Empty output is not success" -- the count is printed and checked.
@@ -1045,9 +1088,19 @@ jobs:
   # docs/acceptance.md says why each check asserts what it does.
   #
   # DEV ONLY, as its name says: it spends subscription quota on six small
-  # claude-code tasks and opens real pull requests on this repository, which
-  # is a price for dev's confidence, not a step of a prod release. It never
-  # starts on prod (tests/unit/scripts/test_release_acceptance_job.py).
+  # claude-code tasks and opens real pull requests on the sandbox, which is a
+  # price for dev's confidence, not a step of a prod release. It never starts
+  # on prod (tests/unit/scripts/test_release_acceptance_job.py).
+  #
+  # THE SMOKE TENANT AND THE PRIVATE SANDBOX (owner decision 2026-10-05,
+  # #628). The suite submits for the `smoke` tenant (X-Swarm-Tenant) and its
+  # tasks clone, and open their pull requests on, the private sandbox
+  # repository -- both from scripts/acceptance/config.sh, never from this
+  # workflow's own repository, which it used to fill with fixture pull
+  # requests (58 since 09-30, each running full CI). The suite refuses to run
+  # in any other tenant or against a publicly readable repository.
+  # tests/unit/scripts/test_acceptance_target.py holds all of that, and that
+  # nothing here or in scripts/acceptance/ names this repository.
   #
   # Its own job, after `deploy`, so a red acceptance is re-run alone with
   # "Re-run failed jobs" -- without redeploying -- and so it cannot hide a
@@ -1058,11 +1111,19 @@ jobs:
   # is 30 minutes, and the groups together would not fit). A FAIL in any group
   # fails this job, and so the release.
   #
-  # The GITHUB_TOKEN is write-scoped here for one step only, the sweep: the
-  # swarm-verify job holds no GitHub credential, so the pull requests and
-  # branches the direct-pr and integrate checks opened are closed from here
-  # (scripts/acceptance/github-cleanup.sh touches only swarm/task_ branches
-  # whose changes lie entirely under tests/acceptance/fixtures/).
+  # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
+  # handed to three steps only, and never to the suite: the swarm-verify job
+  # holds no GitHub credential. Before the suite, sandbox-sync.sh writes this
+  # commit's tests/acceptance/fixtures/ to the sandbox's main and checks the
+  # fixture issue; after it, github-verify.sh reads the pull requests the
+  # suite opened back (title, body, diff, merged branches -- the assertions
+  # the suite itself cannot make without a token) and fails the job on any
+  # defect, and then github-cleanup.sh closes the pull requests and
+  # branches the direct-pr and integrate checks opened there (only swarm/task_
+  # branches whose changes lie entirely under tests/acceptance/fixtures/). The
+  # job's own GITHUB_TOKEN reaches only this repository, so it is read-only
+  # here: nothing in this job writes to it. A missing secret fails the sync
+  # step loudly, and the suite never starts against an unsynced sandbox.
   # -------------------------------------------------------------------------
   acceptance:
     name: acceptance (dev)
@@ -1070,8 +1131,7 @@ jobs:
     needs: [deploy]
     if: ${{ !cancelled() && needs.deploy.result == 'success' && github.event.inputs.environment != 'prod' }}
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       id-token: write
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
@@ -1087,6 +1147,17 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
+      - name: put this commit's fixtures on the sandbox
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+        run: ./scripts/acceptance/sandbox-sync.sh
+
+      # When the suite starts, so github-verify.sh judges only the pull
+      # requests this run opened, not one an earlier, unswept run left.
+      - name: note when the suite starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: acceptance suite (inside the VPC)
         id: suite
         # Every group runs even when an earlier one failed: verify-remote.sh
@@ -1094,10 +1165,21 @@ jobs:
         # that failed.
         run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
 
-      - name: close the pull requests and branches the suite opened
+      # The suite cannot read the private sandbox back (swarm-verify holds no
+      # GitHub token) and SKIPs those assertions; this step makes them here,
+      # with the sandbox token, before the sweep closes anything. A failure
+      # here fails the job; the sweep still runs after it.
+      - name: read the suite's pull requests back from the sandbox
+        if: ${{ !cancelled() && steps.started.outputs.at != '' }}
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          SWARM_ACCEPTANCE_SINCE: ${{ steps.started.outputs.at }}
+        run: ./scripts/acceptance/github-verify.sh
+
+      - name: close the pull requests and branches the suite opened on the sandbox
         if: ${{ !cancelled() }}
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
         run: ./scripts/acceptance/github-cleanup.sh
 
   # -------------------------------------------------------------------------

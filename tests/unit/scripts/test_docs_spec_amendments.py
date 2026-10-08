@@ -21,6 +21,7 @@ fails here rather than leaving the spec quietly wrong again.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -62,22 +63,25 @@ def _backends() -> dict[str, Backend]:
 
 
 def test_the_catalogue_is_what_the_amendment_describes():
-    """The premise: Cloud Run Jobs for four profiles, GKE for browser alone.
+    """The premise: Cloud Run Jobs for most profiles, GKE for browser and claude-code.
 
     If this fails the profiles moved, and every document below is describing
     the old split: amend them before changing the expectation here.
     """
     backends = _backends()
-    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser"}
+    # claude-code: contract request 53, applied 2026-10-08 after request 55's
+    # canary (claude-code-gke, removed by the same change).
+    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code"}
     assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
         "mock",
         "generic",
-        "claude-code",
         "codex",
         # #295, contract requests 33, 35 and 36 (accepted 2026-10-01).
         "merge",
         "post-verdict",
         "claude-code-review",
+        # Contract request 48 (accepted by the owner 2026-10-05, #625).
+        "indexer",
     }
 
 
@@ -132,14 +136,100 @@ def test_build_prompt_no_longer_lists_cloud_run_jobs_for_deletion():
     assert "CLOUD_RUN_JOB` member and every branch" not in deleted
 
 
-_CITE_WINDOW = 150  # a merge above the code moves a cited line; see test_docs_describe_what_was_built._line
+def _cited_symbol(path: str, qualname: str) -> str:
+    """The source of the function, class or assigned name `qualname` (dotted, e.g. `Worker._lease_account`) in `path`.
+
+    #647: a line number in a 10,000-line module moves whenever a lane edits
+    above it, so a large Python file is cited as `path::qualname` instead and
+    the cited call must sit inside that symbol's body. A call that moves out
+    of the function, or a function that is renamed, still fails here.
+
+    The source includes what a reader sees as part of the symbol: a function's
+    decorators (a route's `@router.post("/authorize")`), and for a module or
+    class level name (`TOKEN_ENDPOINT`, `WorkerConfig.checkpoint_interval_seconds`)
+    the `#:` comment block directly above it, the convention that documents a
+    name in this repository.
+    """
+    source = (REPO / path).read_text(encoding="utf-8")
+    scope: ast.AST = ast.parse(source, filename=path)
+    for part in qualname.split("."):
+        scope = next((node for node in ast.iter_child_nodes(scope) if _defines(node, part)), None)
+        assert scope is not None, f"{path} has no {qualname} (no {part!r})"
+    lines = source.splitlines()
+    start = scope.lineno
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        start = min([start] + [d.lineno for d in scope.decorator_list])
+    else:
+        while start > 1 and lines[start - 2].strip().startswith("#:"):
+            start -= 1
+    return "\n".join(lines[start - 1 : scope.end_lineno])
 
 
-def _cited_line(path: str, line: int) -> str:
-    """The lines within +/-150 of the cited one, joined: the cited text must be near the line the doc names."""
-    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
-    lo = max(0, line - 1 - _CITE_WINDOW)
-    return "\n".join(lines[lo : line + _CITE_WINDOW])
+def _defines(node: ast.AST, name: str) -> bool:
+    """Whether `node` is the def, class or single-name assignment of `name`."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    return False
+
+
+def _cited_anchor(path: str, text: str, *, once: bool = True) -> str:
+    """The line of `path` that holds `text`, which a doc cites as `path` (`text`).
+
+    A non-Python file (a Dockerfile, a script, Terraform, markdown) has no
+    symbol to name, so a doc cites the exact text it points at instead of a
+    line number: #675 added 12 lines to the Dockerfile and pushed
+    `USER swarm:swarm` past the +/-150-line window this replaced, which turned
+    main red over a citation that was still true. An anchor never drifts; it
+    fails only when the text is gone, which is when the doc is wrong.
+
+    `once` (the default) also holds that the text names ONE place: an anchor
+    that occurs twice does not say which of the two the doc means.
+    """
+    assert "\n" not in text, f"an anchor is one line of {path}: {text!r}"
+    target = REPO / path
+    assert target.is_file(), f"cited {path}, which does not exist"
+    source = target.read_text(encoding="utf-8")
+    count = source.count(text)
+    assert count, f"{path} no longer contains the cited text {text!r}"
+    if once:
+        assert count == 1, f"{path} contains the cited text {text!r} {count} times: cite one place"
+    return next(line for line in source.splitlines() if text in line)
+
+
+#: The prefixes a citation into this repository starts with.
+_ROOTS = r"(?:apps|terraform|kubernetes|scripts|tests|images|plugin|docs|\.github)/"
+
+#: `path:N` or `path:N-M`: the form #647 and lane CITD retired. Any match fails.
+_LINE_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.\w+:\d+(?:-\d+)?)`")
+
+#: `path::qualname`, a Python function, class or name.
+_SYMBOL_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.py)::([\w.]+)`")
+
+#: `path` (`text`): the exact text a non-Python citation points at. `\s+`, not
+#: one space, so a citation the doc wraps between `path` and (`text`) is still
+#: checked rather than silently skipped.
+_ANCHOR_CITE = re.compile(rf"`({_ROOTS}[\w./-]+)`\s+\(`([^`]+)`\)")
+
+#: Anchors a doc cites that occur more than once in their file, and why each
+#: cannot be narrowed to one. Every other anchor must occur exactly once.
+_REPEATED_ANCHORS: frozenset[tuple[str, str]] = frozenset()
+
+
+def _assert_cites_resolve(doc: Path) -> None:
+    """Every citation in `doc` is a symbol or an anchor that resolves, and none is a line number."""
+    text = _text(doc)
+    stale = _LINE_CITE.findall(text)
+    assert not stale, f"{doc.name} still cites line numbers, which drift: {stale}"
+    for path, qualname in _SYMBOL_CITE.findall(text):
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+        _cited_symbol(path, qualname)
+    for path, anchor in _ANCHOR_CITE.findall(text):
+        assert "\n" not in anchor, f"{doc.name} wraps the anchor it cites in {path}: keep it on one line"
+        _cited_anchor(path, anchor, once=(path, anchor) not in _REPEATED_ANCHORS)
 
 
 def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
@@ -149,22 +239,37 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     text = _text(BUILD_PROMPT)
     isolation = _section(text, "### 2.2 Isolation: root inside the pod, gVisor underneath")
     assert "Amended 2026-10-01" in isolation
-    assert "`images/agent-runtime-base/Dockerfile:658`" in isolation
-    assert "`kubernetes/render.py:390`" in isolation
-    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 658)
-    assert "--runtime gvisor" in _cited_line("kubernetes/render.py", 390)
-    assert "NOT the" in _cited_line("kubernetes/render.py", 390)
+    assert "`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)" in isolation
+    assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
+    assert "`kubernetes/render.py::JOB_FILES_GVISOR`" in isolation
+    gvisor = _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR")
+    # One line says both: that `--runtime gvisor` selects it and that it is
+    # NOT the default. Two phrases anywhere in the symbol's comment block
+    # would pass a comment that split or dropped the negation (#453).
+    assert any("--runtime gvisor" in line and "NOT the" in line for line in gvisor.splitlines()), (
+        "kubernetes/render.py JOB_FILES_GVISOR no longer says, on one line, that "
+        "`--runtime gvisor` selects it and it is NOT the default"
+    )
 
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch
     assert "no init container" in dispatch
-    assert "assign(" in _cited_line("apps/agent-worker/agent_worker/lifecycle.py", 4923)
-    assert "credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/lifecycle.py", 5293
+    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
+    accountlease = "apps/agent-worker/agent_worker/accountlease.py"
+    assert f"`{lifecycle}::Worker._lease_account`" in dispatch
+    assert "self._account_broker.assign(" in _cited_symbol(lifecycle, "Worker._lease_account")
+    assert f"`{lifecycle}::Worker._account_credential_env`" in dispatch
+    assert "credential_env_from_account(" in _cited_symbol(lifecycle, "Worker._account_credential_env")
+    assert f"`{accountlease}::credential_env_from_account`" in dispatch
+    assert _cited_symbol(accountlease, "credential_env_from_account").startswith(
+        "def credential_env_from_account("
     )
-    assert "def credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/accountlease.py", 650
-    )
+
+    built = _section(text, "## 5. What gets built")
+    assert f"`{lifecycle}::Worker._run_child_supervised`" in built
+    assert 'self._checkpoint("periodic")' in _cited_symbol(lifecycle, "Worker._run_child_supervised")
+    # #647: no line number into lifecycle.py is left for a lane to shift.
+    assert not re.search(r"lifecycle\.py:\d", text)
 
     architecture = _section(text, "## 3. Architecture")
     assert "Amended 2026-10-01" in architecture
@@ -248,16 +353,33 @@ def test_budget_exhausted_is_recorded_as_a_request_not_an_edit():
 
 
 # --------------------------------------------------------------------------
-# every file:line an amended document cites resolves
+# every citation an amended document makes resolves, and none is a line number
 # --------------------------------------------------------------------------
 
-_CITE = re.compile(r"`((?:apps|terraform|kubernetes|scripts|tests|images)/[\w./-]+\.\w+):(\d+)`")
+CHILD_TASKS = REPO / "docs" / "design" / "child-tasks.md"
+
+#: The amended documents, and the child-tasks design, whose lifecycle.py line
+#: numbers drifted the same way #647's did.
+CITING = AMENDED + (CHILD_TASKS,)
 
 
-@pytest.mark.parametrize("doc", AMENDED, ids=lambda p: p.name)
-def test_every_cited_line_exists(doc: Path):
-    for path, line in _CITE.findall(_text(doc)):
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        lines = target.read_text(encoding="utf-8").count("\n") + 1
-        assert int(line) <= lines, f"{doc.name} cites {path}:{line}, past its end ({lines})"
+@pytest.mark.parametrize("doc", CITING, ids=lambda p: p.name)
+def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
+    """No `path:N`; every `path::qualname` names a def, class or name; every `path` (`text`) finds its text."""
+    _assert_cites_resolve(doc)
+
+
+def test_an_anchor_that_is_gone_or_ambiguous_fails():
+    """The helpers' own failure modes: the reason a moved line no longer turns main red is
+    that the anchor is checked for presence instead, so presence must really be checked."""
+    dockerfile = "images/agent-runtime-base/Dockerfile"
+    with pytest.raises(AssertionError, match="no longer contains"):
+        _cited_anchor(dockerfile, "USER swarm:swarm-that-is-not-there")
+    with pytest.raises(AssertionError, match="times: cite one place"):
+        _cited_anchor(dockerfile, "RUN ")
+    assert _cited_anchor(dockerfile, "RUN ", once=False).lstrip().startswith("RUN ")
+    with pytest.raises(AssertionError, match="has no"):
+        _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR_GONE")
+    # A name's `#:` block is part of what it cites; a function's decorator is too.
+    assert _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR").startswith("#: v2: root inside a gVisor sandbox.")
+    assert _cited_symbol("apps/swarm-api/swarm_api/routes/platform.py", "runtimes").startswith("@router.get(")

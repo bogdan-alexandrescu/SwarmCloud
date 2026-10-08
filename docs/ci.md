@@ -34,23 +34,22 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The seven workflows, and what each one is responsible for
+## The workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `ci-gate.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`, `ci-fix.yml` and `ci-gate.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
+| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
-| `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
-* **`application.yml` fires on a docs-only pull request** — `docs/**` is in its
-  path filter — and its `shellcheck` job is where documentation links are
+* **`application.yml`'s jobs run on a docs-only pull request** — `docs/**` is
+  in its `changes` job's list — and its `shellcheck` job is where documentation links are
   resolved (`scripts/lib/check-doc-links.sh`). A broken relative link or a
   broken heading anchor fails that job. Anchors are checked, not just files,
   because GitHub silently lands a reader at the top of the page when an anchor
@@ -130,15 +129,20 @@ Stated plainly, because a green pull request is the thing most likely to be
 over-read:
 
 * **Nothing about the live project.** No plan, no apply, no deployed state.
-* **Nothing about an image actually building.** Images build only on `main`,
-  once per commit, in `application.yml`'s `build images` job — see below.
+* **Nothing about an image being pushed or deployed**, and — until the owner
+  creates the pull-request build identity — **nothing about an image building
+  either**. Once it exists, a pull request that changes an image's inputs builds
+  that image, self-tests included, without pushing it
+  ([below](#images-are-built-on-a-pull-request-without-pushing)); the build a
+  release ships is still the one `build images` makes on `main`.
 * **Nothing a browser would see.** The UI job is a typecheck, Vitest in jsdom,
   `node:test`, and the production build (`npm run build`); jsdom has no layout
   engine, so overlap, overflow, wrapping and contrast are invisible to it. Every
   one of those defects this repository has found was found in a real browser
   and none of them turned a check red. The build proves the bundle compiles on
-  the image's Node, not that the `swarm-ui` image builds. That runs on `main`,
-  in `build images`.
+  the image's Node; the `swarm-ui` image's own build is
+  `build changed images without pushing` on a pull request that changes it, and
+  `build images` on `main`.
 * **Nothing about the seams against a real deployment.** Smoke, concurrency,
   race, failure and e2e run through `scripts/verify-remote.sh` inside the VPC,
   because `swarm-api` ingress refuses a laptop. They are not pull-request
@@ -248,7 +252,8 @@ the apply and the deploy; they now sit on the one `approval` job in front of
 the promotion — see the next section.)
 
 **What a pull request cannot prove about this.** `release.yml` never runs on a
-pull request, and `build images` is skipped there, so PR CI never exercises
+pull request, and `build images` is skipped there (a pull request's own build
+pushes nothing and records no manifest), so PR CI never exercises
 the real hand-off. It checks the scripts against a fake `gh` and `gcloud`
 (`tests/unit/scripts/test_ci_built_images.py`,
 `test_push_images_promotes_recorded_digests.py`), reads both workflows to hold
@@ -257,6 +262,135 @@ actionlint. It cannot show that the job receives `actions: read`, that
 GitHub's API returns what the fake returns, that `gh run download` fetches the
 artifact across runs, or that a release actually gets faster. The first push
 to `main` after this lands is the first real proof — read its release run.
+
+## Images are built on a pull request, without pushing
+
+**Owner decision, 2026-10-05 (#650).** Until then images were built only on
+`main`. #641 changed `images/agent-runtime-base/Dockerfile` and the repo-index
+LSP package; its pull request was green, and the first build of the image ran
+after merge, where `swarm-repo-index --lsp-self-test` failed (Cloud Build
+650b9ebb, main 539b5b58 and f1c4b075). Main was red and releases blocked until a
+fix landed. An image's build-time self-tests are checks like any other, and a
+check that first runs after merge is not a pull-request check.
+
+### Why there is no pull-request identity
+
+**Owner decision, 2026-10-05: pull requests get no Google identity.** A pull
+request's checkout chooses what runs — the workflow file, `build-images.sh`,
+every `cloudbuild.yaml` — so whatever an identity minted for a pull request
+can do, anyone who can push a branch can do. An identity that could submit
+Cloud Builds would let code on any branch run builds in
+this repository's GCP project, which is a **shared project**: its Cloud Build quota,
+its logs and the other team's resources in it are not this repository's to expose.
+The deployer stays pinned to `refs/heads/main` (`terraform/bootstrap/wif.tf`,
+and `build images` in `application.yml` says why that pin must never widen),
+and no second, narrower identity is created either. #673 first shipped this
+job waiting for one; that path is gone.
+
+So a pull request builds on the GitHub-hosted runner, with `docker buildx`,
+holding nothing: no Google authentication, no `id-token`, no registry login, no
+secret.
+
+### What `build changed images without pushing` does
+
+`application.yml`'s `build changed images without pushing` job (`build-check`),
+on every pull request:
+
+1. **Skips a fork's pull request in seconds**, before checking anything out,
+   as the owner's brief for this job (2026-10-05) requires. A maintainer who
+   wants a fork's images built pushes its branch to this repository.
+2. **Maps the change to images.** `scripts/build-images.sh --affected-by`
+   reads `git diff base...head` against each image's inputs: its recipe's
+   directory (`images/<image>/**`), every `COPY`/`ADD` source its Dockerfile
+   names, and `.dockerignore` and `.gcloudignore`, which filter every build's
+   context. An image built `FROM` a reached one (`build_after`) is reached too,
+   so a base change builds the browser and indexer images. The `COPY` sources
+   are **read from the Dockerfiles** (`dockerfile_copy_sources`,
+   `scripts/lib/common.sh`), never listed by hand: a `COPY` added to a
+   Dockerfile is an input the day it lands. A `COPY` form the reader cannot
+   map — JSON form, a heredoc, a variable, a URL — fails the job rather than
+   being skipped, because a skipped source is a file whose change would not
+   build the image. `build-images.sh --inputs` prints the whole map. A `COPY`'d
+   file outside `images/` counts: `Makefile`, `scripts/**` and
+   `tests/acceptance/fixtures/**` reach `swarm-verify`; `apps/common/**`
+   reaches every Python service and the worker images. No image input changed:
+   the job ends here, green, and its summary says so.
+3. **Frees runner disk.** `agent-runtime-base` is ~900 MB compressed and
+   several GB unpacked, and BuildKit holds its builder stage, its runtime and
+   its exported layout at once before the browser image (Chromium) and the
+   indexer (a Go toolchain and two compiled language servers) are built on it.
+   The job deletes toolchains it never uses (Android, .NET, GHC, CodeQL,
+   Swift) and the runner's cached images, and writes the free space on `/`
+   before and after to its summary. **How much was needed is not measured
+   yet**: the first pull request that builds the base records it there, and
+   that number belongs here.
+4. **Builds them with `docker buildx` and pushes nothing.**
+   `build-images.sh --build-only --local <images>` writes exactly the configs
+   `--build-only` would submit to Cloud Build — `generate_config`'s for a
+   Dockerfile, a checked-in `cloudbuild.yaml` with its `images:` block removed,
+   `generate_chain_config`'s base-then-derived pair — and `refuse_if_pushes`
+   reads each one, as before. Then, instead of submitting, it replays them on
+   a local `docker-container` buildx builder, one at a time:
+   * a `docker build` step becomes `docker buildx build` with the step's own
+     arguments (main's Dockerfile, `--platform linux/amd64`, `GIT_SHA`,
+     `VITE_SWARM_ENV` for `swarm-ui`), plus `--no-cache` — a cached `RUN` is a
+     self-test that did not run — and an output that is never a registry:
+     `type=cacheonly`, or `type=oci` into `build/build-only/local/` for an
+     image something is built `FROM`;
+   * **order as on main**: `agent-runtime-browser` and `agent-runtime-indexer`
+     are built after `agent-runtime-base`, from the base this run built — its
+     digest passed as `BASE_IMAGE=swarm-build-only/agent-runtime-base@sha256:…`
+     and resolved by `--build-context …=oci-layout://…`, so `FROM` never pulls
+     and the indexer's refusal of an undigested base still holds. The base is
+     built once per run even when both derived images need it, and a base that
+     failed builds nothing from it;
+   * any other step — `swarm-verify`'s context assembly — runs in its own
+     image with the checkout at `/workspace`, as the runner's user, with no
+     docker socket;
+   * a docker step that is not a build (push, pull, login, tag), and a config
+     that asks for a secret, are refused.
+
+   No `gcloud` call is made, no manifest is written, and `--local` is only a
+   mode of `--build-only`.
+5. **Runs main's self-tests, and says which.** The self-tests are `RUN`
+   steps of the Dockerfiles main's Cloud Build builds — the base's
+   agent-worker import and toolbox checks, `swarm-repo-index --self-test`,
+   `--lsp-self-test` and `swarm-repo-graph --self-test` in the indexer, the
+   Chromium launch in the browser — so building the same Dockerfile to its
+   last stage, uncached, is running them; a failing one fails the build and
+   the job, naming the image. The script **reads** each Dockerfile's `RUN`
+   steps into `build/build-only/local-report.md`, which the job appends to its
+   summary; the workflow names none of them.
+
+The job concludes `success` with its build steps skipped when no image input
+changed and on a fork's pull request. It runs on every pull request, so a
+failed build fails `application.yml`'s run and `ci-gate` with it. `main`'s
+`build images` is unchanged, and only pull requests that reach an image pay
+the minutes. A newer push to the branch cancels the run, and with it the
+build, which lives on the runner.
+
+**One difference from main, by construction.** Cloud Build receives the
+checkout filtered by `.gcloudignore`, then `docker build` filters it again by
+`.dockerignore`; the runner builds the checkout filtered by `.dockerignore`
+only. A Dockerfile that `COPY`s a file `.gcloudignore` excludes and
+`.dockerignore` does not would pass here and fail on main.
+
+**What a pull request proves about this, and what it cannot.**
+`tests/unit/scripts/test_build_images_local.py` runs the real script against a
+fake `docker` and a `gcloud` that fails if called: every docker call is a
+`buildx build` or a socket-less `run`, no push, no login, no registry output;
+the base built first and once, the derived images `FROM` its digest through an
+`oci-layout` context; every build of the Dockerfile main's recipe names, to its
+last stage, uncached; a planted `RUN` showing up in the report; a recipe asking
+for a secret refused. It reads the workflow job (buildx, no `secrets.`, no
+`id-token`, no login, no `vars.GCP_*`, no self-test restated), runs its fork
+and plan steps (a fork skips before the checkout; a docs change builds nothing;
+an image change builds), and drives `ci-gate` with this job failed.
+`test_build_images_pr_check.py` holds the path → image map and every input
+path firing `application.yml` on a pull request. They cannot show that BuildKit
+resolves the base through the `oci-layout://` context on a real runner, that
+the disk suffices, or how long it takes. The first pull request touching an
+image after this lands is that proof — read its `build-check` summary.
 
 ## A prod release waits for approval before anything prod-facing
 
@@ -666,8 +800,9 @@ there as success.
 **`contents: write` is granted on that job, not on the workflow.** The workflow
 default stays `contents: read`. The jobs that build, plan and deploy run a lot
 of code, and none of it needs to write to the repository. `plugin-tag` runs
-only checkout, `jq` and `git`. (`acceptance` holds the same grant for its own
-sweep. See its header.)
+only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
+sweep until #628 moved its pull requests to the private sandbox; it is
+`contents: read` now, and the sweep uses the sandbox's own token.)
 
 **A bump that touches only `plugin/` starts no release,** because `plugin/**`
 is not in `release.yml`'s `on.push.paths`. That filter was left alone. The
@@ -984,14 +1119,20 @@ that does not exist yet. So for a **new tenant**:
    git fetch origin && git switch main && git pull --ff-only
    git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars
    grep -n '<<' /tmp/pr-dev.tfvars          # expect nothing inside the tenants block
-   terraform -chdir=terraform/bootstrap init
+   terraform -chdir=terraform/bootstrap init -reconfigure \
+     -backend-config="bucket=swarm-tfstate-saga-agents-staging"
    terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars
    ```
 
    `terraform init` is needed before any bootstrap plan or targeted apply: this
    root reads `modules/service_account_ids` and `modules/custom_role_ids`, and a
    checkout that has not initialised them since they were added fails with
-   "Module not installed".
+   "Module not installed". The `-backend-config` is the state bucket: since #827
+   bootstrap's state lives at `gs://<bucket>/bootstrap`, and a checkout with no
+   state refuses to plan through `scripts/bootstrap.sh` but not through a bare
+   `terraform plan` — check `terraform -chdir=terraform/bootstrap state list` is
+   not empty before reading this plan
+   ([operations](operations.md#the-bootstrap-layers-state)).
 
    **Check the untargeted plan before applying anything**, and stop if any of
    these does not hold:
@@ -1093,13 +1234,16 @@ limited to the roles preflight could read, which is all of them before step 4
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
-**#275's chunking is not yet reflected in the probe script (#276).**
-[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
-still asserts *exactly one* conditioned `projectIamAdmin` binding
-(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
-will find two and stop before asking IAM anything. Filed as #276 rather than
-fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
-brief was terraform/tests/docs only.
+**Preflight checks every chunk, not one binding (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
+one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
+chunk -- and refuses unless each one's expression is exactly
+`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`
+and its list does not name `roles/browser`. A grant is admitted if *any*
+binding admits it, so one chunk with a broader condition (a `|| true`, a
+`hasAny`) or the probe role in its list would make a grant prove nothing; the
+whole expression is matched, and the list is parsed, for that reason. Before
+#276 it asserted exactly one binding and would have stopped at two.
 
 **What it cannot prove:**
 
@@ -1162,6 +1306,49 @@ fixer by hand and push the fix-up from a laptop.
    `MAX_FIX_ATTEMPTS` (two; the script says why) one more comment says it
    stopped. A submission the API refuses is a comment and a red fixer run, and
    does not count as an attempt.
+6. **How the fix step ended is a comment too.** When the fix task reaches a
+   terminal state, swarm-api posts one comment on the pull request: the fix
+   task's id, its console link, its state, and one paragraph -- the commit it
+   pushed, or why nothing was pushed, and the agent's own account cut to a
+   paragraph. It says when the per-pull-request cap is reached. No log is
+   quoted (the console has it), and everything the agent or an error wrote is
+   redacted, with the tenant's token as a known literal, and neutralised
+   (mentions and closing keywords broken) before it is posted
+   ([`swarm_api/cifix.py`](../apps/swarm-api/swarm_api/cifix.py)).
+
+### The post-back, and the cap the API holds
+
+The script comments when it SUBMITS; it ends before the step does, and
+nothing in GitHub Actions should wait an agent's hour for it. So the outcome
+is posted by swarm-api, on the per-tenant `merge_wake` Cloud Scheduler tick
+(`POST /v1/admin/merges/wake?tenant_id=<t>`, every minute, as the rollup
+sweeper), which already reads that tenant's `-git` token for the merge step's
+CI reads. The tick's answer carries `ci_fix` (posted, waiting, failed) and
+`ci_fix_failures` (task id and code) beside the merge report.
+
+* **Stamped by the API, never by the caller.** The script sends
+  `metadata.ci_fix` = `{pull_request, run_id, head_sha, attempt,
+  max_attempts}` on the workflow. The API accepts it only beside
+  `continues_task`, refuses any other key in it (the post-back's record
+  above all), and stamps `ci_fix.postback = "pending"` on the fix task.
+* **Only to the pull request of the continued branch.** The tick reads the
+  pull request with the tenant's token and posts only if its head branch is
+  `swarm/<the continued task>`; anything else is given up as
+  `pull_request_mismatch`.
+* **Once.** The comment opens with `<!-- swarm-ci-fix:outcome:<task> -->`;
+  a retry whose record was lost finds it and does not post again. It is never
+  the script's attempt marker, so it never counts against the cap. A failed
+  write is retried every 5 minutes for an hour (`RETRY_SECONDS`,
+  `MAX_POSTBACK_FAILURES`), then given up with its code.
+* **The cap holds at the API too.** The script counts its own attempt
+  comments, which anyone with write access can delete. The API counts the
+  tenant's fix workflows for that pull request of that branch and refuses
+  the one past `max_attempts` (422 `invalid_dispatch`), and refuses a
+  `max_attempts` above 3 (`MAX_ATTEMPTS_CEILING`).
+* **The token needs `Issues: Read and write`** on the repository -- the same
+  permission an issue run's comments need ([multi-tenancy.md](multi-tenancy.md)).
+  Without it the fix still runs and pushes; the tick reports
+  `writeback_forbidden` for the task and retries until it gives up.
 
 ### Why a step may push to another task's branch
 
@@ -1177,11 +1364,33 @@ Since #454's CI loop a tenant MEMBER may also continue an `integrate`
 workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
 `publish_branch` a `direct-pr` task does, and opens the workflow's one pull
 request from it, so an issue run's fix round lands on the run's pull request.
-A contributor is still refused (its branch has no pull request). The CI
-fixer's continuation-scoped account is NOT given this: its reach was reviewed
-as `direct-pr` tasks only (contract request 30), so it is refused an
-integrator, directly or through a member's continuation of one, and a red
-integrate pull request is fixed by its issue run, not by `ci-fix.yml`. The rules are in
+A contributor is still refused (its branch has no pull request).
+
+**What the CI fixer may continue** (owner decision 2026-10-06). Its
+continuation-scoped account reaches exactly the tasks that opened a pull
+request from their own branch, in its own tenant:
+
+* a `direct-pr` task -- the reach contract request 30 reviewed;
+* an `integrate` workflow's **integrator**. Every SwarmCloud lane pull
+  request is opened by one (the workflow's final fix step), so a fixer
+  limited to `direct-pr` tasks could fix none of them: its first real run,
+  on PR #740, was refused `422 invalid_dispatch`. The fix pushes to the same
+  `swarm/<integrator task>` branch, so that pull request updates, and the
+  per-pull-request cap and the post-back above work unchanged, both keyed on
+  the integrator as the continued task. The integrator is recognised by the
+  `role` the API recorded in its dispatch block when the workflow was
+  submitted -- a reserved key no caller can write -- never by anything the
+  fixer sends.
+
+Still refused to it, each as `422 invalid_dispatch`: any other step of a
+workflow (a contributor's branch has no pull request of its own, so a fix
+there reaches nobody), any task of another tenant (read exactly like a
+missing one), a chain of continuations whose root is neither of the two, and
+a merge-only continuation (a merge is a member's power, not a push). Widening
+the reach to integrators lets a stolen fixer token push to every lane pull
+request of its tenant as well as every `direct-pr` one; it still cannot
+merge, start new work, read what it did not submit, or reach another tenant.
+The rules are in
 [`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
 block it writes is recorded under request #6 in
 [`contract-change-requests.md`](contract-change-requests.md).
@@ -1196,7 +1405,18 @@ it is not configured, and submits nothing.
   through the IAP front door, with an access token for a principal granted
   `roles/iap.httpsResourceAccessor` (`frontend_iap_members` in
   `terraform/bootstrap/terraform.tfvars`, applied by the owner) -- the same
-  path `SWARM_IMPERSONATE_SA` gives an operator's laptop.
+  path `SWARM_IMPERSONATE_SA` gives an operator's laptop. IAP membership lives
+  only there: `terraform/bootstrap/wif.tf` binds each member on the
+  platform's own backends (`frontend_accessors`), in the root only the owner
+  applies, so adding the fixer is an owner apply and never a release. The
+  deployer (`GCP_DEPLOY_SA`) holds no IAP role at all -- no `roles/iap.*`
+  project role, and it is not in `frontend_iap_members` (read 2026-10-07) --
+  and the release never reads an IAP policy: each of the three ways of
+  granting it IAP admin tried on 2026-09-24 either reached the other team's
+  backends or was refused (wif.tf, "WHO MAY PASS IAP"). `tests/terraform/bootstrap.tftest.hcl`
+  (`iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role`)
+  requires every accessor binding to be `roles/iap.httpsResourceAccessor` and
+  no deployer role to start `roles/iap.`.
 * **`ci_fix_service_account` in `terraform/bootstrap/terraform.tfvars`**, the
   same email, applied by the owner. It binds that account
   (`roles/iam.workloadIdentityUser`) to exactly one principal,
@@ -1230,6 +1450,113 @@ it is not configured, and submits nothing.
 `workflow_run` only fires for a workflow file on the default branch, so the
 fixer does nothing before it has merged.
 
+### Turning it on, in this order
+
+Status, 2026-10-06: `ci_fix_wif` is applied (terraform/bootstrap, 08:40Z),
+`swarm-ci-fix` is in `frontend_iap_members` and listed on `eng`, and the
+repository variable `SWARM_CI_FIX_SA` is **unset**, so every red swarm pull
+request gets the "not configured" comment and no fix. Each step below
+depends on the one before it; doing the last one first gives a fixer that
+authenticates and is refused.
+
+1. **The account exists** (it is not created by Terraform; `ci_fix.tf` says
+   why):
+
+   ```bash
+   gcloud iam service-accounts describe \
+     swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com \
+     --project saga-agents-staging --format='value(email,uniqueId)'
+   ```
+
+2. **Bootstrap applied** with `ci_fix_service_account` set and the same
+   account in `frontend_iap_members` (`terraform/bootstrap/terraform.tfvars`;
+   the plan refuses one without the other):
+
+   ```bash
+   terraform -chdir=terraform/bootstrap plan -out=/tmp/bootstrap.plan
+   terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.plan
+   ```
+
+   This makes `google_service_account_iam_member.ci_fix_wif`
+   (`roles/iam.workloadIdentityUser` on the account, for the principalSet
+   `attribute.job_workflow_ref/<repo>/.github/workflows/ci-fix.yml@refs/heads/main`)
+   and the account's `roles/iap.httpsResourceAccessor` on the front door's
+   backend services (`wif.tf`, `frontend_accessors`). **No token-creator
+   grant exists or is needed**: the workflow federates AS the account, and
+   `access_token` in `scripts/lib/common.sh` does not impersonate the account
+   it is already signed in as.
+
+3. **A release has rendered the tenant listing** into swarm-api
+   (`tenants.eng.service_accounts` in
+   `terraform/environments/dev/dev.tfvars`, `TENANT_SERVICE_ACCOUNTS` on the
+   service). Without it the account resolves to its own `u-` tenant, which
+   owns nothing it can continue, and every submission answers 422.
+
+4. **eng's `-git` token can comment**: `Issues: Read and write` on the
+   repository, for the post-back. It already needs it for issue runs.
+
+5. **Then, and only then, the repository variable:**
+
+   ```bash
+   gh variable set SWARM_CI_FIX_SA \
+     --repo bogdan-alexandrescu/SwarmCloud \
+     --body swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+   ```
+
+   `GCP_WIF_PROVIDER` (already set for the release) names the provider;
+   `SWARM_API_HOST` is optional.
+
+### Seeing it work
+
+* On the next red `swarm/<task>` pull request, the `ci-fix` run is green and
+  the pull request has a comment `CI fixer: attempt 1 of 2.` naming the
+  workflow and the fix task. `gh run list --workflow ci-fix.yml --limit 5`
+  lists the runs; a run that is SKIPPED was not a red `application` run on a
+  `swarm/` branch of this repository (the job's `if:`).
+* The fix task is in the console under its id, in `eng`, and its branch is the
+  pull request's. Its push re-runs `application` on the pull request.
+* Within a minute or two of the task ending, a second comment,
+  `CI fixer: attempt 1 of 2 ended <STATE>.`, with the console link and the
+  outcome. If it does not come, the `merge_wake` tick's answer names the task
+  and the code in `ci_fix_failures` (`writeback_forbidden`: the token lacks
+  `Issues: write`; `pull_request_mismatch`: the pull request is not on the
+  continued branch).
+* A third red run on the same pull request gets `CI fixer: stopped after 2
+  attempts.` and no submission; a submission forced past the cap answers 422.
+
+### Admitting the fixer through `swarm-eng-bots@saga.xyz` (owner decision 2026-10-06): NOT EFFECTIVE YET
+
+The owner asked, on 2026-10-06, that `swarm-ci-fix` reach tenant `eng`
+through a SwarmCloud-only group, `swarm-eng-bots@saga.xyz`, rather than
+`eng@saga.xyz` (which holds project-wide admin roles on this shared
+project). Creating the group and its membership is an operator step in Cloud
+Identity, and is exactly:
+
+```bash
+gcloud identity groups create swarm-eng-bots@saga.xyz \
+  --organization=saga.xyz \
+  --display-name="SwarmCloud eng bots" \
+  --description="SwarmCloud only: service accounts admitted to tenant eng. Holds no IAM role on any project."
+gcloud identity groups memberships add \
+  --group-email=swarm-eng-bots@saga.xyz \
+  --member-email=swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
+```
+
+**Running it changes nothing about which tenant the fixer reaches, and
+nothing in Terraform can register the group as `eng`'s.** A tenant's id is
+derived from its group's address by the frozen
+`swarm_common.identity.tenant_id_for_group`, so a registered
+`swarm-eng-bots@saga.xyz` is a NEW tenant, `swarm-eng-bots`, which owns none
+of `eng`'s pull requests -- every fix would be refused as "not a task in your
+tenant". A group member is also a full member of its tenant, able to submit
+any work, where the listing above makes the account continuation-scoped (it
+may only continue a `direct-pr` task or an integrator; contract request 30
+and the 2026-10-06 decision above). The listing
+already keeps the account out of `eng@saga.xyz`. Mapping a second group onto
+`eng` is a frozen-contract change, and whether to make it is the owner's
+question, not this document's: until it is answered, the listing is the
+mechanism and the group, if created, is unused.
+
 ## A ready pull request is merged by GitHub, not by a session
 
 **To be retired, owner decision 2026-10-04 (#295, contract request 47):**
@@ -1258,7 +1585,9 @@ native auto-merge**, and GitHub performs the squash merge once the base
 branch's required checks pass at the pull request's head. It used to take a
 merge watcher running in an operator's session, so a green, ready pull request
 waited for somebody's laptop. [`auto-merge.yml`](../.github/workflows/auto-merge.yml)
-is the whole mechanism; it waits for nothing and polls nothing.
+is the whole mechanism; it waits for nothing and polls nothing. A label that
+lands while checks still run is looked at again when they finish
+([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)).
 
 It refuses, with a comment on the pull request saying which and why:
 
@@ -1277,16 +1606,129 @@ It refuses, with a comment on the pull request saying which and why:
   repository does not use, so it counted zero and refused every `ready` label
   (#412, #403). Classic protection still counts, so moving back to it works;
 * **no merge App configured** — see the next paragraph;
-* **a check that already ran on the head commit and is failing or still
-  running** — even one that is not required. The ruleset requires only the
-  checks that run on every pull request, plus `ci-gate`; a path-filtered workflow
-  (`application.yml`, `terraform.yml`) is not required, but when a pull
-  request's changes do trigger it, this still holds the merge on its result.
+* **a check that already ran on the head commit and is failing** — even one
+  that is not required, and even beside checks still running. The ruleset
+  requires only the checks that run on every pull request, plus `ci-gate`; a
+  path-filtered workflow (`application.yml`, `terraform.yml`) is not required,
+  but when a pull request's changes do trigger it, this still holds the merge
+  on its result;
+* **a closing keyword that names an open pull request** (since 2026-10-08,
+  owner decision). The text of PR 857 named the open, unmerged PR 840 with a
+  closing keyword, and two seconds after the App merged 857, GitHub itself
+  closed 840. Before the gate, the enable job checks out the **default
+  branch's** `scripts/` (sparse, no credentials, never the pull request's
+  head) and runs
+  [`scripts/check-closing-references.sh`](../scripts/check-closing-references.sh).
+  GraphQL `closingIssuesReferences` is an IssueConnection and never lists a
+  pull request (PR 817 puts "fixes" before PR 777 and lists nothing). So the
+  script also reads the closing keywords in the title, the body and **every
+  commit message**, because this repository's squash message is the commit
+  messages. For each number in this repository it asks REST
+  `repos/<R>/issues/<n>` whether it is a pull request and whether it is open.
+  An open one refuses on the label and on a re-evaluation alike: `ready` is
+  removed and the comment says to reword the reference ("PR 840") or write
+  `part of #840`. An issue passes. So does a closed or merged pull request:
+  the keyword closes, never reopens, and cannot change a merged one. If the
+  check cannot tell (an error, a failed read other than a 404, more than one
+  page of references or commits), the job fails and nothing is armed.
+
+A check **still running** is not a refusal (since 2026-10-06, #697): if it
+is a *required* one the pull request is queued and waits, as the next section
+says; if it is not required it does not hold the merge at all (since
+2026-10-07, #815).
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
 workflow merges it directly with the same token, method and subject. The
 ruleset still decides; the App has no bypass.
+
+### A ready label that lands while checks run is re-evaluated
+
+**Measured 2026-10-06 (observer P13):** #697 got `ready` while its CI was
+running. The gate refused it ("failing or still running") and, evaluating
+only on the label event, never looked again, so the pull request sat
+unmerged after it went green. Every pull request SwarmCloud opens with
+`pr_label: ready`, and every one an operator labels at creation, hit that.
+Owner decision, 2026-10-06: a pull request labelled early is merged once its
+checks are green at head.
+
+So a *required* check still running at the head **waits** instead of
+refusing. The label run comments once ("Queued for auto-merge, waiting for
+required checks still running on the head commit: …") and arms nothing.
+Then:
+
+* the **`requeue` job** (`re-evaluate ready pull requests when a run
+  finishes`) runs on `workflow_run: completed` of every workflow that runs on
+  `pull_request` — `application`, `ci-gate`, `security`, `terraform`; the test
+  reads that list out of the workflow files, so a new one cannot be left
+  out. Since #815 it also runs on `check_suite: completed`, the backstop for
+  a suite another App created (code scanning's, for one). It lists the open `ready` pull requests whose head is the finished
+  run's head sha (not `workflow_run.pull_requests`, which GitHub leaves empty
+  for a fork) and sends a `workflow_dispatch` of `auto-merge.yml` on main for
+  each, with `pr: <number>`;
+* the **dispatched run is the `enable` job again**: it reads the pull request
+  back from the API (title and head as they are now), does nothing unless it
+  is still open and labelled `ready`, and runs the same gate. A required
+  check still running: it waits, silently. Every required check green and no
+  check that ran failed: it merges with the App token, exactly as a label on
+  a green pull request does. The last run to finish on the head is the one
+  that merges it.
+
+**Only a required check still running holds the merge (#815, 2026-10-07).**
+#811 got `ready` while code scanning's `Trivy` was still running. Trivy is
+not one of the checks ruleset 24160219 requires, and no application or
+security run reports it, so the gate waited on it, nothing looked again when
+it finished, and the merge queue stalled for five hours until an operator
+dispatched the re-evaluation by hand. Now:
+
+* the wait reads the same required names gate item 3 reads (the branch's
+  effective rules plus classic protection), and only one of those still
+  running waits. A non-required check still running does not hold the merge;
+* a check that already **failed** still refuses, required or not — #815
+  narrows the wait, not gate item 5;
+* GitHub reports a pull request whose required checks are green but a
+  non-required one is running (or red) as `UNSTABLE`, and will not *enable*
+  auto-merge on it, as on `CLEAN`. So `UNSTABLE` and `HAS_HOOKS` are merged
+  directly, or enqueued on a merge-queue base, exactly like `CLEAN`; the
+  ruleset still decides. A non-required check that fails after the gate read
+  the checks is merged past in that window — as native auto-merge would
+  have done — which #815 accepts;
+* `check_suite: completed` dispatches the same re-evaluation for each open
+  `ready` pull request at the suite's head. GitHub runs no workflow on
+  `check_suite` for a suite GitHub Actions created, so it never fires for
+  `application` or `security` — `workflow_run` stays the way in for those —
+  only for another App's suite. It is a backstop: the narrowed wait above
+  does not depend on it.
+
+Why not something simpler. `workflow_run` cannot merge by itself: a merge
+with its GITHUB_TOKEN starts no build and no release (next section), so it
+dispatches, and the dispatched run mints the App token after the gate.
+`check_suite: completed` alone would not do: GitHub does not run a workflow
+on `check_suite` for a suite GitHub Actions created, so it is only the
+backstop for other Apps' suites (above). And arming native auto-merge at
+once, on a running *required* check, is not done either: the gate re-reads
+the checks when it finishes, so a failed check — required or not — is
+refused by gate item 5 instead of merged past. A `ready` label on
+a pull request with no check run at all yet (opened seconds ago) passes the
+gate and arms native auto-merge, as before; the re-evaluation then finds it
+armed (or already merged) and leaves it.
+
+**A refusal on a re-evaluation** — the title, the base, or a check that
+failed — turns auto-merge off, **removes `ready`** and comments once, so the
+next finishing run does not say it again; fix it and add `ready` again. It
+does not fail the run, which sits on main's head commit. The two refusals
+only the owner can fix (no required checks, no merge App) keep `ready`, which
+is what the operator's merge watcher reads, and say nothing more than the
+label run did; without `vars.MERGE_APP_ID` the `requeue` job does not run at
+all. A refusal on the label itself is unchanged: comment, red run, label left
+on.
+
+Re-evaluations queue in their own concurrency group
+(`auto-merge-requeue-<number>`): a queued run cancels the one queued before
+it in its group, so a burst of finishing runs must not cancel a queued
+`synchronize` run of the `disable` job. An operator can send the same
+dispatch by hand (Actions → auto-merge → *Run workflow*, `pr`) to make it
+look again; it is a request to look, not a `ready`.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
@@ -1327,6 +1769,75 @@ tfvars) and the App is installed on this repository only, not on the
 organization or another repository.
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds all of that and runs the gate against a fake `gh`.
+
+### A merge closes the issues its keywords name
+
+**GitHub did not close the issues named by the pull requests the App
+merged.** Of 65 merged pull requests with a closing keyword, owner merges
+closed 77 of 77 referenced issues; the `swarmcloud-merge` App's merges left 28
+of 33 open (history analysis, 2026-10-05; #487 → #124/#125/#127/#128, #481 →
+#89–#93, #541 → #503, #490 → #307), although GraphQL `closingIssuesReferences`
+listed every one of them (#621). Owner decision, 2026-10-05: close them
+explicitly after the merge, as the workflow `merge` step does (#581), with no
+change to the App's permissions.
+
+So `auto-merge.yml` also runs on `closed`, and its `close-issues` job runs
+[`scripts/close-merged-issues.sh`](../scripts/close-merged-issues.sh) on every
+pull request **merged into the default branch**:
+
+* it reads the pull request's `closingIssuesReferences` and closes each one
+  that is **open and in this repository**, with the comment "Closed by #N,
+  merged into main ..." naming the merging pull request;
+* it closes nothing else. It never reads the pull request's text, so a
+  `part of #N` — which GitHub does not list as a closing reference — is never
+  closed. Write `part of #N` for a partial fix, and a closing keyword only when
+  it is unconditionally true (CLAUDE.md, "Issues");
+* it **never closes a pull request**. Owner decision, 2026-10-08: #857's
+  text said `fix #840`, and #840, an open pull request, was closed two
+  seconds after #857 merged. When a closing keyword names a pull request, the
+  script leaves that pull request open, whatever its state. It also posts one
+  comment on the merged pull request: "#N is a pull request named by a closing
+  keyword in this pull request's text; it was left open ...".
+  `closingIssuesReferences` is an `IssueConnection`, so GitHub types every
+  node as `Issue`, and a `... on PullRequest` fragment there is a GraphQL
+  validation error. For that reason the script reads the REST issue endpoint
+  before every close: its `pull_request` key is the authoritative answer. If
+  that check fails, nothing is closed for that reference and the job fails.
+  This guard covers only the script's own closes. In the #857 merge, the
+  job's log reads "#857 has no closing references", and #840's `closed`
+  event came at 04:16:21, nine seconds before the job ran. Its actor is
+  `swarmcloud-merge[bot]`, the merging App, so GitHub's own keyword handling
+  closed #840. Nothing in this repository can stop that. The only defence is
+  never to put a closing keyword before a pull request's number;
+* an issue that is already closed is left alone, with no second comment, and
+  one in another repository is recorded in the run summary, not touched;
+* an unreadable answer or an unmerged pull request fails the job and closes
+  nothing; a refused close fails it after the others have been tried, naming
+  the issue; more than 100 references (one page) fails it after the page.
+
+It runs on every merge, not only the App's, because the event does not
+reliably say who merged and an owner's merge costs it one read: GitHub has
+closed those issues already, and the script skips a closed issue. A merge into
+any other branch does nothing, because GitHub's keywords act only on the
+default branch.
+
+**Least privilege:** the job's GITHUB_TOKEN holds `issues: write` (comment and
+close), `pull-requests: read` (the references) and `contents: read` (a sparse
+checkout of the default branch's `scripts/`, without persisted credentials);
+no other job in the workflow holds `issues`, and the job mints no App token.
+It checks out the default branch — the code the merge just made, the same main
+the release builds — never the pull request's head. A close made with the
+GITHUB_TOKEN starts no workflow, which is right here: nothing should.
+[`test_close_merged_issues.py`](../tests/unit/scripts/test_close_merged_issues.py)
+runs the script against a fake `gh` (`Closes` vs `part of` vs already closed,
+another repository, a referenced pull request, an unmerged or unreadable pull
+request), and
+[`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
+holds the job's trigger, permissions and checkout.
+
+The issues App merges left open before this existed are not closed by it: it
+acts on the merge event only, so they are checked against main and closed by
+hand (#621).
 
 ### What the owner applies, once
 
@@ -1374,9 +1885,9 @@ below is kept as the record of why each value is what it is, and
 `auto-merge.yml` would still count its checks if it were applied.)
 
 **3. Branch protection on `main`**, requiring only the checks that run on
-**every** pull request — `security.yml`'s four jobs. `application.yml` and
-`terraform.yml` both have a `pull_request` path filter
-([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)), so
+**every** pull request — `security.yml`'s four jobs. `application.yml` (until
+2026-10-07) and `terraform.yml` both have a `pull_request` path filter
+([table above](#the-workflows-and-what-each-one-is-responsible-for)), so
 none of their jobs — including `shellcheck` and
 `release workflow wiring (actionlint)` — report on a pull request that does
 not touch their paths. GitHub treats a required check whose workflow was
@@ -1451,8 +1962,8 @@ endpoint.
 ### Why only security is required directly
 
 `security.yml` has no path filter, so its four jobs report on every pull
-request. `application.yml` and `terraform.yml` both carry a `pull_request`
-path filter ([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)),
+request. `terraform.yml` carries a `pull_request` path filter, and
+`application.yml` did until 2026-10-07 ([table above](#the-workflows-and-what-each-one-is-responsible-for)),
 and **GitHub holds a required check whose workflow was filtered out as
 pending, forever** — not skipped, not passed. Requiring `format / unit tests`
 directly would freeze every pull request that touches only `terraform/`;
@@ -1463,52 +1974,88 @@ integration tests or its terraform tests; only `auto-merge.yml`'s gate
 
 ### What ci-gate does
 
-[`ci-gate.yml`](../.github/workflows/ci-gate.yml) runs one job, named exactly
-`ci-gate`, on **every** pull request and every push to `main` — it has no
-filter of its own, so it always reports. It runs
-[`scripts/ci-gate.sh wait`](../scripts/ci-gate.sh), which waits for the
-`application.yml` and `terraform.yml` runs at the same head commit and passes
-only when every one of them that ran passed:
+**Since 2026-10-07 `ci-gate` is the last job of
+[`application.yml`](../.github/workflows/application.yml)**, not a workflow of
+its own. Until then `ci-gate.yml` ran one job that started with the pull
+request and polled the Actions API every 60 s until `application.yml` and
+`terraform.yml` had finished — a runner held for the whole ~12 minutes of CI on
+every pull request, at a time when twelve pull requests opened together queued
+their jobs 400-600 s for runners ([below](#the-merge-pipelines-wall-time)).
+Now GitHub starts it when the last job it `needs` has finished, and it holds a
+runner for seconds. Its name and its meaning are unchanged: the required
+context is the job's name, exactly `ci-gate`, and it passes only when
+everything `application.yml` and `terraform.yml` ran for the commit passed.
 
-* **Did not run because the paths did not match: pass.** Which workflows a
-  change triggers is computed from the `pull_request.paths` lists **read out
-  of the workflow files themselves**, against `git diff base...head` (the
-  three-dot diff GitHub's filter uses). There is no second copy of those
-  lists to drift.
-* **Should have run, and its run does not exist yet: wait.** `ci-gate` starts
-  on the same event as the workflows it waits for, often before their runs are
-  created, and "no run yet" looks exactly like "not triggered" in the API.
-  An expected run that has not appeared after 10 minutes fails the gate by
-  name.
-* **Ran and failed, was cancelled, timed out, awaits approval or failed to
-  start: fail**, naming the job and its URL.
-* **A `skipped` job passes only inside a run that concluded `success`** — a
-  skip its own `if:` chose, like `build images` on a pull request or `plan`.
-  A run that failed to start (`startup_failure`), or whose jobs were skipped
-  because something they need failed, does not conclude `success`, and fails
-  the gate whatever its jobs say.
-* **A run the path model did not predict is still judged.** The gate looks
-  for at least a minute before it will pass, so a run that appears although
-  the paths said it would not — and fails — still fails the gate.
-* **An unreadable API is never a pass**, and a run still going after 90
-  minutes fails it with what was pending.
+`application.yml` therefore runs on **every** pull request — a workflow
+filtered out by `on.pull_request.paths` reports nothing, and the ruleset would
+hold the pull request forever — and its first job, `what this change reaches`,
+decides which of its other jobs a change can affect. The rest is skipped by its
+own `if:`.
 
-It reads runs from the Actions API (`actions: read`), filtered by head sha
-and event, rather than matching check-run names: a check run is named by its
-job's `name:`, which is not unique across workflows and cannot say whether its
-workflow started at all. Its token holds `actions: read` and `contents: read`
-and nothing else; every value reaches the shell through `env:`.
-[`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) runs the real
-script against a fake `gh`, and holds the path lists it reads to what PyYAML
-reads from the same files.
+* **`application.yml`'s jobs: judged through `needs`.** `ci-gate` needs every
+  other job of the workflow (a test fails when one is left out) and passes only
+  when each concluded `success` or `skipped`, and `what this change reaches`
+  itself succeeded. A job skipped because something it needs failed is
+  `skipped` too, but what failed is in the same list and fails the gate by
+  name; and a skip under a gate job that did not succeed means nothing, so
+  that fails it too. `if: always()` makes it report when something it needs
+  failed — a skipped `ci-gate` would read as passed.
+* **`terraform.yml`: waited for, by
+  [`scripts/ci-gate.sh wait`](../scripts/ci-gate.sh)**, told by
+  `CI_GATE_WORKFLOWS` to gate `terraform.yml` alone (waiting for
+  `application.yml` from inside it would wait for itself). The script's rules
+  are as they were:
+  * **Did not run because the paths did not match: pass.** Which workflows a
+    change triggers is computed from the `pull_request.paths` lists **read out
+    of the workflow files themselves**, against `git diff base...head` (the
+    three-dot diff GitHub's filter uses). There is no second copy of those
+    lists to drift.
+  * **Should have run, and its run does not exist yet: wait.** "No run yet"
+    looks exactly like "not triggered" in the API. An expected run that has
+    not appeared after 10 minutes fails the gate by name.
+  * **Ran and failed, was cancelled, timed out, awaits approval or failed to
+    start: fail**, naming the job and its URL.
+  * **A `skipped` job passes only inside a run that concluded `success`** — a
+    skip its own `if:` chose, like `plan` on a pull request. A run that failed
+    to start (`startup_failure`), or whose jobs were skipped because something
+    they need failed, does not conclude `success`, and fails the gate whatever
+    its jobs say.
+  * **A run the path model did not predict is still judged** when it fails.
+    The script can also keep looking for a while before it passes
+    (`CI_GATE_SETTLE`), which mattered when the gate started on the event,
+    often before the other runs existed. The job sets it to zero: it starts
+    only after `what this change reaches` — a job of a run the same event
+    created — has finished, and the runs of one event are created together.
+    A 60 s window would add 60 s to every pull request for nothing.
+  * **An unreadable API is never a pass**, and a run still going after 90
+    minutes fails it with what was pending. It looks every 20 s; terraform.yml
+    takes ~80 s and has usually finished long before.
 
-**Re-running a failed job does not re-run `ci-gate`.** Its run already
-failed; re-run it too (Actions → the `ci-gate` run → *Re-run jobs*) once the
-re-run is green.
+The script reads runs from the Actions API (`actions: read`), filtered by head
+sha and event, rather than matching check-run names: a check run is named by
+its job's `name:`, which is not unique across workflows and cannot say whether
+its workflow started at all. The job's token holds `actions: read` and
+`contents: read` and nothing else; every value reaches the shell through
+`env:`. [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) runs the
+real script against a fake `gh` in the configuration the job gives it, runs
+the job's own `needs` judgement over passing, skipped, failed and cancelled
+results, and holds the path lists the script reads to what PyYAML reads.
+
+**If `application.yml` fails to start at all**, no `ci-gate` check exists and
+the ruleset holds the pull request: closed, not open.
+
+**Re-running a failed job re-runs `ci-gate` with it** when you choose *Re-run
+failed jobs*: the gate failed too, and depends on the job. (Under
+`ci-gate.yml` it did not, and had to be re-run by hand.)
 
 **What it does not stop.** `pull_request` runs the pull request's own copy of
-`ci-gate.yml` and `scripts/ci-gate.sh`, so a pull request that edits either can
-make its own gate pass. Review of those two files is the guard.
+`application.yml` and `scripts/ci-gate.sh`, so a pull request that edits either
+can make its own gate pass. Review of those two files is the guard.
+
+`auto-merge.yml` still lists `ci-gate` among the workflows whose completion
+re-evaluates a `ready` pull request. No workflow has that name now, so the
+entry never fires and costs nothing; `application`'s completion is the gate's.
+It is left as it is while another decision on that file is pending.
 
 ### Owner step: require ci-gate, once it is on main
 
@@ -1577,6 +2124,494 @@ added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
 `security.yml`'s always-run jobs plus `ci-gate`, none pinned.
 
+## The merge pipeline's wall time
+
+**Owner request, 2026-10-07.** With `strict_required_status_checks_policy` on,
+a pull request merges only when it is up to date with `main` and green at that
+head, so exactly one pull request merges per CI cycle, and every merged pull
+request runs full CI twice (once at its own head, once after the update). On
+the night of 2026-10-07 (#754-#794) that measured:
+
+| measure | value |
+|---|---|
+| merges | 24 in 5 h 47 m — 4.15 an hour |
+| CI at a pull request's final head | median **707 s**, p90 796 s |
+| share of the time between merges spent in CI | **82 %** (16,990 of 20,818 s) |
+| long-pole jobs, uncontended run 37579951405 | `swarm-ui typecheck / component tests` 660 s · `format / unit tests` 646 s · `build changed images without pushing` 260 s · `integration tests (emulator)` 163 s |
+| `ci-gate` | median 735 s, every second of it holding a runner while it polled |
+| twelve pull requests opened together | jobs queued 400-600 s for a runner |
+
+CI is the throughput limit, and inside CI two serial jobs set the time. So:
+
+**1. The Python unit suite runs in four shards.** `unit tests (k/4)` each run
+a quarter of the files under `tests/unit`, picked by the `pick this shard's
+test files` step: every file, longest first, onto the lightest shard (LPT),
+weighted by [`tests/unit/scripts/unit_test_durations.json`](../tests/unit/scripts/unit_test_durations.json)
+(a file it has no weight for counts at the median). The split is
+deterministic, so each shard computes the same one and takes its own part, and
+every file runs exactly once. **Weights, not file counts**: one file
+(`test_offboard_tenant.py`) is 12 % of the suite, and splitting by hash or
+round-robin measured 1.20-1.59 times the even share on the slowest shard,
+against 1.00 with the weights. Measured 2026-10-07 in a SwarmCloud container:
+2,943 s of test time over 550 files, ~736 s a shard. At the rate the old job
+ran (~2,943 s in ~520 s of `pytest -n auto` on a 4-vCPU runner) that is ~130 s
+of tests plus ~60 s of setup a shard, about three minutes; more shards buy
+less each and cost a runner apiece. The rest of the old job — the lock check,
+the frozen-contract check, the format pass, the bridge install, the
+destroy-guard self-test — is `lock / contract / format / bridge install`,
+beside the shards rather than in front of them.
+
+**2. The vitest suite runs in four shards** — `swarm-ui component tests
+(k/4)`, vitest's own `--shard=k/4`, through the new `test:components` script
+(`vitest run` alone, so the flag reaches vitest and not the last of the three
+runners `npm test` chains). The typecheck, the two node:test runners
+(`test:node`) and the production build are one job beside them, `swarm-ui
+typecheck / build`. Measured 2026-10-07: shard 4/4 ran 60 of 246 files in
+108 s on 5 cores.
+
+**3. The check names are kept.** `format / unit tests` and `swarm-ui typecheck
+/ component tests` are now jobs that `needs:` their shards, run `if: always()`
+and pass only when each passed or was skipped by its own `if:` (and `what this
+change reaches` succeeded). Neither is required by the ruleset — only the four
+security checks and `ci-gate` are — but `auto-merge.yml`'s comments, the CI
+fixer's log reads and this document name them, and `build images` still needs
+`format / unit tests`.
+
+**4. A change runs what it can reach** (`what this change reaches`, which
+grew out of the swarm-ui gate of #605):
+
+| the pull request changes | Python unit shards | `lock / contract / format / bridge install` | swarm-ui jobs | everything else in `application.yml` |
+|---|---|---|---|---|
+| only `docs/**` | only the test files that read `docs/` (~36 of 551) | skipped | skipped | runs |
+| only `apps/swarm-ui/**` | only the test files that read `apps/swarm-ui/` (~51) | skipped | run | runs |
+| only those two | the union (~81) | skipped | run | runs |
+| anything else in the list (the old `pull_request.paths`) | all | runs | run if the change reaches swarm-ui (as #605 decided) | runs |
+| nothing in the list (e.g. only `terraform/infra/`) | skipped | skipped | skipped | skipped — only `ci-gate`, which waits for `terraform.yml` |
+| a push to `main`, a queue entry, a dispatch | all | runs | run | runs |
+
+**A docs-only change still runs the Python tests that read `docs/`.**
+`test_docs_describe_what_was_built`, `test_docs_spec_amendments` and ~30 others
+hold the documentation to the code; skipping them would let a docs-only pull
+request break `main`. "Reads" is found by the pick step, not listed: a module
+whose source builds a path through the directory (`REPO / "docs"`,
+`"apps/swarm-ui/src"`), every module that imports such a module (a helper, or
+a test module used as one, as `test_issue_forms.py` imports
+`test_nav_headings_agree.py`), and everything under a `conftest.py` that reads
+it. A mention in prose or a dict key named `"docs"` is not a read: matching
+those pulled in 496 of 551 files. A test that builds the path some other way
+would be missed on the pull request and caught by `main`'s push run, which runs
+everything — the one gap this leaves, stated so nobody relies on it.
+
+A shard left with no file runs no `pytest` — a bare `pytest` runs its
+`testpaths`, the whole suite.
+
+**5. `ci-gate` holds no runner while it waits** — it is the last job of
+`application.yml` ([above](#what-ci-gate-does)).
+
+**Expected, not yet measured on a real run.** The critical path of a pull
+request that touches Python was `format / unit tests` (~673 s) or the UI job
+(~660 s); it becomes `what this change reaches` (~20 s) → the slowest of a
+unit shard (~190-220 s), a vitest shard or `swarm-ui typecheck / build`
+(~180 s), `build changed images without pushing` (260 s when an image input
+changed, seconds otherwise) and `integration tests (emulator)` (163 s) → the
+aggregating job and `ci-gate` (~20-40 s with runner pickup). That is **about
+4-5 minutes** where the median was 707 s, before any runner queueing; a
+docs-only pull request is about 2-3 minutes. The price is runners at once: a
+Python-and-UI pull request starts up to 18 jobs instead of 10, though for
+fewer runner-minutes in total (the old `ci-gate` alone held ~12), so a burst of
+pull requests still queues — it queues for minutes of work, not for a poller.
+The first runs after this lands are the measurement; correct these numbers
+from them.
+
+### Refreshing the shard weights
+
+The weights go stale as tests are added and change — the split stays correct
+(every file still runs exactly once, an unknown one at the median weight) but
+drifts out of balance. Every shard on `main` uploads what it measured, per
+file, as the artifact `unit-durations-<k>` (30 days). To refresh, from a green
+push run on `main`:
+
+```bash
+run="$(gh run list --workflow application.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run download "$run" -p 'unit-durations-*' -D /tmp/unit-durations
+jq -S -s 'add' /tmp/unit-durations/*/unit-durations.json > tests/unit/scripts/unit_test_durations.json
+```
+
+and open a pull request with the file. Only the weights' ratios matter, so CI's
+seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
+than 80 % of the test files have a weight, and holds the split to within 10 %
+of an even share.
+
+## Main merges through a merge queue
+
+> **Not available on this repository (read 2026-10-07).** GitHub offers merge queues only to
+> repositories owned by an organization; `bogdan-alexandrescu/SwarmCloud` is owned by a user
+> account (`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .owner.type` prints `User`). The
+> `merge_queue` rule below was refused with `Invalid rule 'merge_queue'` (HTTP 422), and the ruleset
+> was left unchanged. The body below also lacks `max_entries_to_merge`, which the API requires; add
+> it if this repository ever moves to an organization.
+>
+> **What protects main instead** (owner decision 2026-10-07): ruleset 24160219's
+> `required_status_checks` sets `strict_required_status_checks_policy: true`, so a pull request must
+> be up to date with main, and green at that head, before it merges. Two pull requests that are green
+> on their own bases but red together (#726 and #727, 2026-10-06: main red 19:12-19:58Z) can no longer
+> both merge: the second is behind once the first lands, and must update and pass CI again. The merge
+> step already updates a behind branch (MS3) and re-reads its checks at the new head (MS2's wake).
+> The `merge_group` triggers and the merge step's enqueue path below are inert while no queue exists:
+> GitHub raises no `merge_group` event, and the merge step only enqueues when the base requires a queue.
+
+
+**Owner decision, 2026-10-06 (observer P26).** `main` was red from 19:12 to
+19:58Z because #726 and #727 were each green on their own base and merged
+nine seconds apart. Neither had run against the other: `main-protection`
+(`24160219`) has `strict_required_status_checks_policy: false`, so a pull
+request is not required to be up to date with `main` before it merges, and
+two changes that each pass alone can fail together. Turning `strict` on would
+serialise every merge behind a manual "update branch" and a full CI run each.
+The owner chose a **merge queue** instead: GitHub builds a temporary branch
+(`gh-readonly-queue/main/pr-<n>-<sha>`) holding `main` plus every queued pull
+request ahead of it, runs the required checks there, and merges only what is
+green together.
+
+The ruleset change is the operator's, **after** the pull request carrying this
+section has merged. Until then nothing here changes how anything merges.
+
+### What is ready for it
+
+* **Every required check reports on a queue entry.** A queue waits for the
+  ruleset's required contexts on the entry's ref, through the `merge_group`
+  event. `security.yml` (four of them) and `application.yml` (`ci-gate`, its
+  last job since 2026-10-07) trigger on `merge_group: types:
+  [checks_requested]`, with no filter, and so does `terraform.yml`, which
+  `ci-gate` waits for there: `merge_group` does not take a path filter, and a
+  filtered-out run would be one `ci-gate` waits ten minutes for and then fails
+  the entry on.
+  `scripts/ci-gate.sh` accepts `--event merge_group`; on it every gated
+  workflow is expected, whatever changed. The entry's commit is `github.sha`
+  and its base `merge_group.base_sha`.
+* **Nothing that mints a cloud identity runs there.** `build images` and
+  `plan` are gated off `merge_group` as they are off `pull_request`: the
+  workload identity pool admits `refs/heads/main` only, and an entry's ref is
+  not main. Left to run, they would fail auth, fail their run, and fail
+  `ci-gate` on every entry. `plan (not run on a pull request)` says so on the
+  entry, as on a pull request. `build changed images without pushing` and the
+  frozen-contract check read pull-request fields and stay pull-request only
+  (skipped is a pass inside a successful run).
+* **`release.yml` and `auto-merge.yml` never run on `merge_group`.** A
+  release is for a commit on `main`, which an entry is not yet; the queue's
+  merge is a push to `main` like any other, and that push starts
+  `application.yml` and `release.yml` as today (GitHub documents that a
+  queue's merge raises `push`; not yet observed on this repository).
+* **`auto-merge.yml` enqueues.** Its gate reads whether `main`'s effective
+  rules carry a `merge_queue` rule (the same `rules/branches/main` read as its
+  required-checks item) and says `queue`. On a queued base the merge step runs
+  `gh pr merge --auto --match-head-commit` with no method and no subject --
+  the queue's `merge_method` decides how it lands -- and its already-green
+  fallback is GraphQL `enqueuePullRequest`, pinned to the head, never a direct
+  merge, which would be the queue bypassed. A pull request already in the
+  queue is left there. Without the rule the step is exactly what it was.
+* **The worker's merge step enqueues.** In any repository whose base
+  requires a queue, GitHub answers the REST merge `405` "Changes must be made
+  through the merge queue". The step then enqueues through
+  `enqueuePullRequest` with the tenant's `-git` token, behind the same fencing
+  recheck, records the entry in `result_summary.merge.merge_queued`, and parks
+  `CI_PENDING` with code `merge_queued`, holding no lease and no pool count
+  (invariants 1, 3 and 4). The wake tick reads the queue for that park, not
+  the checks. The next attempt finds the pull request merged (success, the
+  record comment and the issues closed), still queued (parked again), or
+  taken out unmerged (`merge_dequeued`, with GitHub's reason; it is never
+  enqueued again).
+
+`tests/unit/scripts/test_merge_queue_workflows.py` holds the workflow side to
+the ruleset's five required contexts, hard-coded there with the ruleset id;
+`test_auto_merge_workflow.py`, `tests/unit/worker/test_merge_action.py` and
+`tests/unit/control_plane/test_merge_wake.py` hold the rest.
+
+**What changes on `main` once it is on.** `merge_method` `MERGE` puts a merge
+commit on `main` for each pull request, titled by GitHub ("Merge pull request
+#N from ...") with the pull request's title in its body, where the squash put
+the title as the headline. A `[swarm] task_` title is still refused before it
+gets there. Merge commits must be allowed on the repository
+(`gh api repos/bogdan-alexandrescu/SwarmCloud --jq .allow_merge_commit` is
+`true`), and the ruleset's `allowed_merge_methods` already lists `merge`.
+
+### Operator step: add the merge queue rule
+
+Apply it only once the pull request carrying this section has merged and a
+pull request has shown `ci-gate` and the four security checks green after it.
+The PUT replaces the ruleset whole, so the body restates every rule the
+[ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main) sets and adds
+only `merge_queue`. Compare it with a fresh read first
+(`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219`): a rule
+added since that this body leaves out would be deleted by the PUT.
+
+```bash
+gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+  },
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
+  ],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {"context": "secret scan"},
+          {"context": "trivy (repo)"},
+          {"context": "checkov (terraform + kubernetes)"},
+          {"context": "platform policy assertions"},
+          {"context": "ci-gate"}
+        ]
+      }
+    },
+    {
+      "type": "merge_queue",
+      "parameters": {
+        "merge_method": "MERGE",
+        "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 5,
+        "min_entries_to_merge": 1,
+        "min_entries_to_merge_wait_minutes": 0,
+        "check_response_timeout_minutes": 60
+      }
+    }
+  ]
+}
+JSON
+```
+
+Why these values: `ALLGREEN` merges an entry only when its checks and those
+of every entry ahead of it pass, which is the guarantee the incident lacked.
+`max_entries_to_build: 5` bounds the groups built at once (each is a full
+`application.yml` run, so a cost in runner time); `min_entries_to_merge: 1`
+with a `0`-minute wait merges a lone entry at once instead of holding it for
+company. `check_response_timeout_minutes: 60` is under `ci-gate`'s own
+90-minute wait, so a hung check drops the entry rather than stalling the
+queue behind it. `strict` stays `false`: the queue is what tests the
+combination now.
+
+Then check it took: `gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main --jq '.[] | select(.type == "merge_queue") | .parameters'`.
+The first queued pull request shows a `merge_group` run of `security`,
+`ci-gate`, `application` and `terraform`; if any of them is missing, roll back
+(below) before more pull requests pile into the queue.
+
+### Rolling back
+
+Roll back by sending the same PUT **without the `merge_queue` rule** -- that
+is exactly the body in the
+[ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main). Everything this
+section added stays harmless with the queue off: GitHub never raises
+`merge_group`, `auto-merge.yml`'s gate says `queue=false` and squashes as
+before, and the merge step never sees the merge-queue `405`. A pull request
+still in the queue at the rollback is taken out by GitHub; label it `ready`
+again.
+
+## The release warms each Cloud Run worker job once on its new digest
+
+`deploy and smoke` runs `scripts/warm-jobs.sh` right after it has verified that
+every job runs the promoted digest, and before the smoke test and the
+`acceptance (dev)` job. The script executes each per-tenant worker job once
+with `--args=--self-test`.
+
+**Why.** The measurement of 2026-10-07 on #363 (874 claude-code attempts from
+09-30 to 10-07, 497 of them with Cloud Run execution conditions): the first
+execution of each Cloud Run job after a new image digest spends **30-59 s
+importing the image** (ContainerReady "Imported container image in Xs"), and
+every later start pays 1-3 s. That is about 3 % of starts. Without a warm run,
+each job's first tenant task after a release pays the import on top of Cloud
+Run's own 70-200 s provisioning. The owner decided the same day that one
+post-deploy run per job absorbs it. This is a different thing from the warm
+capacity the owner declined on 2026-09-30 (invariant 1): nothing is left
+running. Each execution exits as soon as Cloud Run starts it.
+
+**What one execution does.** `--args` replaces the job's arguments, and the
+image's ENTRYPOINT stays `python -m agent_worker`. On `--self-test` the worker
+prints one line and exits 0 before it reads its configuration
+(`agent_worker.__main__.self_test`). It takes no lease, builds no Firestore
+client and touches no task state. The execution carries no `TASK_ID` or
+`ATTEMPT_ID`, so the reconciler leaves it alone. It logs it once
+(`CloudRunBackend.list_executions`) and has no authority over it.
+
+**Which jobs.** The script warms only jobs that are terraform-managed
+(`managed-by=swarm-terraform`), carry a `swarm-tenant` label, and are named
+`swarm-job-*`. That leaves out `swarm-verify` and any job something else
+created. A name on the shared deny-list (`scripts/lib/common.sh`) is never
+executed. If it was listed, the script warns and skips it. If it was named on
+the command line, the script refuses it and exits non-zero after warming the
+rest. `WARM_PARALLELISM` executions run at once (default 4), because each one
+occupies a whole worker shape in the region while it starts.
+
+**It never fails the release.** If a warm execution fails, or the listing
+fails, the script prints a warning and exits 0. The cost is one slower first
+task. The step also sets `continue-on-error`. It runs only when the verify step
+succeeded, because warming the previous digest would warm nothing, and only
+under `!cancelled()`, because it executes jobs in the environment. That puts it
+under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
+`tests/unit/scripts/test_warm_jobs.py` and
+`tests/unit/worker/test_worker_self_test.py` hold all of this.
+
+## Release acceptance runs in the smoke tenant, against a private sandbox
+
+The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
+deploy ([acceptance.md](acceptance.md) says what each check asserts). Until
+2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
+and cloned and opened pull requests on this platform's own public repository.
+The history analysis of that day (#628) counted 58 fixture pull requests
+("Fix add()...") opened and closed there since 09-30, each one running full CI,
+and acceptance as 62% of eng's tasks, so eng's success rates and failure
+classes could not be read; the `smoke` tenant had none. The owner decided the
+same day that acceptance runs in `smoke` against a private sandbox repository,
+and that nothing in acceptance can name the public one.
+
+**Where the target is stated.** Once, in
+[`scripts/acceptance/config.sh`](../scripts/acceptance/config.sh): the tenant
+(`smoke`), the repository (`bogdan-alexandrescu/swarmcloud-sandbox`, private,
+default branch `main`), the ref, and the sandbox's fixture issue. The suite,
+the sweep and the sync all read it; none of them reads
+`GITHUB_REPOSITORY` for a target, and `config.sh` refuses a target that is the
+repository a CI run is for or the one the checkout was cloned from.
+[`test_acceptance_target.py`](../tests/unit/scripts/test_acceptance_target.py)
+holds the configuration to smoke and the sandbox, and fails if any file under
+`scripts/acceptance/` or the release's acceptance job names the public
+repository.
+
+**How the suite gets into `smoke`.** It sends `X-Swarm-Tenant: smoke` on every
+API call (`SWARM_API_TENANT`, which `common.sh`'s `api_request` turns into the
+header). The header *selects* among the caller's confirmed memberships of
+registered directory groups and never grants, so swarm-verify must be a member
+of smoke's group. Its default tenant stays `eng`: `smoke` sorts after `eng` in
+`TENANT_GROUPS`, so smoke-test, e2e and race-test are unchanged. A
+`tenants.smoke.service_accounts` listing would have been simpler to write and
+would have stopped every suite: a listed account is continuation-scoped
+(`swarm_api.auth.CONTINUATION_ROUTES`) and may submit nothing but a
+continuation.
+
+**What the suite refuses.** Before any group runs, `run.sh` asks GitHub
+anonymously for the repository and refuses a 200 (public) or an unanswered
+read, and asks `GET /tenants/me` with the header and refuses any tenant but
+`smoke`, including a 403 `tenant_not_member`. It never falls back to the
+caller's default tenant: that fallback is how acceptance came to fill eng.
+
+**What the release job holds.** `contents: read` and `id-token: write`. The
+repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
+to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
+commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
+differ, and no other path) and opens or checks the fixture issue;
+`scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
+requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
+closes the pull requests and branches the suite opened there. The job's
+`GITHUB_TOKEN` reaches only this repository, which is why it is no longer
+write-scoped.
+
+**Where the GitHub read-backs moved.** The swarm-verify job holds no GitHub
+credential, by design, and the sandbox is private, so the suite cannot read a
+pull request back and SKIPs those assertions, naming the step that makes them.
+Dropping them would have let a release go green with the pull-request half of
+the direct-pr and integrate checks unexercised, so they run on the GitHub
+runner instead, which does hold the sandbox token:
+
+* `github-verify.sh` runs after the suite (even a failed one) and before the
+  sweep closes anything. It judges every open `swarm/task_` pull request of the
+  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
+  `started` step), and fails the job when one has an empty title or a title
+  carrying a task id, a body without its task id, a change outside
+  `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
+  `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
+  that lists no merged branch or leaves one out. It only reads; the sweep still
+  runs when it fails. Finding no pull request at all is printed with a workflow
+  warning, not a failure: a claude-code group without a provider credential
+  SKIPs without opening one.
+* The `collect` check's patch is applied in the suite itself, to this build's
+  own `calc.py`: the swarm-verify image now carries
+  `tests/acceptance/fixtures/`, and `sandbox-sync.sh` put the same commit's
+  copy on the sandbox's `main` first, so the two are the same bytes.
+
+What still runs only in the suite: the pull request was opened, its title is
+the agent's (`pull_request_text.title`), the artifacts exist and the patch
+replaces the bug line. The one comparison the runner cannot make is the PR
+title against the task's `pr-title.txt` artifact, which lives behind the API
+inside the VPC; it checks the title is a non-empty fact rather than a task id
+instead. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set measures that
+in the suite too.
+
+### What the owner applies, once, in this order
+
+1. **Create the Workspace group `smoke@saga.xyz`** and add
+   `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` as a member.
+   It must exist before step 3 is applied: `dev.tfvars` registers it as a
+   directory group, and a registered group whose lookup fails 503s every
+   caller in no group above it.
+2. **Re-point the tenant document.** `tenants/smoke` in Firestore still says
+   `principal: swarm-smoke@saga.xyz`, and Terraform will not change it (the
+   tenant documents are under `ignore_changes`). swarm-api refuses a tenant
+   whose stored principal differs from the selecting group with a 409, so set
+   that one field to `smoke@saga.xyz`, for example:
+
+   ```bash
+   # The access token reaches curl as a config file, never in argv.
+   curl -sS -X PATCH -K <(printf 'oauth2-bearer = "%s"\n' "$(gcloud auth print-access-token)") \
+     -H "x-goog-user-project: saga-agents-staging" -H "Content-Type: application/json" \
+     "https://firestore.googleapis.com/v1/projects/saga-agents-staging/databases/swarm/documents/tenants/smoke?updateMask.fieldPaths=principal" \
+     -d '{"fields": {"principal": {"stringValue": "smoke@saga.xyz"}}}'
+   ```
+
+   `smoke` has never run a task, so no work changes hands.
+3. **Merge the `dev.tfvars` change** (the release applies it): `tenants.smoke`
+   gets `principal = "smoke@saga.xyz"`, `directory_group = true` and
+   `providers = ["anthropic"]`, and `pool_limits.providers.anthropic` goes from
+   100 to 120, because three tenants now declare anthropic and the plan refuses
+   a provider pool below 3 x `provider_tenant`. The live pool documents are
+   under `ignore_changes`, so raise the live one too:
+   `scripts/pool-limit.sh --pool provider:anthropic --limit 120`.
+4. **Give `smoke` its credentials**, with the scripts that keep them out of the
+   repository and out of Terraform state:
+   * the forge token, slot **`swarm-tenant-smoke-git`**:
+     `scripts/register-tenant.sh --tenant smoke --add-provider git`, then
+     `scripts/create-secrets.sh --tenant smoke --provider git --stdin`. A
+     fine-grained token scoped to the sandbox alone, with Contents, Pull
+     requests and Issues read and write (the worker clones, pushes and opens
+     the pull request with it; the `issue` input reads the fixture issue);
+   * the Anthropic credential, slot `swarm-tenant-smoke-anthropic`:
+     `scripts/register-tenant.sh --tenant smoke --add-provider anthropic`,
+     then `scripts/create-secrets.sh --tenant smoke --provider anthropic
+     --stdin` (or `--subscription`), or lend `smoke` an account
+     (`PUT /v1/accounts/<id>/lending`). Without one, every claude-code check
+     SKIPs on `CREDENTIAL_MISSING`.
+5. **Add the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`** (Settings ->
+   Secrets and variables -> Actions): a fine-grained token scoped to the
+   sandbox alone, with Contents, Pull requests and Issues read and write. It
+   may be the same token as step 4's. Without it the sync step fails and the
+   suite does not start.
+
+Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
+with the sentence that names this section, and nothing is submitted: a red
+acceptance job, not a quiet return to eng.
+
 ## The finishing sequence
 
 ```bash
@@ -1592,6 +2627,45 @@ should not be one.
 **Proving a test catches its defect is still required.** Prove it by committing
 an assertion strong enough that the mutation would fail it, and let CI
 demonstrate that — not by running the mutation here.
+
+### A SwarmCloud agent runs `scripts/changed-guards.sh` before it finishes
+
+The laptop rule above does not bind an agent in a SwarmCloud container
+(CLAUDE.md, "A SwarmCloud agent is not this machine"): it runs the unit tests
+for its area, then this one command:
+
+```bash
+scripts/changed-guards.sh            # diff = origin/main...HEAD + work tree
+scripts/changed-guards.sh --list     # print the selection, run nothing
+scripts/changed-guards.sh --base <rev> | --files <list>|-
+```
+
+**Why.** On 2026-10-05, 33 of 131 lane PRs (25%) were red on their first CI
+run, and the reds were mostly repo-wide guards that a lane's narrowed
+`pytest tests/unit/<area>` never collects: `test_docs_describe_what_was_built`,
+`test_docs_spec_amendments`, the route seam
+`test_every_v1_path_the_ui_calls_is_served_by_this_api`, `test_specsign_covers`
+and the contract-parity script (#591, #611, #614; issue #642). Those tests read
+source and docs **as text**, so an import graph does not find them; their text
+naming the changed file does.
+
+**What it selects.** For a non-empty diff: the fixed guard set (always), every
+changed `tests/unit/**/test_*.py`, and every `tests/unit/**/test_*.py` whose
+text names a changed path by repo-relative path or basename. A generic basename
+(`__init__.py`, `package.json`, …) selects by full path only, or it would pick
+half the suite. It runs them in **one** `pytest -q -n auto -p no:warnings` call
+(collecting `tests/unit/scripts` whole costs ~135 s, so files, not
+directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
+deadlines so the whole stays under the ten minutes a lane allows a command. It
+prints the last lines of the output and keeps the full log only on failure. An
+empty diff runs nothing and exits 0; a base that does not resolve exits 2
+rather than reading as an empty diff.
+
+**What it does not do.** It does not replace the area run (a test that imports
+a changed module without naming its file is not selected), it does not run
+vitest, `terraform test` or anything needing credentials, and a green run proves
+nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
+selection against fixture diffs.
 
 ## Where the suites are documented
 

@@ -58,13 +58,21 @@ RUN apt-get update \
 COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
+# The root project and its lock. `uv export` below reads this service's
+# third-party dependency set, at the versions and hashes uv.lock records, from
+# them (#663). With --frozen it reads no other app's directory, so the builder
+# still copies only the packages this image ships.
+COPY pyproject.toml uv.lock /src/
 COPY apps/common/ /src/apps/common/
+# The workflow state derivation the API and the reconciler share (#616).
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/reconciler/ /src/apps/reconciler/
 
-# Build `swarm-common` into a local wheelhouse first and resolve it from there:
-# no index has ever heard of it, so `--find-links` is what makes this build work
-# without a private registry.
+# Build our own packages into a local wheelhouse. No index has ever heard of
+# them, and the install below never asks one: it reads them from /wheels with
+# `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/reconciler
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -72,8 +80,44 @@ RUN uv build --wheel --out-dir /wheels /src/apps/common \
 # all three were flagged by the promote scan (jaraco.context path traversal,
 # vendored inside setuptools; wheel privilege escalation). uv installs into the
 # venv from outside it, so nothing here needs a pip inside it.
-RUN python -m venv --without-pip /opt/venv \
- && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-reconciler
+RUN python -m venv --without-pip /opt/venv
+
+# Third-party dependencies, exported from uv.lock for this service alone. The
+# root project depends on every app, so the export prunes the internal packages
+# swarm-reconciler does not depend on (`swarm-agent-worker`, `swarm-api`,
+# `swarm-mcp`, `swarm-quota-broker`, `swarm-redaction`, `swarm-scheduler`), and
+# the third-party packages only they need go with them. `--no-emit-local`
+# leaves our own packages out of the file: they come from /wheels, below. The
+# export carries a hash for every file; `--no-hashes` must never be added here.
+RUN uv export --frozen --no-dev --no-emit-local --no-editable \
+      --prune swarm-agent-worker --prune swarm-api --prune swarm-mcp \
+      --prune swarm-quota-broker --prune swarm-redaction \
+      --prune swarm-scheduler \
+      > /tmp/requirements.txt
+
+# Installed at exactly the versions and hashes in uv.lock, with nothing
+# resolved at build time (#663). This used to be one `uv pip install
+# --find-links /wheels swarm-reconciler` that resolved every third-party package
+# unpinned against PyPI. `--require-hashes` refuses any file whose hash the lock
+# does not record, so an index can fail this step but never substitute a
+# package; `--no-deps` because the export is already the complete closure.
+RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /tmp/requirements.txt
+
+# Our own packages, from the wheelhouse ONLY. `--find-links` alone ADDS
+# /wheels and keeps PyPI as an index, so every internal name was looked up on
+# pypi.org: main's build on 3a0d488c failed on a 503 from
+# pypi.org/simple/swarm-redaction/, and a public package published under one of
+# these names at a higher version could have been installed instead of ours --
+# dependency confusion into a control-plane image. `--no-index` means no index
+# is ever asked for them; `--no-deps` because their third-party dependencies
+# are already installed above, by hash.
+RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
+      swarm-common swarm-workflow-rollup swarm-reconciler
+
+# With `--no-deps` on both installs nothing above notices a dependency the
+# export left out. `uv pip check` does, here, instead of an ImportError at the
+# runtime stage's import check or in production.
+RUN uv pip check --python /opt/venv/bin/python
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -133,7 +177,13 @@ WORKDIR /home/swarm
 # the function that needs it -- so this runs with no credentials.
 # PROJECT_ID is supplied only so Settings.from_env() can construct; this
 # proves the module imports and wires up, and builds no Google client.
-RUN PROJECT_ID=build-time-import-check \
+# FIRESTORE_EMULATOR_HOST (2026-10-06): create_app() constructs a firestore.Client,
+# which looks up Application Default Credentials at construction. Cloud Build has
+# them; a pull request's image build on the GitHub runner (#688) does not, and
+# failed on #715. The emulator host makes the client anonymous and connectionless
+# until first use, so this still proves the app imports and wires up. Same fix as
+# swarm-api (#696).
+RUN PROJECT_ID=build-time-import-check FIRESTORE_EMULATOR_HOST=127.0.0.1:9 \
     python -c "from reconciler.service import create_app; create_app(); print('swarm-reconciler ok')"
 
 EXPOSE 8080

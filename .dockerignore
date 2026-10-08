@@ -15,7 +15,9 @@ scripts/
 terraform/
 kubernetes/
 tests/
-uv.lock
+# uv.lock is deliberately NOT ignored: the four control-plane builders export
+# their third-party dependencies from it, by hash (#663). Ignoring it fails
+# their `COPY pyproject.toml uv.lock /src/`.
 **/*.tfstate
 **/*.tfstate.backup
 **/.terraform/

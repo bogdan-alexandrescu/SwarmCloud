@@ -44,10 +44,15 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import stat
+import struct
 import sys
 import tarfile
 import tempfile
+import time
+import zlib
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,6 +133,231 @@ def _is_tool_cache(rel: str) -> bool:
     return False
 
 
+#: Dependency and build directories left out of every checkpoint, wherever in
+#: `work/` they sit (#637, owner decision 2026-10-05). The history analysis of
+#: 2026-10-05 measured 247 GB of checkpoints uploaded, a median of 66 MB every
+#: 120 s, and only 1.25% of those bytes ever restored: virtualenvs, bytecode,
+#: bundles, test builds and coverage reports were most of it. Each is rebuilt
+#: by the command that made it (docs/checkpointing.md lists them):
+#:
+#:   .venv        `uv sync` (or `uv run`, which syncs first)
+#:   __pycache__  rewritten by the interpreter on the next import
+#:   dist         the project's build (`npm run build`, `uv build`)
+#:   .test-build  the UI's typecheck build (`npm run typecheck`)
+#:   coverage     the next test run with coverage on
+#:
+#: A DIRECTORY ONLY, AND NOT ONE A GIT CHECKOUT TRACKS. A file named `dist`
+#: is kept, and so is a `dist/` with even one tracked file under it
+#: (`_BuildDirFilter`): left out, the restore would hand the agent a checkout
+#: in which those committed files read as deleted, and a publish could carry
+#: the deletion. When the checkout's index cannot be read, the directory is
+#: kept: a few megabytes too many is the cheap side of that mistake.
+BUILD_DIRS: tuple[str, ...] = (".venv", "__pycache__", "dist", ".test-build", "coverage")
+
+#: How many incremental archives follow a full one before the next full one.
+#: A restore downloads and replays the whole chain, so the chain is bounded:
+#: at the 120 s interval this is a full archive at least every 48 minutes of
+#: steady change. A chain is also rebased once its incremental archives
+#: together outweigh the full archive they sit on (`CheckpointManager._create`).
+CHECKPOINT_CHAIN_MAX = 24
+
+#: The longest a PERIODIC checkpoint waits while the tree has not changed:
+#: 2 -> 4 -> 8 -> 10 minutes at the default 120 s interval (#637, owner
+#: decision 2026-10-05). A tree that changes resets it to the base interval.
+#: This is the wait to the next LOOK, so work done just after an unchanged
+#: look is exposed for up to this long before the next one takes it; the
+#: final, park, cancellation and interruption checkpoints are never skipped
+#: (invariant 8). `WorkerConfig.checkpoint_max_interval_seconds` sets it.
+CHECKPOINT_BACKOFF_CAP_SECONDS = 600
+
+#: How an INCREMENTAL archive names its base and its deletions: the gzip
+#: header's comment (RFC 1952 FCOMMENT), this prefix and then JSON,
+#: `{"base": {"checkpoint_id", "archive_sha256"}, "deleted": [paths]}`. It is
+#: in the archive's own bytes, so the archive's digest -- which the attempt
+#: document binds (`Worker._recorded_checkpoint`) -- binds it too: the base
+#: cannot be swapped by rewriting a manifest or an object in the bucket. Not a
+#: tar member, so it can never collide with a file of the agent's, and not a
+#: pax global header, which `tarfile` refuses to read when no member follows
+#: it (an incremental archive of an unchanged tree has none). Every gzip
+#: reader skips the comment. A full archive has none.
+CHAIN_COMMENT_PREFIX = b"swarm-checkpoint "
+
+#: The longest chain a restore replays. Far past what `create` writes
+#: (`CHECKPOINT_CHAIN_MAX`); it bounds what a forged header could ask for.
+RESTORE_CHAIN_MAX = 200
+
+#: An entry whose mtime or ctime is this close to (or after) the start of the
+#: walk that read it is RACY: a write in the same clock tick, after the stat,
+#: leaves size, mtime, ctime and inode as they were, and would never be seen
+#: as a change. Its signature is recorded so that it never matches, and the
+#: next checkpoint archives it again -- git's racy-clean rule, for the same
+#: reason. File times come from the kernel's coarse clock, a tick or so
+#: behind `time.time_ns()`; a second is far past that on tmpfs.
+RACY_WINDOW_NS = 1_000_000_000
+
+#: A checkpoint id as `create` writes it; a base named in a header is used to
+#: build a key only when it is one.
+_CHECKPOINT_ID_RE = re.compile(r"ckpt-[0-9]{5,}")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+#: The largest git index `_BuildDirFilter` reads. Past it the checkout's build
+#: directories are kept rather than parsed for.
+_GIT_INDEX_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _git_index_paths(git_dir: Path) -> list[bytes] | None:
+    """The paths a git index tracks; [] when there is no index; None when unreadable.
+
+    Read by hand rather than by running git: the checkout is the agent's, and
+    git run in it reads the agent's config (`core.fsmonitor` runs a command).
+    Versions 2, 3 and 4 of the index format, SHA-1 or SHA-256 object names.
+    Nothing read here leaves the worker: it decides only whether a build
+    directory is archived. The last component is opened `O_NOFOLLOW`.
+    """
+    try:
+        fd = os.open(git_dir / "index", os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            data = handle.read(_GIT_INDEX_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > _GIT_INDEX_MAX_BYTES or len(data) < 12 or data[:4] != b"DIRC":
+        return None
+    hash_len = 20
+    try:
+        cfd = os.open(git_dir / "config", os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(cfd, "rb") as handle:
+            if re.search(rb"objectformat\s*=\s*sha256", handle.read(64 * 1024), re.I):
+                hash_len = 32
+    except OSError:
+        pass
+    version, count = struct.unpack(">II", data[4:12])
+    if version not in (2, 3, 4):
+        return None
+    paths: list[bytes] = []
+    previous = b""
+    pos = 12
+    try:
+        for _ in range(count):
+            start = pos
+            pos += 40 + hash_len
+            (flags,) = struct.unpack(">H", data[pos : pos + 2])
+            pos += 2
+            if version >= 3 and flags & 0x4000:
+                pos += 2
+            if version == 4:
+                byte = data[pos]
+                pos += 1
+                strip = byte & 0x7F
+                while byte & 0x80:
+                    byte = data[pos]
+                    pos += 1
+                    strip = ((strip + 1) << 7) | (byte & 0x7F)
+                end = data.index(b"\0", pos)
+                if strip > len(previous):
+                    return None
+                name = previous[: len(previous) - strip] + data[pos:end]
+                pos = end + 1
+            else:
+                end = data.index(b"\0", pos)
+                name = data[pos:end]
+                pos = start + ((end - start + 8) & ~7)
+            if not name or name.startswith(b"/") or pos > len(data):
+                return None
+            paths.append(name)
+            previous = name
+    except (IndexError, ValueError, struct.error):
+        return None
+    return paths
+
+
+class _BuildDirFilter:
+    """Decides, per checkpoint, whether a directory named in `BUILD_DIRS` is left out.
+
+    Out unless a git checkout enclosing it tracks a file under it. The nearest
+    enclosing checkout is the nearest ancestor (`work/` included) holding a
+    real `.git` directory; its index is read once per checkpoint.
+    """
+
+    def __init__(self, source: Path) -> None:
+        self._source = source
+        self._tracked: dict[str, frozenset[str] | None] = {}
+
+    def excludes(self, rel: str) -> bool:
+        parts = rel.split("/")
+        if parts[-1] not in BUILD_DIRS:
+            return False
+        for depth in range(len(parts) - 1, -1, -1):
+            root = "/".join(parts[:depth])
+            git_dir = self._source / root / ".git" if root else self._source / ".git"
+            try:
+                if not stat.S_ISDIR(os.lstat(git_dir).st_mode):
+                    return False  # a `.git` file or link: no index to read here
+            except OSError:
+                continue
+            tracked = self._tracked_dirs(root, git_dir)
+            if tracked is None:
+                return False  # an index that cannot be read keeps the directory
+            return "/".join(parts[depth:]) not in tracked
+        return True
+
+    def _tracked_dirs(self, root: str, git_dir: Path) -> frozenset[str] | None:
+        if root not in self._tracked:
+            paths = _git_index_paths(git_dir)
+            if paths is None:
+                self._tracked[root] = None
+            else:
+                dirs: set[str] = set()
+                for raw in paths:
+                    parts = raw.decode("utf-8", "surrogateescape").rstrip("/").split("/")
+                    for index, part in enumerate(parts):
+                        if part in BUILD_DIRS:
+                            dirs.add("/".join(parts[: index + 1]))
+                self._tracked[root] = frozenset(dirs)
+        return self._tracked[root]
+
+
+class CheckpointBackoff:
+    """The wait to the next PERIODIC checkpoint: doubled while unchanged, reset on change.
+
+    Pure, so the interval rule is tested without a clock. The cap never
+    shortens the base: a profile whose interval is already past the cap does
+    not back off at all.
+    """
+
+    def __init__(
+        self, *, base_seconds: float, cap_seconds: float = CHECKPOINT_BACKOFF_CAP_SECONDS
+    ) -> None:
+        self._base = base_seconds
+        self._cap = max(base_seconds, cap_seconds)
+        self.current = base_seconds
+
+    def next_interval(self, *, changed: bool) -> float:
+        self.current = self._base if changed else min(self.current * 2, self._cap)
+        return self.current
+
+
+def _signature(st: os.stat_result, linkname: str | None = None) -> tuple[Any, ...]:
+    """What `create` compares to decide that an entry changed since the last checkpoint.
+
+    A file's inode and ctime as well as its size and mtime: an editor's atomic
+    save is a new inode, and a write that restores the mtime still moves the
+    ctime. A directory changes only with its mode; what is in it is compared
+    entry by entry.
+    """
+    if stat.S_ISDIR(st.st_mode):
+        return ("d", stat.S_IMODE(st.st_mode))
+    if stat.S_ISLNK(st.st_mode):
+        return ("l", linkname)
+    return ("f", st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
+
+
 @dataclass(frozen=True)
 class CheckpointRecord:
     checkpoint_id: str
@@ -151,6 +381,12 @@ class CheckpointRecord:
     #: and an agent that could move it could keep its own commits out of the
     #: fold. The manifest is written by the worker, outside the archived tree.
     clone_base: str | None = None
+    #: The checkpoint this one's archive holds the changes since, and that
+    #: archive's digest; None for a full archive (#637). For the reader only:
+    #: a restore takes the base from the archive's own header (`PAX_BASE`),
+    #: which the attempt document's digest binds, and never from here.
+    base_checkpoint_id: str | None = None
+    base_archive_sha256: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CheckpointRecord":
@@ -385,6 +621,134 @@ class _CappedFile(io.FileIO):
         return written or 0
 
 
+class _GzipWriter(io.RawIOBase):
+    """gzip (RFC 1952) over `raw`, with an optional header comment.
+
+    What `tarfile`'s `w:gz` wrote, at the same level 9, plus the FCOMMENT
+    field the gzip module cannot write: `CHAIN_COMMENT_PREFIX`. `tell` is
+    the uncompressed offset, which is all `tarfile` asks of it.
+    """
+
+    def __init__(self, raw: Any, *, comment: bytes | None) -> None:
+        super().__init__()
+        self._raw = raw
+        self._deflate = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS)
+        self._crc = 0
+        self._size = 0
+        flags = 0x10 if comment is not None else 0
+        # magic, deflate, flags, mtime 0 (as `tarfile` wrote no name or
+        # time that meant anything), "maximum compression", unknown OS.
+        raw.write(b"\x1f\x8b\x08" + bytes([flags]) + b"\0\0\0\0\x02\xff")
+        if comment is not None:
+            if b"\0" in comment:
+                raise CheckpointError("a checkpoint's gzip comment cannot hold a NUL")
+            raw.write(comment + b"\0")
+
+    def writable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._size
+
+    def write(self, data: Any) -> int:
+        view = memoryview(data).cast("B")
+        self._crc = zlib.crc32(view, self._crc)
+        self._size += len(view)
+        self._raw.write(self._deflate.compress(view))
+        return len(view)
+
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                self._raw.write(self._deflate.flush())
+                self._raw.write(struct.pack("<II", self._crc, self._size & 0xFFFFFFFF))
+            finally:
+                super().close()
+
+
+def _gzip_comment(path: Path, *, limit: int = 64 * 1024 * 1024) -> bytes | None:
+    """The FCOMMENT of the gzip file at `path`, or None when it has none."""
+    with path.open("rb") as handle:
+        head = handle.read(10)
+        if len(head) < 10 or head[:3] != b"\x1f\x8b\x08":
+            raise CheckpointError("a checkpoint archive is not a gzip stream")
+        flags = head[3]
+        if not flags & 0x10:
+            return None
+        if flags & 0x04:  # FEXTRA
+            (length,) = struct.unpack("<H", handle.read(2))
+            handle.read(length)
+        if flags & 0x08:  # FNAME
+            while handle.read(1) not in (b"\0", b""):
+                pass
+        comment = bytearray()
+        while True:
+            byte = handle.read(1)
+            if byte in (b"\0", b""):
+                return bytes(comment)
+            comment += byte
+            if len(comment) > limit:
+                raise CheckpointError("a checkpoint archive's gzip comment is too long")
+
+
+def _chain_header(path: Path, checkpoint_id: str) -> tuple[tuple[str, str] | None, list[str]]:
+    """The base `(checkpoint_id, archive_sha256)` and deleted paths of the archive at `path`.
+
+    `(None, [])` for a full archive. Anything not exactly what `create`
+    writes refuses the archive: the header decides which object is fetched
+    next and which paths are removed.
+    """
+    comment = _gzip_comment(path)
+    if comment is None:
+        return None, []
+    refused = CheckpointError(
+        f"checkpoint {checkpoint_id} names its base in a form the restore refuses"
+    )
+    if not comment.startswith(CHAIN_COMMENT_PREFIX):
+        raise refused
+    try:
+        data = json.loads(comment[len(CHAIN_COMMENT_PREFIX) :].decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        raise refused from None
+    base = data.get("base") if isinstance(data, dict) else None
+    deleted = data.get("deleted") if isinstance(data, dict) else None
+    if (
+        not isinstance(base, dict)
+        or not isinstance(base.get("checkpoint_id"), str)
+        or not _CHECKPOINT_ID_RE.fullmatch(base["checkpoint_id"])
+        or not isinstance(base.get("archive_sha256"), str)
+        or not _SHA256_RE.fullmatch(base["archive_sha256"])
+        or not isinstance(deleted, list)
+        or not all(isinstance(rel, str) and _archive_parts(rel) is not None for rel in deleted)
+    ):
+        raise refused
+    return (base["checkpoint_id"], base["archive_sha256"]), deleted
+
+
+def _deleted_since(
+    previous: dict[str, tuple[Any, ...]], index: dict[str, tuple[Any, ...]]
+) -> list[str]:
+    """What `previous` held that `index` does not, or holds as another kind.
+
+    Outermost only: a removed directory is named, and nothing under it. A
+    path whose kind changed (a file that became a directory, a directory that
+    became a link) is named too, so the restore clears it before the new
+    entry is extracted in its place.
+    """
+    gone = sorted(
+        rel for rel, sig in previous.items() if rel not in index or index[rel][0] != sig[0]
+    )
+    named: set[str] = set()
+    out: list[str] = []
+    for rel in gone:
+        parts = rel.split("/")
+        if any("/".join(parts[:depth]) in named for depth in range(1, len(parts))):
+            continue
+        named.add(rel)
+        out.append(rel)
+    return out
+
+
 class CheckpointManager:
     """Creates, uploads, discovers and restores workspace checkpoints."""
 
@@ -416,6 +780,19 @@ class CheckpointManager:
         #: once the clone has landed, or once it has been read back from the
         #: checkpoint a resumed attempt restored, so it carries forward.
         self.clone_base: str | None = None
+        #: THE CHAIN (#637). What the last committed checkpoint of this
+        #: attempt archived, entry by entry (`_signature`), and its id and
+        #: digest: the next one archives only what differs. None until this
+        #: attempt has committed a checkpoint, so every attempt's first one is
+        #: full and a chain never crosses an attempt -- a restore, which
+        #: starts a new attempt, starts a new chain.
+        self._index: dict[str, tuple[Any, ...]] | None = None
+        self._base: tuple[str, str] | None = None
+        self._chain_length = 0
+        self._chain_bytes = 0
+        self._full_bytes = 0
+        #: True when the last `create_if_changed` found nothing to write.
+        self.last_unchanged = False
 
     @property
     def seq(self) -> int:
@@ -430,18 +807,51 @@ class CheckpointManager:
 
     # -- create ------------------------------------------------------------
     def create(self, ws: Workspace, *, label: str = "periodic") -> CheckpointRecord:
-        """Archive `work/`, upload it, then commit with the manifest."""
-        self._seq += 1
-        checkpoint_id = f"ckpt-{self._seq:05d}"
-        prefix = checkpoint_prefix(
-            tenant_id=self._tenant_id,
-            task_id=self._task_id,
-            attempt_id=self._attempt_id,
-            checkpoint_id=checkpoint_id,
-        )
-        archive_key = f"{prefix}/{ARCHIVE_NAME}"
-        manifest_key = f"{prefix}/{MANIFEST_NAME}"
+        """Archive `work/`, upload it, then commit with the manifest. Always writes.
 
+        Every checkpoint but the periodic one comes through here -- final,
+        park, cancellation, interruption, outage -- and is written whether or
+        not the tree changed since the last (invariant 8): an unchanged tree
+        writes an incremental archive with nothing in it, which is a few
+        hundred bytes, and the checkpoint the next attempt restores is the
+        one this exit recorded.
+        """
+        record = self._create(ws, label=label, only_if_changed=False, before_upload=None)
+        if record is None:  # `only_if_changed=False` always writes
+            raise CheckpointError(f"checkpoint ({label}) wrote nothing")
+        return record
+
+    def create_if_changed(
+        self,
+        ws: Workspace,
+        *,
+        label: str = "periodic",
+        before_upload: Callable[[], None] | None = None,
+    ) -> CheckpointRecord | None:
+        """`create`, or None -- nothing uploaded -- when nothing changed since the last.
+
+        For the PERIODIC checkpoint only (#637): the tree already equals the
+        checkpoint this attempt last committed, so writing it again restores
+        nothing more. `last_unchanged` says which it was, and the lifecycle
+        backs the interval off on it (`CheckpointBackoff`). `before_upload`
+        runs once the walk has found a change and before the first byte is
+        uploaded; whatever it raises propagates, and nothing is uploaded.
+        """
+        return self._create(ws, label=label, only_if_changed=True, before_upload=before_upload)
+
+    def reset_chain(self) -> None:
+        """Make the next checkpoint a full archive."""
+        self._index = None
+        self._base = None
+
+    def _create(
+        self,
+        ws: Workspace,
+        *,
+        label: str,
+        only_if_changed: bool,
+        before_upload: Callable[[], None] | None,
+    ) -> CheckpointRecord | None:
         # THE ARTIFACTS LINK IS LEFT OUT, knowingly (#149). `work/artifacts` is
         # a link the worker makes to `artifacts/` (`workspace.link_artifacts`).
         # Archived, it broke every resume: it resolves outside `work/`, and
@@ -474,9 +884,76 @@ class CheckpointManager:
             for path in (ws.artifacts_link(), ws.artifacts_link(ws.checkout()))
             if ws.is_artifacts_link(path)
         ) | {ws.input_path.relative_to(ws.work).as_posix()}
+        self.last_unchanged = False
+        build_dirs = _BuildDirFilter(ws.work)
+        racy_after = time.time_ns() - RACY_WINDOW_NS
+        previous = self._index
+        base = self._base
+        if previous is not None and (
+            self._chain_length >= CHECKPOINT_CHAIN_MAX or self._chain_bytes >= self._full_bytes
+        ):
+            # Rebase: a restore replays the whole chain, so it is kept short
+            # and never heavier than the full archive under it.
+            previous, base = None, None
+        index: dict[str, tuple[Any, ...]] = {}
+        deleted: list[str] = []
+        if previous is not None:
+            # Two walks. The first only stats, so an unchanged tree costs no
+            # archive at all, and the deletions are known before the archive
+            # opens -- they travel in its gzip header, where the digest
+            # covers them. The second archives what differs from `previous`.
+            index = self._scan(ws.work, skip=skip, build_dirs=build_dirs)
+            deleted = _deleted_since(previous, index)
+            unchanged = not deleted and index == previous
+            if only_if_changed and unchanged:
+                self.last_unchanged = True
+                self._log.info(
+                    "checkpoint unchanged; nothing written", label=label, entries=len(index)
+                )
+                return None
+        if before_upload is not None:
+            before_upload()
+
+        self._seq += 1
+        checkpoint_id = f"ckpt-{self._seq:05d}"
+        prefix = checkpoint_prefix(
+            tenant_id=self._tenant_id,
+            task_id=self._task_id,
+            attempt_id=self._attempt_id,
+            checkpoint_id=checkpoint_id,
+        )
+        archive_key = f"{prefix}/{ARCHIVE_NAME}"
+        manifest_key = f"{prefix}/{MANIFEST_NAME}"
+        comment: bytes | None = None
+        if base is not None:
+            comment = CHAIN_COMMENT_PREFIX + json.dumps(
+                {
+                    "base": {"checkpoint_id": base[0], "archive_sha256": base[1]},
+                    "deleted": deleted,
+                },
+                sort_keys=True,
+            ).encode("ascii")
+
         with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
-            file_count = self._write_archive(ws.work, archive_path, skip=skip)
+            archived: dict[str, tuple[Any, ...]] = {}
+            file_count = self._write_archive(
+                ws.work,
+                archive_path,
+                skip=skip,
+                build_dirs=build_dirs,
+                previous=previous if base is not None else None,
+                index=archived,
+                comment=comment,
+            )
+            # What the next checkpoint compares against: the first walk's
+            # reading, overwritten by what the second actually archived. An
+            # entry that vanished between the walks stays in, so the next
+            # checkpoint names it deleted rather than forgetting it.
+            index.update(archived)
+            for rel, signature in index.items():
+                if signature[0] == "f" and max(signature[3], signature[4]) >= racy_after:
+                    index[rel] = signature + ("racy",)
             size = archive_path.stat().st_size
             if size > self._max_bytes:
                 raise CheckpointError(
@@ -501,14 +978,35 @@ class CheckpointManager:
                 file_count=file_count,
                 uri=self._store.uri(f"{prefix}/"),
                 clone_base=self.clone_base,
+                base_checkpoint_id=base[0] if base is not None else None,
+                base_archive_sha256=base[1] if base is not None else None,
             )
             # Commit marker. Nothing before this line is discoverable.
             self._store.upload_bytes(
                 manifest_key,
-                json.dumps({**asdict(record), "label": label}, indent=2).encode("utf-8"),
+                json.dumps(
+                    {
+                        **asdict(record),
+                        "label": label,
+                        "kind": "incremental" if base is not None else "full",
+                        "deleted": len(deleted),
+                    },
+                    indent=2,
+                ).encode("utf-8"),
                 content_type="application/json",
             )
             self._written += 1
+
+        # The chain moves only once the manifest is up: a checkpoint that
+        # failed anywhere before leaves the next one based on the last that
+        # committed.
+        if base is None:
+            self._chain_length, self._chain_bytes, self._full_bytes = 0, 0, size
+        else:
+            self._chain_length += 1
+            self._chain_bytes += size
+        self._index = index
+        self._base = (checkpoint_id, digest)
 
         self._log.info(
             "checkpoint written",
@@ -516,11 +1014,34 @@ class CheckpointManager:
             bytes=size,
             files=file_count,
             label=label,
+            kind="incremental" if base is not None else "full",
+            base=base[0] if base is not None else None,
+            deleted=len(deleted),
         )
         return record
 
+    def _scan(
+        self, source: Path, *, skip: frozenset[str], build_dirs: _BuildDirFilter
+    ) -> dict[str, tuple[Any, ...]]:
+        """Every entry `_write_archive` would archive, by `_signature`; nothing is read.
+
+        The same walk, by descriptor and following no link, with no archive:
+        the first of an incremental checkpoint's two walks.
+        """
+        index: dict[str, tuple[Any, ...]] = {}
+        self._walk(source, None, skip=skip, build_dirs=build_dirs, previous=None, index=index)
+        return index
+
     def _write_archive(
-        self, source: Path, archive_path: Path, *, skip: frozenset[str] = frozenset()
+        self,
+        source: Path,
+        archive_path: Path,
+        *,
+        skip: frozenset[str] = frozenset(),
+        build_dirs: _BuildDirFilter | None = None,
+        previous: dict[str, tuple[Any, ...]] | None = None,
+        index: dict[str, tuple[Any, ...]] | None = None,
+        comment: bytes | None = None,
     ) -> int:
         """Archive the tree under `source`, following NO link, the root included.
 
@@ -551,7 +1072,35 @@ class CheckpointManager:
         tree's depth, and a deep tree cannot raise `RecursionError` here. The
         depth itself is bounded by `CHECKPOINT_MAX_DEPTH`: below it nothing is
         archived, the count left out is logged, and the checkpoint is written.
+
+        INCREMENTAL (#637). With `previous`, an entry whose `_signature`
+        equals the one recorded there is walked and not archived; `comment`
+        goes into the gzip header (`CHAIN_COMMENT_PREFIX`). `index` collects the signature of every entry walked.
+        A directory in `BUILD_DIRS` that `build_dirs` excludes is neither
+        archived nor entered.
         """
+        if build_dirs is None:
+            build_dirs = _BuildDirFilter(source)
+        if index is None:
+            index = {}
+        with _CappedFile(archive_path, self._max_bytes) as raw, _GzipWriter(
+            raw, comment=comment
+        ) as gz, tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
+            return self._walk(
+                source, tar, skip=skip, build_dirs=build_dirs, previous=previous, index=index
+            )
+
+    def _walk(
+        self,
+        source: Path,
+        tar: tarfile.TarFile | None,
+        *,
+        skip: frozenset[str],
+        build_dirs: _BuildDirFilter,
+        previous: dict[str, tuple[Any, ...]] | None,
+        index: dict[str, tuple[Any, ...]],
+    ) -> int:
+        """`_write_archive`'s walk, into `tar`, or only into `index` when `tar` is None."""
         try:
             root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
@@ -569,35 +1118,40 @@ class CheckpointManager:
             os.close(root_fd)
             raise
         try:
-            with _CappedFile(archive_path, self._max_bytes) as raw, tarfile.open(
-                fileobj=raw, mode="w:gz"
-            ) as tar:
-                while stack:
-                    dir_fd, prefix, names = stack[-1]
-                    if not names:
-                        stack.pop()
-                        os.close(dir_fd)
-                        continue
-                    name = names.pop()  # reverse-sorted, so this is the smallest
-                    rel = prefix + name
-                    if rel in skip or _is_tool_cache(rel):
-                        continue
-                    try:
-                        # `too_deep` by keyword, so the entry's own path stays
-                        # the last positional argument (#288's test records it).
-                        count += self._add_entry(
-                            tar, stack, dir_fd, name, rel, too_deep=too_deep
-                        )
-                    except (FileNotFoundError, NotADirectoryError):
-                        continue  # gone, or no longer a directory
-                    except OSError as exc:
-                        if exc.errno == errno.ELOOP:
-                            continue  # became a link after it was looked at
-                        raise
+            while stack:
+                dir_fd, prefix, names = stack[-1]
+                if not names:
+                    stack.pop()
+                    os.close(dir_fd)
+                    continue
+                name = names.pop()  # reverse-sorted, so this is the smallest
+                rel = prefix + name
+                if rel in skip or _is_tool_cache(rel):
+                    continue
+                try:
+                    # `too_deep` by keyword, so the entry's own path stays
+                    # the last positional argument (#288's test records it).
+                    count += self._add_entry(
+                        tar,
+                        stack,
+                        dir_fd,
+                        name,
+                        rel,
+                        too_deep=too_deep,
+                        build_dirs=build_dirs,
+                        previous=previous,
+                        index=index,
+                    )
+                except (FileNotFoundError, NotADirectoryError):
+                    continue  # gone, or no longer a directory
+                except OSError as exc:
+                    if exc.errno == errno.ELOOP:
+                        continue  # became a link after it was looked at
+                    raise
         finally:
             for dir_fd, _, _ in stack:
                 os.close(dir_fd)
-        if too_deep:
+        if too_deep and tar is not None:
             # Counted by path, with no descriptor held (`walk_tree`), and no
             # link followed: a count, not an archive, so a race here costs a
             # wrong number in a log line and nothing else.
@@ -615,23 +1169,41 @@ class CheckpointManager:
 
     @staticmethod
     def _add_entry(
-        tar: tarfile.TarFile,
+        tar: tarfile.TarFile | None,
         stack: list[tuple[int, str, list[str]]],
         dir_fd: int,
         name: str,
         rel: str,
         too_deep: list[str],
+        build_dirs: _BuildDirFilter | None = None,
+        previous: dict[str, tuple[Any, ...]] | None = None,
+        index: dict[str, tuple[Any, ...]] | None = None,
     ) -> int:
         """Add one entry of the directory open as `dir_fd`; 1 when it counts.
 
         A directory is pushed onto `stack` open, for the walk to descend into
         -- unless it is `CHECKPOINT_MAX_DEPTH` levels down, when it is named in
-        `too_deep` and neither archived nor entered.
+        `too_deep` and neither archived nor entered, or it is a build
+        directory `build_dirs` leaves out (`BUILD_DIRS`).
+
+        The entry's `_signature` goes into `index`. It is archived only when
+        `tar` is given and the signature differs from the one in `previous`
+        (always, with no `previous`); a directory is entered either way, since
+        what changed may be below it.
         """
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+
+        def changed(signature: tuple[Any, ...]) -> bool:
+            if index is not None:
+                index[rel] = signature
+            return tar is not None and (previous is None or previous.get(rel) != signature)
+
         if stat.S_ISLNK(st.st_mode):
+            linkname = os.readlink(name, dir_fd=dir_fd)
+            if not changed(_signature(st, linkname)) or tar is None:
+                return 0
             info = _tarinfo(rel, st, tarfile.SYMTYPE)
-            info.linkname = os.readlink(name, dir_fd=dir_fd)
+            info.linkname = linkname
             tar.addfile(info)
             return 1
         if stat.S_ISDIR(st.st_mode):
@@ -640,18 +1212,23 @@ class CheckpointManager:
             if len(stack) >= CHECKPOINT_MAX_DEPTH:
                 too_deep.append(rel)
                 return 0
+            if build_dirs is not None and build_dirs.excludes(rel):
+                return 0
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
             try:
-                info = _tarinfo(rel, os.fstat(child), tarfile.DIRTYPE)
+                child_st = os.fstat(child)
                 names = sorted(os.listdir(child), reverse=True)
             except BaseException:
                 os.close(child)
                 raise
             stack.append((child, rel + "/", names))
-            tar.addfile(info)
+            if changed(_signature(child_st)) and tar is not None:
+                tar.addfile(_tarinfo(rel, child_st, tarfile.DIRTYPE))
             return 0
         if not stat.S_ISREG(st.st_mode):
             return 0  # sockets and FIFOs are not state worth carrying
+        if not changed(_signature(st)) or tar is None:
+            return 0
         # O_NONBLOCK so a FIFO swapped in after the stat cannot hang the open;
         # the type is checked again on what was actually opened.
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
@@ -780,36 +1357,32 @@ class CheckpointManager:
                 "refusing to restore a checkpoint into a non-empty workspace; "
                 "a resumed attempt must start from a fresh ephemeral runtime"
             )
-        archive_path = ws.restore / ARCHIVE_NAME
-        self._store.download_file(record.archive_key, archive_path)
-
-        digest = _sha256(archive_path)
-        if digest != record.archive_sha256:
-            raise CheckpointError(
-                f"checkpoint {record.checkpoint_id} failed integrity check: "
-                f"expected {record.archive_sha256}, got {digest}"
-            )
-
         # Every refusal of an inconsistent archive is raised by `_safe_members`
-        # BEFORE the first member is extracted, so a refused archive leaves
-        # `work/` empty and the resume falls back as it always has on a
+        # BEFORE the first member of that archive is extracted. A chain
+        # refused part-way through has its earlier layers in `work/`, so on
+        # any refusal `work/` is emptied again: a refused restore leaves it
+        # empty and the resume falls back as it always has on a
         # `CheckpointError` here.
         skipped: list[tuple[str, str]] = []
 
         def skip(name: str, link: str) -> None:
             skipped.append((name, link))
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            members = _safe_members(tar, ws.work, on_skip=skip)
-            try:
-                tar.extractall(path=ws.work, members=members, filter=_restore_filter(skip))
-            except tarfile.FilterError as exc:
-                raise CheckpointError(
-                    f"checkpoint {record.checkpoint_id} holds a member the restore "
-                    f"refuses: {type(exc).__name__}"
-                ) from exc
-        archive_path.unlink(missing_ok=True)
-        _unmake_escaped_links(ws.work, members, skip)
+        layers: list[tuple[str, Path, list[str]]] = []
+        try:
+            self._download_chain(record, ws, layers)
+            # Oldest first: the full archive, then each change in order.
+            for position, (checkpoint_id, path, deleted) in enumerate(reversed(layers)):
+                self._apply_layer(
+                    checkpoint_id, path, ws.work, deleted, incremental=position > 0, on_skip=skip
+                )
+                path.unlink(missing_ok=True)
+        except CheckpointError:
+            _empty_directory(ws.work)
+            raise
+        finally:
+            for _, path, _ in layers:
+                path.unlink(missing_ok=True)
         self._log_skipped_links(record, skipped)
 
         # The ids continue from the restored checkpoint (#174), so they stay
@@ -853,6 +1426,84 @@ class CheckpointManager:
             files=restored,
         )
         return restored
+
+    def _download_chain(
+        self, record: CheckpointRecord, ws: Workspace, layers: list[tuple[str, Path, list[str]]]
+    ) -> None:
+        """Download `record`'s archive and every base it names, newest first, into `layers`.
+
+        Each archive is checked against the digest that names it before its
+        header is read: the head's against the record (which the attempt
+        document binds), every base's against the header of the archive
+        after it. So the whole chain is bound to the one digest the attempt
+        recorded. A base is looked for only beside the head, under the same
+        attempt's `checkpoints/`: a chain never crosses an attempt.
+        """
+        checkpoint_id = record.checkpoint_id
+        key = record.archive_key
+        expected = record.archive_sha256
+        directory = record.archive_key.rsplit("/", 2)[0]
+        seen: set[str] = set()
+        while True:
+            name = ARCHIVE_NAME if not layers else f"base-{len(layers):03d}.tar.gz"
+            path = ws.restore / name
+            layers.append((checkpoint_id, path, []))
+            self._store.download_file(key, path)
+            digest = _sha256(path)
+            if digest != expected:
+                raise CheckpointError(
+                    f"checkpoint {checkpoint_id} failed integrity check: "
+                    f"expected {expected}, got {digest}"
+                )
+            seen.add(checkpoint_id)
+            base, deleted = _chain_header(path, checkpoint_id)
+            layers[-1] = (checkpoint_id, path, deleted)
+            if base is None:
+                return
+            if base[0] in seen or len(layers) >= RESTORE_CHAIN_MAX:
+                raise CheckpointError(
+                    f"checkpoint {record.checkpoint_id}'s chain of bases does not end "
+                    f"in a full archive within {RESTORE_CHAIN_MAX}"
+                )
+            checkpoint_id, expected = base
+            key = f"{directory}/{checkpoint_id}/{ARCHIVE_NAME}"
+
+    def _apply_layer(
+        self,
+        checkpoint_id: str,
+        path: Path,
+        work: Path,
+        deleted: list[str],
+        *,
+        incremental: bool,
+        on_skip: Callable[[str, str], None],
+    ) -> None:
+        """Extract one archive of a chain into `work/`, after its deletions.
+
+        An incremental archive lands on the tree its bases made. What it
+        names deleted is removed first; then whatever stands where one of its
+        members goes is removed unless both are directories, so a changed
+        file is replaced rather than written through -- a regular member over
+        an existing LINK would otherwise be written to the link's target.
+        A member under a path that is a link on disk is refused: this
+        platform's archiver never writes one, any more than within one
+        archive (`_safe_members`).
+        """
+        with tarfile.open(path, "r:gz") as tar:
+            members = _safe_members(tar, work, on_skip=on_skip)
+            if incremental:
+                for rel in deleted:
+                    _remove_within(work, rel, checkpoint_id, keep_directory=False)
+                for member in members:
+                    _remove_within(work, member.name, checkpoint_id, keep_directory=member.isdir())
+            try:
+                tar.extractall(path=work, members=members, filter=_restore_filter(on_skip))
+            except tarfile.FilterError as exc:
+                raise CheckpointError(
+                    f"checkpoint {checkpoint_id} holds a member the restore "
+                    f"refuses: {type(exc).__name__}"
+                ) from exc
+        _unmake_escaped_links(work, members, on_skip)
 
     def _log_skipped_links(self, record: CheckpointRecord, skipped: list[tuple[str, str]]) -> None:
         """One warning naming the first `SKIPPED_LINKS_NAMED` skipped links, and the count.
@@ -902,3 +1553,59 @@ def _unmake_escaped_links(
             continue
         os.unlink(path)
         on_skip(member.name, member.linkname)
+
+
+def _remove_within(work: Path, rel: str, checkpoint_id: str, *, keep_directory: bool) -> None:
+    """Remove what stands at `rel` under `work`, following no link; absent is fine.
+
+    By descriptor from `work/`, every parent opened `O_NOFOLLOW`: a parent
+    that is a link refuses the archive (`CheckpointError`), and nothing is
+    removed outside `work/`. A directory is removed whole, by descriptor
+    (`shutil.rmtree` with `dir_fd`), unless `keep_directory` and it is one.
+    `rmtree` recurses a frame per level; a restored tree is at most
+    `CHECKPOINT_MAX_DEPTH` deep, because nothing deeper is ever archived.
+    """
+    parts = _archive_parts(rel)
+    if parts is None:
+        raise CheckpointError(f"checkpoint {checkpoint_id} names a path outside the workspace")
+    fds = [os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in parts[:-1]:
+            try:
+                fds.append(
+                    os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1])
+                )
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise CheckpointError(
+                        f"checkpoint {checkpoint_id} writes {rel} through a link or a "
+                        f"file in the restored tree"
+                    ) from exc
+                raise
+        try:
+            st = os.stat(parts[-1], dir_fd=fds[-1], follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(st.st_mode):
+            if not keep_directory:
+                shutil.rmtree(parts[-1], dir_fd=fds[-1])
+        else:
+            os.unlink(parts[-1], dir_fd=fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _empty_directory(work: Path) -> None:
+    """Remove everything under `work`, following no link."""
+    fd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in os.listdir(fd):
+            if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                shutil.rmtree(name, dir_fd=fd)
+            else:
+                os.unlink(name, dir_fd=fd)
+    finally:
+        os.close(fd)

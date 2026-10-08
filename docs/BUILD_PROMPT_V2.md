@@ -4,8 +4,8 @@
 2026-10-01). The control plane, the account pool (`apps/quota-broker`), the
 `/swarm` bridge (`apps/swarm-mcp`) and the dashboard (`apps/swarm-ui`) exist in
 this repository. The substrate did NOT move: Cloud Run Jobs stay the primary
-execution backend and GKE Autopilot runs only the browser runner — §2.1 says
-why. What is deployed is a different, dated question: read
+execution backend and GKE Autopilot runs the browser runner and, since
+contract request 53 (applied 2026-10-08), `claude-code` — §2.1 says why. What is deployed is a different, dated question: read
 [`DEPLOY_STATE.md`](DEPLOY_STATE.md), not this line.
 **Supersedes:** `gcp_zero_idle_agent_swarm_build_prompt.md` (v1). v2 keeps v1's
 control plane and its execution substrate, and adds to them.
@@ -47,22 +47,23 @@ disabled for every tenant; no Job exists for them yet):
 
 | profile | backend | where the catalogue says so |
 |---|---|---|
-| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1125` |
-| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1032` |
-| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1141` |
-| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1158` |
-| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1187` |
-| `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1209` |
-| `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1228` |
-| `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1253` |
+| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::_GENERIC_PROFILE` |
+| `claude-code` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 53, applied 2026-10-08; its tenants' Cloud Run Jobs are kept, idle, until 2026-10-15 as the rollback) |
+| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
+| `indexer` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`) |
 
-`BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`) sends
+`BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
-(`apps/scheduler/scheduler/dispatch.py:689`) and `GKE_AUTOPILOT` to
-`GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py:1334`); the module
-header (`apps/scheduler/scheduler/dispatch.py:8`) states the same split. No
+(`apps/scheduler/scheduler/dispatch.py::CloudRunJobDispatcher`) and `GKE_AUTOPILOT` to
+`GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher`); the module
+header (`apps/scheduler/scheduler/dispatch.py` (`Cloud Run Jobs is the primary backend. GKE Autopilot takes browser work, because`)) states the same split. No
 profile is `AUTO`, so `resolve_backend`
-(`apps/common/swarm_common/profiles.py:1267`) only passes the declared backend
+(`apps/common/swarm_common/profiles.py::resolve_backend`) only passes the declared backend
 through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue
 and fails when this table stops matching it.
 
@@ -78,10 +79,20 @@ minimum per pod, and a second rewrite of a dispatcher that is proven. The owner
 chose to keep the proven path.
 
 **Why the browser runner is on GKE.** Chromium needs a large `/dev/shm`, and GKE
-gives direct control over it (`apps/scheduler/scheduler/dispatch.py:8`). That is
-the only profile on GKE today. GPU work and anything over 32 GiB would also need
+gives direct control over it (`apps/scheduler/scheduler/dispatch.py` (`Chromium needs a large /dev/shm and GKE gives direct control over it.`)). That is
+the first profile on GKE. GPU work and anything over 32 GiB would also need
 GKE, but no such profile exists: `ResourceClass` refuses more than 8 vCPU or
-32 GiB at import (`apps/common/swarm_common/profiles.py:65`).
+32 GiB at import (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`).
+
+**Why `claude-code` moved to GKE (contract request 53, applied 2026-10-08).**
+Start latency. On Cloud Run its DISPATCHED -> STARTING wait was p50 128 s /
+p90 212 s (874 attempts), 90-95 % of it in Cloud Run's own provisioning, with
+the lease held throughout. Contract request 55's canary ran the same profile on
+Autopilot for five real steps: DISPATCHED -> RUNNING p50 ~23 s, max 44 s. The
+reliability argument above is not withdrawn for it: claude-code now has the
+node-side ways to lose an attempt (auto-repair, pressure eviction) that Cloud
+Run does not, and mandatory periodic checkpointing is what makes those cost
+minutes.
 
 **What this costs, plainly.** Two backends means two dispatchers, two reap
 paths and two log paths, and a dashboard that has to say which one a task ran
@@ -89,19 +100,19 @@ on. That is the "which backend" branching this section originally set out to
 delete, kept on purpose. `kubectl exec` and `kubectl logs -f` exist for browser
 tasks only; a Cloud Run task is read through Cloud Logging and the structured
 events. The gVisor shape in §2.2 is a render option for GKE pods
-(`kubernetes/render.py:390`, `--runtime gvisor`), not the default, and does not
+(`kubernetes/render.py::JOB_FILES_GVISOR`, `--runtime gvisor`), not the default, and does not
 apply to Cloud Run Jobs at all.
 
 **Workspace storage: memory, GA, live migration.** Cloud Run's disk-backed
 ephemeral volume is **Preview** and **disables live migration**, which would
 partially undermine the reason Cloud Run was chosen. This platform does not use
 it: the Terraform google provider cannot express it (`empty_dir.medium` accepts
-only `"MEMORY"`, `terraform/modules/cloud_run_jobs/main.tf:107`), so the
+only `"MEMORY"`, `terraform/modules/cloud_run_jobs/main.tf` (`medium     = "MEMORY"`)), so the
 workspace is a memory-backed **tmpfs** carved out of the container's memory
-limit (`apps/common/swarm_common/profiles.py:68`,
-`apps/scheduler/scheduler/dispatch.py:153`), and every Job is created on launch
-stage **GA** (`terraform/modules/cloud_run_jobs/main.tf:53`,
-`apps/scheduler/scheduler/dispatch.py:827`). The GA path **does** support live
+limit (`apps/common/swarm_common/profiles.py` (`WORKSPACE SIZES ARE MEMORY, NOT DISK.`),
+`apps/scheduler/scheduler/dispatch.py::WORKSPACE_MEMORY_FRACTION`), and every Job is created on launch
+stage **GA** (`terraform/modules/cloud_run_jobs/main.tf` (`launch_stage        = "GA"`),
+`apps/scheduler/scheduler/dispatch.py::CloudRunJobDispatcher._build_job`). The GA path **does** support live
 migration. That is the CLAUDE.md "Correction (workspace storage)", and the
 consequence is that `disk_gib` is a slice of `memory_gib`, not extra capacity.
 
@@ -126,9 +137,9 @@ verify that against the actual bill rather than trusting this sentence.
 > **Amended 2026-10-01: this section is unbuilt v2 design, not what runs.**
 > No profile runs as root and no profile runs under gVisor by default. The agent
 > image drops to `USER swarm:swarm`, uid 10001
-> (`images/agent-runtime-base/Dockerfile:658`), on both backends, and an agent
+> (`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)), on both backends, and an agent
 > installs into its own user paths (§2.12). gVisor is the `--runtime gvisor`
-> render option for GKE pods (`kubernetes/render.py:390`), not the default, and
+> render option for GKE pods (`kubernetes/render.py::JOB_FILES_GVISOR`), not the default, and
 > Cloud Run Jobs has no runtime class at all. So the boundary this section
 > describes, root made safe by a sandbox underneath it, does not exist: today's
 > boundary is an unprivileged user inside the backend's own isolation. Do not
@@ -211,9 +222,9 @@ is a measurement, not an argument, and §8.3b is taking it.
 
 > **Amended 2026-10-02: what runs.** On Cloud Run Jobs the scratch volume is a
 > memory-backed tmpfs carved out of the container's memory limit
-> (`apps/scheduler/scheduler/dispatch.py:153`), so `disk_gib` is a slice of
+> (`apps/scheduler/scheduler/dispatch.py::WORKSPACE_MEMORY_FRACTION`), so `disk_gib` is a slice of
 > `memory_gib`, not extra capacity (§2.1 says why). On GKE it is an `emptyDir`
-> sized to the resource class (`apps/scheduler/scheduler/dispatch.py:1572`).
+> sized to the resource class (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`).
 > The per-tenant shared cache in the last paragraph is still not built: no
 > volume, quota or cleanup policy for it exists in `terraform/` or in either
 > dispatcher.
@@ -244,7 +255,7 @@ tenant.
 > ```
 >
 > `sc:remote` is the sc plugin's agent (`plugin/agents/remote.md`; usage at
-> `plugin/README.md:622`). It dispatches its prompt as one `claude-code` task on
+> `plugin/README.md` (`and its prompt is what the remote agent is told`)). It dispatches its prompt as one `claude-code` task on
 > the session's repository and pushed branch, follows it, and returns the remote
 > agent's answer, or, given a `schema`, the JSON object parsed from the end of
 > that answer. A schema-mode call can throw when the task does not succeed, so
@@ -257,7 +268,7 @@ tenant.
 > The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
 > MCP tools for a session that is not running a workflow script:
 > `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
-> one request (`apps/swarm-mcp/swarm_mcp/server.py:1520`), and `swarm_collect`
+> one request (`apps/swarm-mcp/swarm_mcp/server.py::_dispatch_batch`), and `swarm_collect`
 > gathers the results.
 
 ```js
@@ -297,9 +308,9 @@ locally?" is never a debugging question.
 > and no service runs claudeswitch. It is not in the agent image, and nothing
 > under `apps/` calls it. What the platform took from it is measured knowledge,
 > not code: the token endpoint that actually answers a refresh
-> (`apps/quota-broker/quota_broker/oauth.py:54`, "verified against
+> (`apps/quota-broker/quota_broker/oauth.py::TOKEN_ENDPOINT`, "verified against
 > claudeswitch") and the onboarding constraints recorded in its ground-truth
-> notes (`apps/quota-broker/quota_broker/oauth.py:337`). The mechanism column of
+> notes (`apps/quota-broker/quota_broker/oauth.py` (`and is recorded in claudeswitch's docs/GROUND_TRUTH.md section 31`)). The mechanism column of
 > the table below is split between two services. The broker signs accounts in
 > (§2.6.1) and refreshes them as the single writer (§7.3). The worker reads an
 > account's access token by secret name and gives it to the agent in one
@@ -349,15 +360,15 @@ runs the mechanism.
 > `sc account add --label <label> [--lend-to <tenant>]`,
 > `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
 > asks for the label typed back. `sc accounts` is the read-only list. `add`
-> (`apps/swarm-mcp/swarm_mcp/sc.py:1112`) runs four steps:
+> (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_account_add`) runs four steps:
 >
 > 1. It calls `POST /v1/accounts/authorize`
->    (`apps/swarm-api/swarm_api/routes/accounts.py:283`), which returns the
+>    (`apps/swarm-api/swarm_api/routes/accounts.py::begin_sign_in`), which returns the
 >    Anthropic sign-in URL and the `state` that keys it.
 > 2. It opens the operator's browser at that URL.
 > 3. It reads the code the callback page shows, without echoing it.
 > 4. It sends that code once to `POST /v1/accounts/exchange`
->    (`apps/swarm-api/swarm_api/routes/accounts.py:310`).
+>    (`apps/swarm-api/swarm_api/routes/accounts.py::finish_sign_in`).
 >
 > The broker exchanges the code and writes the credential to Secret Manager
 > itself. It files the account under the tenant recorded when the sign-in
@@ -403,11 +414,11 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:4923`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py::Worker._lease_account`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:5293`,
-> `apps/agent-worker/agent_worker/accountlease.py:650`). That is the same on a
+> (`apps/agent-worker/agent_worker/lifecycle.py::Worker._account_credential_env`,
+> `apps/agent-worker/agent_worker/accountlease.py::credential_env_from_account`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
 > writer (§7.3); the worker never refreshes.
@@ -415,14 +426,14 @@ refresh disabled, and let the broker own it.
 > **Amended 2026-10-02: the assignment is a broker HOLD, not a field on the
 > lease, and there is no credential file.** The broker records each assignment
 > as a hold on the account document
-> (`apps/quota-broker/quota_broker/accounts.py:352`). A hold carries its own
+> (`apps/quota-broker/quota_broker/accounts.py::Account`). A hold carries its own
 > id, which the release must name, and it expires on its own, so a SIGKILLed
 > worker costs a few stale minutes rather than a count that stays inflated for
-> good (`apps/agent-worker/agent_worker/accountlease.py:66`). It is not on the
+> good (`apps/agent-worker/agent_worker/accountlease.py` (`A hold also expires on its own, which is what makes a SIGKILLed worker cost a`)). It is not on the
 > LEASE because `Lease` is frozen and has no account field. Recording which
 > account an attempt ran on is contract change request 13, still open. The
 > token reaches the agent as one environment variable, `CLAUDE_CODE_OAUTH_TOKEN`
-> (`apps/agent-worker/agent_worker/accountlease.py:131`), and is never written
+> (`apps/agent-worker/agent_worker/accountlease.py::ACCOUNT_TOKEN_ENV`), and is never written
 > to a credentials file. So the `CLAUDE_CONFIG_DIR` and `MergeForSwap` paragraphs
 > below have nothing to act on today.
 
@@ -556,23 +567,23 @@ is a platform that blocks its own upgrades.
 ### 2.8 Dashboard: self-hosted Cloud Run service
 
 > **Amended 2026-10-02: what was built.** The dashboard is its own Cloud Run
-> service, `swarm-ui` (`terraform/infra/main.tf:371`). It differs from this
+> service, `swarm-ui` (`terraform/infra/main.tf` (`"swarm-ui" = {`)). It differs from this
 > section in three places.
 >
 > * **It reads swarm-api only.** It never reads Firestore directly, nor the
 >   Kubernetes API. swarm-api is where the caller's token is verified and
 >   every read is scoped to the caller's tenant. A UI holding a privileged
 >   identity would move invariant 9 into new code
->   (`terraform/modules/frontend/main.tf:21`).
+>   (`terraform/modules/frontend/main.tf` (`design where the UI holds a privileged identity and filters by tenant in`)).
 > * **It polls, with no server-sent events.** The capacity screens re-read
 >   every 30 or 60 seconds and pause while the tab is hidden
->   (`apps/swarm-ui/src/capacityPoll.ts:15`).
+>   (`apps/swarm-ui/src/capacityPoll.ts` (`export const POOLS_POLL_MS`)).
 > * **The front door is an external Application Load Balancer with IAP**
->   (`terraform/modules/frontend/main.tf:1`), not an internal one.
+>   (`terraform/modules/frontend/main.tf` (`An external Application Load Balancer`)), not an internal one.
 >   `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` is exactly the ingress setting an
 >   external ALB in front of Cloud Run needs, so the wall described below was
 >   never there. The module is created where `enable_frontend` is set
->   (`terraform/infra/main.tf:492`).
+>   (`terraform/infra/main.tf` (`module "frontend" {`)).
 >
 > The table below is the design. `docs/web-ui/README.md` records which screens
 > exist.
@@ -642,7 +653,7 @@ architecture.
 
 > **Amended 2026-10-02: the pool counters are not sharded.** Admission still
 > reads and writes whole pool documents in one transaction, the pools named by
-> `pool_names_for` (`apps/common/swarm_common/models.py:82`), so invariant 2
+> `pool_names_for` (`apps/common/swarm_common/models.py::pool_names_for`), so invariant 2
 > holds exactly as v1 built it. Sharding was deferred, not designed.
 > `docs/scaling.md` §5 ranks it third, behind fewer and longer admissions and
 > the per-tenant and per-provider pools that already spread the writes, and
@@ -669,9 +680,11 @@ Already in the image: `git`, `jq`, `ripgrep`, `fd`, `curl`, `wget`, `node`/`npm`
 
 Added (S34, 2026-10-01): `gh`, `gcloud` (with `gke-gcloud-auth-plugin`),
 `kubectl`, `terraform`, `checkov`, `shellcheck`, `make` and the `docker` CLI are
-in the default build. `tofu`, `tflint` and `trivy` are installed only with
-`--build-arg INSTALL_TOFU_TFLINT_TRIVY=1`: no published release of them passed
-the promote gate's fixable-HIGH/CRITICAL scan that day. The pinned versions,
+in the default build. `tofu`, `tflint` and `trivy` were held back: no
+published release of them passed the promote gate's fixable-HIGH/CRITICAL scan
+that day. `trivy` joined the default build at 0.75.0, which scanned clean on
+2026-10-06 (#442); `tofu` and `tflint` are still installed only with
+`--build-arg INSTALL_TOFU_TFLINT=1`. The pinned versions,
 and why two of them differ from the operator pins quoted below, are in
 [`versions.md`](versions.md#agent-image-toolbox). The image still runs every
 tool as uid 10001; it does not provide root.
@@ -706,10 +719,10 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 > **Amended 2026-10-01.** The diagram is the v2 design and draws one execution
 > box. What is built has two (§2.1): Cloud Run Jobs for `mock`, `generic`,
 > `claude-code` and `codex`, and GKE Autopilot for `browser`, routed by
-> `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`).
+> `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`).
 > Neither box is "root, sandboxed": the worker runs as uid 10001
-> (`images/agent-runtime-base/Dockerfile:658`) and gVisor is opt-in
-> (`kubernetes/render.py:390`), see §2.2. There is no credential sidecar; the
+> (`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)) and gVisor is opt-in
+> (`kubernetes/render.py::JOB_FILES_GVISOR`), see §2.2. There is no credential sidecar; the
 > worker leases its account itself (§2.6.3).
 
 ```
@@ -775,7 +788,7 @@ v1 built these and they are correct. They are not rewritten:
 >
 > * **Item 5: there is no sidecar** in either backend's pod. The worker process
 >   itself leases the account (§2.6.3) and runs the checkpoint timer
->   (`apps/agent-worker/agent_worker/lifecycle.py:1486`). The reason is §2.6.3's:
+>   (`apps/agent-worker/agent_worker/lifecycle.py::Worker._run_child_supervised`). The reason is §2.6.3's:
 >   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
 >   How events are published is §2.7's question.
 > * **Item 12 is not configuration.** The catalogue is the frozen
@@ -875,13 +888,15 @@ compared to discovering the answer halfway through.
 > * row 5: Autopilot cold start for short agent tasks.
 >
 > The work to take them, the GKE benchmark lane, was removed when the owner
-> kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` runs on Cloud
-> Run Jobs, and no profile renders the gVisor template by default
-> (`kubernetes/render.py:390`). Row 5 is scoped to `claude-code` and the agent
+> kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` ran on Cloud
+> Run Jobs until contract request 53 moved it to Autopilot on 2026-10-08, and
+> no profile renders the gVisor template by default
+> (`kubernetes/render.py::JOB_FILES_GVISOR`). Row 5 is scoped to `claude-code` and the agent
 > fleets: the `browser` profile does run on Autopilot today
-> (`apps/common/swarm_common/profiles.py:1187`), for its `/dev/shm`, and accepts
-> its cold start, which is not what row 5 asked. If an agent profile ever moves
-> to GKE, these rows come back with it.
+> (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`), for its `/dev/shm`, and accepts
+> its cold start, which is not what row 5 asked. An agent profile has now moved
+> to GKE (`claude-code`, request 53), so these rows are open again; row 5 was
+> answered for claude-code by request 53's probe and request 55's canary.
 
 | # | Question | Invalidates if wrong |
 |---|---|---|
@@ -919,22 +934,22 @@ v2 contradicts the frozen contract in specific places. These are **requests**, p
   gVisor. The defence moved down a layer; it did not disappear, and it is not the
   same defence.~~ **Not requested (amended 2026-10-02):** nothing runs as root,
   so the contract line stands. The agent image drops to `USER swarm:swarm`,
-  uid 10001 (`images/agent-runtime-base/Dockerfile:658`). The GKE pod and its
+  uid 10001 (`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)). The GKE pod and its
   container keep non-root, a read-only root filesystem and every capability
-  dropped (`apps/scheduler/scheduler/dispatch.py:192`,
-  `apps/scheduler/scheduler/dispatch.py:205`). gVisor is the opt-in
-  `--runtime gvisor` render (`kubernetes/render.py:390`). The renderer refuses
+  dropped (`apps/scheduler/scheduler/dispatch.py::POD_SECURITY_CONTEXT`,
+  `apps/scheduler/scheduler/dispatch.py::CONTAINER_SECURITY_CONTEXT`). gVisor is the opt-in
+  `--runtime gvisor` render (`kubernetes/render.py::JOB_FILES_GVISOR`). The renderer refuses
   that render for a namespace still at Pod Security `restricted`
-  (`kubernetes/render.py:826`), because restricted forbids root, so §2.2's
+  (`kubernetes/render.py::render_job`), because restricted forbids root, so §2.2's
   trade is not made anywhere today.
 * **One credential per tenant per provider** → a pool of accounts per tenant, one
   held per agent at a time, swappable mid-run. **Amended 2026-10-02:** the pool
   is built, without editing the contract, and the per-tenant credential is
   still the floor.
   * The pool is per tenant, with explicit lending to named tenants
-    (`apps/quota-broker/quota_broker/accounts.py:4`).
+    (`apps/quota-broker/quota_broker/accounts.py` (`per-tenant with explicit lending: an account belongs to exactly one tenant, and`)).
   * The worker holds one account per attempt
-    (`apps/agent-worker/agent_worker/accountlease.py:3`). When the broker cannot
+    (`apps/agent-worker/agent_worker/accountlease.py` (`WHAT CHANGES HERE. Until now a worker read`)). When the broker cannot
     be reached, the worker falls back to the tenant's own
     `swarm-tenant-<tenant>-<provider>` secret, so the platform never needs this
     amendment to run.
@@ -954,8 +969,9 @@ Ordered by what unblocks what, not by what is most interesting.
 2. **Autopilot substrate** — cluster, gVisor, namespaces, RBAC, NetworkPolicies.
 3. **Pod dispatcher**, with the existing profile catalogue unchanged.
 4. ~~**One real `claude-code` agent in a pod**, end to end.~~ Withdrawn
-   2026-10-01: `claude-code` stays on Cloud Run Jobs, where v1 already reached
-   this milestone (§2.1).
+   2026-10-01: `claude-code` stayed on Cloud Run Jobs, where v1 already reached
+   this milestone (§2.1). It moved to GKE Autopilot on 2026-10-08 (contract
+   request 53), as a pod of the existing dispatcher, not this plan's.
 5. **Structured events** — the dashboard and two stall signals both need them.
 6. **Internal LB + IAP** — prerequisite for the dashboard and for any second user.
 7. **Dashboard.**

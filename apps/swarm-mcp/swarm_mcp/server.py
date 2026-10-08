@@ -46,7 +46,16 @@ from swarm_common.profiles import RESOURCE_CLASSES
 from . import checkout, compact, config, progress
 from . import profiles as catalogue
 from . import workflows
-from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of, task_payload
+from .client import (
+    TERMINAL,
+    SwarmClient,
+    SwarmError,
+    chosen_tenant,
+    outputs_of,
+    task_id_of,
+    task_payload,
+    tenant_listing,
+)
 from .follow import (
     DEFAULT_EVENT_PAGE,
     DEFAULT_LOG_BUDGET,
@@ -217,7 +226,14 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "WHERE IT GOES is `target`: this call's, else the session default. "
             "`local` sends nothing; `hybrid` sends nothing when `needs_local` "
-            "names anything. The reply's `target` says which applied and why."
+            "names anything. The reply's `target` says which applied and why.\n"
+            "\n"
+            "THE REPLY STARTS ITS OWN ROWS: `rows` is a titled /sc:swarmcloud "
+            "script that shows each task just sent as one live [SwarmCloud] row. "
+            "Launch it at once with the Workflow tool, {scriptPath: "
+            "<rows.script_path>, args: <rows.args>}, as `rows.start_now` says; "
+            "`rows.error` means it could not be written, and `/sc attach --all` "
+            "gives the task its row instead."
         ),
         "inputSchema": {
             "type": "object",
@@ -315,6 +331,21 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "swarm_tenants",
+        "description": (
+            "The tenants you may act as (GET /v1/tenants/mine: tenant_id and "
+            "display_name, the group's email), each marked `current` when it is "
+            "the one this bridge acts as. `current` is the API's own answer; "
+            "`chosen` is the bridge's `tenant` setting, null when none is set and "
+            "the API picks your first matching tenant. The setting is "
+            "SWARM_TENANT in the bridge's environment, read once at start, and "
+            "applies to every call this session makes; there is no per-call "
+            "tenant. An empty list means your tenant is personal and there is "
+            "nothing to choose. Read-only."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "swarm_wait",
         "description": (
             "Block until the given tasks reach a terminal state, then return what "
@@ -382,7 +413,9 @@ TOOLS: list[dict[str, Any]] = [
             "no log lines at all, one short line per task only when it changed "
             "(state; elapsed; attempt n/m; last checkpoint age; tokens and cost "
             "so far; what a waiting task waits for), the state `transitions` "
-            "since `since`, `changed`, and a finished task's `outcome` -- a few "
+            "since `since`, `changed`, and a finished task's `outcome`; the "
+            "reply that says `stop: true` also carries `result`, the step's "
+            "answer with no null in it, to return as given -- a few "
             "hundred bytes a call. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
@@ -395,8 +428,8 @@ TOOLS: list[dict[str, Any]] = [
             "FOR AN AGENT THAT RELAYS A REMOTE AGENT'S WORK (`sc:remote`), "
             "pass `format: \"lines\"`: the answer is then short narrated lines -- "
             "what the remote agent said, which tools it called, where a waiting "
-            "task is waiting and why -- plus an opaque `since` token to pass back "
-            "unchanged, instead of the full report. With `wait_seconds` a call "
+            "task is waiting and why -- plus `since`, a short handle (such as "
+            "`r7f3a2`) to pass back unchanged, instead of the full report. With `wait_seconds` a call "
             "gathers for up to that long (max 300) and returns early when every "
             "task has finished or a task starts; the first call, without "
             "`since`, returns at once. A finished task carries `outcome`: its "
@@ -453,9 +486,16 @@ TOOLS: list[dict[str, Any]] = [
                 "since": {
                     "type": "string",
                     "description": (
-                        "The `since` string a previous call returned, passed back "
-                        "UNCHANGED -- the same position as `cursor`, as one opaque "
-                        "token. Omit it on the first call. Pass `since` or "
+                        "The `since` a previous call returned, passed back "
+                        "UNCHANGED. With `lines` and `progress` it is a short "
+                        "handle, `r` and five hex digits (such as `r7f3a2`): "
+                        "the bridge keeps the position behind it, and a handle "
+                        "changed on the way is refused -- copy it again from the "
+                        "previous reply. A full token from an older bridge is "
+                        "still read. The first call has none; with `lines` or "
+                        "`progress`, a later call that has none, for tasks this "
+                        "bridge already answered, resumes from the last position "
+                        "it returned and holds like any follow. Pass `since` or "
                         "`cursor`, not both."
                     ),
                 },
@@ -482,8 +522,9 @@ TOOLS: list[dict[str, Any]] = [
                         "returning. `lines` returns early when every task has "
                         "finished or a task starts, or the read budget is spent; "
                         "`progress` returns early only when a task's state "
-                        "changes or every task has finished. A call without "
-                        "`since` returns at once -- unless it names `parents`."
+                        "changes or every task has finished. The first call, "
+                        "for tasks this bridge has not answered yet, returns "
+                        "at once -- unless it names `parents`."
                     ),
                 },
                 "max_lines": {
@@ -575,7 +616,16 @@ TOOLS: list[dict[str, Any]] = [
             "`artifacts_complete: false` means the task has not finished and its "
             "artifacts are uploaded when the attempt ends -- not that it produced "
             "none; `artifacts: null` means they could not be listed, and "
-            "`artifacts_unavailable_because` says why."
+            "`artifacts_unavailable_because` says why.\n"
+            "\n"
+            "`owner_questions` is what the task's agent asks the owner instead of "
+            "guessing: the items of its questions.json the worker validated, each "
+            "{question, options: [{label, description}], recommended, context}, "
+            "read through the same redacted artifact read as swarm_artifact. It "
+            "is absent when the agent asked none, and a file the worker rejected "
+            "is never served. `questions_unavailable_because` means the worker "
+            "counted questions this read could not get. They are for a person "
+            "to answer: show them; never pick an option yourself."
         ),
         "inputSchema": {
             "type": "object",
@@ -780,6 +830,25 @@ TOOLS: list[dict[str, Any]] = [
                         "carries the digest of what was received either way."
                     ),
                 },
+                "merge_pr": {
+                    "type": "object",
+                    "description": (
+                        "Merge a pull request NO workflow opened, at the head sha you "
+                        "name (#352): submits one `merge` step and nothing else, so it "
+                        "takes no `steps`/`spec` and only `repo` and `title` beside it. "
+                        "The repository is `repo` when given, which must be one your "
+                        "tenant registered, else your tenant's only registered one. The "
+                        "API refuses a pull request that is closed, merged, from a fork, "
+                        "or whose head is not `head_sha` now; the step merges only once "
+                        "every required check is green at that head."
+                    ),
+                    "properties": {
+                        "number": {"type": "integer", "minimum": 1},
+                        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                    },
+                    "required": ["number", "head_sha"],
+                    "additionalProperties": False,
+                },
                 "infer": {
                     "type": "boolean",
                     "default": False,
@@ -873,6 +942,15 @@ TOOLS: list[dict[str, Any]] = [
                                     "this step's checkout starts from, so a fix "
                                     "sees the code it fixes. Needs strategy "
                                     "`integrate` or `direct-pr`."
+                                ),
+                            },
+                            "allow_empty_diff": {
+                                "type": "boolean",
+                                "description": (
+                                    "The step may end SUCCEEDED with no change "
+                                    "(result_summary.no_change) instead of "
+                                    "failing on an empty diff; dependants that "
+                                    "need its patch are SKIPPED."
                                 ),
                             },
                             "inputs": _INPUTS_SCHEMA,
@@ -1028,7 +1106,12 @@ TOOLS: list[dict[str, Any]] = [
             "`state_incomplete_because` names which ones. A STEP whose `state` "
             "is null was likewise not read -- it is neither queued nor gone. "
             "`park_reason: DEPENDENCY_INCOMPLETE` means the step is waiting for "
-            "a parent and is holding no capacity, which costs nothing."
+            "a parent and is holding no capacity, which costs nothing.\n"
+            "\n"
+            "Each step whose task was read carries `questions`: how many "
+            "questions the worker validated in that step's questions.json, 0 "
+            "when it asked none. Read a step with questions with swarm_result, "
+            "whose `owner_questions` holds them; they are for the owner to answer."
         ),
         "inputSchema": {
             "type": "object",
@@ -1044,12 +1127,22 @@ TOOLS: list[dict[str, Any]] = [
             "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
             "label, its state, its current (unfinished) steps and their states, "
             "its age and its console link. Read-only; it submits and attaches "
-            "nothing. `count` is how many are listed; `complete: false` with "
-            "`incomplete_because` means the list stopped paging and older ones "
+            "nothing. The API filters on the workflows' stored state in its "
+            "query, so SUCCEEDED and CANCELLED history costs nothing and the "
+            "running set is usually one page; newer FAILED or DEAD_LETTERED "
+            "workflows are still read (a retry can revive them) and can push it "
+            "to a few. `count` is how many are listed; `complete: false` with "
+            "`incomplete_because` means the list stopped short and older ones "
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10."
+            "{attach: \"all\"}), which follows at most 10.\n"
+            "\n"
+            "`single_tasks` lists YOUR running single tasks beside them: not "
+            "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
+            "with its task_id, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most 10. "
+            "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -1221,6 +1314,153 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["run_id", "reason"],
         },
     },
+    # -- onboarding (#780, OB9) ---------------------------------------------
+    #
+    # The calls `sc setup` and `sc access` make, for /sc:setup. None takes or
+    # returns a token, a code or a state: swarm_setup_connect returns the
+    # authorize URL, whose `state` GitHub requires, and nothing else carries it.
+    {
+        "name": "swarm_setup_status",
+        "description": (
+            "The caller's SwarmCloud onboarding checklist, the one the console "
+            "draws: six steps in order (signed_in, github_connected, "
+            "orgs_enabled, repos_chosen, access_verified, ready), each todo, "
+            "in_progress, done, failed or stale, with every failure's code and "
+            "its recovery copy word for word, and `next_step` (null when ready). "
+            "`checklist` is the text to show. `connected_as_you` is the GitHub "
+            "login SwarmCloud acts as YOU through, or null -- a step that is done "
+            "through the tenant's token is not that. With "
+            "`wait_for_github_seconds`, holds until GitHub is connected as you or "
+            "that many seconds pass (at most 600): call it that way right after "
+            "swarm_setup_connect, while the person approves in the browser."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wait_for_github_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 600, "default": 0,
+                    "description": "Hold until GitHub is connected as you, up to this long.",
+                },
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_connect",
+        "description": (
+            "Start connecting GitHub as the caller, through SwarmCloud's GitHub "
+            "App: returns `authorize_url` and `expires_in_seconds` (the link "
+            "works once, for 10 minutes), and opens the browser on this machine "
+            "when it can (`opened`). Show the person the URL in case it did not "
+            "open; repeat it nowhere else. The console's callback page finishes "
+            "the connection in their browser -- nothing comes back here -- so "
+            "follow with swarm_setup_status and `wait_for_github_seconds`. If "
+            "GitHub is already connected as them, starts nothing and says as whom."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "open_browser": {"type": "boolean", "default": True,
+                                 "description": "Open the URL in this machine's browser."},
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_orgs",
+        "description": (
+            "The GitHub owners the caller reaches -- their account and each "
+            "organisation -- with `install_state` (installed / not_installed), "
+            "`sso` and `enabled`, plus the App's `install_url` for an owner it is "
+            "not installed on (an org the person does not own sends its owners a "
+            "request). With `enable`, enables that installed owner first; an "
+            "owner without the App is refused with REPO_NOT_INSTALLED and its "
+            "recovery copy."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "enable": {"type": "string", "description": "An installed owner's login to enable."},
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_repos",
+        "description": (
+            "One page (up to 100) of an ENABLED owner's repositories that the "
+            "App's installation covers, each with `visibility`, `can_push`, "
+            "`archived`, and whether the caller already `granted` it and in which "
+            "`mode`. `q` filters by name server-side; `next_page` is the page to "
+            "ask for next, null on the last; `capped` says the listing stops "
+            "there -- search, or grant a typed owner/repo."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string"},
+                "page": {"type": "integer", "minimum": 1, "default": 1},
+                "q": {"type": "string", "description": "Only names containing this."},
+            },
+            "required": ["owner"],
+        },
+    },
+    {
+        "name": "swarm_setup_grant",
+        "description": (
+            "Let SwarmCloud use one repository AS THE CALLER: `read` (clone) or "
+            "`write` (clone, push, pull request). The API reads it once as them "
+            "and refuses write on an archived repository or one they cannot push "
+            "to, with the code and recovery copy; the first grant registers it "
+            "for the tenant. Only what the person chose: never grant a repository "
+            "or a mode they did not name."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "owner/repo"},
+                "mode": {"type": "string", "enum": ["read", "write"]},
+            },
+            "required": ["repository", "mode"],
+        },
+    },
+    {
+        "name": "swarm_setup_revoke",
+        "description": (
+            "Revoke the caller's grant on one repository: their tasks for it are "
+            "refused from then on, and a running worker is refused at its next "
+            "push. The tenant's registration goes with the last grant on it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"repository": {"type": "string", "description": "owner/repo"}},
+            "required": ["repository"],
+        },
+    },
+    {
+        "name": "swarm_setup_verify",
+        "description": (
+            "Check what SwarmCloud can do as the caller in each granted "
+            "repository (or only those named): clone, and for a write grant push "
+            "and pull request -- reads only, nothing is pushed. Per repository: "
+            "`passed`, each check's state (ok / missing / unknown / not_required) "
+            "and every failure's code and recovery copy. `unknown` with "
+            "FORGE_UNREACHABLE means GitHub did not answer, not that it failed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repositories": {"type": "array", "items": {"type": "string"},
+                                 "description": "owner/repo each; default every grant."},
+            },
+        },
+    },
+    {
+        "name": "swarm_access",
+        "description": (
+            "The caller's Access page: their GitHub connection (state, login -- "
+            "never a token), the owners they enabled, and every repository grant "
+            "with its mode and last checks. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # -- cluster state -----------------------------------------------------
     #
     # These return the SAME text `sc` prints, at a fixed 80 columns with no
@@ -1348,7 +1588,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Everything wrong right now, worst first: paused dispatch, accounts "
             "needing re-auth, stale quota readings, exhausted windows, full or "
-            "paused pools, parked and dead-lettered tasks. A subsystem that "
+            "paused pools, leases held past their TTL, parked and dead-lettered "
+            "tasks. A task PARKED on DEPENDENCY_INCOMPLETE is left out: it is "
+            "waiting for an earlier step, holds no capacity, and is not "
+            "trouble; every other park reason is listed. A subsystem that "
             "could not be READ is itself reported -- silence about one is how "
             "an operator concludes it is fine."
         ),
@@ -1555,6 +1798,40 @@ def _batch_limit(client: Any) -> tuple[int | None, str | None]:
     return None, "the API's /v1/stats carried no limits.max_batch_size; the API checks it itself"
 
 
+#: What a dispatch reply's `rows` tells the session to do with it (#830).
+ROWS_START_NOW = (
+    "Start the live [SwarmCloud] row of what you just dispatched NOW, without being "
+    "asked: call the Workflow tool once with {scriptPath: <rows.script_path>, args: "
+    "<rows.args>}. It starts one sc:task row per task, titled from its label, follows "
+    "it until it finishes, and submits nothing. Skip it only when you are already that "
+    "task's row (sc:remote follows the task it dispatched itself)"
+)
+
+
+def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
+    """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
+    reply hands it back so a dispatched task gets a row without anyone asking
+    for one. `sent` is `(task_id, label, task)` per task.
+
+    Never a reason for the dispatch to fail: the tasks are already in
+    SwarmCloud, so a copy that cannot be written -- a bridge started outside
+    the plugin has no run.js to copy -- comes back as `error` with
+    `/sc attach --all`, which lists the caller's running single tasks and
+    gives each a row."""
+    from . import launch
+
+    entries = []
+    for task_id, label, task in sent:
+        entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        entries.append(with_console(entry, task))
+    try:
+        rows = launch.for_tasks(entries)
+    except (SwarmError, OSError) as exc:
+        return {"error": str(exc), "attach_with": "/sc attach --all"}
+    rows["start_now"] = ROWS_START_NOW
+    return rows
+
+
 def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -> str:
     """`swarm_dispatch` with `tasks`: every task checked, then ONE request (S7).
 
@@ -1655,6 +1932,11 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         "collect_with": "swarm_collect",
         "follow_with": "swarm_follow",
         "follow_live_with": follow_command(ids),
+        # A row per task, started by the session from this reply (#830).
+        "rows": _dispatch_rows([
+            (task_id, (item.get("label") if isinstance(item, dict) else None) or None, task)
+            for task_id, task, item in zip(ids, created, tasks)
+        ]),
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
@@ -1683,6 +1965,26 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    # WHAT THE AGENT ASKS THE OWNER (owner decisions, 2026-10-05 and
+    # 2026-10-06, observer P15): its questions.json, read back through the
+    # redacted artifacts route by `progress.owner_questions` -- the one parse
+    # the progress row and the follow outcome use too. `owner_questions` only
+    # when it asked any: no key, and no extra read, when the worker counted
+    # none -- which is also every file the worker rejected. A counted file
+    # that could not be read says so in `questions_unavailable_because`.
+    # Data for the reader, never acted on.
+    asked = progress.owner_questions(client, task)
+    if asked["questions"]:
+        described["owner_questions"] = asked["questions"]
+    if asked.get("questions_unavailable_because"):
+        described["questions_unavailable_because"] = asked["questions_unavailable_because"]
+    # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
+    # as the API served them, the last attempt's beside them, and `cost` --
+    # the total in words, `at least` when an attempt recorded none.
+    # As served, never an extra read: a successful result pays no round trip.
+    totals = progress.spend_totals(client, task, read_attempts=False)
+    described.update(totals)
+    described["cost"] = progress.cost_words(totals)
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -2079,6 +2381,244 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     return json.dumps(runs.summary(client, run), indent=2, default=str)
 
 
+_SETUP_TOOLS = frozenset(
+    {"swarm_setup_status", "swarm_setup_connect", "swarm_setup_orgs", "swarm_setup_repos",
+     "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify", "swarm_access"}
+)
+
+#: The longest `swarm_setup_status` holds for GitHub: the authorize link's life.
+MAX_SETUP_WAIT_SECONDS = 600
+
+
+def _setup_view(view: dict[str, Any]) -> dict[str, Any]:
+    """The checklist for a tool reply: the text, and each step without its
+    evidence -- which names secrets and records the model has no use for --
+    bar who GitHub is connected as."""
+    from .sc import connected_as_you, setup_checklist
+
+    steps = [
+        {key: step.get(key) for key in ("step", "state", "code", "copy", "issues")}
+        for step in view.get("steps") or [] if isinstance(step, dict)
+    ]
+    return {
+        "checklist": "\n".join(setup_checklist(view)),
+        "next_step": view.get("next_step"),
+        "complete": view.get("next_step") is None,
+        "connected_as_you": connected_as_you(view),
+        "steps": steps,
+    }
+
+
+def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    """The onboarding tools (#780, OB9): the calls `sc setup` and `sc access`
+    make, through the same functions, so the terminal and /sc:setup cannot
+    disagree about a step. A §2.3 refusal answers with its code and recovery
+    copy, word for word, as `sc` prints it."""
+    from . import sc
+
+    def reply(value: Any) -> str:
+        return json.dumps(value, indent=2, default=str)
+
+    try:
+        if name == "swarm_setup_status":
+            wait = _int_arg(args, "wait_for_github_seconds", 0)
+            if wait < 0 or wait > MAX_SETUP_WAIT_SECONDS:
+                raise SwarmError(
+                    f"wait_for_github_seconds is 0-{MAX_SETUP_WAIT_SECONDS}. Nothing was read")
+            if wait:
+                login, view = sc.wait_for_github(client, timeout=wait)
+                answer = _setup_view(view)
+                if login is None:
+                    answer["not_connected"] = sc.not_connected_text(wait)
+                return reply(answer)
+            return reply(_setup_view(sc.setup_status(client)))
+        if name == "swarm_setup_connect":
+            already = sc.connected_as_you(sc.setup_status(client))
+            if already is not None:
+                return reply({"already_connected_as": already,
+                              "next": "swarm_setup_orgs: enable the owners to choose from"})
+            started = sc.start_github_connect(client)
+            opened = bool(args.get("open_browser", True)) and sc._open_browser(  # noqa: SLF001
+                started["authorize_url"])
+            return reply({**started, "opened": opened,
+                          "next": "swarm_setup_status with wait_for_github_seconds, while "
+                                  "the person approves in the browser"})
+        if name == "swarm_setup_orgs":
+            owner = args.get("enable")
+            enabled = None
+            if owner is not None:
+                done = sc.enable_owner(client, _text_arg(args, "enable", name))
+                enabled = done.get("org") if isinstance(done, dict) else None
+            listing = sc.access_owners(client)
+            answer = {"owners": listing.get("owners"), "install_url": listing.get("install_url"),
+                      "orgs_listed": listing.get("orgs_listed")}
+            if owner is not None:
+                answer["enabled"] = enabled
+            return reply(answer)
+        if name == "swarm_setup_repos":
+            page = _int_arg(args, "page", 1)
+            listing = sc.repositories_page(client, _text_arg(args, "owner", name), page=page,
+                                           query=(args.get("q") or None))
+            return reply({key: value for key, value in listing.items() if key != "tenant_id"})
+        if name == "swarm_setup_grant":
+            mode = _text_arg(args, "mode", name)
+            return reply(sc.grant_repository(client, _text_arg(args, "repository", name), mode))
+        if name == "swarm_setup_revoke":
+            return reply(sc.revoke_repository(client, _text_arg(args, "repository", name)))
+        if name == "swarm_setup_verify":
+            wanted = args.get("repositories") or []
+            if not isinstance(wanted, list) or not all(isinstance(r, str) for r in wanted):
+                raise SwarmError("repositories is a list of owner/repo. Nothing was verified")
+            results = sc.verify_repositories(client, wanted)
+            return reply({"results": results, "text": "\n".join(sc.verify_lines(results)),
+                          "passed": bool(results) and all(r.get("passed") for r in results)})
+        overview = sc.access_overview(client)
+        return reply({**overview, "text": "\n".join(sc.access_lines(overview))})
+    except SwarmError as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("failure_code"):
+            raise sc._refused(exc) from None  # noqa: SLF001
+        raise
+
+
+def _follow_rows(
+    client: SwarmClient,
+    args: dict[str, Any],
+    expected_step: Any,
+    parents: list[str] | None,
+    *,
+    keepalive: bool,
+) -> dict[str, Any]:
+    """A `lines` or `progress` follow's reply, read from `args["since"]` -- a
+    full token by now: `_call` has already resolved any handle."""
+    if args.get("format") == "progress":
+        # The slim row view (`compact.watch_progress`, owner decision
+        # 2026-10-01): no log, one line per task when it changed, compact
+        # JSON -- every byte here is re-read on each of the row's turns.
+        return compact.watch_progress(
+            client,
+            list(args["task_ids"]),
+            since=args.get("since"),
+            wait_seconds=_int_arg(args, "wait_seconds", 0),
+            step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+            parents=[p.strip() for p in parents] if parents else None,
+            max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
+        )
+    # The row view (`progress.watch`): narrated lines, one opaque token, a
+    # call that may gather for a window, and a finished task's outcome.
+    return progress.watch(
+        client,
+        list(args["task_ids"]),
+        since=args.get("since"),
+        wait_seconds=_int_arg(args, "wait_seconds", 0),
+        max_log_bytes=_int_arg(args, "max_log_bytes", progress.DEFAULT_LINES_LOG_BUDGET),
+        max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
+        max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
+        include_heartbeats=_flag(args, "include_heartbeats"),
+        step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+    )
+
+
+#: What `merge_pr` takes beside it: the repository and the run's name. Every
+#: other `swarm_workflow` argument would add work to, or move, a pull request
+#: that is already written, and swarm-api would refuse it anyway.
+_MERGE_PR_BESIDE = ("repo", "title", "target", "merge_pr")
+
+
+def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
+    """`swarm_workflow` with `merge_pr` (#352): one merge step for an existing PR."""
+    beside = sorted(
+        k for k, v in args.items()
+        if k not in _MERGE_PR_BESIDE and v is not None and v is not False
+    )
+    if beside:
+        raise SwarmError(
+            f"swarm_workflow was given `merge_pr` AND {beside}; `merge_pr` submits the one "
+            "merge step for an existing pull request and takes only `repo` and `title` "
+            "beside it. Nothing was sent"
+        )
+    merge_pr = args["merge_pr"]
+    if not isinstance(merge_pr, dict) or set(merge_pr) != {"number", "head_sha"}:
+        raise SwarmError(
+            "`merge_pr` is {\"number\": <the pull request's number>, \"head_sha\": <its "
+            "full head sha>} and nothing else. Nothing was sent"
+        )
+    number = merge_pr["number"]
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise SwarmError("`merge_pr.number` is the pull request's number, a positive integer. "
+                         "Nothing was sent")
+    placed = _placement("swarm_workflow", args, profiles=["merge"])
+    repo = args.get("repo") or None
+    envelope = workflows.submit_merge_pr(
+        client, number=number, head_sha=str(merge_pr["head_sha"]),
+        repository_url=repo,
+        title=workflows.check_title(args.get("title"), where="swarm_workflow"),
+    )
+    return _workflow_created(
+        envelope, placed=placed,
+        repository={"url": repo, "ref": None,
+                    "source": "named" if repo else "the tenant's only registered repository"},
+    )
+
+
+def _workflow_created(
+    envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
+    digest: str | None = None, expected_digest: Any = None,
+) -> str:
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    workflow = envelope["workflow"]
+    workflow_id = workflow.get("workflow_id")
+    if not workflow_id:
+        # Same refusal `swarm_dispatch` makes about a missing task id, for
+        # the same reason: every tool below takes this string, and handing
+        # back an empty one produces a session that polls "" forever.
+        raise SwarmError(
+            "the API accepted the workflow but its response named no id: "
+            f"{sorted(workflow)}"
+        )
+    steps = [
+        with_console(
+            {
+                "step_id": step.get("step_id"),
+                "task_id": step.get("task_id"),
+                "runner_profile": step.get("runner_profile"),
+                "depends_on": step.get("depends_on") or [],
+                "input_from": step.get("input_from") or {},
+            },
+            step,
+        )
+        for step in workflow.get("steps") or []
+    ]
+    created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
+    created.update({
+        "steps": steps,
+        "dispatch": envelope.get("dispatch"),
+        "repository": repository,
+        # NO STATE HERE, deliberately. The create response is the one read
+        # that honestly says `state_source: "stored"`: the step tasks were
+        # written microseconds ago and deriving over them would spend a read
+        # per step to be told what this very request just decided. Echoing
+        # the stored QUEUED would look like an answer.
+        "state_available_from": (
+            "swarm_workflow_status -- a create response does not derive a "
+            "workflow state and this tool will not quote the stored one"
+        ),
+        "target": placed,
+        # Which bridge answered: /sc:swarmcloud names it when this
+        # session's bridge refuses the follow its rows make.
+        "bridge_version": bridge_version(),
+    })
+    if digest is not None:
+        # What was RECEIVED, so a caller that did not pass `spec_digest` can
+        # still compare it with the spec it meant.
+        created["spec_digest"] = digest
+        created["spec_digest_checked"] = expected_digest not in (None, "")
+    task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
+    if task_ids:
+        created["follow_with"] = "swarm_follow"
+        created["follow_live_with"] = follow_command(task_ids)
+    return json.dumps(created, indent=2)
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
     """One tool call's answer. `keepalive` says the caller is sending the host
     progress notifications for as long as this runs (`_Keepalive`), so a
@@ -2163,8 +2703,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # transport failure) never marks its signature, so retrying it after
         # fixing the problem is never refused as a repeat.
         _remember_dispatch(client, signature)
-        return json.dumps(
-            with_console({
+        reply = with_console({
                 "task_id": task_id,
                 "state": task.get("state"),
                 "strategy": _accepted_strategy(task, strategy),
@@ -2180,9 +2719,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "follow_live_with": follow_command([task_id]),
                 # Which target applied, and which layer chose it (S8).
                 "target": placed,
-            }, task),
-            indent=2,
-        )
+            }, task)
+        # Its live row, started by the session from this reply (#830).
+        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        return json.dumps(reply, indent=2)
 
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress"):
         raise SwarmError(
@@ -2217,43 +2757,22 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         if len(args.get("task_ids") or []) != 1:
             raise SwarmError("`parents` names the parents of ONE task; follow one task with it")
 
-    if name == "swarm_follow" and args.get("format") == "progress":
-        # The slim row view (`compact.watch_progress`, owner decision
-        # 2026-10-01): no log, one line per task when it changed, compact
-        # JSON -- every byte here is re-read on each of the row's turns.
-        return json.dumps(
-            compact.watch_progress(
-                client,
-                list(args["task_ids"]),
-                since=args.get("since"),
-                wait_seconds=_int_arg(args, "wait_seconds", 0),
-                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
-                parents=[p.strip() for p in parents] if parents else None,
-                max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
-            ),
-            separators=(",", ":"),
-            ensure_ascii=False,
-            default=str,
-        )
-
-    if name == "swarm_follow" and args.get("format") == "lines":
-        # The row view (`progress.watch`): narrated lines, one opaque token, a
-        # call that may gather for a window, and a finished task's outcome.
-        return json.dumps(
-            progress.watch(
-                client,
-                list(args["task_ids"]),
-                since=args.get("since"),
-                wait_seconds=_int_arg(args, "wait_seconds", 0),
-                max_log_bytes=_int_arg(args, "max_log_bytes", progress.DEFAULT_LINES_LOG_BUDGET),
-                max_new_events=_int_arg(args, "max_new_events", DEFAULT_EVENT_PAGE),
-                max_lines=_int_arg(args, "max_lines", progress.DEFAULT_MAX_LINES),
-                include_heartbeats=_flag(args, "include_heartbeats"),
-                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
-            ),
-            indent=1,
-            default=str,
-        )
+    if name == "swarm_follow" and args.get("format") in ("lines", "progress"):
+        # THE HANDLE (owner decision, 2026-10-05, `progress.Handles`): the row
+        # passes back a short handle, an old full token, or -- having dropped
+        # it -- nothing, which for tasks this process already answered resumes
+        # from the last position it returned, so the call HOLDS rather than
+        # answering at once. The reply's `since` is a new handle.
+        follower = progress.HANDLES.follower(args["format"], list(args["task_ids"]))
+        since_token, since_note = progress.HANDLES.resolve(args.get("since"), follower)
+        args = {**args, "since": since_token}
+        reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
+        reply["since"] = progress.HANDLES.issue(follower, reply["since"])
+        if since_note:
+            reply["since_note"] = since_note
+        if args["format"] == "progress":
+            return json.dumps(reply, separators=(",", ":"), ensure_ascii=False, default=str)
+        return json.dumps(reply, indent=1, default=str)
 
     if name == "swarm_follow":
         # `cursor` crosses the model boundary, so it arrives as whatever the
@@ -2262,7 +2781,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # from the beginning rather than skipping ahead: a position that
         # quietly became zero costs a repeat, a position that quietly became
         # large loses output silently, and only one of those is recoverable.
-        since_cursor, since_states, since_said, _groups, since_note = progress.decode_since(args.get("since"))
+        # A handle (`progress.Handles`) is read as the token it stands for;
+        # no `since` here is still a read from the beginning.
+        given_since, handle_note = progress.HANDLES.resolve(
+            args.get("since"), progress.HANDLES.follower("json", list(args["task_ids"])), resume=False,
+        )
+        since_cursor, since_states, since_said, _groups, since_note = progress.decode_since(given_since)
+        since_note = since_note or handle_note
         report = follow(
             client,
             list(args["task_ids"]),
@@ -2354,6 +2879,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # nothing else does.
         return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
 
+    if name == "swarm_tenants":
+        # Two GETs. A `tenant` setting the caller is not a member of comes back
+        # as the API's 403, unchanged, through `_tool_error_text`.
+        return json.dumps(tenant_listing(client), indent=2)
+
     if name == "swarm_result":
         task = client.task(args["task_id"])
         return json.dumps(_result_of(client, args["task_id"], task), indent=2)
@@ -2429,6 +2959,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             base=args.get("base"),
         )
         return result.render()
+
+    if name == "swarm_workflow" and args.get("merge_pr") is not None:
+        return _workflow_merge_pr(client, args)
 
     if name == "swarm_workflow":
         # BY REFERENCE (measured 2026-10-01): a spec a relay retyped came back
@@ -2513,58 +3046,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             label=fields["label"],
             title=fields["title"],
         )
-        workflow = envelope["workflow"]
-        workflow_id = workflow.get("workflow_id")
-        if not workflow_id:
-            # Same refusal `swarm_dispatch` makes about a missing task id, for
-            # the same reason: every tool below takes this string, and handing
-            # back an empty one produces a session that polls "" forever.
-            raise SwarmError(
-                "the API accepted the workflow but its response named no id: "
-                f"{sorted(workflow)}"
-            )
-        steps = [
-            with_console(
-                {
-                    "step_id": step.get("step_id"),
-                    "task_id": step.get("task_id"),
-                    "runner_profile": step.get("runner_profile"),
-                    "depends_on": step.get("depends_on") or [],
-                    "input_from": step.get("input_from") or {},
-                },
-                step,
-            )
-            for step in workflow.get("steps") or []
-        ]
-        created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
-        created.update({
-            "steps": steps,
-            "dispatch": envelope.get("dispatch"),
-            "repository": repository.as_dict(),
-            # NO STATE HERE, deliberately. The create response is the one read
-            # that honestly says `state_source: "stored"`: the step tasks were
-            # written microseconds ago and deriving over them would spend a read
-            # per step to be told what this very request just decided. Echoing
-            # the stored QUEUED would look like an answer.
-            "state_available_from": (
-                "swarm_workflow_status -- a create response does not derive a "
-                "workflow state and this tool will not quote the stored one"
-            ),
-            "target": placed,
-            # Which bridge answered: /sc:swarmcloud names it when this
-            # session's bridge refuses the follow its rows make.
-            "bridge_version": bridge_version(),
-        })
-        if digest is not None:
-            # What was RECEIVED, so a caller that did not pass `spec_digest` can
-            # still compare it with the spec it meant.
-            created["spec_digest"] = digest
-            created["spec_digest_checked"] = expected_digest not in (None, "")
-        task_ids = [str(s["task_id"]) for s in steps if s["task_id"]]
-        if task_ids:
-            created["follow_with"] = "swarm_follow"
-            created["follow_live_with"] = follow_command(task_ids)
-        return json.dumps(created, indent=2)
+        return _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
+                                 digest=digest, expected_digest=expected_digest)
 
     if name in ("swarm_workflow_status", "swarm_workflow_result"):
         # ONE read for both. The difference is only how much of each step's task
@@ -2601,9 +3084,22 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(reported, indent=2)
 
     if name == "swarm_workflows":
-        from .sc import running_workflows
+        from .sc import running_tasks, running_workflows
 
         listing = running_workflows(client)
+        # The caller's running SINGLE tasks beside them (#830), so the LIST
+        # row of `/sc attach --all` can give each a row. A failed read is said,
+        # never an empty list.
+        try:
+            singles = running_tasks(client)
+        except SwarmError as exc:
+            listing["single_tasks"] = []
+            listing["single_tasks_error"] = str(exc)
+        else:
+            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks_count"] = singles["count"]
+            if not singles["complete"]:
+                listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")
         listing["attach_all_with"] = (
             "/sc attach --all -- or the /sc:swarmcloud workflow with {attach: \"all\"}"
         )
@@ -2615,6 +3111,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
 
     if name in _RUN_TOOLS:
         return _run_tool(client, name, args)
+
+    if name in _SETUP_TOOLS:
+        return _setup_tool(client, name, args)
 
     if name in _SC_VIEWS:
         from . import render
@@ -2825,11 +3324,16 @@ def serve(stdin=None, stdout=None) -> int:
     # once, under a lock, by whichever call needs it first.
     held: dict[str, SwarmClient] = {}
     building = threading.Lock()
+    # THE `tenant` SETTING, READ ONCE, HERE (#447). Every call this session
+    # makes acts as the same tenant: read per call, an edit to the variable
+    # mid-session would move half a workflow's reads to another tenant. None
+    # sends no X-Swarm-Tenant at all, and the API picks as it always did.
+    tenant = chosen_tenant(None)
 
     def _client() -> SwarmClient:
         with building:
             if "client" not in held:
-                held["client"] = SwarmClient()
+                held["client"] = SwarmClient(tenant=tenant)
             return held["client"]
 
     def _answer(message_id: Any, params: dict[str, Any]) -> None:

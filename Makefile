@@ -196,6 +196,7 @@ test: ## Unit tests, terraform tests and the guard self-tests (no cloud resource
 	@$(SCRIPTS)/lib/plan-guard.sh --self-test
 	@$(SCRIPTS)/lib/auth-guard.sh --self-test
 	@$(SCRIPTS)/lib/kubectl-guard.sh --self-test
+	@$(SCRIPTS)/lib/workspace-guard.sh self-test
 	@$(SCRIPTS)/lib/check-contract-parity.sh
 	@$(SCRIPTS)/lib/check-env-parity.sh
 	@# The benchmark engine, offline. It gates on percentiles, on baselines and

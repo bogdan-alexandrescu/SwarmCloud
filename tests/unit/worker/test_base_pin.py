@@ -38,7 +38,7 @@ import pytest
 from agent_worker import gitops, lifecycle, workspace as workspace_mod
 from swarm_common.states import TaskState
 
-from conftest import TENANT
+from worker_seeds import TENANT
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     forge,
     local_urls,

@@ -722,6 +722,32 @@ def outputs_of(
     return out
 
 
+#: Which of the caller's tenants a request acts as (#447). The API honours it
+#: ONLY when the caller's verified membership includes that tenant's group and
+#: refuses anything else with 403 `tenant_not_member` (swarm_api/auth.py
+#: `_select_tenant`): the header selects, it never grants. Absent, the API's
+#: first-match rule picks the tenant exactly as before, so a client that was
+#: told nothing sends nothing.
+TENANT_HEADER = "X-Swarm-Tenant"
+
+
+def chosen_tenant(flag: str | None, environ: Any = None) -> str | None:
+    """The tenant to act as: `flag` if given, else `SWARM_TENANT`, else None.
+
+    THE FLAG WINS, as every other option here beats its variable. Blank is no
+    choice at all -- `SWARM_TENANT=` in a shell profile must not become an
+    empty header, which is a difference on the wire for nothing. Read by the
+    CLI per invocation and by the MCP server once at start; `SwarmClient`
+    never reads it itself, so `sc`, which offers no such option, is not
+    quietly moved to another tenant.
+    """
+    env = os.environ if environ is None else environ
+    for value in (flag, env.get("SWARM_TENANT")):
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
 def service_name() -> str:
     return os.environ.get("API_SERVICE", "").strip() or "swarm-api"
 
@@ -761,6 +787,7 @@ class SwarmClient:
         context: str | None = None,
         deployment: Any = None,
         tier: Any = None,
+        tenant: str | None = None,
     ) -> None:
         # Local imports: `auth`, `config` and `signin` all import this module,
         # so importing them at load time would be a cycle.
@@ -804,6 +831,10 @@ class SwarmClient:
             self._audience = os.environ.get("SWARM_IAP_CLIENT_ID", "").strip()
         else:
             self._audience = audience or os.environ.get("API_AUDIENCE", "").strip() or None
+
+        #: The tenant every request names in `X-Swarm-Tenant`, or None to send
+        #: no header and let the API pick (`chosen_tenant`).
+        self.tenant = (tenant or "").strip() or None
 
         self.base_url = ""
         self.front_door = False
@@ -1131,6 +1162,8 @@ class SwarmClient:
         req = urllib.request.Request(url, data=body, method=method)
         if self.sends_own_token:
             req.add_header("Authorization", f"Bearer {self.credential()}")
+        if self.tenant:
+            req.add_header(TENANT_HEADER, self.tenant)
         req.add_header("Accept", "application/json")
         if body is not None:
             req.add_header("Content-Type", "application/json")
@@ -1247,6 +1280,20 @@ class SwarmClient:
             raise SwarmError("the batch response carried no `tasks` field")
         return [unwrap_task(t) for t in created]
 
+    def tenants_mine(self) -> list[dict[str, Any]]:
+        """`GET /v1/tenants/mine`: every tenant this caller may choose, admin order.
+
+        Each entry is `{tenant_id, display_name}`. Empty for a caller whose
+        tenant is personal: that is not a membership and cannot be chosen.
+        """
+        listing = self.request("GET", "/v1/tenants/mine")
+        if not isinstance(listing, list):
+            raise SwarmError(
+                f"GET /v1/tenants/mine answered {type(listing).__name__}, not a list: "
+                "this deployment's API predates tenant choice (#447)"
+            )
+        return [entry for entry in listing if isinstance(entry, dict)]
+
     def task(self, task_id: str) -> dict[str, Any]:
         return unwrap_task(self.request("GET", f"/v1/tasks/{task_id}"))
 
@@ -1296,6 +1343,7 @@ class SwarmClient:
         self,
         *,
         states: Sequence[str] = (),
+        active: bool = False,
         limit: int | None = None,
         page_token: str | None = None,
     ) -> dict[str, Any]:
@@ -1303,9 +1351,14 @@ class SwarmClient:
 
         `states` filters on the DERIVED state, after the route's rollup, so a
         page may come back short or empty with a `next_page_token` still set.
-        The tenant is the route's (`tenant_scope`), never a parameter here.
+        `active` keeps the unfinished ones, and a route that serves it from its
+        indexed stored-state query says so in `filter.stored_states`; an older
+        route ignores it. The tenant is the route's (`tenant_scope`), never a
+        parameter here.
         """
         params: list[tuple[str, str]] = [("state", s) for s in states]
+        if active:
+            params.append(("active", "true"))
         if limit is not None:
             params.append(("limit", str(limit)))
         if page_token:
@@ -1555,6 +1608,34 @@ class SwarmClient:
         except SwarmError as exc:
             raise run_refusal(exc, run_id=run_id, sent_digest=plan_digest) from exc
         return unwrap_run(data, f"rejecting run {run_id}")
+
+
+def tenant_listing(client: Any) -> dict[str, Any]:
+    """What `swarm tenants` and `swarm_tenants` show: the choices, one marked.
+
+    `current` is what `GET /v1/tenants/me` says this client acts as -- asked
+    with the same header every other call sends, so it is the API's answer and
+    not this process's guess. With nothing chosen that is the first-match
+    default; with a choice it is the choice, or the API's 403 refusing it,
+    which propagates unchanged. `chosen` is what was asked for, None when
+    nothing was. Two GETs, nothing written.
+    """
+    from .render import tenant_of
+
+    mine = client.tenants_mine()
+    current = tenant_of(client.request("GET", "/v1/tenants/me"))
+    return {
+        "current": current,
+        "chosen": getattr(client, "tenant", None),
+        "tenants": [
+            {
+                "tenant_id": entry.get("tenant_id"),
+                "display_name": entry.get("display_name"),
+                "current": entry.get("tenant_id") == current,
+            }
+            for entry in mine
+        ],
+    }
 
 
 def unwrap_run(payload: Any, what: str) -> dict[str, Any]:

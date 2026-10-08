@@ -442,6 +442,26 @@ describe('the probe registry is keyed by route, not by URL (CH-18)', () => {
     expect(tasks.map((p) => p.path)).toEqual(['/v1/tasks'])
     expect(String(lastUrl(tasks[0]))).toContain('state=PARKED')
   })
+
+  it('asks /v1/tasks for view=summary only when the caller does (#168)', async () => {
+    // The Overview and the Agents list poll the summary page; every other
+    // caller of `loadTasks` still gets the full row. The control is the bare
+    // call, whose URL must carry no view at all -- a loader that always sent
+    // it would pass the first half and fail this one.
+    // MUTATION: drop the `view` parameter from `loadTasks`, or send it always.
+    const { api } = await live()
+    respond('{"tasks":[],"tenant_id":"acme","view":"summary"}')
+    await api.loadTasks(50, { view: 'summary' })
+    const asked = String((globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0])
+    expect(asked).toMatch(/[?&]limit=50(&|$)/)
+    expect(asked).toMatch(/[?&]view=summary(&|$)/)
+
+    respond('{"tasks":[],"tenant_id":"acme"}')
+    await api.loadTasks()
+    const bare = String((globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[0])
+    expect(bare).toMatch(/[?&]limit=200(&|$)/)
+    expect(bare).not.toContain('view=')
+  })
 })
 
 // ---------------------------------------------------------------------------

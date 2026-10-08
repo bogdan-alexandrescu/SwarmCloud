@@ -26,7 +26,7 @@ import spec_keys
 from agent_worker import lifecycle
 from agent_worker.control import ControlPlane
 from agent_worker.errors import ExitCode, TenantMismatchError
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 from fakes import FakeSecretClient, FakeTransactionRunner, RecordingQuotaReporter
 from swarm_common.states import EventType, ParkReason, TaskState
 
@@ -432,3 +432,47 @@ def test_fetch_parent_states_refuses_a_parent_with_no_tenant(db):
 
     with pytest.raises(TenantMismatchError):
         _control(db).fetch_parent_states(["orphan"])
+
+
+# ---------------------------------------------------------------------------
+# A superseded worker does not park (invariant 5)
+# ---------------------------------------------------------------------------
+
+
+def test_a_generation_superseded_before_the_dependency_park_writes_nothing(
+    db, worker_factory, witness, monkeypatch
+):
+    """The reconciler can reclaim the attempt between the parent read and the
+    park. The park is then the live attempt's to make, not this worker's: it
+    stands down (`Worker._stand_down`) -- no task state, no lease release, no
+    pool change and no event, only its own attempt document closed -- and
+    still runs nothing (#453)."""
+    _seed_child(db, pool_active=3)
+    _seed_parent(db, "task_impl", TaskState.SUCCEEDED)
+    _seed_parent(db, "task_review", TaskState.RUNNING)
+    original = ControlPlane.fetch_parent_states
+
+    def fetch_then_supersede(self, parent_ids):  # type: ignore[no-untyped-def]
+        states = original(self, parent_ids)
+        db.doc(f"tasks/{TASK}")["current_generation"] = 2
+        return states
+
+    monkeypatch.setattr(ControlPlane, "fetch_parent_states", fetch_then_supersede)
+    worker, _, _ = worker_factory(task_id=TASK)
+
+    rc = worker.run()
+
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.GENERATION_FENCED, (rc, task.get("last_error"))
+    assert task["state"] != TaskState.PARKED.value, task["state"]
+    assert task.get("park_reason") is None, task.get("park_reason")
+    assert task["current_generation"] == 2
+    assert db.doc("leases/lease_1")["released_at"] is None
+    assert db.doc("pools/global")["active"] == 3
+    types = db.event_types(TASK)
+    assert EventType.PARKED.value not in types, types
+    assert EventType.LEASE_RELEASED.value not in types, types
+    # The task's stream is the newer generation's: a refused park emits nothing.
+    assert EventType.GENERATION_FENCED.value not in types, types
+    assert db.doc("attempts/att_1")["exit_code"] == ExitCode.GENERATION_FENCED
+    assert witness.seen == [], f"a fenced attempt still reached: {witness.seen}"

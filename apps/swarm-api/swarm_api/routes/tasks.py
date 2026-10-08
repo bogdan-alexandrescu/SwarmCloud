@@ -19,12 +19,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
 
 from swarm_common.states import TaskState
 
 from ..agent_output import AgentOutputService
+from ..attempt_totals import totals_for, with_totals
 from ..children import PARENT_CANCELLED, cascade_children
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
@@ -42,6 +43,7 @@ from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
 from ..waiting import waiting_for_page
+from ..waker import TASK_FINISHED, ring
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -183,6 +185,9 @@ def list_tasks(
     Each lease-holding row carries its worker's `heartbeat_at` and the
     reconciler's `heartbeat_grace_seconds` (#179), from batched reads of the
     page's current leases (`swarm_api.heartbeats`).
+
+    Every row, in both views, carries its task's attempt totals
+    (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
     """
     parsed_state: TaskState | None = None
     if state is not None:
@@ -221,15 +226,22 @@ def list_tasks(
     accounts = accounts_for(ctx.db, tenant_id, page.items)
     # #179: the lease-holding rows' current leases, one `get_all` per 100.
     beats = heartbeats_for_page(ctx.db, tenant_id, page.items, core=ctx.settings.core)
+    # EVERY ATTEMPT'S SPEND AND TIME on each row, both views (owner decision
+    # 2026-10-05, P1 follow-up): one batched attempts query per 30 rows of the
+    # page, never one per task (`swarm_api.attempt_totals.totals_for`).
+    totals = totals_for(ctx.db, tenant_id, [task.id for task in page.items])
     payload: dict = {
         "tasks": [
-            task_to_api(
-                task,
-                waiting.get(task.id),
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
-                heartbeat=beats.get(task.id),
-                summary=summary,
+            with_totals(
+                task_to_api(
+                    task,
+                    waiting.get(task.id),
+                    account=accounts.get(task.id),
+                    console_url=ctx.settings.console_url,
+                    heartbeat=beats.get(task.id),
+                    summary=summary,
+                ),
+                totals,
             )
             for task in page.items
         ],
@@ -252,13 +264,20 @@ def get_task(
     waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
     accounts = accounts_for(ctx.db, tenant_id, [task])
     beats = heartbeats_for_page(ctx.db, tenant_id, [task], core=ctx.settings.core)
+    # EVERY ATTEMPT'S SPEND AND TIME beside the last attempt's (owner decision
+    # 2026-10-05, lane review P1): the task document describes only the attempt
+    # that ended last. One attempt query; see `swarm_api.attempt_totals`.
+    totals = totals_for(ctx.db, tenant_id, [task.id])
     return {
-        "task": task_to_api(
-            task,
-            waiting.get(task.id),
-            account=accounts.get(task.id),
-            console_url=ctx.settings.console_url,
-            heartbeat=beats.get(task.id),
+        "task": with_totals(
+            task_to_api(
+                task,
+                waiting.get(task.id),
+                account=accounts.get(task.id),
+                console_url=ctx.settings.console_url,
+                heartbeat=beats.get(task.id),
+            ),
+            totals,
         )
     }
 
@@ -269,26 +288,72 @@ def cancel_task(
     # Both: the scope decides WHOSE task may be cancelled, `auth` records WHO
     # cancelled it. Cancelling is a write, and it was reachable across a tenant
     # id collision until this dependency existed.
+    background: BackgroundTasks,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.request_cancel(
+    task, target = ctx.store.request_cancel_with_target(
         tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
     )
+    # STOP THE EXECUTION NOW (#627), rather than waiting for the worker's next
+    # poll or the reconciler: some executions ran 7-13 h past a cancel. Only
+    # the first cancel of a task names one, so a second press asks nothing.
+    # After the response, so a slow backend does not hold the caller; and it
+    # releases nothing -- the worker, SIGTERMed, ends the task and its lease.
+    if target is not None:
+        background.add_task(ctx.executions.cancel, target)
     # OD-B15-4: cancelling a parent cancels its children, at once; the
     # scheduler's sweep makes it certain (docs/design/child-tasks.md §3.4).
-    cascaded = cascade_children(ctx, task, why=PARENT_CANCELLED, by=auth.email)
+    children: list = []
+    ended_children: list[str] = []
+    cascaded = cascade_children(
+        ctx, task, why=PARENT_CANCELLED, by=auth.email, targets=children,
+        ended=ended_children,
+    )
+    # A child cancelled with its parent is stopped the same way (#627).
+    for child_target in children:
+        background.add_task(ctx.executions.cancel, child_target)
+    # THE FINISH WAKE (#636). A task this call ENDED -- it held no capacity,
+    # or no live worker was behind it -- has no worker to ring for it, so its
+    # dependants, and any capacity the cancel released, waited for the
+    # scheduler's safety tick. Ring the same `task_finished` the worker rings,
+    # after the response: the cancel is already durable, and a lost wake costs
+    # one tick. A cancel that only FLAGGED a live worker rings nothing here;
+    # that worker ends the task and rings itself.
+    if task.state is TaskState.CANCELLED:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, TASK_FINISHED,
+            task_id=task.id, tenant_id=task.tenant_id, state=task.state.value,
+        )
+    # The same for each child the cascade ENDED, whatever the parent did: a
+    # child with no live worker has nobody else to ring for it, and its own
+    # dependants waited a tick (#636, left by #741). A child only flagged is
+    # its worker's to ring. Same tenant as the parent: `cascade` refuses any
+    # other (invariant 9).
+    for child_id in ended_children:
+        background.add_task(
+            ring, ctx.waker, ctx.metrics, TASK_FINISHED,
+            task_id=child_id, tenant_id=task.tenant_id, state=TaskState.CANCELLED.value,
+        )
     accounts = accounts_for(ctx.db, tenant_id, [task])
+    # A task cancelled between attempts has already spent: the response
+    # carries every attempt's totals, as `get_task` does (P1 follow-up).
+    totals = totals_for(ctx.db, tenant_id, [task.id])
     return {
-        "task": task_to_api(
-            task, account=accounts.get(task.id), console_url=ctx.settings.console_url
+        "task": with_totals(
+            task_to_api(
+                task, account=accounts.get(task.id), console_url=ctx.settings.console_url
+            ),
+            totals,
         ),
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.
         "released_immediately": task.state.value == "CANCELLED",
         "children_cancelled": cascaded,
+        # Whether this call asked the backend to stop the task's execution.
+        "execution_cancel_requested": target is not None,
     }
 
 

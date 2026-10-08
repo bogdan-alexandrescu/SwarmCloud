@@ -32,6 +32,15 @@ WHY EACH RULE:
   * ABSENT AND UNREADABLE STAY DIFFERENT (`objects.py`): a missing object is
     `GraphUnavailable`, a store that could not answer is
     `UpstreamUnavailable`, and promotion retries the second, never the first.
+  * A WHOLE-REPOSITORY READ FETCHES ITS SHARDS CONCURRENTLY (`Graph.prefetch`).
+    The graph route took 11 s for a 24 KB answer (QA G4-10, 2026-10-07): it
+    read ~190 shards one after another, and a GCS read is two round trips
+    (`get_blob`, then a generation-pinned download). Each shard is still
+    checked against its name exactly as a single read checks it.
+  * A DRAWING IS CACHED BY THE DIGESTS IT WAS COMPUTED FROM (`RepoGraph.view`).
+    A promoted graph is immutable per manifest digest, so an aggregate of it
+    is too; the cache never stands in for the manifest check, which the
+    caller still makes on every request by opening the graph first.
 
 The API's bucket grant is `roles/storage.objectViewer`: it never writes or
 deletes here. The blob sweep is the writer's (`swarm-repo-graph sweep`),
@@ -48,8 +57,12 @@ import hashlib
 import json
 import logging
 import re
+import threading
+import weakref
 import zlib
-from typing import Any, Callable, Mapping
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Hashable, Iterable, Mapping
 
 from .errors import Conflict, Gone, NotFound, UpstreamUnavailable, ValidationFailed
 from .objects import (
@@ -78,6 +91,16 @@ MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 #: orders of magnitude and keep one request's memory bounded.
 MAX_BLOB_BYTES = 64 * 1024 * 1024
 MAX_SHARD_RAW_BYTES = 128 * 1024 * 1024
+
+#: Shard reads in flight at once for one prefetch. Each is one blocking GCS
+#: read. 10 is the connection pool `requests` gives the GCS client per host:
+#: more threads than that open connections the pool then discards, paying a
+#: TLS handshake per read. ~190 serial reads become ~19 rounds.
+PREFETCH_WORKERS = 10
+#: Cached drawings per artifact store (one per process in a deployment). This
+#: repository's is 24 KB; 32 bounds the memory at a few dozen MB even for a
+#: monorepo's, and an evicted drawing is only recomputed.
+MAX_CACHED_VIEWS = 32
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
@@ -223,9 +246,39 @@ class Graph:
         entry = (self.manifest["shards"].get(layer) or {}).get(module)
         if entry is None:
             return []
-        key = blob_key(self.tenant_id, self.repo_id, entry["blob"])
+        rows = self._load(entry["blob"])
+        self._shards[(layer, module)] = rows
+        return rows
+
+    def prefetch(self, layers: Iterable[str]) -> None:
+        """Read every shard of `layers` not yet read, concurrently.
+
+        For a reader of the whole repository (the module graph): the shards
+        are then answered from memory. A failure is raised as the serial read
+        would raise it -- the first in manifest order.
+        """
+        wanted: list[tuple[str, str, str]] = []
+        for layer in layers:
+            if layer not in LAYERS:
+                raise InvalidGraph(f"{layer!r} is not a graph layer")
+            for module, entry in sorted((self.manifest["shards"].get(layer) or {}).items()):
+                if (layer, module) not in self._shards:
+                    wanted.append((layer, module, entry["blob"]))
+        blobs = list(dict.fromkeys(blob for _layer, _module, blob in wanted))
+        if not blobs:
+            return
+        with ThreadPoolExecutor(max_workers=min(PREFETCH_WORKERS, len(blobs)),
+                                thread_name_prefix="repo-graph") as pool:
+            futures = [pool.submit(self._load, blob) for blob in blobs]
+        # Leaving the `with` waited for every read, so none is left running.
+        loaded = {blob: future.result() for blob, future in zip(blobs, futures)}
+        for layer, module, blob in wanted:
+            self._shards[(layer, module)] = loaded[blob]
+
+    def _load(self, blob: str) -> list[dict[str, Any]]:
+        key = blob_key(self.tenant_id, self.repo_id, blob)
         stored = _read_whole(self._reader, key, MAX_BLOB_BYTES, what="graph shard")
-        if digest_of(stored) != entry["blob"]:
+        if digest_of(stored) != blob:
             log.warning("repo graph tenant=%s repo_id=%s blob=mismatch", self.tenant_id,
                         self.repo_id)
             raise GraphDigestMismatch(
@@ -241,7 +294,6 @@ class Graph:
                     raise InvalidGraph("a graph shard line is not JSON") from None
                 if isinstance(row, dict):
                     rows.append(row)
-        self._shards[(layer, module)] = rows
         return rows
 
     def symbols(self, module: str) -> list[dict[str, Any]]:
@@ -274,6 +326,36 @@ def _read_whole(reader: ObjectReader, key: str, limit: int, *, what: str) -> byt
     if window.total_bytes > limit:
         raise InvalidGraph(f"the {what} is larger than {limit} bytes")
     return window.data
+
+
+class _Views:
+    """A bounded, thread-safe LRU of computed drawings for one artifact store."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._rows: OrderedDict[Hashable, Any] = OrderedDict()
+
+    def get(self, key: Hashable, compute: Callable[[], Any]) -> Any:
+        with self._lock:
+            if key in self._rows:
+                self._rows.move_to_end(key)
+                return self._rows[key]
+        # Computed outside the lock: two concurrent misses both compute the
+        # same immutable answer, which is cheaper than serialising every read.
+        value = compute()
+        with self._lock:
+            self._rows[key] = value
+            self._rows.move_to_end(key)
+            while len(self._rows) > self._limit:
+                self._rows.popitem(last=False)
+        return value
+
+
+#: Keyed by the reader object, so a deployment's one bucket has one cache and
+#: a test's fresh store never sees another test's drawings.
+_VIEWS: "weakref.WeakKeyDictionary[Any, _Views]" = weakref.WeakKeyDictionary()
+_VIEWS_LOCK = threading.Lock()
 
 
 class RepoGraph:
@@ -310,6 +392,11 @@ class RepoGraph:
         key, _manifest = self._manifest(tenant_id, repo_id, commit_sha, expected)
         return key
 
+    def verified_manifest(self, tenant_id: str, repo_id: str, commit_sha: str, expected: str
+                          ) -> tuple[str, dict[str, Any]]:
+        """For promotion: the manifest's key and parsed body, once its bytes match `expected`."""
+        return self._manifest(tenant_id, repo_id, commit_sha, expected)
+
     def open(self, tenant_id: str, repo_id: str, version: Mapping[str, Any]) -> Graph:
         """A promoted version's graph, for `tenant_id`'s own registration only."""
         digest = version.get("graph_digest")
@@ -323,6 +410,21 @@ class RepoGraph:
         key, manifest = self._manifest(tenant_id, repo_id, commit_sha, digest)
         return Graph(self._reader(), tenant_id=tenant_id, repo_id=repo_id, key=key,
                      digest=digest, manifest=manifest)
+
+    def view(self, key: tuple[Hashable, ...], compute: Callable[[], Any]) -> Any:
+        """A drawing of a promoted graph, computed once per `key`.
+
+        `key` MUST begin with the tenant and repository and name every digest
+        the drawing was computed from (the graph's and the index document's)
+        plus every parameter: it is the whole of what makes two drawings the
+        same. The cached value is shared -- a caller copies before mutating.
+        """
+        reader = self._reader()
+        with _VIEWS_LOCK:
+            views = _VIEWS.get(reader)
+            if views is None:
+                views = _VIEWS[reader] = _Views(MAX_CACHED_VIEWS)
+        return views.get(key, compute)
 
 
 __all__ = [

@@ -1575,6 +1575,62 @@ def produced_lines(
     return lines
 
 
+#: How much of the merge commit's sha a merge row shows.
+_MERGE_SHA_CHARS = 12
+
+
+def _issue_numbers(values: Any) -> list[str]:
+    """`#N` for each issue number (or `{number: N}` record) in a summary list."""
+    out: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        number = value.get("number") if isinstance(value, dict) else value
+        if isinstance(number, int) and not isinstance(number, bool):
+            out.append(f"#{number}")
+    return out
+
+
+def merge_row(task: dict[str, Any]) -> str | None:
+    """A finished merge step's outcome in one line, from `result_summary.merge`.
+
+    `merged #N at <sha> · issues closed #a, #b` (or `already merged`, when an
+    earlier attempt's merge stood), or `refused <code>` with the worker's
+    refusal code (`agent_worker.merge`). The refusal's message is NOT here: it
+    is the task's `last_error`, which every view already prints, and a row is
+    one line. None for a task with no merge record, and for one that is not
+    finished: a parked merge says why in its waiting row (CI_PENDING).
+
+    Issues are said as recorded and never inferred: `issues_unread` (the
+    closing references could not be read) is `issues unread`, not "none".
+    """
+    if task.get("state") not in FINISHED_STATES:
+        return None
+    merge = (task.get("result_summary") or {}).get("merge")
+    if not isinstance(merge, dict):
+        return None
+    refused = merge.get("refusal")
+    if isinstance(refused, dict) and refused.get("code"):
+        return f"refused {refused['code']}"
+    if not (merge.get("merged_by_this_task") or merge.get("already_merged")):
+        return None
+    head = "merged" if merge.get("merged_by_this_task") else "already merged"
+    number = merge.get("pull_request")
+    if isinstance(number, int) and not isinstance(number, bool):
+        head += f" #{number}"
+    commit = str(merge.get("merge_commit") or "")[:_MERGE_SHA_CHARS]
+    if commit:
+        head += f" at {commit}"
+    parts = [head]
+    if merge.get("issues_unread"):
+        parts.append("issues unread")
+    else:
+        closed = _issue_numbers(merge.get("issues_closed"))
+        parts.append("issues closed " + (", ".join(closed) if closed else "none"))
+    left = _issue_numbers(merge.get("issues_not_closed"))
+    if left:
+        parts.append("not closed " + ", ".join(left))
+    return " · ".join(parts)
+
+
 def render_task(
     task: dict[str, Any] | None,
     style: Style,
@@ -1630,6 +1686,10 @@ def render_task(
     # repository printed only that, over an output.txt it had written.
     if produced is not None:
         lines += produced_lines(produced, style, fetch_with=fetch_with)
+
+    merged = merge_row(task)
+    if merged is not None:
+        lines.append(f"  {style.paint('merge', 'dim')}     {merged}")
 
     git = ((task.get("result_summary") or {}).get("git")) or {}
     if not git:
@@ -1702,9 +1762,39 @@ class Snapshot:
     accounts_absent: bool = False
     tasks: list[dict[str, Any]] | None = None
     tasks_error: str | None = None
+    #: The page `GET /v1/admin/leases?active_only=true` serves: the read the
+    #: console's Overview "Needs a look" takes its Leases check from
+    #: (`swarm-ui/src/checks.ts` `leaseCheck`), so `sc trouble` counts a lease
+    #: held past its TTL exactly where the console does (#532, 5b).
+    leases: dict[str, Any] | None = None
+    leases_error: str | None = None
+    #: True when the API REFUSED the read -- a 403 to a caller who is not an
+    #: admin, or a deployment with no such route -- rather than failing it.
+    #: The finding is still printed; only its severity changes, for the reason
+    #: `accounts_absent` gives: a non-admin's `sc trouble` must not be a red
+    #: screen forever over a check the console gates the same way.
+    leases_refused: bool = False
+    #: The page `GET /v1/workflows` serves, read for its `stalled_workflows`:
+    #: the reconciler's workflow stall check, as the console's Overview
+    #: Workflows check reads it (#616). None when not fetched or not read.
+    workflows: dict[str, Any] | None = None
+    workflows_error: str | None = None
     api_url: str = ""
     tier: str = ""
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+#: The park reason `find_trouble` leaves out: waiting for a parent step. From
+#: the frozen enum; `compact` imports it from here.
+_DEPENDENCY_WAIT = _states.ParkReason.DEPENDENCY_INCOMPLETE.value
+
+#: Every park reason `find_trouble` leaves out, each an ordinary wait that
+#: holds no capacity (invariant 1). A merge step parked on CI_PENDING is
+#: waiting for its pull request's checks and is woken when they settle
+#: (docs/merge-step.md, "Revised 2026-10-06" §1); it is the ordinary shape of a
+#: workflow whose last step has not merged yet. A check that ends red ends the
+#: step `checks_failed`, which is its own finding as a failed task.
+_NOT_TROUBLE_PARKS = frozenset({_DEPENDENCY_WAIT, _states.ParkReason.CI_PENDING.value})
 
 
 def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
@@ -1831,6 +1921,14 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             state = task.get("state")
             if state == "PARKED":
                 reason = str(task.get("park_reason") or "no reason recorded")
+                if reason in _NOT_TROUBLE_PARKS:
+                    # Not trouble (owner decision 2026-10-06, P5): a step
+                    # waiting for its parents holds no capacity (invariant 1)
+                    # and is the ordinary shape of a workflow whose earlier
+                    # steps still run. A parent that dead-lettered shows as its
+                    # own finding; this one would only bury it. A merge step
+                    # waiting for CI is the same (MS5).
+                    continue
                 parked[reason] = parked.get(reason, 0) + 1
             elif state in ("DEAD_LETTERED", "DEAD_LETTER"):
                 dead += 1
@@ -1852,7 +1950,164 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
         if failed:
             out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
 
+    out += lease_findings(snap, style)
+    out += workflow_findings(snap, style)
+
+    # Stable: findings that share a severity and a WHERE keep the order they
+    # were added in, which is how the stalled workflows stay worst first.
     out.sort(key=lambda f: (f.rank, f.where))
+    return out
+
+
+#: The longest a lease's task error may run in a finding. `last_error` can be
+#: an agent's stderr tail; its first line says what happened and the task's
+#: own view prints the rest.
+_LEASE_REASON_CHARS = 160
+
+
+def _lease_reason(row: dict[str, Any], style: Style) -> str:
+    """Why a held lease is held, in the words the lease row has."""
+    error = str(row.get("last_error") or "").strip()
+    if error:
+        first = error.splitlines()[0].strip()
+        if len(first) > _LEASE_REASON_CHARS:
+            first = first[: _LEASE_REASON_CHARS - 1] + style.ellipsis
+        return first
+    if row.get("heartbeat_ever") is False:
+        return f"its worker never beat {style.dash} no error recorded"
+    silent = row.get("silent_seconds")
+    if isinstance(silent, (int, float)) and not isinstance(silent, bool):
+        return f"no heartbeat for {_span(silent, style)} {style.dash} no error recorded"
+    return "no error recorded"
+
+
+def lease_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """Leases held past their TTL: the console's "N leases are past the TTL".
+
+    THE SAME ROWS AND THE SAME TEST AS THE CONSOLE. `leaseCheck` counts the
+    rows of `/v1/admin/leases?active_only=true` whose server-computed
+    `expired` is true; so does this, so the two cannot disagree about a lease.
+    The tenant-scoped `/v1/leases` was not used: it serves only each task's
+    CURRENT lease, and a lease held past its TTL is most often one that is no
+    longer current -- fenced at an older generation, the #560 shape.
+
+    A READ THAT FAILED IS A FINDING, never an empty list: no finding would
+    read as "no lease is held past its TTL", which nobody established.
+    """
+    if snap.leases_error:
+        return [
+            Finding(
+                "note" if snap.leases_refused else "down",
+                "leases",
+                f"not read ({snap.leases_error})",
+            )
+        ]
+    if snap.leases is None:
+        return []
+    rows = [r for r in (snap.leases.get("leases") or []) if isinstance(r, dict)]
+    now = parse_time(snap.leases.get("evaluated_at")) or snap.now
+    out: list[Finding] = []
+    held = [r for r in rows if r.get("expired") is True and not r.get("released")]
+    if held:
+
+        def past(row: dict[str, Any]) -> float:
+            due = parse_time(row.get("expires_at"))
+            return (now - due).total_seconds() if due is not None else 0.0
+
+        worst = max(held, key=past)
+        out.append(
+            Finding(
+                "warn",
+                "held",
+                f"{len(held)} lease(s) past their TTL, longest held "
+                f"{_span(max(0.0, past(worst)), style)} past it "
+                f"({worst.get('task_id') or '?'}): {_lease_reason(worst, style)}",
+            )
+        )
+    beyond = _int_or_none(snap.leases.get("active_beyond_window"))
+    if beyond:
+        # The console's page is 200 rows and so is this one; a live lease
+        # beyond it was not looked at, and saying nothing would count it clear.
+        out.append(
+            Finding(
+                "note",
+                "leases",
+                f"{beyond} more live lease(s) beyond the {len(rows)} read were not checked",
+            )
+        )
+    return out
+
+
+#: The reconciler grades each stalled-workflow row (`WorkflowStall.entry`,
+#: `bad`/`warn`/`note`); this is the trouble list's word for each. A stalled
+#: workflow is `warn`, as a lease held past its TTL is: one tenant's work has
+#: stopped, the platform has not.
+_STALL_SEVERITY = {"bad": "warn", "warn": "warn", "note": "note"}
+
+#: Rows printed before the rest are summarised in one line.
+_STALL_ROWS = 10
+
+
+def _stall_line(entry: dict[str, Any], style: Style) -> str:
+    what = str(entry.get("workflow_id") or "?")
+    if entry.get("step_id"):
+        what += f" step {entry['step_id']}"
+        if entry.get("task_id"):
+            what += f" ({entry['task_id']})"
+    what += f" {entry.get('kind') or '?'}"
+    age = entry.get("age_seconds")
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        what += f" {_span(max(0.0, float(age)), style)}"
+    what += f": {entry.get('reason') or 'no reason given'}"
+    if entry.get("repaired"):
+        what += f" {style.dash} repaired: {entry.get('repair') or 'yes'}"
+    elif entry.get("repair"):
+        what += f" {style.dash} {entry['repair']}"
+    return what
+
+
+def workflow_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """The reconciler's stalled workflows: the console's Workflows check.
+
+    WORST FIRST, IN THE RECONCILER'S ORDER. The pass sorts its rows once
+    (`reconciler.detect._STALL_ORDER`) and the API keeps that order, so this
+    lists them as served rather than re-ranking them by a second rule.
+
+    THREE WAYS TO KNOW NOTHING, and each is a finding, never silence: the
+    route failed (`workflows_error`), the reconciler's check was blind
+    (`check_error`), or the API is older than the field.
+    """
+    if snap.workflows_error:
+        return [Finding("down", "workflows", f"not read ({snap.workflows_error})")]
+    if snap.workflows is None:
+        return []
+    report = snap.workflows.get("stalled_workflows")
+    if not isinstance(report, dict):
+        return [
+            Finding(
+                "note",
+                "workflows",
+                "this deployment's API does not report stalled workflows; "
+                "whether any has stopped is unknown",
+            )
+        ]
+    if report.get("check_error") or report.get("count") is None:
+        return [
+            Finding(
+                "warn",
+                "workflows",
+                f"stall check not known {style.dash} "
+                f"{report.get('check_error') or 'the API gave no count'}",
+            )
+        ]
+    rows = [r for r in (report.get("workflows") or []) if isinstance(r, dict)]
+    out = [
+        Finding(_STALL_SEVERITY.get(str(r.get("severity")), "warn"), "workflow", _stall_line(r, style))
+        for r in rows[:_STALL_ROWS]
+    ]
+    more = (_int_or_none(report.get("count")) or len(rows)) - len(out)
+    if more > 0:
+        out.append(Finding("note", "workflow", f"{more} more stalled workflow row(s) not shown"))
     return out
 
 

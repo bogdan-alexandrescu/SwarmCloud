@@ -2,8 +2,8 @@
 // form F1, the stacked workflow form G1) AND THE #503 AUDIT FINDINGS ON THEM.
 //
 //   * /submit is a page of its own in the frame: its head names Submit, not
-//     API reads; its age resolves (it reads nothing) instead of "reading…"
-//     forever; and the Work section is the lit one, as in every M2 frame.
+//     API reads; its refresh carries the recent read's age instead of
+//     "reading…" forever; and the Work section is the lit one, as in every M2 frame.
 //   * the chooser's two cards carry an icon, a "Start a task" / "Start a
 //     workflow" button and their T / W key, and print no route as text;
 //     recent submissions are M2's "Start from a recent one" card, stating the
@@ -42,15 +42,17 @@ const OLD_SK = (tail: string) => `.sk-${tail}`
 // ---------------------------------------------------------------------------
 
 describe('/submit is a page of its own in the frame', () => {
-  it('names Submit in the head, says it reads nothing, and lights Submit', async () => {
+  it('names Submit in the head, times its recent read, and lights Submit', async () => {
     window.history.replaceState(null, '', '/submit')
     render(<App />)
     await screen.findByRole('heading', { name: 'Submit' }, WAIT)
     // The page head (visual QA Q2): the title and the head's age on one row.
     const head = document.querySelector<HTMLElement>('main.work .c-phead')!
     expect(visible(head), 'the head fell through to the API reads label').not.toContain('API reads')
-    // MUTATION: drop SUBMIT from ScreenAge's "reads nothing" branch.
-    expect(visible(head.querySelector('.ctl-head-age'))).toBe('reads nothing')
+    // THE CHOOSER READS YOUR RECENT SUBMISSIONS (QA G1-05/G4-23), so its
+    // head carries that read's age on its refresh, never "reads nothing".
+    expect(visible(head)).not.toContain('reads nothing')
+    expect(head.querySelector('.c-refresh'), 'no refresh in the chooser head').not.toBeNull()
     // SUBMIT IS THE PLACE (U10a D25, owner QA 2026-10-04): it lit Work, and
     // the panel lit Agents › Live, so Submit never read as where you were.
     const cta = document.querySelector<HTMLElement>('.sk-spine .sk-cta')!
@@ -186,7 +188,9 @@ describe('the task form is F1', () => {
     expect(steps().map((s) => s.classList.contains('is-dim'))).toEqual([false, true, true])
     fireEvent.click(runnerCard(container, 'mock').querySelector('input')!)
     expect(steps().map((s) => s.classList.contains('is-dim'))).toEqual([false, false, false])
-    expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\.is-dim\s*\{[^}]*opacity/)
+    // The CONTROLS are dimmed, not the step (QA G4-26): qa.c6p.submit.test.tsx.
+    expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\.is-dim textarea[^{]*\{[^}]*opacity/)
+    expect(rules(SUBMIT_CSS)).not.toMatch(/\.sb-step\.is-dim\s*\{/)
     expect(rules(SUBMIT_CSS)).toMatch(/\.sb-step\s*\{[^}]*border-radius:\s*var\(--radius\)/)
   })
 
@@ -224,7 +228,8 @@ describe('the workflow form is G1', () => {
     expect(names).toEqual(['', 'browser', 'claude-code', 'codex', 'generic', 'mock'])
     const codex = [...select.options].find((o) => o.value === 'codex')!
     expect(codex.disabled).toBe(true)
-    expect(codex.textContent).toMatch(/not enabled yet/)
+    // The card's own words, not a lowercased copy (QA G4-30).
+    expect(codex.textContent).toBe('codex · Not enabled yet. Use claude-code')
     expect(step.classList.contains('is-bad'), 'an unchosen step is not flagged').toBe(true)
 
     fireEvent.change(select, { target: { value: 'mock' } })

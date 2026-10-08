@@ -31,10 +31,13 @@ without being obeyed.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
-from swarm_common.models import Tenant, utcnow
+from swarm_common.models import FORGE_CREDENTIAL, Tenant, utcnow
+
+from . import indexrun
 
 
 class SecretError(RuntimeError):
@@ -48,6 +51,19 @@ class CredentialMissing(RuntimeError):
         super().__init__(f"tenant {tenant_id} has no {provider} credential registered")
         self.tenant_id = tenant_id
         self.provider = provider
+
+
+class ForgeWriteRefused(RuntimeError):
+    """The task's forge credential does not allow this write (docs/onboarding.md §3.3).
+
+    `cause` is the worker's word for why (a read grant, a revoked grant, an
+    unreadable one); `reason` says it in a sentence. Neither holds a value.
+    """
+
+    def __init__(self, cause: str, reason: str) -> None:
+        super().__init__(f"{cause}: {reason}")
+        self.cause = cause
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -69,7 +85,8 @@ def load_tenant(
 
     `call_options` is the read's `retry` and `timeout`. The lifecycle passes
     its startup budget before the runner starts (`ControlPlane.call_options`),
-    and nothing mid-run, where the library's defaults apply.
+    and the mid-run `tenant` budget for a credential reload
+    (`control.MID_RUN_BUDGETS`, #70).
     """
     snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
     if not snap.exists:
@@ -213,18 +230,44 @@ def resolve_git_token(
     tenant: Tenant,
     client: SecretManagerClient | None,
     logger: Any,
+    provider: str = GIT_PROVIDER,
 ) -> str | None:
-    """The tenant's own clone token, or None when it has not registered one.
+    """The task's forge token, or None when the tenant has not registered one.
 
-    None is not an error: a public repository clones without a credential, and a
-    private one fails with git's own message, which is the right diagnosis. The
-    value is registered with the logger before it is returned so that every path
-    that might echo it is already scrubbing it.
+    `provider` is the suffix `forge_suffix` read from the task's SIGNED
+    `forge_credential` (contract request 54): `git`, the tenant's own token,
+    by default; `git-u-<hex>`, a member's user slot, or `git-r-<hex>`, a
+    repository's. Whichever it is, the name is `Tenant.secret_name` under this
+    worker's OWN tenant, and the read is the `latest` version, which swarm-api's
+    refresher keeps at least two hours from expiry (docs/onboarding.md §3.3
+    step 3). Nothing caches it: a caller that reads again gets the version
+    current at that moment, which is how an attempt outlives an 8-hour user
+    token.
+
+    None is not an error for the tenant token: a public repository clones
+    without a credential, and a private one fails with git's own message, which
+    is the right diagnosis. A user or repository slot is not listed in
+    `tenant.credentials` (swarm-api creates it, not the tenant document), so it
+    is read directly, and a read that fails is a `SecretError` naming the
+    secret, never its value. The value is registered with the logger before it
+    is returned so that every path that might echo it is already scrubbing it.
     """
-    if client is None or GIT_PROVIDER not in tenant.credentials:
+    if client is None:
         return None
-    secret_name = tenant.secret_name(GIT_PROVIDER)
-    payload = client.access(secret_name).strip()
+    if not FORGE_CREDENTIAL.fullmatch(provider or ""):
+        raise SecretError(f"{provider!r} is not a forge credential suffix")
+    if provider == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials:
+        return None
+    secret_name = tenant.secret_name(provider)
+    if provider == GIT_PROVIDER:
+        payload = client.access(secret_name).strip()
+    else:
+        try:
+            payload = client.access(secret_name).strip()
+        except Exception as exc:  # noqa: BLE001 -- the type is enough; never the value
+            raise SecretError(
+                f"secret {secret_name} could not be read ({type(exc).__name__})"
+            ) from None
     token = payload
     if payload.startswith("{"):
         try:
@@ -243,3 +286,106 @@ def resolve_git_token(
     logger.register_secret(token)
     logger.info("tenant git credential resolved", secret=secret_name)
     return token
+
+
+# --------------------------------------------------------------------------
+# The task's forge credential and its grant (docs/onboarding.md §3.3, OB5)
+# --------------------------------------------------------------------------
+
+#: `swarm_api.forgeapp.GRANTS`: one document per person x repository, id
+#: `{tenant_id}__{user_hash}__{repo_id}`, written and deleted by swarm-api's
+#: Access routes (`swarm_api.access.AccessService.grant` / `revoke` /
+#: `remove_org`). RESTATED, because the worker's image does not carry
+#: swarm-api; tests/unit/worker/test_forge_credential.py holds it, and the
+#: id recipe, to swarm-api's own.
+FORGE_GRANTS = "forge_grants"
+#: The values of a grant's `mode` and of `Task.forge_access`.
+WRITE, READ = "write", "read"
+#: A user slot's suffix. Its 16 hex are the person's `user_hash`, the same
+#: hex that sits in the middle of their grant ids (`swarm_api.gittokens.
+#: provider_suffix`, `swarm_api.forgeapp.user_hash`).
+_USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
+
+
+def forge_suffix(task: Mapping[str, Any]) -> str:
+    """The provider suffix of the task's forge secret, `git` when it names none.
+
+    CALL ONLY ON THE VERIFIED DOCUMENT. `forge_credential` is covered by the
+    spec signature (`specsign.canonical_step_spec`, format 3), and the worker
+    reads it only after the generation check and the signature check have both
+    passed, in that order (invariant 5; docs/onboarding.md §3.6 item 5). A value
+    of another shape is refused rather than defaulted: it was signed, so it is
+    a platform bug, and reading the tenant token instead would run the task as
+    somebody it was not resolved to.
+    """
+    value = task.get("forge_credential")
+    if value is None:
+        return GIT_PROVIDER
+    if not isinstance(value, str) or not FORGE_CREDENTIAL.fullmatch(value):
+        raise SecretError("the task's forge_credential is not a forge credential suffix")
+    return value
+
+
+def forge_read_only(task: Mapping[str, Any]) -> bool:
+    """True when the task's signed `forge_access` is `read` (D9). None is `write`."""
+    return task.get("forge_access") == READ
+
+
+def user_slot_hash(suffix: str) -> str | None:
+    """The `user_hash` a `git-u-<hex>` suffix names, else None."""
+    match = _USER_SLOT.fullmatch(suffix or "")
+    return match.group(1) if match else None
+
+
+def grant_refusal(
+    db: Any,
+    *,
+    tenant_id: str,
+    suffix: str,
+    repository_url: str | None,
+    write: bool,
+    call_options: dict[str, Any] | None = None,
+) -> str | None:
+    """Why the task's grant no longer covers what it is about to do, or None.
+
+    docs/onboarding.md §3.3 step 4: before cloning, and again before each push
+    or pull request, the worker re-reads the person's grant for the task's
+    repository by id. Only for a user slot: the tenant token and a repository
+    token are not a person's, and no grant stands behind them.
+
+    TENANT-SCOPED (invariant 9). The id is built from this worker's OWN tenant
+    (`tenant_id`, the admitted one, never a document's), the hex of the signed
+    suffix, and the repo_id of the signed repository URL by the registration's
+    recipe (`indexrun.repo_id_for`). A document there that names another
+    tenant, another person or another repository is not this task's grant,
+    and reads as no grant.
+
+    `write` asks for a push or a pull request: a grant changed to `read` since
+    submission refuses it, as a deleted one does. A grant is not cached: each
+    call reads the document again.
+    """
+    hashed = user_slot_hash(suffix)
+    if hashed is None:
+        return None
+    where = indexrun.target(tenant_id, repository_url)
+    if isinstance(where, str):
+        return f"no grant can cover this repository: {where}"
+    doc_id = f"{tenant_id}__{hashed}__{where.repo_id}"
+    snap = db.collection(FORGE_GRANTS).document(doc_id).get(**dict(call_options or {}))
+    data = (snap.to_dict() or {}) if snap.exists else None
+    if (
+        data is None
+        or data.get("tenant_id") != tenant_id
+        or data.get("user_hash") != hashed
+        or data.get("repo_id") != where.repo_id
+    ):
+        return (
+            f"the submitter's grant on {where.repo_id} has been removed since the "
+            "task was submitted"
+        )
+    if write and data.get("mode") != WRITE:
+        return (
+            f"the submitter's grant on {where.repo_id} is now {data.get('mode')!r}, "
+            "not 'write'"
+        )
+    return None

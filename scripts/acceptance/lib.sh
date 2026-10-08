@@ -28,18 +28,20 @@ source "${REPO_ROOT}/scripts/acceptance/parsers.sh"
 
 ACC_DIR="${REPO_ROOT}/scripts/acceptance"
 
-#: The repository every task that clones clones. This repository, public, so a
-#: clone needs no credential; the fixtures live in tests/acceptance/fixtures.
-ACC_REPOSITORY_URL="${SWARM_ACCEPTANCE_REPOSITORY_URL:-https://github.com/bogdan-alexandrescu/SwarmCloud.git}"
-#: The ref cloned. `main` because the release deploys main, so the fixtures a
-#: run clones are the ones merged with the code it tests. verify-remote.sh
-#: cannot pass an environment variable into the swarm-verify job, so a release
-#: run always reads main; set it by hand to prove a branch.
-ACC_REF="${SWARM_ACCEPTANCE_REF:-main}"
-#: owner/repo on GitHub, derived from the URL: where pull requests open, and
-#: where the suite reads them back from.
-ACC_GITHUB_REPO="$(printf '%s' "${ACC_REPOSITORY_URL}" | sed -E 's#^https://github.com/##; s#\.git$##')"
-ACC_GITHUB_API="${SWARM_ACCEPTANCE_GITHUB_API:-https://api.github.com}"
+# WHERE the suite works -- ACC_TENANT, ACC_REPOSITORY_URL, ACC_REF,
+# ACC_GITHUB_REPO, ACC_GITHUB_API, ACC_ISSUE -- is config.sh's, stated once
+# for this file, github-cleanup.sh and sandbox-sync.sh. A target it refuses
+# stops the suite here, before anything is submitted.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=config.sh
+source "${REPO_ROOT}/scripts/acceptance/config.sh"
+acc_config_problem || exit 1
+
+#: Every API call this run makes carries `X-Swarm-Tenant: ${ACC_TENANT}`:
+#: common.sh's api_request sends the header whenever this is set. Exported, so
+#: a helper run in a child process selects the same tenant.
+export SWARM_API_TENANT="${ACC_TENANT}"
+
 #: How long one task may take, end to end. Cloud Run Jobs start in about a
 #: minute; the slowest mock check sleeps 150 s; a claude-code task on a tiny
 #: prompt takes a few minutes.
@@ -61,6 +63,82 @@ acc_init() {
 acc_cleanup() {
   cancel_all ${ACC_TASKS[@]+"${ACC_TASKS[@]}"}
   [[ -z "${ACC_WORK}" ]] || rm -rf "${ACC_WORK}"
+}
+
+# ---------------------------------------------------------------------------
+# The target: checked against the platform and GitHub before anything is
+# submitted (#628). Each dies rather than reporting a FAIL: a suite run in the
+# wrong tenant or on a public repository has already done the damage the
+# check exists to stop, whatever it then reports.
+# ---------------------------------------------------------------------------
+
+# acc_require_tenant -> returns when the API resolves this caller, with
+# X-Swarm-Tenant: ACC_TENANT, to ACC_TENANT; dies otherwise.
+#
+# A refusal is a 403 `tenant_not_member`: the caller is not a CONFIRMED member
+# of the tenant's registered directory group. Never retried without the
+# header -- that is how acceptance came to fill eng.
+acc_require_tenant() {
+  local out got
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-acc-me.XXXXXX")"
+  if ! api_get "/tenants/me" >"${out}"; then
+    got="$(acc_error_code <"${out}" 2>/dev/null || true)"
+    rm -f "${out}"
+    die "GET /tenants/me with X-Swarm-Tenant: ${ACC_TENANT} answered HTTP ${API_STATUS} ${got:-}: this caller cannot select tenant '${ACC_TENANT}'. It must be a member of ${ACC_TENANT}'s directory group and the group registered in dev.tfvars (docs/ci.md, \"Release acceptance runs in the smoke tenant\"). Not running in the caller's default tenant instead."
+  fi
+  got="$(jq -r '.tenant.tenant_id // empty' <"${out}" 2>/dev/null || true)"
+  rm -f "${out}"
+  [[ "${got}" == "${ACC_TENANT}" ]] \
+    || die "the API resolved this caller to tenant '${got:-none}', not '${ACC_TENANT}': refusing to run acceptance there"
+  info "tenant ${got} (X-Swarm-Tenant)"
+}
+
+# acc_require_private_repository -> returns when an ANONYMOUS read of
+# ACC_GITHUB_REPO is a 404; dies when anybody can read it, or when GitHub's
+# answer cannot be had.
+#
+# Anonymous on purpose: a token reads a private repository too. A 404 is
+# private or absent, and the clone tells those apart. A 200 is public, which
+# the sandbox is not -- and every public repository is one whose readers a
+# fixture pull request reaches. Any other answer is asked once more, then is a
+# refusal: "could not tell" is not "private".
+#
+# HTTP 000 IS NOT AN ANSWER. It is curl's own failure -- DNS, connect, TLS or
+# its 30 s timeout, on the way out through the VPC NAT -- and twice failed the
+# generic group of release 37413200995 (owner decision 2026-10-06). It is
+# tried 4 times, 5, 15 and 30 s apart, and a refusal on it names egress and
+# carries curl's own stderr, which is what tells DNS from a timeout. The
+# request is anonymous, so that stderr holds no credential.
+acc_require_private_repository() {
+  local code attempt=0 answers=0 err why=""
+  local backoff=(5 15 30)
+  err="$(mktemp "${TMPDIR:-/tmp}/swarm-acc-probe.XXXXXX")"
+  while :; do
+    attempt=$(( attempt + 1 ))
+    code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' \
+      -H "Accept: application/vnd.github+json" \
+      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}" 2>"${err}")" || code="000"
+    [[ -n "${code}" ]] || code="000"
+    case "${code}" in
+      404) rm -f "${err}"; info "repository ${ACC_GITHUB_REPO} is not publicly readable"; return 0 ;;
+      200) rm -f "${err}"; die "${ACC_GITHUB_REPO} is publicly readable: acceptance opens real pull requests and runs only against a private sandbox (#628)" ;;
+      000) why="$(tr '\n' ' ' <"${err}" | cut -c1-300)" ;;
+      *) answers=$(( answers + 1 )) ;;
+    esac
+    [[ "${answers}" -lt 2 && "${attempt}" -lt 4 ]] || break
+    sleep "${backoff[$(( attempt - 1 ))]}"
+  done
+  rm -f "${err}"
+  if [[ "${code}" == "000" ]]; then
+    die "could not confirm ${ACC_GITHUB_REPO} is private: no answer from ${ACC_GITHUB_API} in ${attempt} tries, 5, 15 and 30 s apart -- an egress failure (DNS, connect, TLS or timeout through the NAT), not an answer about the repository; curl said: ${why:-nothing}"
+  fi
+  # 403 and 429 are what GitHub answers an anonymous caller over its 60
+  # requests an hour, counted per source IP -- the swarm-verify job's NAT
+  # address. Not a platform failure, and not a public repository: say so.
+  case "${code}" in
+    403|429) die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read, which is its unauthenticated rate limit (60 an hour per source IP), not an answer about the repository; re-run the job once the hour has passed" ;;
+  esac
+  die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read"
 }
 
 # ---------------------------------------------------------------------------
@@ -117,7 +195,7 @@ acc_extra() {
   jq -nc --argjson m "$(acc_metadata)" --argjson x "${1:-$empty}" '{priority: 10, metadata: $m} + $x'
 }
 
-# acc_repo_extra [EXTRA_JSON] -> acc_extra plus this repository at ACC_REF.
+# acc_repo_extra [EXTRA_JSON] -> acc_extra plus the sandbox (ACC_REPOSITORY_URL) at ACC_REF.
 acc_repo_extra() {
   local empty='{}'
   acc_extra "$(jq -nc --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" --argjson x "${1:-$empty}" \
@@ -235,10 +313,20 @@ acc_declares() {
 #     exhausted budget (printed as HELD:<state>:<why>). A pool that is merely
 #     full is waited on for the whole timeout.
 #
-# The caller turns either into a SKIP naming the reason. A PARKED task that
-# HAS held a lease (a quota park) is not "held": it ran, and the wait goes on.
+# And a third: a workflow step PARKED on DEPENDENCY_INCOMPLETE whose ANCESTOR
+# is held by either of the above (printed as UPSTREAM:<ancestor>:<its state>).
+# The dependant's own document says only "waiting on a parent", so without
+# following depends_on a wait on the last step of a chain whose root has no
+# credential runs its whole timeout and reports FAIL -- release 37324226899,
+# 2026-10-05: the integrate chain's implement parked on CREDENTIAL_MISSING in
+# 2 s and the wait on fix ran 900 s. The ancestor's verdict is the same one it
+# would get waited on directly (_acc_hold), clocked from when THIS wait began.
+#
+# The caller turns any of these into a SKIP naming the reason. A PARKED task
+# that HAS held a lease (a quota park) is not "held": it ran, and the wait
+# goes on -- for an ancestor as for the task itself.
 acc_settle() {
-  local task="$1" timeout="$2" started deadline doc state reason
+  local task="$1" timeout="$2" started deadline doc state hold
   started="$(date -u +%s)"
   deadline=$(( started + timeout ))
   while :; do
@@ -249,35 +337,18 @@ acc_settle() {
     case "${state}" in
       SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED)
         printf '%s' "${state}"; return 0 ;;
-      PARKED)
-        reason="$(jq -r '.park_reason // ""' <<<"${doc}")"
-        if [[ "${reason}" == "CREDENTIAL_MISSING" ]]; then
-          printf 'PARKED:CREDENTIAL_MISSING'; return 0
-        fi
-        ;;
     esac
-    case "${state}" in
-      QUEUED|READY|PARKED)
-        if [[ $(( $(date -u +%s) - started )) -ge "${ACC_ADMIT_WAIT}" ]] \
-            && [[ "$(jq -r '.attempt_count // 0' <<<"${doc}")" == "0" ]]; then
-          # CLOSED, not merely full. A pool at its limit because this suite's
-          # own tasks fill it will open, and waiting is right; a pool an
-          # operator paused (MANUAL_PAUSE) or set to 0 will not. The
-          # scheduler's own blockers say which (swarm_common.admission writes
-          # {pool, reason, limit, active}), so nothing is re-derived here.
-          reason="$(jq -r '
-              [ (.blocked_by // [])[]
-                | select(.reason == "MANUAL_PAUSE" or .limit == 0)
-                | "\(.pool // "?") \(.reason // "?") limit \(.limit // "?")" ]
-              + (if (.park_reason // "") == "MANUAL_PAUSE" or (.park_reason // "") == "BUDGET_EXHAUSTED"
-                 then [.park_reason] else [] end)
-              | join(", ")' <<<"${doc}")"
-          if [[ -n "${reason}" ]]; then
-            printf 'HELD:%s:%s' "${state}" "${reason}"; return 0
-          fi
-        fi
-        ;;
-    esac
+    hold="$(_acc_hold "${doc}" "${started}")"
+    if [[ -n "${hold}" ]]; then
+      printf '%s' "${hold}"; return 0
+    fi
+    if [[ "${state}" == "PARKED" ]] \
+        && [[ "$(jq -r '.park_reason // ""' <<<"${doc}")" == "DEPENDENCY_INCOMPLETE" ]]; then
+      hold="$(_acc_upstream_hold "${doc}" "${started}")"
+      if [[ -n "${hold}" ]]; then
+        printf 'UPSTREAM:%s' "${hold}"; return 0
+      fi
+    fi
     if [[ "$(date -u +%s)" -ge "${deadline}" ]]; then
       printf '%s' "${state}"; return 1
     fi
@@ -285,17 +356,109 @@ acc_settle() {
   done
 }
 
+# _acc_hold DOC STARTED -> prints PARKED:CREDENTIAL_MISSING or HELD:<state>:<why>
+# when the task in DOC will not run however long the suite waits (see
+# acc_settle), and nothing otherwise. STARTED is the epoch the wait began.
+_acc_hold() {
+  local doc="$1" started="$2" state reason
+  state="$(jq -r '.state // "MISSING"' <<<"${doc}")"
+  case "${state}" in
+    PARKED)
+      reason="$(jq -r '.park_reason // ""' <<<"${doc}")"
+      if [[ "${reason}" == "CREDENTIAL_MISSING" ]]; then
+        printf 'PARKED:CREDENTIAL_MISSING'; return 0
+      fi
+      ;;
+  esac
+  case "${state}" in
+    QUEUED|READY|PARKED)
+      if [[ $(( $(date -u +%s) - started )) -ge "${ACC_ADMIT_WAIT}" ]] \
+          && [[ "$(jq -r '.attempt_count // 0' <<<"${doc}")" == "0" ]]; then
+        # CLOSED, not merely full. A pool at its limit because this suite's
+        # own tasks fill it will open, and waiting is right; a pool an
+        # operator paused (MANUAL_PAUSE) or set to 0 will not. The
+        # scheduler's own blockers say which (swarm_common.admission writes
+        # {pool, reason, limit, active}), so nothing is re-derived here.
+        reason="$(jq -r '
+            [ (.blocked_by // [])[]
+              | select(.reason == "MANUAL_PAUSE" or .limit == 0)
+              | "\(.pool // "?") \(.reason // "?") limit \(.limit // "?")" ]
+            + (if (.park_reason // "") == "MANUAL_PAUSE" or (.park_reason // "") == "BUDGET_EXHAUSTED"
+               then [.park_reason] else [] end)
+            | join(", ")' <<<"${doc}")"
+        if [[ -n "${reason}" ]]; then
+          printf 'HELD:%s:%s' "${state}" "${reason}"; return 0
+        fi
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# _acc_upstream_hold DOC STARTED -> prints "<ancestor task id>:<its hold>" for
+# the first ancestor of DOC's task, through depends_on, that _acc_hold says
+# will not run; nothing when every ancestor is running, finished or merely
+# waiting. Breadth-first, each ancestor read once per call: a SUCCEEDED
+# ancestor is not climbed past (its own parents are done), and a terminal
+# failure is the scheduler's to cascade, which ends the wait on its own.
+# A space-delimited string, not an associative array: bash 3.2.
+_acc_upstream_hold() {
+  local doc="$1" started="$2" queue seen id parent state hold
+  queue="$(jq -r '(.depends_on // [])[]' <<<"${doc}" | tr '\n' ' ')"
+  seen=" "
+  while [[ -n "${queue// /}" ]]; do
+    queue="${queue#"${queue%%[! ]*}"}"
+    id="${queue%% *}"
+    queue="${queue#"${id}"}"
+    [[ "${seen}" != *" ${id} "* ]] || continue
+    seen="${seen}${id} "
+    if ! doc="$(task_doc "${id}")"; then
+      die "could not read task ${id}, an ancestor of the task being waited on; see the Firestore error above -- a failed read is not a result"
+    fi
+    state="$(jq -r '.state // "MISSING"' <<<"${doc}")"
+    case "${state}" in
+      SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) continue ;;
+    esac
+    hold="$(_acc_hold "${doc}" "${started}")"
+    if [[ -n "${hold}" ]]; then
+      printf '%s:%s' "${id}" "${hold}"; return 0
+    fi
+    while IFS= read -r parent; do
+      [[ -z "${parent}" ]] || queue="${queue} ${parent}"
+    done < <(jq -r '(.depends_on // [])[]' <<<"${doc}")
+  done
+  return 0
+}
+
+# _acc_hold_reason HOLD -> the words acc_settled_or_skip uses for one of
+# _acc_hold's verdicts, for an ancestor's SKIP line.
+_acc_hold_reason() {
+  case "$1" in
+    PARKED:CREDENTIAL_MISSING)
+      printf "PARKED on CREDENTIAL_MISSING: the caller's tenant holds no credential for its profile's provider" ;;
+    HELD:*)
+      printf 'admission held it for %ss without leasing it: %s -- a closed pool or a limit, not a result' "${ACC_ADMIT_WAIT}" "${1#HELD:}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # acc_settled_or_skip TASK STATE -> 0 when STATE is a state the task RAN to;
-# otherwise records a SKIP (the platform holding it on purpose) or a FAIL (the
-# wait timed out) and returns 1.
+# otherwise records a SKIP (the platform holding it, or an ancestor it waits
+# on, on purpose) or a FAIL (the wait timed out) and returns 1.
 acc_settled_or_skip() {
-  local task="$1" state="$2"
+  local task="$1" state="$2" upstream ancestor
   case "${state}" in
     SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) return 0 ;;
     PARKED:CREDENTIAL_MISSING)
       acc_skip "not measured: the caller's tenant holds no credential for this profile's provider (PARKED on CREDENTIAL_MISSING)" "${task}" ;;
     HELD:*)
       acc_skip "not measured: admission held the task for ${ACC_ADMIT_WAIT}s without leasing it (${state#HELD:}) -- a closed pool or a limit, not a result" "${task}" ;;
+    UPSTREAM:*)
+      # UPSTREAM:<ancestor>:<the ancestor's own verdict>, from acc_settle.
+      upstream="${state#UPSTREAM:}"
+      ancestor="${upstream%%:*}"
+      acc_skip "not measured: it waits on upstream step ${ancestor}, which will not run ($(_acc_hold_reason "${upstream#*:}"))" "${task}"
+      cancel_all "${ancestor}" ;;
     *)
       acc_fail "did not finish within ${ACC_TIMEOUT}s (last state ${state})" "${task}" ;;
   esac
@@ -343,11 +506,13 @@ acc_leases_released() {
 # bytes and the trailing newline -- so "the downloaded bytes match exactly"
 # could never be true of a PNG, and could be false of a text file for a reason
 # that is the suite's own. curl writes straight to the file, the header on
-# stdin as common.sh's auth_config does everywhere.
+# stdin as common.sh's auth_config does everywhere -- and X-Swarm-Tenant, as
+# api_request sends it, or the task is another tenant's and answers 404.
 acc_raw_artifact() {
   local task="$1" name="$2" out="$3" q code
   q="$(jq -rn --arg n "${name}" '$n | @uri')"
   if ! code="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" -w '%{http_code}' \
+      -H "X-Swarm-Tenant: ${ACC_TENANT}" \
       "$(api_url)${API_PREFIX}/tasks/${task}/artifacts/raw?name=${q}&disposition=attachment")"; then
     return 1
   fi
@@ -387,11 +552,31 @@ acc_events() { task_events "$1"; }
 # GitHub: read a pull request back, and clean up after one.
 # ---------------------------------------------------------------------------
 
-#: A token for cleanup, when this run has one. The swarm-verify job has none,
-#: on purpose; the release's acceptance job sweeps with its own GITHUB_TOKEN
-#: afterwards (scripts/acceptance/github-cleanup.sh). Reads need none: the
-#: repository is public.
+#: A token that can read and write the sandbox, when this run has one. The
+#: swarm-verify job has none, on purpose: its identity holds no secret, and a
+#: forge token lives only in Secret Manager for the worker (CLAUDE.md). The
+#: release's acceptance job sweeps afterwards with the sandbox's own token
+#: (scripts/acceptance/github-cleanup.sh, secret SWARM_SANDBOX_GITHUB_TOKEN).
 ACC_GITHUB_TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+
+# acc_github_can_read -> 0 when this run can read ACC_GITHUB_REPO back.
+#
+# The sandbox is PRIVATE (run.sh's acc_require_private_repository refuses
+# anything else), so without a token every read is a 404. A check asks this
+# first and SKIPs what it cannot look at, naming why -- never a FAIL for a
+# read it could not make, and never a PASS for one it did not. In the release
+# that is every pull-request read-back: the platform-side assertions (the
+# pull request was opened, its title is the agent's, the artifacts exist) run
+# here, and the release's acceptance job then makes the read-back ones on the
+# GitHub runner, with the sandbox token, before anything is closed
+# (scripts/acceptance/github-verify.sh). An operator run with
+# SWARM_ACCEPTANCE_GITHUB_TOKEN measures them here too.
+acc_github_can_read() { [[ -n "${ACC_GITHUB_TOKEN}" ]]; }
+
+# acc_github_skip_reason -> the one sentence every such SKIP gives.
+acc_github_skip_reason() {
+  printf 'not measured here: %s is private and this run holds no token to read it (the swarm-verify job carries none). The release measures it after the suite with scripts/acceptance/github-verify.sh; set SWARM_ACCEPTANCE_GITHUB_TOKEN to measure it here' "${ACC_GITHUB_REPO}"
+}
 
 # acc_github METHOD PATH [BODY] -> the response body; fails on non-2xx.
 acc_github() {
@@ -409,6 +594,19 @@ acc_github() {
   cat "${out}"
   rm -f "${out}"
   [[ "${code}" =~ ^2 ]]
+}
+
+# acc_github_raw PATH_IN_REPO OUTFILE -> the file's bytes at ACC_REF, through
+# the contents API with this run's token. Not raw.githubusercontent.com: it
+# serves a private repository's files to nobody without one.
+acc_github_raw() {
+  local path="$1" out="$2" code q
+  q="$(jq -rn --arg r "${ACC_REF}" '$r | @uri')"
+  code="$(auth_config "${ACC_GITHUB_TOKEN}" \
+    | curl -K - -sS -m 30 -o "${out}" -w '%{http_code}' \
+      -H "Accept: application/vnd.github.raw" -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${ACC_GITHUB_API}/repos/${ACC_GITHUB_REPO}/contents/${path}?ref=${q}")" || return 1
+  [[ "${code}" == "200" ]]
 }
 
 # acc_pr_files_vs_ref HEAD_BRANCH -> the files GitHub's compare API says

@@ -94,13 +94,13 @@ graph-storage, impact, selected-tests and graph-explorer lanes.
 
 Today a repository is not a thing the platform knows about. It is a string on
 a task: `TaskCreate.repository_url`, checked by one rule,
-`check_repository_url` (`apps/swarm-api/swarm_api/validation.py:792`), which
+`check_repository_url` (`apps/swarm-api/swarm_api/validation.py::check_repository_url`), which
 accepts any https, ssh or `git@` URL that carries no credential. An issue run
 derives its repository from the issue reference (`IssueRef`,
-`apps/swarm-api/swarm_api/validation.py:854`; GitHub only, `ISSUE_FORGE_HOSTS`)
+`apps/swarm-api/swarm_api/validation.py::IssueRef`; GitHub only, `ISSUE_FORGE_HOSTS`)
 and reads the forge for that one run: the issue for the preview, and the
 repository's open issues and pull requests for the planner
-(`read_open_work`, `apps/swarm-api/swarm_api/forge.py:531`). Nothing outlives
+(`read_open_work`, `apps/swarm-api/swarm_api/forge.py::read_open_work`). Nothing outlives
 the run. Every planner therefore starts from nothing: it clones the
 repository and spends the first part of its budget discovering the layout,
 the test conventions and the territory rules that the previous planner on the
@@ -137,7 +137,7 @@ runs (§2.4 says why indexes are not shared).
 **The credential is the tenant's existing forge token,
 `swarm-tenant-<tenant>-git`, by name.** It is the secret the worker clones and
 publishes with, that swarm-api already reads through
-`SecretManagerForgeTokens` (`apps/swarm-api/swarm_api/forge.py:156`) for the
+`SecretManagerForgeTokens` (`apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens`) for the
 issue preview and the open-work read, and that `scripts/create-secrets.sh
 --stdin` stores. Registration does not accept a token, does not store one,
 and does not echo one: the record holds no credential field at all.
@@ -187,7 +187,7 @@ implementer otherwise spends tokens answering:
 | `entry_points` | executables, service mains, CLI commands, workers, `create_app()` factories, with `path` and how they are started | "what runs?" |
 | `routes` | public APIs: HTTP routes (`method`, `path`, handler `file`), exported library symbols, MCP tools | "what do callers depend on?" — the impact question |
 | `test_layout` | test roots, frameworks, how each suite runs, what needs an emulator or credentials | "how are tests organised here?" |
-| `test_map` | source path globs → the tests that cover them, each edge with its `evidence` (`import` / `naming` / `co-change` / `declared`) | "which tests does this change need?" (§4.3) |
+| `test_map` | source path globs → the tests that cover them, each edge with its `evidence` (`import` / `naming` / `co-change` / `declared`, and `ast` / `lsp` from the graph); the file level, with `confidence` and `also_evidence`, is in the graph (§2.5, "The test map") | "which tests does this change need?" (§4.3) |
 | `territory` | ownership hints read from the repository: CLAUDE.md track tables, CODEOWNERS, frozen directories, "do not edit" notes, quoted with their source file | "may I edit this, and who do I tell?" |
 | `commands` | build, lint, test and CI commands, read from Makefile, `package.json`, `pyproject.toml` and the CI workflows, each with its source | "how do I prove it works?" |
 | `hot_spots` | the files changed most in the last 90 days of the default branch, with change counts and the paths most often changed together | "what is fragile, and what else moves when this moves?" |
@@ -217,7 +217,7 @@ Two objects per indexed commit:
   the API from the JSON (never written by the agent, so it cannot say
   something the JSON does not). 24 KiB is chosen against the planner's prompt:
   `MAX_PLANNER_PROMPT_BYTES` is 64 KiB
-  (`apps/swarm-api/swarm_api/issueruns.py:162`) because the claude-code runner
+  (`apps/swarm-api/swarm_api/issueruns.py::MAX_PLANNER_PROMPT_BYTES`) because the claude-code runner
   passes the prompt as one argv string and Linux refuses one argument over
   128 KiB. The open-work section, the instructions and the summary together
   must fit; 24 KiB leaves the open work more than half the remaining budget.
@@ -242,33 +242,121 @@ never padded to look complete.
 
 ### 2.3 Where it lives, and how it is versioned
 
-The index objects are the indexer task's **artifacts**:
+**Revised 2026-10-06 (owner decision, lane IX3).** The index has its own home
+under the registration's prefix, beside its graph, and the bucket's lifecycle
+never touches it:
 
-    tenants/<tenant>/tasks/<task>/attempts/<attempt>/artifacts/repo-index.json
+    tenants/<tenant>/tasks/<task>/attempts/<attempt>/artifacts/repo-index.json   the artifact, as written
+    tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/repo-index.json          the kept copy
+    tenants/<tenant>/repos/<repo_id>/graph/<commit_sha>/manifest.json            the graph (§2.5)
+    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
-That path is already under the tenant's own GCS prefix, written by the
-tenant's own worker service account and readable by nobody else's
-(invariant 9: own GSA, own secrets, own GCS prefix, own namespace). Using the
-artifact path rather than a new `tenants/<tenant>/repos/` prefix means phase 1
-needs no new bucket, no new IAM binding and no new writer: the worker uploads
-it like any artifact, and swarm-api reads it back like it reads `plan.json`.
-The catch is retention: an index is an artifact and lives as long as
-artifacts do. Lane RI2 reads the bucket's lifecycle rule and, if it is shorter
-than the longest schedule a registration may set, copies the current index to
-`tenants/<tenant>/repos/<repo_id>/index/<commit_sha>/` under the same tenant
-prefix instead.
+**Why the artifact alone was not enough.** The first cut kept the index only
+as the task's artifact, on the argument that the artifact lifecycle
+(`artifact_retention_days`: 14 in dev, 180 in prod) outlived the longest
+schedule a registration may set. Reading the lifecycle again showed two rules
+that did not care about schedules: `SetStorageClass NEARLINE` at 14 days on
+`matchesPrefix ["tenants/"]`, which put every index and every graph blob in
+Nearline -- a retrieval fee on each read, while planners read them on every
+run, and a 30-day minimum charge on each deletion -- and the customTime
+`Delete`, unprefixed, which the worker's stamp would have pointed at anything
+it wrote under `repos/`. A registration whose interval is `off`, or a base an
+incremental run builds on, outlives a 14-day artifact anyway.
+
+**Who writes what.** The worker uploads repo-index.json as the task's
+artifact, then copies the uploaded object -- read back, so byte for byte --
+to `index/<commit_sha>/` (`agent_worker.lifecycle._index_keep_copy`; the
+commit is the signed `repository_ref`, the repo_id is derived from the signed
+`repository_url`, never from metadata). swarm-api cannot write it: it holds
+`roles/storage.objectViewer` on the bucket and nothing more, by design, and
+this change adds no IAM. The path is under `tenants/<tenant>/`, which the
+tenant's own worker account may already write (invariant 9).
 
 **Versioned by commit sha.** When an index run succeeds, swarm-api validates
 the JSON, renders the markdown, and in one Firestore transaction writes an
 `index_versions/{commit_sha}` entry under the registration (task, attempt,
-object paths, the JSON's sha256 digest, `kind`, `built_at`) and moves
+`json_object` naming the artifact, the JSON's sha256 digest as the masked
+reader serves it, `kind`, `built_at`) and moves
 `repositories/{repo_id}.index.current_sha` to it — **only if** the new sha is
 the branch head or a descendant of the current one, so a slow full run
 finishing after a newer incremental one cannot move the pointer backwards.
-The last 20 versions are kept; older entries are deleted with their objects
-left to the artifact lifecycle. A consumer reads a version by sha and checks
-the digest, so an artifact rewritten after promotion is detected rather than
-served (§5.2).
+Since IX3 the entry also records `repo_id`, `index_object` -- the kept copy's
+key -- and `object_digest`, the sha256 of its raw bytes, but only when the
+copy is the artifact byte for byte; otherwise both are null and the version
+is read from the artifact, exactly as before.
+
+**Reading a version.** `RepoIndex.read_version` reads the kept copy first:
+its key is rebuilt from the caller's tenant and the entry's repo_id and sha
+and must equal the recorded one (a version document cannot point the read
+anywhere else), its bytes must match `object_digest`, it is masked as the
+artifact reader masks a whole JSON artifact, and the result must match the
+promoted digest -- which is what proves the copy served is the document
+promotion validated. When there is no copy (a version promoted before IX3),
+or it does not match, the artifact is read and digest-checked as before; a
+copy that was rewritten while the artifact is gone is refused
+(`index_digest_mismatch`), never served. An incremental run's base is staged
+the same way: the copy first, then the artifact, each checked against the
+promoted digest (§3.4).
+
+**Retention.** The last 20 versions are kept (`KEPT_VERSIONS`); swarm-api
+deletes older `index_versions` entries at promotion. Their objects under
+`repos/` are deleted by the **next index run's sweep**, run as the tenant's
+worker account -- the only identity that may delete there -- because
+promotion runs in swarm-api, which may not. Before its graph write the worker
+reads the registration's remaining `index_versions` (plus the promoted
+`current_sha` and its own commit; `agent_worker.indexrun.kept_commits`) and
+passes them as `--keep-commit`; the writer's sweep then deletes every other
+commit's manifest and index copy older than a day, and then every blob no
+remaining manifest names (`repo_graph_shards.sweep`). One sweep deletes at
+most 2,000 objects, in batched `gcloud storage rm` calls; a backlog is worked
+off over the following runs, and a retired manifest past the bound still
+protects its blobs until it goes. When the versions cannot be read, the
+registration is not this tenant's, or more than 200 are listed, no
+`--keep-commit` is passed and the sweep retires nothing (it still removes
+orphan blobs, as it always has). Deleted objects become noncurrent versions,
+which the bucket's noncurrent rules remove (3 newer versions, or 30 days).
+
+**The lifecycle, per prefix** (`terraform/modules/storage/main.tf`). The two
+rules on live objects keep `repos/` off the clock in two different ways,
+because GCS `matchesPrefix` can only include, never exclude:
+
+* **Nearline** lists `tenants/<t>/tasks/` and `tenants/<t>/verdicts/` for
+  every tenant in the Terraform tenants map (`aged_prefixes`), instead of
+  `tenants/`. With no tenant at all the rule is omitted, because an empty
+  `matchesPrefix` would match every object.
+* **The customTime Delete stays bucket-wide**, unprefixed, as it was before
+  IX3. A per-tenant prefix list there would take every tenant outside the
+  map off the clock for good -- above all the personal tenants (`u-<slug>`)
+  the API creates at runtime, which Terraform never lists. `repos/` is out of
+  its reach because nothing there carries a customTime: the worker stamps one
+  on every upload except a checkpoint's and anything under
+  `tenants/<t>/repos/` (`agent_worker.objectstore.is_repos_key`), and the
+  graph writer's `gcloud storage` uploads set none. GCS never matches
+  `daysSinceCustomTime` against an object without one.
+
+| prefix | Nearline at `nearline_after_days` | Delete at `artifact_retention_days` after customTime | noncurrent cleanup |
+|---|---|---|---|
+| `tenants/<t>/tasks/` (artifacts, logs, checkpoints), `<t>` in the map | yes | yes (checkpoints carry no customTime) | yes |
+| `tenants/<t>/verdicts/`, `<t>` in the map | yes | yes | yes |
+| `tenants/<t>/tasks/`, `tenants/<t>/verdicts/`, `<t>` **not** in the map (runtime personal tenants, a tenant registered by `scripts/register-tenant.sh` alone) | **no** | yes | yes |
+| `tenants/<t>/repos/` (index copies, graph), every tenant | **never** | **never** (no customTime) | yes |
+
+So a tenant outside the map loses only the cold-storage step: its task
+objects stay in Standard until the Delete removes them -- a storage-class
+cost difference, nothing kept forever. Adding it to the map puts it back on
+Nearline.
+
+`tests/terraform/artifact_lifecycle.tftest.hcl` evaluates the Nearline
+rule's prefixes against keys under `repos/` (must match none) and under
+`tasks/` and `verdicts/` (must match), holds every live Delete to customTime
+alone (no `age`, no `created_before`), and checks the Delete reaches a
+personal tenant's task key; `tests/unit/worker/test_repos_objects_carry_no_custom_time.py`
+holds the worker's side: nothing it writes under `repos/` is stamped, and
+task artifacts, logs and verdicts still are.
+
+**After an unregister** nothing deletes `tenants/<t>/repos/<repo_id>/`: no
+lifecycle rule reaches it and no index run sweeps a registration that no
+longer exists. Those objects stay until deleted by hand.
 
 ### 2.4 Why two tenants on one repository do not share an index
 
@@ -298,10 +386,75 @@ the product along it, and it is shown, never hidden, so "the graph says no
 test reaches this" can always be answered with "through an `ast` edge at
 0.3".
 
+**The test map (revised 2026-10-07, QA findings G4-04 to G4-07).** The
+file → test map has three more ways to know an edge than the call graph,
+because what a test exercises is often reached by a path, not an import:
+
+| evidence | how it is produced | confidence |
+|---|---|---|
+| `path-ref` | the test file names a repository path in a string literal — `REPO / "scripts" / "lib" / "common.sh"`, `"kubernetes/"`, `spec_from_file_location(…, "images/…/repo_index_extract.py")`, a `.tftest.hcl`'s `source = "../../terraform/infra"` (resolved from the root, then from the test's directory). A directory gives a `<dir>/**` source | 0.35 |
+| `path-ref` (module) | a `.tftest.hcl` names `module.<name>` of a root it runs by path, and that root's `module "<name>" { source = "../modules/x" }` names the module directory | 0.3 |
+| `declared` | every test under a `test_layout[].root`, for each of its `covers` globs that matches a listed source file — the layout the agent last wrote, read from the staged base index | 0.2 |
+
+and the call graph gains one fallback for tests: a Python `obj.method()` in
+a test, with no import or type to resolve it by, resolves to the method of
+that name when exactly one class in the repository defines one (`ast`, 0.3).
+That is what connects `Scheduler._admit_one` to the tests that call it on a
+fixture-built scheduler. A name two classes define gives no edge.
+
+*Test-side files are never a source.* A file is test-side when a directory
+on its path is `tests`, `test`, `__tests__` or `testdata`, when it is
+`conftest.py`, or when it lies under a `test_layout[].root`. The helpers,
+conftest and fixtures a suite imports used to be counted as covered source
+(`tests/unit/control_plane/**` had 200 edges); they are now neither a test map
+source nor a symbol the symbol test map reports as covered. The extractor's
+`test_coverage` says how many modules are source, which are not and why
+(`test`: every file test-side; `build`: every file a Dockerfile, a Makefile
+or not source), and which source modules have no edge — the honest
+denominator: the QA pass of 2026-10-07 counted about 48 source modules among
+the 83 this repository's index listed.
+
+*Where the file level lives.* `repo-index.json` holds at most 4,000 edges
+(§2.2). The extractor no longer cuts the file-level map to that bound: the
+graph carries it whole (up to 200,000 edges, `file_test_map` in the graph's
+`truncated` past that), as `tests` on each source file's row in the `files`
+layer — `{test, evidence, confidence, also_evidence}` — so a reader pages it
+by the file's module shard, as it pages symbols. The index holds the file
+level when it fits; over 4,000 edges or over its byte budget it goes to
+directory granularity first, which merges a directory's duplicate
+(source, test) pairs, and only then cuts entries.
+
+*What a cut keeps.* Entries are kept round by round across sources — every
+source's strongest edge, then every source's second — not most-confident
+first. Confidence-first cut every `naming` edge before any `import` edge,
+and the `naming`, `path-ref` and `declared` edges are exactly what connect a
+module no import reaches.
+
+*The vocabulary `repo-index.json` is served in.* `RepoIndexSpec` accepts
+`declared`, `lsp`, `ast`, `co-change`, `import` and `naming`; an agent that
+copied `path-ref` into the index would have the whole index refused at
+promotion. So the index reports a `path-ref` edge as `declared` — the test
+names the path it exercises — with `path-ref` in its `also_evidence`; the
+graph keeps `path-ref`. Adding `path-ref` to `swarm_api.repoindex.Evidence`
+is a change request, not done here.
+
+*History is read, not assumed.* An index run's clone holds the window the
+hot spots and co-change read: one commit deep, then `git fetch
+--shallow-since=<head − 90 days>` and `--deepen=1` for the parent past it
+(`agent_worker/gitops.py` `deepen_history`, asked for by
+`indexrun.clone_history_days`). Bounded by date: the cost is the window's
+commits' trees and blobs and no older ones — and the checkout, which the
+attempt's periodic checkpoints carry, grows by that pack. A shallow history's
+boundary commit is never counted: git shows it as adding every file it
+holds, which is how a one-commit clone reported every hot spot as
+`changes: 1`. A clone the deepen could not reach says `available: false` with
+the reason, and `window_covered` says whether the counts span the whole
+window.
+
 **Graph shards, per commit, under the tenant's own prefix.**
 
     tenants/<tenant>/repos/<repo_id>/graph/<commit_sha>/manifest.json
-    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.zst
+    tenants/<tenant>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
 The manifest lists the shards and their digests, the `languages` table and
 the counts. Shards are content-addressed blobs: symbols sharded by module,
@@ -316,14 +469,33 @@ lines and 4-6 MB compressed; a 10,000-file monorepo about 30 MB compressed.
 The hard ceiling is **256 MiB per commit**; a graph over it keeps the
 module-level edges and drops symbol edges below confidence 0.4, and says so
 in the manifest's `truncated`. Graph manifests are kept for the last 20
-index versions (§2.3) and for every commit an open pull request's impact plan
-names, for 30 days; unreferenced blobs are deleted by a sweep in the RI9
-lane.
+index versions (§2.3): the index run's sweep deletes the manifest of every
+other commit older than a day, then every blob no remaining manifest names,
+and nothing else deletes under `repos/` -- the bucket's lifecycle never
+matches it (§2.3, revised 2026-10-06, lane IX3). The longer retention first
+sketched here, for every commit an open pull request's impact plan names,
+for 30 days, is not built: such a manifest goes with its version.
+
+**The write is resumable (revised 2026-10-06, lane IX1).** Blobs go up
+first, the manifest last. A blob already at its content-addressed path is
+*written* when its bytes are ours -- checked against the listing's MD5, or
+by reading it back -- so a write interrupted after any number of blobs
+completes when it is run again, and a path holding different bytes is a hard
+error: nothing overwrites it and no manifest is written over it. Blobs go up
+in batches (one `gcloud storage cp` of many files, which gcloud uploads in
+parallel), never one process per blob. Measured on
+`task_209ba9e0c9c948e284e9` (2026-10-06): the serial writer took ~3.9 s a
+blob, ~24 minutes for a full graph's ~370, more than an index run has; and
+its retry failed with `HTTPError 412` on its first blob because the store
+listed each object by its url, which on the versioned artifact bucket ends
+in `#<generation>`, so no blob ever read as present (and the sweep, on the
+same listing, never saw a manifest). The listing now names each object by
+its name.
 
 **Invariant 9 holds without a new grant.** The prefix is under
 `tenants/<tenant>/`, which the tenant's own worker service account may
 already write — everything there except `verdicts/`
-(`terraform/modules/tenancy/main.tf:169`) — and which no other tenant's
+(`terraform/modules/tenancy/main.tf` (`!${local.verdicts_prefix[t]}`)) — and which no other tenant's
 account can read. The indexer writes the shards directly; swarm-api reads
 them as it reads `plan.json`. The digest of the manifest is recorded in the
 `index_versions` entry at promotion (§2.3), so a shard rewritten after
@@ -410,7 +582,7 @@ Each registration carries:
 **Polling the forge (phase 1).** A per-tenant Cloud Scheduler job,
 `repo_index_poll`, calls `POST /v1/admin/repositories/poll?tenant_id=<tenant>`
 every 5 minutes, the pattern `issue_run_advance` already uses
-(`terraform/modules/scheduler/jobs.tf:214`), and like it says
+(`terraform/modules/scheduler/jobs.tf` (`resource "google_cloud_scheduler_job" "issue_run_advance"`)), and like it says
 `managed-by=swarm-terraform` in its description because a Cloud Scheduler job
 has no labels. The route reads, for each of the tenant's registrations whose
 `on_change` is `poll`, `GET /repos/{owner}/{repo}/commits/{default_branch}`
@@ -454,8 +626,9 @@ the language of each module, the import graph that grounds `test_map`
 `import` edges, the naming-convention edges (`src/x/y.py` ↔
 `tests/**/test_y.py`), the co-change pairs and the hot-spot counts from `git
 log --numstat --since=90.days` are deterministic and cheap. Lane RI3 ships
-them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the indexer
-prompt tells the agent to run first; the agent then spends its tokens on what
+them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the worker
+runs before the agent (§3.6; until 2026-10-06 the prompt told the agent to
+run it); the agent then spends its tokens on what
 needs reading: purposes, territory, notes, and checking the edges the tool
 was unsure of. That is what keeps a full run on a 2,000-file repository under
 the 30-minute timeout.
@@ -464,6 +637,95 @@ the 30-minute timeout.
 import scan: the file tree, the symbols and the `ast` and `import` edges all
 come from one parse per file (§3.5). The timeouts in §3.1 were RI0's; §3.5's
 budget table replaces them for any run that builds the graph.
+
+**Built (revised 2026-10-06, owner, lane IX2).** Until this lane
+`check_run_kind` refused `incremental`, because the design above stages the
+previous index as an `input_from` file and a standalone index task cannot
+be given one (a plain task's `metadata.input_from` is refused at submission,
+`validation._RESERVED_BECAUSE`). Every trigger was therefore a full rebuild:
+on 2026-10-06 the run for `36ac73bd` re-indexed all 1,685 files two commits
+after the previous index (`fe9e69c6`). What runs now, and why each piece is
+shaped the way it is:
+
+* **The base is staged by reference, not copied.** swarm-api names it in the
+  task's prompt, on a line of its own (`swarm-index-base: <sha>`,
+  `repoindex.BASE_LINE`). The prompt is inside the signed `input`;
+  `metadata.index_kind` and `base_sha` are swarm-api's own record and are
+  outside the spec signature, so the worker never reads them
+  (`tests/unit/common/test_specsign_covers.py`), and a signed metadata key
+  would need `SIGNED_METADATA_KEYS`, which is frozen. Before the extractor
+  the worker runs a fourth phase, `stage_base`
+  (`agent_worker/indexrun.py`): it reads the promoted version
+  (`repositories/<repo_id>/index_versions/<base_sha>`, under the repo_id the
+  signed spec derives), fetches that version's task's `repo-index.json`
+  through the staged-input path a workflow input takes
+  (`inputs.fetch_upstream_task`, `inputs.artifact_reference`: the successful
+  attempt's manifest, a key inside the tenant's own prefix), checks it
+  against the digest promotion recorded, and reads the base graph back from
+  its shards with `swarm-repo-graph read`, checked against the recorded
+  manifest digest. No new grant: the step's account already reads its
+  tenant's artifacts and graph prefix (invariant 9). The base line is still
+  a request: whatever names it can only make the run full or pick another
+  promoted version of the same registration, whose content the digests
+  vouch for.
+* **What changed is measured by blob id, not by `git diff`.** The worker's
+  checkout is one commit deep, so `<base_sha>` is not in it; the head's
+  tree is. The extractor records each file's git blob id in the graph's
+  `files` rows and compares the head's (`git ls-files -s`) with the base's.
+  A base graph from before this lane has no blob ids, so the first run after
+  it is full.
+* **A base the extractor would refuse is a full run before it is submitted.**
+  The extractor also refuses a base graph of another extractor version, a
+  truncated one (`files_not_listed`, or any `truncated` entry, the shard
+  writer's ceiling cuts included) and one without blob ids. swarm-api cannot
+  see those in GitHub's compare, so promotion records them on the version
+  (`graph_extractor`: the manifest's extractor `version`, its `blob_ids`
+  marker, `files_not_listed` and `truncated`), and `choose_kind` refuses the
+  same bases with the reason. Without that the run would be submitted
+  incremental, with the 900-second timeout, and the extractor would then
+  read the whole repository inside it -- about 20 minutes measured on this
+  repository, so a pre-IX2 base, or a repository whose graph is always
+  truncated, would get a half-timeout full run on every trigger. Such a run
+  is submitted full, with the full timeout; the first run after deploy
+  against a pre-IX2 base is one of them, and the version it promotes
+  carries the record.
+* **What is re-resolved.** The tree-sitter pass still parses every file
+  (seconds; a changed file's calls resolve against every other file's
+  definitions). The LSP pass -- the minutes -- is asked only about the
+  affected files: the changed ones, every file whose base edges point into
+  a changed or deleted file, and every file whose fresh edges point into a
+  changed one (a new definition can capture an old call, which §3.5's rule
+  alone would miss). Every other file keeps its base edges verbatim, `lsp`
+  evidence included, so its shards come out as the same blobs and
+  `swarm-repo-graph write --base-commit` counts them carried
+  (`shards_carried`) rather than writing them. Deleted files leave every list.
+* **The agent's reading is carried.** The extractor's output carries each
+  module's base `purpose` and the commit its entry was read at
+  (`commit_sha`: the base's for an untouched module, the head's for a touched
+  one), the base's entry points, test layout, always-tests, territory,
+  commands and notes minus rows naming a deleted file (`carried`), and the
+  diff (`changes`). The agent revises only what the diff touches.
+* **Who decides.** swarm-api first (`repoindex.choose_kind`, on the promoted
+  version and GitHub's compare): a promoted index with a graph, of an
+  ANCESTOR of the head (`ahead`), fewer than 300 changed files (GitHub's
+  compare lists at most 300, so 300 is exactly what this side cannot see
+  whole), no build, test, lockfile, CI or language-server configuration
+  changed, and the last full run younger than `full_every_days`
+  (`last_full_at`, written only when a full index is promoted). Then the
+  extractor again, on the diff it measures (`incremental_changes`, the same
+  lists, held equal by `tests/unit/worker/test_repo_index_incremental.py`).
+  Either one falling back makes the run full and records why: the run's
+  `kind_reason`, or the extractor's `extractor.incremental.reason` and the
+  `stage_base` phase record. A fallback is never a failed run.
+* **What is recorded.** The run: `kind`, `base_sha`, `requested_kind`,
+  `kind_reason`; the version and the promotion: the document's `kind` and
+  `base_sha`. Promotion refuses an index that claims a base its run was not
+  given. "Index now" with no kind stays full; the console's button, the
+  poll and a pending head ask for `incremental`.
+
+§3.5 asks for a configuration change to force a full run *for that
+language*; it forces the whole run full, because one index carries one
+`kind`.
 
 ### 3.5 The AST and LSP passes (revised 2026-10-04, owner)
 
@@ -553,12 +815,63 @@ something a caller names (invariant 10).
 
 *Revised 2026-10-05 (#625):* the single image exists as
 `images/agent-runtime-indexer`, built FROM `agent-runtime-base` by digest.
-The toolchain had shipped in the base, where every claude-code start pulled
-its ~133 MB (compressed) and only an index run used it. No profile runs the
-indexer image until contract request 48 (the image half of request B, §6.3)
-is accepted. Until then index runs on `claude-code` record the extractor as
-not installed and write no graph. [worker-images.md](worker-images.md) has
-the measurement.
+The toolchain had shipped in the base, where it added +188 MB (compressed)
+to every agent start and only an index run used it. Contract request 48 (the
+image half of request B, §6.3), accepted by the owner the same day, added
+the `indexer` profile: claude-code on that image, and what index runs are
+submitted as. [worker-images.md](worker-images.md) has the measurement.
+
+### 3.6 The deterministic passes are the worker's steps (revised 2026-10-06, owner)
+
+Until 2026-10-06 the indexer prompt told the agent to run the extractor
+first and `swarm-repo-graph write` last, through its shell. Measured on
+`task_209ba9e0c9c948e284e9` (`repo_4c5105947752b3f3`, 15:08-15:32): the
+extractor wrote `repo-index.json` (1,685 files, 25,541 symbols, 48,717 call
+edges), the agent's graph write was killed by Claude Code's 10-minute
+command limit after 150 blobs, and its retry met the 412 of §2.5. Neither
+pass reads anything a model has to read, so the worker runs them, around the
+agent, as its own supervised steps (`apps/agent-worker/agent_worker/
+indexrun.py`):
+
+| phase | what | timeout, of a 1,800 s full run |
+|---|---|---|
+| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | a quarter of the extractor's budget (90 s of an incremental run's 360) |
+| `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>` | 0.4 of the task's timeout, 720 s: twice the ~6 minutes measured |
+| `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
+| `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the task's timeout, 270 s, reserved before the agent starts |
+
+Why each rule:
+
+* **Supervised like the runner.** A phase beats the lease, polls the
+  control plane and checkpoints on the runner's cadences (invariants 5 and
+  8): the extractor takes longer than `_heartbeat_meanwhile`'s bound. A
+  fence, a cancel or a SIGTERM ends the attempt exactly as it would mid-agent.
+* **A phase never fails the run.** An extractor that is missing, fails or
+  times out leaves the agent to compute the mechanical fields itself, as the
+  prompt has always allowed; `$SWARM_WORK_DIR/repo-index.phases.json` tells
+  it why. A graph write that fails leaves the index without
+  `graph.manifest_digest`, which promotion reads as "no graph"; the write is
+  resumable, so the next run completes it. A timeout is a less certain
+  index, never a lost one (§3.5).
+* **Each phase's duration is recorded**, in the step's
+  `result_summary.repo_index_phases` and in the phases file, so "where did
+  the 30 minutes go" is answered from the run, not from a log search.
+* **The target comes from the signed spec** (invariant 9). The tenant and
+  the bucket are the worker's own configuration; the `repo_id` is derived
+  from the spec's tenant and `repository_url` by the registration's recipe
+  (`repositories.repo_id_for`). `metadata.repo_index`, which the spec
+  signature does not cover, is never read by the worker, so a rewritten
+  metadata cannot point the write at another registration.
+* **The prompt starts from the extractor's output** and no longer names
+  either command line. It still names the graph prefix, as the one place the
+  agent must never write.
+
+Promotion is unchanged: it still checks the index's `graph.manifest_digest`
+against the manifest the writer stored (§2.3, `repograph`).
+
+Not in this change: the extractor's own time (~6 minutes, most of it
+Pyright reaching its 300 s server budget). `full_every_days` is read since
+lane IX2 (§3.4).
 
 ---
 
@@ -568,7 +881,7 @@ the measurement.
 
 `POST /v1/runs` already reads the forge for the planner and puts the open work
 in its prompt between two delimiter lines carrying the run id, as data
-(`planner_prompt`, `apps/swarm-api/swarm_api/issueruns.py:591`). The index
+(`planner_prompt`, `apps/swarm-api/swarm_api/issueruns.py::planner_prompt`). The index
 joins it the same way, **in phase 1, with no frozen-contract change**: when a
 registration matches the issue's `owner/repo` and has a current index,
 `planner_prompt` adds a section
@@ -618,7 +931,7 @@ missing index is context missing, not an input failure, so it never ends a
 task `INPUTS_UNAVAILABLE`.
 
 Phase 2 needs the frozen-contract request in §6.3, because `_CLI_AGENT_INPUTS`
-(`apps/common/swarm_common/profiles.py:1100`) declares `issue` as the only
+(`apps/common/swarm_common/profiles.py::_CLI_AGENT_INPUTS`) declares `issue` as the only
 input those profiles take, and swarm-api refuses an undeclared input.
 
 ### 4.3 "What tests should run for this diff"
@@ -883,10 +1196,10 @@ indistinguishable from a missing one.
 | route | does |
 |---|---|
 | `POST /v1/repositories` | register: `{"repository": "owner/repo", "default_branch"?: "...", "allowed_profiles"?: [...], "index"?: {...}}`; reads the forge once (§1); idempotent on `repo_id` |
-| `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage |
+| `GET /v1/repositories` | the tenant's registrations with freshness (§5), last index run, schedule and `test_map` coverage (counts of modules, §6.2) |
 | `GET /v1/repositories/{repo_id}` | one registration, with its last 20 index runs and the runs and workflows that used its index |
 | `PATCH /v1/repositories/{repo_id}` | schedule, trigger, `allowed_profiles`, `default_branch`, `paused` |
-| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console; index objects are left to the artifact lifecycle |
+| `DELETE /v1/repositories/{repo_id}` | unregister; typed confirmation in the console. The task artifacts are left to the artifact lifecycle; since IX3 nothing deletes the registration's `repos/<repo_id>/` objects (index copies, graph), because the lifecycle never matches `repos/` and no index run sweeps an unregistered repository -- they stay until deleted by hand (§2.3) |
 | `POST /v1/repositories/{repo_id}/index:run` | queue an index run now (`{"kind": "full" \| "incremental"}`); the in-flight rule of §3.1 applies |
 | `GET /v1/repositories/{repo_id}/index` | the current index's summary and freshness; `?sha=` for a kept version; `?format=json` for the structured document |
 | `POST /v1/repositories/{repo_id}/tests:select` | §4.3 |
@@ -905,7 +1218,7 @@ routes are in [git-tokens.md](git-tokens.md) §7.
 
 Kept by their own module, read and written there only, not through
 `store.py` or `codec.py`, for the reason `issue_runs` gives
-(`apps/swarm-api/swarm_api/issueruns.py:135`): the shape is not the frozen
+(`apps/swarm-api/swarm_api/issueruns.py` (`THIS MODULE KEEPS ITS OWN DOCUMENT`)): the shape is not the frozen
 contract's and must not leak into it.
 
     repositories/{repo_id}
@@ -925,6 +1238,8 @@ contract's and must not leak into it.
       task_id, attempt_id, json_object, md_object, digest, kind, base_sha,
       built_at, bytes, truncated,
       graph_manifest, graph_digest, languages      (revised 2026-10-04)
+      repo_id, index_object, object_digest         (revised 2026-10-06, IX3: the
+                                                    kept copy under repos/, §2.3)
 
     repo_index_runs/{task_id}
       tenant_id, repo_id, commit_sha, kind, trigger (interval|change|manual),
@@ -945,6 +1260,23 @@ repository page lists a repository's index runs, and a query over all tasks by
 a metadata key is a composite index on a collection every other lane writes.
 Indexes: `repositories (tenant_id, owner, repo)` and
 `repo_index_runs (tenant_id, repo_id, queued_at desc)`.
+
+`index.coverage` is **counts, not a ratio** (decided 2026-10-07, QA G4-03):
+`{modules, modules_with_tests, test_map_edges, always_tests}`, written by
+`coverage()` in `swarm_api/repoindex.py` when a version is promoted. The
+console draws it as "20 of 83 modules", the bar filled to that share, with
+"1,339 edges · 7 always-run" under it. The unit is the index's *modules*
+because that is what the index can count: a `test_map` edge's source is a
+glob (`apps/common/swarm_common/**`), so the share of *source files* with a
+test edge, which the first mock-up drew as a percentage, is not something
+the index knows. The console and its mock-up had expected a 0-1 ratio the API
+never served, so every card drew "Tests mapped —" with a tooltip saying the
+index had not reported it; a percentage of modules relabelled as source
+files would be the same mistake in a quieter form. The module count also
+differs from the graph's: the index lists every module its indexer named,
+docs and config included, while a graph node is a directory holding at
+least one parsed code symbol (`module_graph` in `impact.py`), and the Graph
+tab says so beside both numbers.
 
 ### 6.3 The frozen contract
 
@@ -987,6 +1319,12 @@ equal limits, invariant 7), the budget table's timeouts, and **no agent**:
 the tool pass runs as a worker-run step, as `merge` and `post-verdict` do, so
 no agent in the tenant writes the graph a merge gate reads. The agent's
 reading (purposes, territory, notes) stays a `claude-code` step after it.
+
+*Revised 2026-10-05 (#625):* the image half of (B) is contract request 48,
+accepted by the owner: the `indexer` profile is `claude-code` on
+`agent-runtime-indexer` (same resource class, timeouts and inputs), and index
+runs are submitted as it. The agent-free, worker-run shape above is still
+the later change.
 
 **Request (C), revised 2026-10-04, needed only for execution mode X1 (§4.4):**
 

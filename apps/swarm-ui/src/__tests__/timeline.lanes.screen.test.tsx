@@ -330,6 +330,25 @@ describe('Lanes: the outcome strip', () => {
     expect(document.querySelector('.tl-strip')?.textContent).toMatch(/boom/)
   })
 
+  // #123: the strip printed a rate, a failed count and a cancelled count with
+  // no total, so the reader had to add them up to know what they were parts of.
+  // MUTATION: drop the finished figure, or print FAILED without DEAD_LETTERED.
+  it('splits the span’s finished tasks into succeeded, failed and cancelled, which add up to it (#123)', async () => {
+    const d = ledgerFixture()
+    d.totals = { ...d.totals, failed: d.totals.failed - 3, dead_lettered: 3 }
+    api.loadOutcomes.mockResolvedValue(ok(d))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip .tl-ended')).not.toBeNull())
+    const ended = document.querySelector('.tl-strip .tl-ended') as HTMLElement
+    const fig = (cls: string) => Number(ended.querySelector(`.${cls}`)?.textContent ?? 'NaN')
+    expect(fig('tl-n-ended')).toBe(d.totals.ended)
+    expect(fig('tl-n-ok')).toBe(d.totals.succeeded)
+    expect(fig('tl-n-bad'), 'failed is FAILED + DEAD_LETTERED').toBe(d.totals.failed + d.totals.dead_lettered)
+    expect(fig('tl-n-cancelled')).toBe(d.totals.cancelled.total)
+    expect(fig('tl-n-ok') + fig('tl-n-bad') + fig('tl-n-cancelled')).toBe(fig('tl-n-ended'))
+    expect(ended.textContent).toMatch(/finished: \d+ succeeded · \d+ failed · \d+ cancelled/)
+  })
+
   it('prints the success rate from the route, and fences from the lanes drawn', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/% success/))
@@ -358,7 +377,7 @@ describe('Lanes: refresh', () => {
     const asked = (id: string) => api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === id && (c[1] as { order?: string }).order === 'desc' && !(c[1] as { pageToken?: string }).pageToken).length
     expect(asked('task_plan')).toBe(1)
     expect(asked('task_solo')).toBe(1)
-    fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
+    fireEvent.click(screen.getByRole('button', { name: /^refresh/i }))
     await waitFor(() => expect(asked('task_plan')).toBe(2))
     await waitFor(() => expect(asked('task_solo')).toBe(2))
     expect(asked('task_test')).toBe(2)
@@ -378,7 +397,7 @@ describe('Lanes: refresh', () => {
     )
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(release).not.toBeNull())
-    fireEvent.click(await screen.findByRole('button', { name: 'refresh' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^refresh/i }))
     await waitFor(() => expect(api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === 'task_plan').length).toBe(2))
     release!()
     await new Promise((r) => setTimeout(r, 20))

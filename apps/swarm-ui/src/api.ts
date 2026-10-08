@@ -11,21 +11,28 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
-  type ResolvedToken, type TokenScope,
+  type ResolvedToken, type TestSelection, type TokenScope,
 } from './RepositoriesData'
+import {
+  normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
+  type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
+} from './RepoGraphData'
 import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
+  GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
+  AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -47,6 +54,36 @@ export async function loadCapacity(options: { frame?: boolean } = {}): Promise<R
   return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0, { frame: options.frame === true })
 }
 
+/**
+ * `GET /v1/admin/pools` (#133): every pool, with who last changed it through
+ * an admin route, when, and what changed. Admin-gated, so a non-admin's 403 is
+ * information. Pool limits joins it onto `/v1/capacity` by pool name; the
+ * record is not on `/v1/capacity` because every tenant member reads that.
+ */
+export async function loadAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
+  if (USE_FIXTURES) return fixtureAdminPools()
+  return read<{ pools: AdminPool[] }>(route('/v1/admin/pools'), (d) => d.pools.length === 0)
+}
+
+async function fixtureAdminPools(): Promise<Result<{ pools: AdminPool[] }>> {
+  const cap = await fixtureCapacity()
+  noteFixtureProbe(route('/v1/admin/pools'), 0, true)
+  if (cap.status !== 'ok') return { status: 'empty', fetchedAt: Date.now() }
+  // One pool carries a record, so the row that prints it is looked at; the
+  // rest are null, as a pool no admin has touched is.
+  const pools = cap.data.pools.map((p, i): AdminPool =>
+    i === 0 && p.hard_limit !== null
+      ? {
+          ...p,
+          admin_changed_by: 'ops@saga.xyz',
+          admin_changed_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+          admin_change: { hard_limit: { from: p.hard_limit * 2, to: p.hard_limit } },
+        }
+      : { ...p, admin_changed_by: null, admin_changed_at: null, admin_change: null },
+  )
+  return { status: 'ok', fetchedAt: Date.now(), data: { pools } }
+}
+
 // `TASK_PAGE_LIMIT` lives in `pageLimits.ts`: the check layer (checks.ts)
 // names it, and importing it from here dragged this client -- and Vite's
 // `import.meta.env` -- into a layer the node test loader runs bare.
@@ -56,12 +93,24 @@ export { TASK_PAGE_LIMIT }
  * A page of the task list. `limit` is the full page unless a caller has a
  * reason to ask for less -- the Agents list at phone width asks for 50
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
+ *
+ * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
+ * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
+ * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
+ * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
+ * them asks for it: the Overview and the Agents list. Anything that reads a
+ * row's input, metadata or result summary reads `loadTask` instead, which is
+ * always the full row. No `view` is the full row, as before.
  */
-export async function loadTasks(limit: number = TASK_PAGE_LIMIT): Promise<Result<TaskPage>> {
+export async function loadTasks(
+  limit: number = TASK_PAGE_LIMIT,
+  options: { view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size the caller asked for.
-  return read<TaskPage>(route('/v1/tasks', {}, `limit=${limit}`), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for.
+  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
+  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -1612,6 +1661,12 @@ export interface RuntimeTopology {
    * that read failed -- never rebuilt here from a naming rule.
    */
   profilePools?: Record<string, string[]> | null
+  /**
+   * Of those, the pools with no document, by runner-profile name: the same
+   * read's `admission.uncapped`, which admission skips as unlimited (QA
+   * G5-04). Absent or null when that read failed or served no admission block.
+   */
+  profileUncapped?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1642,6 +1697,13 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
       profilePools: poolsOk
         ? Object.fromEntries(
             Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
+      profileUncapped: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).flatMap(([name, p]) =>
+              p.admission === undefined ? [] : [[name, p.admission.uncapped]],
+            ),
           )
         : null,
       poolsDetail: poolsOk
@@ -2705,7 +2767,9 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 200))
-    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+    // The route's shape -- `{ pool }` with the pool's new hard limit -- because
+    // the editor compares that pool with what was asked (AdminSettings `saveOutcome`).
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: { name: poolName, hard_limit: limit } } }
   }
 
   return write(path, 'PUT', { limit })
@@ -3154,6 +3218,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
     "BUDGET_LIMIT",
     "DEPENDENCY",
     "MANUAL_PAUSE",
+    "POOL_LIMIT_UNSET",
     "QUOTA_EXHAUSTED"
   ],
   "no_room": [
@@ -3193,7 +3258,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
-  "claude-code-review": {"required_keys": ["prompt"]}
+  "claude-code-review": {"required_keys": ["prompt"]},
+  "indexer": {"required_keys": ["prompt"]}
 }
 
 /**
@@ -3224,7 +3290,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "browser": {"available": true, "disabled_reason": ""},
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
-  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."}
+  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "indexer": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -5131,14 +5198,68 @@ export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexD
   return readAs(route('/v1/repositories/{repo_id}/index', { repo_id: repoId }, new URLSearchParams({ format: 'json' })), normIndexDoc)
 }
 
-/** Languages per repository (not served): per language, grammar, server and status. */
-export async function loadRepositoryLanguages(_repoId: string): Promise<Result<LanguageRow[]>> {
-  // NOT SERVED: the API has no per-language route, so nothing is fetched and
-  // the Languages region draws its "not served yet" state.
-  return {
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The API serves no per-language route for a repository.' },
-  }
+/** `GET /v1/repositories/{repo_id}/graph`: the module dependency graph, aggregated for drawing (Graph A). */
+export async function loadRepositoryGraph(repoId: string): Promise<Result<ModuleGraph | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/graph', { repo_id: repoId }), normModuleGraph)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?q=`: symbols whose id contains `q`. */
+export async function searchRepositorySymbols(repoId: string, q: string): Promise<Result<SymbolSearch | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, new URLSearchParams({ q })), normSymbolSearch)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?id=&depth=&direction=`: the call graph centred on one symbol. */
+export async function loadSymbolGraph(
+  repoId: string,
+  id: string,
+  depth: number,
+  direction: 'both' | 'callers' | 'callees',
+): Promise<Result<CallGraph | null>> {
+  const q = new URLSearchParams({ id, depth: String(depth), direction })
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, q), normCallGraph)
+}
+
+/** `GET /v1/repositories/{repo_id}/symbols?id=&tests=1`: the tests that reach one symbol. */
+export async function loadSymbolTests(repoId: string, id: string): Promise<Result<SymbolTests | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/symbols', { repo_id: repoId }, new URLSearchParams({ id, tests: '1' })), normSymbolTests)
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/impact`: a pull request or a commit -> the
+ * test plan (repo-index.md §4.3a). A query, not a change: the API reads the
+ * diff from the forge and stores the plan keyed by its inputs, so asking twice
+ * for one head is the same plan. The body names the change and nothing else
+ * (the route refuses `paths`, `tests` or a command: invariant 10).
+ */
+export async function queryRepositoryImpact(repoId: string, change: { pull_request: number } | { commit: string }): Promise<Result<ImpactPlan | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/impact', { repo_id: repoId }), 'POST', change)
+  if (r.status === 'ok') return { ...r, data: normImpact(r.data) }
+  if (r.status === 'stale') return { ...r, data: normImpact(r.data) }
+  return r
+}
+
+/**
+ * `POST /v1/repositories/{repo_id}/tests:select`: changed paths -> the tests
+ * that cover them, the always-run tests, the paths no edge covers and the
+ * suite to run for those (repo-index.md §4.3). A query, not a change: the
+ * route reads the promoted index and stores nothing. The body is the paths,
+ * as data, and nothing else (the route's `extra="forbid"`: invariant 10).
+ */
+export async function selectRepositoryTests(repoId: string, paths: readonly string[]): Promise<Result<TestSelection | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/tests:select', { repo_id: repoId }), 'POST', { paths })
+  if (r.status === 'ok') return { ...r, data: normTestSelection(r.data) }
+  if (r.status === 'stale') return { ...r, data: normTestSelection(r.data) }
+  return r
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server
+ * and status (routes/repositories.py `repository_languages`). An API that
+ * does not serve it answers 404/501, and Settings then draws the index
+ * document's own `languages` rows instead (QA G4-13).
+ */
+export async function loadRepositoryLanguages(repoId: string): Promise<Result<LanguageRow[]>> {
+  return readAs(route('/v1/repositories/{repo_id}/languages', { repo_id: repoId }), normLanguages, (rows) => rows.length === 0)
 }
 
 /** The token that resolves here and its capability row, derived from `GET /v1/git-tokens` (R2); no per-repository token route exists. */
@@ -5146,9 +5267,43 @@ export async function loadResolvedToken(repoId: string): Promise<Result<Resolved
   return readAs(route('/v1/git-tokens'), (raw) => normResolvedFromTokens(raw, repoId))
 }
 
-/** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
+/**
+ * Pages read at most, whatever `next_page` says: the API caps the list at
+ * `MAX_READABLE_PAGES` (10, repositories.py) and says `capped`, so this is
+ * only a backstop against an answer that never stops offering a next page.
+ */
+const READABLE_PAGE_BACKSTOP = 50
+
+/**
+ * `GET /v1/repositories/readable`, EVERY page: what the tenant's git token can
+ * read, for Register C (OB0, docs/onboarding.md §5). Page 1 is asked for with
+ * no `page`, then `?page=N` for each `next_page` the API offers, until it
+ * offers none. `capped` arrives on the last page and is kept, so the picker
+ * can say the token reads more than is listed.
+ *
+ * A failure on page 1 is the read's failure. A failure on a later page is
+ * not: the pages already read are served, with `gap` naming the page that did
+ * not come back, so the picker says the list is short instead of passing it
+ * off as everything.
+ */
 export async function loadReadableRepositories(): Promise<Result<ReadableList>> {
-  return readAs(route('/v1/repositories/readable'), normReadable, (d) => d.repositories.length === 0)
+  const first = await readAs(route('/v1/repositories/readable'), normReadable)
+  if (first.status !== 'ok') return first
+  let list = first.data
+  let asked = 1
+  while (list.next_page !== null && list.next_page > asked && asked < READABLE_PAGE_BACKSTOP) {
+    asked = list.next_page
+    const more = await readAs(route('/v1/repositories/readable', {}, new URLSearchParams({ page: String(asked) })), normReadable)
+    if (more.status === 'ok') {
+      list = appendReadable(list, more.data)
+      continue
+    }
+    const message = more.status === 'error' || more.status === 'stale' ? more.error.message : 'the page was not read'
+    list = { ...list, next_page: null, gap: { page: asked, message } }
+    break
+  }
+  if (list.repositories.length === 0 && list.gap === null) return { status: 'empty', fetchedAt: first.fetchedAt, serverAt: first.serverAt }
+  return { ...first, data: list }
 }
 
 export interface RegisterRepositoryBody {
@@ -5187,4 +5342,117 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
 /** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
   return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
+}
+
+// ---------------------------------------------------------------------------
+// Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
+//
+// The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE
+// ANSWERS A VALUE -- no token, no code, no state after `authorize` minted it
+// -- and nothing here logs or keeps what it posts. The fixture build answers
+// each as not served, like the git-token routes above.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/onboarding`: the caller's six steps, derived on this read. */
+export async function loadOnboarding(): Promise<Result<OnboardingDoc>> {
+  return readAs(route('/v1/onboarding'), (raw) => raw as OnboardingDoc)
+}
+
+/** `POST /v1/onboarding/github/authorize`: a single-use, ten-minute authorise URL for this person. */
+export async function authorizeGitHub(surface: GitHubAuthorizeSurface = 'console'): Promise<Result<GitHubAuthorization>> {
+  return writeTo(route('/v1/onboarding/github/authorize'), 'POST', { surface }) as Promise<Result<GitHubAuthorization>>
+}
+
+/**
+ * `POST /v1/onboarding/github/exchange`: the callback's `state` and `code`
+ * (or GitHub's `error`). The server spends the state first, so a second post
+ * of the same pair is refused `AUTHORISATION_EXPIRED` -- the callback page
+ * posts once.
+ */
+export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<GitHubExchangeResponse>> {
+  return writeTo(route('/v1/onboarding/github/exchange'), 'POST', body) as Promise<Result<GitHubExchangeResponse>>
+}
+
+/** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
+export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
+  return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
+}
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4), read and written by the Access page (OB8).
+//
+// The routes are swarm_api/routes/access.py. Each acts as the caller with
+// THEIR OWN GitHub connection, inside the caller's tenant (`tenant_scope`);
+// none answers a value. The fixture build answers each as not served.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants (no GitHub read). */
+export async function loadAccess(): Promise<Result<AccessOverview>> {
+  return readAs(route('/v1/access'), (raw) => raw as AccessOverview)
+}
+
+/** `GET /v1/access/orgs`: every owner the caller's connection reaches, each with its install state. */
+export async function loadAccessOwners(): Promise<Result<AccessOwners>> {
+  return readAs(route('/v1/access/orgs'), (raw) => raw as AccessOwners)
+}
+
+/** `POST /v1/access/orgs`: enable an owner the App is installed on. */
+export async function enableAccessOwner(owner: string): Promise<Result<AccessEnableResponse>> {
+  return writeTo(route('/v1/access/orgs'), 'POST', { owner }) as Promise<Result<AccessEnableResponse>>
+}
+
+/** `DELETE /v1/access/orgs/{owner}`: disable it, and delete every grant under it in one write. */
+export async function disableAccessOwner(owner: string): Promise<Result<AccessDisableResponse>> {
+  return writeTo(route('/v1/access/orgs/{owner}', { owner }), 'DELETE') as Promise<Result<AccessDisableResponse>>
+}
+
+/**
+ * `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: ONE page of the
+ * owner's installation, searched server-side (a substring of the name).
+ */
+export async function loadAccessRepositories(owner: string, page = 1, q = ''): Promise<Result<AccessRepositoryPage>> {
+  const query = new URLSearchParams({ page: String(page) })
+  if (q.trim() !== '') query.set('q', q.trim())
+  return readAs(route('/v1/access/orgs/{owner}/repositories', { owner }, query), (raw) => raw as AccessRepositoryPage)
+}
+
+/** `PUT /v1/access/grants/{repo_id}`: grant read or write. The server reads the repository once, as the caller. */
+export async function putAccessGrant(repoId: string, repository: string, mode: AccessMode): Promise<Result<AccessGrantResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'PUT', { repository, mode }) as Promise<Result<AccessGrantResponse>>
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`: revoke the grant. */
+export async function revokeAccessGrant(repoId: string): Promise<Result<AccessRevokeResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'DELETE') as Promise<Result<AccessRevokeResponse>>
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`: run clone, push and pull request now. Reads only (D6). */
+export async function verifyAccessGrant(repoId: string, checks?: AccessCheckName[]): Promise<Result<AccessVerifyResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}/verify', { repo_id: repoId }), 'POST', checks === undefined ? {} : { checks }) as Promise<
+    Result<AccessVerifyResponse>
+  >
+}
+
+/** `GET /v1/access/members` (admin): every member's connection state and grants in the caller's tenant. */
+export async function loadAccessMembers(): Promise<Result<AccessMembers>> {
+  return readAs(route('/v1/access/members'), (raw) => raw as AccessMembers)
+}
+
+/**
+ * THE REGISTRATION ID OF A TYPED `owner/repo`, for `PUT /v1/access/grants/{repo_id}`.
+ *
+ * A repository picked from a listing carries its `repo_id`, minted by the
+ * server; a TYPED one has none, and the route is keyed on it. This is
+ * `swarm_api/repositories.py::repo_id_for`, restated: `repo_` + the first 16
+ * hex of sha256(tenant + `github.com/` + lower-cased owner/repo). A drift
+ * cannot grant the wrong repository: the server recomputes it from the body's
+ * `repository` and refuses a mismatch ("repo_id is not this tenant's id for
+ * that repository"). `__tests__/access.test.tsx` pins it to a value the
+ * Python recipe produced.
+ */
+export async function typedRepoId(tenantId: string, repository: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${tenantId}github.com/${repository.toLowerCase()}`)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `repo_${hex.slice(0, 16)}`
 }

@@ -110,6 +110,15 @@ def evaluate_capacity(
                  "limit": pool.effective_limit, "active": pool.active}
             )
             continue
+        # Checked after the pause, which refuses at any limit and so stays the
+        # reason. A ceiling nobody set refuses too, but as itself: never as a
+        # limit of 0, never as unlimited (contract request 38, #374).
+        if pool.hard_limit is None:
+            blockers.append(
+                {"pool": name, "reason": BlockedReason.POOL_LIMIT_UNSET.value,
+                 "limit": None, "active": pool.active}
+            )
+            continue
         if not pool.has_capacity(units):
             blockers.append(
                 {"pool": name, "reason": _blocked_reason_for_pool(name).value,
@@ -172,9 +181,11 @@ def acquire_lease_in_transaction(
         snap = _snapshot(txn.get(ref))
         if snap.exists:
             d = snap.to_dict()
+            # A missing or null `hard_limit` is None: no ceiling was set, and
+            # `evaluate_capacity` refuses with POOL_LIMIT_UNSET (request 38).
             pools[name] = SlotPool(
                 name=name,
-                hard_limit=d.get("hard_limit", 0),
+                hard_limit=d.get("hard_limit"),
                 adaptive_target=d.get("adaptive_target"),
                 quota_derived_limit=d.get("quota_derived_limit"),
                 active=d.get("active", 0),

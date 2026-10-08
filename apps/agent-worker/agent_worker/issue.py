@@ -19,10 +19,10 @@ credential, read by the same path the clone and the publish read it
 (`Worker._git_token`, #219), and it goes in exactly one place: the
 `Authorization` header of a request this process makes. It is never written
 to the workspace, a file, an environment variable or a log, and it is never
-sent to a host other than the one the task's repository names: a redirect
-off that host is refused rather than followed, because urllib copies the
-header onto a redirect wherever it points. When the worker must not hold the
-token at all (`_git_token_refusal`), the fetch runs without it, as the clone
+sent to a host other than the one the task's repository names: no redirect
+is followed, to that host or any other, because urllib copies the header
+onto a redirect wherever it points (`forge.open_without_redirects`, #645).
+When the worker must not hold the token at all (`_git_token_refusal`), the fetch runs without it, as the clone
 does, and a private repository's refusal says why.
 
 **THE FILE IS IN THE WORKSPACE, NEVER IN THE ARTIFACTS.** `work/issue.md` is
@@ -62,6 +62,8 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -74,9 +76,11 @@ from swarm_common.profiles import InputRefused, RunnerProfile
 from .errors import InputUnavailable
 from .forge import (
     GITHUB_HOSTS,
+    ConnectBound,
     ForgeUnavailable,
     RepoRef,
     RetryPolicy,
+    open_without_redirects,
     parse_repo,
     retry_after_from_headers,
     retry_transient,
@@ -90,10 +94,30 @@ INPUT_KEY = "issue"
 #: The file in `work/` the issue is written to.
 FILE_NAME = "issue.md"
 
-#: Per request. Shorter than the forge module's 30 s because this runs before
-#: the agent, inside the reconciler's heartbeat grace, and the worker proves
-#: liveness between requests (`on_request`).
-_TIMEOUT = 20
+#: The connect (TCP and TLS) and the reads are bounded apart (observer proposal
+#: P3, owner decision 2026-10-06). Measured 2026-10-06: C1E's issue fetch timed
+#: out at exactly 20 s and succeeded on a retry 2 s later, and C1A's took
+#: 19.99 s, both against one 20 s timeout that bounded the connect and the reads
+#: alike -- so a stalled connect spent the whole 20 s before anything tried
+#: again. A connect to api.github.com that has not finished in 5 s is stalled,
+#: not slow; it is given up and tried again, up to 3 times, inside the request.
+_CONNECT_TIMEOUT = 5
+_CONNECT_TRIES = 3
+#: Before the second connect try; doubled before the third. Three stalled
+#: tries and their backoff (3 x 5 s + 0.5 s + 1 s) stay inside the 20 s the
+#: single timeout allowed, so the worst connect is no slower than before.
+_CONNECT_BACKOFF_SECONDS = 0.5
+#: Each read once connected. Kept at the old 20 s: a forge that connected and
+#: is slow to answer (C1A's 19.99 s) is still waited for, and one that never
+#: answers still fails here and is retried as a whole fetch by `stage_issue`.
+#: Shorter than the forge module's 30 s because this runs before the agent,
+#: inside the reconciler's heartbeat grace, and the worker proves liveness
+#: between requests (`on_request`).
+_READ_TIMEOUT = 20
+
+_CONNECT = ConnectBound(
+    timeout=_CONNECT_TIMEOUT, tries=_CONNECT_TRIES, backoff_seconds=_CONNECT_BACKOFF_SECONDS
+)
 
 _UA = "swarmcloud-agent-worker"
 
@@ -195,31 +219,6 @@ def reserved_names(task_input: Any, profile: RunnerProfile) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-class _SameHostRedirects(urllib.request.HTTPRedirectHandler):
-    """Follow a redirect on the same https host; refuse any other.
-
-    urllib copies every header but the body's onto a redirected request,
-    `Authorization` included, wherever the redirect points. GitHub redirects
-    an issue of a renamed or transferred repository within api.github.com,
-    which is followed. Anything else would hand the tenant's credential to a
-    host the task never named.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        old = urlparse(req.full_url)
-        new = urlparse(newurl)
-        if new.scheme != "https" or (new.hostname or "").lower() != (old.hostname or "").lower():
-            raise IssueUnavailable(
-                f"the forge redirected the issue request from {old.hostname} to "
-                f"{new.scheme}://{new.hostname}; the tenant credential is not sent to "
-                "another host, so the issue was not fetched"
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_OPENER = urllib.request.build_opener(_SameHostRedirects)
-
-
 def _read_capped(source: Any, *, req: urllib.request.Request) -> bytes:
     """Read at most `MAX_RESPONSE_BYTES` from `source`; refuse anything longer.
 
@@ -246,11 +245,21 @@ def _open(req: urllib.request.Request) -> tuple[int, Any, Mapping[str, str]]:
     GitHub's rate-limit headers to tell a rate limit from a refusal.
     """
     try:
-        with _OPENER.open(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_READ_TIMEOUT, connect=_CONNECT) as response:
             raw = _read_capped(response, req=req).decode("utf-8", errors="replace")
             headers = dict(response.headers.items()) if response.headers else {}
             return response.status, (json.loads(raw) if raw.strip() else None), headers
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            # `forge.open_without_redirects` never follows a redirect: urllib
+            # would copy `Authorization` onto it wherever it points. Same host
+            # or not, a 3xx ends the fetch here, and `Location` is not quoted.
+            exc.close()
+            raise IssueUnavailable(
+                f"{urlparse(req.full_url).hostname} answered {exc.code}, a redirect; a "
+                "request carrying the tenant credential never follows one, so the "
+                "issue was not fetched"
+            ) from None
         raw = _read_capped(exc, req=req).decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
@@ -521,6 +530,113 @@ def write(work_dir: Path | str, text: str) -> Path:
     return path
 
 
+def _fetch_retried(
+    *,
+    number: int,
+    repository_url: str,
+    token: str | None,
+    on_request: Callable[[], None] | None,
+    retry: RetryPolicy | None,
+) -> Issue:
+    """`fetch_issue` under `retry_transient`: the one fetch both paths make."""
+    return retry_transient(
+        lambda: fetch_issue(
+            repository_url=repository_url, number=number, token=token, on_request=on_request
+        ),
+        policy=retry,
+        what=f"issue #{number}",
+    )
+
+
+class IssuePrefetch:
+    """The issue fetch, started in a thread beside the clone (#721, P29).
+
+    Owner decision 2026-10-06 (chunk-3 observer P29): the fetch needs only the
+    token and the issue number, yet it waited for the clone, the staging and
+    the credentials before it asked the forge anything. The lifecycle now
+    starts this as soon as both are known, before the clone, and hands it to
+    `stage_issue`, which joins it before the agent starts.
+
+    ONLY THE NETWORK READ MOVES. The scrub, the render and the write stay in
+    `stage_issue`, after the credentials step, so every secret the attempt
+    holds is registered before the issue's text is scrubbed, as before. A
+    failure is kept, not raised, and `outcome()` raises THE SAME exception in
+    the caller's thread, where `stage_issue` maps it exactly as it maps one
+    from a fetch it made itself. Nothing here heartbeats: the clone's own
+    heartbeat thread covers the fetch while the clone runs, and the lifecycle
+    beats around a join that still has to wait.
+
+    `timing()` -- `started_seconds`, `ended_seconds` on `clock`, and `ok` -- is
+    what `agent_started` carries. No text from the issue or the forge is in it.
+    """
+
+    def __init__(
+        self,
+        *,
+        number: int,
+        repository_url: str,
+        token: str | None,
+        retry: RetryPolicy | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.number = number
+        self.repository_url = repository_url
+        self.token = token
+        self._retry = retry
+        self._clock = clock
+        self._issue: Issue | None = None
+        self._error: BaseException | None = None
+        self._started: float | None = None
+        self._ended: float | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._started = self._clock()
+        self._thread = threading.Thread(target=self._run, name="issue-prefetch", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._issue = _fetch_retried(
+                number=self.number, repository_url=self.repository_url, token=self.token,
+                on_request=None, retry=self._retry,
+            )
+        except BaseException as exc:  # noqa: BLE001 -- raised again by `outcome`
+            self._error = exc
+        finally:
+            self._ended = self._clock()
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def wait(self) -> None:
+        """Join the thread. Unbounded: the fetch's own timeouts and `retry` bound it."""
+        if self._thread is not None:
+            self._thread.join()
+
+    def outcome(self) -> Issue:
+        """The fetched issue, after joining; raises the fetch's own exception."""
+        self.wait()
+        if self._error is not None:
+            raise self._error
+        if self._issue is None:
+            raise IssueUnavailable(f"issue #{self.number} was never fetched")
+        return self._issue
+
+    def timing(self) -> dict[str, Any]:
+        def at(value: float | None) -> float | None:
+            return round(float(value), 3) if value is not None else None
+
+        return {
+            "started_seconds": at(self._started),
+            "ended_seconds": at(self._ended),
+            "ok": self._ended is not None and self._error is None and self._issue is not None,
+        }
+
+
 def stage_issue(
     *,
     number: int,
@@ -532,6 +648,7 @@ def stage_issue(
     logger: Any,
     on_request: Callable[[], None] | None = None,
     retry: RetryPolicy | None = None,
+    prefetched: IssuePrefetch | None = None,
 ) -> Path:
     """Fetch issue `number` of the task's repository into `work/issue.md`.
 
@@ -547,6 +664,11 @@ def stage_issue(
         -- the WHOLE fetch is tried again, the issue and its comment pages,
         all of them idempotent reads, so a blip on page three costs a few
         requests rather than the attempt.
+
+    `prefetched` (#721, P29) is the same fetch, already started beside the
+    clone: joined here, and its issue -- or its exception -- taken as this
+    call's own. Used only when it asked for this `number` of this
+    `repository_url`; otherwise the fetch is made here as it always was.
     """
     if not repository_url:
         raise IssueUnavailable(
@@ -562,14 +684,20 @@ def stage_issue(
         # Scrubbed: a forge's message is text this worker did not write.
         return str(scrub(message))
 
+    usable = (
+        prefetched is not None
+        and prefetched.number == number
+        and prefetched.repository_url == repository_url
+    )
     try:
-        issue = retry_transient(
-            lambda: fetch_issue(
-                repository_url=repository_url, number=number, token=token, on_request=on_request
-            ),
-            policy=retry,
-            what=f"issue #{number}",
-        )
+        if usable:
+            assert prefetched is not None
+            issue = prefetched.outcome()
+        else:
+            issue = _fetch_retried(
+                number=number, repository_url=repository_url, token=token,
+                on_request=on_request, retry=retry,
+            )
     except IssueUnavailable as exc:
         raise IssueUnavailable(annotated(str(exc))) from None
     except ForgeUnavailable as exc:

@@ -451,3 +451,66 @@ resource "google_logging_metric" "spec_upstream_invalid" {
     reason    = "REGEXP_EXTRACT(jsonPayload.spec_check.reason, \"^upstream:[^:]*:(.*)$\")"
   }
 }
+
+# ---------------------------------------------------------------------------
+# A merge or post-verdict worker action ended without doing its job (contract
+# requests 33 and 35; merge-step.md §6, §6a): the four end causes
+# merge_refused, merge_failed, verdict_refused and verdict_failed.
+#
+# THE EMITTER: agent_worker.lifecycle `Worker._record_worker_action_end` logs,
+# at ERROR, `{"message": "worker action ended", "action": "merge" |
+# "post_verdict", "code": <refusal code>, "end_cause": <one of the four>,
+# "labels": {...}}` -- per-call fields at the top of the payload, bound
+# identity under `labels` (StructuredLogger, as for every metric above). It
+# writes that line for a refusal, and for the last attempt of a forge outage
+# that spent its retries (`fail_retryably` returning FAILED): that second path
+# is how most _failed ends arrive, and a metric reading only the first would
+# miss them. tests/unit/worker/test_worker_action_starts_no_runner.py holds
+# the line in both paths.
+#
+# Keyed on the message AND the four end causes, so a cannot_start (the same
+# line, another end cause) and a reworded line do not count. An upstream
+# step's spec failing to verify is one of the _refused ends here (code
+# `spec_unverified`). `spec_upstream_invalid` above is meant to page on that
+# case alone, but it keys on a message no worker writes yet (read 2026-10-08:
+# no `upstream spec signature invalid` line in apps/), so until it does, this
+# metric is the only count of it.
+#
+# `code` is not a label: it carries the forge's own error codes as well as
+# the worker's vocabulary, so it is read from the log line, not grouped by.
+# ---------------------------------------------------------------------------
+resource "google_logging_metric" "worker_action_ended" {
+  project = var.project_id
+  name    = "${var.name_prefix}/worker-action-ended"
+
+  description = "A merge or post-verdict worker action ended the task merge_refused, merge_failed, verdict_refused or verdict_failed: the pull request was not merged or the review was not posted."
+
+  filter = join(" AND ", [
+    "resource.type=(\"cloud_run_job\" OR \"k8s_container\")",
+    "jsonPayload.message=\"worker action ended\"",
+    "jsonPayload.end_cause=(\"merge_refused\" OR \"merge_failed\" OR \"verdict_refused\" OR \"verdict_failed\")",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "tenant_id"
+      value_type = "STRING"
+    }
+
+    # One of the four: which action, and refused (nothing changed on the
+    # forge) or failed (allowed, and the forge did not do it).
+    labels {
+      key        = "end_cause"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
+    end_cause = "EXTRACT(jsonPayload.end_cause)"
+  }
+}

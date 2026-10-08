@@ -53,7 +53,11 @@ wall clock stays out; whoever promotes the index stamps it.
 EVIDENCE AND CONFIDENCE follow §2.5: `ast` 0.6 for a call whose name matches
 exactly one definition in scope or in an imported module, 0.3 for each of
 several; `import` 0.4; `naming` 0.3; `co-change` the pair's Jaccard support,
-capped at 0.5. Only in-repository edges are resolved.
+capped at 0.5. Only in-repository edges are resolved. The test map adds
+`path-ref` (0.35; 0.3 for a Terraform module reached through the root a
+`.tftest.hcl` runs) and `declared` (0.2, a `test_layout[].covers` glob), and
+a test's `obj.method()` resolves by a unique method name (`ast` 0.3);
+docs/repo-index.md §2.5, "The test map", says why.
 
 THE LSP PASS (lane RI10, lsp/). After the tree-sitter pass each language's
 server (pyright, tsserver, gopls, terraform-ls) is started headless over
@@ -75,6 +79,12 @@ still succeeds. A timeout is a less certain index, never a failed one.
 The 90-day window is anchored at the HEAD commit's committer time, not the
 wall clock, so a rerun on the same commit counts the same commits.
 
+INCREMENTAL (§3.4, lane IX2). `--base-sha`, `--base-index` and `--base-graph`
+give the run the previous promoted index of an ancestor, as the worker staged
+it. The run is incremental when `incremental_changes` allows it and full,
+with the reason in `extractor.incremental`, when it does not; the section
+"incremental runs" below says what is rewritten and what is carried.
+
 Symlinks are listed and never followed: a checkout is untrusted input, and a
 link to a file outside it must not put that file's contents in an artifact.
 """
@@ -82,6 +92,7 @@ link to a file outside it must not put that file's contents in an artifact.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import importlib.metadata
 import hashlib
 import json
@@ -121,7 +132,12 @@ MAX_INDEX_BYTES = 512 * 1024
 # §2.2: the summary carries the 100 most-called symbols.
 MOST_CALLED = 100
 EXTRACTOR_NAME = "swarm-repo-index"
-EXTRACTOR_VERSION = "1"
+# "2" (QA G4-04/05): test-side classification under a test_layout root, the
+# name-unique method fallback and the evidence ranking change what an edge
+# means. An incremental run carries an unchanged file's edges verbatim, so a
+# base extracted by "1" would keep the old edges until some full run; the
+# version check below refuses it instead.
+EXTRACTOR_VERSION = "2"
 
 # §2.5's confidences, by evidence.
 AST_UNIQUE = 0.6
@@ -129,7 +145,41 @@ AST_AMBIGUOUS = 0.3
 IMPORT_CONFIDENCE = 0.4
 NAMING_CONFIDENCE = 0.3
 CO_CHANGE_CAP = 0.5
-EVIDENCE_RANK = {"lsp": 4, "ast": 3, "import": 2, "naming": 1, "co-change": 0}
+# A test file that names a repository path in a string literal -- a script it
+# runs through subprocess, a manifest it reads, a module it loads with
+# `spec_from_file_location`, a `.tftest.hcl` `source = "../../terraform/x"`:
+# stronger than a name that merely matches, weaker than an import.
+PATH_REF_CONFIDENCE = 0.35
+# A `.tftest.hcl` reaching a Terraform module through the root it runs
+# (`module.iam` in an assertion, `module "iam" { source = "../modules/iam" }`
+# in that root): one step removed from the path the test names.
+HCL_MODULE_CONFIDENCE = 0.3
+# A suite's `test_layout[].covers` glob, as the agent last wrote it: the
+# weakest evidence there is, but it is what connects shell, Terraform and
+# manifests that no import reaches.
+DECLARED_CONFIDENCE = 0.2
+# A test's `obj.method()` whose name is defined as a method on exactly one
+# class in the repository: the type is not known, the name is unique.
+NAME_UNIQUE_CONFIDENCE = 0.3
+EVIDENCE_RANK = {"lsp": 6, "ast": 5, "import": 4, "path-ref": 3, "naming": 2, "declared": 1,
+                 "co-change": 0}
+# The test-map evidence swarm-api's RepoIndexSpec accepts (`repoindex.Evidence`).
+# `path-ref` is reported to it as `declared` -- the test names the path it
+# exercises -- and stays `path-ref` in the graph's file-level map, so an index
+# the agent copies this map into is never refused for a value it does not know.
+SERVED_EVIDENCE = {"path-ref": "declared"}
+
+# A path is TEST-SIDE -- a test, or a helper, conftest or fixture a test
+# imports -- when a directory on it has one of these names, when it is one of
+# these files, or when it lies under a `test_layout[].root`. A test-side file
+# is never a test map source and never counts as a source module: a helper
+# imported by its tests would otherwise read as "covered source".
+TEST_DIRECTORY_NAMES = frozenset({"tests", "test", "__tests__", "testdata"})
+TEST_SIDE_FILENAMES = frozenset({"conftest.py"})
+# Languages whose every file is build or packaging, not source to map tests to.
+NON_SOURCE_LANGUAGES = frozenset({"dockerfile", "make"})
+# One test naming hundreds of paths is a fixture listing, not coverage.
+PATH_REF_MAX_PER_TEST = 50
 
 # §3.4: git log --numstat --since=90.days; §2.5: at least 5 commits together.
 HISTORY_DAYS = 90
@@ -152,9 +202,53 @@ MAX_HOT_SPOTS = 50
 MAX_SYMBOLS = 200_000
 MAX_EDGES = 500_000
 MAX_SYMBOL_TEST_MAP = 200_000
+# The file-level test map the graph carries (§2.5, G4-07). repo-index.json
+# holds at most MAX_TEST_MAP edges, at directory granularity when the file
+# level does not fit; every file-level edge is in the graph, on the source
+# file's row (`files[].tests`), so a reader pages it by the file's module.
+MAX_FILE_TEST_MAP = 200_000
 
 # How often the walk looks at the clock. Cheap enough to be frequent.
 _CLOCK_EVERY = 256
+
+# §3.4: an incremental run over this many changed files or more is a full
+# run. GitHub's compare lists at most 300 files, which is where swarm-api
+# reads the same rule (`swarm_api.repoindex.MAX_INCREMENTAL_CHANGES`); the
+# two are held equal by tests/unit/worker/test_repo_index_incremental.py.
+MAX_INCREMENTAL_CHANGES = 300
+
+# §3.4 and §3.5: a change to any of these changes what `commands`, `test_map`
+# or a language server's resolution mean EVERYWHERE, not only in the changed
+# file, so carrying the other entries forward would carry stale meaning. Such
+# a change makes the run full. By file name, by base-name glob, and by
+# directory. swarm-api applies the same lists before it submits
+# (`swarm_api.repoindex.CONFIG_FILENAMES` and friends), held equal by the
+# same test; this side applies them again to the diff it actually reads.
+CONFIG_FILENAMES = frozenset({
+    "Makefile", "GNUmakefile", "makefile",
+    "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini", "noxfile.py",
+    "conftest.py", "uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock",
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lockb",
+    "go.mod", "go.sum", "go.work",
+    "pyrightconfig.json", ".terraform.lock.hcl",
+})
+CONFIG_GLOBS = (
+    "requirements*.txt", "tsconfig*.json", "jsconfig*.json", "jest.config.*",
+    "vitest.config.*", "vitest.workspace.*", "playwright.config.*", "karma.conf.*",
+    ".mocharc*",
+)
+CONFIG_DIRECTORIES = (".github/workflows/",)
+
+
+def is_config_path(path: str) -> bool:
+    """Whether a change to `path` forces a full run (§3.4, §3.5)."""
+    name = posixpath.basename(path)
+    if name in CONFIG_FILENAMES:
+        return True
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in CONFIG_GLOBS):
+        return True
+    return any(path.startswith(prefix) for prefix in CONFIG_DIRECTORIES)
 
 # --- languages --------------------------------------------------------------
 
@@ -172,7 +266,8 @@ LANGUAGE_SERVERS = {
     "typescript": "tsserver",
     "javascript": "tsserver",
     "go": "gopls",
-    "hcl": "terraform-ls",
+    # "hcl": terraform-ls is out of the image for now (lsp/servers.py
+    # DISABLED_SERVERS); HCL is tree-sitter only.
 }
 
 # extension -> (language, grammar key)
@@ -286,6 +381,14 @@ class Facts:
     wildcards: list[int] = field(default_factory=list)
     # CommonJS `module.exports = { a }` names
     commonjs_exports: set[str] = field(default_factory=set)
+    # (caller id, name, line) of a Python call through an attribute whose
+    # object is not a plain name (`self.scheduler._admit_one()`): recorded
+    # with no qualifier above, and told apart from a bare call here.
+    attribute_calls: set[tuple[str, str, int]] = field(default_factory=set)
+    # HCL: every `module.<name>` the file names, wherever the expression sits
+    # (an assertion's `module.iam.x != ""` is an operation, which `references`
+    # does not walk into).
+    module_refs: set[str] = field(default_factory=set)
     package: str | None = None
     has_error: bool = False
     _ids: set[str] = field(default_factory=set)
@@ -460,6 +563,8 @@ def _extract_python(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             if target is not None:
                 facts.calls.append((owner, target[0], target[1] if target[1] else None,
                                     node.start_point[0] + 1))
+                if target[1] == "":
+                    facts.attribute_calls.add((owner, target[0], node.start_point[0] + 1))
         elif kind == "import_statement":
             for name_node in node.named_children:
                 if name_node.type == "dotted_name":
@@ -945,6 +1050,14 @@ def _hcl_collect_refs(facts: Facts, owner: str, node: Any, src: bytes, clock: _C
             address = _hcl_address(current, src)
             if address is not None:
                 facts.references.append((owner, address, current.start_point[0] + 1))
+        elif current.type == "variable_expr" and current.parent is not None:
+            ident = next((c for c in current.named_children if c.type == "identifier"), None)
+            after = current.next_named_sibling
+            if ident is not None and _text(ident, src) == "module" and after is not None \
+                    and after.type == "get_attr":
+                name = next((c for c in after.named_children if c.type == "identifier"), None)
+                if name is not None:
+                    facts.module_refs.add(_text(name, src))
         for child in reversed(current.named_children):
             stack.append(child)
 
@@ -1004,7 +1117,7 @@ def _extract_hcl(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
                 literal = attribute.named_children[-1]
                 text = _text(literal, src).strip()
                 if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
-                    facts.imports.append({"source": text[1:-1],
+                    facts.imports.append({"source": text[1:-1], "module": labels[0],
                                           "line": attribute.start_point[0] + 1})
         _hcl_collect_refs(facts, symbol_id, inner, src, clock)
 
@@ -1033,6 +1146,31 @@ def _is_test_file(path: str, language: str | None) -> bool:
     if language == "hcl":
         return name.endswith(".tftest.hcl")
     return False
+
+
+def _under(path: str, root: str) -> bool:
+    root = root.strip("/")
+    return bool(root) and root != "." and (path == root or path.startswith(root + "/"))
+
+
+def _is_test_side(path: str, test_roots: Iterable[str] = ()) -> bool:
+    """A test, or a helper, conftest or fixture beside tests (G4-04).
+
+    By a directory named like a test root on the path, by `conftest.py`, or
+    by a `test_layout[].root` the agent declared. Never a test map source.
+    """
+    parts = path.split("/")
+    if any(part in TEST_DIRECTORY_NAMES for part in parts[:-1]):
+        return True
+    if parts[-1] in TEST_SIDE_FILENAMES:
+        return True
+    return any(_under(path, root) for root in test_roots)
+
+
+def _test_layout_rows(index: Any) -> list[dict]:
+    """The `test_layout` rows of a staged index (the agent's last reading)."""
+    rows = index.get("test_layout") if isinstance(index, dict) else None
+    return [row for row in rows or [] if isinstance(row, dict) and isinstance(row.get("root"), str)]
 
 
 def _classify(path: str, head: bytes) -> tuple[str | None, str | None]:
@@ -1105,6 +1243,234 @@ def _list_paths(root: Path, in_git: bool) -> list[str]:
     return sorted(set(found))
 
 
+# --- incremental runs (§3.4, §3.5) -------------------------------------------
+#
+# An incremental run is given the previous promoted index of an ancestor
+# commit: its repo-index.json and its graph, reassembled from the shards by
+# `swarm-repo-graph read`. The worker stages both (agent_worker/indexrun.py);
+# this tool decides, from what it can measure itself, whether the run may be
+# incremental, and runs full -- saying why -- whenever it may not.
+#
+# WHAT CHANGED is measured per file, by git's blob id of every tracked file
+# (`git ls-files -s`), against the blob id the base graph recorded for it.
+# Not `git diff <base>..HEAD`: the worker's checkout is one commit deep, so
+# the base commit is not in it, while the head's tree -- every blob id -- is.
+#
+# WHAT IS REWRITTEN. The tree-sitter pass still parses every file: it takes
+# seconds, and resolving a changed file's calls needs every other file's
+# definitions. The LSP pass -- the minutes -- is asked only about the
+# AFFECTED files: the changed ones, every file whose base edges point into a
+# changed or deleted file (a renamed or deleted function's callers must be
+# re-resolved, §3.5), and every file whose fresh edges point into a changed
+# one (a new definition can capture an old call). Every other file keeps its
+# base edges verbatim, `lsp` evidence included, and its symbols and file row
+# come out byte-identical, so its shards are the same blobs (§2.5) and the
+# writer stores nothing new for them. Deleted files are gone from every list.
+#
+# The agent's reading -- module purposes, entry points, territory, commands,
+# notes -- is carried from the base index, minus what names a deleted file;
+# each module says which commit its entry was read at (`commit_sha`): the
+# base's for an untouched module, the head's for one the diff touched.
+
+#: The base index's keys the agent wrote, carried forward for it to revise.
+CARRIED_KEYS = ("entry_points", "test_layout", "always_tests", "territory", "commands", "notes")
+#: A carried row that names a deleted file in any of these is dropped.
+_ROW_PATH_KEYS = ("path", "file", "source", "root", "target")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class Base:
+    """The previous promoted index of an ancestor commit, as the worker staged it."""
+
+    sha: str
+    graph: Any
+    index: Any = None
+
+
+@dataclass(frozen=True)
+class Changes:
+    """The files that differ from the base, by blob id."""
+
+    added: tuple[str, ...]
+    modified: tuple[str, ...]
+    deleted: tuple[str, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.added) + len(self.modified) + len(self.deleted)
+
+    @property
+    def changed(self) -> set[str]:
+        return set(self.added) | set(self.modified)
+
+
+def _budget_record(budget: Budget) -> dict:
+    return {"max_file_bytes": budget.max_file_bytes,
+            "max_total_bytes": budget.max_total_bytes,
+            "max_files": budget.max_files,
+            "file_timeout_seconds": budget.file_timeout_seconds}
+
+
+def _blob_ids(root: Path) -> dict[str, str] | None:
+    """Every tracked path's git blob id, from the index of the checkout."""
+    try:
+        done = _git(root, "ls-files", "-s", "-z")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    found: dict[str, str] = {}
+    for entry in done.stdout.split(b"\x00"):
+        meta, tab, path = entry.partition(b"\t")
+        parts = meta.split()
+        if not tab or len(parts) < 2:
+            continue
+        found[path.decode("utf-8", errors="surrogateescape")] = parts[1].decode("ascii", "replace")
+    return found
+
+
+def _path_of(node_id: str) -> str:
+    """The file a symbol id (`<path>#<name>`) or a file id names."""
+    return node_id.split("#", 1)[0]
+
+
+def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: Budget,
+                        commit_sha: str | None) -> Changes | str:
+    """The diff an incremental run rewrites, or why this run has to be full."""
+    graph, index = base.graph, base.index
+    if not isinstance(base.sha, str) or not _SHA_RE.match(base.sha):
+        return "the base is not a 40-hex commit sha"
+    if not isinstance(graph, dict) or graph.get("schema") != GRAPH_SCHEMA:
+        return f"no base graph ({GRAPH_SCHEMA}) was staged"
+    if graph.get("commit_sha") != base.sha:
+        return "the base graph describes another commit than the base"
+    if not isinstance(index, dict) or index.get("schema") != SCHEMA:
+        return f"no base index ({SCHEMA}) was staged"
+    if index.get("commit_sha") != base.sha:
+        return "the base index describes another commit than the base"
+    if commit_sha is None or head_blobs is None:
+        return "the checkout is not a git repository, so no file can be compared"
+    if commit_sha == base.sha:
+        return "the base is the commit being indexed"
+    extractor = graph.get("extractor") if isinstance(graph.get("extractor"), dict) else {}
+    if extractor.get("version") != EXTRACTOR_VERSION:
+        return (f"the base was extracted by version {extractor.get('version')!r} of "
+                f"{EXTRACTOR_NAME}, this is version {EXTRACTOR_VERSION!r}")
+    if extractor.get("budget") != _budget_record(budget):
+        return "the base was extracted under another size budget"
+    if extractor.get("files_not_listed") or graph.get("truncated"):
+        return ("the base graph was truncated "
+                f"({', '.join(graph.get('truncated') or ['files'])}), so it cannot be carried")
+    rows = graph.get("files")
+    if not isinstance(rows, list):
+        return "the base graph lists no files"
+    base_blobs: dict[str, str] = {}
+    for row in rows:
+        blob = row.get("blob") if isinstance(row, dict) else None
+        if not isinstance(blob, str) or not blob:
+            return ("the base graph records no per-file blob id (it was extracted before "
+                    "incremental runs existed)")
+        base_blobs[str(row.get("path"))] = blob
+    changes = Changes(
+        added=tuple(sorted(set(head_blobs) - set(base_blobs))),
+        modified=tuple(sorted(p for p in set(head_blobs) & set(base_blobs)
+                              if head_blobs[p] != base_blobs[p])),
+        deleted=tuple(sorted(set(base_blobs) - set(head_blobs))),
+    )
+    if changes.count >= MAX_INCREMENTAL_CHANGES:
+        return (f"{changes.count} files changed since the base, at or over the "
+                f"{MAX_INCREMENTAL_CHANGES} an incremental run takes")
+    config = sorted(p for p in (*changes.added, *changes.modified, *changes.deleted)
+                    if is_config_path(p))
+    if config:
+        more = f" and {len(config) - 1} more" if len(config) > 1 else ""
+        return (f"a build, test or language-server configuration changed ({config[0]}{more}), "
+                "which changes what every entry means")
+    return changes
+
+
+def _affected(changes: Changes, base_graph: dict, fresh: "_Edges") -> set[str]:
+    """The files whose edges are re-resolved: changed, and what points into the change."""
+    changed = changes.changed
+    gone = set(changes.modified) | set(changes.deleted)
+    affected = set(changed)
+    for edge in base_graph.get("call_edges") or []:
+        if isinstance(edge, dict) and _path_of(str(edge.get("to"))) in gone:
+            affected.add(_path_of(str(edge.get("from"))))
+    for frm, to, _kind in fresh.edges:
+        if _path_of(to) in changed:
+            affected.add(_path_of(frm))
+    return affected - set(changes.deleted)
+
+
+def _carry_edges(fresh: "_Edges", base_graph: dict, affected: set[str],
+                 deleted: set[str]) -> "_Edges":
+    """The affected files' fresh edges, and every other file's base edges verbatim."""
+    merged = _Edges()
+    for key, edge in fresh.edges.items():
+        if _path_of(key[0]) in affected:
+            merged.edges[key] = edge
+    for edge in base_graph.get("call_edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        frm, to, kind = str(edge.get("from")), str(edge.get("to")), str(edge.get("kind"))
+        source = _path_of(frm)
+        if source in affected or source in deleted or _path_of(to) in deleted:
+            continue
+        merged.edges.setdefault((frm, to, kind), dict(edge))
+    return merged
+
+
+def _module_for(path: str, module_paths: set[str]) -> str | None:
+    """The module a file counts under: its directory, or the deepest module above it."""
+    directory = posixpath.dirname(path) or "."
+    if directory in module_paths:
+        return directory
+    above = [m for m in module_paths if m != "." and directory.startswith(m + "/")]
+    return max(above, key=len) if above else None
+
+
+def carry_modules(modules: list[dict], base_index: dict, changes: Changes,
+                  base_sha: str, commit_sha: str) -> list[dict]:
+    """Each module with the base's purpose, and the commit its entry was read at."""
+    before = {m["path"]: m for m in base_index.get("modules") or []
+              if isinstance(m, dict) and isinstance(m.get("path"), str)}
+    now_paths = {m["path"] for m in modules}
+    touched: set[str] = set()
+    for path in (*changes.added, *changes.modified, *changes.deleted):
+        for found in (_module_for(path, now_paths), _module_for(path, set(before))):
+            if found is not None:
+                touched.add(found)
+    carried = []
+    for module in modules:
+        entry = dict(module)
+        old = before.get(module["path"])
+        if old is not None and isinstance(old.get("purpose"), str) and old["purpose"]:
+            entry["purpose"] = old["purpose"]
+        if old is None or module["path"] in touched:
+            entry["commit_sha"] = commit_sha
+        else:
+            read_at = old.get("commit_sha")
+            entry["commit_sha"] = read_at if isinstance(read_at, str) and _SHA_RE.match(
+                read_at) else base_sha
+        carried.append(entry)
+    return carried
+
+
+def carried_reading(base_index: dict, deleted: Iterable[str]) -> dict[str, list[dict]]:
+    """The base index's agent-written lists, without the rows that name a deleted file."""
+    gone = set(deleted)
+    reading: dict[str, list[dict]] = {}
+    for key in CARRIED_KEYS:
+        rows = base_index.get(key)
+        if not isinstance(rows, list):
+            continue
+        reading[key] = [row for row in rows if isinstance(row, dict) and not any(
+            row.get(name) in gone for name in _ROW_PATH_KEYS)]
+    return reading
+
+
 # --- import resolution ------------------------------------------------------
 
 
@@ -1144,10 +1510,16 @@ class _Resolver:
         self.defs: dict[str, dict[str, list[str]]] = {}
         self.kinds: dict[str, str] = {}
         self.hcl_addresses: dict[str, dict[str, list[str]]] = {}
+        # Python methods by simple name, repository-wide: the name-unique
+        # fallback for a test's `obj.method()` (`unique_method`).
+        self.py_methods: dict[str, list[str]] = {}
         for path, fact in facts.items():
             names: dict[str, list[str]] = {}
             for symbol in fact.symbols:
                 self.kinds[symbol["id"]] = symbol["kind"]
+                if symbol["kind"] == "method" and fact.language == "python":
+                    simple = symbol["id"].split("#", 1)[1].split("@", 1)[0].rsplit(".", 1)[-1]
+                    self.py_methods.setdefault(simple, []).append(symbol["id"])
                 if symbol["kind"] in ("route", "test"):
                     continue
                 qual = symbol["id"].split("#", 1)[1].split("@", 1)[0]
@@ -1157,6 +1529,13 @@ class _Resolver:
                     continue
                 names.setdefault(qual.rsplit(".", 1)[-1], []).append(symbol["id"])
             self.defs[path] = names
+
+    def unique_method(self, name: str) -> str | None:
+        """The one Python method named `name` in the repository, or None (G4-05 d)."""
+        if name.startswith("__") and name.endswith("__"):
+            return None
+        found = self.py_methods.get(name, [])
+        return found[0] if len(found) == 1 else None
 
     def load_go_mods(self, root: Path) -> None:
         for path in sorted(self.existing):
@@ -1368,7 +1747,9 @@ def _go_package_name(resolver: _Resolver, targets: list[str], spec: str) -> str:
     return spec.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _build_edges(resolver: _Resolver, facts: dict[str, Facts]) -> tuple[_Edges, dict[str, set[str]]]:
+def _build_edges(resolver: _Resolver, facts: dict[str, Facts],
+                 test_side: frozenset[str] | set[str] = frozenset()
+                 ) -> tuple[_Edges, dict[str, set[str]]]:
     edges = _Edges()
     imports_of: dict[str, set[str]] = {}
     for path in sorted(facts):
@@ -1385,6 +1766,16 @@ def _build_edges(resolver: _Resolver, facts: dict[str, Facts]) -> tuple[_Edges, 
                     found = [name[1:]]
                 else:
                     found = _resolve_name(resolver, fact, caller, name, qualifier, targets)
+                if not found and kind == "call" and path in test_side \
+                        and fact.language == "python" \
+                        and (qualifier is not None or (caller, name, line) in fact.attribute_calls):
+                    # A test's `obj.method()` on a fixture-built instance: no
+                    # type to resolve it by, but a name defined on one class
+                    # only (G4-05 d; `Scheduler._admit_one`).
+                    unique = resolver.unique_method(name)
+                    if unique is not None and _path_of(unique) != path:
+                        edges.add(caller, unique, kind, "ast", NAME_UNIQUE_CONFIDENCE, path, line)
+                    continue
                 if not found:
                     continue
                 confidence = AST_UNIQUE if len(found) == 1 else AST_AMBIGUOUS
@@ -1404,10 +1795,147 @@ def _build_edges(resolver: _Resolver, facts: dict[str, Facts]) -> tuple[_Edges, 
 
 # --- tests ------------------------------------------------------------------
 
+# A string literal, and a run of them joined by `/` (pathlib's
+# `REPO / "scripts" / "lib" / "common.sh"`), as one candidate path.
+_LITERAL = r"""(?:"([^"\n\\]{1,300})"|'([^'\n\\]{1,300})'|`([^`\n\\$]{1,300})`)"""
+_JOINED_LITERALS = re.compile(_LITERAL + r"(?:\s*/\s*" + _LITERAL + r")*")
+_ONE_LITERAL = re.compile(_LITERAL)
+_PATH_CHARS = re.compile(r"^[A-Za-z0-9_.@+\-/]+$")
 
-def _naming_edges(files: list[dict]) -> list[tuple[str, str]]:
+
+def _path_literals(data: bytes) -> list[str]:
+    """The string literals in a test file that could name a repository path."""
+    text = data.decode("utf-8", errors="replace")
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _JOINED_LITERALS.finditer(text):
+        pieces = ["".join(groups) for groups in _ONE_LITERAL.findall(match.group(0))]
+        candidates = ["/".join(p.strip("/") for p in pieces)] if len(pieces) > 1 else []
+        candidates += pieces
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if candidate in seen or not _PATH_CHARS.match(candidate):
+                continue
+            if "/" not in candidate and "." not in candidate.lstrip("."):
+                continue  # a bare word, not a path
+            seen.add(candidate)
+            found.append(candidate)
+    return found
+
+
+class _Paths:
+    """Every listed path and every directory above one, to resolve a literal against."""
+
+    def __init__(self, files: list[dict], test_side: set[str]) -> None:
+        self.files = {f["path"] for f in files}
+        self.test_side = test_side
+        # Only a directory holding a file that is not test-side is a source
+        # directory: `tests/fixtures/` named by a test is not coverage.
+        self.dirs: set[str] = set()
+        for path in self.files - test_side:
+            parent = posixpath.dirname(path)
+            while parent and parent not in self.dirs:
+                self.dirs.add(parent)
+                parent = posixpath.dirname(parent)
+
+    def resolve(self, test: str, literal: str) -> str | None:
+        """The file, or `<dir>/**`, a literal in `test` names; None when it names none.
+
+        Tried from the repository root first, then from the test's own
+        directory (a `.tftest.hcl`'s `source = "../../terraform/infra"`).
+        """
+        bases = [""] if literal.startswith("/") else ["", posixpath.dirname(test)]
+        for base in bases:
+            path = posixpath.normpath(posixpath.join(base, literal.lstrip("/")))
+            if path in ("", ".") or path.startswith("../") or path == "..":
+                continue
+            if path in self.files:
+                return None if path in self.test_side else path
+            if path in self.dirs:
+                return f"{path}/**"
+        return None
+
+
+def _path_ref_edges(path_literals: dict[str, list[str]],
+                    paths: _Paths) -> list[tuple[str, str]]:
+    """(source file or `<dir>/**`, test): what each test names by path (G4-05 b, c)."""
+    pairs: list[tuple[str, str]] = []
+    for test in sorted(path_literals):
+        targets: list[str] = []
+        for literal in path_literals[test]:
+            target = paths.resolve(test, literal)
+            if target is None or target in targets:
+                continue
+            targets.append(target)
+            if len(targets) >= PATH_REF_MAX_PER_TEST:
+                break
+        pairs.extend((target, test) for target in targets)
+    return pairs
+
+
+def _hcl_module_edges(facts: dict[str, Facts], resolver: "_Resolver",
+                      path_refs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """(`<module dir>/**`, test) for a `.tftest.hcl` naming `module.<name>` of a root it runs.
+
+    The root is a directory the test names by path (`source = "../../terraform/infra"`,
+    G4-05 c); the module is that root's `module "<name>" { source = "./..." }`.
+    """
+    roots_of: dict[str, list[str]] = {}
+    for target, test in path_refs:
+        if target.endswith("/**"):
+            roots_of.setdefault(test, []).append(target[:-3])
+    pairs: list[tuple[str, str]] = []
+    for test in sorted(roots_of):
+        fact = facts.get(test)
+        if fact is None or fact.language != "hcl":
+            continue
+        names = set(fact.module_refs)
+        found: set[str] = set()
+        for root in roots_of[test]:
+            for path in resolver.by_dir.get(root, []):
+                block_fact = facts.get(path)
+                if block_fact is None or block_fact.language != "hcl":
+                    continue
+                for imp in block_fact.imports:
+                    if imp.get("module") not in names:
+                        continue
+                    spec = imp["source"]
+                    if not spec.startswith(("./", "../")):
+                        continue
+                    directory = posixpath.normpath(posixpath.join(root, spec))
+                    if directory in resolver.by_dir and not directory.startswith(".."):
+                        found.add(f"{directory}/**")
+        pairs.extend((target, test) for target in sorted(found))
+    return pairs
+
+
+def _declared_edges(test_layout: list[dict], files: list[dict],
+                    test_side: set[str]) -> list[tuple[str, str]]:
+    """(covers glob, test) for every test under a `test_layout[].root` (G4-05 a).
+
+    A glob that matches no listed source file is stale and gives no edge.
+    """
+    sources = [f["path"] for f in files if f["path"] not in test_side]
+    tests = sorted(f["path"] for f in files if f["test"])
+    pairs: list[tuple[str, str]] = []
+    for row in test_layout:
+        root = row["root"]
+        covers = [c for c in row.get("covers") or [] if isinstance(c, str) and c.strip()]
+        under = [t for t in tests if _under(t, root)]
+        if not under:
+            continue
+        for glob in covers:
+            if not any(fnmatch.fnmatchcase(p, glob) for p in sources):
+                continue
+            pairs.extend((glob, test) for test in under)
+    return pairs
+
+
+def _naming_edges(files: list[dict], test_side: set[str] | frozenset[str] = frozenset()
+                  ) -> list[tuple[str, str]]:
     """(source, test) pairs by the naming conventions of §2.5."""
-    sources = [f for f in files if f["language"] in GRAMMAR_PACKAGES and not f["test"]]
+    sources = [f for f in files if f["language"] in GRAMMAR_PACKAGES and not f["test"]
+               and f["path"] not in test_side]
     by_stem: dict[tuple[str, str], list[str]] = {}
     for f in sources:
         name = posixpath.basename(f["path"])
@@ -1488,11 +2016,34 @@ def _symbol_test_map(symbols: list[dict], edges: _Edges, test_files: set[str]) -
 # --- history ----------------------------------------------------------------
 
 
+def _shallow_boundary(root: Path) -> set[str]:
+    """The commits a shallow checkout's history stops at (`.git/shallow`)."""
+    where = _git(root, "rev-parse", "--git-path", "shallow")
+    if where.returncode != 0:
+        return set()
+    path = Path(where.stdout.decode().strip())
+    path = path if path.is_absolute() else root / path
+    try:
+        text = path.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return set()
+    return {line.strip() for line in text.splitlines() if _SHA_RE.match(line.strip())}
+
+
 def _history(root: Path, tracked: set[str]) -> tuple[dict, list[dict], dict[tuple[str, str], float]]:
-    """Hot spots and co-change supports from the 90 days before HEAD."""
+    """Hot spots and co-change supports from the 90 days before HEAD.
+
+    A SHALLOW checkout's boundary commit is not counted: git shows it as
+    adding every file it holds, so a one-commit-deep clone read as "every
+    file changed once" (G4-06). Without it, such a clone has no history,
+    and says so (`available` false, with the reason), rather than reporting
+    a change count of 1 for every file. `window_covered` says whether the
+    history reaches back past the window's start; when it does not, the
+    counts are a lower bound.
+    """
     meta: dict[str, Any] = {"available": False, "reason": None, "window_days": HISTORY_DAYS,
                             "window_start": None, "window_end": None, "commits": 0,
-                            "shallow": None}
+                            "shallow": None, "boundary_commits": 0, "window_covered": None}
     try:
         head = _git(root, "show", "-s", "--format=%ct", "HEAD")
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1510,6 +2061,7 @@ def _history(root: Path, tracked: set[str]) -> tuple[dict, list[dict], dict[tupl
         meta["reason"] = "git log failed"
         return meta, [], {}
     shallow = _git(root, "rev-parse", "--is-shallow-repository")
+    boundary = _shallow_boundary(root)
     meta.update({
         "available": True,
         "window_start": since,
@@ -1521,6 +2073,7 @@ def _history(root: Path, tracked: set[str]) -> tuple[dict, list[dict], dict[tupl
     deleted: dict[str, int] = {}
     pairs: dict[tuple[str, str], int] = {}
     commits = 0
+    boundary_in_window = 0
     for record in log.stdout.decode("utf-8", errors="replace").split("\x1e"):
         record = record.strip("\n")
         if not record:
@@ -1528,6 +2081,10 @@ def _history(root: Path, tracked: set[str]) -> tuple[dict, list[dict], dict[tupl
         lines = record.split("\n")
         header = lines[0].split("\x1f")
         if len(header) != 2 or not header[1].isdigit() or int(header[1]) < start:
+            continue
+        if header[0] in boundary:
+            # Diffed against nothing: its numstat is the whole tree.
+            boundary_in_window += 1
             continue
         commits += 1
         touched: set[str] = set()
@@ -1547,6 +2104,15 @@ def _history(root: Path, tracked: set[str]) -> tuple[dict, list[dict], dict[tupl
                 for b in ordered[i + 1:]:
                     pairs[(a, b)] = pairs.get((a, b), 0) + 1
     meta["commits"] = commits
+    meta["boundary_commits"] = boundary_in_window
+    # The window is whole when the history is not cut short inside it.
+    meta["window_covered"] = boundary_in_window == 0
+    if commits == 0 and boundary_in_window:
+        meta.update(available=False,
+                    reason="the checkout is shallow and holds no commit inside the "
+                           f"{HISTORY_DAYS}-day window but the one it stops at, whose change "
+                           "counts would be the whole tree; hot spots and co-change are not known")
+        return meta, [], {}
     strong = {pair: n for pair, n in pairs.items() if n >= CO_CHANGE_MIN_COMMITS}
     supports: dict[tuple[str, str], float] = {}
     partners: dict[str, list[dict]] = {}
@@ -1610,11 +2176,18 @@ def _parse_file(parsers: _Parsers, grammar: str, data: bytes, facts: Facts,
 
 
 def extract(root: Path, budget: Budget | None = None,
-            lsp: "lsp_pass.LspOptions | None" = None) -> dict:
+            lsp: "lsp_pass.LspOptions | None" = None, base: Base | None = None,
+            test_layout: list[dict] | None = None) -> dict:
     """The mechanical index of the checkout at `root`.
 
     With `lsp` the LSP pass runs after the tree-sitter pass and its resolved
-    sites become `lsp` edges; without it no server is started.
+    sites become `lsp` edges; without it no server is started. With `base`
+    the run is incremental when `incremental_changes` allows it, and full,
+    with the reason in `extractor.incremental`, when it does not.
+
+    `test_layout` is the agent's last reading of the suites (`root`,
+    `covers`); without it, the base index's, when one was staged. Its roots
+    make files test-side and its `covers` globs give `declared` edges.
     """
     budget = budget or Budget()
     root = Path(root).resolve()
@@ -1623,8 +2196,28 @@ def extract(root: Path, budget: Budget | None = None,
     toplevel = _git_toplevel(root)
     in_git = toplevel is not None and Path(toplevel).resolve() == root
     truncated: set[str] = set()
+    if test_layout is None:
+        test_layout = _test_layout_rows(base.index) if base is not None else []
+    test_roots = [row["root"] for row in test_layout]
 
     all_paths = _list_paths(root, in_git)
+    head_blobs = _blob_ids(root) if in_git else None
+    commit_sha = branch = None
+    if in_git:
+        rev = _git(root, "rev-parse", "HEAD")
+        if rev.returncode == 0:
+            commit_sha = rev.stdout.decode().strip()
+        ref = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
+        if ref.returncode == 0:
+            branch = ref.stdout.decode().strip() or None
+    changes: Changes | None = None
+    fell_back: str | None = None
+    if base is not None:
+        planned = incremental_changes(base, head_blobs, budget, commit_sha)
+        if isinstance(planned, str):
+            fell_back = planned
+        else:
+            changes = planned
     listed = all_paths[:budget.max_files]
     not_listed = len(all_paths) - len(listed)
     if not_listed:
@@ -1634,10 +2227,15 @@ def extract(root: Path, budget: Budget | None = None,
     files: list[dict] = []
     facts: dict[str, Facts] = {}
     parsed_bytes = 0
+    # A test file's string literals that could name a path (G4-05 b).
+    path_literals: dict[str, list[str]] = {}
     for rel in listed:
         full = root / rel
         record: dict[str, Any] = {"path": rel, "language": None, "lines": 0, "bytes": 0,
                                   "status": "", "reason": None, "test": False}
+        # git's blob id: what the next incremental run compares this file by.
+        if head_blobs is not None and rel in head_blobs:
+            record["blob"] = head_blobs[rel]
         files.append(record)
         try:
             info = os.lstat(full)
@@ -1682,6 +2280,8 @@ def extract(root: Path, budget: Budget | None = None,
             record.update(status="binary", reason="binary content", language=None, test=False)
             continue
         record["lines"] = _count_lines(data)
+        if record["test"]:
+            path_literals[rel] = _path_literals(data)
         if language is None:
             ext = posixpath.splitext(rel)[1] or "no extension"
             record.update(status="not_source", reason=f"not a source file ({ext})")
@@ -1716,15 +2316,29 @@ def extract(root: Path, budget: Budget | None = None,
                     symbol["exported"] = True
         facts[rel] = fact
 
+    test_side = {f["path"] for f in files if f["test"] or _is_test_side(f["path"], test_roots)}
     resolver = _Resolver(files, facts)
     resolver.load_go_mods(root)
-    edges, imports_of = _build_edges(resolver, facts)
+    edges, imports_of = _build_edges(resolver, facts, test_side)
 
     symbols = [s for path in sorted(facts) for s in facts[path].symbols]
+    affected: set[str] | None = None
+    if changes is not None and base is not None:
+        affected = _affected(changes, base.graph, edges)
+        edges = _carry_edges(edges, base.graph, affected, set(changes.deleted))
     lsp_result = None
     if lsp is not None:
-        lsp_result = lsp_pass.run_pass(root, {path: facts[path].language for path in facts},
-                                       symbols, _lsp_sites(facts), lsp)
+        lsp_files = {path: facts[path].language for path in facts}
+        sites = _lsp_sites(facts)
+        if affected is not None:
+            # Only the affected files' sites are asked, and only their
+            # languages' servers started; every other file keeps its edges.
+            wanted = {facts[path].language for path in affected if path in facts}
+            lsp_files = {path: lang for path, lang in lsp_files.items() if lang in wanted}
+            sites = [site for site in sites if site.path in affected]
+        if affected is None or lsp_files:
+            lsp_result = lsp_pass.run_pass(root, lsp_files, symbols, sites, lsp)
+    if lsp_result is not None:
         for edge in lsp_result.edges:
             edges.add(edge.frm, edge.to, edge.kind, "lsp", edge.confidence, edge.path, edge.line)
     routes = [r for path in sorted(facts) for r in facts[path].routes]
@@ -1737,7 +2351,8 @@ def extract(root: Path, budget: Budget | None = None,
             route["handler"] = by_route[route["id"]][0]
 
     test_files = {f["path"] for f in files if f["test"]}
-    symbol_test_map = _symbol_test_map(symbols, edges, test_files)
+    # A helper a test reaches is not a symbol the test covers (G4-04).
+    symbol_test_map = _symbol_test_map(symbols, edges, test_side)
 
     if in_git:
         history, hot_spots, co_pairs = _history(root, {f["path"] for f in files})
@@ -1747,27 +2362,40 @@ def extract(root: Path, budget: Budget | None = None,
                    "commits": 0, "shallow": None}
         hot_spots, co_pairs = [], {}
 
-    test_edges = _test_map(files, imports_of, symbol_test_map, co_pairs, test_files)
-
-    commit_sha = branch = None
-    if in_git:
-        rev = _git(root, "rev-parse", "HEAD")
-        if rev.returncode == 0:
-            commit_sha = rev.stdout.decode().strip()
-        ref = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
-        if ref.returncode == 0:
-            branch = ref.stdout.decode().strip() or None
+    path_refs = _path_ref_edges(path_literals, _Paths(files, test_side))
+    test_edges = _test_map(files, imports_of, symbol_test_map, co_pairs, test_files,
+                           test_side=test_side, path_refs=path_refs,
+                           hcl_modules=_hcl_module_edges(facts, resolver, path_refs),
+                           declared=_declared_edges(test_layout, files, test_side))
 
     edge_list = list(edges.edges.values())
     symbols, edge_list, symbol_test_map, routes, test_edges = _apply_caps(
         symbols, edge_list, symbol_test_map, routes, test_edges, truncated)
     modules = _modules(files, truncated)
+    incremental = None
+    if base is not None:
+        incremental = {"base_sha": base.sha if isinstance(base.sha, str) else None,
+                       "ran": changes is not None, "reason": fell_back}
+    carried: dict[str, Any] = {}
+    if changes is not None and base is not None and commit_sha is not None:
+        modules = carry_modules(modules, base.index, changes, base.sha, commit_sha)
+        carried = {
+            "changes": {"added": list(changes.added), "modified": list(changes.modified),
+                        "deleted": list(changes.deleted),
+                        "affected": sorted(affected or ())},
+            "carried": carried_reading(base.index, changes.deleted),
+        }
+    carried_languages = None
+    if changes is not None and base is not None:
+        carried_languages = {row["language"]: row for row in base.graph.get("languages") or []
+                             if isinstance(row, dict) and isinstance(row.get("language"), str)}
 
     return {
-        "kind": "full",
+        **carried,
+        "kind": "incremental" if changes is not None else "full",
         "commit_sha": commit_sha,
         "branch": branch,
-        "base_sha": None,
+        "base_sha": base.sha if changes is not None and base is not None else None,
         "built_at": None,
         "modules": modules,
         "routes": sorted(routes, key=lambda r: (r["file"], r["start_line"], r["method"], r["path"])),
@@ -1775,19 +2403,23 @@ def extract(root: Path, budget: Budget | None = None,
         "call_edges": sorted(edge_list, key=lambda e: (e["from"], e["to"], e["kind"])),
         "symbol_test_map": sorted(symbol_test_map, key=lambda m: (m["symbol"], m["test"])),
         "test_map": sorted(test_edges, key=lambda t: (t["source"], t["test"])),
+        "test_coverage": test_coverage(modules, files, test_edges, test_side),
         "hot_spots": hot_spots,
-        "languages": _languages(files, lsp_result),
+        "languages": _languages(files, lsp_result, carried_languages),
         "files": files,
         "truncated": sorted(truncated),
         "extractor": {
             "name": EXTRACTOR_NAME,
             "version": EXTRACTOR_VERSION,
             "grammars": {lang: f"{pkg} {_grammar_version(pkg)}" for lang, pkg in sorted(GRAMMAR_PACKAGES.items())},
-            "budget": {"max_file_bytes": budget.max_file_bytes,
-                       "max_total_bytes": budget.max_total_bytes,
-                       "max_files": budget.max_files,
-                       "file_timeout_seconds": budget.file_timeout_seconds},
+            "budget": _budget_record(budget),
             "files_not_listed": not_listed,
+            # Every listed file carries its git blob id, so a later run can
+            # carry this graph (§3.4). Promotion records it on the version and
+            # the API's `choose_kind` submits a run full, with the full
+            # timeout, when the promoted graph lacks it.
+            "blob_ids": head_blobs is not None and all(
+                isinstance(row.get("blob"), str) and bool(row["blob"]) for row in files),
             "history": history,
             "lsp": None if lsp_result is None else {
                 "servers": dict(sorted(lsp_result.servers.items())),
@@ -1796,6 +2428,7 @@ def extract(root: Path, budget: Budget | None = None,
                 "total_budget_seconds": lsp_result.total_budget_seconds,
                 "memory_limit_mib": lsp_result.memory_limit_mib,
             },
+            **({} if incremental is None else {"incremental": incremental}),
         },
     }
 
@@ -1839,11 +2472,22 @@ def _lsp_sites(facts: dict[str, Facts]) -> list:
 
 
 def _test_map(files: list[dict], imports_of: dict[str, set[str]], symbol_test_map: list[dict],
-              co_pairs: dict[tuple[str, str], float], test_files: set[str]) -> list[dict]:
-    """Source file -> test file edges: naming, import, ast and co-change."""
+              co_pairs: dict[tuple[str, str], float], test_files: set[str], *,
+              test_side: set[str] | None = None,
+              path_refs: Iterable[tuple[str, str]] = (),
+              hcl_modules: Iterable[tuple[str, str]] = (),
+              declared: Iterable[tuple[str, str]] = ()) -> list[dict]:
+    """Source -> test file edges: naming, import, ast, co-change, path-ref and declared.
+
+    A source is a file that is not test-side (G4-04): a helper, conftest or
+    fixture its tests import is never one. `path-ref` and `declared` sources
+    may be a directory glob (`<dir>/**`, a covers glob); the rest are files.
+    """
     entries: dict[tuple[str, str], dict] = {}
+    test_side = test_files if test_side is None else test_side | test_files
     source_files = {f["path"] for f in files
-                    if f["language"] is not None and not f["test"] and f["status"] != "not_source"}
+                    if f["language"] is not None and f["path"] not in test_side
+                    and f["status"] != "not_source"}
 
     def add(source: str, test: str, evidence: str, confidence: float) -> None:
         confidence = round(confidence, 3)
@@ -1858,8 +2502,14 @@ def _test_map(files: list[dict], imports_of: dict[str, set[str]], symbol_test_ma
             return
         _merge_evidence(current, evidence, confidence)
 
-    for source, test in _naming_edges(files):
+    for source, test in _naming_edges(files, test_side):
         add(source, test, "naming", NAMING_CONFIDENCE)
+    for source, test in path_refs:
+        add(source, test, "path-ref", PATH_REF_CONFIDENCE)
+    for source, test in hcl_modules:
+        add(source, test, "path-ref", HCL_MODULE_CONFIDENCE)
+    for source, test in declared:
+        add(source, test, "declared", DECLARED_CONFIDENCE)
     for test in sorted(test_files):
         for target in sorted(imports_of.get(test, ())):
             if target in source_files:
@@ -1895,9 +2545,78 @@ def _apply_caps(symbols: list[dict], edges: list[dict], test_map_entries: list[d
     test_map_entries = cap(test_map_entries, MAX_SYMBOL_TEST_MAP, "symbol_test_map",
                            lambda m: (m["depth"], -m["confidence"], m["symbol"], m["test"]))
     routes = cap(routes, MAX_ROUTES, "routes", lambda r: (r["file"], r["start_line"]))
-    test_edges = cap(test_edges, MAX_TEST_MAP, "test_map",
+    # The file-level map goes to the graph whole up to its own bound;
+    # repo-index.json's 4,000 is applied where that document is cut
+    # (`index_document`), at directory granularity first.
+    test_edges = cap(test_edges, MAX_FILE_TEST_MAP, "file_test_map",
                      lambda t: (-t["confidence"], t["source"], t["test"]))
     return symbols, edges, test_map_entries, routes, test_edges
+
+
+def test_coverage(modules: list[dict], files: list[dict], test_edges: list[dict],
+                  test_side: set[str]) -> dict:
+    """How many SOURCE modules have a test map edge, and why the rest are not counted (G4-04).
+
+    A module whose every file is test-side is test code; one whose every
+    file is build or packaging (a Dockerfile-only image directory) or not
+    source is not a place tests map to. Neither belongs in the denominator.
+    """
+    members: dict[str, list[dict]] = {m["path"]: [] for m in modules}
+    paths = sorted(members, key=lambda m: (-len(m), m))
+    for f in files:
+        if f["language"] is None:
+            continue
+        directory = posixpath.dirname(f["path"]) or "."
+        for module in paths:
+            if directory == module or (module != "." and directory.startswith(module + "/")):
+                members[module].append(f)
+                break
+    # Every directory a test map source lies in or under, and every
+    # directory a glob source spans: a module is covered when it is one of
+    # the first, or lies under one of the second (`scripts/**` covers
+    # `scripts/lib`).
+    reached: set[str] = set()
+    spans: set[str] = set()
+    for edge in test_edges:
+        source = edge["source"]
+        if source == "**":
+            spans.add(".")
+            continue
+        directory = source[:-3] if source.endswith("/**") else posixpath.dirname(source)
+        if source.endswith("/**"):
+            spans.add(directory)
+        if not directory:
+            reached.add(".")
+        while directory:
+            reached.add(directory)
+            directory = posixpath.dirname(directory)
+
+    def covered(module: str) -> bool:
+        if module in reached or "." in spans:
+            return True
+        directory = module
+        while directory and directory != ".":
+            if directory in spans:
+                return True
+            directory = posixpath.dirname(directory)
+        return False
+    excluded: list[dict] = []
+    counted: list[str] = []
+    for module in sorted(members):
+        rows = members[module]
+        if rows and all(f["path"] in test_side for f in rows):
+            excluded.append({"path": module, "reason": "test"})
+        elif rows and all(f["language"] in NON_SOURCE_LANGUAGES or f["status"] == "not_source"
+                          for f in rows if f["path"] not in test_side):
+            excluded.append({"path": module, "reason": "build"})
+        else:
+            counted.append(module)
+
+    with_tests = [m for m in counted if covered(m)]
+    return {"modules": len(members), "source_modules": len(counted),
+            "source_modules_with_tests": len(with_tests),
+            "not_counted": excluded,
+            "without_tests": [m for m in counted if m not in with_tests]}
 
 
 def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
@@ -1934,7 +2653,8 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
     return modules[:MAX_MODULES]
 
 
-def _languages(files: list[dict], lsp_result: Any = None) -> list[dict]:
+def _languages(files: list[dict], lsp_result: Any = None,
+               carried: dict[str, dict] | None = None) -> list[dict]:
     """The `languages` table: what each language got, and why.
 
     Without the LSP pass every language with a grammar is `unsupported`
@@ -1963,11 +2683,18 @@ def _languages(files: list[dict], lsp_result: Any = None) -> list[dict]:
                 "parsed": 0, "timed_out": 0, "failed": 0, "too_large": 0, "over_budget": 0,
             }
             ran = None if lsp_result is None else lsp_result.languages.get(language)
+            before = (carried or {}).get(language)
             if supported and ran is not None:
                 entry.update(status=ran.status, reason=ran.reason,
                              fallback=None if ran.status == "ok" else "ast")
                 if ran.server is not None:
                     entry.update(server=ran.server, lsp=dict(sorted(ran.counts.items())))
+            elif supported and before is not None:
+                # An incremental run asked no server about this language: its
+                # edges are the base's, and so is what the base's server said.
+                for key in ("status", "reason", "fallback", "server", "lsp"):
+                    if key in before:
+                        entry[key] = before[key]
             table[language] = entry
         entry["files"] += 1
         if f["status"] in ("parsed", "timed_out", "failed", "too_large", "over_budget"):
@@ -1987,7 +2714,7 @@ def dumps(index: dict) -> bytes:
 # The keys of extract()'s result that are the graph, and go only to the graph
 # document. Everything else is small and per-list bounded.
 _GRAPH_LISTS = ("symbols", "call_edges", "symbol_test_map", "files")
-_GRAPH_TRUNCATIONS = {"symbols", "call_edges", "symbol_test_map", "files"}
+_GRAPH_TRUNCATIONS = {"symbols", "call_edges", "symbol_test_map", "files", "file_test_map"}
 # The lists repo-index.json may cut when it is over its byte budget, least
 # load-bearing first (the tie-break when two weigh the same). `test_map` goes
 # to directory granularity before any entry is cut, and `modules` comes last,
@@ -1995,9 +2722,28 @@ _GRAPH_TRUNCATIONS = {"symbols", "call_edges", "symbol_test_map", "files"}
 _INDEX_CUT_ORDER = ("hot_spots", "graph.most_called", "routes", "test_map", "modules")
 
 
+def _file_tests(test_map: list[dict]) -> dict[str, list[dict]]:
+    """The file-level test map by source FILE (a glob source is not a file)."""
+    by_source: dict[str, list[dict]] = {}
+    for edge in test_map:
+        if edge["source"].endswith("**"):
+            continue
+        by_source.setdefault(edge["source"], []).append(
+            {"test": edge["test"], "evidence": edge["evidence"],
+             "confidence": edge["confidence"], "also_evidence": list(edge["also_evidence"])})
+    for rows in by_source.values():
+        rows.sort(key=lambda t: t["test"])
+    return by_source
+
+
 def graph_document(facts: dict) -> dict:
     """The graph for the shard writer: symbols, edges, the symbol test map and
-    every file with its status and reason. Never repo-index.json (§2.2)."""
+    every file with its status and reason. Never repo-index.json (§2.2).
+
+    Each source file's row carries its file-level test map edges as `tests`
+    (G4-07): the whole map, with `confidence` and `also_evidence`, sharded
+    by module with the file, so a reader pages it by path. repo-index.json
+    keeps the map at directory granularity when it has to cut."""
     graph = {
         "schema": GRAPH_SCHEMA,
         "kind": facts["kind"],
@@ -2010,6 +2756,10 @@ def graph_document(facts: dict) -> dict:
     }
     for key in _GRAPH_LISTS:
         graph[key] = facts[key]
+    tests = _file_tests(facts.get("test_map") or [])
+    if tests:
+        graph["files"] = [dict(row, tests=tests[row["path"]]) if row["path"] in tests else row
+                          for row in facts["files"]]
     return graph
 
 
@@ -2039,6 +2789,8 @@ def _graph_summary(facts: dict, graph_bytes: bytes) -> dict:
         "symbols": len(facts["symbols"]),
         "call_edges": len(facts["call_edges"]),
         "symbol_test_map": len(facts["symbol_test_map"]),
+        # File-level test map edges the graph's file rows carry (`files[].tests`).
+        "test_map": sum(len(rows) for rows in _file_tests(facts.get("test_map") or []).values()),
         "files": len(facts["files"]),
         "files_by_status": statuses,
         "by_language": {name: by_language[name] for name in sorted(by_language)},
@@ -2075,6 +2827,38 @@ def _test_map_by_directory(entries: list[dict]) -> list[dict]:
     return sorted(merged.values(), key=lambda t: (t["source"], t["test"]))
 
 
+def _served_edge(entry: dict) -> dict:
+    """A test map edge in the evidence vocabulary swarm-api accepts (`SERVED_EVIDENCE`)."""
+    evidence = SERVED_EVIDENCE.get(entry["evidence"], entry["evidence"])
+    also = {SERVED_EVIDENCE.get(e, e) for e in entry["also_evidence"]} | (
+        {entry["evidence"]} if evidence != entry["evidence"] else set())
+    also.discard(evidence)
+    return {**entry, "evidence": evidence, "also_evidence": sorted(also)}
+
+
+def _test_map_keep_order(items: list[dict]) -> list[dict]:
+    """The test map, most worth keeping first: every source's best edge, then
+    every source's second, and so on (G4-07).
+
+    Not confidence first: that cut every `naming`, `path-ref` and
+    `declared` edge before any `import`, and those are what connect a module
+    no import reaches. Round by round, a source keeps its strongest edges and
+    a source with one edge keeps it longest.
+    """
+    by_source: dict[str, list[dict]] = {}
+    for item in items:
+        by_source.setdefault(item["source"], []).append(item)
+    ranked: list[tuple[int, float, int, str, str, int]] = []
+    position = {id(item): n for n, item in enumerate(items)}
+    for source, rows in by_source.items():
+        rows.sort(key=lambda t: (-t["confidence"], -EVIDENCE_RANK.get(t["evidence"], 0), t["test"]))
+        for rank, row in enumerate(rows):
+            ranked.append((rank, -row["confidence"], -EVIDENCE_RANK.get(row["evidence"], 0),
+                           source, row["test"], position[id(row)]))
+    ranked.sort()
+    return [items[entry[-1]] for entry in ranked]
+
+
 def index_document(facts: dict, graph_bytes: bytes | None = None,
                    max_bytes: int = MAX_INDEX_BYTES) -> dict:
     """repo-index.json (§2.2): the mechanical keys and the graph's summary,
@@ -2095,7 +2879,7 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
         "built_at": facts["built_at"],
         "modules": facts["modules"],
         "routes": facts["routes"],
-        "test_map": facts["test_map"],
+        "test_map": [_served_edge(t) for t in facts["test_map"]],
         "hot_spots": facts["hot_spots"],
         "languages": facts["languages"],
         "graph": _graph_summary(facts, graph_bytes),
@@ -2103,6 +2887,17 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
     }
     # The graph's own cuts are named too, so the index never hides them.
     index["graph"]["truncated"] = sorted(set(facts["truncated"]) & _GRAPH_TRUNCATIONS)
+    # An incremental run's diff and the base's carried reading, for the
+    # agent to start from (§3.4). Neither is a key of the artifact's shape:
+    # the agent copies the carried rows into their own keys.
+    for key in ("changes", "carried"):
+        if key in facts:
+            index[key] = facts[key]
+    # Which modules are source, which are not and why, and how many source
+    # modules have a test (G4-04). Not a key of the artifact's shape: the
+    # agent reads it, and says it in `notes`.
+    if "test_coverage" in facts:
+        index["test_coverage"] = facts["test_coverage"]
 
     def size() -> int:
         index["truncated"] = sorted(truncated)
@@ -2124,9 +2919,24 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
         "hot_spots": lambda h: (-h["changes"], h["path"]),
         "graph.most_called": lambda m: (-m["callers"], m["symbol"]),
         "routes": lambda r: (r["file"], r["start_line"], r["method"], r["path"]),
-        "test_map": lambda t: (-t["confidence"], t["source"], t["test"]),
         "modules": lambda m: (-m["lines"], m["path"]),
     }
+
+    def keep_order(name: str, items: list[dict]) -> list[dict]:
+        if name == "test_map":
+            return _test_map_keep_order(items)
+        return sorted(items, key=keep_first[name])
+
+    # The index's own bound on the test map (§2.2: 4,000 edges): the graph
+    # holds the file level whole, so over it the index goes to directory
+    # granularity, which merges a directory's duplicate (source, test)
+    # pairs, before any edge is cut.
+    if len(index["test_map"]) > MAX_TEST_MAP:
+        index["test_map"] = _test_map_by_directory(index["test_map"])
+        truncated.add("test_map")
+    if len(index["test_map"]) > MAX_TEST_MAP:
+        kept_edges = keep_order("test_map", index["test_map"])[:MAX_TEST_MAP]
+        index["test_map"] = sorted(kept_edges, key=lambda t: (t["source"], t["test"]))
     # First the cuts that lose detail, not entries: the test map at directory
     # granularity (§2.2), then the hot spots without their partners.
     if size() > max_bytes and index["test_map"]:
@@ -2146,7 +2956,7 @@ def index_document(facts: dict, graph_bytes: bytes | None = None,
             break
         name = max(weights)[2]
         items = get(name)
-        kept = sorted(items, key=keep_first[name])[: len(items) // 2]
+        kept = keep_order(name, items)[: len(items) // 2]
         # Back to the list's own order, so a cut list reads like an uncut one.
         position = {id(item): n for n, item in enumerate(items)}
         put(name, sorted(kept, key=lambda item: position[id(item)]))
@@ -2200,19 +3010,16 @@ _LSP_SELF_TEST_FILES = {
     "go/go.mod": "module example.com/selftest\n\ngo 1.22\n",
     "go/a.go": "package selftest\n\nfunc Alpha() int {\n\treturn 1\n}\n",
     "go/b.go": "package selftest\n\nfunc Beta() int {\n\treturn Alpha()\n}\n",
-    "tf/main.tf": ("variable \"zeta\" {\n  type = string\n}\n\n"
-                  "resource \"null_resource\" \"eta\" {\n  triggers = {\n    z = var.zeta\n  }\n}\n"),
 }
 _LSP_SELF_TEST_EDGES = {
     "python": ("py/b.py#beta", "py/a.py#alpha"),
     "typescript": ("ts/b.ts#beta", "ts/a.ts#alpha"),
     "go": ("go/b.go#Beta", "go/a.go#Alpha"),
-    "hcl": ("tf/main.tf#null_resource.eta", "tf/main.tf#var.zeta"),
 }
 
 
 def lsp_self_test(bin_dir: Path, request_timeout_seconds: float = 30.0) -> int:
-    """Start each of the four servers and require one `lsp` edge from each.
+    """Start each installed server and require one `lsp` edge from each.
 
     The image build runs this as the agent user, so an image whose servers
     cannot start, or start and resolve nothing, never ships to an indexer.
@@ -2246,6 +3053,16 @@ def lsp_self_test(bin_dir: Path, request_timeout_seconds: float = 30.0) -> int:
         return 1
     print(f"repo-index lsp self-test: {len(_LSP_SELF_TEST_EDGES)} servers ok")
     return 0
+
+
+def _read_json(path: str | None) -> Any:
+    """A staged base document, or None when it is absent or not JSON."""
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_bytes())
+    except (OSError, ValueError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2283,6 +3100,11 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: 3/4 of the container's limit, or 4096)")
     parser.add_argument("--lsp-self-test", action="store_true",
                         help="start each language server on a scratch workspace and exit")
+    parser.add_argument("--base-sha",
+                        help="incremental (§3.4): the commit of the previous promoted index")
+    parser.add_argument("--base-index", help="incremental: that index's repo-index.json")
+    parser.add_argument("--base-graph",
+                        help="incremental: its graph, as `swarm-repo-graph read` wrote it")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
@@ -2298,7 +3120,13 @@ def main(argv: list[str] | None = None) -> int:
         bin_dir=Path(args.lsp_bin_dir), request_timeout_seconds=args.lsp_request_timeout_seconds,
         server_budget_seconds=args.lsp_server_budget_seconds,
         total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
-    facts = extract(root, budget, lsp=lsp_options)
+    base = None
+    if args.base_sha:
+        # A base that cannot be read makes the run full and says why; it
+        # never fails the run (§3.5: a less certain index, never a lost one).
+        base = Base(sha=args.base_sha, graph=_read_json(args.base_graph),
+                    index=_read_json(args.base_index))
+    facts = extract(root, budget, lsp=lsp_options, base=base)
     graph_payload = dumps(graph_document(facts))
     index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
     payload = dumps(index)
@@ -2313,8 +3141,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.buffer.write(payload)
     summary = index["graph"]
+    incremental = facts["extractor"].get("incremental") or {}
     print(
-        f"{EXTRACTOR_NAME}: files={summary['files']} symbols={summary['symbols']} "
+        f"{EXTRACTOR_NAME}: kind={facts['kind']}"
+        + (f" base={str(incremental.get('base_sha'))[:12]}" if incremental else "")
+        + (f" changed={sum(len(v) for k, v in facts['changes'].items() if k != 'affected')}"
+           f" affected={len(facts['changes']['affected'])}" if "changes" in facts else "")
+        + (f" full_because={incremental['reason']!r}" if incremental.get("reason") else "")
+        + f" files={summary['files']} symbols={summary['symbols']} "
         f"edges={summary['call_edges']} routes={len(index['routes'])} "
         f"statuses={json.dumps(summary['files_by_status'], sort_keys=True)} "
         f"index_bytes={len(payload)} graph_bytes={len(graph_payload)} "

@@ -21,8 +21,11 @@ Two invariants, both about not locking a tenant out:
 And one about not writing for the sake of writing:
 
   3. An UNCHANGED credential adds no secret version. A sweep runs every five
-     minutes and a token lives eight hours, so anything this module writes per
-     tick it writes ~1,700 times per token. See `_BaseState` for the bool that
+     minutes and a token is refreshed about three hours before its eight-hour
+     expiry, so anything this module writes per tick it writes about 60 times
+     per token (96 if one were never refreshed early). The 1,741 and 1,814
+     versions below are what that added up to over a four-day incident, not
+     per token. See `_BaseState` for the bool that
      could not tell "the secret differs" from "I was not allowed to look", and
      what that cost -- and `quota_broker.publishledger` for why the replacement
      had to be durable rather than a dict on this object.
@@ -45,7 +48,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Collection, Protocol
 
 from .oauth import (
     Credential,
@@ -66,6 +69,19 @@ from .publishledger import (
 #: Suffix for the long-lived half. The short-lived half keeps the original name
 #: so the worker's mount is unchanged.
 REFRESH_SUFFIX = "-refresh"
+
+#: How close to expiry a HELD account's token may get before the sweep
+#: refreshes it anyway (#626). Refreshing revokes the access token a running
+#: agent is using, so an account with a live hold is left alone inside the
+#: ordinary three-hour window -- until its token is this close to expiring,
+#: when an expired token would stop the agent just as surely as a revoked one.
+#: Thirty minutes is six five-minute sweep ticks: a sweep or two can fail and
+#: the token is still refreshed before it lapses. A worker whose token is
+#: revoked anyway reloads it and resumes its session (`agent_worker`'s
+#: credential-reload path), so the margin decides how often that happens, not
+#: whether an attempt survives it. Set by ACCOUNT_HELD_REFRESH_MARGIN_SECONDS
+#: (`settings.held_refresh_margin`).
+DEFAULT_HELD_REFRESH_MARGIN = timedelta(minutes=30)
 
 
 class SecretStore(Protocol):
@@ -159,8 +175,10 @@ class CredentialRefresher:
         window: timedelta = timedelta(hours=3),
         now: Any = None,
         ledger: PublishLedger | None = None,
+        held_margin: timedelta = DEFAULT_HELD_REFRESH_MARGIN,
     ) -> None:
         self._store = store
+        self._held_margin = held_margin
         self._endpoint = endpoint
         self._log = logger
         self._window = window
@@ -190,7 +208,9 @@ class CredentialRefresher:
             provider=provider,
         )
 
-    def _refresh(self, base: str, *, tenant_id: str, provider: str) -> RefreshOutcome:
+    def _refresh(
+        self, base: str, *, tenant_id: str, provider: str, held: bool = False
+    ) -> RefreshOutcome:
         now = self._now()
         refresh_secret = f"{base}{REFRESH_SUFFIX}"
 
@@ -222,6 +242,30 @@ class CredentialRefresher:
                 extra={"tenant_id": tenant_id, "provider": provider, "error": str(exc)},
             )
             return RefreshOutcome(tenant_id, provider, False, "unreadable")
+
+        if (
+            held
+            and credential.needs_refresh(now, self._window)
+            and not credential.needs_refresh(now, self._held_margin)
+        ):
+            # AN AGENT IS ON THIS ACCOUNT (#626). Exchanging the refresh token
+            # revokes the access token it is running with, and the agent
+            # restarts in place. Nothing is exchanged and nothing written; the
+            # token still has more than the held margin left, and the next
+            # sweep looks again. Not the still-valid branch below: that may
+            # publish, and the agent's token is by definition already there.
+            self._log.info(
+                "account is held by a running agent; refresh deferred until its "
+                "token nears expiry",
+                extra={
+                    "account": tenant_id,
+                    "expires_at": credential.expires_at.isoformat(),
+                    "margin_seconds": int(self._held_margin.total_seconds()),
+                },
+            )
+            return RefreshOutcome(
+                tenant_id, provider, False, "held_deferred", credential.expires_at
+            )
 
         if not credential.needs_refresh(now, self._window):
             # STILL VALID IS NOT THE SAME AS ALREADY PUBLISHED.
@@ -392,7 +436,9 @@ class CredentialRefresher:
         )
         return RefreshOutcome(tenant_id, provider, True, "refreshed", fresh.expires_at)
 
-    def refresh_secret(self, secret_base: str, *, label: str = "") -> RefreshOutcome:
+    def refresh_secret(
+        self, secret_base: str, *, label: str = "", held: bool = False
+    ) -> RefreshOutcome:
         """Refresh one named credential pair, whatever it belongs to.
 
         `refresh_tenant` builds its secret name from a tenant and a provider,
@@ -401,7 +447,9 @@ class CredentialRefresher:
         takes the base name directly so the two callers share one implementation
         rather than drifting into two that must be kept in step.
         """
-        return self._refresh(secret_base, tenant_id=label or secret_base, provider="account")
+        return self._refresh(
+            secret_base, tenant_id=label or secret_base, provider="account", held=held
+        )
 
     def _base_state(self, base: str, access_token: str) -> tuple[_BaseState, str]:
         """What the worker-facing secret holds, and how confident that is.
@@ -508,6 +556,7 @@ class CredentialRefresher:
         secrets: list[tuple[str, str]],
         *,
         keep_going: Callable[[], bool] | None = None,
+        held: Collection[str] = (),
     ) -> list[RefreshOutcome]:
         """Refresh every account given, INCLUDING ones nobody is using.
 
@@ -524,13 +573,20 @@ class CredentialRefresher:
         exchanging one more refresh token is exactly the race the lease exists
         to prevent. The accounts not reached are the next tick's, and are not
         reported as outcomes -- nothing happened to them.
+
+        `held` names (by label, the second element of each pair) the accounts
+        a running agent holds now. Each is still visited -- an idle account and
+        a busy one are both looked at every tick -- but a held one is exchanged
+        only once its token is within the held margin (#626, `_refresh`).
         """
         outcomes: list[RefreshOutcome] = []
         for secret_base, label in secrets:
             if keep_going is not None and not keep_going():
                 break
             try:
-                outcomes.append(self.refresh_secret(secret_base, label=label))
+                outcomes.append(
+                    self.refresh_secret(secret_base, label=label, held=label in held)
+                )
             except Exception as exc:
                 self._log.error(
                     "account refresh raised; continuing with the rest of the pool",

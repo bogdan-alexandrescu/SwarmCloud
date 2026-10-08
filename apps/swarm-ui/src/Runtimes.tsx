@@ -154,7 +154,13 @@ function Topology({ data }: { data: RuntimeTopology }) {
 
         <div className="ctl-cards">
           {runtimes.map((r) => (
-            <RuntimeCard key={r.name} runtime={r} all={runtimes} pools={poolsOf(data, r.name)} />
+            <RuntimeCard
+              key={r.name}
+              runtime={r}
+              all={runtimes}
+              pools={poolsOf(data, r.name)}
+              uncapped={uncappedOf(data, r.name)}
+            />
           ))}
         </div>
       </div>
@@ -534,6 +540,14 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
  * Never rebuilt from a naming rule here -- that would be a second copy of the
  * contract's pool naming, which is how drift starts.
  */
+/** The title of a pool chip whose pool has no document (QA G5-04). */
+const PHANTOM_POOL = 'no such pool configured: admission treats it as uncapped'
+
+/** See `RuntimeCard`'s `uncapped`: empty when the read carries no admission block. */
+function uncappedOf(data: RuntimeTopology, name: string): string[] {
+  return data.profileUncapped?.[name] ?? []
+}
+
 function poolsOf(data: RuntimeTopology, name: string): string[] | null | undefined {
   if (data.profilePools === undefined) return undefined
   if (data.profilePools === null) return null
@@ -544,11 +558,14 @@ function RuntimeCard({
   runtime,
   all,
   pools,
+  uncapped = [],
 }: {
   runtime: Runtime
   all: Runtime[]
   /** See `poolsOf`. */
   pools: string[] | null | undefined
+  /** Of `pools`, the ones the read says have no document (`admission.uncapped`). */
+  uncapped?: readonly string[]
 }) {
   const facts = distinguishing(runtime, all)
   // A profile that let the platform choose is the case this exists for: the
@@ -646,10 +663,13 @@ function RuntimeCard({
             {/* THE WORKSPACE IS A SLICE OF THE MEMORY BESIDE IT, not storage
                 on top of it -- the workspace is a memory-backed tmpfs because
                 the Terraform google provider cannot express Cloud Run's
-                disk-backed empty_dir. `of mem` is what stops the two being
-                added together, in two characters rather than a clause. */}
-            <b>ws of mem</b>
-            {spec.disk_gib} GiB
+                disk-backed empty_dir. `of mem`, after the figure, is what
+                stops the two being added together. The KEY is the word
+                `workspace` (QA G5-23): `ws of mem` was an abbreviation a
+                reader had to decode, as the table's `Workspace (of memory)`
+                head is not. */}
+            <b>workspace</b>
+            {spec.disk_gib} GiB of mem
           </li>
           <li className="ctl-fact">
             <b>weight</b>
@@ -684,11 +704,21 @@ function RuntimeCard({
               <span className="ctl-mark is-unread" title="The capacity read failed, so the pools this runtime clears are not known.">not read</span>
             ) : (
               <span className="rt-pool-chips">
-                {pools.map((p) => (
-                  <Chip key={p} href="#capacity/pools" title={p}>
-                    {p}
-                  </Chip>
-                ))}
+                {pools.map((p) =>
+                  uncapped.includes(p) ? (
+                    /* A POOL NOBODY CREATED (QA G5-04): the profile names it
+                       because the pool naming does, but Pools does not list
+                       it and admission skips it as unlimited. Dashed, so the
+                       link is not read as a pool that exists. */
+                    <Chip key={p} href="#capacity/pools" title={PHANTOM_POOL} className="is-phantom">
+                      {p}
+                    </Chip>
+                  ) : (
+                    <Chip key={p} href="#capacity/pools" title={p}>
+                      {p}
+                    </Chip>
+                  ),
+                )}
               </span>
             )}
           </div>
@@ -705,8 +735,9 @@ function RuntimeCard({
           {facts.length === 0 ? (
             /* A MEASURED "nothing", not a blank. The comparison ran and found
                no difference; a blank here would read as a comparison nobody
-               made. */
-            <span className="ctl-mark is-zero">real zero</span>
+               made. In words, muted (QA G5-10): `real zero` is the console's
+               own honesty term, and as a chip it read as a status. */
+            <span className="rt-apart-none">nothing: same as the others</span>
           ) : (
             <ul className="ctl-facts is-rows rt-apart-facts">
               {facts.map((f) => (
@@ -752,11 +783,14 @@ export function Credential({ runtime }: { runtime: Runtime }) {
   if (runtime.secrets.length === 0) {
     return (
       <span className="rt-cred">
-        <span className="mono">{runtime.provider}</span>{' '}
-        {/* THE MARK STAYS. An empty credential cell beside a named provider is
-            exactly what a failed read would look like, and this is not one --
-            so it is marked as a measurement rather than left blank. */}
-        <span className="ctl-mark is-zero">real zero</span>
+        <span className="mono">{runtime.provider}</span> ·{' '}
+        {/* SAID, NOT MARKED (QA G5-10). An empty credential cell beside a
+            named provider is what a failed read would look like, so it is not
+            left blank; but `real zero` there read as "needs no credential",
+            and a runtime can name a provider whose credential the worker reads
+            at run time without the catalogue mounting any secret. What is
+            measured is exactly that the catalogue declares none. */}
+        <span className="rt-cred-none">no secret declared in the catalogue</span>
       </span>
     )
   }
@@ -874,8 +908,8 @@ function Sizing({
                 <th role="columnheader" scope="col" className="is-num">Workspace (of memory)</th>
                 {/* `(units)`, because a bare "Weight" is a number with no
                     dimension and the `?` that supplied the dimension is gone
-                    (B7.4). The cells read `2u`, so the unit is on the figure
-                    too; what the header adds is that the unit is what the POOLS
+                    (B7.4). The cells are bare figures, as Pools' are under
+                    `Leased (units)`; what the header adds is that the unit is what the POOLS
                     count, so two agents of different classes can cost the same
                     and two of the same class can cost double one of another.
                     NO CLASS IS NAMED IN THIS COMMENT, and that is not style:
@@ -899,7 +933,9 @@ function Sizing({
                     <td role="cell" data-label="vCPU" className="is-num">{spec.cpu}</td>
                     <td role="cell" data-label="Memory" className="is-num">{spec.memory_gib} GiB</td>
                     <td role="cell" data-label="Workspace (of memory)" className="is-num">{spec.disk_gib} GiB</td>
-                    <td role="cell" data-label="Weight (units)" className="is-num">{spec.units}u</td>
+                    {/* A BARE FIGURE (QA G5-23): the head says `(units)`,
+                        and `1u` under it said the unit twice. */}
+                    <td role="cell" data-label="Weight (units)" className="is-num">{spec.units}</td>
                     <td role="cell" data-label="Resolves from">
                       {users.length === 0 ? (
                         /* CONFIGURED AND UNREACHABLE is a fact, not a fault:

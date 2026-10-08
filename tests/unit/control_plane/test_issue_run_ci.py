@@ -162,13 +162,21 @@ def _to_checking(client, db, objects, writes, clock, sha=SHA_A, **body) -> dict:
 # --------------------------------------------------------------------------
 
 def test_the_ci_states_sit_between_running_and_done():
-    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
+    # RUNNING -> DONE is only the build that changed nothing (#646,
+    # test_issue_run_already_on_main.py); a pull request still goes to CHECKING.
+    assert RUN_TRANSITIONS[RunState.RUNNING] == {
+        RunState.CHECKING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
+    }
     assert RUN_TRANSITIONS[RunState.CHECKING] == {
         RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
     }
     assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
-    # A run is DONE only from CHECKING: a workflow that succeeded is not CI that passed.
-    assert [s for s, exits in RUN_TRANSITIONS.items() if RunState.DONE in exits] == [RunState.CHECKING]
+    # A run is DONE only from CHECKING -- a workflow that succeeded is not CI
+    # that passed -- or from RUNNING when there was no pull request to open
+    # because nothing needed changing (`issueci._already_on_main`).
+    assert [s for s, exits in RUN_TRANSITIONS.items() if RunState.DONE in exits] == [
+        RunState.RUNNING, RunState.CHECKING,
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -655,3 +663,13 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
 
     assert run["state"] == "FIXING" and run["ci_fix_round"] == 1
     assert len(_rounds(db, running["id"])) == 1
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

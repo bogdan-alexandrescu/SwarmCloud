@@ -194,7 +194,8 @@ describe('#89: overview account headroom names the account its figure is', () =>
       loadAccountPool: ok(accountsPage([account('a', 0.95), account('b', 0.9), account('c', 0.8), account('roomy', 0.28)])),
     })
     const best = [...el.querySelectorAll('.ov-headroom .ov-acc > span')].map(text).find((t) => t.startsWith('best'))
-    expect(best).toMatch(/^best roomy at 28% of its five-hour window · read (just now|\d+[smhd] ago)$/)
+    // A fresh reading states no age on the tile (#98); the line's title keeps it.
+    expect(best).toBe('best roomy at 28% of its five-hour window')
   })
 })
 

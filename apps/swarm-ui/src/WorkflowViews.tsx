@@ -27,8 +27,10 @@ import {
   type StepWhy,
   type TimelineAxis,
   type WorkflowView,
+  MERGE_MAX_BRANCH_UPDATES,
+  type MergeCard,
 } from './stepviews'
-import { TERMINAL_STATES, bytesLabel, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
+import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
 
 /**
  * A WORKFLOW'S TIMELINE AND TABLE, AND THE INSPECTOR THAT SCRUBS ACROSS THEM.
@@ -335,6 +337,7 @@ export function WorkflowTimeline({
 }) {
   return (
     <div className="wf-timeline" role="group" aria-label="When each step waited and ran">
+      <TimelineKey />
       <span className="wf-tl-corner" aria-hidden />
       <div className="wf-tl-scale" aria-hidden>
         {axis !== null && <Ticks axis={axis} />}
@@ -358,6 +361,34 @@ export function WorkflowTimeline({
         </Fragment>
       ))}
     </div>
+  )
+}
+
+/**
+ * WHAT EACH KIND OF BAR IS, IN ONE LINE ABOVE THE AXIS (QA G3-13). A wait, a
+ * run, the time on parents and a park were told apart only by a hover; each
+ * swatch here is drawn by the same classes the spans are, so the key cannot
+ * describe a bar the track does not draw. `parked` and `skipped` are the
+ * hatches the Graph's node uses for those states.
+ */
+export const TIMELINE_KEY: readonly { kind: string; word: string; title: string }[] = [
+  { kind: 'parents', word: 'on parents', title: 'Waiting for a parent step to finish: the step could not start any sooner.' },
+  { kind: 'waited', word: 'waited', title: 'Queued, ready, leased or dispatched: time waited, never time run.' },
+  { kind: 'parked', word: 'parked', title: 'Parked and holding nothing: the step is waiting on a provider window or capacity, and will resume.' },
+  { kind: 'ran', word: 'ran', title: 'From the latest start to the recorded finish, in the step’s state colour.' },
+  { kind: 'skipped', word: 'skipped by verdict', title: 'The verdict gate kept the step’s agent from running; the attempt only published the reviewed work.' },
+]
+
+function TimelineKey() {
+  return (
+    <ul className="wf-tl-key" aria-label="Timeline key">
+      {TIMELINE_KEY.map((k) => (
+        <li key={k.kind} className="wf-tl-key-item" title={k.title}>
+          <i className={`wf-tl-swatch is-${k.kind}`} aria-hidden />
+          {k.word}
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -432,10 +463,16 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
         // the mock-up draws every wait neutral, for the reason above.
         const tint = s.kind === 'ran' || s.kind === 'running' ? ` ${tintClass(row.look)}` : ''
         const cut = d.clampedMs !== null ? ' is-clamped' : ''
+        // A VERDICT-SKIPPED RUN IS THE NODE'S SKIP HATCH, and a step parked
+        // now draws its open wait in the node's parked hatch (QA G3-02,
+        // G3-13): an outline on the track read as an empty row for a step
+        // parked 1h 37m.
+        const skip = s.kind === 'ran' && row.look.mark === 'skipped' ? ' is-skipped' : ''
+        const parked = s.kind === 'waiting' && row.look.mark === 'parked' ? ' is-parked' : ''
         return (
           <Fragment key={i}>
             <i
-              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}`}
+              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}${skip}${parked}`}
               style={{ left: `${left}%`, width: `${width}%` }}
             />
             {d.clampedMs !== null &&
@@ -548,7 +585,7 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'ran', label: 'Ran', sort: 'ran', num: true },
   { col: 'attempts', label: 'Attempts', sort: 'attempts', num: true },
   { col: 'cost', label: 'Cost', sort: 'cost', num: true },
-  { col: 'tokens', label: 'Tokens', sort: null, num: true },
+  { col: 'tokens', label: 'Tokens', sort: 'tokens', num: true },
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
@@ -719,8 +756,10 @@ function inputsRowId(stepId: string): string {
  *
  * `.ctl-table`, the shared table primitive, so the rhythm, the head and the row
  * tones are the ones every other table in this console already draws. The
- * head is NOT sticky (WF-21): the wrapper scrolls sideways only, so a sticky
- * head never stuck. The faint seams this table showed at fractional column
+ * head IS sticky now (QA G3-12), on `thead`: it never stuck while the wrapper
+ * was `overflow-x: auto` (WF-21), and the wrapper clips instead, because at a
+ * width where the table is drawn as a table it never needs to scroll
+ * sideways (styles/workflows.css). The faint seams this table showed at fractional column
  * edges were first put down to that stickiness, then to each head cell
  * painting its own fill; they survived both fixes, because Chrome paints a
  * row group's background into each cell's rect too. `thead` now also paints
@@ -841,7 +880,9 @@ export function WorkflowTable({
                 </span>
               </td>
               {columns.length === COLUMNS.length && (
-                <td data-col="why" data-label="Why">
+                // A ROW WITH NO WHY PRINTS NO `Why` LABEL (QA G3-32): stacked,
+                // the label is the cell's `::before`, and it stood alone.
+                <td data-col="why" data-label={r.why === null ? undefined : 'Why'}>
                   <WhyCell why={r.why} />
                 </td>
               )}
@@ -1300,6 +1341,9 @@ export function StepInspector({
                 // attempt of a finished task (WF-5). Any other attempt keeps
                 // its own absences.
                 at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.result : null,
+                // ONE DURATION FOR ONE RUN (QA G3-26): the newest attempt of a
+                // finished task is the run the Graph and the Table time.
+                at === ready.length - 1 && taskState !== null && TERMINAL_STATES.has(taskState) ? row.times.ranMs : null,
               )}
             />
           </>
@@ -1367,6 +1411,130 @@ export function StepInspector({
         )}
         <Id title={workflowId}>{workflowId}</Id>
       </div>
+    </section>
+  )
+}
+
+/** `abc1234`, with the whole sha as its title. */
+function Sha({ sha }: { sha: string }) {
+  return (
+    <span className="mono" title={sha}>
+      {sha.length > 12 ? sha.slice(0, 7) : sha}
+    </span>
+  )
+}
+
+/** What a CI park waits on, by the park's code (`agent_worker.merge._with_forge`). */
+function waitsOn(code: string | null, pending: readonly string[]): string {
+  if (pending.length > 0) return `pending: ${pending.join(', ')}`
+  if (code === 'mergeability_unknown') return 'GitHub has not computed mergeability yet'
+  if (code === 'no_checks') return 'no check has reported yet; it waits for a first check'
+  return 'the pull request\'s checks'
+}
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+/**
+ * THE MERGE STEP'S CARD (docs/merge-step.md "Revised 2026-10-06" §6 MS4), on
+ * the run page's Steps card and in the workflow page's step inspector: the
+ * state -- waiting for CI with the pending checks and the head, behind and
+ * updated (n of 3), merged with the commit and the issues closed, or refused
+ * with the code and the reason -- the pull request, and when the step first
+ * parked for CI. Every fact is `mergeCardOf`'s; this draws them.
+ *
+ * A CI_PENDING park is "waiting for CI". It holds no lease, no pool count and
+ * no Job (invariant 1), and swarm-api's tick or the fallback instant wakes it,
+ * so it is never worded as stalled or blocked.
+ */
+export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
+  const s = card.state
+  let head: string
+  let lines: ReactNode[] = []
+  switch (s.kind) {
+    case 'waiting':
+      head = 'waiting for CI'
+      lines = [
+        <>{waitsOn(s.code, s.pending)}{s.head !== null && <> · at <Sha sha={s.head} /></>}</>,
+        'Holds no capacity. Woken when the checks settle.',
+      ]
+      break
+    case 'updated':
+      head =
+        s.updates === null
+          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_BRANCH_UPDATES}`
+          : `behind, updated ${s.updates} of ${MERGE_MAX_BRANCH_UPDATES}`
+      lines = [
+        <>GitHub merged the base into the branch; the checks run again{s.head !== null && <> at <Sha sha={s.head} /></>}</>,
+        'Holds no capacity. Woken when the checks settle.',
+      ]
+      break
+    case 'merged':
+      head = 'merged'
+      lines = [
+        <>
+          {s.byThisTask === true
+            ? 'by this step'
+            : s.already
+              ? 'already merged at the pinned head, not by this step'
+              : s.byThisTask === false
+                ? 'not by this step'
+                : 'whether this step merged was not recorded'}
+          {s.commit !== null && <> · commit <Sha sha={s.commit} /></>}
+          {s.updates !== null && s.updates > 0 && <> · after {plural(s.updates, 'branch update')}</>}
+        </>,
+        <>
+          {s.closed.length === 0 ? 'no issue closed' : <>closed {s.closed.map((n) => `#${n}`).join(', ')}</>}
+          {s.notClosed > 0 && <> · {plural(s.notClosed, 'issue')} not closed</>}
+          {s.beyondPage && <> · more references than one page: the rest were not closed</>}
+        </>,
+      ]
+      break
+    case 'refused':
+      head = s.failed ? 'merge failed' : 'refused'
+      lines = [
+        <>
+          {s.code !== null && <span className="mono">{s.code}</span>}
+          {s.code !== null && s.reason !== null && ': '}
+          {s.reason ?? (s.code === null ? 'no reason recorded' : null)}
+        </>,
+      ]
+      break
+    case 'not-yet':
+      head = `${TERMINAL_STATES.has(s.state) ? 'not merged' : 'not merged yet'} · ${s.state.toLowerCase().replace(/_/g, ' ')}`
+      break
+  }
+  const kind = s.kind
+  const pr = card.pullRequest
+  return (
+    <section className="wf-merge" aria-label="Merge" data-merge={kind}>
+      <div className="wf-card-h">
+        <b>Merge</b>
+        <span className={`wf-merge-out${kind === 'refused' ? ' is-bad' : ''}`}>{head}</span>
+        <span className="wf-card-r">
+          {pr === null ? (
+            'pull request not recorded'
+          ) : pr.href !== null ? (
+            <a className="ctl-link" data-fact="pull-request" href={pr.href} target="_blank" rel="noopener noreferrer">
+              #{pr.number}
+            </a>
+          ) : (
+            <span data-fact="pull-request">#{pr.number}</span>
+          )}
+        </span>
+      </div>
+      {lines.map((line, i) => (
+        <p key={i} className="wf-merge-head">
+          {line}
+        </p>
+      ))}
+      {card.firstParkedAt !== null && (
+        <p className="wf-card-foot" data-fact="first-parked">
+          first parked for CI{' '}
+          <time dateTime={card.firstParkedAt} title={card.firstParkedAt}>
+            {timeAgo(card.firstParkedAt, now)}
+          </time>
+        </p>
+      )}
     </section>
   )
 }

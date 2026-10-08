@@ -6,7 +6,7 @@ comments read-only with the tenant's forge credential and writes them to
 `work/issue.md`; the runner names that file in the prompt. What is held here:
 
   * the fetch asks the repository's own forge, carries the credential only in
-    its `Authorization` header, and follows no redirect to another host;
+    its `Authorization` header, and follows no redirect, to another host or its own;
   * the file is scrubbed of every secret the attempt holds, is never written
     through a link, and lands in `work/`, not in the checkout or the artifacts;
   * the prompt names the file by absolute path between the caller's prompt and
@@ -40,11 +40,19 @@ from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 REPO = "https://github.com/octo/widgets.git"
+#: The sentence after the deliverables line (owner decision, 2026-10-05): the
+#: agent may ask the owner in `questions.json`. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
 TOKEN = "ghp_issuefetchtoken0123456789abcdef"
 
 
@@ -309,24 +317,25 @@ def test_a_repository_on_no_forge_is_refused_before_any_request(forge):
     assert not fake.requests
 
 
-def test_a_redirect_to_another_host_is_refused_and_one_on_the_same_host_followed():
-    """urllib copies `Authorization` onto a redirect wherever it points."""
-    handler = issue_mod._SameHostRedirects()
+def test_no_redirect_is_followed_by_the_issue_fetch_on_any_host():
+    """urllib copies `Authorization` onto a redirect wherever it points, so the
+    fetch sends through `forge.open_without_redirects`, which follows none --
+    not to another host, and not on the same one (#645). The real-server
+    versions of this are in test_forge_no_redirect.py."""
+    from agent_worker import forge as forge_mod
+
     req = urllib.request.Request("https://api.github.com/repos/octo/widgets/issues/1")
     req.add_header("Authorization", f"Bearer {TOKEN}")
-
-    for elsewhere in (
+    (handler,) = [
+        h for h in forge_mod._NO_REDIRECT_OPENER.handlers
+        if isinstance(h, urllib.request.HTTPRedirectHandler)
+    ]
+    for target in (
         "https://attacker.example/steal",
         "http://api.github.com/repos/octo/widgets/issues/1",
+        "https://api.github.com/repositories/42/issues/1",
     ):
-        with pytest.raises(issue_mod.IssueUnavailable) as caught:
-            handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, elsewhere)
-        assert TOKEN not in str(caught.value)
-
-    followed = handler.redirect_request(
-        req, io.BytesIO(), 301, "Moved", {}, "https://api.github.com/repositories/42/issues/1"
-    )
-    assert followed is not None and followed.full_url.endswith("/repositories/42/issues/1")
+        assert handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, target) is None
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +460,8 @@ _RECORDING_CLI = r"""#!/usr/bin/env python3
 import json, os, sys
 with open(os.path.join(os.environ["SWARM_WORK_DIR"], "argv.json"), "w") as fh:
     json.dump(sys.argv, fh)
+with open(os.path.join(os.environ["SWARM_WORK_DIR"], "prompt.txt"), "w") as fh:
+    fh.write(sys.stdin.read())
 print(json.dumps({"result": "ok"}))
 """
 
@@ -478,7 +489,8 @@ def _prompt(tmp_path: Path, monkeypatch, payload: dict[str, Any], *, issue_text:
         args_env="FAKE_ARGS", args_default=("--print",), key_env="FAKE_KEY", model_flag=None,
     )
     run_cli_agent(ctx, spec)
-    return json.loads((work / "argv.json").read_text())[-1], work, artifacts
+    assert json.loads((work / "argv.json").read_text())[1:] == ["--print"]
+    return (work / "prompt.txt").read_text(), work, artifacts
 
 
 def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_instructions(
@@ -493,6 +505,7 @@ def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_inst
     assert str((work / "issue.md").resolve()) in prompt or str(work / "issue.md") in prompt
     assert prompt.endswith(
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
+        f"\n{QUESTIONS_LINE}"
     )
     # The number is in the file, not the prompt: a bare `429` in what a CLI
     # echoes reads as a rate limit (`cliagent._RATE_LIMIT_MARKERS`).
@@ -504,7 +517,7 @@ def test_a_task_that_asks_for_no_issue_gets_the_prompt_it_got_before(tmp_path, m
 
     assert prompt == (
         f"do it\n\nFiles written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and "
-        "shown in Artifacts."
+        f"shown in Artifacts.\n{QUESTIONS_LINE}"
     )
 
 
@@ -527,7 +540,7 @@ import json, os, sys
 work = os.environ["SWARM_WORK_DIR"]
 path = os.path.join(work, "issue.md")
 record = {
-    "prompt": sys.argv[-1],
+    "prompt": sys.stdin.read(),
     "cwd": os.getcwd(),
     "issue_md": open(path).read() if os.path.isfile(path) else None,
     "env": dict(os.environ),
@@ -589,7 +602,9 @@ def _worker(worker_factory, monkeypatch, url: str, fetch):
     worker.log.register_secret(TOKEN)
     monkeypatch.setattr(
         worker, "_git_token",
-        lambda: TOKEN if worker.phases.current == "fetch_issue" else None,
+        # Read where the fetch starts, beside the clone (P29), and never by
+        # the clone itself.
+        lambda: TOKEN if worker.phases.current in ("issue_prefetch", "fetch_issue") else None,
     )
     monkeypatch.setattr(issue_mod, "fetch_issue", fetch)
     return worker
@@ -647,6 +662,40 @@ def test_the_agent_reads_the_issue_and_never_the_token(
     names = [entry["name"] for entry in (task.get("result_summary") or {}).get("artifacts", [])]
     assert "issue.md" not in names, names
     assert not [key for key in store.list_keys(f"tenants/{TENANT}/") if key.endswith("/issue.md")]
+
+
+@needs_git
+@pytest.mark.parametrize(
+    ("title", "expected_attr", "expected_pr_title"),
+    [
+        ("Point a step at an issue", "Point a step at an issue",
+         "Point a step at an issue (part of #265)"),
+        # No title: the number names the work, as it always did.
+        ("", None, "Work on issue #265 (part of #265)"),
+    ],
+    ids=["titled", "untitled"],
+)
+def test_the_fetched_issue_title_names_the_pull_request(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace,
+    title, expected_attr, expected_pr_title,
+):
+    """`_issue_title` was declared and never assigned, so an issue run's pull
+    request read "Work on issue #72 (part of #72)" (#453). It is the fetched
+    issue's title, read when the fetch lands -- before the agent starts, so
+    nothing the agent writes to `issue.md` reaches it."""
+
+    def fetch(*, repository_url, number, token, on_request=None):
+        return issue_mod.Issue(
+            repository="octo/widgets", number=number, title=title,
+            state="open", author="bogdan", created_at="", url="", body="The body.",
+        )
+
+    _seed(db)
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+
+    assert worker.run() == ExitCode.OK, db.doc("tasks/task_1")
+    assert worker._issue_title == expected_attr
+    assert worker._title_from_issue_input(db.doc("tasks/task_1")) == expected_pr_title
 
 
 @needs_git

@@ -56,7 +56,7 @@ from agent_worker.errors import ExitCode, FencedWriteRefused
 from agent_worker.startup import StartupInterrupted
 from swarm_common.states import TaskState
 
-from conftest import TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import TENANT, build_worker, seed_attempt, seed_tenant
 
 #: 128 + SIGTERM, restated: the number is the contract with the pod's reader.
 INTERRUPTED = 143

@@ -238,7 +238,7 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
       'Runners',
       'Cost',
       'Owner',
-      'Started',
+      'Submitted',
       'Duration',
     ])
     // Browser QA D8 (2026-10-04): State, Steps done and Duration are px wide,
@@ -384,7 +384,7 @@ describe('Recent (5) shows on the list page, by name (#503)', () => {
 
 async function page(view = 'wf=wf_broker'): Promise<void> {
   render(<Routed initial={view} />)
-  await waitFor(() => expect(document.querySelector('.wfp-head')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
 describe('the workflow page head (#503, workflows.html frame B)', () => {
@@ -392,7 +392,10 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     await page()
     await waitFor(() => expect(document.querySelector('h1')!.textContent).toBe('refactor-broker'))
     expect(document.querySelector('.wfp-label'), 'the name is drawn twice').toBeNull()
-    const sub = document.querySelector('.sub')!.textContent ?? ''
+    // The meta line is the Screen's count note now (#138: no sub-line under the title).
+    expect(document.querySelector('.sub'), 'a sub-line is back under the title').toBeNull()
+    const note = document.querySelector<HTMLElement>('.c-count-note')!
+    const sub = note.textContent ?? ''
     expect(sub.trim().startsWith('·'), `the meta line opens on a dot: "${sub}"`).toBe(false)
     expect(sub).toContain('4 steps · 1 → 2 → 1')
     // The id is still on the page, whole, as the head's chip.
@@ -408,8 +411,9 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker" onView={onView} />)
     const tabs = await waitFor(() => {
-      // The canonical underline tabs (components.html A): a link per view.
-      const t = document.querySelector<HTMLElement>('nav.c-tabs[aria-label="Views of this workflow"]')
+      // The canonical underline tabs (components.html A): a link per view --
+      // the loaded page's, since its skeleton draws them too, uncounted (#113).
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > nav.c-tabs[aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
@@ -531,7 +535,10 @@ describe('the steps Table fits its width (#503)', () => {
     // and that minimum fits the step card's column at 1440 (1440 less the
     // 84px spine, the 236px panel and the page and card gutters), so at 1440
     // there is still no sideways scroll.
-    expect(at(t.parentElement!, 'overflow-x')).toBe('auto')
+    // `clip`, not `auto` (QA G3-12): below its minimum the box stacks the
+    // rows rather than scrolling, so the wrapper never needs to scroll
+    // sideways, and an `auto` wrapper kept the sticky head from sticking.
+    expect(at(t.parentElement!, 'overflow-x')).toBe('clip')
     expect(parseFloat(at(t, 'min-width') ?? '0')).toBeLessThanOrEqual(1000)
   })
 })

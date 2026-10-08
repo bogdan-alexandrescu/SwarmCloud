@@ -3,6 +3,8 @@
 Shape, and why it is this shape:
 
     woken by Pub/Sub
+      (a `task_finished` wake runs `release_dependants` instead: that task's
+       dependants, then one admission pass -- see there)
       -> promote what has become runnable (dependencies, credentials, prewarm),
          and cancel what a failed `fail_workflow` workflow will never run
       -> while admissible work exists and the run is within budget:
@@ -35,11 +37,16 @@ from typing import Any, Callable
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import PENDING_STATES, BlockedReason, EventType, ParkReason, TaskState
+from swarm_common.states import (
+    PENDING_STATES,
+    TERMINAL_STATES,
+    EventType,
+    ParkReason,
+    TaskState,
+)
 
 from . import children as children_mod
-from .codec import POOL_LIMIT_UNSET, hard_limit_known
-from .credentials import AccountPool, CredentialSource, credential_for
+from .credentials import AccountPool, CredentialSource, ForgeConnections, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
@@ -47,6 +54,15 @@ from .settings import SchedulerSettings
 from .store import GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
+
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): `metadata.merge_wait`, written by the worker's
+#: `control.ControlPlane.park_ci_pending`, and inside it the marker swarm-api's
+#: wake tick (`swarm_api.mergewake`) writes once the checks have settled.
+#: Restated because the scheduler image carries neither; held equal by
+#: tests/unit/worker/test_merge_action.py.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+MERGE_WAKE_MARKER = "wake_requested_at"
 
 #: Park reasons that a provider pool's `quota_derived_limit` already guards, so
 #: promoting them early is safe: admission still refuses until quota returns.
@@ -220,6 +236,9 @@ class DrainReport:
     #: CHILDREN_INCOMPLETE parks returned to READY: every child terminal with
     #: its outputs staged, or the await deadline passed (child tasks, §3.3).
     promoted_child_awaits: int = 0
+    #: CI_PENDING parks returned to READY: swarm-api's wake tick marked their
+    #: checks settled, or their fallback instant passed (lane MS2).
+    promoted_ci_waits: int = 0
     #: Children this drain cancelled or flagged because of their parent: its
     #: cancel, its end, or its await deadline (child tasks, §3.4). The ones
     #: that became CANCELLED here are also in `cancelled`.
@@ -255,6 +274,7 @@ class Scheduler:
         now: Callable[[], datetime] = utcnow,
         monotonic: Callable[[], float] = time.monotonic,
         pool: AccountPool | None = None,
+        forge: ForgeConnections | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -272,6 +292,11 @@ class Scheduler:
         self._pool = pool if pool is not None else AccountPool.for_deployment(
             settings, store.db
         )
+        # The submitters' GitHub grants and connections, which admission and
+        # the credential sweep ask about and the dispatcher never does
+        # (credentials.py, docs/onboarding.md §3.3 step 2). Forgotten at the
+        # top of each run, like the pool.
+        self._forge = forge if forge is not None else ForgeConnections(store.db)
         self._now = now
         self._monotonic = monotonic
         self._aging = AgingConfig(
@@ -289,11 +314,13 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
-        self._unset_limit_pools: frozenset[str] | None = None
         # Where each paged park sweep resumes (`_parked_window`). Kept across
         # drains on purpose: that is what moves the window.
         self._park_cursors: dict[ParkReason, str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
+        # Tasks this run ended itself (`_note_ended`), whose dependants it
+        # resolves before it returns (`_release_ended`, #636). Per run.
+        self._ended: list[str] = []
         # Where the child-cascade sweep resumes: (parent_task_id, child id).
         self._child_cursor: tuple[str, str] | None = None
         cutoff = settings.on_step_failure_enforced_since
@@ -324,16 +351,22 @@ class Scheduler:
 
     # -- entry point ------------------------------------------------------
 
-    def drain(self) -> DrainReport:
-        started = self._monotonic()
-        report = DrainReport()
+    def _begin_run(self) -> None:
+        """Forget what the previous run cached. Every entry point starts here."""
         self._tenant_cache: dict[str, Tenant | None] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
-        self._unset_limit_pools = None
         self._swept_workflows = set()
+        self._ended = []
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
+        # A reconnect, or a refresh that failed, since the last drain likewise.
+        self._forge.forget()
+
+    def drain(self) -> DrainReport:
+        started = self._monotonic()
+        report = DrainReport()
+        self._begin_run()
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -349,6 +382,7 @@ class Scheduler:
         report.promoted_credentials = self._promote_credentials(report)
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
+        report.promoted_ci_waits = self._promote_ci_waits(report)
         # Guarded: a child sweep that cannot query (its index still building
         # after a release, say) must not stop admission for every tenant.
         try:
@@ -358,6 +392,9 @@ class Scheduler:
             log.exception("child-task sweeps failed this drain; admission continues")
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm(report)
+        # The sweeps above run AFTER `_promote_dependencies`, so what they
+        # ended is resolved here, not on the next tick (#636).
+        self._release_ended(report)
 
         while True:
             if report.passes >= self._settings.max_passes_per_run:
@@ -370,35 +407,10 @@ class Scheduler:
                 report.stop_reason = "time_budget"
                 break
 
-            candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
-            if not candidates:
-                self._metrics.candidates.observe(0)
+            leased_this_pass = self._admission_pass(report, started)
+            if leased_this_pass is None:
                 report.stop_reason = "queue_empty"
                 break
-            candidates, topped_up = self._top_up_starved_tenants(candidates)
-            report.topped_up_tenants = max(report.topped_up_tenants, topped_up)
-            self._metrics.candidates.observe(len(candidates))
-
-            ordered = round_robin_order(
-                candidates,
-                now=self._now(),
-                config=self._aging,
-                active_by_tenant=self._store.active_by_tenant(),
-            )
-            tenants = {task.tenant_id for task in ordered}
-            report.tenants_seen = max(report.tenants_seen, len(tenants))
-            self._metrics.tenants_in_rotation.set(len(tenants))
-
-            leased_this_pass = 0
-            for task in ordered:
-                report.scanned += 1
-                if report.leased >= self._settings.max_leases_per_run:
-                    break
-                if self._monotonic() - started >= self._settings.max_run_seconds:
-                    break
-                if self._admit_one(task, report):
-                    leased_this_pass += 1
-            report.passes += 1
 
             if leased_this_pass == 0:
                 # Nothing in this slice could be admitted. Re-reading the same
@@ -406,10 +418,224 @@ class Scheduler:
                 report.stop_reason = "no_admissible_work"
                 break
 
+        # And what admission ended: a cancel it honoured, a step its workflow
+        # sweep cancelled, a dispatch that failed on the last attempt.
+        self._release_ended(report)
         report.duration_seconds = self._monotonic() - started
         self._metrics.runs.labels(stop_reason=report.stop_reason).inc()
         self._metrics.run_seconds.observe(report.duration_seconds)
         log.info("drain finished %s", report.to_dict())
+        return report
+
+    def _admission_pass(
+        self, report: DrainReport, started: float, *, include: list[Task] | tuple[Task, ...] = ()
+    ) -> int | None:
+        """One pass of admission: read a slice of READY work, interleave it, try each.
+
+        Returns how many were leased, or None when there was nothing READY to
+        try. `include` adds tasks the caller knows are READY to the slice --
+        the finish event's released dependants, which a full slice of older or
+        higher-priority work might otherwise leave out -- and they are then
+        ordered with everything else by `round_robin_order`, so a released
+        task is admitted in its fair turn and never ahead of it.
+        """
+        candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
+        if include:
+            seen = {task.id for task in candidates}
+            candidates = candidates + [task for task in include if task.id not in seen]
+        if not candidates:
+            self._metrics.candidates.observe(0)
+            return None
+        candidates, topped_up = self._top_up_starved_tenants(candidates)
+        report.topped_up_tenants = max(report.topped_up_tenants, topped_up)
+        self._metrics.candidates.observe(len(candidates))
+
+        ordered = round_robin_order(
+            candidates,
+            now=self._now(),
+            config=self._aging,
+            active_by_tenant=self._store.active_by_tenant(),
+        )
+        tenants = {task.tenant_id for task in ordered}
+        report.tenants_seen = max(report.tenants_seen, len(tenants))
+        self._metrics.tenants_in_rotation.set(len(tenants))
+
+        leased_this_pass = 0
+        for task in ordered:
+            report.scanned += 1
+            if report.leased >= self._settings.max_leases_per_run:
+                break
+            if self._monotonic() - started >= self._settings.max_run_seconds:
+                break
+            if self._admit_one(task, report):
+                leased_this_pass += 1
+        report.passes += 1
+        return leased_this_pass
+
+    # -- the finish event (#636) ------------------------------------------
+
+    def release_dependants(self, task_id: str) -> DrainReport:
+        """A task has ended: release what waited on it, and admit once. Now, not next tick.
+
+        Called from `/pubsub/push` for a `task_finished` wake, which the worker
+        publishes after its terminal write and its lease release. Measured
+        before it existed (#636, 2026-10-05): parent done -> child READY p50
+        27 s, p90 54 s, because only `drain()` ran `_promote_dependencies` and
+        nothing woke a drain when a task ended.
+
+        THE SAME RULE, NOT A SECOND COPY. Each of the parent's dependants goes
+        through `_resolve_dependency`, the body of `_promote_dependencies`:
+        promoted only when EVERY parent SUCCEEDED, cancelled when one did not,
+        left PARKED otherwise, with `on_step_failure` read first. Promotion is
+        `SchedulerStore.promote_to_ready`, the guarded write the sweep uses, so
+        whichever of the event and the tick gets there second finds the task
+        READY, not PARKED, and writes nothing: a duplicate event, a redelivery
+        and the tick after an event are all no-ops (the dependants query no
+        longer returns the task at all). A dependant this cancels has ended
+        too, so its own dependants are resolved in the same event
+        (`_release_chain`), rather than one tick per link.
+
+        THEN ONE ADMISSION PASS, `_admission_pass`, with the released tasks
+        added to the slice: the same `_admit_one`, the same all-or-nothing
+        lease transaction (invariant 2) and the same fencing generation on the
+        lease (invariant 5). The pass runs even when nothing was released,
+        because the parent's lease release freed capacity some READY task may
+        have been denied. Only `_admit_one` takes a lease, and only for a task
+        that is READY, so nothing this path does creates demand for a task
+        that is not LEASED (invariant 1).
+
+        A NO-OP for a task that is missing or has not ended -- a wake is a
+        doorbell, and anyone who may publish one may ring it for any id -- and
+        while dispatch is paused, as `drain()` is.
+
+        THE TICK STAYS THE SAFETY NET. Anything that stops this path -- a wake
+        never published, a push refused, this method raising -- leaves the
+        dependant PARKED and the next drain's `_promote_dependencies` releases
+        it exactly as before #636.
+        """
+        started = self._monotonic()
+        report = DrainReport()
+        self._begin_run()
+
+        if self._store.dispatch_paused():
+            report.stop_reason = "dispatch_paused"
+            return self._end_finish_event(report, started)
+
+        parent = self._store.get_task(task_id)
+        if parent is None or parent.state not in TERMINAL_STATES:
+            report.stop_reason = "not_terminal"
+            return self._end_finish_event(report, started)
+
+        released = self._release_chain([parent], report)
+        report.promoted_dependencies = len(released)
+
+        # Re-read: each `_admit_one` write is guarded on the state it was
+        # handed, and what was handed here was the PARKED snapshot.
+        fresh = [
+            task
+            for task in (self._store.get_task(tid) for tid in released)
+            if task is not None and task.state is TaskState.READY
+        ]
+        self._admission_pass(report, started, include=fresh)
+        # What that pass ended itself has no worker to ring for it either.
+        self._release_ended(report)
+        report.stop_reason = "task_finished"
+        return self._end_finish_event(report, started)
+
+    def _release_chain(self, ended: list[Task], report: DrainReport) -> list[str]:
+        """Resolve the dependants of the `ended` tasks, and of every task that ends meanwhile.
+
+        A dependant the rule CANCELS -- its parent did not succeed -- has
+        itself reached a terminal state, and no worker will ring a wake for
+        it. Stopping at the first level left its own dependants PARKED until
+        the next drain's sweep, one tick per link of the chain (#636). So
+        every task ended while this runs -- a dependant cancelled, or the
+        steps a `fail_workflow` sweep inside `_resolve_dependency` cancelled
+        -- is resolved in turn (`_note_ended`), breadth first, through the
+        same `_resolve_dependency`, with the same tenant filter in
+        `dependants_waiting_on` (invariant 9).
+
+        Only an end extends the chain. A promoted dependant is READY, not
+        ended; its dependants wait for its own finish. Bounded by
+        `dependency_sweep_size` dependants in all and as many ended tasks
+        looked up, and by visited sets; whatever the bounds leave is the next
+        drain's, as before. Returns the ids promoted, for the admission pass.
+        """
+        budget = self._settings.dependency_sweep_size
+        lookups = self._settings.dependency_sweep_size
+        released: list[str] = []
+        resolved: set[str] = set()
+        expanded: set[str] = {task.id for task in ended}
+        queue: list[Task] = list(ended)
+        while queue and budget > 0 and lookups > 0:
+            current = queue.pop(0)
+            lookups -= 1
+            for task in self._store.dependants_waiting_on(current, budget):
+                if task.id in resolved or budget <= 0:
+                    continue
+                resolved.add(task.id)
+                budget -= 1
+                if self._resolve_dependency(task, report):
+                    released.append(task.id)
+            queue.extend(self._take_ended(expanded))
+        # Left by the bounds: the next drain's `_promote_dependencies` has them.
+        self._ended.clear()
+        return released
+
+    def _note_ended(self, task_id: str) -> None:
+        """This run wrote a terminal state on `task_id`. Every such write calls it.
+
+        No worker rings `task_finished` for a task the scheduler ended, and
+        `_promote_dependencies` has already run by the time the sweeps and
+        admission write these, so its dependants waited for the next tick
+        (#636, left by #741). `_release_ended` resolves them in this run.
+        """
+        self._ended.append(task_id)
+
+    def _take_ended(self, expanded: set[str]) -> list[Task]:
+        """The tasks noted ended since the last call and not yet expanded, re-read."""
+        noted, self._ended = self._ended, []
+        out: list[Task] = []
+        for task_id in dict.fromkeys(noted):
+            if task_id in expanded:
+                continue
+            expanded.add(task_id)
+            task = self._store.get_task(task_id)
+            if task is not None and task.state in TERMINAL_STATES:
+                out.append(task)
+        return out
+
+    def _release_ended(self, report: DrainReport) -> None:
+        """Resolve the dependants of what this run ended itself. Never fails the run.
+
+        A task the scheduler ends is FAILED, DEAD_LETTERED or CANCELLED, never
+        SUCCEEDED, so the rule CANCELS its dependants and promotes none: this
+        writes no READY and takes no lease, and creates no demand (invariant
+        1). The scheduler does not publish a `task_finished` wake to itself
+        instead: it is the wake's receiver, and that message would queue
+        behind the drain lock this run holds.
+
+        A failure here is logged and the run goes on: resolving now is a
+        latency win, and the next drain's `_promote_dependencies` resolves the
+        same dependants by the same rule, as it did before #636.
+        """
+        if not self._ended:
+            return
+        try:
+            ended = self._take_ended(set())
+            if ended:
+                report.promoted_dependencies += len(self._release_chain(ended, report))
+        except Exception:
+            self._ended.clear()
+            log.exception(
+                "resolving the dependants of tasks this run ended failed; "
+                "the next drain's dependency sweep resolves them"
+            )
+
+    def _end_finish_event(self, report: DrainReport, started: float) -> DrainReport:
+        report.duration_seconds = self._monotonic() - started
+        self._metrics.finish_events.labels(outcome=report.stop_reason).inc()
+        log.info("finish event handled %s", report.to_dict())
         return report
 
     # -- candidate selection ----------------------------------------------
@@ -559,7 +785,13 @@ class Scheduler:
         # means a container that can only park or fail, holding a slot while
         # it does, so it parks here, before any lease. The detail names what
         # the account pool answered, so the park says what would clear it.
-        credential = credential_for(profile, tenant, self._pool)
+        # The submitter's GitHub connection is part of the same question: a
+        # task that runs on their user slot while the refresh sweep says
+        # `refresh_failed`, or with no connection at all, would clone with a
+        # token GitHub refuses (docs/onboarding.md §3.3 step 2, OB6). Parked
+        # here it holds nothing (invariant 1), and nothing was reserved, so
+        # the all-or-nothing reservation below is never half-made (2).
+        credential = credential_for(profile, tenant, self._pool, task=task, forge=self._forge)
         if not credential.runnable:
             self._park(
                 task,
@@ -577,7 +809,7 @@ class Scheduler:
                 task, units=units, backend=backend.value, config=self._admission
             )
         except AdmissionDenied as denied:
-            reasons = self._name_unset_limits(denied.reasons)
+            reasons = denied.reasons
             recorded = self._store.record_blockers(task, reasons)
             if not recorded.applied:
                 # A `not_ready` denial: another scheduler admitted it first.
@@ -638,11 +870,17 @@ class Scheduler:
             )
             if not returned.applied:
                 self._count_stale(returned, report)
-            elif returned.target == TaskState.FAILED.value and task.workflow_id:
-                # This drain just wrote FAILED on a workflow step. Its siblings
-                # may be next in this very pass, and the verdict cached for the
-                # workflow was read before the failure existed.
-                self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
+            elif returned.target in (TaskState.FAILED.value, TaskState.CANCELLED.value):
+                # CANCELLED when a cancel was requested meanwhile (store
+                # `_returned`): terminal all the same, so its dependants are
+                # resolved in this run too (#636).
+                self._note_ended(task.id)
+                if returned.target == TaskState.FAILED.value and task.workflow_id:
+                    # This drain just wrote FAILED on a workflow step. Its
+                    # siblings may be next in this very pass, and the verdict
+                    # cached for the workflow was read before the failure
+                    # existed.
+                    self._workflow_verdicts.pop((task.tenant_id, task.workflow_id), None)
             report.dispatch_failures += 1
             self._metrics.dispatch_failures.labels(backend=backend.value).inc()
             log.warning(
@@ -758,42 +996,6 @@ class Scheduler:
             write=outcome.write, reason=outcome.reason or "unknown"
         ).inc()
 
-    def _name_unset_limits(self, reasons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Admission's blockers, with a ceiling nobody set named as that (#374).
-
-        The frozen admission transaction reads a pool document with no
-        `hard_limit` as limit 0 and refuses with the pool's ordinary reason --
-        TENANT_LIMIT at 0, which says an operator set the pool to zero. Nobody
-        did. Refusing is still right (nothing says how much may run there), so
-        the refusal stands; only its record changes: `POOL_LIMIT_UNSET`, limit
-        null. A pause stays a pause, since it refuses at any ceiling.
-
-        Which pools have no limit is read once per drain, and only once a
-        denial needs it. A blocker is renamed only when admission reported it
-        at 0, which a stand-in 0 always is: a limit written during the drain
-        and actually full is reported at its own positive limit, untouched.
-        """
-        if not any(isinstance(b, dict) and b.get("pool") for b in reasons):
-            return reasons
-        if self._unset_limit_pools is None:
-            self._unset_limit_pools = frozenset(
-                name for name, pool in self._store.pools().items() if not hard_limit_known(pool)
-            )
-        unset = self._unset_limit_pools
-        if not unset:
-            return reasons
-        named: list[dict[str, Any]] = []
-        for blocker in reasons:
-            if (
-                isinstance(blocker, dict)
-                and blocker.get("pool") in unset
-                and blocker.get("reason") != BlockedReason.MANUAL_PAUSE.value
-                and blocker.get("limit") == 0
-            ):
-                blocker = {**blocker, "reason": POOL_LIMIT_UNSET, "limit": None}
-            named.append(blocker)
-        return named
-
     def _park(
         self,
         task: Task,
@@ -822,6 +1024,7 @@ class Scheduler:
         outcome = self._store.cancel(task, text, detail, end_cause=end_cause)
         if outcome.applied:
             self._count_cancel(report, reason=why)
+            self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
 
@@ -948,6 +1151,7 @@ class Scheduler:
                 )
                 if outcome.applied:
                     self._count_cancel(report, reason="workflow_failed")
+                    self._note_ended(step.id)
                     cancelled += 1
                 else:
                     # Leased by a concurrent drain, or finished, since the
@@ -970,9 +1174,11 @@ class Scheduler:
         """Return DEPENDENCY_INCOMPLETE tasks to READY once every parent SUCCEEDED.
 
         This is the "returns to READY when the last parent succeeds" half of
-        dependency resolution. It runs at the top of the drain rather than being
-        triggered by the succeeding worker, so a worker that dies immediately
-        after writing SUCCEEDED cannot strand its children.
+        dependency resolution. It runs at the top of every drain, so a worker
+        that dies immediately after writing SUCCEEDED cannot strand its
+        children. The finish event (`release_dependants`, #636) applies the
+        same rule to one parent's dependants the moment it ends; this sweep is
+        what still releases them when that event is lost.
 
         A dependent whose parent did NOT succeed is cancelled here, and counted
         in `report.cancelled` (and `swarm_scheduler_cancelled_total`) exactly as
@@ -986,46 +1192,54 @@ class Scheduler:
         (`_stop_for_failed_workflow`). Under `continue`, and for a CANCELLED
         parent under either setting, only the dependency rule below applies. It
         is transitive: a cancelled child is itself a "failed parent" to its own
-        children, on this drain or the next.
+        children, resolved in this drain (`_release_ended`, #636), or on the
+        next when a bound stops it.
         """
         promoted = 0
         for task in self._store.parked_tasks(
             ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
         ):
-            if self._stop_for_failed_workflow(task, report):
-                continue
-            if not task.depends_on:
-                # Counted in the metric as well as the report. Incrementing only
-                # the report here made `swarm_scheduler_promoted{kind=
-                # "dependency"}` disagree with DrainReport.promoted_dependencies,
-                # so a dashboard built on the metric under-counted promotions.
-                if self._promote(
-                    task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
-                ):
-                    promoted += 1
-                continue
-            parents = self._store.parent_ends(task.depends_on)
-            states = {tid: end.state for tid, end in parents.items()}
-            failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
-            if failed:
-                self._cancel(
-                    task,
-                    "an upstream workflow step did not succeed",
-                    report,
-                    why="failed_parent",
-                    detail={"failed_parents": failed},
-                    end_cause=_parent_cause(parents, failed),
-                )
-                continue
-            if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
-                if self._promote(
-                    task,
-                    kind="dependency",
-                    detail={"reason": "dependencies_satisfied"},
-                    report=report,
-                ):
-                    promoted += 1
+            if self._resolve_dependency(task, report):
+                promoted += 1
         return promoted
+
+    def _resolve_dependency(self, task: Task, report: DrainReport) -> bool:
+        """The dependency rule for one DEPENDENCY_INCOMPLETE park. True only if promoted.
+
+        Shared by the sweep above and the finish event (`release_dependants`),
+        so the two cannot come to disagree about when a dependant runs.
+        """
+        if self._stop_for_failed_workflow(task, report):
+            return False
+        if not task.depends_on:
+            # Counted in the metric as well as the report. Incrementing only
+            # the report here made `swarm_scheduler_promoted{kind=
+            # "dependency"}` disagree with DrainReport.promoted_dependencies,
+            # so a dashboard built on the metric under-counted promotions.
+            return self._promote(
+                task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
+            )
+        parents = self._store.parent_ends(task.depends_on)
+        states = {tid: end.state for tid, end in parents.items()}
+        failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
+        if failed:
+            self._cancel(
+                task,
+                "an upstream workflow step did not succeed",
+                report,
+                why="failed_parent",
+                detail={"failed_parents": failed},
+                end_cause=_parent_cause(parents, failed),
+            )
+            return False
+        if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
+            return self._promote(
+                task,
+                kind="dependency",
+                detail={"reason": "dependencies_satisfied"},
+                report=report,
+            )
+        return False
 
     def _promote_credentials(self, report: DrainReport) -> int:
         """Re-ready tasks that admission would now let run.
@@ -1055,6 +1269,14 @@ class Scheduler:
         ahead, the task waits for it. Admission's own parks set no instant and
         are unaffected. A key registered meanwhile makes the answer TENANT_KEY,
         which promotes at once: the wait never delays a fix an admin made.
+
+        A GITHUB CONNECTION IS PART OF THE ANSWER (OB6). A task admission
+        parked because its submitter's connection was `refresh_failed`, or
+        missing while a grant names them, stays parked until the connection is
+        `active` again -- the person reconnected -- and is then promoted like
+        any other. If the person instead disconnected, swarm-api deleted their
+        grants, the task no longer needs the user slot, and it is promoted to
+        run as it would have before onboarding.
         """
         promoted = 0
         now = self._now()
@@ -1069,7 +1291,9 @@ class Scheduler:
             profile = RUNNER_PROFILES.get(task.runner_profile)
             if profile is None:
                 continue
-            credential = credential_for(profile, tenant, self._pool)
+            credential = credential_for(
+                profile, tenant, self._pool, task=task, forge=self._forge
+            )
             if (
                 credential.source is CredentialSource.ACCOUNT_POOL
                 and task.next_eligible_at is not None
@@ -1147,8 +1371,15 @@ class Scheduler:
                 promoted += 1
         return promoted
 
-    def _end_exhausted_retry(self, task: Task, report: DrainReport) -> None:
-        text = (
+    def _end_exhausted_retry(
+        self,
+        task: Task,
+        report: DrainReport,
+        *,
+        reason: ParkReason = ParkReason.SCHEDULED_RETRY,
+        text: str | None = None,
+    ) -> None:
+        text = text or (
             f"interrupted on its last attempt ({task.attempt_count} of "
             f"{task.max_attempts}); retries exhausted"
         )
@@ -1162,12 +1393,76 @@ class Scheduler:
             )
             return
         outcome = self._store.dead_letter_parked(
-            task, text, detail={"park_reason": ParkReason.SCHEDULED_RETRY.value}
+            task, text, detail={"park_reason": reason.value}
         )
         if outcome.applied:
             report.dead_lettered += 1
+            self._note_ended(task.id)
         else:
             self._count_stale(outcome, report)
+
+    def _promote_ci_waits(self, report: DrainReport) -> int:
+        """Return CI_PENDING parks to READY on the wake marker or the fallback.
+
+        docs/merge-step.md "Revised 2026-10-06" §1. The scheduler promotes; it
+        never reads GitHub -- it holds no forge token and must not, so a
+        GitHub outage can never slow admission. A merge step parked waiting
+        for its pull request's checks is due when either:
+
+          * `metadata.merge_wait.wake_requested_at` is set: swarm-api's wake
+            tick read the checks settled. Any value counts: the marker is on
+            a tenant-writable document, and a forged one costs one early
+            wake, whose worker re-reads every fact and trusts nothing the
+            tick saw;
+          * `next_eligible_at` has passed: the worker set it to the park
+            instant plus `MERGE_CI_FALLBACK_SECONDS`, so a dead tick or a
+            broken token never strands a merge. A park with no instant at all
+            is due, as `_promote_scheduled_retries` reads one.
+
+        A park on a task that has used its last attempt -- past the worker's
+        `MERGE_CI_MAX_WAKES` a park is not refunded -- is ended at once,
+        DEAD_LETTERED (or CANCELLED when a cancel was requested), exactly as
+        `_end_exhausted_retry` ends a SCHEDULED_RETRY park: admission does not
+        check the cap, so READY would lease one attempt too many.
+
+        Promotion is `promote_to_ready`, guarded on the state and park reason
+        this sweep read, so two drains racing promote it once. It writes the
+        task alone: no lease, no pool count. Only admission, later, takes
+        capacity (invariants 1 and 3).
+        """
+        promoted = 0
+        now = self._now()
+        for task in self._parked_window(ParkReason.CI_PENDING):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            if task.retries_exhausted():
+                self._end_exhausted_retry(
+                    task,
+                    report,
+                    reason=ParkReason.CI_PENDING,
+                    text=(
+                        f"waited for its pull request's checks on its last attempt "
+                        f"({task.attempt_count} of {task.max_attempts}); retries exhausted"
+                    ),
+                )
+                continue
+            wait = (task.metadata or {}).get(MERGE_WAIT_METADATA_KEY)
+            marked = isinstance(wait, dict) and bool(wait.get(MERGE_WAKE_MARKER))
+            eligible_at = task.next_eligible_at
+            if not marked and eligible_at is not None and eligible_at > now:
+                continue
+            if self._promote(
+                task,
+                kind="ci_wait",
+                detail={
+                    "reason": "wake_requested" if marked else "fallback_due",
+                    "park_reason": ParkReason.CI_PENDING.value,
+                    "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
+                },
+                report=report,
+            ):
+                promoted += 1
+        return promoted
 
     # -- child tasks (docs/design/child-tasks.md) ---------------------------
 
@@ -1206,6 +1501,7 @@ class Scheduler:
                 )
                 if outcome.applied:
                     report.dead_lettered += 1
+                    self._note_ended(task.id)
                 else:
                     self._count_stale(outcome, report)
                 continue
@@ -1278,6 +1574,7 @@ class Scheduler:
         )
         if result == "cancelled":
             self._count_cancel(report, reason="child_cascade")
+            self._note_ended(child_id)
         return 1 if result is not None else 0
 
     def _promote_manual_pauses(self, report: DrainReport) -> int:

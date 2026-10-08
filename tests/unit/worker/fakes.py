@@ -145,7 +145,7 @@ class FakeQuery:
     def limit(self, count: int) -> "FakeQuery":
         return FakeQuery(self._db, self._prefix, self._filters, count)
 
-    def stream(self) -> Iterator[FakeSnapshot]:
+    def stream(self, **_call_options: Any) -> Iterator[FakeSnapshot]:
         seen = 0
         for path, doc in sorted(self._db.documents.items()):
             if not path.startswith(self._prefix + "/"):

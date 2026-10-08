@@ -139,6 +139,11 @@ class ParkReason(str, Enum):
     #: the scheduler when every child is terminal; see docs/design/child-tasks.md.
     #: Contract request 40, applied 2026-10-02.
     CHILDREN_INCOMPLETE = "CHILDREN_INCOMPLETE"
+    #: A merge step waits for its pull request's checks; promoted by the
+    #: scheduler's CI-wait sweep on the wake marker or the fallback instant.
+    #: Contract request 49 (docs/merge-step.md, 2026-10-06, request (A)),
+    #: applied 2026-10-06.
+    CI_PENDING = "CI_PENDING"
 
 
 class BlockedReason(str, Enum):
@@ -160,6 +165,10 @@ class BlockedReason(str, Enum):
     DEPENDENCY = "DEPENDENCY"
     SCHEDULED_RETRY = "SCHEDULED_RETRY"
     MANUAL_PAUSE = "MANUAL_PAUSE"
+    #: The pool's document carries no `hard_limit`: nobody set its ceiling, so
+    #: admission refuses through it (contract request 38, #374). Not a limit of
+    #: 0, which says an operator chose zero, and never read as unlimited.
+    POOL_LIMIT_UNSET = "POOL_LIMIT_UNSET"
 
 
 class EventType(str, Enum):

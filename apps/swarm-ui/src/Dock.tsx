@@ -12,7 +12,7 @@ import { probeSnapshot, subscribeProbes } from './fetch'
 import { nudgePane } from './focus'
 import { helpAnchor, type TopicId } from './help'
 import { timeAgo } from './Shell'
-import { DOCK, DOCK_COLLAPSED, clampPane, readPane, summariseProbes, writePane } from './panes'
+import { DOCK, DOCK_COLLAPSED, clampPane, fmtLatency, readPane, summariseProbes, writePane } from './panes'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -66,8 +66,8 @@ export function Dock() {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages on this strip are the whole point of it, so they move on their
   // own rather than only when a fetch happens to land -- on the SHARED clock
-  // (useNow.ts) the head and every screen's sub-line read, so the dock's
-  // `newest 22s ago` and a sub-line's `read just now` are one instant (CH-1).
+  // (useNow.ts) the head and every screen's refresh control read, so the dock's
+  // `newest 22s ago` and a screen's `⟳ 0 s` are one instant (CH-1).
   const now = useNow(AGE_TICK_MS)
   const [open, setOpen] = useState(false)
   const [height, setHeight] = useState(() => readPane(DOCK))
@@ -279,7 +279,7 @@ export function Dock() {
           </span>
           {/* An em dash, never a 0: no sample is not a fast response. */}
           <span className="ctl-dock-fact is-wide">
-            {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${s.p95Ms}ms`}
+            {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${fmtLatency(s.p95Ms)}`}
             {' · '}
           </span>
           <span className={`ctl-dock-fact${s.failed > 0 ? ' ctl-dock-bad' : ''}`}>

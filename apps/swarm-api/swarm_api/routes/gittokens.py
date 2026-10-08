@@ -1,6 +1,7 @@
 """Git token registry routes (docs/git-tokens.md §7; lane GT1). The record is `swarm_api.gittokens`'s.
 
-    GET    /v1/git-tokens                   the tenant's slots, the default first
+    GET    /v1/git-tokens                   the tenant's slots, the default first; each
+                                            marked `yours` for the caller's own user token
     GET    /v1/git-tokens/{token_id}        one slot
     POST   /v1/git-tokens                   register a slot: {"scope", "repo_id"|"repository"?, "repo_ids"?}
     POST   /v1/git-tokens/{token_id}/verify probe it now: {"repository"|"repo_id"}? (lane GT2a)
@@ -51,6 +52,7 @@ from ..gittokens import (
     GitTokens,
     Scope,
     TokenState,
+    Viewer,
     record_for_slot,
     repo_id_for,
 )
@@ -98,6 +100,12 @@ def _probe(ctx: AppContext, tenant_id: str, token_id: str, **kwargs) -> GitToken
         tokens=ctx.forge_tokens, send=_probe_send(ctx), **kwargs,
     )
     return record
+
+
+def _viewer(auth: AuthContext) -> Viewer:
+    """The caller every served record is drawn for: `yours` and which emails
+    it carries come from the verified identity, never from the request."""
+    return Viewer(email=auth.email, is_admin=auth.is_admin)
 
 
 def _require_admin(auth: AuthContext, what: str) -> None:
@@ -154,6 +162,7 @@ def _slot_from(body: GitTokenSlot, tenant_id: str, auth: AuthContext, ctx: AppCo
 @router.get("")
 def list_git_tokens(
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tokens = _tokens(ctx)
@@ -161,7 +170,8 @@ def list_git_tokens(
     pairs = tokens.pair_docs(tenant_id)
     return {
         "tenant_id": tenant_id,
-        "tokens": [record.to_api(pairs) for record in tokens.list(tenant_id)],
+        "tokens": [record.to_api(pairs, viewer=_viewer(auth))
+                   for record in tokens.list(tenant_id)],
         # Which order a task's token is resolved in (docs/git-tokens.md §3.1).
         "resolution_order": "R2",
     }
@@ -171,12 +181,13 @@ def list_git_tokens(
 def get_git_token(
     token_id: str,
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tokens = _tokens(ctx)
     tokens.ensure_tenant_default(ctx.store.get_tenant(tenant_id))
     record = tokens.get(tenant_id, token_id)
-    return {"token": record.to_api(tokens.pair_docs(tenant_id))}
+    return {"token": record.to_api(tokens.pair_docs(tenant_id), viewer=_viewer(auth))}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -195,7 +206,7 @@ def register_git_token(
         # Registration and rotation probe at once (§3.4, §5.3). A slot with no
         # value stored yet answers that in `probe.error`, not as a failure.
         record = _probe(ctx, tenant_id, record.token_id)
-    api = record.to_api(tokens.pair_docs(tenant_id))
+    api = record.to_api(tokens.pair_docs(tenant_id), viewer=_viewer(auth))
     return {
         "token": api,
         "store_command": api["store_command"],
@@ -228,7 +239,7 @@ def verify_git_token(
                                detail={"field": "repository"})
     record = _probe(ctx, tenant_id, token_id, repository=scope.repository,
                     repo_id=scope.repo_id, allowed=allowed)
-    return {"token": record.to_api(_tokens(ctx).pair_docs(tenant_id))}
+    return {"token": record.to_api(_tokens(ctx).pair_docs(tenant_id), viewer=_viewer(auth))}
 
 
 @router.delete("/{token_id}")
@@ -245,7 +256,7 @@ def revoke_git_token(
 
     record = _tokens(ctx).revoke(tenant_id, token_id, by=auth.email, allowed=allowed)
     return {
-        "token": record.to_api(),
+        "token": record.to_api(viewer=_viewer(auth)),
         "note": (
             f"the record is revoked and no task resolves to it; {record.secret_name}'s "
             "versions are unchanged, because swarm-api holds no grant that can disable them. "

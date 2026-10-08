@@ -321,10 +321,12 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     Every other profile declaring `command` is still flagged here."""
     declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
     assert declaring == [
-        "browser", "claude-code", "claude-code-review", "codex", "generic", "mock",
+        "browser", "claude-code", "claude-code-review", "codex", "generic",
+        "indexer", "mock",
     ], declaring
-    # claude-code-review is claude-code under its own Job (contract request 36).
-    for name in ("claude-code", "claude-code-review", "codex"):
+    # claude-code-review is claude-code under its own Job (contract request 36);
+    # indexer is claude-code on the indexer image (contract request 48).
+    for name in ("claude-code", "claude-code-review", "codex", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)

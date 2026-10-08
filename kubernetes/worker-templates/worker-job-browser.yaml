@@ -122,11 +122,11 @@ spec:
             requests:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
             limits:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
           env:
             # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
@@ -242,12 +242,14 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+        # /tmp and HOME from the dispatcher's GkeDisk, like the workspace: the
+        # three sizeLimits add up to the pod's ephemeral-storage, never past it.
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__
         - name: home
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__
         # `optional`: a namespace whose ConfigMap has not been applied yet
         # still starts its pod, and the worker exits CANNOT_START for every
         # task, signed or not (no keys, and no mode or cutover either) --

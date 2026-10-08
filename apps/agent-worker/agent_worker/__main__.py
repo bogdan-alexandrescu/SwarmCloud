@@ -1,6 +1,8 @@
 """Worker entrypoint.
 
     python -m agent_worker
+    python -m agent_worker --self-test   exit 0 at once; the release's warm
+                                         run per job (`self_test`, #363)
 
 Everything that decides WHAT to run comes from the frozen catalogue keyed by
 `RUNNER_PROFILE`; everything the environment supplies is an identifier. The exit
@@ -92,7 +94,9 @@ FINISHED execution whose attempt still holds its task's current lease
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +107,7 @@ from . import hardening, startup
 from .config import WorkerConfig
 from .control import BrokerQuotaReporter, ControlPlane
 from .errors import ConfigError, ExitCode
+from .finishwake import PubSubFinishAnnouncer
 from .lifecycle import Worker, WorkerDeps, _execution_name
 from .logs import build_logger
 from .metrics import build_metrics_exporter
@@ -189,6 +194,7 @@ def build_worker(
         quota_reporter=BrokerQuotaReporter.for_broker(
             config.quota_broker_url, config.quota_broker_audience
         ),
+        finish_announcer=PubSubFinishAnnouncer.for_topic(config.project_id, config.wake_topic),
     )
     if phases is not None:
         phases.rebind(logger)
@@ -242,7 +248,43 @@ def protect_memory(phases: startup.Phases) -> hardening.MemoryProtection:
     return memory
 
 
-def main() -> int:
+#: The one argument the worker reads. The release passes it to one warm
+#: execution of each Cloud Run worker job (`scripts/warm-jobs.sh`, #363).
+SELF_TEST_FLAG = "--self-test"
+
+
+def self_test() -> int:
+    """Exit 0 at once: the image started, and nothing else happened.
+
+    WHY. Measured 2026-10-07 on #363: the first execution of each Cloud Run job
+    after a new image digest spends 30-59 s importing the image, and every
+    later start pays 1-3 s. The release runs one execution of each worker job
+    with this flag after promoting new digests, so that import is paid there
+    and not by the first tenant task.
+
+    It returns before the configuration is read, so before any lease, any
+    Firestore client and any task state: a warm execution carries no task
+    identity, and the reconciler leaves an execution without one alone
+    (`reconciler.backends.CloudRunBackend.list_executions`).
+    """
+    print(
+        json.dumps(
+            {
+                "severity": "INFO",
+                "message": "worker self-test: the image started; exiting 0 before "
+                "configuration, leasing or any client",
+                "self_test": True,
+            }
+        ),
+        flush=True,
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args == [SELF_TEST_FLAG]:
+        return self_test()
     # FIRST, before anything that can fail or hang: one flushed line that says
     # this process exists. A pod whose log is empty never ran this line.
     phases = startup.Phases(startup.bootstrap_logger())

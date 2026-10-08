@@ -36,7 +36,7 @@ from swarm_common.profiles import (
     check_inputs,
 )
 
-from .errors import ValidationFailed
+from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
 #: models already forbid extras; this list is the explicit, greppable statement
@@ -75,14 +75,19 @@ def known_providers() -> tuple[str, ...]:
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
 
-    EXCEPT A WORKER ACTION'S PROVIDER (`APP_CREDENTIAL_PROVIDERS`). Both
+    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). Both
     credential routes accept exactly this set (`routes/tenants.py`,
-    `routes/admin.py`), and a credential registered through them is granted to
-    the tenant's ORDINARY worker account (`credentials._grant_accessor`), whose
-    token any agent of the tenant can mint. `git-merge` and `git-review` are
-    GitHub App keys that only the merge and post-verdict Jobs' own service
-    accounts may read (contract request 33's #364 amendment, accepted
-    2026-10-01), so neither may ever enter through that path.
+    `routes/admin.py` `_check_provider`), and a credential registered through
+    them is granted to the tenant's ORDINARY worker account
+    (`credentials._grant_accessor`), whose token any agent of the tenant can
+    mint. `git-merge` and `git-review` were GitHub App keys meant for the
+    merge and post-verdict Jobs' own accounts (contract request 33's #364
+    amendment). Those accounts are retired (owner decision MS0-Q4,
+    2026-10-06): nothing reads either key any more, so neither is registrable,
+    listed (`service.providers`) or accepted by the quota broker
+    (`quota_broker.main._known_provider`) anywhere. The frozen catalogue still
+    names `git-review` on its disabled post-verdict entry until contract
+    request 50 is decided, which is why the exclusion is still needed.
 
     AND THE FORGE TOKEN, `git`, which the `merge` profile names since contract
     request 47 (2026-10-04). It is the tenant's own forge token, registered
@@ -110,18 +115,16 @@ FORGE_PROVIDER = "git"
 #: 47 moved the merge onto the tenant's `-git` token. Derived from the
 #: catalogue rather than named, so a third worker action is left out of
 #: `known_providers()` the day it is added rather than the day someone
-#: remembers this line. An App key is read by its own Job's service account at
-#: action time and is never registered against the worker account.
-#: `scripts/register-tenant.sh` reads this set to refuse binding one to the
-#: worker; the forge token is the one worker-action provider the worker DOES
-#: read, so it is not in it.
+#: remembers this line. The forge token is the one worker-action provider the
+#: worker DOES read, so it is not in it.
 #:
-#: `git-merge` STAYS IN THE SET after contract request 47 retired it from the
-#: catalogue (`RETIRED_APP_CREDENTIAL_PROVIDERS`). A `-git-merge` secret that
-#: exists holds a GitHub App key; dropping the name here would let
-#: `register-tenant.sh` grant the tenant's worker account read on it, which is
-#: the one thing that secret's design forbids. It goes when the merge account
-#: leaves `terraform/modules/service_account_ids`.
+#: BOTH ARE RETIRED (owner decision MS0-Q4, 2026-10-06): the merge,
+#: post-verdict and review accounts that alone were to read them are gone from
+#: terraform, so no account reads either key. The set stays, as the refusal:
+#: `scripts/register-tenant.sh` reads it to refuse either provider on every
+#: path, and a `-git-merge` or `-git-review` secret that exists still holds an
+#: App key no worker may be granted. `git-merge` is named
+#: (`RETIRED_APP_CREDENTIAL_PROVIDERS`) because the catalogue no longer is.
 RETIRED_APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({"git-merge"})
 APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
     p.provider for p in RUNNER_PROFILES.values()
@@ -586,15 +589,91 @@ MERGE_TARGET_FIELD = "merge_target"
 #: `merge.MERGEABLE_HOSTS` is held equal to this by test_merge_action.py.
 MERGE_FORGE_HOSTS = frozenset({"github.com", "www.github.com"})
 
-#: Attempts a merge step gets. A required check still running fails the
-#: attempt retryably and the step waits READY, holding nothing, for the
-#: worker's `CHECKS_PENDING_RETRY_SECONDS` (300 s) before reading again; ten
-#: attempts is about 45 minutes of CI, against the three a task gets by
-#: default. The API's own ceiling on `max_attempts` is 10.
+#: Attempts a merge step gets. A required check still running no longer
+#: spends one: the step parks CI_PENDING and its attempt is refunded, up to the
+#: worker's `MERGE_CI_MAX_WAKES` (lane MS2, docs/merge-step.md "Revised
+#: 2026-10-06" §1). Past that bound each wake counts, so ten is how many wakes
+#: a pull request whose CI never settles gets after its refunds, and how many
+#: outages a merge survives, against the three a task gets by default. The
+#: API's own ceiling on `max_attempts` is 10.
 MERGE_STEP_MAX_ATTEMPTS = 10
 
 #: The step id an appended merge step takes, suffixed when a step already has it.
 MERGE_STEP_ID = "merge"
+
+# --- the merge step's knobs (lane MS1, docs/merge-step.md "Revised 2026-10-06") ---
+
+#: The key inside a workflow's `metadata` that asks for CI-fix rounds: how
+#: many times a red required check hands the pull request to a fix
+#: continuation before the merge step refuses `checks_failed` (MS7 spends
+#: them). NOT reserved: the caller writes it, and it is stored as written.
+MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
+#: Absent means 0: a red check refuses at once, which is what the built step
+#: does. 5 bounds what one pull request can spend on fix agents before a
+#: person looks at it; each round is a full agent attempt.
+MERGE_FIX_ROUNDS_DEFAULT = 0
+MERGE_FIX_ROUNDS_MAX = 5
+
+
+def resolve_merge_fix_rounds(
+    metadata: Mapping[str, Any], *, merge_step: bool
+) -> int:
+    """A workflow's `metadata.merge_fix_rounds`, or the default when it is absent.
+
+    Refused when it is not an integer in 0-`MERGE_FIX_ROUNDS_MAX` (a bool is
+    not one), and refused whenever it is present on a workflow with no merge
+    step: rounds that nothing would spend are a request that would silently
+    not happen, as `metadata.merge` "on" on such a workflow is refused.
+    """
+    if MERGE_FIX_ROUNDS_KEY not in metadata:
+        return MERGE_FIX_ROUNDS_DEFAULT
+    value = metadata[MERGE_FIX_ROUNDS_KEY]
+    field = f"metadata.{MERGE_FIX_ROUNDS_KEY}"
+    bounds = {"min": 0, "max": MERGE_FIX_ROUNDS_MAX}
+    if isinstance(value, bool) or not isinstance(value, int) or not (
+        0 <= value <= MERGE_FIX_ROUNDS_MAX
+    ):
+        raise DispatchOptionError(
+            f"{field} is {str(value)[:40]!r}; it is a whole number of CI-fix rounds "
+            f"from 0 to {MERGE_FIX_ROUNDS_MAX}, or absent for "
+            f"{MERGE_FIX_ROUNDS_DEFAULT}.",
+            detail={"field": field, "accepted": bounds},
+        )
+    if not merge_step:
+        raise DispatchOptionError(
+            f"{field} asks for CI-fix rounds before a merge, but this workflow has no "
+            f"merge step to spend them. Set metadata.{MERGE_METADATA_KEY} to 'on', "
+            f"or remove {field}.",
+            detail={"field": field, "accepted": bounds, "merge_step": False},
+        )
+    return value
+
+
+def merge_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a repository a merge step can act on, else None.
+
+    Only for a host `is_mergeable_forge` admits, so the pair is a GitHub
+    name. Used to find the tenant's registration of the repository
+    (`swarm_api.repositories.repo_id_for`), never to reach the forge.
+    """
+    if not is_mergeable_forge(repository_url):
+        return None
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if text.startswith("git@"):
+        text = "ssh://" + text.replace(":", "/", 1)
+    try:
+        path = urlsplit(text).path
+    except ValueError:
+        return None
+    parts = [part for part in path.strip("/").split("/") if part]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
 
 
 def dispatchable_strategies() -> tuple[str, ...]:
@@ -707,6 +786,13 @@ CHILD_REQUEST_ID_METADATA_KEY = "child_request_id"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+#: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
+#: §1): what its park waits on, written by the worker's CI_PENDING park, and
+#: the wake marker in it, written by the wake tick (`mergewake`). Restated by
+#: the worker and the scheduler; tests/unit/worker/test_merge_action.py holds
+#: the strings equal.
+MERGE_WAIT_METADATA_KEY = "merge_wait"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -720,6 +806,7 @@ RESERVED_METADATA_KEYS = (
     CHILD_REQUEST_ID_METADATA_KEY,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     CHILD_CASCADE_METADATA_KEY,
+    MERGE_WAIT_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -875,6 +962,36 @@ def check_repository_url(value: str | None) -> str | None:
             "repository_url must not carry a credential (a user name or token before "
             f"'@'); an ssh URL may name only the {SSH_LOGIN!r} user; "
             + REPOSITORY_CREDENTIAL_PATH
+        )
+    return value
+
+
+#: What the worker reads as a commit sha rather than a branch or tag name:
+#: `agent_worker.gitops._SHA_RE`, restated because this image cannot import the
+#: worker. Every ref this matches is fetched BY SHA, and a forge serves a fetch
+#: by sha only for the full 40 characters.
+_WORKER_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_FULL_SHA_LENGTH = 40
+
+
+def check_repository_ref(value: str | None) -> str | None:
+    """Refuse a `repository_ref` the worker would fetch as an abbreviated sha.
+
+    task_531f0eeb was submitted with `b7bda42e` and failed in the clone, after
+    admission, a lease and a container start (history analysis 2026-10-05,
+    F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
+    be fetched, so 7-39 is refused here, before anything holds capacity. A
+    branch or tag name -- anything the worker passes to `--branch` -- and a
+    full sha are accepted unchanged.
+    """
+    if not value:
+        return value
+    if _WORKER_SHA_RE.match(value) and len(value) != _FULL_SHA_LENGTH:
+        raise ValidationFailed(
+            f"repository_ref {value!r} is an abbreviated commit sha, which the clone "
+            f"cannot fetch; send the full {_FULL_SHA_LENGTH}-character sha "
+            f"(`git rev-parse {value}`) or a branch or tag name instead",
+            detail={"field": "repository_ref", "repository_ref": value},
         )
     return value
 
@@ -1068,6 +1185,11 @@ class DispatchOptions:
     #: Here and not read from `metadata` by the worker, because the worker
     #: reads no key the spec signature does not cover.
     pr_label: str | None = None
+    #: The tenant's wave epic (#638), on a GATED step only: the issue the
+    #: worker files the review verdict's MINOR findings on, read from the
+    #: tenant's `findings_epic` setting at submission. Here, inside the signed
+    #: block, so no agent of the tenant can point the worker at another issue.
+    findings_epic: int | None = None
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1095,7 +1217,9 @@ class DispatchOptions:
     #: whose pull request it merges, and -- when the workflow has a review --
     #: `review`, that review's task id, and `verdict_file`, the file it stages
     #: from it. Inside the dispatch block, so the spec signature covers it.
-    merge_target: tuple[tuple[str, str], ...] = ()
+    #: For a `merge_pr` workflow (#352) it names no task: `number` and
+    #: `head_sha`, the pull request and the head the caller named, instead.
+    merge_target: tuple[tuple[str, Any], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -1120,9 +1244,11 @@ class DispatchOptions:
         gate_verdicts: Sequence[str] = (),
         allow_empty_diff: bool = False,
         pr_label: str | None = None,
+        findings_epic: int | None = None,
     ) -> "DispatchOptions":
         """This step's `builds_on`, verdict gate and empty-diff permission,
-        already resolved to task ids. `pr_label` is kept only on a gated step."""
+        already resolved to task ids. `pr_label` and `findings_epic` are kept
+        only on a gated step."""
         return replace(
             self,
             builds_on=builds_on,
@@ -1130,6 +1256,7 @@ class DispatchOptions:
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
             allow_empty_diff=bool(allow_empty_diff),
             pr_label=pr_label if gate_task_id and pr_label else None,
+            findings_epic=findings_epic if gate_task_id and findings_epic else None,
         )
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
@@ -1156,15 +1283,37 @@ class DispatchOptions:
     def with_merge_target(
         self,
         *,
-        pull_request: str,
+        pull_request: str | None = None,
         review: str | None = None,
         verdict_file: str | None = None,
+        base: str | None = None,
+        number: int | None = None,
+        head_sha: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
-        it runs no agent, clones nothing and is integrated by nobody."""
+        it runs no agent, clones nothing and is integrated by nobody.
+
+        `base` is the default branch the tenant registered the repository
+        with, absent when it registered none (lane MS1): the worker refuses a
+        pull request on any other base `base_not_default` from this, inside
+        the signed block, without reading the registry itself.
+
+        A `merge_pr` workflow (#352) names the pull request by `number` and
+        the `head_sha` the caller named instead of by the task that opened
+        it, because no task did; it has no review."""
+        target: list[tuple[str, Any]]
+        if pull_request is None:
+            if number is None or head_sha is None:
+                raise ValueError("a merge target names a task, or a number and a head sha")
+            target = [("number", number), ("head_sha", head_sha)]
+            if base:
+                target.append(("base", base))
+            return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
+        if base:
+            target.append(("base", base))
         return replace(self, role=None, integrates=(), merge_target=tuple(target))
 
     def to_metadata(self) -> dict[str, Any]:
@@ -1192,6 +1341,10 @@ class DispatchOptions:
             block["allow_empty_diff"] = True
         if self.pr_label:
             block["pr_label"] = self.pr_label
+        # Absent unless the tenant set an epic (#638). The worker spells the
+        # key `agent_worker.findings_epic.EPIC_FIELD`.
+        if self.findings_epic:
+            block["findings_epic"] = self.findings_epic
         # Absent unless the step opted in (#75), so a step that did not stores
         # exactly the block it stored before. The worker spells the key
         # `agent_worker.inputs.PARENTS_KEY`.
@@ -1231,6 +1384,10 @@ def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
     `WORKFLOW_LABEL_MAX_CHARS`. A caller's text: the worker scrubs it, refuses
     it if it carries a task id or attribution, and neutralises every mention
     before it titles anything, as it does for an agent's `pr-title.txt`.
+
+    A label of `ready` is a title like any other, merge step or not (owner
+    decision 2026-10-06, #352): it never becomes a GitHub label, so it
+    cannot reach `auto-merge.yml`.
     """
     for key in WORKFLOW_LABEL_KEYS:
         value = (metadata or {}).get(key)
@@ -1293,6 +1450,11 @@ _RESERVED_BECAUSE = {
     CHILD_CASCADE_METADATA_KEY: (
         f"metadata.{CHILD_CASCADE_METADATA_KEY} is reserved: it is set only on a "
         "child task cancelled because of its parent. Drop the key from metadata."
+    ),
+    MERGE_WAIT_METADATA_KEY: (
+        f"metadata.{MERGE_WAIT_METADATA_KEY} is reserved: it is set only on a merge "
+        "step waiting for its pull request's checks, by the worker that parked it "
+        "and the tick that wakes it. Drop the key from metadata."
     ),
 }
 
@@ -1940,9 +2102,12 @@ class MergeSources:
     #: step): `pull_request` is then the continued TASK, which pushed the
     #: head to pin in an earlier workflow, and the step depends on nothing.
     continued: bool = False
+    #: True for a `merge_pr` workflow (#352): no task opened the pull
+    #: request, `pull_request` is "", and the step depends on nothing.
+    named: bool = False
 
     def depends_on(self) -> list[str]:
-        if self.continued:
+        if self.continued or self.named:
             return []
         return [self.pull_request] + ([self.review] if self.review else [])
 
@@ -1957,7 +2122,8 @@ class MergePlan:
 
 
 def merge_sources(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -1975,8 +2141,14 @@ def merge_sources(
     with NO agent step merges that task's pull request at the head that task
     pushed: how an issue run merges once its CI is green and its keyword
     block is written (`issueci`), after the workflow that opened it ended.
+
+    `named_pull` is True for a workflow with `merge_pr` (#352), as
+    `continuation.resolve_merge_pr` checked it: with NO agent step it merges
+    the pull request the caller named, which no task opened.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if named_pull:
+        return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
         return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
@@ -1995,7 +2167,8 @@ def merge_sources(
 
 
 def merge_step_for(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
@@ -2004,7 +2177,7 @@ def merge_step_for(
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         return None
     taken = {step.step_id for step in steps}
@@ -2021,7 +2194,8 @@ def merge_step_for(
 
 
 def plan_merge(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -2068,7 +2242,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "
@@ -2156,6 +2330,113 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+
+# --------------------------------------------------------------------------
+# Whose GitHub credential a task runs with (#780 lane OB7, decision D4)
+# --------------------------------------------------------------------------
+#
+# Contract request 54: `Task.forge_credential` names the slot the worker reads
+# its forge token from and `Task.forge_access` whether it may push. Only
+# swarm-api writes them, at submission, from the grants the person chose
+# under Access (`access.py`, `forge_grants`) -- never from the request body,
+# which `extra="forbid"` refuses them in (invariant 10) -- and BEFORE the spec
+# is signed, so a rewritten value fails the worker's check.
+#
+# D4 as the owner decided it on 2026-10-07: a PERSON's task on a GitHub
+# repository they hold no grant for is refused, 403 REPOSITORY_NOT_GRANTED,
+# until they choose it under Access; a SERVICE ACCOUNT's submission (tenant
+# automation, the release's acceptance suite) and a repository index run
+# use the tenant token, `git`, with write, as before #780. A task with no
+# repository, or one on a host that is not GitHub (grants exist only for
+# GitHub), carries neither field and reads the tenant token as it always has.
+
+#: The code a client branches on. Upper case, like the access API's own
+#: refusals (`access.AccessRefused`), because the console's Access page reads
+#: them side by side.
+REPOSITORY_NOT_GRANTED = "REPOSITORY_NOT_GRANTED"
+
+#: `Task.forge_access` for a service submission: the tenant token's reach, as
+#: before #780. A person's task carries their grant's mode instead.
+SERVICE_FORGE_ACCESS = "write"
+
+#: The domain every Google service account's email ends in, user-managed
+#: (`SERVICE_ACCOUNT_EMAIL`) and Google-managed alike. No person's address
+#: can: no Workspace domain ends in it.
+_SERVICE_ACCOUNT_DOMAIN = ".gserviceaccount.com"
+
+
+class RepositoryNotGranted(Forbidden):
+    """A person submitted work on a GitHub repository they hold no grant for."""
+
+    code = REPOSITORY_NOT_GRANTED
+
+
+def is_service_submitter(email: str | None) -> bool:
+    """Whether the submitter is a service account rather than a person (D4)."""
+    return (email or "").strip().lower().endswith(_SERVICE_ACCOUNT_DOMAIN)
+
+
+def github_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a repository on GitHub, else None.
+
+    Wider than `merge_repository` on purpose: that one answers "can a merge
+    step act here" and says None for a URL with a port or a trailing path.
+    This one answers "would the worker clone from GitHub", so a GitHub host
+    is GitHub whatever port or trailing dot it is written with, and a GitHub
+    URL that names no `owner/repo` is REFUSED rather than read as "not
+    GitHub", which would hand it the tenant token D4 withholds.
+    """
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if not text:
+        return None
+    if text.startswith("git@"):
+        head, _, tail = text.partition(":")
+        text = f"ssh://{head}/{tail}"
+    try:
+        parts = urlsplit(text)
+        # `.hostname` only: `.port` raises on a malformed port, and a host
+        # read as "" there would be "not GitHub".
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        host = ""
+        parts = None
+    if host not in MERGE_FORGE_HOSTS:
+        return None
+    segments = [seg for seg in parts.path.strip("/").split("/") if seg] if parts else []
+    if len(segments) == 2 and segments[1].lower().endswith(".git"):
+        segments[1] = segments[1][:-4]
+    if len(segments) != 2 or not all(segments):
+        raise ValidationFailed(
+            "repository_url on GitHub must name one repository as "
+            "https://github.com/<owner>/<repo>",
+            detail={"field": "repository_url"},
+        )
+    return segments[0], segments[1]
+
+
+def repository_not_granted(refused: Sequence[tuple[str | None, str]]) -> RepositoryNotGranted:
+    """The refusal for every `(step_id, "owner/repo")` the person holds no grant on.
+
+    One refusal for the whole submission, naming each repository and, in a
+    workflow, each step: nothing is stored, so a person fixes all of it at
+    once under Access rather than one resubmission per step.
+    """
+    repositories = sorted({name for _, name in refused}, key=str.lower)
+    if len(repositories) == 1:
+        message = (f"repository {repositories[0]} is not granted to you: "
+                   "choose it under Access")
+    else:
+        message = (f"repositories {', '.join(repositories)} are not granted to you: "
+                   "choose them under Access")
+    detail: dict[str, Any] = {"repository": repositories[0], "repositories": repositories}
+    steps = [{"step_id": step, "repository": name} for step, name in refused if step]
+    if steps:
+        detail["steps"] = steps
+    return RepositoryNotGranted(message, detail=detail)
 
 
 # --------------------------------------------------------------------------

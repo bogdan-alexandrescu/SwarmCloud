@@ -24,6 +24,7 @@ import type { Capacity, Pool, QuotaState, RunnerProfile } from '../types'
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  loadAdminPools: vi.fn(),
   setPoolLimit: vi.fn(),
   loadAdminQuota: vi.fn(),
   // Pool limits reads the session to lock Edit for a non-admin. Unanswered
@@ -149,7 +150,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       ],
     })
     api.loadCapacity.mockResolvedValueOnce(ok(capacity())).mockResolvedValueOnce(ok(after))
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 
@@ -181,7 +182,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     api.loadCapacity
       .mockResolvedValueOnce(ok(capacity()))
       .mockReturnValueOnce(new Promise<Result<Capacity>>((resolve) => (land = resolve)))
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 
@@ -203,7 +204,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       status: 'error',
       error: { kind: 'upstream_degraded', httpStatus: 503, code: 'unavailable', message: 'Firestore did not answer.' },
     })
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 
@@ -414,8 +415,11 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     const global = document.querySelector('.adm-family')!
     expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).toContain('Set by')
     const cell = editorRow('global').querySelector('td[data-label="Set by"]')!
-    expect(cell.textContent).toBe('configured')
+    // A faint dot named `configured` since QA G5-19 (capacity.html §G): never
+    // blank, never the word on every row.
+    expect(cell.textContent).toBe('·')
     expect(cell.querySelector('.adm-setby-cfg'), 'configured is drawn as loud as an override').not.toBeNull()
+    expect(cell.querySelector('.adm-setby-cfg')?.getAttribute('aria-label')).toBe('configured')
   })
 })
 
@@ -471,12 +475,15 @@ function quota(over: Partial<QuotaState>): QuotaState {
   } as QuotaState
 }
 
+// The counts are the screen's count note over its first card since #138
+// (owner ruling 2026-10-07), where they were the line under the title.
+// MUTATION: pluralise unconditionally (`1 documents`), or drop the summary.
 describe('Provider quota counts in English (CP-22)', () => {
   it('says 1 document, 1 provider, 1 tenant', async () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota({})] }))
     render(<QuotaDetailScreen />)
     await screen.findByRole('rowheader', { name: 'eng' }, WAIT)
-    const summary = document.querySelector('p.sub')!.textContent ?? ''
+    const summary = document.querySelector('p.c-count-note')!.textContent ?? ''
     expect(summary).toContain('1 document')
     expect(summary).toContain('1 provider')
     expect(summary).toContain('1 tenant')
@@ -489,7 +496,7 @@ describe('Provider quota counts in English (CP-22)', () => {
     )
     render(<QuotaDetailScreen />)
     await screen.findAllByRole('rowheader', { name: 'eng' }, WAIT)
-    const summary = document.querySelector('p.sub')!.textContent ?? ''
+    const summary = document.querySelector('p.c-count-note')!.textContent ?? ''
     expect(summary).toContain('3 documents')
     expect(summary).toContain('2 providers')
     expect(summary).toContain('2 tenants')
@@ -531,17 +538,17 @@ async function renderQuota(rows: QuotaState[]): Promise<HTMLElement> {
 describe('Provider quota says what its cap is and which pool it feeds (CP-8)', () => {
   it('calls the cap a quota cap, in the header and in the stacked key', async () => {
     const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
-    expect(quotaHeads()).toContain('Quota cap')
+    expect(quotaHeads()).toContain('Quota cap (units)')
     expect(quotaHeads()).not.toContain('Limit')
     // The value is unchanged: the document's effective_limit.
-    expect(row.querySelector('td[data-label="Quota cap"]')?.textContent).toBe('50')
+    expect(row.querySelector('td[data-label="Quota cap (units)"]')?.textContent).toBe('50')
     expect(row.querySelector('td[data-label="Limit"]')).toBeNull()
   })
 
   it('names the pool the cap feeds, right after it, as a link to Pools', async () => {
     const row = await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(1) })])
     const heads = quotaHeads()
-    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap') + 1)
+    expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap (units)') + 1)
     const link = row.querySelector('td[data-label="Feeds pool"] a')
     expect(link, 'the pool is not a link').not.toBeNull()
     // To THAT pool's row on Pools (#128), not to the top of the screen.

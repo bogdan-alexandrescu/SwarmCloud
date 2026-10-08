@@ -55,6 +55,7 @@ the platform keeps, for the reconciler's stuck-browser judgement.
 
 from __future__ import annotations
 
+import functools
 import os
 import resource
 import threading
@@ -664,6 +665,88 @@ def _rounded(value: float | None, places: int = 3) -> float | None:
     return None if value is None else round(float(value), places)
 
 
+#: Upper bound on building the Cloud Monitoring client, and separately on each
+#: `create_time_series` call. The export runs on the attempt's exit path, and
+#: the library's default retry policy would otherwise let a hung or throttled
+#: endpoint hold the exit for minutes; a measurement that misses its write is
+#: still in the log line.
+#:
+#: 5 s, from a measurement: on mock execution swarm-job-smoke-mock-sk8h9
+#: (2026-10-06 06:05) 53 s passed with nothing logged between the "attempt
+#: resource usage" line and the quota park's broker POST, against 1.3-3.1 s
+#: across 24 other quota parks. The likely cause was the client's construction
+#: (credential discovery, a channel), which had no bound at all. 5 s is above
+#: every healthy span measured there and an order of magnitude below the hang.
+#: The worker also records its park or terminal state BEFORE it exports
+#: (`Worker._metrics_after_the_record`), so this bound only limits how long a hung
+#: exporter holds the exit -- never the park.
+EXPORT_TIMEOUT_SECONDS = 5.0
+
+
+def call_with_timeout(fn: Callable[[], Any], timeout_seconds: float, *, name: str) -> Any:
+    """`fn()`, or `TimeoutError` once `timeout_seconds` have passed.
+
+    On a daemon thread, because neither a client's construction nor a gRPC
+    call can be interrupted from outside: a call that never returns is left
+    behind and dies with the process, which is exiting anyway.
+    """
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # handed to the caller below
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True, name=name)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        raise TimeoutError(f"{name} did not return within {timeout_seconds:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _monitored_resource(project_id: str, region: str, labels: dict[str, str]) -> Any:
+    """The `generic_task` resource every series is written against.
+
+    Built from `google.api.monitored_resource_pb2`, the type `TimeSeries.resource`
+    is declared with: google-cloud-monitoring does not re-export it as
+    `monitoring_v3.MonitoredResource`, and asking for that raised on every
+    attempt before a request existed (observer P12, 518 warnings on 2026-10-06).
+
+    Why `generic_task`: it is one of the few resource types Cloud Monitoring
+    accepts custom metrics against, and it fits both backends the same way.
+    `cloud_run_job` is not writable for custom metrics at all, and `k8s_pod`
+    would give the GKE backend a second schema whose labels (cluster, pod)
+    the sizing report does not group by. Its five labels are all required:
+    the tenant is the namespace, the runner profile the job, and the attempt
+    the task, so one series is one attempt.
+    """
+    from google.api import monitored_resource_pb2
+
+    return monitored_resource_pb2.MonitoredResource(
+        type="generic_task",
+        labels={
+            "project_id": project_id,
+            "location": region,
+            "namespace": labels.get("tenant_id") or "unknown",
+            "job": labels.get("runner_profile") or "unknown",
+            "task_id": labels.get("attempt_id") or "unknown",
+        },
+    )
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """Our bound, or the RPC's deadline (api_core's `DeadlineExceeded`, or the
+    `RetryError` its retry policy raises when the deadline ends the retries)."""
+    return isinstance(exc, TimeoutError) or type(exc).__name__ in (
+        "DeadlineExceeded",
+        "RetryError",
+    )
+
+
 class CloudMonitoringExporter:
     """Writes GAUGE time series per attempt to Cloud Monitoring.
 
@@ -671,40 +754,78 @@ class CloudMonitoringExporter:
     and in a SEPARATE write. Those are new metric types, created on their first
     write, and one call that failed on them would take the three series the
     sizing report already depends on down with it.
+
+    Never raises and never logs more than one warning per exporter: a failed
+    write costs the attempt nothing, and one line says why rather than one per
+    write or per retry of the export.
     """
 
-    def __init__(self, project_id: str, region: str, logger: Any, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        project_id: str,
+        region: str,
+        logger: Any,
+        client: Any | None = None,
+        *,
+        timeout_seconds: float = EXPORT_TIMEOUT_SECONDS,
+    ) -> None:
         self._project_id = project_id
         self._region = region
         self._log = logger
         self._client = client
+        self._warned = False
+        self.timeout_seconds = timeout_seconds
+
+    def _build_client(self) -> Any:
+        # The import too: it is the library's first load, and it runs on the
+        # bounded thread with the construction.
+        from google.cloud import monitoring_v3  # lazy: never imported by tests
+
+        return monitoring_v3.MetricServiceClient()
 
     def _get_client(self) -> Any:
+        # Bounded: an unbounded construction is the likely cause of the 53 s
+        # measured on 2026-10-06 (EXPORT_TIMEOUT_SECONDS).
         if self._client is None:
-            from google.cloud import monitoring_v3  # lazy: never imported by tests
-
-            self._client = monitoring_v3.MetricServiceClient()
+            self._client = call_with_timeout(
+                self._build_client, self.timeout_seconds, name="swarm-metrics-client"
+            )
         return self._client
 
+    def _warn_once(self, exc: Exception, write: str) -> None:
+        if self._warned:
+            return
+        self._warned = True
+        self._log.warning(
+            "metrics export failed",
+            exporter=type(self).__name__,
+            write=write,
+            error=str(exc),
+        )
+
     def export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
+        try:
+            self._export(usage, labels)
+        except Exception as exc:
+            self._warn_once(exc, "build")
+
+    def _export(self, usage: ResourceUsage, labels: dict[str, str]) -> None:
+        # The client first, under its bound: it is what imports the library,
+        # and a construction that hung must not be followed by an unbounded
+        # import of the same modules here.
+        try:
+            client = self._get_client()
+        except Exception as exc:
+            self._warn_once(exc, "client")
+            return
+
         from google.cloud import monitoring_v3
 
         now = time.time()
         interval = monitoring_v3.TimeInterval(
             {"end_time": {"seconds": int(now), "nanos": int((now % 1) * 1e9)}}
         )
-        resource = monitoring_v3.MonitoredResource(
-            {
-                "type": "generic_task",
-                "labels": {
-                    "project_id": self._project_id,
-                    "location": self._region,
-                    "namespace": labels.get("tenant_id", "unknown"),
-                    "job": labels.get("runner_profile", "unknown"),
-                    "task_id": labels.get("attempt_id", "unknown"),
-                },
-            }
-        )
+        resource = _monitored_resource(self._project_id, self._region, labels)
         metric_labels = {
             k: str(v)
             for k, v in labels.items()
@@ -730,11 +851,6 @@ class CloudMonitoringExporter:
                 out.append(s)
             return out
 
-        client = self._get_client()
-        client.create_time_series(
-            name=f"projects/{self._project_id}", time_series=_series(values)
-        )
-
         # Integers in milli-units, like every other series here: the metric
         # kind is fixed on first write, and one INT64 convention is one fewer
         # way for a dashboard to be off by a factor of a thousand.
@@ -745,13 +861,33 @@ class CloudMonitoringExporter:
             cpu["peak_cpu_millicores"] = int(round(usage.peak_cpu_cores * 1000))
         if usage.mean_cpu_cores is not None:
             cpu["mean_cpu_millicores"] = int(round(usage.mean_cpu_cores * 1000))
+
+        writes = [("memory", _series(values))]
         if cpu:
+            writes.append(("cpu", _series(cpu)))
+
+        for write, series in writes:
+            # Each write on its own: a CPU write that fails (new metric types)
+            # must not take the memory series down with it, and vice versa.
+            # Bounded twice: the RPC's own deadline, and a thread join in case
+            # the library does not honour it. A write that TIMED OUT, by
+            # either bound, ends the export: the next one would wait on the
+            # same hung endpoint.
             try:
-                client.create_time_series(
-                    name=f"projects/{self._project_id}", time_series=_series(cpu)
+                call_with_timeout(
+                    functools.partial(
+                        client.create_time_series,
+                        name=f"projects/{self._project_id}",
+                        time_series=series,
+                        timeout=self.timeout_seconds,
+                    ),
+                    self.timeout_seconds,
+                    name=f"swarm-metrics-{write}",
                 )
             except Exception as exc:
-                self._log.warning("CPU metrics export failed", error=str(exc))
+                self._warn_once(exc, write)
+                if _timed_out(exc):
+                    return
 
 
 class CompositeExporter:

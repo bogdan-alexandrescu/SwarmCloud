@@ -411,5 +411,8 @@ def test_the_tenant_is_never_crossed(db, config):
         for _, path, *_ in db.writes
         if not path.startswith(("reconciler_passes/", "pools/"))
     }
-    assert touched <= {"tasks/task_1", "leases/lease_1"}, touched
+    # The incident's own superseded attempt gets its end in the same commit
+    # (#630): att_1 is generation 1 of task_1, under a task fenced to 2.
+    assert touched <= {"tasks/task_1", "leases/lease_1", "attempts/att_1"}, touched
     assert db.doc("tasks/task_1")["tenant_id"] == TENANT
+    assert db.doc("attempts/att_1")["tenant_id"] == TENANT

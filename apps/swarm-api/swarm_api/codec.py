@@ -20,6 +20,8 @@ from urllib.parse import quote
 from swarm_common.models import (
     Attempt,
     EndCause,
+    FORGE_ACCESS,
+    FORGE_CREDENTIAL,
     Lease,
     QuotaState,
     SlotPool,
@@ -187,7 +189,48 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 14. Absent on every task that is not a child.
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
+        # Contract request 54. Read back so a task this service decodes and
+        # writes again keeps the signed fields it was submitted with.
+        forge_credential=_forge_credential(data.get("forge_credential")),
+        forge_access=_forge_access(data.get("forge_access")),
     )
+
+
+def _forge_credential(value: Any) -> str | None:
+    """A stored forge credential, or None for an old document and for a value
+    of the wrong shape. A tenant's agent can write its task documents, and one
+    malformed field must not make a task unreadable to every listing here.
+    Nothing here acts on it: the worker verifies the signed document itself,
+    and a None written back over a signed value fails that check."""
+    if isinstance(value, str) and FORGE_CREDENTIAL.fullmatch(value):
+        return value
+    return None
+
+
+def _forge_access(value: Any) -> str | None:
+    """A stored forge access mode, or None -- as `_forge_credential`."""
+    return value if isinstance(value, str) and value in FORGE_ACCESS else None
+
+
+#: What `task_to_api` says a task's `forge_credential` is, by its prefix.
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+_FORGE_SOURCES = (
+    ("git-u-", "the submitter's GitHub credential"),
+    ("git-r-", "the repository's token"),
+)
+
+
+def forge_credential_source(value: str | None) -> str | None:
+    """The words for a task's forge credential, or None when it names none
+    (no repository, not GitHub, or submitted before #780)."""
+    if value is None:
+        return None
+    if value == "git":
+        return "tenant token, service submission"
+    for prefix, words in _FORGE_SOURCES:
+        if value.startswith(prefix):
+            return words
+    return None
 
 
 def _spec_format(value: Any) -> int | None:
@@ -367,6 +410,12 @@ def task_to_api(
         # child was submitted by, set by swarm-api, null for everything else.
         "parent_task_id": task.parent_task_id,
         "parent_attempt_id": task.parent_attempt_id,
+        # #780 OB7: which GitHub credential the task runs with, by NAME (a
+        # slot suffix, never a value), and whether it may push. The owner's
+        # D4 for automation (2026-10-07): "the task says so".
+        "forge_credential": task.forge_credential,
+        "forge_access": task.forge_access,
+        "forge_credential_source": forge_credential_source(task.forge_credential),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,
@@ -566,34 +615,21 @@ def lease_from_dict(data: dict[str, Any]) -> Lease:
 # Pools / quota / tenants
 # --------------------------------------------------------------------------
 
-class UnsetLimitPool(SlotPool):
-    """A pool whose document has no `hard_limit`: its ceiling is UNKNOWN (#374).
-
-    Adds no field and overrides nothing, so every reader that takes a
-    `SlotPool` reads it as the frozen admission transaction reads the same
-    document -- `d.get("hard_limit", 0)`, a ceiling of 0. What it adds is that
-    the 0 is KNOWN to be a stand-in: `pool_to_api` serves the limit as null,
-    because a 0 on the wire says an operator set the pool to zero, and nobody
-    did. The scheduler's codec carries the same class (the two images do not
-    import each other).
-    """
-
-
 def hard_limit_known(pool: SlotPool) -> bool:
-    """False for a pool whose document carried no `hard_limit` (`UnsetLimitPool`)."""
-    return not isinstance(pool, UnsetLimitPool)
+    """False for a pool whose document carried no `hard_limit` (contract request 38)."""
+    return pool.hard_limit is not None
 
 
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
-    """A pool document as a `SlotPool`; an `UnsetLimitPool` when no `hard_limit` was written.
+    """A pool document as a `SlotPool`.
 
-    A missing (or null) `hard_limit` is UNKNOWN, never 0 (#374).
+    A missing (or null) `hard_limit` is None -- no ceiling set, UNKNOWN, never
+    0 -- exactly as the frozen admission transaction reads it (request 38, #374).
     """
     raw_limit = data.get("hard_limit")
-    cls = SlotPool if raw_limit is not None else UnsetLimitPool
-    pool = cls(
+    pool = SlotPool(
         name=name,
-        hard_limit=int(raw_limit) if raw_limit is not None else 0,
+        hard_limit=int(raw_limit) if raw_limit is not None else None,
         adaptive_target=data.get("adaptive_target"),
         quota_derived_limit=data.get("quota_derived_limit"),
         active=int(data.get("active", 0)),
@@ -611,16 +647,58 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
         {
             "admin_changed_by": data.get("admin_changed_by"),
             "admin_changed_at": as_datetime(data.get("admin_changed_at")),
+            "admin_change": _admin_change(data.get("admin_change")),
         },
     )
     return pool
+
+
+#: The fields `Store.upsert_pool` records in `admin_change`, and their types.
+_ADMIN_CHANGE_FIELDS: dict[str, type] = {"hard_limit": int, "enabled": bool}
+
+
+def _admin_change(raw: Any) -> dict[str, dict[str, Any]] | None:
+    """`admin_change` as stored, narrowed to the fields an admin route writes (#133).
+
+    Each entry is `{"from": ..., "to": ...}`. `from` is null when the pool did
+    not exist, or carried no value, before the write. Anything else in the map
+    -- a field this codec does not know, a value of the wrong type -- is left
+    out rather than served as if it were a ceiling. A pool with nothing left
+    is null: no admin change on record.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def typed(v: Any, kind: type) -> Any:
+        if v is None:
+            return None
+        # `bool` is an `int` in Python: a ceiling of `True` is not a ceiling.
+        if kind is int and (isinstance(v, bool) or not isinstance(v, int)):
+            return _INVALID
+        if kind is bool and not isinstance(v, bool):
+            return _INVALID
+        return v
+
+    out: dict[str, dict[str, Any]] = {}
+    for field, kind in _ADMIN_CHANGE_FIELDS.items():
+        entry = raw.get(field)
+        if not isinstance(entry, dict):
+            continue
+        before, after = typed(entry.get("from"), kind), typed(entry.get("to"), kind)
+        if before is _INVALID or after is _INVALID or after is None:
+            continue
+        out[field] = {"from": before, "to": after}
+    return out or None
+
+
+_INVALID = object()
 
 
 _POOL_ATTRIBUTION = "_swarm_admin_attribution"
 
 
 def pool_attribution(pool: SlotPool) -> dict[str, Any]:
-    """`admin_changed_by` / `admin_changed_at` of a pool read by `pool_from_dict` (#133).
+    """`admin_changed_by` / `admin_changed_at` / `admin_change` of a pool read by `pool_from_dict` (#133).
 
     FOR THE ADMIN POOL READS ONLY, which is why it is not in `pool_to_api`:
     `/v1/capacity` serves pools to every tenant member, and an admin's email is
@@ -631,7 +709,7 @@ def pool_attribution(pool: SlotPool) -> dict[str, Any]:
     """
     found = getattr(pool, _POOL_ATTRIBUTION, None)
     if not isinstance(found, dict):
-        return {"admin_changed_by": None, "admin_changed_at": None}
+        return {"admin_changed_by": None, "admin_changed_at": None, "admin_change": None}
     return dict(found)
 
 
@@ -773,17 +851,16 @@ def _age_seconds(at: datetime | None, now: datetime | None) -> float | None:
 
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
     # A ceiling nobody set is served as null, and so is everything computed
-    # from it: an effective limit or an availability derived from a stand-in 0
-    # is the same untruth one step removed (#374).
-    known = hard_limit_known(pool)
+    # from it (#374): the contract's `SlotPool` already says None for all
+    # three (request 38), so nothing here may substitute a 0.
     return {
         "name": pool.name,
-        "hard_limit": pool.hard_limit if known else None,
+        "hard_limit": pool.hard_limit,
         "adaptive_target": pool.adaptive_target,
         "quota_derived_limit": pool.quota_derived_limit,
-        "effective_limit": pool.effective_limit if known else None,
+        "effective_limit": pool.effective_limit,
         "active": pool.active,
-        "available": pool.available if known else None,
+        "available": pool.available,
         "enabled": pool.enabled,
         "updated_at": pool.updated_at,
     }
@@ -826,7 +903,11 @@ def tenant_from_dict(data: dict[str, Any]) -> Tenant:
         tenant_id=data["tenant_id"],
         kind=data.get("kind", "user"),
         principal=data.get("principal", ""),
-        created_at=as_datetime(data.get("created_at")) or datetime.now(timezone.utc),
+        # None when the document holds none (F10): the read time here was a
+        # fabricated creation date that moved on every read. The frozen
+        # `Tenant.created_at` is typed `datetime`; nothing reads it but the
+        # API's tenant view, which serves the None as null.
+        created_at=as_datetime(data.get("created_at")),  # type: ignore[arg-type]
         display_name=data.get("display_name"),
         max_active=int(data.get("max_active", 20)),
         capacity_units=int(data.get("capacity_units", 40)),

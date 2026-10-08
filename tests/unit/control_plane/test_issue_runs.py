@@ -310,7 +310,10 @@ def test_the_machine_is_the_one_454_names():
     }
     assert RUN_TRANSITIONS[RunState.APPROVED] == {RunState.RUNNING, RunState.FAILED}
     # The workflow succeeding opens a pull request; CI decides DONE (issueci).
-    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
+    # DONE from RUNNING: the build changed nothing, already on main (#646).
+    assert RUN_TRANSITIONS[RunState.RUNNING] == {
+        RunState.CHECKING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
+    }
     assert RUN_TRANSITIONS[RunState.CHECKING] == {
         RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
     }
@@ -685,7 +688,19 @@ STAGED_PLAN = {
 #: What `compile_plan` emitted for PLAN on 2026-10-03, before `depends_on`
 #: existed, with the closing-keyword rule and the (empty) requirements list
 #: every compiled prompt now carries. A plan with no `depends_on` anywhere must
-#: compile to exactly this chain.
+#: compile to exactly this chain. Since #646 each build step also allows an
+#: empty diff and asks, when it changes nothing, for the verification table.
+VERIFICATION_ASK = (
+    "\n\nIf the default branch already does everything this step asks, changing nothing "
+    "is a correct outcome: change no file, and write $SWARM_ARTIFACTS_DIR/verification.md, "
+    "a Markdown table with one row, numbered 1, for this step (the plan lists no numbered "
+    "requirements):\n"
+    "| # | Met on main | Where (file, function) | Proving test |\n"
+    "|---|---|---|---|\n"
+    "| 1 | yes | path/to/module.py, function_name | tests/path/test_module.py::test_name |\n"
+    "Met on main is yes only when the default branch delivers that requirement in full "
+    "and a test proves it; otherwise no, saying what is missing.\n"
+)
 CHAIN_AS_BEFORE = {
     "steps": [
         {
@@ -698,9 +713,11 @@ CHAIN_AS_BEFORE = {
                     "issue file named below holds the issue.\n\nThe plan: Make the widget list "
                     "sortable by name.\n\nThis step -- Add a sort key:\nAdd a name sort key to "
                     "WidgetList.\n\nDo this step only. " + issueruns.NO_CLOSING_KEYWORD
+                    + VERIFICATION_ASK
                 ),
                 "issue": 42,
             },
+            "allow_empty_diff": True,
         },
         {
             "step_id": "impl-ui",
@@ -713,9 +730,11 @@ CHAIN_AS_BEFORE = {
                     "sortable by name.\n\nThis step -- Wire the header:\nMake the Name header "
                     "toggle the sort.\n\nThe earlier steps' work is already on this branch. "
                     "Do this step only. " + issueruns.NO_CLOSING_KEYWORD
+                    + VERIFICATION_ASK
                 ),
                 "issue": 42,
             },
+            "allow_empty_diff": True,
             "depends_on": ["impl-sort-key"],
             "builds_on": "impl-sort-key",
         },
@@ -1330,3 +1349,13 @@ def test_a_join_stages_every_ancestor_its_base_branch_does_not_carry(client, db,
     _finish_planner(db, objects, run, plan)
     read = _run(client, run["id"]).json()["run"]
     assert _approve(client, run["id"], read["plan_digest"]).status_code == 200
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

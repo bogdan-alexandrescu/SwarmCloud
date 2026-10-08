@@ -20,7 +20,7 @@ from agent_worker import lifecycle
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 FAILURE_LINE = "FATAL: the line the runner actually failed on"
 

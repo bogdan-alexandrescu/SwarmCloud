@@ -25,7 +25,7 @@ from agent_worker.runners.base import EXIT_CREDENTIAL_REVOKED, EXIT_QUOTA_EXHAUS
 from agent_worker.runners.cliagent import detect_credential_failure, detect_rate_limit
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 
 
 # -- detection -------------------------------------------------------------

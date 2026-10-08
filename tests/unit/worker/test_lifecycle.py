@@ -17,7 +17,7 @@ from fakes import FakeSecretClient
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 
 def test_successful_attempt_persists_state_uploads_and_releases(db, store, worker_factory):

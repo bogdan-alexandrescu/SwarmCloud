@@ -39,14 +39,16 @@ requests" has no mechanism to do so -- not a quota it would exhaust first.
 from __future__ import annotations
 
 import base64
+import functools
 import http.client
 import json
 import re
+import socket
 import ssl
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, TypeVar
 from urllib.parse import quote, urlencode, urlparse
 
@@ -132,8 +134,22 @@ def transient_network_error(exc: BaseException) -> bool:
     if isinstance(reason, ssl.SSLCertVerificationError):
         return False
     if isinstance(reason, str):
-        return "timed out" in reason.lower()
+        return bool(_TRANSIENT_REASON.search(reason))
     return isinstance(reason, (OSError, http.client.HTTPException))
+
+
+#: A network failure that arrives as TEXT rather than as an exception (a
+#: `URLError` whose reason is a string, or a proxy's message): a timeout, a
+#: connect failure, a DNS failure or a dropped connection. Only "timed out"
+#: was read before, so "Failed to connect to github.com port 443" ended its
+#: call as a permanent `ForgeError` (#623, 2026-10-05).
+_TRANSIENT_REASON = re.compile(
+    r"timed out|failed to connect|couldn't connect|could not resolve"
+    r"|temporary failure in name resolution|name or service not known"
+    r"|connection (?:reset|refused|closed|aborted)|network is unreachable"
+    r"|no route to host|remote end closed connection",
+    re.IGNORECASE,
+)
 
 
 def _network_reason(exc: BaseException) -> Any:
@@ -307,14 +323,26 @@ class PullRequest:
     #: False when an open pull request for this branch already existed. A
     #: resumed attempt pushing again must update that one, never open a second.
     created: bool
-    #: True when that existing pull request's title and body were replaced
-    #: (`open_pull_request(update_existing=True)`, #214).
+    #: True when an adopted pull request was edited at all: retitled, a
+    #: section appended to its body, or both (`retitled`, `appended`).
     updated: bool = False
     #: The title GitHub reports for an ADOPTED pull request (empty on one this
     #: call created). Read only so `open_pull_request` can tell a title a
     #: human may have written from the platform's own stale one (`retitle_if`,
     #: #259 follow-up); nothing else in this module or its caller uses it.
     title: str = ""
+    #: The body GitHub reports for an ADOPTED pull request (empty on one this
+    #: call created): what an amendment is appended to, and what the
+    #: closing-line guard compares a new body against (#807).
+    body: str = ""
+    #: The adopted pull request's title was replaced.
+    retitled: bool = False
+    #: A section was appended to the adopted pull request's body (#807).
+    appended: bool = False
+    #: The closing-keyword lines a proposed body would have dropped, when the
+    #: guard in `_update_pull_request` refused to send it (#807). Empty when
+    #: no body was refused.
+    body_refused: tuple[str, ...] = ()
 
 
 def parse_repo(url: str) -> RepoRef | None:
@@ -361,6 +389,176 @@ def parse_repo(url: str) -> RepoRef | None:
     return RepoRef(host=host, owner=owner, name=name)
 
 
+# ---------------------------------------------------------------------------
+# The one opener for every request that carries a forge token (#645, #307)
+# ---------------------------------------------------------------------------
+#
+# `urllib.request.urlopen` follows 301/302/303/307/308 and builds the follow-up
+# request with the original's headers, `Authorization` included, wherever the
+# `Location` points. A forge answer of `302 Location: https://elsewhere/` would
+# hand the tenant's token -- or the worker actions' installation token -- to a
+# host that must never see it. So every request this worker makes with a forge
+# token goes through `_NO_REDIRECT_OPENER`, via `open_without_redirects`: a 3xx
+# comes back as an HTTPError carrying its own status and is never followed, to
+# another host or to the same one. GitHub's API has no call here it answers
+# with a redirect it needs followed; a renamed repository's 301 is refused and
+# says so, which is the safe answer to a credential question.
+#
+# `_request` (the probe and the pull-request calls), `_open` (the pinned
+# client's transport) and `issue._open` (the issue fetch) are the call sites;
+# tests/unit/worker/test_forge_no_redirect.py fails if any of them, or any
+# other module that imports this one, opens a URL another way.
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Answer every redirect with None, so urllib raises it as an HTTPError.
+
+    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
+    default one, so no other handler follows it either.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+@dataclass(frozen=True)
+class ConnectBound:
+    """A connect timeout apart from the read timeout, and how often to retry it.
+
+    urllib has one `timeout`, and http.client gives it to the TCP connect, the
+    TLS handshake and every later read alike. A caller that wants a stalled
+    connect to give up early and try again -- without cutting short a forge
+    that connected and is slow to answer -- passes one of these to
+    `open_without_redirects`. Only a timeout or a refused/reset connection is
+    retried: a certificate the host could not prove (`ssl.SSLError`) and a
+    DNS failure (`socket.gaierror`) are not `ConnectionError`s and raise at
+    once, to the caller's own classification.
+    """
+
+    timeout: float
+    tries: int = 1
+    #: The wait before the second try; doubled before each later one.
+    backoff_seconds: float = 0.0
+    sleep: Callable[[float], Any] = time.sleep
+
+
+#: The attribute of a `Request` that carries its `ConnectBound` to the handler.
+#: urllib keeps `timeout` on the request the same way.
+_CONNECT_BOUND_ATTR = "swarm_connect_bound"
+
+
+class _ConnectBounded:
+    """An http.client connection whose connect obeys a `ConnectBound`.
+
+    `self.timeout` (urllib's `timeout`) is kept as the READ timeout: the
+    connect runs under the bound's own timeout, and the connected socket --
+    the TLS one, for https -- is then set to the read timeout. Subclassing the
+    connection and overriding `connect` is the smallest correct way with
+    urllib: the connect timeout is fixed at `socket.create_connection` and the
+    TLS handshake inherits it, so nothing outside the connection can tell the
+    two phases apart.
+    """
+
+    def __init__(self, *args: Any, connect_bound: ConnectBound, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        self._connect_bound = connect_bound
+
+    def connect(self) -> None:
+        bound = self._connect_bound
+        read_timeout = self.timeout  # type: ignore[has-type]
+        if read_timeout is socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+            read_timeout = socket.getdefaulttimeout()
+        attempt = 1
+        while True:
+            self.timeout = bound.timeout
+            try:
+                super().connect()  # type: ignore[misc]
+            except ssl.SSLError:
+                self._drop_socket()
+                raise
+            except (TimeoutError, ConnectionError):
+                self._drop_socket()
+                if attempt >= bound.tries:
+                    raise
+                bound.sleep(bound.backoff_seconds * (2 ** (attempt - 1)))
+                attempt += 1
+                continue
+            finally:
+                self.timeout = read_timeout
+            self.sock.settimeout(read_timeout)  # type: ignore[attr-defined]
+            return
+
+    def _drop_socket(self) -> None:
+        # The socket only, never `close()`: http.client connects lazily inside
+        # `send()`, after the request line is queued, and `close()` would reset
+        # that request's state and fail the try that does connect.
+        sock, self.sock = self.sock, None  # type: ignore[has-type]
+        if sock is not None:
+            sock.close()
+
+
+class _ConnectBoundedHTTP(_ConnectBounded, http.client.HTTPConnection):
+    pass
+
+
+class _ConnectBoundedHTTPS(_ConnectBounded, http.client.HTTPSConnection):
+    pass
+
+
+_BOUNDED_CONNECTION = {
+    http.client.HTTPConnection: _ConnectBoundedHTTP,
+    http.client.HTTPSConnection: _ConnectBoundedHTTPS,
+}
+
+
+class _HonoursConnectBound:
+    """Opens a request carrying a `ConnectBound` through `_ConnectBounded`.
+
+    `do_open` is where urllib hands over the connection class, in every
+    Python this worker runs; a request with no bound is opened exactly as the
+    stock handler opens it.
+    """
+
+    def do_open(self, http_class, req, **http_conn_args):  # noqa: ANN001
+        bound = getattr(req, _CONNECT_BOUND_ATTR, None)
+        if bound is not None:
+            http_class = functools.partial(_BOUNDED_CONNECTION[http_class], connect_bound=bound)
+        return super().do_open(http_class, req, **http_conn_args)  # type: ignore[misc]
+
+
+class _HTTPHandler(_HonoursConnectBound, urllib.request.HTTPHandler):
+    pass
+
+
+class _HTTPSHandler(_HonoursConnectBound, urllib.request.HTTPSHandler):
+    pass
+
+
+#: Subclasses of HTTPHandler and HTTPSHandler REPLACE the defaults in
+#: `build_opener`, as `_NoRedirect` replaces the redirect handler.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect, _HTTPHandler, _HTTPSHandler)
+
+
+def open_without_redirects(
+    request: urllib.request.Request,
+    *,
+    timeout: float = _TIMEOUT,
+    connect: ConnectBound | None = None,
+) -> Any:
+    """Send one request through the no-redirect opener. A 3xx raises as HTTPError.
+
+    The only way a request carrying a forge token leaves this process. It
+    reads `_NO_REDIRECT_OPENER` at call time, so a test that replaces it sees
+    every call.
+
+    With `connect`, `timeout` bounds each read only and the connect is bounded
+    and retried by `connect` (`ConnectBound`); without it, `timeout` bounds
+    the connect and each read alike, as urllib does.
+    """
+    setattr(request, _CONNECT_BOUND_ATTR, connect)
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
 def _request(
     url: str,
     *,
@@ -378,10 +576,17 @@ def _request(
         req.add_header("Content-Type", "application/json")
     host = urlparse(url).hostname
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_TIMEOUT) as response:
             raw = response.read().decode("utf-8", errors="replace")
             return response.status, (json.loads(raw) if raw.strip() else None)
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            # Never followed (`_NO_REDIRECT_OPENER`), and not read as an answer
+            # either: the caller learns the forge redirected, and the token
+            # went to the first host only. `Location` is not quoted -- it
+            # names wherever the redirect pointed, which is not ours to log.
+            exc.close()
+            raise ForgeRedirectRefused(exc.code, urlparse(url).path) from None
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
@@ -411,8 +616,12 @@ def _request(
 def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     """Ask the forge what this token may do. One GET, no side effect.
 
-    None means "this is not a forge I can publish to" -- an unrecognised host,
-    or no credential at all. The caller harvests a patch and says so.
+    None means the URL does not parse as a forge repository URL (no host, or
+    fewer than two path segments); there is no host allow-list, so any host
+    that parses is treated as GitHub. A missing credential, or a host the
+    tenant's credential may not be sent to, returns a `RepoAccess` with
+    `can_push=False` and the reason. Either way the caller harvests a patch
+    and says so.
     """
     ref = parse_repo(url)
     if ref is None:
@@ -489,6 +698,65 @@ def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     )
 
 
+#: GitHub's own cap on a pull request body, in characters. An appended
+#: section is cut to fit under it; the existing body never is (#807).
+PR_BODY_MAX_CHARS = 65536
+
+#: A line GitHub reads as closing an issue on merge -- `close`, `fix` or
+#: `resolve` in any tense, an optional colon, then `#N` or `owner/repo#N` --
+#: or a `part of #N` line, which is how the platform says an issue is NOT
+#: closed. Either, dropped from a body, changes what the merge does to an
+#: issue without anyone deciding it (#807: #775 lost three).
+_CLOSING_LINE_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:[\w.-]+/[\w.-]+)?#\d+"
+    r"|\bpart\s+of\s+(?:[\w.-]+/[\w.-]+)?#\d+",
+    re.IGNORECASE,
+)
+#: Said where an appended section had to be cut to fit `PR_BODY_MAX_CHARS`.
+_AMENDMENT_CUT_NOTE = "\n\n_[section cut to fit GitHub's body limit by the worker]_"
+
+
+def closing_lines(body: str | None) -> list[str]:
+    """Every line of `body`, stripped, that names a closing keyword or `part of #N`."""
+    return [
+        line.strip() for line in (body or "").splitlines() if _CLOSING_LINE_RE.search(line)
+    ]
+
+
+def dropped_closing_lines(current: str | None, proposed: str | None) -> list[str]:
+    """The closing lines of `current` that `proposed` no longer has, in order."""
+    kept = {line.strip() for line in (proposed or "").splitlines()}
+    return [line for line in closing_lines(current) if line not in kept]
+
+
+def appended_body(current: str | None, section: str) -> str | None:
+    """`current`, verbatim, with `section` appended after a blank line -- or
+    None when there is nothing to send.
+
+    None when `section`'s first line (its heading) is already a line of
+    `current`, so a publish retried by the same attempt appends nothing the
+    second time, and when not even the heading fits under
+    `PR_BODY_MAX_CHARS`. Only the SECTION is ever cut to fit: the existing
+    body is a human's or another task's, and its closing lines are the point.
+    """
+    current = current or ""
+    section = section.strip()
+    if not section:
+        return None
+    heading = section.splitlines()[0].strip()
+    if heading in {line.strip() for line in current.splitlines()}:
+        return None
+    base = current.rstrip()
+    joiner = "\n\n" if base else ""
+    body = f"{base}{joiner}{section}\n"
+    if len(body) <= PR_BODY_MAX_CHARS:
+        return body
+    room = PR_BODY_MAX_CHARS - len(base) - len(joiner) - len(_AMENDMENT_CUT_NOTE) - 1
+    if room < len(heading):
+        return None
+    return f"{base}{joiner}{section[:room].rstrip()}{_AMENDMENT_CUT_NOTE}\n"
+
+
 def open_pull_request(
     *,
     access: RepoAccess,
@@ -497,7 +765,7 @@ def open_pull_request(
     base: str,
     title: str,
     body: str,
-    update_existing: bool = False,
+    amendment: str | None = None,
     retitle_if: Callable[[str], bool] | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
@@ -507,21 +775,25 @@ def open_pull_request(
     noise that a human has to close by hand. GitHub answers 422 for the
     duplicate; that is looked up rather than treated as a failure.
 
-    `update_existing` replaces an adopted pull request's title and body with
-    these (#214). The worker asks for it only when the AGENT wrote them
-    (`pr-title.txt`, `pr-body.md`): a retry whose agent wrote a new
-    `Closes #N` must put it on the pull request it reuses, and a retry with
-    nothing of the agent's to say must not overwrite a title or body a human
-    edited by hand. A refused update is not a failure -- the pull request is
-    still adopted, with `updated` False.
+    `title` and `body` are used ONLY for a pull request this call opens. AN
+    ADOPTED PULL REQUEST'S BODY IS NEVER REPLACED (#807): it is the
+    implementer's, or a human's, and its `Closes #N` lines are what the merge
+    closes issues by -- a CI fixer's republish that replaced it with its own
+    provenance left three issues open on #775. `amendment`, when given, is
+    APPENDED to the adopted body as one marked section (`appended_body`:
+    once per heading, cut to fit, the existing text verbatim); without one
+    the body is not touched. A pull request whose body was added to says so
+    with `appended`.
 
-    `retitle_if`, separately, retitles an adopted pull request whose CURRENT
-    title it answers True for -- the worker passes the owner's 2026-09-28 rule
-    that a title never carries the task id, so a pull request left with the
-    old `[swarm] task_...` fallback is retitled the next time this task's
-    branch is pushed, whether or not the agent wrote anything of its own. Only
-    the title is replaced on that path: the body may be a human's, and
-    nothing about it broke the rule.
+    `retitle_if` retitles an adopted pull request whose CURRENT title it
+    answers True for, to `title`. The worker passes two rules: the owner's
+    2026-09-28 rule that a title never carries the task id (a pull request
+    left with the old `[swarm] task_...` fallback), and #807's -- the agent
+    wrote `pr-title.txt` and the current title is the worker's own default.
+    Any other title, a human's or the implementer's, is kept.
+
+    A refused update is not a failure -- the pull request is still adopted,
+    with `updated` False.
     """
     ref = access.ref
     if not may_receive_forge_token(ref.host):
@@ -548,15 +820,19 @@ def open_pull_request(
     if status == 422:
         existing = _find_open_pull_request(access=access, token=token, head=head)
         if existing is not None:
-            if update_existing and existing.number:
-                return _update_pull_request(
-                    access=access, token=token, existing=existing, title=title, body=body
-                )
-            if retitle_if is not None and existing.number and retitle_if(existing.title):
-                return _update_pull_request(
-                    access=access, token=token, existing=existing, title=title, body=None
-                )
-            return existing
+            if not existing.number:
+                return existing
+            new_title = (
+                title if retitle_if is not None and retitle_if(existing.title) else None
+            )
+            new_body = (
+                appended_body(existing.body, amendment) if amendment is not None else None
+            )
+            if new_title is None and new_body is None:
+                return existing
+            return _update_pull_request(
+                access=access, token=token, existing=existing, title=new_title, body=new_body
+            )
         message = ""
         if isinstance(data, dict):
             errors = data.get("errors")
@@ -598,18 +874,36 @@ def _find_open_pull_request(
         state=str(first.get("state") or "open"),
         created=False,
         title=str(first.get("title") or ""),
+        body=str(first.get("body") or ""),
     )
 
 
 def _update_pull_request(
-    *, access: RepoAccess, token: str, existing: PullRequest, title: str, body: str | None
+    *,
+    access: RepoAccess,
+    token: str,
+    existing: PullRequest,
+    title: str | None,
+    body: str | None,
 ) -> PullRequest:
-    """PATCH an adopted pull request's title and body (title only when `body`
-    is None); `updated` says whether it took."""
+    """PATCH an adopted pull request's title and/or body (each only when not
+    None); `updated` says whether it took.
+
+    THE GUARD (#807): a body that drops any closing-keyword or `part of #N`
+    line the CURRENT body has is never sent, whoever built it. The title, if
+    any, still goes; `body_refused` names the lines that would have been lost.
+    """
     ref = access.ref
-    payload: dict[str, Any] = {"title": title}
+    payload: dict[str, Any] = {}
+    if title is not None:
+        payload["title"] = title
+    refused: tuple[str, ...] = ()
     if body is not None:
-        payload["body"] = body
+        refused = tuple(dropped_closing_lines(existing.body, body))
+        if not refused:
+            payload["body"] = body
+    if not payload:
+        return replace(existing, updated=False, body_refused=refused)
     try:
         status, _ = _request(
             f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls/{existing.number}",
@@ -621,12 +915,85 @@ def _update_pull_request(
         # The pull request exists either way; an unreachable forge on the
         # update must not read as "no pull request was opened".
         status = 0
+    took = status == 200
     return PullRequest(
         number=existing.number,
         url=existing.url,
         state=existing.state,
         created=False,
-        updated=status == 200,
+        updated=took,
+        title=existing.title,
+        body=existing.body,
+        retitled=took and "title" in payload,
+        appended=took and "body" in payload,
+        body_refused=refused,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue comments: a review's minor findings on the tenant's wave epic (#638)
+# ---------------------------------------------------------------------------
+
+#: The most pages of an epic's comments read before refusing to file. The
+#: dedup has to see EVERY comment: one it never read is a finding filed twice.
+#: 30 pages of 100 is GitHub's own cap on a list read elsewhere in this module.
+MAX_COMMENT_PAGES = 30
+COMMENTS_PER_PAGE = 100
+
+
+def _issue_comments_url(ref: RepoRef, number: int) -> str:
+    if ref is None or not may_receive_forge_token(ref.host):
+        # Asked where the token would leave, as `open_pull_request` asks (#307).
+        raise ForgeError(
+            "refusing to send the tenant's git credential to "
+            f"{getattr(ref, 'host', None)}: it is sent only to github.com"
+        )
+    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+        raise ForgeError(f"{number!r} is not an issue number")
+    return f"{ref.api_base}/repos/{ref.owner}/{ref.name}/issues/{number}/comments"
+
+
+def list_issue_comments(*, ref: RepoRef, token: str, number: int) -> list[str]:
+    """The body of every comment on issue `number`, oldest first. GETs only.
+
+    Raises `ForgeUnavailable` on an outage and `ForgeError` on anything else
+    -- an issue that does not exist, a token that cannot read it, or more
+    comments than `MAX_COMMENT_PAGES` pages -- because a partial list read as
+    whole would let a finding be filed twice.
+    """
+    url = _issue_comments_url(ref, number)
+    bodies: list[str] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        status, data = _request(f"{url}?per_page={COMMENTS_PER_PAGE}&page={page}", token=token)
+        if status != 200 or not isinstance(data, list):
+            message = _message_of(data)
+            failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+            raise failure(
+                f"could not read the comments of issue #{number} ({status})"
+                + (f": {message}" if message else "")
+            )
+        bodies += [str(c.get("body") or "") for c in data if isinstance(c, dict)]
+        if len(data) < COMMENTS_PER_PAGE:
+            return bodies
+    raise ForgeError(
+        f"issue #{number} has more than {MAX_COMMENT_PAGES * COMMENTS_PER_PAGE} comments; "
+        "they were not all read, so nothing is filed on it"
+    )
+
+
+def create_issue_comment(*, ref: RepoRef, token: str, number: int, body: str) -> int:
+    """Post one comment on issue `number`; its id. Never retried by this module:
+    a POST whose answer was lost may have made the comment, and the caller's
+    dedup on its next run is what finds it."""
+    status, data = _request(
+        _issue_comments_url(ref, number), token=token, method="POST", payload={"body": body}
+    )
+    if status == 201 and isinstance(data, dict):
+        return int(data.get("id") or 0)
+    message = _message_of(data)
+    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    raise failure(
+        f"could not comment on issue #{number} ({status})" + (f": {message}" if message else "")
     )
 
 
@@ -739,24 +1106,10 @@ class ForgeResponse:
 Transport = Callable[[urllib.request.Request], tuple[int, Mapping[str, str], bytes]]
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Answer every redirect with None, so urllib raises it as an HTTPError.
-
-    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
-    default one, so no other handler follows it either.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
 def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], bytes]:
     """Send one request with the no-redirect opener; a 3xx comes back as itself."""
     try:
-        with _NO_REDIRECT_OPENER.open(request, timeout=_TIMEOUT) as response:
+        with open_without_redirects(request, timeout=_TIMEOUT) as response:
             return response.status, dict(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read() if exc.fp is not None else b""

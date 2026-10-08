@@ -20,15 +20,17 @@ output "scheduler_job_names" {
       google_cloud_scheduler_job.safety_tick.name,
       google_cloud_scheduler_job.reconciler.name,
       try(google_cloud_scheduler_job.quota_refresh[0].name, ""),
+      try(google_cloud_scheduler_job.forge_refresh[0].name, ""),
     ]),
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.workflow_rollup[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.issue_run_advance[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.repo_index_poll[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.merge_wake[t].name],
   )
 }
 
 output "rollup_sweeper_email" {
-  description = "The identity the workflow-rollup, issue-run-advance and repo-index-poll jobs present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance and POST /v1/admin/repositories/poll and nothing else."
+  description = "The identity the workflow-rollup, issue-run-advance, repo-index-poll and merge-wake jobs present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/repositories/poll and POST /v1/admin/merges/wake and nothing else."
   value       = local.rollup_sweeper_email
 }
 
@@ -45,4 +47,9 @@ output "issue_run_advance_schedule" {
 output "repo_index_poll_schedule" {
   description = "Exposed so a test can assert how often registered repositories are polled (docs/repo-index.md §3.3)."
   value       = var.repo_index_poll_schedule
+}
+
+output "execution_cancel_topic" {
+  description = "Where swarm-api publishes a cancelled task's attempt for the reconciler to stop (#627)."
+  value       = google_pubsub_topic.execution_cancel.name
 }

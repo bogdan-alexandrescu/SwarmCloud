@@ -47,6 +47,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
+| 38 | `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374) | accepted by the owner 2026-10-05 (recorded on #374), IMPLEMENTED 2026-10-05 (functionality wave 7, lane CR38) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
 | 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
@@ -56,6 +57,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 | 46 | `models.py`: a pull-request step that published nothing has no end cause (functionality wave 3, lane B46) | open |
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
+| 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
+| 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
+| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
+| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
+| 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
+| 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 
 ---
 
@@ -66,7 +73,7 @@ edit the frozen module itself.
 
 ### The claim that is false
 
-`apps/common/swarm_common/identity.py:88`:
+`apps/common/swarm_common/identity.py::tenant_id_for_user`:
 
 ```python
 def tenant_id_for_user(email: str) -> str:
@@ -161,7 +168,7 @@ The original request follows, unchanged, as the record of what was asked for.
 
 ### What is missing
 
-`Attempt` (`apps/common/swarm_common/models.py:196-215`) carries
+`Attempt` (`apps/common/swarm_common/models.py::Attempt`) carries
 `peak_rss_bytes` and `peak_disk_bytes`. It carries no token count and no cost.
 
 So the platform records precisely how much MEMORY an agent used and nothing at
@@ -278,7 +285,7 @@ if source.input_from:
 
 **Read by exactly one place.** `agent-worker/agent_worker/inputs.py:56`
 (`METADATA_KEY = "input_from"`) and `declared_inputs()` at `:109-154`, called
-from `lifecycle.py:875-905` (`_stage_declared_inputs`). `declared_inputs` then
+from `apps/agent-worker/agent_worker/lifecycle.py::Worker._stage_declared_inputs`. `declared_inputs` then
 re-validates every key and every value at runtime -- the key is a non-empty
 string, the value is a non-empty string, no two entries share a destination --
 because the contract types `metadata` as `dict[str, Any]` and says nothing about
@@ -301,7 +308,7 @@ upstream dependency" -- and `:412-425` enforces it, so a step cannot stage an
 artifact from a step that may never have run. That check lives in the workflow
 path. Meanwhile `reject_reserved_metadata` (`validation.py:242-255`) reserves
 `dispatch` and nothing else, and
-`tests/unit/control_plane/test_dispatch_strategy.py:572-573` pins that
+`tests/unit/control_plane/test_dispatch_strategy.py::test_reject_reserved_metadata_allows_everything_else` pins that
 `input_from` is deliberately allowed through:
 
 ```python
@@ -396,7 +403,7 @@ re-validates every key at runtime."
 
 ### The shape, and its single writer
 
-`agent-worker/agent_worker/lifecycle.py:2110`, inside `_upload_outputs`:
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._upload_outputs`:
 
 ```python
 artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
@@ -427,7 +434,7 @@ rendered (`gs://...` in production, `file://...` locally).
 A fifth thing shares the name and not the shape:
 `agent-worker/agent_worker/runners/base.py:172` writes
 `"artifacts": [<filename>, ...]` -- a list of **strings** -- into the runner's
-`result.json`. It is not copied into `result_summary` (`lifecycle.py:697-707`
+`result.json`. It is not copied into `result_summary` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._add_runner_block`
 takes `status`, `summary`, `output` and `metrics` only), so the two do not
 collide today. They are two identically-named fields with incompatible shapes in
 one codebase, which is the ambiguity a named type removes.
@@ -573,7 +580,7 @@ start it. The reconciler, which is what would notice, was reading the same
 cluster through the copy that worked.
 
 What holds them together today is
-`tests/unit/control_plane/test_gke_client_host.py:97`:
+`tests/unit/control_plane/test_gke_client_host.py::test_the_two_copies_agree_on_every_input`:
 
 ```python
 assert scheduler_gke_api_host(endpoint) == reconciler_gke_api_host(endpoint)
@@ -644,7 +651,7 @@ The accepted vocabularies are `DISPATCH_STRATEGIES` (`:155`) and
   the API's defaults so a task predating the feature reads as
   `collect`/`checkpoints` rather than null, and `codec.workflow_dispatch`
   (`:122-149`) rolls that up to the workflow.
-* `agent-worker/lifecycle.py:1611-1675` -- for the worker. Five accessors:
+* `apps/agent-worker/agent_worker/lifecycle.py::Worker._dispatch_block` and the four beside it -- for the worker. Five accessors:
   `_dispatch_block`, `_dispatch_strategy`, `_dispatch_role`,
   `_dispatch_integrates`, `_dispatch_carrier`.
 
@@ -676,7 +683,7 @@ the other accepts as the default.
 
 **Today this costs nothing, and the reason matters.** `_dispatch_carrier` has no
 caller in production code. Its only references are its own definition and
-`tests/unit/worker/test_integrate_strategy.py:86-88`, which asserts the default
+`tests/unit/worker/test_integrate_strategy.py::test_carrier_defaults_to_checkpoints_and_reads_branches`, which asserts the default
 is `"patches"` -- pinning the disagreement into the suite rather than catching
 it. 1cfdf57 says as much about the other end: "`carrier: "branches"` forced
 `needs_repository` at submission and then changed no behaviour at all."
@@ -715,7 +722,7 @@ vocabularies drifting apart again, which they already have. Concretely, a
 * **The tolerance rules must be part of the type's written contract.** If the
   next implementer makes `from_metadata()` strict, a version skew stops being a
   conservative downgrade and becomes a failed attempt.
-* `tests/unit/worker/test_integrate_strategy.py:86-88` has to change. It
+* `tests/unit/worker/test_integrate_strategy.py::test_carrier_defaults_to_checkpoints_and_reads_branches` has to change. It
   currently asserts the wrong vocabulary.
 
 ### If it is declined
@@ -773,7 +780,7 @@ place it CAN live and still be used by more than one service — and it is used 
 exactly one.
 
 The scheduler would have been the better home for the write. It already runs on a
-guaranteed one-minute clock (`terraform/modules/scheduler/jobs.tf:3`, the safety
+guaranteed one-minute clock (`terraform/modules/scheduler/jobs.tf` (`resource "google_cloud_scheduler_job" "safety_tick"`), the safety
 tick into the wake topic) and it already owns "state advances over time". It
 cannot have the derivation, because:
 
@@ -842,7 +849,7 @@ What ships today, which is not broken but is narrower than it should be:
 
 ### The claim that is imprecise
 
-`apps/common/swarm_common/models.py:344`:
+`apps/common/swarm_common/models.py::Workflow.state`:
 
 ```python
 @dataclass
@@ -1065,7 +1072,7 @@ What that cost, measured before the check existed:
 The `QuotaState` row is worth spelling out, because it is the one that shows why
 a typechecker would not have helped. There is no provider state called `HEALTHY`
 anywhere in this platform -- the only other occurrence of the word in the
-repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py:28`. Three
+repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py::HEALTHY`. Three
 states that *do* exist (`AVAILABLE`, `THROTTLED`, `UNKNOWN`) were missing from
 the union. And the trailing `| string` widens the whole thing back to `string`,
 so even a typechecker that ran would have reported nothing: the union documented
@@ -1128,10 +1135,10 @@ seconds after admission.
 
 ### What it cost
 
-* `apps/swarm-api/swarm_api/routes/admin.py:433` — the `overdue_only=1` filter
+* `apps/swarm-api/swarm_api/routes/admin.py::list_leases` — the `overdue_only=1` filter
   is the query an operator runs during a capacity incident to find stuck
   dispatches. It returned an empty list at exactly the moment it was asked.
-* `apps/swarm-api/swarm_api/codec.py:355` — `lease_to_api` reported
+* `apps/swarm-api/swarm_api/codec.py::lease_to_api` — `lease_to_api` reported
   `dispatch_overdue: false` on every lease the API served.
 * `apps/swarm-ui/src/Overview.tsx` — narrowed again with
   `dispatch_state === 'LEASED' &&`, a second copy of a guard that had already
@@ -1445,7 +1452,7 @@ and `SWARM_TENANT_ID` are in the child environment it builds
 (`agent_worker/lifecycle.py`, the `base` env). An agent that submitted work of
 its own could therefore name itself. There is nowhere typed to put that name:
 
-* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py:33`) is a free
+* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py::TaskCreate.metadata`) is a free
   `dict`. A child could carry `metadata.parent_task_id` by convention -- the
   same shape request #3 records for `input_from`.
 * A convention in `metadata` is **unvalidated**: any caller can claim any
@@ -1520,11 +1527,12 @@ acceptance line here, because `scripts/lib/check-frozen-contract.sh` credits
 only a line the same pull request adds.
 
 **Citations corrected.** The entry above cites `models.py:172-205` for the
-workflow fields; they are `apps/common/swarm_common/models.py:280-282` today
-(`Task` starts at `apps/common/swarm_common/models.py:255`). The "base env" it
-names is `_build_child_env` (`apps/agent-worker/agent_worker/lifecycle.py:3173`),
-with the three ids at `apps/agent-worker/agent_worker/lifecycle.py:3187-3189`.
-`TaskCreate.metadata` is still `apps/swarm-api/swarm_api/schemas.py:33`.
+workflow fields; they are `apps/common/swarm_common/models.py::Task.workflow_id`,
+`Task.step_id` and `Task.depends_on` today (`Task` is
+`apps/common/swarm_common/models.py::Task`). The "base env" it
+names is `_build_child_env` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`),
+with the three ids at `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env.base`.
+`TaskCreate.metadata` is still `apps/swarm-api/swarm_api/schemas.py::TaskCreate.metadata`.
 
 **OD-B15-1 -- the field is accepted as requested**, both fields optional,
 default `None`, and set only by swarm-api from the submitting attempt. Nothing
@@ -1540,7 +1548,7 @@ worker generated in its non-dumpable heap and registered with swarm-api BEFORE
 the agent was spawned. An agent can mint its tenant's token from the metadata
 server ([security.md](security.md#cloud-metadata-abuse)), and it can read the
 whole container environment at `/proc/1/environ`, because `tini` is PID 1 and
-is not non-dumpable (`apps/agent-worker/agent_worker/hardening.py:42-45`). So
+is not non-dumpable (`apps/agent-worker/agent_worker/hardening.py` (`WHAT IT DOES NOT COVER. The container's environment is also PID 1's (tini's),`)). So
 nothing that authorises a submission travels through the environment, a
 mounted file or `work/` and stays valid while the agent runs. The scheduler
 passes only a one-use registration nonce, which the worker spends between the
@@ -3232,6 +3240,30 @@ words for "not yours" as for "not found" and "cross-tenant", so the filter is
 not a new enumeration oracle) is unaffected; only the literal quoted string
 was wrong. Every place describing #273's own `continues_task` message is
 unchanged and was already correct.
+
+**2026-10-06, owner decision (#754): the fixer's reach widened from "any
+`direct-pr` task" to an `integrate` workflow's integrator as well.** Every
+SwarmCloud lane pull request is opened by an integrator -- the workflow's
+final step, which pushes `<prefix><its own task id>` and opens the one pull
+request `integrate` produces -- so a fixer confined to `direct-pr` tasks fixed
+none of them: PR #740's first real run was refused by `resolve_continuation`.
+`_has_own_pull_request` in `apps/swarm-api/swarm_api/continuation.py` now
+admits both, for a member and for a continuation-scoped account alike. What did
+NOT widen: the integrator is told apart by the `role` the API itself wrote into
+the task's dispatch block (a reserved key no caller can write), never by
+anything the request carries; it must be in the caller's own tenant; an
+`integrate` contributor is still refused (its branch has no pull request of its
+own); a chain of continuations is checked again at its root; and a merge-only
+continuation is still a member's power, never this account's. So a stolen
+token's reach in **Isolation analysis (invariant 9)** below reads "any `eng`
+`direct-pr` task **or integrator** that still exists": every open lane pull
+request of the tenant as well as every `direct-pr` one, and still no merge, no
+new work, no read of what it did not submit, and no other tenant. Proved by
+`tests/unit/control_plane/test_continuation_scope_is_narrow.py`
+(`test_the_listed_account_can_continue_an_integrate_workflows_integrator`, and
+the contributor, chain-root and merge-only refusals beside it).
+[ci.md](ci.md), "What the CI fixer may continue", states the same rule from
+the operator's side.
 
 ### What is true today
 
@@ -6206,6 +6238,8 @@ relies on for correctness.
 
 ## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
 
+**Superseded in part 2026-10-06 (lane MS0, part of #352):** the App-shaped half -- `provider="git-merge"`, the merge App, its own Job account -- was already replaced by request 47; the [2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs) keeps everything else this request applied (`WorkerAction`, `RunnerProfile.worker_action`, the `merge` entry, `MERGE_REFUSED`/`MERGE_FAILED`) as the merge step's own vocabulary, and adds new refusal codes inside `result_summary.merge.refusal`, not new end causes.
+
 **Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
 #342. APPLIED 2026-10-01, the build accepted by the owner on 2026-10-01**
 (functionality wave 3, lane M1). The owner decided that #295 is built now
@@ -6418,7 +6452,7 @@ on #351). Nothing enforces that yet outside `register-tenant.sh`
 * `terraform/modules/secret_manager` has no per-provider accessor override.
   Its `iam_binding` is authoritative and today reads `members=[cfg.accessor]`
   (`main.tf:17-28,109-116`), always the tenant's worker account
-  (`terraform/infra/main.tf:236-237`). Left as is, the next `terraform apply`
+  (`terraform/infra/main.tf` (`accessor      = cfg.accessor`)). Left as is, the next `terraform apply`
   after `git-merge`/`git-review` join the catalogue both binds the worker
   account to the secret and **removes** a separately-granted merge or review
   service account, since `iam_binding` (not `iam_member`) replaces the whole
@@ -6879,7 +6913,7 @@ close**, the workflow document).
   (`swarm-tf-deployer`) off `setIamPolicy` on the key, so **the CI pipeline**
   cannot grant itself `signer`. The binding names `swarm-api` by its email,
   `swarm-api@<project>.iam.gserviceaccount.com`, since the account itself is
-  created by `terraform/infra` (`modules/iam`).
+  created by `terraform/infra` (in `modules/iam`).
 
   **This is not a boundary against the project itself, and the owner accepted
   that rather than designing it away (2026-09-29): the key stays in the shared
@@ -6989,8 +7023,13 @@ close**, the workflow document).
   in that project. **Not verified here:** the project's current quota value,
   its current headroom against the other team's usage, and the platform's
   peak submission rate against it. Before `enforce` is the default (section
-  6), this needs a check against `gcloud services quota list` (or the Cloud
-  KMS quota page) for this project, and a quota increase request filed ahead
+  6), this needs a check against
+  `gcloud quotas info list --service=cloudkms.googleapis.com`
+  (`gcloud services quota list` does not exist: gcloud 586 answers
+  `Invalid choice: 'quota'`; the runbook,
+  [spec-signing-rollout.md](runbooks/spec-signing-rollout.md#not-verified-here),
+  has the full command and the values read 2026-10-01) or the Cloud
+  KMS quota page for this project, and a quota increase request filed ahead
   of the rollout if headroom is thin -- a KMS `RESOURCE_EXHAUSTED` here is a
   503 on every submission (this section's "Fails closed"), not a soft
   degradation.
@@ -7628,6 +7667,8 @@ it were found wrong while building it (#353, #354), and one decision was added:
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
 
+**Superseded 2026-10-06 (lane MS0, part of #352):** the merge step anchors the verdict on the review's verdict file and green required checks, not on an App's GitHub review, and there is no review App ([2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs), §3). The applied entry stays disabled; retiring it is that revision's request (B), the owner's decision.
+
 **Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
 (functionality wave 3, lane M1): `WorkerAction.POST_VERDICT`, the
 `post-verdict` entry (`available=False` until #342 is enforced and the review
@@ -7729,17 +7770,17 @@ code and its cause.
 
 * **MAJOR 1 (security review 2026-09-29, NOT_YET): the catalogue entry alone
   makes the tenant's ORDINARY worker account a reader of the review App
-  key.** `known_providers()` (`apps/swarm-api/swarm_api/validation.py:62-75`)
+  key.** `known_providers()` (`apps/swarm-api/swarm_api/validation.py::known_providers`)
   derives its accepted set from the catalogue, so `POST /me/credentials`
-  (`apps/swarm-api/swarm_api/routes/tenants.py:54-66`) and the admin route
-  (`apps/swarm-api/swarm_api/routes/admin.py:63`) both accept `git-review`
+  (`apps/swarm-api/swarm_api/routes/tenants.py::put_credential`) and the admin route
+  (`apps/swarm-api/swarm_api/routes/admin.py::_check_provider`) both accept `git-review`
   as an ordinary, registrable provider name; `credentials.py`'s
   `_grant_accessor` (202-235) then grants `tenant.service_account` — the
   tenant's ordinary worker account, not `post-verdict`'s — `secretAccessor`
-  on it; and `terraform/modules/secret_manager/main.tf:17-28,109-116` writes
+  on it; and `terraform/modules/secret_manager/main.tf` (`resource "google_secret_manager_secret_iam_binding" "accessor"`) writes
   an authoritative `iam_binding` (not an additive `iam_member`) whose
   `members` list is `[cfg.accessor]` for every listed provider
-  (`terraform/infra/main.tf:236-237` sets `cfg.accessor` to the worker
+  (`terraform/infra/main.tf` (`accessor      = cfg.accessor`) sets `cfg.accessor` to the worker
   account for every tenant), which on its next apply would also REMOVE any
   post-verdict accessor granted separately. `enable_subscription_refresh`
   compounds it: the refresher's `-refresh` twin grants the same worker
@@ -7824,6 +7865,8 @@ merge step cannot be enabled for any tenant without this.
 ---
 
 ## 36. `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint`
+
+**Superseded 2026-10-06 (lane MS0, part of #352) for the profile, not the field:** the review-only-writable prefix the `claude-code-review` profile served went with the review App ([2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs), §3), so the entry stays disabled and retiring it is that revision's request (B). `never_restore_checkpoint` stays: the lifecycle reads it.
 
 **Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
 (functionality wave 3, lane M1): `RunnerProfile.never_restore_checkpoint`
@@ -8112,9 +8155,10 @@ schedule back toward ~90 s, which is what lost the two attempts #401 recorded.
 
 ## 38. `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374)
 
-**Status: PROPOSED (functionality wave 1, lane B1, 2026-10-01).** Numbered 38
-on the assumption 37 is the last entry on main; renumber if another branch has
-taken it.
+**Status: ACCEPTED 2026-10-05 by the owner (recorded on #374) and IMPLEMENTED
+2026-10-05 (functionality wave 7, lane CR38).** Proposed 2026-10-01
+(functionality wave 1, lane B1). What was applied is listed under "As
+implemented" at the end of this entry.
 
 ### What is true today
 
@@ -8165,6 +8209,37 @@ scheduler's drain (none today) would still say `TENANT_LIMIT` at 0.
 3. Concurrency counts from `LEASED`: unchanged.
 7. `requests == limits`: unaffected; this is the pool ceiling, not a pod spec.
 
+### As implemented, 2026-10-05
+
+* `states.py`: `BlockedReason.POOL_LIMIT_UNSET`. `swarm_api/headroom.py` files
+  it under `NEEDS_ACTION` (waiting never clears it; somebody sets a limit).
+* `models.py`: `SlotPool.hard_limit: int | None`. None makes `effective_limit`
+  and `available` None and `has_capacity` False. `SlotPool` lives in
+  `models.py`, not `admission.py`/`states.py`; it is the type this request's
+  third bullet names, so that is the one edit outside the two modules in the
+  title.
+* `admission.py`: the transaction reads `d.get("hard_limit")`, so a missing
+  key and a stored null are both None; `evaluate_capacity` refuses through
+  such a pool with `{"reason": "POOL_LIMIT_UNSET", "limit": None}`, after the
+  `MANUAL_PAUSE` check. An explicit 0 is still a 0 with the pool's own reason.
+* Removed as dead: `Scheduler._name_unset_limits` (`scheduler/loop.py`), the
+  `UnsetLimitPool` class in both codecs and the scheduler codec's string
+  `POOL_LIMIT_UNSET`, and `_UnsetLimitReads`/`_PoolSnapshot`
+  (`scheduler/store.py`, #601), which hid a stored null from the transaction
+  because the old read crashed on it. swarm-api's `hard_limit_known` stays,
+  now `pool.hard_limit is not None`, for `service.py`'s `/v1/capacity` filter.
+* `swarm_api/headroom.py` `_ceiling`: a None limit bounds headroom at 0, never
+  "unbounded" (a paused pool with no limit reaches it).
+* The jq restatement `effective_limit` in `scripts/lib/common.sh` returns null
+  for an absent or null `hard_limit`, as the model returns None, and
+  `scripts/lib/check-contract-parity.sh` holds it there with three
+  null-`hard_limit` rows. `status.sh` prints such a pool's LIMIT and HARD as
+  `unset`; `resume-swarm.sh` says `POOL_LIMIT_UNSET`, not `hard_limit 0`; the
+  over-limit checks in `concurrency-test.sh` and `race-test.sh` treat a null
+  limit as admitting nothing, because in jq every number is greater than null.
+* Proved by `tests/unit/common/test_pool_limit_unset_contract.py` and the
+  updated `tests/unit/control_plane/test_pool_limit_unset.py`.
+
 ---
 
 ## 39. `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets
@@ -8181,28 +8256,28 @@ The owner decided on 2026-10-01 that there are NO per-tenant budgets: no
 `PARKED(BUDGET_EXHAUSTED)`. The frozen contract still carries the vocabulary of
 the feature that was dropped:
 
-* `ParkReason.BUDGET_EXHAUSTED` (`apps/common/swarm_common/states.py:134`).
+* `ParkReason.BUDGET_EXHAUSTED` (`apps/common/swarm_common/states.py::ParkReason.BUDGET_EXHAUSTED`).
   Nothing writes it, and no scheduler sweep reads it
-  (`apps/scheduler/scheduler/loop.py:836`;
+  (`apps/scheduler/scheduler/loop.py::Scheduler._stop_for_failed_workflow`;
   `tests/unit/control_plane/test_every_park_has_an_unparker.py`
   `test_no_sweep_reads_budget_exhausted` holds the second).
-* `BlockedReason.BUDGET_LIMIT` (`apps/common/swarm_common/states.py:153`).
-  `evaluate_capacity` never produces it; `apps/swarm-api/swarm_api/headroom.py:73`
+* `BlockedReason.BUDGET_LIMIT` (`apps/common/swarm_common/states.py::BlockedReason.BUDGET_LIMIT`).
+  `evaluate_capacity` never produces it; `apps/swarm-api/swarm_api/headroom.py::NEEDS_ACTION`
   lists it in the needs-action group with the advice "raise the budget", which
   there is no way to do.
-* `Tenant.monthly_budget_usd` (`apps/common/swarm_common/models.py:452`). The
+* `Tenant.monthly_budget_usd` (`apps/common/swarm_common/models.py::Tenant.monthly_budget_usd`). The
   admin route refuses it with a 422
-  (`apps/swarm-api/swarm_api/routes/admin.py:266`), so no write path sets it;
+  (`apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits`), so no write path sets it;
   the codecs still read it from a document if a hand-edit put it there.
 
 Per-attempt cost IS recorded, which is what made the old refusal message
 ("no cost attribution source") stale: `record_spend`
-(`apps/agent-worker/agent_worker/control.py:1119`) writes `cost_usd` onto the
-attempt (`apps/common/swarm_common/models.py:372`). The decision is not "budgets
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`) writes `cost_usd` onto the
+attempt (`apps/common/swarm_common/models.py::Attempt.cost_usd`). The decision is not "budgets
 once attribution exists"; it is "no budgets".
 
 Readers outside the contract that name the unused value and would go with it:
-`apps/swarm-mcp/swarm_mcp/compact.py:88`, `apps/swarm-mcp/swarm_mcp/progress.py:160`,
+`apps/swarm-mcp/swarm_mcp/compact.py::_WAITS_FOR`, `apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`,
 and the UI's park-reason lists in `apps/swarm-ui/src/types.ts` (`:1822`,
 `:2088`, `:2109`, `:2134`, `:2196`).
 
@@ -8225,7 +8300,7 @@ Either of these, at the owner's choice:
   merging. A tenant document with a hand-written `monthly_budget_usd` would
   decode only if the codecs drop the key.
 * Removal: the API's `TenantLimitsRequest.monthly_budget_usd`
-  (`apps/swarm-api/swarm_api/schemas.py:200`) exists only so the refusal can
+  (`apps/swarm-api/swarm_api/schemas.py::TenantLimitsRequest.monthly_budget_usd`) exists only so the refusal can
   explain itself. It would stay, as a refusal of a field the contract no longer
   has, or go, and the refusal would become a plain `extra_forbidden`.
 * Removal: the UI and MCP lists lose a member; their tests that enumerate
@@ -8255,11 +8330,11 @@ reach, which costs nothing but a misleading line in a list.
 
 ### What is true today
 
-`ParkReason` (`apps/common/swarm_common/states.py:125`) has no value for "this
+`ParkReason` (`apps/common/swarm_common/states.py::ParkReason`) has no value for "this
 task is waiting for tasks it created". The nearest, `DEPENDENCY_INCOMPLETE`
-(`apps/common/swarm_common/states.py:132`), is the scheduler's: its sweep
+(`apps/common/swarm_common/states.py::ParkReason.DEPENDENCY_INCOMPLETE`), is the scheduler's: its sweep
 promotes a task parked on it whose `depends_on` is empty immediately, with
-reason `no_dependencies` (`apps/scheduler/scheduler/loop.py:975`). An awaiting
+reason `no_dependencies` (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`). An awaiting
 parent has an empty `depends_on`.
 
 ### The requested change
@@ -8274,7 +8349,7 @@ CHILDREN_INCOMPLETE = "CHILDREN_INCOMPLETE"
 
 Nothing that exists: no document carries the value. Every exhaustive reading
 of `ParkReason` must learn it -- `types.ts` and parity section 5, the MCP
-progress sentences (`apps/swarm-mcp/swarm_mcp/progress.py:154`) and compact
+progress sentences (`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`) and compact
 labels, and the console's blocker copy.
 
 ### If it is declined
@@ -8294,7 +8369,7 @@ document any tenant identity can rewrite.
 
 ### What is true today
 
-`EndCause` (`apps/common/swarm_common/models.py:171`) has `CANCELLED_PARENT`,
+`EndCause` (`apps/common/swarm_common/models.py::EndCause`) has `CANCELLED_PARENT`,
 which means an UPSTREAM workflow step was cancelled, and `CANCEL_REQUESTED`,
 which the outcome ledger reads as a cancel somebody pressed. A child cancelled
 because its parent was cancelled, failed, dead-lettered or out-waited its
@@ -8330,9 +8405,9 @@ request 23 was accepted to end.
 
 ### What is true today
 
-`canonical_step_spec` (`apps/common/swarm_common/specsign.py:45`) covers the
+`canonical_step_spec` (`apps/common/swarm_common/specsign.py::canonical_step_spec`) covers the
 fields a worker must trust, at `SPEC_FORMAT = 1`
-(`apps/common/swarm_common/specsign.py:28`). Any tenant identity can rewrite a
+(`apps/common/swarm_common/specsign.py::SPEC_FORMAT`). Any tenant identity can rewrite a
 task document whose id it knows ([multi-tenancy.md](multi-tenancy.md)), so a
 child's `parent_task_id` could be rewritten to attach it to, or detach it
 from, a parent's cancel cascade and await, and nothing would notice.
@@ -8364,8 +8439,9 @@ tree the console draws is a claim rather than a fact.
 ### What is true today
 
 The worker service account is `swarm-agent-worker-<tenant>`, stated privately
-as `_GSA_PREFIX` (`apps/common/swarm_common/identity.py:115`) and restated by
-`scripts/register-tenant.sh:285` and `terraform/modules/tenancy/main.tf:21`.
+as `_GSA_PREFIX` (`apps/common/swarm_common/identity.py::_GSA_PREFIX`) and restated by
+`scripts/register-tenant.sh` (`GSA_PREFIX="swarm-agent-worker-"`) and
+`terraform/modules/tenancy/main.tf` (`sa_account_id = { for t, _ in var.tenants`).
 The children route must derive the identity it accepts from the tenant id,
 because `tenants/<id>.service_account` is a document any tenant identity can
 rewrite.
@@ -8400,7 +8476,7 @@ another branch has taken it.
 
 The worker records a subscription account's lifecycle on the task's events
 with a `cause` on an event type the frozen `EventType`
-(`apps/common/swarm_common/states.py:161`) already has:
+(`apps/common/swarm_common/states.py::EventType`) already has:
 
 * `account_assigned` is `EventType.RUNNING` with `cause: "account_assigned"`
   (`Worker` in `apps/agent-worker/agent_worker/lifecycle.py`).
@@ -8625,11 +8701,18 @@ section says otherwise.
 
 ## 48. `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain
 
-**Status:** open, filed 2026-10-05 with #625 (functionality wave 8, lane IMG).
-A request, not a change. It is the image half of docs/repo-index.md §6.3
-request (B), in the smallest form that restores what index runs had.
+**Status:** accepted by the owner 2026-10-05 (#625), and applied by
+functionality wave 8, lane IDX. The owner's decision changed the requested
+entry in two ways: the profile is named `indexer`, not `repo-indexer`, and it
+is `claude-code` in EVERY field but its name and its image -- so it takes
+claude-code's inputs (`issue`), not `inputs={}`. Its pool ceiling is the
+`runner_profiles` lookup's default, the global ceiling, as for merge,
+post-verdict and claude-code-review; a tfvars entry narrows it. Filed
+2026-10-05 with #625 (functionality wave 8, lane IMG); it is the image half
+of docs/repo-index.md §6.3 request (B), in the smallest form that restores
+what index runs had.
 
-### What is true today
+### What was true before
 
 #625 moved the repository index's toolchain out of `agent-runtime-base` into
 its own image, `agent-runtime-indexer` (docs/worker-images.md). Every
@@ -8685,6 +8768,13 @@ Nothing that exists. The work that follows acceptance:
 * `INDEXER_PROFILE` becomes `"repo-indexer"`;
 * the tests that enumerate `RUNNER_PROFILES` gain the entry.
 
+As applied (lane IDX): `RUNNER_PROFILES["indexer"]`, the `indexer` entry and
+its model in `terraform/infra/locals.tf`, `INDEXER_PROFILE = "indexer"`, its
+agent-stream rows in the worker and swarm-api, and the UI's fixture and
+Submit rows. The catalogue has no internal-only mechanism, so `indexer` is
+offered to every caller like `claude-code`; keeping it platform-only would
+need a catalogue field, which is a request of its own.
+
 ### If it is declined
 
 There are two choices, both measured in docs/worker-images.md:
@@ -8702,3 +8792,779 @@ There are two choices, both measured in docs/worker-images.md:
   the graph under the tenant's own prefix, as index runs do today.
 - **Invariants 1-3.** It is an ordinary profile: QUEUED until admitted,
   counted from LEASED.
+
+---
+
+## 49. `states.py`: a merge step waiting for its pull request's checks has no park reason
+
+**Status:** accepted by the owner 2026-10-06 (#352), APPLIED 2026-10-06 by lane MS2. Filed
+2026-10-06 by functionality wave 11, lane MS1, as request (A) of
+[docs/merge-step.md's 2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs)
+("Owner decisions on this plan", decision 1). Lane MS2 applies it, with its
+mirrors, and adds the line the frozen-contract guard reads to its own pull
+request.
+
+### What is true today
+
+The built merge step waits for CI by failing its attempt retryably: a
+required check still queued or in progress ends the attempt, and the step
+waits READY for `CHECKS_PENDING_RETRY_SECONDS` before it is admitted again,
+at most `MERGE_STEP_MAX_ATTEMPTS` times
+(`apps/agent-worker/agent_worker/merge.py`,
+`apps/swarm-api/swarm_api/validation.py`). Every wait spends an attempt and a
+Job execution, so a slow CI exhausts the step, and a fast one is read only
+every five minutes.
+
+None of the existing `ParkReason` members fits a park that waits for a
+forge's checks:
+
+* `SCHEDULED_RETRY` is promoted by time alone and counts every wake as an
+  attempt, which is today's behaviour;
+* `DEPENDENCY_INCOMPLETE` is promoted when the workflow's upstream steps
+  end, and a merge step's have already ended;
+* `CHILDREN_INCOMPLETE` names child tasks, and the observer tools say so
+  (`apps/swarm-mcp/swarm_mcp/progress.py`, `_PARKED_BECAUSE`).
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, after `CHILDREN_INCOMPLETE`:
+
+```python
+    #: A merge step waits for its pull request's checks; promoted by the
+    #: scheduler's CI-wait sweep on the wake marker or the fallback instant.
+    #: Contract request 49 (docs/merge-step.md, 2026-10-06, request (A)).
+    CI_PENDING = "CI_PENDING"
+```
+
+### What it would break if accepted
+
+Nothing that exists: no writer emits it until MS2's worker park does. MS2
+adds its mirrors with it -- the UI's park list, the MCP plugin's
+`_PARKED_BECAUSE` row (MS5), and `scripts/lib/check-contract-parity.sh` --
+and the scheduler's `_promote_ci_waits` sweep, which returns the park to
+READY on `metadata.merge_wait.wake_requested_at` or on `next_eligible_at`.
+A reader that enumerates `ParkReason` and has no row for the new member
+shows the raw value until its mirror lands.
+
+### If it is declined
+
+MS2 parks on `SCHEDULED_RETRY` with a `blocked_by` reason of `CI_PENDING`
+and no refund, and nothing frozen changes. A slow CI then still spends the
+step's attempts, one per wake.
+
+### Invariants
+
+- **Invariants 1 and 3.** A `CI_PENDING` task is PARKED: no lease, no pool
+  count, no Job execution. Only admission takes capacity when it is woken.
+- **Invariant 4.** This is the point of the request: the step parks,
+  releases and exits instead of waiting.
+- **Invariant 5.** The park is written in the fenced transaction every park
+  uses.
+
+---
+
+## 50. `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries
+
+**Status:** open. Filed 2026-10-06 by functionality wave 11, lane MS1, as
+request (B) of
+[docs/merge-step.md's 2026-10-06 revision](merge-step.md#revised-2026-10-06-owner-merging-is-its-own-step-parked-while-ci-runs).
+The owner decided on 2026-10-06 ("Owner decisions on this plan", decision 4)
+that the unused #295 pieces are removed by a separate cleanup lane; this
+request is that lane's frozen half, and records the change it makes so that
+lane carries its own acceptance line.
+
+### What is true today
+
+Requests 35 and 36 added, for the `single-pr` chain:
+
+* the `post-verdict` and `claude-code-review` runner profiles, both
+  `available=False` since 2026-10-04;
+* `WorkerAction.POST_VERDICT`;
+* `EndCause.VERDICT_REFUSED` and `EndCause.VERDICT_FAILED`.
+
+The 2026-10-04 revision moved the merge onto the tenant's `-git` token and
+appended the `merge` step to `integrate` and one-step `direct-pr` workflows
+(request 47), and the 2026-10-06 revision superseded the review App and the
+GitHub-review verdict anchor these served (merge-step.md, 2026-10-06 §3).
+Nothing submits either profile, and nothing writes either end cause.
+
+### The requested change
+
+Remove the two profiles from `RUNNER_PROFILES`, `WorkerAction.POST_VERDICT`
+from `profiles.py`, and `VERDICT_REFUSED`/`VERDICT_FAILED` from `EndCause`,
+with every mirror: the Terraform catalogue in `terraform/infra/locals.tf` and
+its test, the worker's `post-verdict` action, swarm-api's `single-pr`
+planning, the outcome ledger's classes and the UI's and plugin's rows.
+
+### What it would break if accepted
+
+A stored task or outcome that names either end cause would no longer parse
+as an `EndCause`. None should exist, since neither profile has been
+submittable; the cleanup lane reads the store to confirm before it removes
+them.
+
+### If it is declined
+
+The entries stay disabled, as they are today, and every reader keeps the
+rows for values nothing writes.
+
+### Invariants
+
+- **Invariant 10.** Two fewer profiles a caller can name; neither was
+  available.
+- **Invariant 9.** The per-tenant review, post-verdict and merge service
+  accounts are the Terraform half of the same cleanup (decision 4), decided
+  at dev-iam, not here.
+
+---
+
+## 51. `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to
+
+**Status:** proposed, filed 2026-10-07 for #350, the Firestore document-shape
+record of #348 (the fix for S0 #347). A request, not a change: nothing under
+`apps/common/swarm_common/` is edited by it, and the owner accepts or refuses
+it.
+
+### What is true today
+
+Since #348, attempt documents (`attempts/<id>`) carry a field the frozen
+`Attempt` does not name: `checkpoint_sha256`, a map of checkpoint id to the
+SHA-256 of that checkpoint's archive. Its only name is the worker's
+`agent_worker.control.CHECKPOINT_DIGESTS_FIELD`, restated as a key by the test
+seeds in `tests/unit/worker/worker_seeds.py`.
+
+* **Who writes it, and when.** Only the worker:
+  `ControlPlane.record_checkpoint` adds `{checkpoint_id: archive_sha256}` in
+  the same merge-set of the attempt's own document that appends the id to
+  `checkpoints`, and only then runs the fenced transaction that moves
+  `task.latest_checkpoint` to the new checkpoint. A pointer therefore never
+  names a checkpoint whose digest is not yet recorded. A checkpoint recorded
+  without a digest adds no entry.
+* **Who reads it.** Only the worker of a LATER attempt of the same task:
+  `Worker._recorded_checkpoint` reads the document of the attempt that wrote
+  the checkpoint `latest_checkpoint` names (`ControlPlane.fetch_attempt`,
+  which refuses another tenant's document), and restores only when that
+  document is this task's, lists the checkpoint id in `checkpoints`, and
+  records the digest the manifest carries. The restore then checks the
+  archive's bytes against it (docs/checkpointing.md, "What is restored").
+* **Who drops it.** swarm-api's `codec.attempt_from_dict` builds an `Attempt`
+  field by field, so it reads the field nowhere and drops it silently -- the
+  same shape as the five spend fields this decoder once dropped while the
+  worker wrote them correctly (request 2).
+
+### Why
+
+A retry restores only a checkpoint whose archive digest its earlier attempt
+recorded. The manifest that also carries the digest sits in the bucket, and
+every agent of the tenant can write anywhere under `tenants/<tenant>/`
+(docs/security.md, "Which checkpoint is restored is not chosen from the
+bucket"). Before #348 a restore took whatever the bucket held under the task's
+prefix, and `.claude/` -- settings and hooks, which run code -- travels in
+every checkpoint because HOME is `work/`. Binding the restore to a digest in
+Firestore is what refuses an archive rewritten in place, even with its
+manifest rewritten to match. The field is a security record of S0 weight,
+and the frozen contract is where every other component learns what an
+attempt document holds.
+
+### The requested change
+
+In `apps/common/swarm_common/models.py`, on `Attempt`, after `checkpoints`:
+
+```python
+    #: Checkpoint id -> lowercase hex SHA-256 of that checkpoint's archive.
+    #: Written ONLY by the worker's `ControlPlane.record_checkpoint`, in the
+    #: same merge as `checkpoints` and before `task.latest_checkpoint` moves;
+    #: read ONLY by a later attempt of the same task, which restores a
+    #: checkpoint only when its archive matches the digest recorded here (#347).
+    #: Empty means "no digest recorded": a document written before #348, or a
+    #: checkpoint recorded without one. Its retry starts from an empty
+    #: workspace; an empty map is never read as "anything goes".
+    checkpoint_sha256: dict[str, str] = field(default_factory=dict)
+```
+
+* **Type:** `dict[str, str]`, keyed by checkpoint id (`ckpt-` and five or
+  more digits), valued by a 64-character lowercase hex digest.
+* **Default:** an empty dict, through `field(default_factory=dict)` as for
+  `checkpoints`, so every existing document still decodes.
+* **The mirrors that follow it, in the applying change:**
+  `CHECKPOINT_DIGESTS_FIELD` becomes `"checkpoint_sha256"` checked against
+  the dataclass field rather than a free string (a unit test, or a section of
+  `scripts/lib/check-contract-parity.sh`); `codec.attempt_from_dict` reads
+  it, keeping only `str -> str` entries. `codec.attempt_to_api` does not
+  serve it: no API caller needs it, and leaving it out keeps the response
+  shape unchanged. Whether a later change shows it to an operator is a
+  separate decision.
+
+No writer or reader changes behaviour. The worker writes and checks exactly
+what it does today.
+
+### What it would break if accepted
+
+Nothing that exists. A new optional field with an empty default: every
+stored attempt still parses, and no reader that ignores it changes.
+
+**Migration for existing attempt documents.** None is run, on purpose. An
+attempt document written before #348 has no `checkpoint_sha256`, decodes with
+the empty default, and a retry of that attempt starts from an empty workspace
+once, as docs/checkpointing.md already says. A backfill must **not** compute
+digests from the bucket: the bucket's current bytes are the value the binding
+exists to distrust, and a backfill would bless whatever a planter had already
+put there. How tasks that were mid-retry at deploy are treated is the owner's
+decision recorded on #348; this request takes no position on it and changes
+nothing about it.
+
+### If it is declined
+
+Behaviour is identical: the field stays a worker-private key in
+`agent_worker.control`, and the restore keeps working. What remains is that
+the frozen `Attempt` under-describes a security-relevant document, that
+swarm-api's decoder drops the field without anyone deciding to, and that a
+future writer of attempt documents (a reconciler repair, a copy tool) learns
+of the field only by reading the worker.
+
+### Invariants
+
+- **Invariant 1.** No state, lease or pool count changes. The field is
+  written by a RUNNING attempt that already holds its lease; a QUEUED, PARKED
+  or READY task creates no demand by having it.
+- **Invariant 2.** Untouched: nothing in admission's all-or-nothing
+  transaction reads or writes the attempt document.
+- **Invariant 3.** Untouched: concurrency counts from LEASED as before.
+- **Invariant 4.** No wait is added. The digest is computed while the
+  archive is written, and the restore's check is one point read at startup.
+- **Invariant 5.** The digest map is written to the attempt's OWN document;
+  the pointer that makes a later attempt read it moves only in the fenced
+  transaction. A stale worker can write digests into its own document, but
+  cannot repoint `latest_checkpoint`, so no later attempt reads them.
+- **Invariants 6 and 7.** Untouched: no Spot, no resource spec.
+- **Invariant 8.** Checkpointing stays mandatory and periodic at the same
+  cadence; this makes a restored checkpoint trustworthy against a
+  bucket-only writer. Its cost is that a retry of a pre-#348 attempt starts
+  clean once.
+- **Invariant 9.** `fetch_attempt` refuses another tenant's attempt
+  document, and the checkpoint must lie in the task's own prefix. Within one
+  tenant this stops a bucket-only writer, not one that also writes Firestore,
+  which has no document-level IAM (docs/multi-tenancy.md); that half rests on
+  signed step specs (#342).
+- **Invariant 10.** No caller sends it: no API route accepts the field, and
+  the serialiser does not return it.
+
+---
+
+## 53. `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s
+
+**Status:** APPLIED 2026-10-08. The owner switched `claude-code` to
+`Backend.GKE_AUTOPILOT` after request 55's canary passed: 5/5 `claude-code-gke`
+steps ran on GKE Autopilot with DISPATCHED -> RUNNING p50 ~23 s, max 44 s
+(against Cloud Run's p50 128 s / p90 212 s), on `claude-opus-5-5`, and opened
+their pull requests. The same change removed the canary (request 55). How the
+conditions below were met: (1) MODEL reaches the GKE pod
+(`GkeJobDispatcher._manifest`, via `profile_model`) and the workspace is sized
+for the disk `emptyDir`; (2) `pool_limits.backends.GKE_AUTOPILOT` is 100 in
+`terraform/environments/dev/dev.tfvars`; (3) the tenants' claude-code Cloud Run
+Jobs are kept, idle, until 2026-10-15 by `cloud_run_fallback_profiles` in
+`terraform/infra/locals.tf` -- without it the Job loop, which makes a Job only
+for a `CLOUD_RUN_JOB` profile, would have destroyed them with the switch.
+Rolling back while they exist is one line: the backend back to
+`CLOUD_RUN_JOB`.
+
+Accepted by the owner 2026-10-07, with conditions:
+1. Land the follow-ups first: MODEL is passed to GKE pods, and the workspace
+   is sized for the 4Gi disk emptyDir.
+2. Raise the `GKE_AUTOPILOT` backend ceiling to **100**. us-central1 has 2,990
+   of 3,000 regional vCPUs free, so 100 x 4 vCPU fits. T2D allows only 128
+   vCPUs, so no compute class may pin to T2D.
+3. Keep the Cloud Run claude-code Jobs as a fallback, until a week of clean
+   GKE runs.
+The profiles.py switch is the last change, after those land. Filed
+2026-10-07. The owner set the rule before the
+probe ran (decision on #667, 2026-10-07): file this request if a fresh-node
+GKE Autopilot start of the claude-code image has p90 <= 128 s AND a warm start
+has p50 <= 20 s; do not if the fresh-node p50 is >= 128 s. The probe met the
+first condition: fresh-node p50 89 s / p90 120 s (n=12), warm p50 1 s (n=10).
+A request, not a change: nothing under `apps/common/swarm_common/` and no
+tfvars is edited by it, and the owner accepts or refuses it.
+
+### What is true today
+
+* **The catalogue.** `apps/common/swarm_common/profiles.py`, the
+  `"claude-code"` entry (line 1137): `resource_class="standard"` (4 CPU /
+  8 GiB, `disk_gib=4`, `units=1`), `backend=Backend.CLOUD_RUN_JOB`,
+  `timeout_seconds=7200`. The `"browser"` entry (line 1181) already names
+  `Backend.GKE_AUTOPILOT`, so the GKE dispatch path is live, not new:
+  `scheduler/dispatch.py` `BackendRouter.for_backend` routes it to
+  `GkeJobDispatcher`, which creates a `batch/v1` Job in the tenant's
+  namespace, and the reconciler's GKE backend (`reconciler/backends.py`,
+  `name = "GKE_AUTOPILOT"`) watches it. 313 browser attempts went through it
+  between 09-29 and 10-07.
+* **Where claude-code's start goes on Cloud Run** (874 attempts, 09-30 ..
+  10-07, read-only, scratchpad `cloudrun-start-measure.md`, summarised on
+  #667): DISPATCHED -> STARTING p50 128 s / p90 212 s. 90-95 % of it is Cloud
+  Run's own `ResourcesAvailable -> Started` (p50 138 s / p90 227 s, n=497);
+  everything of ours is small and flat (dispatch call -> execution created
+  -0.2 s, Started -> worker's first log 3 s, first log -> STARTING 3 s). It
+  swings by day with no change on our side (10-03 p50 92 s, 10-05 163 s,
+  10-07 176 s), and the 27.6 MB, 1 CPU `swarm-verify` job swings the same way,
+  so neither image size nor shape is the cause. The lease is held, and its
+  units counted, for all of it.
+* **The same image on GKE Autopilot** (probes run 2026-10-07 on
+  `swarm-autopilot`, image `agent-runtime-base@sha256:de51d9cf...`; scratchpad
+  `gke-probe/summary.md`, `gke-probe/fresh/summary.md`,
+  `gke-probe/cc/summary.md`). Metric: pod `creationTimestamp` -> container
+  `startedAt`, 1 s resolution. Pod: 4 CPU / 8Gi with requests == limits, 4Gi
+  ephemeral storage, `safe-to-evict: "false"`, no Spot, no Google identity,
+  no-op command.
+
+  | set | n | p50 s | p90 s | min | max |
+  |---|---|---|---|---|---|
+  | warm (a node with room already exists) | 10 | 1 | 1 | 1 | 1 |
+  | existing node, not warm | 9 | 8 | 8 | 1 | 9 |
+  | **fresh node, pod create -> container started** | 12 | **89** | **120** | 75 | 126 |
+  | fresh node, default `ek` family only | 2 | 82 | 90 | 82 | 90 |
+  | fresh node, pod create -> scheduled | 12 | 72 | 99 | 60 | 112 |
+  | fresh node, TriggeredScaleUp -> node Ready | 11 | 71 | 97 | 57 | 111 |
+  | fresh node, image pull | 12 | 4.8 | 9.2 | 1.6 | 9.2 |
+  | *baseline:* Cloud Run claude-code DISPATCHED -> STARTING | 874 | 128 | 212 | | |
+  | *baseline:* browser on GKE DISPATCHED -> STARTING | 313 | 15 | 83 | | |
+
+  Ten of the twelve fresh samples come from probe 3, which forced a new node
+  by pinning a machine family or compute class no current node carried
+  (Balanced -> n2d, Scale-Out -> t2d, e2, n2, n2d, t2d, c3, c3d); two come
+  from the default general-purpose class (`ek`), which is what claude-code
+  would actually get.
+* **What the probe saw go wrong.** Probe 3 made 13 runs. **3 never
+  scheduled** (t2d on its first try, n4, n4d: "Pod didn't trigger scale-up
+  ... 4 in backoff after failed scale-up"), and **3 of the 10 that ran logged
+  "GCE out of resources"** scale-up failures in us-central1-f (n2d, t2d) or
+  us-central1-a (n2d) before a node came up in another zone. Every one of the
+  six was pinned to a single machine family. The default-class runs (n=2)
+  saw neither, which is too few to call a rate.
+* **The ceilings.** `terraform/environments/dev/dev.tfvars`, `pool_limits`:
+  `backends = { CLOUD_RUN_JOB = 100, GKE_AUTOPILOT = 40 }`, and
+  `runner_profiles.claude-code = 80`, `resource_classes.standard = 80`.
+  Admission takes every pool all-or-nothing, so on GKE claude-code would be
+  capped at 40 concurrent, shared with browser (2 units each), until the GKE
+  ceiling moves.
+
+### Why
+
+The DISPATCHED -> STARTING wait is lease-held time: the task occupies its
+global, tenant, provider, profile, class and backend slots while doing
+nothing, and on Cloud Run that wait is two minutes at the median and three
+and a half at p90, set by a provider step we cannot influence (#363, #625,
+#667). On Autopilot the same image starts in about a second when a node has
+room, about 8 s when the autoscaler only has to place it, and about 90 s
+(p90 120 s) when a node must be created, which is the worst case rather than
+the typical one. The browser profile, on the same cluster, already reaches
+STARTING in p50 15 s / p90 83 s measured from DISPATCHED. Expected saving:
+roughly 100 s per attempt at the median and more at p90, on the profile that
+runs nearly every SwarmCloud step.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, the `"claude-code"` entry:
+
+```diff
+     "claude-code": RunnerProfile(
+         name="claude-code",
+         image="agent-runtime-base",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        # GKE Autopilot since contract request 53: the same image starts in
++        # p50 89 s / p90 120 s on a NEW node and ~1 s on a warm one, against
++        # Cloud Run's DISPATCHED -> STARTING p50 128 s / p90 212 s, 90-95 %
++        # of it in Cloud Run's own provisioning (#363, #625, #667). Extended
++        # run time is what keeps a two-hour agent from being consolidated
++        # away, and it is on-demand only: no Spot (invariant 6).
++        backend=Backend.GKE_AUTOPILOT,
+         runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+```
+
+Nothing else in the frozen package changes. `resolve_backend` returns the
+named backend unchanged; `standard` stays 4 CPU / 8 GiB.
+
+**The non-frozen follow-ups, in the applying change** (each must land with or
+before the catalogue edit, or claude-code regresses on GKE):
+
+1. **MODEL on the GKE pod** -- `apps/scheduler/scheduler/dispatch.py`,
+   `GkeJobDispatcher` manifest. A Cloud Run Job carries `MODEL` from
+   `terraform/infra/locals.tf` `runner_models` (or `WORKER_MODELS` for Jobs the
+   scheduler creates); `gke_worker_env` and the GKE manifest set no `MODEL`,
+   so a claude-code pod on GKE today would run the CLI's default model instead
+   of `claude-opus-5-5` (#226). The GKE render must add `MODEL` from the same
+   `WORKER_MODELS` source, with a unit test.
+2. **The Terraform mirror** -- `terraform/infra/locals.tf`
+   `runner_profiles["claude-code"].backend = "GKE_AUTOPILOT"`, which
+   `tests/terraform/catalogue.tftest.hcl` holds byte-identical to the Python.
+   What that does to the `swarm-job-<tenant>-claude-code` Cloud Run Jobs
+   (kept as an idle fallback, or no longer created for a GKE profile) is read
+   from the same file's Job loop when the change is written; this request has
+   not traced it.
+3. **The backend ceiling** -- `terraform/environments/dev/dev.tfvars`
+   `pool_limits.backends.GKE_AUTOPILOT`, today 40. Leaving it caps claude-code
+   at 40 (from 80); raising it to 80 or 100 is a cost and quota decision for
+   the owner, as is whether the Autopilot cluster's own limits (regional CPU
+   quota, the cluster's node auto-provisioning maximum) cover 80 concurrent
+   4-CPU pods. `CLOUD_RUN_JOB = 100` then only bounds mock, generic and the
+   Cloud Run profiles.
+4. **Node class: none pinned.** Every unscheduled and every out-of-resources
+   probe run was pinned to ONE machine family; the dispatcher today sets no
+   `nodeSelector`, so Autopilot's default general-purpose class picks from
+   every family and zone it can, and this request asks to keep it so. If live
+   telemetry later shows stockouts on the default class, the remedy is a GKE
+   custom ComputeClass listing families in priority order (fallback, not a
+   pin); whether the cluster's GKE version supports one on Autopilot is not
+   verified here.
+5. **The docs** -- `docs/execution-backends.md` says Cloud Run is preferred
+   "for everything it can hold" because it has no nodes; it would name
+   claude-code as the exception and why (start latency), with the reliability
+   cost below kept, not softened. `docs/architecture.md` and
+   `docs/cost-control.md` get the same line where they name the backend per
+   profile.
+
+### What the probe did NOT measure
+
+* **DISPATCHED, not pod creation.** The GKE numbers start at the pod's
+  `creationTimestamp`; the Cloud Run numbers start at the scheduler's
+  DISPATCHED event and include the dispatch call. GKE adds the Job-create
+  call, the Job controller creating the pod, the worker's first log (Cloud Run
+  S_W 3 s) and its STARTING write (3 s). Browser-on-GKE's 15 s / 83 s is the
+  only measured DISPATCHED figure on this cluster, on a different image and
+  shape.
+* **The worker.** The pod ran a no-op command: no Workload Identity token, no
+  Secret Manager read, no Firestore write, no clone. Those run on both
+  backends, but the GKE path's DNS and metadata route differ
+  (`gke_worker_env`, #341).
+* **Shape and volumes.** The probe's 4 CPU / 8Gi with requests == limits
+  matches `standard`, but the real Job also mounts `/dev/shm` (2Gi, memory),
+  `/tmp`, HOME and the spec-verify ConfigMap, which the probe did not.
+* **Image pull at scale.** Pulls were 1.6-9.2 s for the 727 MB image on a
+  fresh node; a burst of new nodes pulling at once, and the
+  first pull after each release's new digest, were not measured.
+* **Extended run time over a full run.** The pods carried `safe-to-evict:
+  "false"` but exited at once; nothing measured a two-hour pod surviving node
+  upgrades, consolidation or auto-repair.
+* **Stockout rate on the default class.** 2 default-class samples, no
+  failure; the six pinned failures are the evidence that a pin is harmful,
+  not a rate for the unpinned path. A pod that never schedules holds its lease
+  until the 480 s dispatch deadline reclaims it, as on Cloud Run; whether the
+  reconciler deletes that pod's Job on reclaim was not checked by this
+  request.
+* **Cost.** Autopilot bills the pod's requests for its life; Cloud Run bills
+  the execution. Not compared.
+
+### What it would break if accepted
+
+* **The reason Cloud Run was chosen.** Extended run time suppresses
+  consolidation and auto-upgrade for up to seven days; it does not stop node
+  auto-repair or memory/disk-pressure eviction (docs/execution-backends.md).
+  claude-code gains a node-side way to lose an attempt that it does not have
+  today. Mandatory periodic checkpointing makes that cost minutes rather than
+  the run; it does not make it free.
+* **Workspace becomes disk.** On Cloud Run the 4 GiB workspace is a tmpfs
+  carved out of the 8 GiB memory limit. On GKE it is a disk `emptyDir`; the
+  pod's ephemeral-storage limit is 4Gi and kubelet evicts the pod when its
+  total local usage (workspace, `/tmp` and HOME together) exceeds it, while
+  the agent gets the full 8 GiB of memory. A run that fits today can fail on
+  disk instead, or one that ran out of memory can now fit.
+* **Concurrency** halves to 40 unless the backend ceiling moves (follow-up 3).
+* **The model** silently changes to the CLI default unless follow-up 1 lands
+  first.
+* **Running attempts.** None expected: an attempt already dispatched keeps
+  running where it was created; only dispatches after the release go to GKE. A retry of an
+  attempt checkpointed on Cloud Run restores on GKE from the same GCS prefix.
+
+### If it is declined
+
+Nothing changes. claude-code keeps a 2-3.5 minute lease-held start that moves
+with Cloud Run's provisioning, and the remaining levers are the ones already
+decided on #667: a post-deploy warm run per Cloud Run Job (absorbs the 30-59 s
+per-digest import on ~3 % of starts) and the Cloud Run support case. Neither
+touches the 138 s median in `ResourcesAvailable -> Started`.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: only LEASED/DISPATCHED/STARTING/RUNNING create
+  demand. A GKE pod is created only for a leased, admitted task, exactly as a
+  Cloud Run execution is. Pending pods are never a backlog: an unschedulable
+  pod is a DISPATCHED lease bounded by the dispatch deadline, never a queue.
+- **Invariant 2.** Unchanged: admission still reserves every pool, the
+  `GKE_AUTOPILOT` backend pool instead of `CLOUD_RUN_JOB`, in the same single
+  Firestore transaction.
+- **Invariant 3.** Unchanged: counted from LEASED.
+- **Invariant 4.** Unchanged: the worker lifecycle is the same image
+  ENTRYPOINT on both backends, and parks and exits the same way.
+- **Invariant 5.** Unchanged: the generation travels in `GENERATION` in the
+  pod's env and is in the Job name; `backoffLimit: 0` means Kubernetes never
+  re-runs a stale attempt.
+- **Invariant 6 (Spot).** Preserved and load-bearing. The GKE manifest
+  requests no Spot and sets `safe-to-evict: "false"` on the Job and the pod
+  template; extended run time is only available on on-demand capacity, which is
+  why "Spot preferred" is impossible here rather than merely undesirable. The
+  frozen catalogue still raises at import on any Spot strategy. The probe ran
+  without Spot.
+- **Invariant 7 (requests == limits).** Preserved: `GkeJobDispatcher` sets the
+  same `resources` dict as both `requests` and `limits` for CPU, memory and
+  ephemeral storage, from `RESOURCE_CLASSES["standard"]`. The probe used the
+  same equality.
+- **Invariant 8.** Unchanged and more important: the node-side eviction paths
+  above are exactly what periodic checkpointing exists to absorb.
+- **Invariant 9.** Unchanged and already exercised by browser: the pod runs
+  in the tenant's own namespace as the tenant's KSA, workload-identity-bound
+  to the tenant's GSA, behind default-deny NetworkPolicy, and reads its
+  provider credential from Secret Manager itself; no Kubernetes Secret holds
+  it. Its GCS prefix is the same.
+- **Invariant 10.** Unchanged: the backend is a catalogue field; a caller
+  still names `claude-code` and cannot choose where it runs.
+
+---
+
+## 54. `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write
+
+**Status:** ACCEPTED by the owner 2026-10-07, APPLIED 2026-10-07 by the pull
+request that adds this entry (part of #780). This is request E of
+[docs/onboarding.md §3.3](onboarding.md#33-how-the-worker-gets-the-per-task-credential)
+("With request E (recommended)" and the draft after it), accepted by the
+owner 2026-10-07 for the guided-onboarding work of #780; it supersedes request
+(E) as [git-tokens.md §8](git-tokens.md) sketched it, by adding the access mode
+and the signature. Only the frozen half is applied here: swarm-api writing the
+fields at submission is lane OB7, and the worker reading them is lane OB5.
+
+### What is true today
+
+`Task` (`apps/common/swarm_common/models.py::Task`) says nothing about which
+forge secret a task uses. The worker reads `Tenant.secret_name("git")`
+(`Worker._git_token`, through `resolve_git_token`), so registration, clone and
+push all use the one tenant token `swarm-tenant-<tenant>-git`. The
+repository-scoped (`git-r-<hex>`) and per-user (`git-u-<hex>`) slots of
+docs/git-tokens.md exist, and swarm-api can resolve them, but no task can name
+one. `canonical_step_spec` (`apps/common/swarm_common/specsign.py`) signs
+`submitted_by` and the signed metadata keys, and no credential.
+
+### Why
+
+#780 asks for SwarmCloud to act **as the user**, across more than one GitHub
+org, on repositories the user chose to grant read or write. That needs a task
+to carry two decisions swarm-api makes at submission (onboarding.md §3.3 step
+1): whose token the worker reads, and whether it may push with it. Both must
+come from somewhere the worker can trust. A tenant's agents can write any task
+document of their tenant (docs/multi-tenancy.md), so an unsigned field would
+let one user's agent point its task at another user's slot in the same tenant,
+or lift a `read` grant to `write`. Inside the spec signature, a rewrite fails
+the worker's check (`SPEC_SIGNATURE_INVALID`) before anything runs.
+
+The alternative -- the worker derives the user's slot from the signed
+`submitted_by` -- needs no frozen change, but restates the user-hash rule in
+the worker and cannot say "this task uses the tenant token", so the tenant
+fallback of decision D4 would be impossible.
+
+### The requested change
+
+In `apps/common/swarm_common/models.py`:
+
+* `FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")`, matched with
+  `fullmatch`, and `FORGE_ACCESS = ("write", "read")`;
+* on `Task`, after `parent_attempt_id`, two optional fields:
+  `forge_credential: str | None = None` (the provider suffix the worker reads:
+  `git` for the tenant token, `git-r-<16 hex>` for a repository token,
+  `git-u-<16 hex>` for a user's slot; None is `git`, today's behaviour) and
+  `forge_access: str | None = None` (`write` or `read`; None is `write`, for
+  backward compatibility). Both are **written by swarm-api only**, at
+  submission, and never accepted from a caller;
+* `Task.__post_init__` refuses a value of any other shape, so a writer cannot
+  construct a malformed task. It checks only these two fields, so no document
+  that decodes today is refused.
+
+In `apps/common/swarm_common/specsign.py`, **format 3**: format 2's projection
+plus `forge_credential` and `forge_access`. `SPEC_FORMAT` becomes 3 and
+`SPEC_FORMATS` `(1, 2, 3)`. `signing_format` signs at the oldest format that
+covers every field a task sets: 1 with no parent and no forge field, 2 with a
+parent and no forge field, 3 when either forge field is set. Formats 1 and 2
+**refuse** (`SpecNotCanonical`) a document that sets either forge field. A
+parent added to a format-1 document stays outside the signed bytes (#476); a
+forge field must not, because the worker acts on it itself.
+
+swarm-api's `codec.task_from_dict` reads both back, so a task it decodes and
+writes again keeps its signed fields; a stored value of the wrong shape
+decodes as None rather than making the task unreadable. Neither field is
+served by the API: `test_api_contract_shapes` lists them as deliberate
+omissions until OB7 decides otherwise.
+
+### What it would break if accepted
+
+Nothing existing. A document without the fields decodes as it does today, and
+a task that sets neither is signed at format 1 or 2 with **the same canonical
+bytes as before**: `tests/unit/common/test_specsign.py` pins the SHA-256 of
+both formats as computed before format 3 existed, and verifies a P-256
+signature over that pinned digest against the digest the new code computes.
+A worker built before format 3 knows only formats 1 and 2, and refuses a
+format-3 task as `unknown_format`. Only a task swarm-api resolved a forge
+field for is signed at format 3, and swarm-api writes none until OB7, so the
+rollout order is the worker (OB5) first, then the submission (OB7).
+
+One edge is said plainly: the worker's legacy window (`SPEC_LEGACY_UNTIL`)
+admits an UNSIGNED task created before signing shipped. Such a task has no
+signature to protect a forge field, so the worker that reads the fields (OB5)
+must ignore both on an unsigned task and read `git`/`write`, as today.
+
+### If it is declined
+
+The "without it" path of onboarding.md §3.3: the worker derives the user slot
+from the signed `submitted_by`, reads the grant for the mode, restates the
+user-hash rule beside swarm-api's under a parity test, and no task can use the
+tenant token as a fallback for a user without a grant (decision D4).
+
+### Invariants
+
+- **Invariants 1, 2 and 3.** Untouched: no state, lease, pool count or
+  admission transaction reads or writes either field here. (The scheduler's
+  `CREDENTIAL_MISSING` check reading the named slot is OB7's, and parks at no
+  cost as today.)
+- **Invariant 4.** No wait is added.
+- **Invariant 5.** The worker verifies the signature, fenced as today, before
+  it reads anything the fields name; a stale worker still exits without
+  running the agent. A rewrite of either field, or adding one to a task
+  signed without it, fails verification.
+- **Invariants 6, 7 and 8.** Untouched.
+- **Invariant 9.** The field is a suffix, not a secret name: the worker
+  places it with `Tenant.secret_name` under the task's OWN tenant, and the
+  anchored shape admits no other tenant's prefix and no `-refresh` twin, so it
+  can never name another tenant's secret.
+- **Invariant 10.** No caller sets either field. swarm-api writes them from
+  its own resolution of the grants, as it writes `parent_task_id`.
+
+---
+
+## 55. `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53
+
+**Status:** REMOVED 2026-10-08 (the switch replaced it): request 53 moved
+`claude-code` itself to `Backend.GKE_AUTOPILOT` after this canary passed 5/5,
+and the same change deleted the `claude-code-gke` entry and every mirror of it
+(Terraform, the console, the worker's and the API's stream tables, the docs).
+`tests/unit/control_plane/test_claude_code_on_gke.py` holds that it is gone.
+
+Accepted by the owner 2026-10-07, and applied in the same change
+that files it. TEMPORARY: the entry is removed in the same change that
+switches `claude-code` itself to `Backend.GKE_AUTOPILOT` (request 53's last
+step), or, if request 53 is withdrawn after the canary, in the change that
+records that. This is the sanctioned edit to `apps/common/swarm_common/` for
+it; nothing else in the frozen package changes.
+
+### What is true today
+
+* **Request 53 is accepted, with conditions** (above): its follow-ups land
+  first, the `GKE_AUTOPILOT` ceiling rises to 100, and the Cloud Run
+  claude-code Jobs stay as a fallback until a week of clean GKE runs. The
+  `profiles.py` switch is the last change.
+* **Nothing can run claude-code on GKE before that switch.** A caller names a
+  profile, never a backend (invariant 10), and `claude-code` resolves to
+  `CLOUD_RUN_JOB`. Request 53's probe measured the image on Autopilot with a
+  no-op command: no Workload Identity token, no Secret Manager read, no
+  Firestore write, no clone, no `/dev/shm`/`/tmp`/HOME/spec-verify mounts, no
+  two-hour run (its "What the probe did NOT measure"). The only way to measure
+  those on real steps, without moving every claude-code step at once, is a
+  second catalogue name for the same runner on the other backend.
+* **The GKE pod carried no `MODEL`** (request 53, follow-up 1):
+  `GkeJobDispatcher._manifest` built its environment from `gke_worker_env`
+  and `RUNNER_JOB_NAME` only, so a claude-code pod would have run the CLI's
+  default model.
+
+### Why
+
+A canary on real steps answers what the probe could not -- the DISPATCHED ->
+STARTING time including the Job controller, the worker's first log and its
+STARTING write; the workspace on a 4Gi disk `emptyDir` instead of tmpfs;
+extended run time over a full run -- while `claude-code` keeps running on
+Cloud Run for everyone else. The week of clean GKE runs request 53's third
+condition asks for needs runs to count.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, after the `RUNNER_PROFILES` dict
+literal:
+
+```python
+RUNNER_PROFILES["claude-code-gke"] = replace(
+    RUNNER_PROFILES["claude-code"], name="claude-code-gke", backend=Backend.GKE_AUTOPILOT
+)
+```
+
+IDENTICAL to `claude-code` in every other field -- image, `runner_argv`,
+provider, secrets and `secrets_any_of`, resource class, timeout, checkpoint
+interval, inputs, availability -- because it is BUILT from that entry with
+`dataclasses.replace`, not restated, so the two cannot drift.
+`tests/unit/control_plane/test_claude_code_gke_canary.py` asserts that only
+`name` and `backend` differ.
+
+**The non-frozen mirrors, in the same change:**
+
+1. `terraform/infra/locals.tf`: `runner_profiles["claude-code-gke"]`
+   (backend `GKE_AUTOPILOT`), so the catalogue comparison holds and its pool
+   `runner:claude-code-gke` exists, with no `pool_limits.runner_profiles`
+   entry: it takes the `global` ceiling, and the `GKE_AUTOPILOT` backend pool
+   (shared with browser) is what binds. The Job matrix keeps only
+   `backend == "CLOUD_RUN_JOB"`, so **no Cloud Run Job is created for it**;
+   `catalogue.tftest.hcl` asserts that.
+   `runner_models["claude-code-gke"]` names claude-code's model, which reaches
+   the scheduler as `WORKER_MODELS`.
+2. `tests/terraform/catalogue_mirror/main.tf`: the text parser reads this
+   `replace(...)` shape as its base with the backend overridden, and cuts
+   each literal entry at the end of the dict so the last one does not absorb
+   the assignment.
+3. `apps/scheduler/scheduler/dispatch.py`: `profile_model(settings, profile)` (already on main from request 53),
+   one lookup for both backends, and `GkeJobDispatcher._manifest` sets `MODEL`
+   from it -- request 53's follow-up 1, for every GKE profile with a pinned
+   model (browser has none and gets none).
+4. Worker and API: `agent_worker.runners.streams.cli_agent_spec` and
+   `swarm_api.agent_streams.AGENT_STREAM_FILES` treat it as the claude_code
+   CLI, as they do `claude-code-review` and `indexer`.
+5. Console: `PLATFORM_RUNNERS` in `RunnerPicker.tsx` marks it "platform", so
+   the Submit picker lists it after the runners people submit rather than
+   beside `claude-code`. The console has no mechanism that hides a profile
+   (that list's comment says so: a name is drawn, never hidden), and the
+   frozen `RunnerProfile` has no audience field; a caller who names it can
+   still submit it, which is how the canary is run.
+6. `kubernetes/worker-templates/worker-job.yaml`: the reference GKE Job now
+   mounts `/dev/shm` and the spec-verify ConfigMap, which the dispatcher
+   already mounts on EVERY GKE pod; the template was unread while browser
+   was the only GKE profile.
+
+### What it would break if accepted
+
+* **A second name for claude-code.** Reports, pools and the console count
+  the canary apart from `claude-code`. That is the point of a canary, and it
+  is temporary.
+* **Shared memory on GKE.** Every GKE pod gets a 2Gi memory-backed
+  `/dev/shm`. It counts against the 8 GiB limit only as far as something
+  writes to it, which the claude CLI is not known to do; it is not measured.
+* **The `GKE_AUTOPILOT` pool** is shared with browser until request 53's
+  ceiling rise lands: a canary step can make a browser step wait.
+
+### If it is declined
+
+Request 53 is applied without a canary: `claude-code` moves to GKE for every
+step at once, and the probe's unmeasured items are first measured in
+production.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased,
+  admitted task; an unschedulable pod is a DISPATCHED lease bounded by the
+  dispatch deadline, never a backlog.
+- **Invariant 2.** Unchanged: admission reserves `runner:claude-code-gke`,
+  `backend:GKE_AUTOPILOT` and the rest in the same single transaction.
+- **Invariant 3.** Unchanged: counted from LEASED.
+- **Invariant 4.** Unchanged: the same image ENTRYPOINT and lifecycle.
+- **Invariant 5.** Unchanged: `GENERATION` in the pod's env and the Job
+  name; `backoffLimit: 0`.
+- **Invariant 6 (Spot).** Preserved: no Spot request, `safe-to-evict:
+  "false"` on the Job and the pod, `spot` copied as `ON_DEMAND_ONLY`.
+- **Invariant 7.** Preserved: `requests == limits` from
+  `RESOURCE_CLASSES["standard"]`.
+- **Invariant 8.** Unchanged: checkpointing is mandatory and periodic at
+  claude-code's interval; the node-side eviction paths are what it absorbs.
+- **Invariant 9.** Unchanged: the tenant's namespace, KSA, GSA, secrets and
+  GCS prefix, as browser's pods use today.
+- **Invariant 10.** Unchanged: a caller names `claude-code-gke`, and the
+  catalogue says where it runs. `MODEL` comes from the scheduler's
+  `WORKER_MODELS`, never from the task (`test_a_tasks_own_model_never_reaches_the_pod`).

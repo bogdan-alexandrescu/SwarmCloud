@@ -27,7 +27,7 @@
  * Shared components (U0's, components.html A) are not on main yet, so the few
  * this page needs are local and prefixed `Tl` for a later pass to swap.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 
 import {
   loadAttemptsPage,
@@ -67,11 +67,14 @@ import {
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
-import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
-import { PageHead, timeAgo } from './Shell'
+import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
+import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, usePoll } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
+import { VALUE_LABEL_GAP_PX } from './charts/parts'
+import { SKIPPED_WORD } from './dag'
+import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/timeline.css'
 
@@ -92,14 +95,18 @@ const DRAG_MIN_PX = 4
 // The two pages
 // ---------------------------------------------------------------------------
 
-/** Lanes | Outcomes: the Timeline's two pages, one strip on each. */
-export function TimelinePages({ at }: { at: 'lanes' | 'outcomes' }) {
+/**
+ * Lanes | Outcomes: the Timeline's two pages, one strip on each. `otherTitle`
+ * is the other page's link title: where the two read the same span name over
+ * different ranges, both ranges (QA G3-08).
+ */
+export function TimelinePages({ at, otherTitle }: { at: 'lanes' | 'outcomes'; otherTitle?: string | undefined }) {
   return (
     <nav className="tl-pages" aria-label="Timeline pages">
-      <a href="/timeline" aria-current={at === 'lanes' ? 'page' : undefined}>
+      <a href="/timeline" aria-current={at === 'lanes' ? 'page' : undefined} title={at === 'outcomes' ? otherTitle : undefined}>
         Lanes
       </a>
-      <a href="/timeline/outcomes" aria-current={at === 'outcomes' ? 'page' : undefined}>
+      <a href="/timeline/outcomes" aria-current={at === 'outcomes' ? 'page' : undefined} title={at === 'lanes' ? otherTitle : undefined}>
         Outcomes
       </a>
     </nav>
@@ -130,20 +137,71 @@ function clock(ms: number, wide = false): string {
  * A TICK NEVER SITS UNDER "now". The now label is drawn at the right edge
  * whenever the window ends at the present; a tick in the last `NOW_GAP_PCT` of
  * the track overprinted it ("1now0" at 24h), so it is not drawn.
+ *
+ * AND THE GAP IS PIXELS ONCE THE TRACK IS MEASURED (QA G3-15, 2026-10-07): a
+ * percentage of a 358 px phone track is 21 px, so `18:00` at 21:07 still ran
+ * into `now`. With the track's width known, a label is kept only when it ends
+ * `VALUE_LABEL_GAP_PX` (the ledger's rule, 14 px) before `now` and before the
+ * next label. Widths are estimated from the mono micro face: 12 px at about
+ * 0.6 em a character, rounded up as `AttemptPhases`'s axis does.
  */
 const NOW_GAP_PCT = 6
+/** One character of the tick face (`var(--t-micro)` mono), rounded up. */
+export const TICK_CHAR_PX = 7.5
+/** A tick label's left padding (`.tl-tk`). */
+export const TICK_PAD_PX = 5
+/** The `now` label: three characters, its padding and its 2 px rule (`.tl-tk.is-now`). */
+export const NOW_LABEL_PX = 3 * TICK_CHAR_PX + 5 + 2
 
-export function axisLabels(since: number, until: number, nowAt: number): { t: number; pct: number; label: string }[] {
+export function axisLabels(
+  since: number,
+  until: number,
+  nowAt: number,
+  trackPx: number | null = null,
+): { t: number; pct: number; label: string }[] {
   const ticks = axisTicks(since, until)
   const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
   const nowShown = until >= nowAt - 60_000
-  return ticks
+  const placed = ticks
     .map((t) => {
       const d = new Date(t)
       const midnight = d.getHours() === 0 && d.getMinutes() === 0
       return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
     })
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
+  if (trackPx === null || !(trackPx > 0)) return placed
+  const limit = nowShown ? trackPx - NOW_LABEL_PX - VALUE_LABEL_GAP_PX : trackPx
+  const kept: typeof placed = []
+  let lastEnd = -Infinity
+  for (const x of placed) {
+    const from = (x.pct / 100) * trackPx
+    const to = from + TICK_PAD_PX + x.label.length * TICK_CHAR_PX
+    if (to > limit || from - lastEnd < VALUE_LABEL_GAP_PX) continue
+    kept.push(x)
+    lastEnd = to
+  }
+  return kept
+}
+
+/**
+ * WHERE `+` AND `−` ZOOM (QA G3-30, 2026-10-07). About the window's middle,
+ * `+` on a 24 h span at 21:07 drew 03:07–15:07 and dropped the last six
+ * hours, running work included. A window that ends at the present keeps
+ * ending there; one in the past zooms about its middle, never past now.
+ * `endsNow` is said by the caller for a span, which ends at its read, however
+ * long ago that read was.
+ */
+export function zoomWindow(
+  win: { since: number; until: number },
+  factor: number,
+  now: number,
+  endsNow = win.until >= now - 60_000,
+): { since: number; until: number } {
+  const width = (win.until - win.since) * factor
+  if (endsNow) return { since: Math.max(0, now - width), until: now }
+  const mid = (win.since + win.until) / 2
+  const until = Math.min(mid + width / 2, now)
+  return { since: Math.max(0, until - width), until }
 }
 
 /**
@@ -228,7 +286,59 @@ type EventsRead =
   | { status: 'error'; httpStatus: number | null; message: string }
   | { status: 'ok'; events: TaskEvent[]; next: string | null; older: 'idle' | 'reading' | string }
 
-type WorkflowState = { status: 'ok'; read: WorkflowRead } | { status: 'error'; why: string }
+type WorkflowState =
+  | { status: 'ok'; read: WorkflowRead }
+  | { status: 'error'; why: string; route: string; limited: boolean }
+
+/**
+ * HOW MANY WORKFLOW READS ARE IN FLIGHT AT ONCE, and how long a 429 waits
+ * before it is asked again (QA G3-07, 2026-10-07). The page used to ask for
+ * every workflow its lanes name at once -- 49 of them on a busy day -- and 15
+ * came back 429, each printed as `steps — (/v1/workflows/wf_… answered 429)`.
+ * Four at a time is what the route answered without refusing; a refused read
+ * keeps its slot while it waits, so the whole queue slows down with it rather
+ * than the other three asking straight back into the limit.
+ */
+export const WORKFLOW_READS_AT_ONCE = 4
+export const WORKFLOW_429_WAITS_MS: readonly number[] = [1_000, 3_000, 9_000]
+
+/** A queue that runs at most `limit` reads at once, in the order they were asked. */
+export function readQueue(limit: number): <T>(read: () => Promise<T>) => Promise<T> {
+  let active = 0
+  const waiting: Array<() => void> = []
+  const next = () => {
+    if (active >= limit) return
+    const go = waiting.shift()
+    if (go === undefined) return
+    active += 1
+    go()
+  }
+  return <T,>(read: () => Promise<T>) =>
+    new Promise<T>((resolve, reject) => {
+      waiting.push(() => {
+        read()
+          .then(resolve, reject)
+          .finally(() => {
+            active -= 1
+            next()
+          })
+      })
+      next()
+    })
+}
+
+/** A read asked again after each wait in `waits` while the route answers 429; any other answer is returned as it came. */
+export async function withBackoff<T>(
+  read: () => Promise<Result<T>>,
+  waits: readonly number[],
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<Result<T>> {
+  for (let i = 0; ; i += 1) {
+    const r = await read()
+    if (r.status !== 'error' || r.error.httpStatus !== 429 || i >= waits.length) return r
+    await sleep(waits[i]!)
+  }
+}
 
 /**
  * How long the outcome strip waits for /v1/outcomes before it says so. The
@@ -238,13 +348,23 @@ type WorkflowState = { status: 'ok'; read: WorkflowRead } | { status: 'error'; w
  */
 export const STRIP_DEADLINE_MS = 20_000
 
-type StripRead = { status: 'loading' } | { status: 'ok'; data: Outcomes } | { status: 'error'; error: ApiError }
+export type StripRead = { status: 'loading' } | { status: 'ok'; data: Outcomes } | { status: 'error'; error: ApiError }
 
 const isData = <T,>(r: Result<T>): r is Extract<Result<T>, { data: T }> => r.status === 'ok' || r.status === 'stale'
 
 // ---------------------------------------------------------------------------
 // The screen
 // ---------------------------------------------------------------------------
+
+/**
+ * How often both Timeline pages (Lanes and Outcomes) re-read while open:
+ * every 60 seconds (#117, owner ruling 2026-10-07). Slower than the capacity
+ * screens' 30 because a timeline is read for its shape over hours, and one
+ * minute is a sliver of the narrowest span it offers. It polls through
+ * `usePoll` (Shell.tsx): nothing while the tab is hidden, and nothing after
+ * `IDLE_STOP_MS` without input, behind the head's `Paused · resume`.
+ */
+export const TIMELINE_POLL_MS = 60_000
 
 export function TimelineLanesScreen({
   view: hashView = null,
@@ -286,6 +406,13 @@ export function TimelineLanesScreen({
     setAnchor(Date.now())
     setNonce((n) => n + 1)
   }
+  // THE CADENCE (#117) and THE ONE AGE (#98): a re-read every
+  // `TIMELINE_POLL_MS` re-anchors the span at the read, as a refresh does,
+  // and the head's refresh control carries the age, so the frame's head
+  // prints none.
+  const { idle, resume } = useIdleStop(true)
+  usePoll(TIMELINE_POLL_MS, refresh, idle)
+  useClaimPageAge(true)
 
   // ---- the attempts ------------------------------------------------------
   const [att, setAtt] = useState<AttemptsRead>({ key: readKey, status: 'loading' })
@@ -363,10 +490,43 @@ export function TimelineLanesScreen({
 
   const [workflows, setWorkflows] = useState<Map<string, WorkflowState>>(new Map())
   const askedWf = useRef(new Set<string>())
+  /** The read the workflow answers belong to: one landing after a refresh is dropped. */
+  const wfGen = useRef(nonce)
   useEffect(() => {
+    wfGen.current = nonce
     askedWf.current = new Set()
     setWorkflows(new Map())
   }, [nonce])
+  const wfQueue = useRef(readQueue(WORKFLOW_READS_AT_ONCE))
+  const askWorkflow = useCallback((wf: string) => {
+    askedWf.current.add(wf)
+    const gen = wfGen.current
+    void wfQueue.current(() => withBackoff(() => loadWorkflow(wf), WORKFLOW_429_WAITS_MS)).then((r) => {
+      if (wfGen.current !== gen) return
+      const route = `/v1/workflows/${wf}`
+      setWorkflows((m) =>
+        new Map(m).set(
+          wf,
+          isData(r)
+            ? { status: 'ok', read: r.data }
+            : r.status === 'error'
+              ? { status: 'error', why: failureWords(r.error), route, limited: r.error.httpStatus === 429 }
+              : { status: 'error', why: 'not read', route, limited: false },
+        ),
+      )
+    })
+  }, [])
+  const retryWorkflow = useCallback(
+    (wf: string) => {
+      setWorkflows((m) => {
+        const n = new Map(m)
+        n.delete(wf)
+        return n
+      })
+      askWorkflow(wf)
+    },
+    [askWorkflow],
+  )
 
   /** Every task document read, by any of the three reads. */
   const tasks = useMemo(() => {
@@ -397,19 +557,9 @@ export function TimelineLanesScreen({
     for (const id of laneIds) {
       const wf = tasks.get(id)?.workflow_id ?? null
       if (wf === null || askedWf.current.has(wf)) continue
-      askedWf.current.add(wf)
-      loadWorkflow(wf).then((r) => {
-        setWorkflows((m) =>
-          new Map(m).set(
-            wf,
-            isData(r)
-              ? { status: 'ok', read: r.data }
-              : { status: 'error', why: r.status === 'error' ? `/v1/workflows/${wf} ${failureWords(r.error)}` : 'not read' },
-          ),
-        )
-      })
+      askWorkflow(wf)
     }
-  }, [laneIds, tasks])
+  }, [laneIds, tasks, askWorkflow])
 
   // ---- one events page per lane in view -----------------------------------
   const [events, setEvents] = useState<Map<string, EventsRead>>(new Map())
@@ -560,22 +710,36 @@ export function TimelineLanesScreen({
   const workflowIds = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.workflow_id ?? null)), [allLanes])
 
   const zoomBy = (factor: number) => {
-    const mid = (win.since + win.until) / 2
-    const half = ((win.until - win.since) * factor) / 2
-    const until = Math.min(mid + half, Date.now())
-    setView(zoomedTo(view, Math.max(0, until - 2 * half), until))
+    const at = Date.now()
+    const z = zoomWindow(win, factor, at, view.since === null || win.until >= at - 60_000)
+    setView(zoomedTo(view, z.since, z.until))
   }
 
   return (
     <div className="tl-page">
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
+          age and the cadence, is the head's one action; the span and the
+          lane count are the note over the first card. */}
       <PageHead title="Timeline">
-        {rangeWords(win.since, win.until)} · {shown === null ? 'reading…' : `${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'} read ${timeAgo(new Date(shown.fetchedAt).toISOString(), now)}`}{' '}
-        <button type="button" onClick={refresh} disabled={att.status === 'loading'}>
-          {att.status === 'loading' ? 'reading…' : 'refresh'}
-        </button>
+        <RefreshControl
+          readAt={shown === null ? null : shown.fetchedAt}
+          now={now}
+          cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
+          reading={att.status === 'loading'}
+          idle={idle}
+          onRefresh={refresh}
+          onResume={() => {
+            resume()
+            refresh()
+          }}
+        />
       </PageHead>
 
-      <TimelinePages at="lanes" />
+      <TimelinePages at="lanes" otherTitle={bothRanges(strip, win.since, win.until) ?? undefined} />
+
+      <CountNote>
+        {rangeWords(win.since, win.until)} · {shown === null ? 'reading…' : `${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'}`}
+      </CountNote>
 
       {madeOnOutcomes(query) && (
         <p className="tl-note">
@@ -591,11 +755,6 @@ export function TimelineLanesScreen({
           options={LANE_SPANS.map((s) => ({ key: s, label: s }))}
           onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
         />
-        {back !== null && zoomed && (
-          <Chip onClick={() => setView(back)}>
-            ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
-          </Chip>
-        )}
         <span className="tl-zoom">
           <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>
             −
@@ -640,6 +799,16 @@ export function TimelineLanesScreen({
           </select>
         </label>
       </div>
+      {/* THE WAY BACK HAS ITS OWN LINE (QA G3-31, 2026-10-07): inserted
+          among the controls, the chip moved every control after it, and the
+          one being pressed, `+`, jumped from under the pointer. */}
+      {back !== null && zoomed && (
+        <p className="tl-back">
+          <Chip onClick={() => setView(back)}>
+            ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
+          </Chip>
+        </p>
+      )}
 
       <OutcomeStrip strip={strip} lanes={allLanes} view={view} since={win.since} until={win.until} />
 
@@ -698,7 +867,11 @@ export function TimelineLanesScreen({
             />
             {blocks.map((b) => (
               <Fragment key={b.key}>
-                <GroupHead block={b} workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null} />
+                <GroupHead
+                  block={b}
+                  workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null}
+                  onRetry={() => retryWorkflow(b.key)}
+                />
                 {b.lanes.map((l) => [
                   <LaneRow
                     key={l.taskId}
@@ -798,8 +971,33 @@ function TlPicker({
   onChange: (next: string[]) => void
 }) {
   const summary = selected.length === 0 ? `all ${options.length}` : selected.map(word).join(', ')
+  // ESCAPE AND A PRESS OUTSIDE CLOSE IT (QA G3-18, 2026-10-07): the checklist
+  // stayed open through Escape and across a `+` zoom until its own button was
+  // pressed again. Escape hands focus back to the button that opened it.
+  // The element's own `open` is the state: the browser toggles it from the
+  // summary, and these two only ever close it.
+  const box = useRef<HTMLDetailsElement | null>(null)
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const el = box.current
+      if (el !== null && el.open && e.target instanceof Node && !el.contains(e.target)) el.open = false
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [])
   return (
-    <details className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}>
+    <details
+      ref={box}
+      className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}
+      onKeyDown={(e) => {
+        const el = box.current
+        if (e.key !== 'Escape' || el === null || !el.open) return
+        e.preventDefault()
+        e.stopPropagation()
+        el.open = false
+        el.querySelector('summary')?.focus()
+      }}
+    >
       <summary>
         {label} <i>{summary}</i>
       </summary>
@@ -866,7 +1064,21 @@ function Axis({
   summary: string
   onZoom: (since: number, until: number) => void
 }) {
-  const ticks = axisLabels(since, until, nowAt)
+  // The track's width, so the ticks keep their pixel gaps (G3-15). Null
+  // until measured, and in a browser without ResizeObserver: the
+  // percentage rule alone then.
+  const track = useRef<HTMLDivElement | null>(null)
+  const [trackPx, setTrackPx] = useState<number | null>(null)
+  useEffect(() => {
+    const el = track.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const measure = () => setTrackPx(el.getBoundingClientRect().width || null)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [])
+  const ticks = axisLabels(since, until, nowAt, trackPx)
   const [drag, setDrag] = useState<{ x0: number; x1: number; w: number; left: number } | null>(null)
   const at = (x: number, d: { w: number; left: number }) => since + (Math.min(Math.max(x - d.left, 0), d.w) / d.w) * (until - since)
   const down = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -901,6 +1113,7 @@ function Axis({
         <small>{summary}</small>
       </div>
       <div
+        ref={track}
         className="tl-trk"
         title="Drag across the axis to zoom"
         onPointerDown={down}
@@ -924,17 +1137,27 @@ function Axis({
   )
 }
 
-function GroupHead({ block, workflow }: { block: LaneBlock; workflow: WorkflowState | null }) {
+function GroupHead({ block, workflow, onRetry }: { block: LaneBlock; workflow: WorkflowState | null; onRetry: () => void }) {
   let title: string
-  let note: string
+  let note: ReactNode
   if (block.kind === 'workflow') {
     title = block.key
+    // A FAILED WORKFLOW READ IS SAID IN WORDS, with the route in the title
+    // only (QA G3-07): the subtitle printed the raw route and status, which
+    // the label's width cut to `steps — (/v1/workflows/wf_55…`.
     note =
-      workflow === null
-        ? 'workflow: reading…'
-        : workflow.status === 'error'
-          ? `steps — (${workflow.why})`
-          : `${workflow.read.workflow.steps.length} steps · ${workflow.read.workflow.state.toLowerCase().replace('_', '-')}`
+      workflow === null ? (
+        'workflow: reading…'
+      ) : workflow.status === 'error' ? (
+        <span className="tl-wf-unread" title={`${workflow.route} ${workflow.why}`}>
+          steps not read: {workflow.limited ? 'rate-limited' : workflow.why} ·{' '}
+          <button type="button" className="c-link is-sm tl-wf-retry" onClick={onRetry}>
+            retry
+          </button>
+        </span>
+      ) : (
+        `${workflow.read.workflow.steps.length} ${workflow.read.workflow.steps.length === 1 ? 'step' : 'steps'} · ${workflow.read.workflow.state.toLowerCase().replace('_', '-')}`
+      )
   } else if (block.kind === 'standalone') {
     title = 'Standalone'
     note = `${block.lanes.length} ${block.lanes.length === 1 ? 'task' : 'tasks'} in this span`
@@ -1035,6 +1258,11 @@ function LaneRow({
   const t = lane.task
   const name = t !== null ? agentName(t) : lane.taskId
   const held = heldFor(lane)
+  // A STEP ITS REVIEW VERDICT SKIPPED IS NOT A RUN (QA G3-02, 2026-10-07):
+  // `fix ✓ · 1m 15s` read as a successful run where the graph says `agent not
+  // run`. Its attempt held capacity to publish the reviewed work, and its bar
+  // stays; the label says the agent did not run and which verdict kept it.
+  const skipped = t !== null && t.state === 'SUCCEEDED' && skippedByVerdict(t)
   const wide = until - since > 36 * 3_600_000
   const segs = lane.segs.filter((s) => s.to > since && s.from < until)
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
@@ -1049,11 +1277,18 @@ function LaneRow({
             {name}
           </button>
           {t !== null && <StateMark state={t.state} bare />}
-          {held !== null && (
-            <span className="tl-dur" title="Time its attempts held capacity">
+          {skipped ? (
+            <span className="tl-dur is-skip" title={`${SKIPPED_WORD}: its agent was not run, and its attempt only published the reviewed work`}>
               {' · '}
-              {formatDuration(held)}
+              {`not run (verdict ${(t !== null ? gateVerdictOf(t) : null) ?? '—'})`}
             </span>
+          ) : (
+            held !== null && (
+              <span className="tl-dur" title="Time its attempts held capacity">
+                {' · '}
+                {formatDuration(held)}
+              </span>
+            )
           )}
         </b>
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>
@@ -1120,13 +1355,32 @@ function Seg({ s, since, until, wide, multi }: { s: LaneSeg; since: number; unti
 // The outcome strip
 // ---------------------------------------------------------------------------
 
+/**
+ * BOTH RANGES, WHERE THE TWO PAGES LINK (QA G3-08): Outcomes reads the span
+ * from a bucket boundary, these lanes the last span to the minute. Null until
+ * the strip's read has said which range it covered.
+ */
+export function bothRanges(strip: StripRead, since: number, until: number): string | null {
+  if (strip.status !== 'ok') return null
+  const aligned = alignedWords(strip.data)
+  return `Outcomes reads ${ledgerRange(strip.data)}${aligned === null ? '' : ` (${aligned})`}; these lanes read ${rangeWords(since, until)}`
+}
+
 function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; lanes: readonly Lane[]; view: LanesView; since: number; until: number }) {
   const fenced = lanes.reduce((n, l) => n + l.segs.filter((s) => s.kind === 'cut').length, 0)
   const drawn = lanes.filter((l) => !l.neverRan)
   const unread = drawn.filter((l) => !l.eventsRead).length
   const parks = drawn.reduce((n, l) => n + l.segs.filter((s) => s.kind === 'park' && !s.future).length, 0)
   const still = drawn.filter((l) => l.task?.state === 'PARKED').length
-  const link = <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`}>Outcomes for this span ›</a>
+  const link = (
+    <a href={`/timeline/outcomes?${outcomesQueryFor(view)}`} title={bothRanges(strip, since, until) ?? undefined}>
+      Outcomes for this span ›
+    </a>
+  )
+  // THE STRIP'S COUNTS ARE THE LEDGER'S, OVER THE LEDGER'S RANGE (QA G3-08):
+  // it said "Decided counts cover 20:57–20:57" over counts the route had read
+  // from 22:00, so its numbers matched neither page.
+  const aligned = strip.status === 'ok' ? alignedWords(strip.data) : null
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
@@ -1146,11 +1400,14 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
               <b>{Math.round(strip.data.totals.rate.p * 100)} %</b> success, {strip.data.totals.rate.k} of {strip.data.totals.rate.n} decided
             </span>
           )}
-          <span className="tl-x">
-            <b>{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed or dead-lettered
-          </span>
-          <span className="tl-x">
-            <b>{strip.data.totals.cancelled.total}</b> cancelled
+          {/* THE FINISHED TOTAL, SPLIT INTO PARTS THAT ADD UP TO IT (#123):
+              succeeded + failed + cancelled = finished, with failed FAILED +
+              DEAD_LETTERED, the one definition the ledger uses. The rate
+              beside it leaves the cancels out, so its n is not this total. */}
+          <span className="tl-x tl-ended">
+            <b className="tl-n-ended">{strip.data.totals.ended}</b> finished: <b className="tl-n-ok">{strip.data.totals.succeeded}</b> succeeded ·{' '}
+            <b className="tl-n-bad">{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed ·{' '}
+            <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
           </span>
           {unread > 0 && fenced === 0 ? (
             <span className="tl-x">
@@ -1178,7 +1435,15 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
       {/* WHAT IT COUNTS, IN THE READER'S WORDS (walkthrough E): where the
           counts come from is the Outcomes help topic, one click away. */}
       <p className="tl-q">
-        Decided counts cover {rangeWords(since, until)}; parks and fences count only the lanes drawn.{' '}
+        {strip.status === 'ok' ? (
+          <>
+            Decided counts cover <span className="tl-strip-range">{ledgerRange(strip.data)}</span>
+            {aligned !== null && `, ${aligned} as on Outcomes`}; the lanes cover{' '}
+            <span className="tl-lanes-range">{rangeWords(since, until)}</span>. Parks and fences count only the lanes drawn.{' '}
+          </>
+        ) : (
+          <>Decided counts cover {rangeWords(since, until)}; parks and fences count only the lanes drawn. </>
+        )}
         <a className="ctl-link" href={`#${HELP['outcome-buckets'].anchor}`}>How these are counted</a>
       </p>
     </div>

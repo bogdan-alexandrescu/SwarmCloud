@@ -71,8 +71,10 @@ from .progress import (
     _payload,
     clip,
     outcome,
+    questions_count,
+    questions_words,
 )
-from .render import describe_blocker, parse_time, task_label
+from .render import _DEPENDENCY_WAIT, describe_blocker, merge_row, parse_time, task_label
 
 #: The longest one progress call may hold: thirty minutes (owner decision,
 #: 2026-10-01, #448). A held call costs a task read per poll and NOTHING in the
@@ -129,6 +131,7 @@ _EVENT_PAGE = 100
 _WAITS_FOR = {
     "DEPENDENCY_INCOMPLETE": "dependency",
     "CHILDREN_INCOMPLETE": "child tasks",
+    "CI_PENDING": "pull request checks",
     "PROVIDER_QUOTA_EXHAUSTED": "quota",
     "PROVIDER_COOLDOWN": "quota cooldown",
     "PROVIDER_OUTAGE": "provider outage",
@@ -222,10 +225,6 @@ def waits_for(task: dict[str, Any]) -> str:
 #: The states that hold capacity (invariant 3: concurrency counts from LEASED),
 #: from the frozen contract. One state for the hold: see the module docstring.
 _HOLDING = frozenset(state.value for state in CONCURRENCY_STATES)
-
-#: What a dependent step waits in before it can start.
-_DEPENDENCY_WAIT = "DEPENDENCY_INCOMPLETE"
-
 
 def _wake_key(task: dict[str, Any]) -> str:
     """What ends a window early: the task's state, as a row acts on it.
@@ -333,6 +332,16 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
         parts.append(words)
     tokens, cost = _spend(client, str(task.get("task_id")))
     parts += [tokens, cost]
+    asked = questions_count(task) if task.get("terminal") else 0
+    if asked:
+        # WHAT THE AGENT ASKS THE OWNER (owner decision, 2026-10-05): on the
+        # final line, so the row that writes one line per change says it.
+        parts.append(questions_words(asked))
+    merged = merge_row(task)
+    if merged is not None:
+        # A MERGE STEP'S VERDICT (lane MS5): merged and the issues closed, or
+        # the refusal code -- what a workflow acts on, on the final line.
+        parts.append(merged)
     return " · ".join(parts), f"{wake}|{stamp}"
 
 
@@ -360,18 +369,85 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
         "state": full.get("state"),
         "answer_excerpt": full.get("answer_excerpt"),
         "cost_usd": full.get("cost_usd"),
+        # `cost_usd` is every attempt's; these say whether it is a floor and
+        # what the last attempt alone cost (lane review P1).
+        "cost_incomplete": full.get("cost_incomplete"),
+        "attempts": full.get("attempts"),
+        "last_attempt_cost_usd": full.get("last_attempt_cost_usd"),
         "duration_s": full.get("duration_s"),
         "pr_url": full.get("pr_url"),
         "artifacts": [a.get("name") for a in full.get("artifacts") or [] if isinstance(a, dict)],
         "last_error": full.get("last_error"),
         "end_cause": full.get("end_cause"),
+        # The agent's questions for the owner, whole: they are the reason a
+        # person reads this step's result (`progress.owner_questions`).
+        "questions": list(full.get("questions") or []),
     }
+    if full.get("questions_unavailable_because"):
+        out["questions_unavailable_because"] = clip(full["questions_unavailable_because"], 300)
     if full.get("answer_unavailable_because"):
         out["answer_unavailable_because"] = clip(full["answer_unavailable_because"], 200)
     if full.get("console"):
         # The API's link, so the row's answer can say where the whole of it is.
         out["console"] = full["console"]
     return out
+
+
+def _text(value: Any) -> str:
+    """A field as text for `step_result`: "" for none, a non-string as compact JSON."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"), default=str)
+
+
+def step_result(row: dict[str, Any]) -> dict[str, Any]:
+    """The step's answer, ready for an `sc:step` row to return as given.
+
+    WHY (owner decision, 2026-10-05, lane review B2). Every one of the 14
+    refused StructuredOutput calls that day was a bare null -- `"pr_url": ,`
+    -- typed by the Haiku relay while retyping `outcome` field by field, and
+    one review row lost a SUCCEEDED result that way. So this object holds NO
+    null anywhere: a text with no value is "", a list with none is [], and a
+    figure that was not recorded (`cost_usd`, `duration_s`) is LEFT OUT --
+    never 0, which would say it cost nothing. `plugin/workflows/run.js` reads
+    a missing figure back as null.
+
+    A task given up on (`abandoned`) answers `UNKNOWN` with its reason as
+    `last_error`, so every reply that stops carries a result to return.
+    """
+    found = row.get("outcome") or {}
+    result: dict[str, Any] = {"state": str(found.get("state") or row.get("state") or "UNKNOWN")}
+    if row.get("abandoned"):
+        result["state"] = "UNKNOWN"
+    result["answer_excerpt"] = _text(found.get("answer_excerpt"))
+    for figure in ("cost_usd", "duration_s"):
+        value = found.get(figure)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[figure] = value
+    result["pr_url"] = _text(found.get("pr_url"))
+    result["artifacts"] = [str(name) for name in found.get("artifacts") or [] if name]
+    result["last_error"] = _text(row.get("abandoned_because") if row.get("abandoned") else found.get("last_error"))
+    result["console"] = _text(found.get("console") or row.get("console"))
+    # The agent's questions for the owner (2026-10-05), with "" for a text it
+    # left out, so this object still holds no null. `[]` when it asked none.
+    result["questions"] = [_no_null_question(q) for q in found.get("questions") or [] if isinstance(q, dict)]
+    return result
+
+
+def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
+    """One of `progress.owner_questions`' questions, every missing text as ""."""
+    return {
+        "question": _text(question.get("question")),
+        "options": [
+            {"label": _text(option.get("label")), "description": _text(option.get("description"))}
+            for option in question.get("options") or []
+            if isinstance(option, dict)
+        ],
+        "recommended": _text(question.get("recommended")),
+        "context": _text(question.get("context")),
+    }
 
 
 def watch_progress(
@@ -486,7 +562,14 @@ def watch_progress(
         if link is not None:
             row["console"] = link
         abandoned = None
-        if step_id is not None and task["read"] == "ok" and task.get("step_id") != step_id:
+        if step_id is not None and task["read"] == "ok" and task.get("step_id") is None:
+            # A single task handed to a step row (#830).
+            abandoned = (
+                f"task {task_id} is a single task, not workflow step {step_id!r}: it "
+                "belongs to no workflow. Follow it WITHOUT `step_id` -- the sc:task row "
+                "does. Nothing was cancelled"
+            )
+        elif step_id is not None and task["read"] == "ok" and task.get("step_id") != step_id:
             abandoned = (
                 f"task {task_id} is workflow step {task.get('step_id')!r}, not {step_id!r}: this "
                 "row was handed another step's task id. Nothing was cancelled"
@@ -551,4 +634,8 @@ def watch_progress(
     }
     if parents:
         reply["parents"] = parent_states
+    if stop and len(rows) == 1:
+        # The step's answer, ready-made (`step_result`): the row returns it as
+        # given rather than retyping `outcome` field by field.
+        reply["result"] = step_result(rows[0])
     return reply

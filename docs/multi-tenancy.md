@@ -353,7 +353,7 @@ authorization layer rather than in our code.
   service account — forced by Cloud Run setting the SA on the Job, not the
   execution. See [execution-backends.md](execution-backends.md).
 * GKE: namespace `swarm-tenant-<id>` (the dispatcher's default template,
-  `apps/scheduler/scheduler/dispatch.py:1463`; this row said `swarm-<id>` until
+  `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher.namespace_for`; this row said `swarm-<id>` until
   2026-10-02, the spelling §1 above records as behind the 2026-09-23 outage),
   tenant KSA workload-identity-bound to the tenant GSA, default-deny
   NetworkPolicy so one tenant's pod cannot reach another's.
@@ -527,6 +527,19 @@ figure as `Enforced`. A new tenant at the defaults is capped at 20, not 40.
 Until 2026-09-25 the script wrote `capacity_units` and Terraform wrote
 `max_active`, so a pool one of them created before then can hold the larger
 value; setting either limit through the admin route rewrites it.
+
+**The tenant ceiling route sets both, so the ceiling is the number typed.**
+`PUT /v1/admin/limits/tenant/{id}` — what the console's Pool limits editor
+sends for a `tenant:` pool — writes `max_active` AND `capacity_units` to the
+requested limit, and the pool becomes exactly that limit. On 2026-10-07 it
+wrote `max_active` alone: the owner raised `smoke` 8 -> 20, `capacity_units`
+stayed 8, the min() held the pool at 8, and the route answered 200 with a
+pool of 8 that the console called saved. The owner decided the ceiling is one
+number. The min() rule stays for `PUT /v1/admin/tenants/{id}/limits`, which
+sets the two separately, and the ceiling route's response carries
+`capped_by` (`capacity_units`, `max_active`, …, or null) so the console can
+say "Saved, but the ceiling is still N" instead of a success when a pool did
+not move.
 
 ---
 

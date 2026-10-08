@@ -7,14 +7,17 @@
 // applies. What this file added:
 //
 //   * ABNORMAL ROWS FIRST, inside each family: a full pool is at the top of
-//     its family, then the rest by used/ceiling, highest first -- not by name.
-//   * THE POOL NAME LINKS TO HOLDERS FILTERED TO THAT POOL
+//     its family, then the rest in the one order every pool list shares
+//     since QA G5-22 (this tenant's own, then name) -- no longer by use.
+//   * `N holders` LINKS TO HOLDERS FILTERED TO THAT POOL
 //     (`#capacity/holders?pool=<name>`), and `limit` to that pool's Pool
 //     limits row (`#admin/limits?pool=<name>`), which #134 already lands on.
+//     The pool name is its own row's address since QA G5-23, so the two
+//     links no longer go to one place.
 //   * A ROW A LINK NAMED (`#capacity/pools?pool=<name>`, from Provider quota)
 //     is outlined, the way Pool limits outlines its linked row.
 //
-// BREAK IT: sort a family by name again -- `runner:zeta` (full) drops below
+// BREAK IT: sort a family by name alone -- `runner:zeta` (full) drops below
 // `runner:alpha`. Or drop `?pool=` from the holders link -- the href no
 // longer names the pool. Or keep the router stripping `?pool=` off
 // `capacity/pools` / `capacity/holders` -- `canonical` loses it.
@@ -86,9 +89,9 @@ function rowOf(name: string): HTMLElement {
 }
 
 describe('Pools puts the abnormal row first and measures every row (#125)', () => {
-  it('sorts a family full first, then by used/ceiling, never by name', async () => {
+  it('sorts a family full first, then the rest by name (QA G5-22)', async () => {
     await renderPools()
-    expect(familyOrder('Runner profiles')).toEqual(['runner:zeta', 'runner:beta', 'runner:gamma', 'runner:alpha'])
+    expect(familyOrder('Runner profiles')).toEqual(['runner:zeta', 'runner:alpha', 'runner:beta', 'runner:gamma'])
   })
 
   it('draws a utilisation track and a % on every row, and Set by on every row', async () => {
@@ -101,18 +104,20 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
       expect(r.querySelector('.cap-use-pct')!.textContent).toMatch(/%$/)
     }
     expect(rowOf('runner:zeta').querySelector('.cap-use-pct')!.textContent).toBe('100%')
-    // Never blank since browser QA D32 (2026-10-04): the configured case says so, faint.
-    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('configured')
+    // Never blank since browser QA D32 (2026-10-04); a faint dot named
+    // `configured` since QA G5-19 (capacity.html §G).
+    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('·')
+    expect(rowOf('global').querySelector('td[data-label="Set by"] [aria-label="configured"]')).not.toBeNull()
     expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
   })
 })
 
 describe('a Pools row is one click from its holders and its limit (#125)', () => {
-  it('links the pool name to Holders filtered by that pool', async () => {
+  it('links the pool name to its own row, which Holders is not (QA G5-23)', async () => {
     await renderPools()
     const link = rowOf('runner:zeta').querySelector('th a')
     expect(link, 'the pool name is not a link').not.toBeNull()
-    expect(link!.getAttribute('href')).toBe(`#capacity/holders?pool=${encodeURIComponent('runner:zeta')}`)
+    expect(link!.getAttribute('href')).toBe(`#capacity/pools?pool=${encodeURIComponent('runner:zeta')}`)
   })
 
   it('links limit to that pool\'s Pool limits row', async () => {

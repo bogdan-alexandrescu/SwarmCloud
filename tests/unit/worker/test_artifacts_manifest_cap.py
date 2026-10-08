@@ -24,7 +24,8 @@ Every test here runs the production worker and the production claude-code
 runner, with a stand-in agent started through `CLAUDE_CODE_BIN` the way
 `test_standalone_outputs.py` does. This one writes numbered SERIES of files
 into `$SWARM_ARTIFACTS_DIR`: a plan naming 1,200 files of up to 700 bytes each
-would be one argument past Linux's 128 KiB limit on a single argv string.
+is far past Linux's 128 KiB limit on a single argv string, which no longer
+matters since the prompt goes on the CLI's stdin.
 
 The keys and the wording are spelled out rather than imported: each is a field
 of a document that outlives the process that wrote it, or a line an operator
@@ -47,7 +48,7 @@ from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.config import Settings
 
-from conftest import BUCKET, TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import BUCKET, TENANT, build_worker, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 from test_standalone_outputs import (
     PROFILE,
@@ -90,7 +91,7 @@ FIRESTORE_DOCUMENT_BYTES = 1024 * 1024
 SERIES_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
-prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+prompt = sys.stdin.read()
 try:
     plan, _end = json.JSONDecoder().raw_decode(prompt)
 except ValueError:
@@ -285,6 +286,53 @@ def test_a_declared_name_longer_than_the_manifest_bound_is_still_uploaded(
     summary = _summary(db)
     assert "expected_outputs_missing" not in summary, summary.get("expected_outputs_missing")
     assert long_name not in skipped_names(summary.get("artifacts_skipped"))
+
+
+def test_a_declared_name_longer_than_the_shown_cut_keeps_its_cap_cause(
+    db, worker_factory, series_cli
+):
+    """#165, owner decision 2026-09-28: a missing output the byte cap kept out
+    fails the attempt for good, because the retry writes the same file into
+    the same cap. The summary lists a skipped name cut to 256 characters, and
+    the cause the check reads was keyed by that cut name, so a declared name
+    over 256 lost its `cap` and was called not written, and retried."""
+    long_name = f"{'d' * 140}/{'e' * 159}"
+    _seed(db, {"series": [[long_name, 1]]}, metadata={"expected_outputs": [long_name]})
+
+    assert _run(worker_factory, max_artifact_bytes=1) == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    summary = _summary(db)
+    assert summary["expected_outputs_missing_causes"] == [{"name": long_name, "cause": "cap"}]
+    assert task["state"] == "FAILED", "a retry meets the same cap"
+    assert task["end_cause"] == "outputs_missing"
+    assert "retried" not in task["last_error"]
+
+
+def test_a_declared_name_past_the_exempt_count_and_over_the_bound_is_refused_for_good(
+    db, worker_factory, series_cli
+):
+    """#165: the name bound is a cause a retry cannot change. Past the first
+    49 declared names the exemption from the 256-byte bound ends, so the 50th,
+    at 300 bytes, is refused at every attempt. Its cause, looked up by the
+    name as declared, is `refused`, and the attempt fails for good."""
+    exempt = [f"out-{index:02d}.md" for index in range(49)]
+    # Sorting after every `out-` name, so it is the 50th in any order.
+    long_name = f"{'z' * 140}/{'e' * 159}"
+    _seed(
+        db,
+        {"series": [[long_name, 1]]},
+        metadata={"expected_outputs": [*exempt, long_name]},
+    )
+
+    assert _run(worker_factory) == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    causes = {
+        entry["name"]: entry["cause"]
+        for entry in _summary(db)["expected_outputs_missing_causes"]
+    }
+    assert causes[long_name] == "refused"
+    assert task["state"] == "FAILED", "a retry meets the same name bound"
+    assert task["end_cause"] == "outputs_missing"
 
 
 # ---------------------------------------------------------------------------

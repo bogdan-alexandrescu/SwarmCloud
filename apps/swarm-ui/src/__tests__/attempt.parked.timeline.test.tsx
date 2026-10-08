@@ -92,6 +92,37 @@ describe('a parked attempt on the timeline', () => {
   })
 })
 
+// THE ISSUE'S ACCEPTANCE CASE: a task that ran 5 minutes, parked for 40 and
+// was then cancelled. The task's own span, last start to cancel, is 45m; the
+// parked attempt's end (exit 75, written by the worker's park) makes the
+// inspector's attempt card time the run itself.
+describe('a task cancelled while parked, in the Attempts view', () => {
+  function ranFact(el: HTMLElement): string | undefined {
+    const facts = Array.from(el.querySelectorAll<HTMLElement>('.att-card .ctl-fact'))
+    const f = facts.find((li) => li.querySelector('b')?.textContent === 'ran')
+    expect(f, 'the attempt card draws no `ran` fact').not.toBeUndefined()
+    return f!.textContent?.replace(/^ran/, '')
+  }
+
+  it('times the run, not the last start to the cancel', async () => {
+    const parked = attempt(1, {
+      started_at: at(1),
+      completed_at: at(6),
+      exit_code: 75,
+      error: 'PROVIDER_QUOTA_EXHAUSTED',
+    })
+    const el = await mount(task({ state: 'CANCELLED', started_at: at(1), completed_at: at(46) }), [parked])
+    expect(ranFact(el)).toBe('5m 0s')
+    expect(chip(el).textContent).toBe('parked · PROVIDER_QUOTA_EXHAUSTED')
+  })
+
+  it('still times a mid-run cancel to its end', async () => {
+    const cancelled = attempt(1, { started_at: at(1), completed_at: at(46), exit_code: 130, error: null })
+    const el = await mount(task({ state: 'CANCELLED', started_at: at(1), completed_at: at(46) }), [cancelled])
+    expect(ranFact(el)).toBe('45m 0s')
+  })
+})
+
 describe('a parked attempt on the Details tab', () => {
   async function details(t: Task, attempts: AttemptRow[]): Promise<HTMLElement> {
     api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })

@@ -27,13 +27,16 @@
 #                     process group; tini reaps them instead of leaving zombies
 #
 # NOT HERE: the repository index's toolchain (the tree-sitter extractor, the
-# graph shard writer, the Go toolchain, gopls, terraform-ls, pyright and
+# graph shard writer, the Go toolchain, gopls, pyright and
 # typescript-language-server). It is images/agent-runtime-indexer, built FROM
-# this image by digest. Every claude-code and codex start pulls this image,
-# and the toolchain is ~133 MB compressed (409 MB unpacked) that only an index
-# run uses; claude-code's Cloud Run start p50 went from ~115 s to 166-168 s
-# the days it landed here (#625, docs/worker-images.md). Adding a tool to this
-# image is paid on every agent start: measure it with scripts/image-sizes.sh.
+# this image by digest, and only the `indexer` runner profile runs it. Every
+# claude-code and codex start pulls this image, and the toolchain was +188 MB
+# compressed (726 -> 916 MB, the operator's registry bisect of 2026-10-05 with
+# scripts/image-sizes.sh, #625) that only an index run uses. That bisect also
+# showed the ~115 -> ~167 s start step of 10-04/05 happened with no change in
+# this image's size (#667), so the move keeps the weight off every start; it
+# is not the cause of that step. Adding a tool to this image is paid on every
+# agent start: measure it with scripts/image-sizes.sh.
 #
 # Digests resolved from the registries on 2026-09-15.
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
@@ -73,15 +76,20 @@ RUN apt-get update \
 COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
+# The root project and its lock. `uv export` below reads the worker's
+# third-party dependency set, at the versions and hashes uv.lock records, from
+# them (#663). With --frozen it reads no other app's directory, so the builder
+# still copies only the packages this image ships.
+COPY pyproject.toml uv.lock /src/
 # Only what the image needs to build: the frozen contract, the credential
 # patterns the worker's per-commit secret scan matches (#259), and the worker.
 COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
-# Wheels first, then install from the local wheelhouse. Resolving
-# `swarm-common` from a wheel we just built -- rather than from an index that
-# has never heard of it -- is what makes this build reproducible offline.
+# Build our own packages into a local wheelhouse. No index has ever heard of
+# them, and the install below never asks one: it reads them from /wheels with
+# `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
@@ -110,9 +118,48 @@ ARG PYTEST_VERSION=8.4.2
 # precisely BECAUSE an agent may build a package.
 RUN python -m venv /opt/venv \
  && uv pip install --python /opt/venv/bin/python \
-      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}" \
- && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-agent-worker \
- && uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
+      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
+
+# Third-party dependencies, exported from uv.lock for the worker alone. The
+# root project depends on every app, so the export prunes the internal packages
+# swarm-agent-worker does not depend on (`swarm-api`, `swarm-mcp`,
+# `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`,
+# `swarm-workflow-rollup`), and the third-party packages only they need go with
+# them. `--no-emit-local` leaves our own packages out of the file: they come
+# from /wheels, below. The export carries a hash for every file; `--no-hashes`
+# must never be added here.
+RUN uv export --frozen --no-dev --no-emit-local --no-editable \
+      --prune swarm-api --prune swarm-mcp \
+      --prune swarm-quota-broker --prune swarm-reconciler \
+      --prune swarm-scheduler --prune swarm-workflow-rollup \
+      > /tmp/requirements.txt
+
+# Installed at exactly the versions and hashes in uv.lock, with nothing
+# resolved at build time (#663). This used to be one `uv pip install
+# --find-links /wheels swarm-agent-worker` that resolved every third-party
+# package unpinned against PyPI. `--require-hashes` refuses any file whose hash
+# the lock does not record, so an index can fail this step but never substitute
+# a package; `--no-deps` because the export is already the complete closure.
+RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /tmp/requirements.txt
+
+# Our own packages, from the wheelhouse ONLY. `--find-links` alone ADDS
+# /wheels and keeps PyPI as an index, so every internal name was looked up on
+# pypi.org -- the control-plane images' build on 3a0d488c failed on a 503 from
+# pypi.org/simple/swarm-redaction/ -- and a public package published under one
+# of these names at a higher version could have been installed instead of ours:
+# dependency confusion into the image every tenant's agent runs in. `--no-index`
+# means no index is ever asked for them; `--no-deps` because their third-party
+# dependencies are already installed above, by hash.
+RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
+      swarm-common swarm-redaction swarm-agent-worker
+
+# pytest for the generic runner's `python -m pytest` (see the venv step above).
+RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
+
+# With `--no-deps` on both installs nothing above notices a dependency the
+# export left out. `uv pip check` does, here, instead of an ImportError at the
+# runtime stage's import check or inside a tenant's task.
+RUN uv pip check --python /opt/venv/bin/python
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -540,36 +587,44 @@ RUN mkdir -p /tmp/toolbox \
 # https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS.
 ARG TERRAFORM_VERSION=1.16.4
 ARG TERRAFORM_SHA256=dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
-# INSTALL_TOFU_TFLINT_TRIVY is OFF by default because no published release of
-# these three passed the promote gate on 2026-10-01, and the gate refuses the
-# whole image, not just the tool. Each was scanned at its newest release:
+# INSTALL_TOFU_TFLINT is OFF by default because no published release of tofu
+# or tflint passes the promote gate, and the gate refuses the whole image, not
+# just the tool. Re-scanned on 2026-10-06 with trivy 0.75.0, the gate's filter
+# (`trivy rootfs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed`,
+# vulnerability DB updated 2026-10-05T19:07Z), at each newest release:
 #
-#   tofu 1.13.0 (2026-09-30)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
+#   tofu 1.13.1 (2026-10-01)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
 #                              CVE-2026-56865; fixed 0.40.0), google.golang.org/
 #                              grpc 1.83.1 (CVE-2026-84445; fixed 1.83.2). The
-#                              1.12.6 docs/versions.md names had fourteen.
+#                              same two as 1.13.0 (2026-10-01 scan). The 1.12
+#                              line's newest, 1.12.7, has eight: otel/sdk
+#                              1.42.0, x/mod 0.38.0, grpc 1.79.3, oras-go 2.6.1.
 #   tflint 0.64.0 (2026-07-17) Go stdlib 1.26.3 (eleven CVEs, fixed 1.26.6),
 #                              x/crypto 0.53.0 (CVE-2026-56854), x/mod 0.37.0,
 #                              grpc 1.82.0 (CVE-2026-84304, CVE-2026-84445,
-#                              GHSA-hrxh-6v49-42gf). No newer release exists.
-#   trivy 0.74.0 (2026-08-14)  grpc 1.82.1 (CVE-2026-84304, fixed 1.83.1;
-#                              CVE-2026-84445, fixed 1.83.2). No newer release.
+#                              GHSA-hrxh-6v49-42gf). Still no newer release.
+#
+# trivy WAS held here too (0.74.0: grpc 1.82.1, CVE-2026-84304 and
+# CVE-2026-84445). 0.75.0 (2026-10-01) carries grpc 1.83.2, x/mod 0.41.0,
+# x/crypto 0.57.0 and Go 1.27.1, and that scan found nothing fixable at any
+# severity, so it left the hold (#442) and is installed below by default.
 #
 # Building them from source with patched dependencies is ruled out (see the
 # header of this section), and an ignore entry for another project's
-# dependencies is the owner's decision, not this file's. So the install below
-# is complete -- pinned, verified, and covered by the smoke step when the
-# argument is 1 -- and turning it on is one build argument once the vendors
-# ship a release that scans clean (or the owner accepts these findings in
-# .trivyignore.yaml with an expiry). Re-scan before flipping it.
+# dependencies is the owner's decision, not this file's (#442: no waiver). So
+# the install below is complete -- pinned, verified, and covered by the smoke
+# step when the argument is 1 -- and turning it on is one build argument once
+# both vendors ship a release that scans clean. Re-scan before flipping it,
+# and record the release and the scan here; a tool can also leave the hold on
+# its own, as trivy did.
 #
-# Checksums: https://github.com/opentofu/opentofu/releases/download/v1.13.0/tofu_1.13.0_SHA256SUMS
-# (tofu_1.13.0_linux_amd64.tar.gz) and
+# Checksums: https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_SHA256SUMS
+# (tofu_1.13.1_linux_amd64.tar.gz) and
 # https://github.com/terraform-linters/tflint/releases/download/v0.64.0/checksums.txt
 # (tflint_linux_amd64.zip).
-ARG INSTALL_TOFU_TFLINT_TRIVY=0
-ARG TOFU_VERSION=1.13.0
-ARG TOFU_SHA256=1f0cb37fc85dea4e7633a72aca2332b801f72650a32be911b8b9b32907f214fb
+ARG INSTALL_TOFU_TFLINT=0
+ARG TOFU_VERSION=1.13.1
+ARG TOFU_SHA256=378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
 ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
 RUN mkdir -p /tmp/toolbox \
@@ -578,7 +633,7 @@ RUN mkdir -p /tmp/toolbox \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
+ && if [ "${INSTALL_TOFU_TFLINT}" = "1" ]; then \
       curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
         "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && curl -fsSL -o /tmp/toolbox/tflint.zip \
@@ -592,7 +647,7 @@ RUN mkdir -p /tmp/toolbox \
     fi \
  && rm -rf /tmp/toolbox
 
-# Linters and scanners: shellcheck always, trivy behind the same argument.
+# Linters and scanners: shellcheck and trivy.
 #
 # shellcheck 0.11.0, the newest release and the version docs/versions.md pins
 # (Debian bookworm's apt package is 0.9.0).
@@ -601,14 +656,18 @@ RUN mkdir -p /tmp/toolbox \
 # file, so the sha256 is the asset digest GitHub records for
 # shellcheck-v0.11.0.linux.x86_64.tar.gz in
 # https://api.github.com/repos/koalaman/shellcheck/releases/latest, recomputed
-# over the downloaded file. trivy 0.74.0: see INSTALL_TOFU_TFLINT_TRIVY above;
-# checksum from
-# https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_checksums.txt
-# (trivy_0.74.0_Linux-64bit.tar.gz).
+# over the downloaded file.
+#
+# trivy 0.75.0 (2026-10-01), the newest release: it scanned clean on
+# 2026-10-06 (see INSTALL_TOFU_TFLINT above for the scan and why 0.74.0 could
+# not ship). It is the agent's scanner, not the gate's: CI and the release pin
+# their own trivy in .github/workflows. Checksum from
+# https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_checksums.txt
+# (trivy_0.75.0_Linux-64bit.tar.gz), recomputed over the downloaded file.
 ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
-ARG TRIVY_VERSION=0.74.0
-ARG TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+ARG TRIVY_VERSION=0.75.0
+ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
 RUN mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
       "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
@@ -616,13 +675,11 @@ RUN mkdir -p /tmp/toolbox \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
-        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
-      && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
-      && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy ; \
-    fi \
+ && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
+      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+ && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
+ && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy \
  && rm -rf /tmp/toolbox
 
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
@@ -694,8 +751,8 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # will run it. A missing or unrunnable tool fails the build and is named; the
 # count is printed so a list that collapsed to one word cannot read as a pass.
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
-RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov shellcheck make docker" \
- && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then tools="$tools tofu tflint trivy"; fi \
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker" \
+ && if [ "${INSTALL_TOFU_TFLINT}" = "1" ]; then tools="$tools tofu tflint"; fi \
  && HOME="$(mktemp -d)" && export HOME \
  && n=0 && missing="" \
  && for t in $tools; do \

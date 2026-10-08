@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -9,7 +10,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, Mark } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadTask } from './api'
@@ -31,6 +32,7 @@ import {
 } from './listSnap'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
+import { TaskIdLine } from './TaskIdLine'
 import { useResourceClasses } from './Blockers'
 import { HelpCard } from './HelpCard'
 import {
@@ -157,7 +159,13 @@ export function AgentSplit({
   const [ckpts, setCkpts] = useState<{ taskId: string; c: CheckpointCount } | null>(null)
   const onCheckpoints = useCallback((c: CheckpointCount | null) => setCkpts(c === null ? null : { taskId, c }), [taskId])
   const ckpt = ckpts !== null && ckpts.taskId === taskId ? ckpts.c : null
-  const ckptCount = ckpt === null ? null : ckpt.kept
+  // KEPT OF WRITTEN WHEN THE TWO DIFFER (G2-12, QA 2026-10-07): on a
+  // succeeded review the tab said `0` while Details and Attempts said 3, the
+  // three having been reclaimed once the task finished. `0 of 3` says both.
+  // Only when fewer are kept than written: a bucket holding more than the
+  // records name (records not yet written, or older ones) keeps its count.
+  const ckptCount: number | string | null =
+    ckpt === null ? null : ckpt.kept !== null && ckpt.written !== null && ckpt.kept < ckpt.written ? `${ckpt.kept} of ${ckpt.written}` : ckpt.kept
 
   // THE HEADER'S OWN READ of the task document, at the detail's cadence, so
   // the state pill, the name and Stop are there on every tab -- not only on
@@ -176,6 +184,7 @@ export function AgentSplit({
   }, [live, task === null])
   const reload = useCallback(() => setReads((n) => n + 1), [])
   const childCount = useChildCount(task, `${reads}`)
+  const headReadAt = head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null
 
   useEffect(() => {
     const root = document.documentElement
@@ -272,7 +281,7 @@ export function AgentSplit({
     if (inFlight) go(`${base}/logs`)
   }, [decided, taskId, pane, head.state.status, inFlight, go, base])
 
-  const tabs: { id: TaskPane; label: string; count: number | null; say: string | null; to: string }[] = [
+  const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
     { id: 'logs', label: 'Logs', count: null, say: null, to: `${base}/logs` },
     // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
@@ -325,7 +334,7 @@ export function AgentSplit({
 
   return (
     <div
-      className="drawer ctl-drawer ag-split"
+      className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}`}
       role="dialog"
       aria-label={`Agent ${taskId}`}
       ref={panel}
@@ -402,78 +411,99 @@ export function AgentSplit({
       {/* THE ✕ IS IN THE HEADER'S ACTION ROW, after Copy link (walkthrough
           B, 2026-10-03): a sticky band of its own on the column, it was
           drawn over Copy link. */}
-      <AgHead
-        taskId={taskId}
-        task={task}
-        read={head.state.status}
-        readAt={head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null}
-        reload={reload}
-        onClose={close}
-      />
-
-      {/* UNDERLINE TABS WITH COUNTS (agents.html V1; #503 measured a boxed
-          segmented control with none). A count the task document does not
-          carry is a dash with its reason in the title, never a 0. The ids and
-          addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
-      <AgTabsEdge>
-        <Tabs
-          className="ag-split-tabs"
-          label="Agent panes"
-          current={selected}
-          tabs={tabs.map((t) => ({
-            key: t.id,
-            label: t.label,
-            ...(t.id === 'detail' || t.id === 'logs' ? {} : { count: t.count, why: t.say ?? undefined }),
-          }))}
-          onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
+      <SplitTick live={live} readAt={headReadAt}>
+        <AgHead
+          taskId={taskId}
+          task={task}
+          read={head.state.status}
+          reload={reload}
+          onClose={close}
         />
-      </AgTabsEdge>
 
-      <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}`}>
-        {deciding ? (
-          <p className="art-loading">
-            <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
-            <span className="ctl-pending art-loading-bar" />
-          </p>
-        ) : selected === 'logs' && task !== null ? (
-          <AgentLogs key={taskId} task={task} />
-        ) : selected === 'logs' ? (
-          <p className="art-loading">
-            <Mark kind="pending" say="Reading the agent before its log. The read is in flight." />
-            <span className="ctl-pending art-loading-bar" />
-          </p>
-        ) : selected === 'children' && task !== null ? (
-          <AgChildrenPane task={task} readKey={`${reads}`} />
-        ) : selected === 'children' ? (
-          <p className="art-loading">
-            <Mark kind="pending" say="Reading the agent before its children. The read is in flight." />
-            <span className="ctl-pending art-loading-bar" />
-          </p>
-        ) : selected === 'detail' ? (
-          // THE LAST LOG LINE IS IN THE LEADING CARD (agent-details-v3.html
-          // A): a lone row above the body, it was disconnected from the state
-          // it explains. The split draws it, since only the split can switch
-          // to Logs; the card places it.
-          <AgentDetailScreen
-            taskId={taskId}
-            onClose={close}
-            headed
-            checkpoints={ckpt}
-            links={links}
-            lastLine={task !== null ? <LogLastLine key={taskId} task={task} onOpen={links.logs} /> : undefined}
+        {/* UNDERLINE TABS WITH COUNTS (agents.html V1; #503 measured a boxed
+            segmented control with none). A count the task document does not
+            carry is a dash with its reason in the title, never a 0. The ids and
+            addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
+        <AgTabsEdge>
+          <Tabs
+            className="ag-split-tabs"
+            label="Agent panes"
+            current={selected}
+            tabs={tabs.map((t) => ({
+              key: t.id,
+              label: t.label,
+              ...(t.id === 'detail' || t.id === 'logs' ? {} : { count: t.count, why: t.say ?? undefined }),
+            }))}
+            onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
           />
-        ) : selected === 'attempts' ? (
-          <AttemptTimelineScreen taskId={taskId} />
-        ) : selected === 'checkpoints' ? null : (
-          <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
-        )}
-        {/* Mounted with the split, shown on its tab (D21, above). */}
-        <div className="ag-ckpts-host" hidden={selected !== 'checkpoints'}>
-          <CheckpointsPane key={taskId} taskId={taskId} onCount={onCheckpoints} />
+        </AgTabsEdge>
+
+        <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}`}>
+          {deciding ? (
+            <p className="art-loading">
+              <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
+              <span className="ctl-pending art-loading-bar" />
+            </p>
+          ) : selected === 'logs' && task !== null ? (
+            <AgentLogs key={taskId} task={task} />
+          ) : selected === 'logs' ? (
+            <p className="art-loading">
+              <Mark kind="pending" say="Reading the agent before its log. The read is in flight." />
+              <span className="ctl-pending art-loading-bar" />
+            </p>
+          ) : selected === 'children' && task !== null ? (
+            <AgChildrenPane task={task} readKey={`${reads}`} />
+          ) : selected === 'children' ? (
+            <p className="art-loading">
+              <Mark kind="pending" say="Reading the agent before its children. The read is in flight." />
+              <span className="ctl-pending art-loading-bar" />
+            </p>
+          ) : selected === 'detail' ? (
+            // THE LAST LOG LINE IS IN THE LEADING CARD (agent-details-v3.html
+            // A): a lone row above the body, it was disconnected from the state
+            // it explains. The split draws it, since only the split can switch
+            // to Logs; the card places it.
+            <AgentDetailScreen
+              taskId={taskId}
+              onClose={close}
+              headed
+              checkpoints={ckpt}
+              links={links}
+              lastLine={task !== null ? <LogLastLine key={taskId} task={task} onOpen={links.logs} /> : undefined}
+            />
+          ) : selected === 'attempts' ? (
+            <AttemptTimelineScreen taskId={taskId} />
+          ) : selected === 'checkpoints' ? null : (
+            <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
+          )}
+          {/* Mounted with the split, shown on its tab (D21, above). */}
+          <div className="ag-ckpts-host" hidden={selected !== 'checkpoints'}>
+            <CheckpointsPane key={taskId} taskId={taskId} onCount={onCheckpoints} />
+          </div>
         </div>
-      </div>
+      </SplitTick>
     </div>
   )
+}
+
+/**
+ * THE SPLIT'S ONE INSTANT (G2-03, QA 2026-10-07). One running task showed
+ * `17m 33s` in the header and `17m 39s` on the Elapsed tile: one 1s clock,
+ * capped by two different reads (the header's and the Details pane's), so
+ * the two figures stopped at different instants. It is taken once here --
+ * ticking every second, and stopping one poll past the header's read
+ * (`rowClock`), so a failed re-read never ages a live agent -- and the
+ * header and the Details tab both read it (`SplitClock`).
+ *
+ * A COMPONENT OF ITS OWN so the tick re-renders only what reads the clock:
+ * its children are the split's elements, unchanged between ticks, so React
+ * keeps them and only the context's readers draw again. Null until the
+ * header's read lands, so the Details tab keeps its own clock until then.
+ */
+function SplitTick({ live, readAt, children }: { live: boolean; readAt: number | null; children: ReactNode }) {
+  const clock = useNow(1000)
+  const now = readAt === null ? null : live ? rowClock(clock, readAt, DRAWER_POLL_MS) : clock
+  return <SplitClock.Provider value={now}>{children}</SplitClock.Provider>
 }
 
 /**
@@ -524,11 +554,12 @@ const COPY_SAID_MS = 4000
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
  * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
  * it is when it stands alone -- the headline `elapsed · attempt n of N` in
- * sans, and Copy link, Stop and ✕. Line 2: one sans meta line -- profile ·
- * class · workflow · account -- the task id behind a copy button whose title
- * is the whole id, and the dispatch as plain-language chips.
+ * sans, and Copy link, Stop and ✕. Under it the whole task id, printed in
+ * mono with its copy button (`TaskIdLine`, #94 -- it was only the button's
+ * tooltip). Then one sans meta line -- profile · class · workflow · account --
+ * and the dispatch as plain-language chips.
  *
- * WHAT LEFT IT, AND WHERE TO: the printed id (behind `copy id`), the tenant
+ * WHAT LEFT IT, AND WHERE TO: the tenant
  * (the panel's tenant tile says it), gen and units (the Attempts tab), and
  * started (the strip's Elapsed sub-line). The actions share line 1 again:
  * the title takes the slack and clamps at two lines, and the headline and
@@ -540,23 +571,19 @@ function AgHead({
   taskId,
   task,
   read,
-  readAt,
   reload,
   onClose,
 }: {
   taskId: string
   task: Task | null
   read: string
-  /** When the header's read landed, so the elapsed figure stops where the read stops vouching for it. */
-  readAt: number | null
   reload: () => void
   onClose: () => void
 }) {
-  // THE HEADLINE TICKS EVERY SECOND, as the Agents list's elapsed column
-  // does, and stops one poll past a read that has not been renewed
-  // (`rowClock`): a failed re-read must not age a live agent into a long run.
+  // THE SPLIT'S ONE INSTANT (`SplitTick`), which the Details tab draws its
+  // running figures at too; the bare clock only outside a split.
   const clock = useNow(1000)
-  const now = task !== null && !TERMINAL_STATES.has(task.state) ? rowClock(clock, readAt, DRAWER_POLL_MS) : clock
+  const now = useContext(SplitClock) ?? clock
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
   useEffect(() => {
     if (copied === null) return
@@ -612,7 +639,10 @@ function AgHead({
           </Button>
         </span>
       </div>
-      <AgHeadMeta taskId={taskId} task={task} />
+      {/* UNDER THE NAME, THE WHOLE ID, PRINTED (#94): it was only the copy
+          button's tooltip, so it had to be hovered to be read. */}
+      <TaskIdLine id={taskId} className="ag-head-id" />
+      <AgHeadMeta task={task} />
     </header>
   )
 }
@@ -644,101 +674,93 @@ const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
 
 /**
  * Profile · class (with its size, once the catalogue answers) · workflow ·
- * account, the id's copy button, and the dispatch chips. Sans; mono only for
- * the ids. An account not read is a dash with its reason, never blank.
+ * account, and the dispatch chips. Sans; mono only for the ids. An account
+ * not read is a dash with its reason, never blank. The task id is the line
+ * above this one (`TaskIdLine`).
  */
-export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
+export function AgHeadMeta({ task }: { task: Task | null }) {
   const classes = useResourceClasses()
   const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
   const account = task === null ? null : accountText(task.account)
   const d = task === null ? null : dispatchOf(task)
+  // A WRAPPED LINE NEVER STARTS WITH A MIDDOT (G2-20, QA 2026-10-07). The
+  // separator was each fact's `::before`, so on a phone a fact that wrapped
+  // took its dot to the head of the next line (`· workflow wf_…`). It is the
+  // `::after` of every fact but the last now, so it stays at the end of the
+  // line it separates on.
+  const facts: { key: string; li: ReactNode; className?: string; title?: string }[] =
+    task === null
+      ? []
+      : [
+          { key: 'profile', li: <b>{task.runner_profile}</b> },
+          {
+            key: 'class',
+            title: cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined,
+            li: (
+              <>
+                {task.resource_class}
+                {cls !== null && ` · ${cls.cpu} vCPU · ${cls.memory_gib} GiB`}
+              </>
+            ),
+          },
+          ...(task.workflow_id === null
+            ? []
+            : [
+                {
+                  key: 'workflow',
+                  li: (
+                    <>
+                      workflow{' '}
+                      <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
+                        {task.workflow_id} ›
+                      </a>
+                    </>
+                  ),
+                },
+              ]),
+          ...(account === null
+            ? []
+            : [
+                {
+                  key: 'account',
+                  className: account.known ? undefined : 'is-absent',
+                  title: account.title,
+                  li: (
+                    <>
+                      account <b className="mono">{account.text}</b>
+                    </>
+                  ),
+                },
+              ]),
+        ]
   return (
     <ul className="ag-head-facts">
-      {task !== null && (
-        <>
-          <li>
-            <b>{task.runner_profile}</b>
-          </li>
-          <li title={cls === null ? 'The class catalogue has not answered, so its size is not shown.' : undefined}>
-            {task.resource_class}
-            {cls !== null && ` · ${cls.cpu} vCPU · ${cls.memory_gib} GiB`}
-          </li>
-          {task.workflow_id !== null && (
-            <li>
-              workflow{' '}
-              <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
-                {task.workflow_id} ›
-              </a>
-            </li>
-          )}
-          {account !== null && (
-            <li className={account.known ? undefined : 'is-absent'} title={account.title}>
-              account <b className="mono">{account.text}</b>
-            </li>
-          )}
-        </>
-      )}
-      <li className="is-nodot">
-        <AgCopyId value={taskId} />
-      </li>
+      {facts.map((f, i) => (
+        <li key={f.key} className={f.className} title={f.title} data-sep={i < facts.length - 1 ? '' : undefined}>
+          {f.li}
+        </li>
+      ))}
       {task !== null && (
         // ONE `?` FOR THE DISPATCH CHIPS, after them: what the strategy and
         // the role mean is one topic. The carrier gets no chip -- no worker
         // reads it yet (`CARRIER_NOTE`) -- and the topic names it.
         <li className="is-nodot ag-head-dispatch">
-          {d === null ? (
-            <span className="ag-head-dchip is-absent">dispatch not served</span>
-          ) : (
-            <>
-              <span className="ag-head-dchip">{STRATEGY_LABEL[d.strategy]}</span>
-              {d.role !== null && <span className="ag-head-dchip">{ROLE_SAY[d.role]}</span>}
-            </>
-          )}
-          <HelpCard topic={d === null ? 'dispatch-absent-is-old-api' : 'dispatch-strategies'} />
+          {d !== null && d.role !== null && <span className="ag-head-dchip">{STRATEGY_LABEL[d.strategy]}</span>}
+          {/* THE `?` NEVER SITS ALONE ON A LINE (G2-20): it is held to the
+              last chip, so where the chips wrap it goes with one. And it is
+              `strategy-on-a-task`, not the Submit form's
+              `dispatch-strategies`, which spoke of a number computed from the
+              steps on the form (G2-10). */}
+          <span className="ag-head-dlast">
+            {d === null ? (
+              <span className="ag-head-dchip is-absent">dispatch not served</span>
+            ) : (
+              <span className="ag-head-dchip">{d.role !== null ? ROLE_SAY[d.role] : STRATEGY_LABEL[d.strategy]}</span>
+            )}
+            <HelpCard topic={d === null ? 'dispatch-absent-is-old-api' : 'strategy-on-a-task'} />
+          </span>
         </li>
       )}
     </ul>
-  )
-}
-
-/**
- * THE TASK ID, BEHIND ITS COPY (agent-details-v3.html A). Not printed: the
- * button's title is the whole id, and the status says whether the copy
- * happened -- `navigator.clipboard` is undefined outside a secure context.
- */
-function AgCopyId({ value }: { value: string }) {
-  const [said, setSaid] = useState('')
-  useEffect(() => {
-    if (said === '') return
-    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
-    return () => clearTimeout(t)
-  }, [said])
-  const copy = () => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clipboard === undefined) {
-      setSaid('copy refused')
-      return
-    }
-    clipboard.writeText(value).then(
-      () => setSaid('task id copied'),
-      () => setSaid('copy refused'),
-    )
-  }
-  return (
-    <>
-      <button
-        type="button"
-        className="ag-head-idcopy"
-        title={`${value} (click to copy)`}
-        aria-label={`Copy task id ${value}`}
-        onClick={copy}
-      >
-        <CIcon name="copy" />
-        copy id
-      </button>
-      <span className="ag-head-said" role="status">
-        {said}
-      </span>
-    </>
   )
 }

@@ -96,7 +96,10 @@ class ActionOutcome:
     is the task's only once its attempts are spent; otherwise `state` and
     `end_cause` are the task's now. `summary` is `result_summary[<key>]`.
     `credential_missing` parks the task CREDENTIAL_MISSING, at no cost, like
-    any profile whose provider the tenant has not registered.
+    any profile whose provider the tenant has not registered. `ci_wait` parks
+    it CI_PENDING (`control.ControlPlane.park_ci_pending`): the merge's facts
+    may change by themselves, so it waits holding nothing until swarm-api's
+    wake tick or the fallback instant (docs/merge-step.md, 2026-10-06, §1).
     """
 
     state: TaskState
@@ -108,6 +111,8 @@ class ActionOutcome:
     retry_delay_seconds: int = 0
     spec_check: dict[str, Any] | None = None
     credential_missing: Any = None
+    #: `{"code", "head", "pull_request", "pending"}`: what the park waits on.
+    ci_wait: dict[str, Any] | None = None
 
 
 @dataclass

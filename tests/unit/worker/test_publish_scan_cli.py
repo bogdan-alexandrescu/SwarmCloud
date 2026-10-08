@@ -257,7 +257,7 @@ def test_an_empty_repository_clone_scans_against_the_empty_tree(tmp_path: Path):
 def test_the_worker_exports_its_clone_base_to_the_agent(db, worker_factory, tmp_path: Path):
     """The value the CLI prefers is set by the worker, from the base its own
     publish diffs from (`_publish_base`), in the agent's environment."""
-    from conftest import seed_attempt
+    from worker_seeds import seed_attempt
 
     from agent_worker import workspace as workspace_mod
 

@@ -892,10 +892,29 @@ greyscale.
 > `Activity.tsx`), `.coverage > i` (the usage-coverage strip in
 > `Activity.tsx`), and `.ctl-track > i`, which the comment beside the default
 > rule keeps `--info` on purpose as "the meter beside a number" (no screen
-> currently renders a bare `<i>` inside `.ctl-track`). They share the
-> `background: var(--info)` rule in `styles.css`. Whether the same "colour on a
-> bar is a verdict" rule extends to them is a question for the owner and was
-> not decided here. One consequence of the corrected guard: if a screen ever
+> currently renders a bare `<i>` inside `.ctl-track`). They shared the
+> `background: var(--info)` rule in `styles.css`.
+>
+> **Decided (#122, recorded here 2026-10-06 for #74): the rule extends to
+> both, grey, always.** The owner chose option 1 of #74's three. `.sr-bar > i`
+> and `.coverage > i` take `--text-dim`, as every other proportion does, and
+> `.sr-bar > i.bad` keeps `--bad`: that is the only verdict hue either bar has.
+> `.coverage` has no verdict at all, so its fill never takes a hue. Option 2
+> (`.coverage` in `--warn` while partial) was not taken. `.coverage` was then
+> retired with its only caller, the Timeline's row-count strip (TS-12): read
+> on main on 2026-10-06, no shipped sheet declares `.coverage > i`, and the
+> Timeline no longer renders a `.sr-bar` (Admin › Platform counts is the one
+> screen that does). The shared rule in `styles.css` now paints
+> `.ctl-track > i, .ctl-util-fill, .sr-bar > i` in `--text-dim`, so
+> `.ctl-track > i` went grey under the same #122 rule. Two guards hold it.
+> PR #722 added `proportion.verdict.test.tsx` (vitest), which renders Platform
+> counts and reads every fill it draws. #74's Python half extends
+> `test_a_proportion_fill_takes_a_hue_only_from_a_verdict`: it tries every
+> `<i>` in a `.sr-bar` or `.coverage` against every background rule in every
+> shipped sheet and fails on any hue that is not `.sr-bar > i.bad`.
+> `test_the_bar_fill_check_fails_on_a_hued_bar` puts the #74 rule back on each
+> bar, tries five other ways in, and requires the check to fail on every one.
+> A `.sr-bar > i.bad` verdict must still pass. One consequence of the corrected guard: if a screen ever
 > renders a `.ctl-util-fill` as an `<i>` inside `.ctl-track`, then
 > `.ctl-track > i` (0,1,1) outranks the grey default (0,1,0) and paints it
 > blue. The guard fails on that, because it reads the parent.
@@ -1475,66 +1494,83 @@ the count of sentences above a table in this product is zero.
 marked by a surface step and weight — **not a filled pill**. Very low ink, and
 it survives both themes without a fill that has to be re-tuned for each.
 
-### 6.12 Page header — `PageHead` (`.head` + `.sub`), and `.ctl-page-head`
+### 6.12 Page header — `PageHead` (`.c-phead`: `.head` + `.c-acts`), and `.ctl-page-head`
 
-*(Amended 2026-09-25, AH-25 in #86: this section said "title left, actions
-right, nothing else", while fourteen routes drew a title over a line of
-provenance and the code called that line the house standard. The rule below is
-the head that ships.)*
+*(Amended 2026-10-07, owner ruling on #138, #98 and #117: title left, actions
+right, nothing under the title. This reverses the 2026-09-25 amendment (AH-25 in
+#86), which had made "a title, then one line of provenance" the house head.
+That line is gone: its count moved onto the first card and its age moved onto
+the refresh control.)*
 
-**A title, then one line of provenance.** The line says what was read, how old
-it is, and the screen's read control: `4 tenants · read 2m ago · refresh`. It
-carries no description sentence. **A control that costs something carries its
-cost on itself** (#138, 2026-10-02; AH-25 had put it immediately before the
-control), so the price is part of the control's name and cannot wrap away from
-it: `not counted yet · Run the count · 24 count()`. The control is `.sub button`,
-the link-style read-now control, not a boxed button.
+**Title left, actions right, nothing else.** `PageHead` in `Shell.tsx` renders
+`.c-phead`. `.head` on the left holds the `<h1>` and its `?`. `.c-acts` on the
+right holds the screen's controls. No `.sub` line sits under the title, on any
+route. `PageHead` takes no `meta` or `action` line.
 
-**One age per screen (#98).** Inside the frame the age of a fresh read is the
-head's (`.ctl-head-age`, scoped to the current screen's own reads, CH-2) and the
-dock's is the tab-wide one; a `Screen`'s line drops its own `read 4s ago` while
-the read is fresh (`FrameAge` in `Shell.tsx`) and prints it again, with
-`not refreshed`, once the read is stale or aged. It also keeps it whenever the
-data is older than the fetch (a cached payload's `generated_at`), and on the page
-under an open agent, whose head times the inspector. A screen whose data has an age
-the head cannot know -- Platform counts, as old as the count the server ran --
-claims the age (`useClaimPageAge`) and the head prints none.
+**The count is a card note.** What the old line counted ("4 tenants", "8/8
+reads", a range and its lane count) renders as `CountNote` (`p.c-count-note`)
+over the screen's first card. It renders from `Screen`'s `summary`, so the
+figure sits beside the data it counts.
 
-**The breadcrumb is the trail to the page (#138).** `crumbsOf` in `App.tsx`:
-every segment is a link back (the section to its first page; with an agent open,
-the list, which closes it), the open object's id is the last segment, and the
-trail stops before the page the `<h1>` names -- so Overview, Help and API reads
-draw no crumb, and no crumb repeats a title.
+**Refresh is a quiet head control that carries the screen's own age (#98).**
+`RefreshControl` (`Shell.tsx`) is the one read-now control:
+- `⟳ 12 s` on a screen read once;
+- `⟳ every 30 s · read 4 s ago` on a screen that polls;
+- `not refreshed` once the read is stale or older than `AGED_AFTER_MS`;
+- `Paused · resume` once polling stopped for inactivity.
 
-`PageHead` in `Shell.tsx` is the markup, once: `.head > h1` over `p.sub`.
-`Screen` renders it on fourteen routes, and Platform counts and Help render it
-with their own lines. Every head has a line.
+Pressing it re-runs every read on the page. The screen claims the page age
+(`useClaimPageAge`), so the frame's `.ctl-head-age` is not drawn beside it. The
+tab-wide age lives only in the dock. Pages that read through `useUrRead`
+(Repositories, Git tokens, Permissions) use `UrRefresh`, the same control over
+their head reads. The frame's plain `newest read` span appears only on heads
+that read nothing: Help, API reads and Submit.
 
-**The one exception is Help.** It reads nothing, so it has no provenance to
-print: its line says what the page is and which topic is showing —
-`<n> topics in <m> groups · showing <topic title>` — every part read from
-`help.ts` at render time, so no count is written down here to go stale. It is
-the head-line shape, facts joined by `·`, and not the description sentence
-AH-15 deleted ("why a figure on these screens looks the way it does"), which
-was true of about one topic in eight.
+**One age per screen.** Panels, and Overview's tile and card feet, state
+freshness only when stale (`staleFoot`: `from 6 min ago`) and say nothing while
+fresh. They read the head's instant through `PageClock` (`useNow.ts`), so a foot
+and the refresh control never disagree by a tick.
 
-A screen whose one `?` explains the whole screen puts it after the title, in
-`.head` and outside the `<h1>` (`PageHead`'s `help`): the Workflows board's
-absent figures, and Profile headroom's every-pool-at-once, whose words are the
-pool column's name on every card (`Pools it must clear (all at once)`, CP-5,
-as Pools names its `Could start (min across pools)`), are the two cases.
+**Cadences (#117).** Each cadence is one named constant whose comment cites the
+ruling:
+- the Timeline polls every 60 s (`TIMELINE_POLL_MS`);
+- Pools, Holders, Accounts and Provider quota poll every 30 s, and every 60 s
+  below the phone breakpoint (`capacityPoll()`);
+- Overview polls every 20 s.
 
-`.ctl-page-head` is the wrapper for the heads `PageHead` does not describe —
-Overview's facts row and the API reads page. There it stays title left, actions
-right. No breadcrumb duplication anywhere — the breadcrumb lives in `.ctl-head`
-one region up and is never repeated. `flex-wrap` is the entire mobile strategy:
-the line wraps under the title at 390px instead of needing a second, phone-only
-header.
+Polling pauses while `document.hidden` and reads at once on return. It stops
+after 15 minutes without input (`IDLE_STOP_MS`, `useIdleStop`).
 
-**The one sentence a screen is allowed lives behind the `?`.** `.ctl-q` already
-ships with 82 help topics, hover-120ms / focus-immediate / click-to-pin, and
-`#help/<topic>` deep links. The destination was already mature; what was missing
-was a rule saying it is *the* destination.
+**A control that costs something carries its cost on itself** (#138): Platform
+counts' `Run the count · 24 count()` sits in `.c-acts` with its provenance, and
+nothing sits beside the `<h1>` (AH-25).
+
+**The breadcrumb is the trail to the page (#138).** `crumbsOf` in `App.tsx`
+builds it:
+- every segment is a link back: the section links to its first page, and with an
+  agent open, the list link closes it;
+- the open object's id is the last segment;
+- the trail stops before the page the `<h1>` names.
+
+So Overview, Help and API reads draw no crumb, and no crumb repeats a title.
+Overview's lead title (`.ov-lh h2`) is one rank below an `<h1>` (`--t-body`,
+OV-15).
+
+`.ctl-page-head` wraps the heads `PageHead` does not describe: Overview's facts
+row and the API reads page. They follow the same rule: title left, actions right.
+`flex-wrap` is the entire mobile strategy: the actions wrap under the title at
+390px rather than needing a second, phone-only header.
+
+**The one sentence a screen is allowed lives behind the `?`.** A screen whose
+one `?` explains the whole screen puts it after the title, in `.head` and
+outside the `<h1>`. There are two cases:
+- the Workflows board's absent figures;
+- Profile headroom's every-pool-at-once. Its words are the pool column's name on
+  every card: `Pools it must clear (all at once)` (CP-5), just as Pools names its
+  `Could start (min across pools)`.
+
+`.ctl-q` ships with hover-120ms / focus-immediate / click-to-pin behaviour and
+`#help/<topic>` deep links. It is *the* destination for explanation.
 
 ### 6.13 Eyebrow — `.ctl-eyebrow` and facts strip — `.ctl-facts`
 
@@ -1632,6 +1668,17 @@ to 36px (`.sk-app.is-scrolled`, `scrollBand` in `Spine.tsx`); past one
 scrollport (floored at 600px) a `Top` control appears, sticky at the foot of the
 page so it sits above the dock rather than under it. On an 844px screen that is
 36px of header plus the ~32px collapsed dock: about 8% of the glass.
+
+The header is a row of the frame **above** the page scroller (`.ctl-scroll`),
+not inside it, so anything a page sticks under it — Agents' Live/Waiting/Recent
+strip, the timeline's axis — sticks at `top: 0`: the scroller's top edge already
+is the header's foot, at 44px and at 36px alike. A `top` equal to the header's
+height (Agents' strip had 44px, and 36px when compacted) pins the strip a whole
+header below the header with rows scrolling through the gap, and a second value
+for the compacted header moves it mid-scroll. The header's row never widens the
+page: the title gives way first, then a plain tenant label, capped at 40vw and
+cut with an ellipsis like the switchable chip; the menu, the mark and the env
+pill do not shrink.
 
 ---
 

@@ -34,17 +34,17 @@ What the design settles, in one line each:
 
 One forge token per tenant. It lives in Secret Manager as
 `swarm-tenant-<tenant>-git` — the name `Tenant.secret_name("git")` produces
-(`apps/common/swarm_common/models.py:508`) — and is stored only with
+(`apps/common/swarm_common/models.py::Tenant.secret_name`) — and is stored only with
 `scripts/create-secrets.sh --stdin` (`scripts/create-secrets.sh`, whose header
 says why the forge token is never typed on a command line). The worker reads
 it at runtime and writes it to a credentials file the agent is never told
 about, for the forge host the URL names and no other
 (`apps/agent-worker/agent_worker/gitops.py`, its module docstring). swarm-api
 reads the same secret through `SecretManagerForgeTokens`
-(`apps/swarm-api/swarm_api/forge.py:156`) for the issue preview and the
+(`apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens`) for the issue preview and the
 open-work read, as the one platform identity bound to it
 (`var.forge_readers` on the accessor binding,
-`terraform/modules/secret_manager/main.tf:140`).
+`terraform/modules/secret_manager/main.tf` (`resource "google_secret_manager_secret_iam_binding" "accessor"`)).
 
 The owner rule of 2026-09-25 (CLAUDE.md, "Writing Terraform") binds every
 section below: **a forge token is never written to the repository, a tfvars
@@ -180,7 +180,7 @@ task's **own** tenant:
   `pull_requests: write` — and a user without one still dispatches.
 
 In both, the dispatching user is the task's `submitted_by`
-(`apps/common/swarm_common/models.py:288`), the verified email from the ID
+(`apps/common/swarm_common/models.py::Task.submitted_by`), the verified email from the ID
 token, never a field a caller sets (invariant 10: a caller picks a runner
 profile and a repository by name, never a credential).
 
@@ -377,7 +377,7 @@ picks this design:
 
 * *What is true today:* the worker reads `tenant.secret_name("git")`, and the
   admission check that parks `CREDENTIAL_MISSING` reads `Tenant.credentials`
-  (`apps/common/swarm_common/models.py:502`), which lists providers; nothing
+  (`apps/common/swarm_common/models.py::Tenant.credentials`), which lists providers; nothing
   on a `Task` says which forge secret it uses.
 * *The requested change:* an optional `forge_credential` on `Task`, set only
   by swarm-api at submission from the resolution of §3 (a provider suffix,

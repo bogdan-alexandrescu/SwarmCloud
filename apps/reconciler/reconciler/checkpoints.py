@@ -319,10 +319,29 @@ def classify(
     # resumes from exactly this pointer. Asking `can_transition` rather than
     # hard-coding the set means this rule cannot drift from the contract.
     if can_transition(task.state, TaskState.READY):
-        if pointer_to_prefix(task.latest_checkpoint) == ref.prefix:
+        pointed = pointer_to_prefix(task.latest_checkpoint)
+        if pointed == ref.prefix:
             return Decision(
                 Disposition.KEEP,
                 f"task.latest_checkpoint names it and {task.state.value} may still return to READY",
+            )
+        # AN INCREMENTAL CHECKPOINT NEEDS ITS BASES (#637). After an attempt's
+        # first checkpoint each holds only what changed, and restoring one
+        # replays the earlier checkpoints of the SAME attempt -- which one is
+        # the full archive is in the archive, not in the key. So the pointer's
+        # whole attempt is kept. A chain never crosses an attempt, so every
+        # other attempt's checkpoints are still collected.
+        target = parse_checkpoint_key(f"{pointed}/{MANIFEST_NAME}") if pointed else None
+        if (
+            target is not None
+            and target.tenant_id == ref.tenant_id
+            and target.task_id == ref.task_id
+            and target.attempt_id == ref.attempt_id
+        ):
+            return Decision(
+                Disposition.KEEP,
+                f"an earlier checkpoint of the attempt task.latest_checkpoint names, "
+                f"which a restore replays; {task.state.value} may still return to READY",
             )
 
     return Decision(

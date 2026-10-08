@@ -7,6 +7,7 @@ import {
   PARK_WAITS_ON_A_STEP,
   TERMINAL_STATES,
   clearsIn,
+  formatDuration,
   leaseLiveliness,
   needsAHuman,
   overCeiling,
@@ -91,6 +92,42 @@ export function blindness(error: ApiError): { why: string; admin: boolean } {
     return { why: 'Admin only. Nothing failed.', admin: true }
   }
   return { why: `${errorHeading(error)} — ${error.message}`, admin: false }
+}
+
+/**
+ * One row of the reconciler's workflow stall check (#616), as
+ * `GET /v1/workflows` serves it under `stalled_workflows` (swarm_api/stalls.py;
+ * the row is `WorkflowStall.entry` in reconciler/detect.py). Declared here
+ * rather than in types.ts because this check is its only reader.
+ */
+export interface StalledWorkflow {
+  workflow_id: string
+  tenant_id: string | null
+  step_id: string | null
+  task_id: string | null
+  /** no_progress · start_overdue · unreadable · dependencies_met · state_drift */
+  kind: string
+  /** The reconciler's grade, so this screen does not restate which kinds are worse. */
+  severity: 'bad' | 'warn' | 'note'
+  age_seconds: number | null
+  reason: string
+  repaired: boolean
+  repair: string | null
+}
+
+/**
+ * The caller's rows from the reconciler's newest pass. `count` is NULL, never
+ * zero, when the result is not known -- no pass, a blind check, a failed read --
+ * and `check_error` says which.
+ */
+export interface StalledWorkflows {
+  count: number | null
+  /** Worst first, in the reconciler's order. */
+  workflows: StalledWorkflow[]
+  truncated: boolean
+  scan_truncated: boolean
+  pass_at: string | null
+  check_error: string | null
 }
 
 /** The reads every check is derived from. One per panel-independent route. */
@@ -490,10 +527,14 @@ function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean):
           newestFailureClause(failed, now) +
           workflowClause(failed) +
           windowNote(phonePage, PHONE_PAGE_LIMIT, TASK_PAGE_LIMIT),
-        detail:
-          exhausted.length > 0
-            ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
-            : `All still have attempts left and may retry. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
+        // FAILED IS TERMINAL (QA G1-04, 2026-10-07). The detail read "All
+        // still have attempts left and may retry" beside an error saying the
+        // task failed without a retry: attempts left is not a retry coming.
+        // A retryable failure with attempts left goes back to READY
+        // (agent_worker/control.py), so FAILED is written only once nothing
+        // will run it again: TERMINAL_STATES holds it, and no writer moves it
+        // back. The attempt count says why, never whether.
+        detail: `${terminalClause(failed.length, exhausted.length)} Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
         // A failed agent is a row in the agent list, not an entry on a board
         // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
         // tab filtered to FAILED. The tab used to be component state the hash
@@ -519,6 +560,19 @@ function failureCheck(tasks: Result<TaskPage>, now: number, phonePage: boolean):
 function namesOf(ids: string[]): string {
   const shown = ids.slice(0, 3).join(', ')
   return ids.length > 3 ? `${shown} +${ids.length - 3} more` : shown
+}
+
+/**
+ * Why N FAILED tasks will not run again, by what their attempts say (QA
+ * G1-04): never "may retry", because FAILED is terminal whatever was left.
+ */
+export function terminalClause(failed: number, exhausted: number): string {
+  const left = failed - exhausted
+  const parts = [
+    ...(exhausted > 0 ? [`${exhausted} used every attempt`] : []),
+    ...(left > 0 ? [`${left} had attempts left but the cause is not retryable`] : []),
+  ]
+  return `Terminal: nothing will retry ${failed === 1 ? 'it' : 'them'}. ${parts.join('; ')}.`
 }
 
 /**
@@ -646,12 +700,12 @@ function secondsSince(iso: string | null | undefined, now: number): number | nul
  * like it moved a minute ago. The WORKFLOW document is the opposite --
  * `rollup._persist` refuses to write a value that already agrees, expressly so
  * that `updated_at` keeps meaning "the document changed" rather than "something
- * looked at it" (rollup.py:602-605). It therefore moves exactly when the
+ * looked at it" (`rollup._persist`). It therefore moves exactly when the
  * derived state moves, which is what "advanced" means here.
  *
  * And while nothing is in flight, the derived state cannot move without the
  * workflow advancing: with no step holding capacity the state is whichever
- * pending state ranks highest (rollup.py:93-98), so PARKED -> READY, READY ->
+ * pending state ranks highest (`swarm_rollup._PENDING_PRECEDENCE`), so PARKED -> READY, READY ->
  * anything in flight, and a step finishing all change it. A quiet `updated_at`
  * under a quiet set of steps is a real stop, not a gap in the record.
  */
@@ -742,6 +796,16 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
     })
   }
 
+  // THE RECONCILER'S CHECK (#616). Everything above judges the workflows on
+  // THIS page by their `updated_at`; the reconciler judges every live
+  // workflow on its pass, step by step -- a step parked on parents that
+  // finished, one not started past its budget, a stored state that drifted.
+  const reconciler = stalledProblem(
+    (page as WorkflowPage & { stalled_workflows?: StalledWorkflows }).stalled_workflows,
+    now,
+  )
+  if (reconciler.problem) problems.push(reconciler.problem)
+
   if (problems.length > 0) return { label, status: 'found', problems }
 
   const scope = page.rollup_report?.truncated
@@ -751,9 +815,65 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
     label,
     status: 'clear',
     note:
-      live.length === 0
+      (live.length === 0
         ? `${scope} read, none unfinished`
-        : `${live.length} unfinished of ${scope}${cancelling.length > 0 ? ` (${cancelling.length} cancelling)` : ''}, each holding a step in flight or advanced within ${WORKFLOW_STALL_MINUTES} minutes`,
+        : `${live.length} unfinished of ${scope}${cancelling.length > 0 ? ` (${cancelling.length} cancelling)` : ''}, each holding a step in flight or advanced within ${WORKFLOW_STALL_MINUTES} minutes`) +
+      reconciler.note,
+  }
+}
+
+/** "wf_x step review no progress, 50m 0s" -- one stalled row, in words. */
+function describeStall(w: StalledWorkflow): string {
+  const age = w.age_seconds === null ? '' : `, ${formatDuration(w.age_seconds * 1000)}`
+  return `${w.workflow_id}${w.step_id ? ` step ${w.step_id}` : ''} ${w.kind.replace(/_/g, ' ')}${age}`
+}
+
+/**
+ * The reconciler's stalled workflows as at most one problem, and the clause
+ * the clear note carries otherwise.
+ *
+ * A RESULT THAT IS NOT KNOWN IS A PROBLEM. `count: null` is the API saying the
+ * check was blind or never ran, and folding it into "clear" would be this
+ * panel reporting a reassurance nobody established. A field the API does not
+ * send at all (a deployment older than #616) is said in the note.
+ *
+ * REPAIRED ROWS ARE NOT RAISED. The reconciler promoted the step or wrote the
+ * state; nothing is left for a reader to do, so they are counted in the note.
+ */
+function stalledProblem(
+  report: StalledWorkflows | undefined,
+  now: number,
+): { problem?: Problem; note: string } {
+  if (report === undefined) return { note: ' · the API reported no reconciler stall check' }
+  if (report.check_error !== null || report.count === null) {
+    return {
+      note: '',
+      problem: {
+        severity: 'warn',
+        n: 1,
+        headline: "The reconciler's workflow stall check is not known",
+        detail: `${report.check_error ?? 'The API gave no count.'} Whether a workflow has stopped is unknown, not fine.`,
+        href: '#work/workflows',
+      },
+    }
+  }
+  const open = report.workflows.filter((w) => !w.repaired)
+  const fixed = report.workflows.length - open.length
+  const note = fixed > 0 ? ` · the reconciler repaired ${fixed}` : ' · the reconciler found none stalled'
+  if (open.length === 0) return { note }
+  const worst = open[0] as StalledWorkflow
+  const shown = open.slice(0, 3).map((w) => `${describeStall(w)}: ${w.reason}`)
+  const more = open.length > shown.length || report.truncated ? '; and more' : ''
+  const when = report.pass_at ? ` Checked ${timeAgo(report.pass_at, now)}.` : ''
+  return {
+    note,
+    problem: {
+      severity: open.some((w) => w.severity === 'bad') ? 'bad' : 'warn',
+      n: open.length,
+      headline: `${open.length} workflow finding${open.length === 1 ? '' : 's'} from the reconciler, worst ${describeStall(worst)}`,
+      detail: `${shown.join('; ')}${more}.${when}`,
+      href: '#work/workflows',
+    },
   }
 }
 

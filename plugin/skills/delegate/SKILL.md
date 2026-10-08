@@ -23,6 +23,7 @@ allowed-tools:
   - mcp__swarmcloud__swarm_capacity
   - mcp__swarmcloud__swarm_agents
   - mcp__swarmcloud__swarm_trouble
+  - mcp__swarmcloud__swarm_tenants
   - mcp__plugin_sc_swarmcloud__swarm_profiles
   - mcp__plugin_sc_swarmcloud__swarm_dispatch
   - mcp__plugin_sc_swarmcloud__swarm_workflow
@@ -44,6 +45,7 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_capacity
   - mcp__plugin_sc_swarmcloud__swarm_agents
   - mcp__plugin_sc_swarmcloud__swarm_trouble
+  - mcp__plugin_sc_swarmcloud__swarm_tenants
   - Bash(uv run swarm tail:*)
   - Bash(swarm tail:*)
   - Bash(git status:*)
@@ -215,6 +217,7 @@ succeeded.
 | is there room for this batch | `swarm_capacity` |
 | what is the shared pool at | `swarm_accounts` |
 | why did four of them die at once | `swarm_trouble` |
+| which tenant am I acting as, and which others may I choose | `swarm_tenants` |
 
 `swarm_result` carries `outputs`: each artifact the task wrote by `name` and
 `bytes`, the runner's `runner_summary`, `exit_code`, `duration_s` and the
@@ -306,6 +309,19 @@ per-tenant isolation is not negotiable — so a prompt that says "continue what
 the other agent started" describes something the agent cannot do.
 
 ## Following a run
+
+**A dispatched task shows as a row without anyone asking (#830).** Every
+`swarm_dispatch` reply carries `rows`: a titled copy of the `/sc:swarmcloud`
+script whose args are `{attach_tasks: [...]}`. Launch it AT ONCE, before
+anything else, with the Workflow tool — `{scriptPath: <rows.script_path>,
+args: <rows.args>}` — exactly as `rows.start_now` says. It submits nothing and
+starts one `[SwarmCloud]` row per task just sent, titled from its `label`, that
+follows the task (`sc:task`, `swarm_follow` without `step_id`) until it
+finishes. So give every dispatched task a short `label`: it is the row's name.
+When `rows.error` is set instead, the copy could not be written (a bridge
+started outside the plugin); say so in one line and run `/sc attach --all`,
+which lists your running single tasks and gives each a row. `sc:remote` is
+already its task's row and ignores `rows`.
 
 Use **`swarm_follow`** rather than going silent between dispatch and result. It
 takes a cursor and hands back the next one, so poll it between turns and narrate

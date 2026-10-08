@@ -28,7 +28,7 @@ from agent_worker.errors import ExitCode
 from swarm_common.models import EndCause
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 SHA = "a" * 40
 REVIEW = {"verdict": "MERGE", "sha": SHA, "title": "The merge step lands the reviewed head",

@@ -350,7 +350,7 @@ def _fake_cli(tmp_path: Path) -> Path:
         "#!" + sys.executable + "\n"
         "import json, sys\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
-        " 'result': 'argv=' + json.dumps(sys.argv[1:])}))\n"
+        " 'result': 'argv=' + json.dumps([*sys.argv[1:], sys.stdin.read()])}))\n"
     )
     script.chmod(0o755)
     return script
@@ -378,9 +378,11 @@ def test_a_resumed_start_passes_resume_and_logs_the_session_masked(
 
     out = run_cli_agent(ctx, spec)
 
-    argv = json.loads(out["summary"].split("argv=", 1)[1])
-    assert argv[-3:] == ["--resume", sid, RESUME_PROMPT]
-    assert "the original prompt" not in json.dumps(argv), "the session already holds it"
+    # The fake appends what it read on stdin after its argv: the message is
+    # the resume prompt, delivered on stdin after `--resume <id>`.
+    received = json.loads(out["summary"].split("argv=", 1)[1])
+    assert received[-3:] == ["--resume", sid, RESUME_PROMPT]
+    assert "the original prompt" not in json.dumps(received), "the session already holds it"
     err = capsys.readouterr().err
     assert sid not in err and "<session>" in err
 
@@ -406,12 +408,16 @@ def test_a_spec_that_cannot_resume_refuses_a_resume(tmp_path, monkeypatch):
         run_cli_agent(ctx, spec)
 
 
-def test_claude_code_is_the_runner_that_can_resume():
+def test_both_cli_runners_can_resume():
     from agent_worker.runners.claude_code import SPEC
     from agent_worker.runners.codex import SPEC as CODEX
 
     assert SPEC.resume_flag == "--resume"
-    assert CODEX.resume_flag is None, "codex is unchanged"
+    # codex resumes too since #626 (`codex exec resume <id>`), for a
+    # credential reload; it still never holds a pool account, so it never
+    # gets the channel and never moves (`accountlease.ACCOUNT_TOKEN_ENV`).
+    assert CODEX.resume_flag == "resume"
+    assert CODEX.session_locator is not None, "codex's stdout names no session"
 
 
 def test_a_session_id_containing_429_does_not_make_a_failure_a_rate_limit(tmp_path, monkeypatch):

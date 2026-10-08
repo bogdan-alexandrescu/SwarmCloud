@@ -20,6 +20,7 @@ RUNNER_ERROR -- the refusal test reads the wrong cause.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -33,7 +34,7 @@ from swarm_common.models import EndCause
 from swarm_common.profiles import RUNNER_PROFILES, WorkerAction
 from swarm_common.states import EventType, TaskState
 
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from fakes import ExplodingChildProcess
 
 def _seed(db, profile: str) -> None:
@@ -157,6 +158,57 @@ def test_a_forge_outage_fails_the_attempt_retryably(db, worker_factory, monkeypa
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.READY.value, "an outage ended the task"
     assert EventType.RETRYING.value in db.event_types("task_1")
+
+
+def _ended_lines(log_stream) -> list[dict[str, Any]]:
+    lines = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.startswith("{")]
+    return [line for line in lines if line.get("message") == "worker action ended"]
+
+
+def test_a_refusal_logs_the_line_the_end_cause_metric_counts(
+    db, worker_factory, monkeypatch, no_runner, log_stream
+):
+    """terraform/modules/monitoring metrics.tf `worker_action_ended` filters on
+    this message and extracts the top-level `end_cause`."""
+    _seed(db, "merge")
+    _recorder(monkeypatch, lambda ctx: post_verdict_mod.refusal(
+        {"action": "merge"}, EndCause.MERGE_REFUSED, "checks_pending", "ci-gate is queued"))
+    worker, _, _ = worker_factory(runner_profile="merge")
+    worker.run()
+    [line] = _ended_lines(log_stream)
+    assert line["severity"] == "ERROR"
+    assert line["end_cause"] == EndCause.MERGE_REFUSED.value
+    assert line["labels"]["tenant_id"] == "eng"
+
+
+def test_an_outage_on_the_last_attempt_logs_the_line_the_end_cause_metric_counts(
+    db, worker_factory, monkeypatch, no_runner, log_stream
+):
+    """An outage that spent its retries ends VERDICT_FAILED through
+    `fail_retryably`, and must reach the metric like a refusal does."""
+    _seed(db, "post-verdict")
+    db.doc("tasks/task_1")["attempt_count"] = db.doc("tasks/task_1")["max_attempts"]
+    _recorder(monkeypatch, lambda ctx: post_verdict_mod.unavailable(
+        {"action": "post_verdict"}, EndCause.VERDICT_FAILED, "502", retry_after=30))
+    worker, _, _ = worker_factory(runner_profile="post-verdict")
+    worker.run()
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value
+    assert task["end_cause"] == EndCause.VERDICT_FAILED.value
+    [line] = _ended_lines(log_stream)
+    assert line["end_cause"] == EndCause.VERDICT_FAILED.value
+
+
+def test_an_outage_that_will_be_retried_logs_no_end(
+    db, worker_factory, monkeypatch, no_runner, log_stream
+):
+    _seed(db, "post-verdict")
+    _recorder(monkeypatch, lambda ctx: post_verdict_mod.unavailable(
+        {"action": "post_verdict"}, EndCause.VERDICT_FAILED, "502", retry_after=30))
+    worker, _, _ = worker_factory(runner_profile="post-verdict")
+    worker.run()
+    assert db.doc("tasks/task_1")["state"] == TaskState.READY.value
+    assert _ended_lines(log_stream) == []
 
 
 def test_an_unregistered_app_parks_the_step_at_no_cost(db, worker_factory, monkeypatch, no_runner):

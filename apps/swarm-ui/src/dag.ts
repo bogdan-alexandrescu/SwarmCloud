@@ -32,6 +32,7 @@ import {
   usageOf,
 } from './types'
 import type { StepUsage } from './api'
+import { measuredCell, usd, type Cell } from './measure'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { skippedByVerdict } from './wfreview'
 
@@ -1950,6 +1951,32 @@ const NO_NOTES: ReadonlySet<string> = new Set<string>()
  * level holding one noted node is that much taller, like a level holding one
  * long dependency list.
  */
+/**
+ * HOW WIDE A LINEAR CHAIN'S NODES MAY GROW (QA G3-27): twice the full tier's
+ * card. A chain -- one step per level -- drew its 248px cards down the middle
+ * of a ~1,000px column, and wrapped its dependency line mid-filename
+ * (`(swarm-` / `work.patch)`) in a card a quarter of the width it sat in.
+ * Nothing sits beside a chain's node, so the room is free; the cap keeps a
+ * short chain from turning into full-width bars.
+ */
+export const CHAIN_NODE_W = NODE_W * 2
+
+/**
+ * The node width for these levels: `base`, or -- when every level holds one
+ * step -- as wide as `CHAIN_NODE_W` and the column allow. Width is all it
+ * changes: `heightOf` is handed the same width, so a dependency list that
+ * now fits on fewer lines is measured on fewer lines.
+ */
+export function chainNodeW(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
+  if (levels.length === 0 || levels.some((l) => l.length !== 1)) return base
+  return Math.max(base, Math.min(CHAIN_NODE_W, column - PAD * 2))
+}
+
+/** How much wider than `base` a chain's nodes are drawn: `chainNodeW` less `base`. */
+function chainRoom(levels: readonly (readonly WorkflowStep[])[], base: number, column: number): number {
+  return chainNodeW(levels, base, column) - base
+}
+
 export function layoutOf(
   steps: readonly WorkflowStep[],
   expandedStages: ReadonlySet<number> = NO_STAGES_OPEN,
@@ -1963,7 +1990,9 @@ export function layoutOf(
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
   // below is in terms of it rather than of NODE_W, which is now only the full
   // tier's value.
-  const nodeW = nodeWidthAt(tier, steps)
+  // A LINEAR CHAIN'S NODES TAKE THE ROOM BESIDE THEM (QA G3-27, `chainNodeW`):
+  // zero for any other shape.
+  const nodeW = nodeWidthAt(tier, steps) + chainRoom(levels, nodeWidthAt(tier, steps), column)
   if (levels.length === 0) {
     return {
       nodes: [],
@@ -2630,6 +2659,8 @@ export function edgePath(e: DagEdge): string {
  *                 includes the earlier run, so it has no figure (`elapsed()`).
  *  - `queued`  -- it is waiting. Time spent waiting is not time spent working.
  *  - `parked`  -- it waited, stopped, and holds nothing. Also not work.
+ *  - `held`    -- LEASED or DISPATCHED: it holds a slot and has not started.
+ *                 A wait, never "queued" -- it is past the queue (#503).
  *  - `running` -- elapsed so far. Real, and NOT a final duration.
  *  - `ran`     -- start to finish. The only arm that is a duration.
  *
@@ -2649,13 +2680,21 @@ export type StepDuration =
   | { readonly kind: 'none'; readonly text: string; readonly note: string }
   | { readonly kind: 'queued'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'parked'; readonly seconds: number; readonly text: string; readonly note: string }
+  | { readonly kind: 'held'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'running'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'ran'; readonly seconds: number; readonly text: string; readonly note: string }
 
 const at = (v: string | null | undefined): number => (v ? new Date(v).getTime() : NaN)
 const secs = (ms: number): number => Math.max(0, Math.round(ms / 1000))
 
-export function stepDuration(state: StepState, now: number): StepDuration {
+/**
+ * `enteredAt` is when the task entered the state it is in now, read from its
+ * events (`stepviews.ts` `stateEnteredAt`) for PARKED, LEASED and DISPATCHED;
+ * null when they were not read or do not show it. The task record holds no
+ * such time (types.ts `Task`), so without it a wait is given as a LOWER BOUND
+ * from `updated_at`, the record's last write, which is at or after the entry.
+ */
+export function stepDuration(state: StepState, now: number, enteredAt: number | null = null): StepDuration {
   if (state.kind === 'unstarted') {
     return {
       kind: 'none',
@@ -2725,9 +2764,21 @@ export function stepDuration(state: StepState, now: number): StepDuration {
     }
   }
 
+  // TIMED FROM THE PARKED EVENT (#503). This read `updated_at`, the record's
+  // LAST write: a `next_eligible_at` re-check or a cancel request moves it on,
+  // so the figure ran minutes short of the park. Without the event the same
+  // write still bounds the park from below, and says so with `≥`.
   if (task.state === 'PARKED') {
-    const parked = at(task.updated_at)
-    if (!Number.isFinite(parked)) {
+    if (enteredAt !== null && Number.isFinite(enteredAt)) {
+      return {
+        kind: 'parked',
+        seconds: secs(now - enteredAt),
+        text: `parked ${formatDuration(now - enteredAt)}`,
+        note: 'Time since it parked, from its PARKED event. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.',
+      }
+    }
+    const written = at(task.updated_at)
+    if (!Number.isFinite(written)) {
       return {
         kind: 'none',
         text: 'parked',
@@ -2736,9 +2787,41 @@ export function stepDuration(state: StepState, now: number): StepDuration {
     }
     return {
       kind: 'parked',
-      seconds: secs(now - parked),
-      text: `parked ${formatDuration(now - parked)}`,
-      note: 'Time spent parked. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.',
+      seconds: secs(now - written),
+      text: `parked ≥${formatDuration(now - written)}`,
+      note: "At least this long parked: timed from the record's last write, which is at or after the park, because its PARKED event was not read. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.",
+    }
+  }
+
+  // HOLDING A SLOT IS NOT QUEUED (#503). A LEASED or DISPATCHED step has been
+  // admitted and holds capacity (invariant 1), and it read `queued 3m`, timed
+  // from submission. It says its state, timed from the event that entered it --
+  // for a second attempt too, because the event belongs to this attempt and the
+  // earlier run is not in the span. Without the event a first attempt is bounded
+  // from below by the record's last write (the lease or dispatch wrote it); a
+  // later one falls through to the between-attempts arm, with no figure.
+  if (task.state === 'LEASED' || task.state === 'DISPATCHED') {
+    const word = task.state.toLowerCase()
+    const holds = 'It holds a slot and has not started, so this is time waited for the container, never time run.'
+    if (enteredAt !== null && Number.isFinite(enteredAt)) {
+      return {
+        kind: 'held',
+        seconds: secs(now - enteredAt),
+        text: `${word} ${formatDuration(now - enteredAt)}`,
+        note: `Time since it was ${word}, from its ${task.state} event. ${holds}`,
+      }
+    }
+    const written = at(task.updated_at)
+    if (!Number.isFinite(started) && Number.isFinite(written)) {
+      return {
+        kind: 'held',
+        seconds: secs(now - written),
+        text: `${word} ≥${formatDuration(now - written)}`,
+        note: `At least this long ${word}: timed from the record's last write, which is at or after the transition, because its ${task.state} event was not read. ${holds}`,
+      }
+    }
+    if (!Number.isFinite(started)) {
+      return { kind: 'none', text: word, note: `${task.state}: when it got there was not recorded, so there is no figure. ${holds}` }
     }
   }
 
@@ -2817,6 +2900,52 @@ export interface WorkflowSpend {
   /** Steps whose task was joined at all -- the most that could have reported. */
   readonly joined: number
   readonly steps: number
+  /**
+   * STEPS KNOWN TO HAVE SPENT NOTHING ON AN AGENT (QA G3-02, G3-03): a step
+   * whose verdict gate kept its agent from running, and a step with no
+   * attempt -- no task yet, an attempt read that came back empty, or a task
+   * that ended without ever starting. Each is a known $0, not a step that has
+   * not reported, so it is OUT of the coverage denominator (`dueSteps`). A
+   * step that did report a figure is `covered`, never counted here.
+   */
+  readonly skipped: number
+  readonly noAttempt: number
+}
+
+/** The steps a cost could have come from: every step less the known $0s. */
+export function dueSteps(spend: WorkflowSpend): number {
+  return spend.steps - spend.skipped - spend.noAttempt
+}
+
+/**
+ * WHY A STEP SPENT NOTHING ON AN AGENT, or null when it may have (QA G3-02,
+ * G3-03). ONE RULE for the row's coverage, the Table's cost and tokens cells
+ * and the node, so a step drawn `none` is the same step the total leaves out
+ * of its denominator.
+ *
+ *   skipped     SUCCEEDED with `verdict_gate.agent_ran === false`: the worker
+ *               published the reviewed work and never started the agent.
+ *   no-attempt  the step has no task, the board's attempt read for it came
+ *               back empty, the task has used no attempt, or it ended without
+ *               succeeding and with no start time (cancelled while it queued
+ *               -- `never started`).
+ *
+ * `task` is null for a step with no task yet. A step whose task was NOT IN
+ * THE READ is not passed here at all: unread is unknown, never a $0.
+ */
+export type NoSpend = 'skipped' | 'no-attempt'
+
+export function noAgentSpend(task: Task | null, telemetry: StepUsage | undefined): NoSpend | null {
+  if (task === null) return 'no-attempt'
+  if (task.state === 'SUCCEEDED' && skippedByVerdict(task)) return 'skipped'
+  if (telemetry !== undefined && telemetry.attempts === 0) return 'no-attempt'
+  if (task.attempt_count === 0) return 'no-attempt'
+  // ENDED WITHOUT EVER STARTING: cancelled, failed or dead-lettered with no
+  // start time. Not SUCCEEDED -- a success with no start recorded is a record
+  // that lost a timestamp, which is unknown, not a known $0.
+  const started = task.started_at ? Date.parse(task.started_at) : NaN
+  if (task.state !== 'SUCCEEDED' && TERMINAL_STATES.has(task.state) && !Number.isFinite(started)) return 'no-attempt'
+  return null
 }
 
 /**
@@ -2840,6 +2969,13 @@ export interface ResultUsage {
   readonly usd: number | null
   readonly inputTokens: number | null
   readonly outputTokens: number | null
+  /**
+   * THE TWO CACHE KINDS (#322). `_usage_summary` writes them beside input and
+   * output, and a step that read 1.34M cached tokens printed `52 in · 9,955
+   * out` while its cost was the whole run's.
+   */
+  readonly cacheReadTokens: number | null
+  readonly cacheCreationTokens: number | null
 }
 
 export function resultUsageOf(task: Task): ResultUsage | null {
@@ -2849,8 +2985,19 @@ export function resultUsageOf(task: Task): ResultUsage | null {
     const v = usage[key]
     return typeof v === 'number' && Number.isFinite(v) ? v : null
   }
-  const out = { usd: n('total_cost_usd'), inputTokens: n('input_tokens'), outputTokens: n('output_tokens') }
-  return out.usd === null && out.inputTokens === null && out.outputTokens === null ? null : out
+  const out = {
+    usd: n('total_cost_usd'),
+    inputTokens: n('input_tokens'),
+    outputTokens: n('output_tokens'),
+    cacheReadTokens: n('cache_read_input_tokens'),
+    cacheCreationTokens: n('cache_creation_input_tokens'),
+  }
+  return out.usd === null && !hasTokenKind(out) ? null : out
+}
+
+/** Whether any of the four token kinds was reported -- the test every borrowing site shares. */
+export function hasTokenKind(u: ResultUsage): boolean {
+  return [u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens].some((v) => v !== null)
 }
 
 /**
@@ -2880,14 +3027,56 @@ export function resultIsNewest(task: Task): boolean {
   return TERMINAL_STATES.has(task.state)
 }
 
-/** Where a step's cost figure came from. */
-export type FigureSource = 'telemetry' | 'result'
+/**
+ * Where a step's cost figure came from: the board's own attempt read, the
+ * API's served total over every attempt (`totalCostOf`), or the result
+ * summary, which is the last attempt's alone.
+ */
+export type FigureSource = 'telemetry' | 'total' | 'result'
+
+/**
+ * THE API'S TOTAL OVER EVERY ATTEMPT (lane review P1, 2026-10-05), or null
+ * when this task was served without one (an older API, a list route, or an
+ * attempt read that failed). `incomplete` makes `usd` a floor.
+ */
+export function totalCostOf(task: Task): { usd: number; incomplete: boolean; attempts: number | null; lastUsd: number | null } | null {
+  const total = task.cost_usd_total
+  if (typeof total !== 'number' || !Number.isFinite(total) || task.attempts_read === 'failed') return null
+  const last = task.last_attempt_cost_usd
+  return {
+    usd: total,
+    incomplete: task.cost_incomplete === true,
+    attempts: typeof task.attempts === 'number' ? task.attempts : null,
+    lastUsd: typeof last === 'number' && Number.isFinite(last) ? last : null,
+  }
+}
+
+/**
+ * The served total as a board cell: `at least` when an attempt recorded no
+ * cost, and the last attempt's figure in the note -- the secondary text --
+ * because the result summary a reader may compare it with is that attempt's.
+ */
+export function totalCostCell(task: Task): Cell | null {
+  const total = totalCostOf(task)
+  if (total === null) return null
+  const n = total.attempts
+  const over = n === null ? 'every attempt' : `${n} attempt${n === 1 ? '' : 's'}`
+  const last = n !== null && n > 1 ? ` · last attempt ${total.lastUsd === null ? 'not reported' : usd(total.lastUsd)}` : ''
+  const floor = total.incomplete ? ' At least: an attempt reported no cost, so this is a floor.' : ''
+  return measuredCell(
+    `${total.incomplete ? 'at least ' : ''}${usd(total.usd)}`,
+    `Summed by the API over ${over}${last}.${floor} Token cost only — no infrastructure cost is recorded anywhere.`,
+  )
+}
 
 /**
  * ONE STEP'S COST, BY THE ONE RULE THE NODE, THE TABLE AND THE ROW'S TOTAL
- * SHARE: the attempt telemetry where it carries a cost, otherwise the result's
- * -- and the result's only once the task has finished (`finishedResultOf`),
- * which is when the inspector offers it too.
+ * SHARE: the attempt telemetry where it carries a cost, otherwise the API's
+ * served total over every attempt (`totalCostOf`), otherwise the result's --
+ * and the result's only once the task has finished (`finishedResultOf`),
+ * which is when the inspector offers it too. The result is the LAST attempt's
+ * alone, so it is the last resort: preferring it under-reported a retried
+ * step by every earlier attempt (UR1: $0.51 served, $9.64 spent).
  *
  * `telemetry` is the step's rolled-up attempts when this board read them, and
  * undefined when it did not (outside the sample, or the read failed). Null
@@ -2905,6 +3094,8 @@ export function stepCostOf(
   ) {
     return { usd: telemetry.costUsd, from: 'telemetry' }
   }
+  const total = totalCostOf(task)
+  if (total !== null) return { usd: total.usd, from: 'total' }
   const result = finishedResultOf(task)?.usd ?? null
   return result === null ? null : { usd: result, from: 'result' }
 }
@@ -2928,19 +3119,36 @@ export function workflowSpend(
   let covered = 0
   let fromResult = 0
   let joined = 0
+  let skipped = 0
+  let noAttempt = 0
 
   for (const step of steps) {
-    const task = step.task_id ? (taskById?.get(step.task_id) ?? null) : null
+    if (!step.task_id) {
+      // NO TASK YET: nothing has run under this step, so it has spent nothing.
+      noAttempt += 1
+      continue
+    }
+    const task = taskById?.get(step.task_id) ?? null
+    // Not in the read: unknown, so it stays in the denominator as a gap.
     if (!task) continue
     joined += 1
     const cost = stepCostOf(task, telemetry?.get(task.id))
-    if (cost === null) continue
+    if (cost === null) {
+      const none = noAgentSpend(task, telemetry?.get(task.id))
+      if (none === 'skipped') skipped += 1
+      else if (none === 'no-attempt') noAttempt += 1
+      continue
+    }
     covered += 1
     if (cost.from === 'result') fromResult += 1
     usd = (usd ?? 0) + cost.usd
   }
 
-  return { usd, covered, fromResult, joined, steps: steps.length }
+  // EVERY STEP IS A KNOWN $0 (nothing ran, or every agent was skipped): the
+  // spend is measured, and it is zero. Only when no step is left unaccounted.
+  if (usd === null && steps.length > 0 && skipped + noAttempt === steps.length) usd = 0
+
+  return { usd, covered, fromResult, joined, steps: steps.length, skipped, noAttempt }
 }
 
 // ---------------------------------------------------------------------------

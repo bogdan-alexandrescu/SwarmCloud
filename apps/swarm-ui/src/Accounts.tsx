@@ -3,19 +3,22 @@ import {
   beginAccountSignIn,
   finishAccountSignIn,
   loadAccountsBoard,
+  loadTask,
   refreshAccount,
   removeAccount,
   setAccountLending,
   setAccountState,
   type AccountsBoard,
 } from './api'
+import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
-import { ACCOUNTS_POLL_MS } from './capacityPoll'
+import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
+import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
   FIVE_HOUR,
@@ -246,10 +249,10 @@ export function AccountsScreen() {
       key={nonce}
       title="Accounts"
       load={load}
-      // Decided 2026-10-01 (#117): every 60s, paused while the tab is hidden
+      // #117 (owner ruling 2026-10-07): every 30 s, 60 s on a phone, paused while the tab is hidden
       // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
       // never remounts the screen under a sign-in in progress.
-      pollMs={ACCOUNTS_POLL_MS}
+      pollMs={capacityPoll(ACCOUNTS_POLL_MS)}
       summary={(b) => <SummaryLine board={b} />}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its
@@ -361,15 +364,22 @@ function Body({
   )
   // Choosing an account folds an add form nobody is using -- the pane shows
   // one thing at a time -- but never one with a sign-in under way (`addOpen`).
-  const choose = (id: string | null) =>
+  // THE CHOICE IS IN THE ADDRESS TOO (QA G5-23): `?account=<id>`, so a chosen
+  // account can be linked to and a reload reopens it. The address wins over
+  // the held choice, which is what a followed link means.
+  const linked = useLinkedParam('account')
+  const choose = (id: string | null) => {
     patch((p) => ({ ...p, chosen: id, adding: p.signin.kind === 'idle' ? false : p.adding }))
+    if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/accounts', { account: id })
+  }
+  const view = linked !== null ? { ...ui, chosen: linked } : ui
   return (
     <>
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
       <Pool
         board={board}
         accounts={accounts}
-        ui={ui}
+        ui={view}
         patch={patch}
         reload={reload}
         choose={choose}
@@ -417,22 +427,70 @@ function AddButton({ ui, patch }: { ui: Persisted; patch: Patch }) {
 }
 
 /**
- * The account the pane shows: the one a reader chose, else the default.
+ * How badly an account needs a person, lower first; null when it does not.
  *
- * THE DEFAULT IS AN ACCOUNT, NEVER A PLACEHOLDER (#503). An account that needs
- * a sign-in comes first -- REAUTH_REQUIRED is the one state whose controls are
- * the reason for visiting, and the sweep has stopped retrying it -- and
- * otherwise the first in list order. A dashed "Choose an account." beside a
- * list of accounts was a pane spent on saying nothing.
+ *   0  REAUTH_REQUIRED: its sign-in expired. The sweep has stopped retrying,
+ *      so it stays until a person signs in again.
+ *   1  the broker refuses it to this tenant (`unreadable_now`): its secret
+ *      could not be read, so it looks idle while every task goes elsewhere.
+ *   2  exhausted: its binding window is spent (100%) and has not reset, so it
+ *      gives out nothing until that window refills.
+ *
+ * PAUSED and DRAINING are not here: a person chose them, and they are not
+ * waiting on anyone.
+ */
+export function attentionRank(a: Account, scope: string | null): number | null {
+  if (needsAHuman(a)) return 0
+  if (unreadableFor(a, scope)) return 1
+  const binding = bindingWindow(a)
+  if (binding !== null) {
+    const r = readingOf(a, binding.key)
+    if ((r.kind === 'live' || r.kind === 'stale') && r.pct >= 100) return 2
+  }
+  return null
+}
+
+/** Alphabetical, the way a reader sees the list: by label, then by id for two equal labels. */
+function byName(a: Account, b: Account): number {
+  return a.label.localeCompare(b.label) || a.account_id.localeCompare(b.account_id)
+}
+
+/**
+ * THE ACCOUNT THE PAGE OPENS ON when nobody chose one (#503: it opened on an
+ * arbitrary account, the first by opaque id). The rule, in order:
+ *
+ *   1. the first account that NEEDS ATTENTION -- the most urgent by
+ *      `attentionRank` (expired sign-in, then unreadable, then exhausted),
+ *      alphabetical among equals. Its controls are the reason to visit;
+ *   2. else the MOST USED -- the most agents holding it now (`assigned`),
+ *      alphabetical among equals. It is the account whose figures are moving;
+ *   3. else, when no account is held at all, ALPHABETICAL by label.
+ */
+export function defaultAccount(accounts: readonly Account[], scope: string | null): Account | null {
+  if (accounts.length === 0) return null
+  const ranked = accounts
+    .map((a) => ({ a, rank: attentionRank(a, scope) }))
+    .filter((x): x is { a: Account; rank: number } => x.rank !== null)
+    .sort((x, y) => x.rank - y.rank || byName(x.a, y.a))
+  if (ranked[0] !== undefined) return ranked[0].a
+  const used = accounts.filter((a) => a.assigned > 0).sort((x, y) => y.assigned - x.assigned || byName(x, y))
+  return used[0] ?? [...accounts].sort(byName)[0] ?? null
+}
+
+/**
+ * The account the pane shows: the one a reader chose, else `defaultAccount`.
+ *
+ * THE DEFAULT IS AN ACCOUNT, NEVER A PLACEHOLDER (#503). A dashed "Choose an
+ * account." beside a list of accounts was a pane spent on saying nothing.
  *
  * A chosen account that is no longer in the read (removed, or no longer lent)
  * falls back to the default rather than to nothing.
  */
-function shownAccount(accounts: Account[], chosen: string | null): { account: Account; explicit: boolean } | null {
+function shownAccount(accounts: Account[], chosen: string | null, scope: string | null): { account: Account; explicit: boolean } | null {
   const picked = chosen === null ? undefined : accounts.find((a) => a.account_id === chosen)
   if (picked !== undefined) return { account: picked, explicit: true }
-  const first = accounts.find(needsAHuman) ?? accounts[0]
-  return first === undefined ? null : { account: first, explicit: false }
+  const first = defaultAccount(accounts, scope)
+  return first === null ? null : { account: first, explicit: false }
 }
 
 /**
@@ -524,7 +582,7 @@ function Pool({
   // figures in the same pane disagree by a second, which is exactly the kind
   // of flicker that makes a number look untrustworthy when it is not.
   const now = Date.now()
-  const shown = shownAccount(accounts, ui.chosen)
+  const shown = shownAccount(accounts, ui.chosen, board.page.tenant_id)
 
   if (shown === null) {
     return (
@@ -687,7 +745,11 @@ function AcctItem({
     <li className={cls}>
       <button type="button" className="acct-open" aria-current={chosen ? 'true' : undefined} onClick={onChoose}>
         <b className="acct-li-name">{account.label}</b>
-        <WindowFig reading={five} window="five-hour" label="5h used" />
+        {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
+            list's % is always the five-hour window, and the only place that
+            said so was the sub-line's `· 5h` -- which is the window Clears is
+            about, and is `· 7d` on another row, 200px away. */}
+        <WindowFig reading={five} window="five-hour" label="5h used" win="5h" />
         <small className="acct-li-line">
           <AcctState state={account.state} /> &middot;{' '}
           <ClearsLine account={account} now={now} readAt={readAt} />
@@ -700,7 +762,7 @@ function AcctItem({
         {/* LAST GIVEN OUT, ON THE ROW (#127): a pool no worker can reach --
             every account `never` -- otherwise looks like a healthy idle one. */}
         <span className="acct-given">
-          {neverAssigned(account) ? 'never given out' : `given out ${timeAgo(account.last_assigned_at as string)}`}
+          {neverAssigned(account) ? 'never given out' : `given out ${agoPastDay(account.last_assigned_at as string, now)}`}
         </span>
         {/* A MARK, NOT A CLAUSE (B4.4). The state is still AVAILABLE and that
             is still true; the pool simply will not hand it to THIS tenant while
@@ -766,16 +828,21 @@ function WindowFig({
   // The figure's name, passed rather than derived: `five-hour` is not what the
   // figure is called, and OV-1 puts the polarity (`used`) on every %.
   label,
+  win,
 }: {
   reading: AccountReading
   window: string
   label: string
+  /** The window's short name, drawn after the figure (`69% 5h`). */
+  win?: string
 }) {
   const title = readingTitle(reading, window)
+  const named = win === undefined ? null : <span className="acct-pct-win"> {win}</span>
   if (reading.kind === 'never' || reading.kind === 'absent') {
     return (
       <em className="acct-window acct-unmeasured" data-label={label} title={title}>
         <span className="acct-pct ctl-em">&mdash;</span>
+        {named}
       </em>
     )
   }
@@ -786,8 +853,25 @@ function WindowFig({
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
       </span>
+      {named}
     </em>
   )
+}
+
+/**
+ * An age past a day in days AND hours (QA G5-23): `given out 1d 20h ago`, not
+ * `44h ago`, which is arithmetic a reader does before reacting. Under a day it
+ * is `timeAgo`'s. Floored, so an age never reads older than it is; a whole
+ * number of days drops its `0h`.
+ */
+export function agoPastDay(when: string, now: number = Date.now()): string {
+  const t = Date.parse(when)
+  if (!Number.isFinite(t)) return timeAgo(when, now)
+  const h = Math.floor((now - t) / 3_600_000)
+  if (h < 24) return timeAgo(t, now)
+  const d = Math.floor(h / 24)
+  const r = h % 24
+  return r === 0 ? `${d}d ago` : `${d}d ${r}h ago`
 }
 
 /**
@@ -1198,7 +1282,17 @@ function Detail({
               </span>
             </b>
           ) : (
-            <b>{timeAgo(account.last_assigned_at as string)}</b>
+            // THE CLOCK, THEN THE AGE (G5-16, QA 2026-10-07; capacity.html §D
+            // draws `14:09`). The age alone made a reader do the subtraction
+            // to line the hand-out up against Holding now's Since column,
+            // which is a clock. The mock-up's `to eng` is not drawn: the
+            // broker records when an account was last handed out, not to whom.
+            <>
+              <b title={new Date(account.last_assigned_at as string).toLocaleString()}>
+                {givenAt(account.last_assigned_at as string, now)}
+              </b>
+              <i>{timeAgo(account.last_assigned_at as string, now)}</i>
+            </>
           )}
         </div>
       </div>
@@ -1404,6 +1498,19 @@ function clockOf(iso: string): string {
 }
 
 /**
+ * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` within the
+ * last day, and the date before it beyond that -- a bare `22:30` from three
+ * days ago reads as tonight's. An unreadable instant is the em dash.
+ */
+function givenAt(iso: string, now: number): string {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return '—'
+  if (now - t < 86_400_000) return clockOf(iso)
+  const day = new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
+  return `${day} ${clockOf(iso)}`
+}
+
+/**
  * What a hold was running, in the three cases that must not read alike:
  * a task the hold's tenant owns (a link), a task it named and does NOT own
  * (`unverified`, no id), and no task named at all (`task not recorded`).
@@ -1412,9 +1519,9 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
   if (h.task_id) {
     return (
       <>
-        <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(h.task_id)}`}>
-          {h.task_id}
-        </a>
+        {/* ONE TASK REFERENCE (QA G5-15): `task_…` and the last eight, as
+            Holders prints the same task -- never cut from the end. */}
+        <TaskRef id={h.task_id} />
         {typeof h.attempt === 'number' && <span className="muted"> attempt {h.attempt}</span>}
         {h.verified === false && <span className="ctl-mark is-partial">unverified</span>}
       </>
@@ -1495,35 +1602,72 @@ function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
   const b = res.data
   return (
     <div className="acct-holders">
-      <h4>Holding now ({b.total})</h4>
-      {b.total === 0 ? (
-        <p className="muted small">Nobody holds it.</p>
-      ) : (
-        <ul className="acct-holder-list">
-          {b.holders.map((h, i) => (
-            <li key={i}>
-              {h.tenant !== undefined && <span className="mono">{h.tenant} </span>}
-              <HoldWork h={h} />
-              {h.since ? (
-                <span className="muted">
-                  {' '}since {clockOf(h.since)} ({heldFor(now - Date.parse(h.since))})
-                </span>
-              ) : (
-                <span className="muted"> since an unrecorded time</span>
-              )}
-            </li>
-          ))}
+      <h4>Holding now · {b.total}</h4>
+      {b.holders.length > 0 && (
+        // THE MOCK-UP'S TABLE (G5-16, QA 2026-10-07; capacity.html §D): Agent ·
+        // Attempt · Since. It was a bulleted list of `task_…` ids, the one
+        // thing on the row that says nothing about what the agent is doing.
+        // The agent is named the way every other screen names it (`agentName`),
+        // from the task read; until that read lands, or if it fails, the id is
+        // the name, and the whole id is always the link's title.
+        <table className="acct-hist acct-holding-now">
+          <thead>
+            <tr>
+              <th scope="col" data-col="holder">Agent</th>
+              <th scope="col" data-col="attempt" className="is-num">Attempt</th>
+              <th scope="col" data-col="since">Since</th>
+            </tr>
+          </thead>
+          <tbody>
+            {b.holders.map((h, i) => (
+              <tr key={i}>
+                <td className="acct-hist-who" title={[h.task_id, h.tenant].filter(Boolean).join(' · ') || undefined}>
+                  <span className="acct-hist-whoin">
+                    {h.tenant !== undefined && <span className="mono">{h.tenant}</span>}
+                    {h.task_id ? <HolderAgent taskId={h.task_id} verified={h.verified} /> : <HoldWork h={h} />}
+                  </span>
+                </td>
+                <td className="is-num">{typeof h.attempt === 'number' ? h.attempt : '—'}</td>
+                <td>
+                  {h.since ? (
+                    `${clockOf(h.since)} (${heldFor(now - Date.parse(h.since))})`
+                  ) : (
+                    <span className="muted">not recorded</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {b.total === 0 && <p className="muted small">Nobody holds it.</p>}
+      {(b.by_tenant ?? []).length > 0 && (
+        <ul className="acct-holder-tenants">
           {(b.by_tenant ?? []).map((t) => (
             <li key={`t:${t.tenant}`}>
               {pluralise(t.n, 'agent')} · <span className="mono">{t.tenant}</span>
             </li>
           ))}
-          {b.others > 0 && b.by_tenant === undefined && (
-            <li className="muted">+{b.others} held by other tenants</li>
-          )}
         </ul>
       )}
+      {b.others > 0 && b.by_tenant === undefined && <p className="muted small">+{b.others} held by other tenants</p>}
     </div>
+  )
+}
+
+/**
+ * One holder's agent, by name (G5-16). The task read is the one the agent's
+ * own page makes; until it lands, or if it fails, the link is `TaskRef`'s
+ * short id (QA G5-15), and the whole id is its title and its copy.
+ */
+function HolderAgent({ taskId, verified }: { taskId: string; verified?: boolean }) {
+  const [res] = useLoad(() => loadTask(taskId), taskId)
+  const name = res.status === 'ok' || res.status === 'stale' ? agentName(res.data) : null
+  return (
+    <>
+      <TaskRef id={taskId} title={name} />
+      {verified === false && <span className="ctl-mark is-partial">unverified</span>}
+    </>
   )
 }
 

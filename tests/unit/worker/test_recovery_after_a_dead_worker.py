@@ -54,7 +54,7 @@ from reconciler.store import ControlStore
 from swarm_common.models import pool_names_for, utcnow
 from swarm_common.states import EventType, TaskState
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 
 DEAD_GENERATION = 3
 POOLS = pool_names_for(

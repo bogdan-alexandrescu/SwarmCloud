@@ -243,6 +243,22 @@ class ReconcilerConfig:
     #: cannot scale down while it runs, because it may not be evicted.
     left_running_grace_seconds: int = 300
 
+    #: How long after a task's cancel was requested its current attempt's
+    #: execution may still be active before the reconciler stops it through
+    #: the backend, fences its generation, releases its lease and ends the task
+    #: CANCELLED (`detect.detect_cancel_overdue`, #627).
+    #:
+    #: 600s. It must be longer than the worker's own cancel path, or the
+    #: reconciler kills a worker that IS honouring the cancel while it prices
+    #: and writes the attempt's cost: one control poll (10s), then everything
+    #: the scheduler's WORKER_FINALISE_BUDGET_SECONDS (300s) is sized for --
+    #: stop the runner (20s), the cancellation checkpoint, the uploads that
+    #: record the spend, the terminal write. Twice that budget leaves a slow
+    #: upload its room and a pass (one a minute) its slack. And it must be far
+    #: short of what an ignored cancel cost: 7.6 h and 12.8 h in the
+    #: 2026-10-05 history, so ten minutes caps the loss at under 2% of that.
+    cancel_enforce_after_seconds: int = 600
+
     #: How long after its task reached a terminal state an attempt that never
     #: recorded its end, with no live execution, waits before the reconciler
     #: records the end for it and gives back its account holds
@@ -337,6 +353,50 @@ class ReconcilerConfig:
     #: worker that is merely slow is in this window. `from_env` keeps it at
     #: least twice the platform's dispatch timeout if that is ever raised.
     never_started_release_seconds: int = 1200
+
+    # -- workflow stall check (#616, owner decision 2026-10-05) --------------
+    #: How long a workflow step may sit in DISPATCHED or STARTING before the
+    #: pass reports it as `start_overdue`.
+    #:
+    #: Ten minutes, beside a MEASURED median of 162 s from dispatch to a
+    #: running worker. It is set past the 480 s `dispatch_timeout_seconds`
+    #: on purpose: inside that deadline the missing-execution and
+    #: ended-at-startup rules are still entitled to act on the task, and a
+    #: workflow finding there would only repeat them. A step still not
+    #: started at ten minutes -- over three and a half medians, and past the
+    #: slowest cold start ever measured here (256 s) -- is one those rules did
+    #: not resolve, which is what an operator needs to hear. Reported, never
+    #: repaired: the task-level rules own the repair.
+    workflow_start_budget_seconds: int = 600
+
+    #: Minutes a RUNNING workflow may go with no step state change, and no
+    #: step holding a fresh heartbeat, before the pass reports `no_progress`.
+    #:
+    #: Forty-five. A step RUNNING with a heartbeat younger than
+    #: `heartbeat_grace_seconds` is progress whatever its age -- an agent
+    #: thinking for an hour is working -- so this clock only runs on a
+    #: workflow whose live steps have ALL gone quiet. It is longer than the
+    #: 30-minute no-progress rule (`stuck_after_seconds`) so that rule, which
+    #: can fence, acts first; this finding is what is left when it could not.
+    #: Only RUNNING workflows: a READY, PARKED or QUEUED one holds no capacity
+    #: and is waiting on something the parked and blocked-by views name
+    #: (invariant 1), so a long wait there is not a stall.
+    workflow_no_progress_minutes: int = 45
+
+    #: How long after its last parent finished a step still PARKED on
+    #: DEPENDENCY_INCOMPLETE waits before the pass promotes it to READY.
+    #:
+    #: 120 s: two of the scheduler's one-minute safety ticks. Its dependency
+    #: sweep is the normal promoter (RI10 recovered seconds later on
+    #: 2026-10-05), and both writes are guarded, so promoting earlier would be
+    #: safe -- it would only turn the scheduler's routine work into a finding.
+    workflow_promote_grace_seconds: int = 120
+
+    #: Live workflows read per pass. Each costs one read plus one per step,
+    #: every minute; past this many the pass says `truncated` rather than
+    #: reading the platform's whole history. 200 is several times the
+    #: concurrent workflows ever run here.
+    workflow_scan_limit: int = 200
 
     max_findings_per_pass: int = 200
     dry_run: bool = False
@@ -434,6 +494,7 @@ class ReconcilerConfig:
             stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),
+            cancel_enforce_after_seconds=_int("CANCEL_ENFORCE_AFTER_SECONDS", 600),
             ended_execution_grace_seconds=_int("ENDED_EXECUTION_GRACE_SECONDS", 30),
             lost_after_finish_grace_seconds=_int("LOST_AFTER_FINISH_GRACE_SECONDS", 300),
             lost_after_finish_lookback_seconds=_int(
@@ -447,6 +508,10 @@ class ReconcilerConfig:
                 2 * settings.dispatch_timeout_seconds,
                 _int("NEVER_STARTED_RELEASE_SECONDS", 1200),
             ),
+            workflow_start_budget_seconds=_int("WORKFLOW_START_BUDGET_SECONDS", 600),
+            workflow_no_progress_minutes=_int("WORKFLOW_NO_PROGRESS_MINUTES", 45),
+            workflow_promote_grace_seconds=_int("WORKFLOW_PROMOTE_GRACE_SECONDS", 120),
+            workflow_scan_limit=max(1, _int("WORKFLOW_SCAN_LIMIT", 200)),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

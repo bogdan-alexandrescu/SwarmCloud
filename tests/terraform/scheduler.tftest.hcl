@@ -394,6 +394,94 @@ run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
   }
 }
 
+# docs/merge-step.md "Revised 2026-10-06" §1 (lane MS2): every minute, per
+# registered tenant, POST /v1/admin/merges/wake reads that tenant's CI_PENDING
+# merge parks' checks with that tenant's -git token and marks the settled ones
+# for the scheduler to wake. As the rollup sweeper, which swarm-api admits to
+# that route by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES); its one grant,
+# run.invoker on swarm-api, is already the rollup's, so the job adds no IAM
+# member.
+run "the_merge_wake_runs_per_tenant_every_minute_as_the_sweeper" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.merge_wake)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one merge_wake job, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["eng"].name == "swarm-merge-wake-eng"
+    error_message = "the merge wake job is named for its tenant"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/merges/wake?tenant_id=eng"
+    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.merge_wake["research"].http_target[0].http_method == "POST"
+    error_message = "the merge wake route is a POST"
+  }
+
+  # The OIDC grant: the rollup-sweeper identity, minted for the API's own URL.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake :
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+      && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    ])
+    error_message = "the merge wake presents the rollup-sweeper identity, for the API's own URL, never the platform tick"
+  }
+
+  # Every minute: a parked merge waits on this read between its CI settling
+  # and its wake. A read costs one GET per check list and holds nothing.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake : job.schedule == "* * * * *"
+    ])
+    error_message = "the merge wake runs every minute"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake : job.retry_config[0].retry_count == 0
+    ])
+    error_message = "the next tick is the merge wake's retry"
+  }
+
+  # A Cloud Scheduler job has no labels; the destroy guard reads the marker
+  # from its description.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.merge_wake :
+      startswith(job.description, "managed-by=swarm-terraform;")
+    ])
+    error_message = "every merge_wake job carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "merge-wake")
+    error_message = "the sweeper account's description names every job that presents it"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-merge-wake-eng") && contains(output.scheduler_job_names, "swarm-merge-wake-research")
+    error_message = "scheduler_job_names must list every merge_wake job"
+  }
+}
+
 run "no_registered_tenant_means_no_rollup_job" {
   command = plan
 
@@ -415,6 +503,11 @@ run "no_registered_tenant_means_no_rollup_job" {
     condition     = length(google_cloud_scheduler_job.repo_index_poll) == 0
     error_message = "a repo_index_poll job for a tenant nobody registered polls nothing"
   }
+
+  assert {
+    condition     = length(google_cloud_scheduler_job.merge_wake) == 0
+    error_message = "a merge_wake job for a tenant nobody registered wakes nothing"
+  }
 }
 
 run "a_rollup_job_without_an_https_api_endpoint_is_refused" {
@@ -430,4 +523,84 @@ run "a_rollup_job_without_an_https_api_endpoint_is_refused" {
   }
 
   expect_failures = [var.api_endpoint]
+}
+
+# #627: a cancel is published here by swarm-api and pushed to the reconciler,
+# which holds the stop permissions swarm-api deliberately does not.
+run "a_cancel_reaches_the_reconciler_and_only_swarm_api_publishes_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    execution_cancel_publisher_members = {
+      api = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  assert {
+    condition     = google_pubsub_topic.execution_cancel.name == "swarm-execution-cancel"
+    error_message = "the root derives the same name for swarm-api's EXECUTION_CANCEL_TOPIC; the two must agree"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.push_config[0].push_endpoint == "https://swarm-reconciler-abcdef-uc.a.run.app/stop-execution"
+    error_message = "the push must reach the route reconciler/service.py serves, @app.post(\"/stop-execution\")"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.push_config[0].oidc_token[0].service_account_email == var.tick_service_account
+    error_message = "the reconciler's only invoker is the tick identity; any other push identity is refused at Cloud Run's edge"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.expiration_policy[0].ttl == ""
+    error_message = "cancels are rare; an expired subscription would put every cancel back on the 7-13 h path"
+  }
+
+  assert {
+    condition     = google_pubsub_topic.execution_cancel.labels["managed-by"] == "swarm-terraform" && google_pubsub_subscription.execution_cancel.labels["managed-by"] == "swarm-terraform"
+    error_message = "every resource carries managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition = keys(google_pubsub_topic_iam_member.execution_cancel_publishers) == ["api"] && alltrue([
+      for k, m in google_pubsub_topic_iam_member.execution_cancel_publishers :
+      m.role == "roles/pubsub.publisher" && m.member != "allUsers" && m.member != "allAuthenticatedUsers"
+    ])
+    error_message = "only swarm-api writes a cancel, so only swarm-api may publish a stop request"
+  }
+}
+
+run "the_task_identities_may_ring_the_wake_topic_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    worker_publisher_members = {
+      "worker:eng"             = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      "action:eng:claude-code" = "serviceAccount:swarm-action-eng-cc@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  # #636: the worker publishes `task_finished` on the wake topic when it ends
+  # a task. Publisher on that topic only -- not the dead-letter topic, not a
+  # subscription -- and the platform services' grants are unchanged.
+  assert {
+    condition = alltrue([
+      for k, m in google_pubsub_topic_iam_member.worker_publishers :
+      m.topic == "swarm-scheduler-wake" && m.role == "roles/pubsub.publisher"
+    ]) && length(google_pubsub_topic_iam_member.worker_publishers) == 2
+    error_message = "every task identity gets roles/pubsub.publisher on the wake topic, and only there"
+  }
+
+  assert {
+    condition     = keys(google_pubsub_topic_iam_member.publishers) == ["api", "reconciler"]
+    error_message = "the task identities are granted apart from the platform services, which are unchanged"
+  }
 }

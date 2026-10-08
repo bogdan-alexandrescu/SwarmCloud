@@ -6,7 +6,8 @@
 # ten thousand QUEUED tasks waits in Firestore.
 #
 # Two independent triggers, on purpose:
-#   * Pub/Sub, published by the API the moment work is submitted. Low latency.
+#   * Pub/Sub, published by the API the moment work is submitted, and by the
+#     worker the moment it ends a task (`task_finished`, #636). Low latency.
 #   * A one-minute Cloud Scheduler tick. Bounded staleness if a message is ever
 #     lost, a subscription is misconfigured, or a push is rejected.
 # Losing either one degrades latency. Losing both is what would stall the queue,
@@ -121,6 +122,17 @@ resource "google_pubsub_subscription" "dead_letter" {
 # be planned at all.
 resource "google_pubsub_topic_iam_member" "publishers" {
   for_each = var.publisher_members
+
+  project = var.project_id
+  topic   = google_pubsub_topic.wake.name
+  role    = "roles/pubsub.publisher"
+  member  = each.value
+}
+
+# The task identities, for the `task_finished` wake (#636). The wake topic
+# only: never the dead-letter topic, never a subscription.
+resource "google_pubsub_topic_iam_member" "worker_publishers" {
+  for_each = var.worker_publisher_members
 
   project = var.project_id
   topic   = google_pubsub_topic.wake.name

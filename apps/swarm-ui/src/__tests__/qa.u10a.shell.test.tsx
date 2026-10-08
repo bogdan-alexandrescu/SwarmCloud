@@ -9,8 +9,12 @@
  *   D27  the panel's Live / Waiting lagged the Agents tabs (14/1 vs 8/2).
  *   D31  help popover headings were mono on one card, sans on the other.
  *   D39  at 390px the Overview head put a lone `?` above the tenant chip, and
- *        the API-reads line wrapped to two lines.
- *   D40  the meta pill had a fill in dark and none to see in light.
+ *        the API-reads line wrapped to two lines. Since #138 (owner ruling
+ *        2026-10-07) the chip is a count note under the head and the head's
+ *        right half is its actions (the refresh); the `?` still shares a line.
+ *   D40  the meta pill had a fill in dark and none to see in light. #138
+ *        removed the pill: the count is `.c-count-note`, unboxed text, and
+ *        D40 now pins that it reads the same, and legibly, in both themes.
  *   +    Help's `copy link` confirms as the agent header's Copy link does.
  *
  * MUTATIONS: restore any one rule or branch these cases name.
@@ -123,7 +127,7 @@ describe('D14: a recent workflow is one line, never broken mid-id', () => {
     localStorage.setItem(RECENT_WORKFLOWS_KEY, JSON.stringify([{ id, state: 'RUNNING', name: null }]))
     const c = await at('/workflows')
     const button = await waitFor(() => {
-      const b = c.querySelector<HTMLElement>('.sk-recent > button.sk-kid[title]')
+      const b = c.querySelector<HTMLElement>('.sk-recent > a.sk-kid[title]')
       expect(b).not.toBeNull()
       return b!
     })
@@ -175,13 +179,18 @@ describe('Help’s copy link confirms as Copy link does', () => {
 })
 
 describe('D39: the phone frame', () => {
-  it('keeps the Overview’s `?` and its tenant chip on one line', () => {
-    const host = tree('<div class="ov-page"><div class="c-phead"><div class="head"><h1>Overview</h1></div><p class="sub"><span class="c-meta">tenant eng</span></p></div></div>')
+  it('keeps the Overview’s `?` and its refresh on one line', () => {
+    // MUTATION: let `.ov-page > .c-phead` wrap at 390, or drop the actions'
+    // `flex: 1 1 0; min-width: 0` -- the `?` goes back to a line of its own.
+    const host = tree(
+      '<div class="ov-page"><div class="c-phead"><div class="head"><h1>Overview</h1></div>' +
+        '<div class="c-acts"><button type="button" class="c-refresh">⟳ every 20 s · read 4 s ago</button></div></div></div>',
+    )
     const ph = host.querySelector('.c-phead')!
     expect(painted(ph, 'flex-wrap', PHONE)).toBe('nowrap')
-    const sub = host.querySelector('.sub')!
-    expect(painted(sub, 'min-width', PHONE)).toBe('0')
-    expect(painted(sub, ['flex', 'flex-basis'], PHONE)).toMatch(/^1 1 0\b|^0$/)
+    const acts = host.querySelector('.c-acts')!
+    expect(painted(acts, 'min-width', PHONE)).toBe('0')
+    expect(painted(acts, ['flex', 'flex-basis'], PHONE)).toMatch(/^1 1 0\b|^0$/)
   })
 
   it('draws the API-reads line as one line: the caveats stay, routes and p95 step aside', async () => {
@@ -206,16 +215,25 @@ describe('D39: the phone frame', () => {
   })
 })
 
-describe('D40: the meta pill is drawn the same in both themes', () => {
-  it('has an edge that stands off the page in light and in dark', () => {
-    const host = tree('<div class="c-phead"><p class="sub"><span class="c-meta">2 read</span></p></div>')
-    const meta = host.querySelector('.c-meta')!
+describe('D40: the count is drawn the same in both themes', () => {
+  it('is unboxed text whose ink stands off the page in light and in dark', () => {
+    // The meta pill D40 was about is gone (#138): the count is a note over
+    // the first card. What D40 asked still holds of it -- no fill in one theme
+    // that the other lacks, and legible in both.
+    // MUTATION: give `.c-count-note` a fill or an edge (a pill again, in one
+    // theme or both), or an ink that fails 4.5:1 against the page in either.
+    const host = tree('<p class="c-count-note">2 read</p>')
+    const note = host.querySelector('.c-count-note')!
     for (const theme of THEMES) {
-      const border = painted(meta, ['border', 'border-color'], { ...WIDE, theme }) ?? ''
-      const edge = /var\((--[\w-]+)\)/.exec(border)?.[1]
-      expect(edge, `${theme}: the pill has no edge`).toBeDefined()
-      const ratio = contrast(resolveColour(`var(${edge})`, theme), resolveColour('var(--bg)', theme))
-      expect(ratio, `${theme}: the pill's edge does not stand off the page`).toBeGreaterThan(1.15)
+      const env = { ...WIDE, theme }
+      const fill = painted(note, ['background', 'background-color'], env)
+      expect(fill === null || /^(none|transparent)$/.test(fill), `${theme}: the note has a fill: ${fill}`).toBe(true)
+      const edge = painted(note, ['border', 'border-color'], env)
+      expect(edge === null || /^(0|none)\b/.test(edge), `${theme}: the note has an edge: ${edge}`).toBe(true)
+      const ink = painted(note, ['color'], env)
+      expect(ink, `${theme}: no rule gives the note its ink`).not.toBeNull()
+      const ratio = contrast(resolveColour(ink!, theme), resolveColour('var(--bg)', theme))
+      expect(ratio, `${theme}: the note's ink does not stand off the page`).toBeGreaterThanOrEqual(4.5)
     }
   })
 })

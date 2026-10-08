@@ -140,9 +140,10 @@ describe('#94: the inspector is headed by the step, with the id kept and copyabl
     expect(screen.queryByRole('heading', { name: STEP.id })).toBeNull()
   })
 
-  it('keeps the whole task id behind a copy control in the header', async () => {
+  it('prints the whole task id under the name, with a copy control, in the header', async () => {
     const head = await header(STEP)
-    const copy = head.querySelector<HTMLButtonElement>('.ag-head-idcopy')
+    expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(STEP.id)
+    const copy = head.querySelector<HTMLButtonElement>('.ag-head-id .tid-copy')
     expect(copy, 'no id copy').not.toBeNull()
     expect(copy!.title).toContain(STEP.id)
     expect(copy!.getAttribute('aria-label')).toBe(`Copy task id ${STEP.id}`)
@@ -150,16 +151,18 @@ describe('#94: the inspector is headed by the step, with the id kept and copyabl
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
     fireEvent.click(copy!)
     expect(write).toHaveBeenCalledWith(STEP.id)
-    await waitFor(() => expect(head.querySelector('.ag-head-said')?.textContent).toBe('task id copied'))
+    await waitFor(() => expect(head.querySelector('.ag-head-id [role="status"]')?.textContent).toBe('task id copied'))
   })
 
-  it('prints the id nowhere for a standalone task either: it is the copy button’s', async () => {
+  it('prints a standalone task’s id once, on the id line, not again in the meta line', async () => {
     const t = runTask({ state: 'SUCCEEDED', started_at: at(1), completed_at: at(10) })
     const head = await header(t)
     const shown = head.cloneNode(true) as HTMLElement
     shown.querySelector('.ag-head-title')?.remove()
+    shown.querySelector('.ag-head-id')?.remove()
     expect(shown.textContent).not.toContain(t.id)
-    expect(head.querySelector<HTMLButtonElement>('.ag-head-idcopy')!.title).toContain(t.id)
+    expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(t.id)
+    expect(head.querySelector<HTMLButtonElement>('.ag-head-id .tid-copy')!.title).toContain(t.id)
   })
 
   it("links the workflow id to that workflow's page", async () => {

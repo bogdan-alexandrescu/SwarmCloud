@@ -234,7 +234,18 @@ describe('O1: Needs a look is a row of check cards', () => {
 
   it('says how many checks found something, of how many, on this read', async () => {
     const el = await mount()
-    expect(text(el.querySelector('#ov-needs .ov-lh .ov-cnt'))).toMatch(/^\d+ (check|checks) of \d+ · derived on this read/)
+    // #98 (owner ruling 2026-10-07): the lead fraction is labelled `checks ran/total`, so it cannot be read as
+    // the reads tally or as a count of problems; "derived on this read" moved into its accessible name.
+    // MUTATION: drop the `checks` label or the `found something` clause, or put "derived on this read" back in the visible words.
+    const cnt = el.querySelector('#ov-needs .ov-lh .ov-cnt')!
+    const m = /^checks (\d+)\/(\d+) · (\d+) found something/.exec(text(cnt))
+    expect(m, `the lead count reads ${JSON.stringify(text(cnt))}`).not.toBeNull()
+    const [ran, total, found] = [Number(m![1]), Number(m![2]), Number(m![3])]
+    expect(ran).toBeLessThanOrEqual(total)
+    expect(found).toBeLessThanOrEqual(ran)
+    expect(text(cnt)).not.toMatch(/derived/i)
+    expect(cnt.getAttribute('aria-label')).toMatch(new RegExp(`^${ran} of ${total} checks ran and found `))
+    expect(cnt.getAttribute('aria-label')).toMatch(/Derived on every read from /)
   })
 
   // Browser QA D18 (2026-10-04): three across cut the title at 345px; two across at 400px or more.
@@ -318,7 +329,7 @@ describe('O1: Running now', () => {
     expect(text(row)).toContain('claude-code')
   })
 
-  it('draws Cost so far as a dash with its reason, because no task route serves it', async () => {
+  it('draws Cost so far as a dash with its reason for a row served without attempt totals', async () => {
     const el = await mount()
     const cell = el.querySelector('#ov-running tbody tr td:last-child')!
     expect(text(cell)).toBe('—')

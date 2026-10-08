@@ -6,7 +6,10 @@ tenant's `repo_id` is a 404 indistinguishable from a missing one.
 
 `GET /v1/repositories/readable` is the Register C picker's list (PICKS.md,
 2026-10-05): what the tenant's git token can read, one GitHub page per call,
-capped at `repositories.MAX_READABLE_PAGES`. Everything about the token is
+capped at `repositories.MAX_READABLE_PAGES`. Since lane OB4 (#780) both it
+and `POST /v1/repositories` read with the CALLER's own GitHub connection
+when they have an active one (`access.AccessService.credential_for`), and
+with the tenant's token otherwise. Everything about the token is
 `swarm_api.forge`'s and `swarm_api.repositories`'s; these routes log the
 outcome's code -- never the token, never the forge's text.
 
@@ -25,7 +28,8 @@ forge read or submission. Everything else is `swarm_api.repoindex`'s.
 THE IMPACT AND GRAPH ROUTES (lane RI11, repo-index.md §4.3a, §6.1) are last:
 `POST /{repo_id}/impact` (a pull request, a commit or a base..head range ->
 the test plan), and the graph explorer's reads `GET /{repo_id}/graph`,
-`GET /{repo_id}/symbols` and `GET /{repo_id}/languages`. Same rule: the
+`GET /{repo_id}/symbols`, `GET /{repo_id}/languages` and the paged
+`GET /{repo_id}/test-map?path=&cursor=` (QA G4-07). Same rule: the
 registration first, with the caller's tenant. Everything else is
 `swarm_api.impact`'s; these routes log counts and codes, never a token,
 a path or a symbol name.
@@ -33,16 +37,22 @@ a path or a symbol name.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from swarm_common.models import Tenant
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..forgeapp import Caller
+from .access import get_access
 from ..errors import ValidationFailed
 from ..forge import ForgeReadError
 from ..impact import (
@@ -61,12 +71,16 @@ from ..impact import (
 )
 from ..repograph import NoGraph
 from ..repoindex import (
+    MAX_CURSOR_CHARS,
     RUNS_PAGE_MAX,
+    TEST_MAP_PAGE_DEFAULT,
+    TEST_MAP_PAGE_MAX,
     IndexRunRequest,
     RepoIndex,
     SelectRequest,
     check_run_kind,
     freshness,
+    page_test_map,
     render_markdown,
     run_to_api,
     select_tests,
@@ -108,15 +122,19 @@ def _tenant(ctx: AppContext, tenant_id: str, auth: AuthContext) -> Tenant:
 def create_repository(
     body: RepositoryCreate,
     response: Response,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id, auth)
+    # The caller's own GitHub connection when they have one (lane OB4).
+    credential = get_access(request).credential_for(
+        Caller(email=auth.email, tenant_id=tenant_id), tenant, ctx.forge_tokens)
     try:
         record, created = register(
             body, tenant, created_by=auth.email, store=_store(ctx),
-            tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now,
+            tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now, credential=credential,
         )
     except ForgeReadError as refused:
         log.info("repository register tenant=%s outcome=%s", tenant_id, refused.code)
@@ -150,15 +168,19 @@ def list_repositories(
 # Declared before `/{repo_id}`, which would otherwise match "readable".
 @router.get("/readable")
 def readable_repositories(
+    request: Request,
     page: int = Query(default=1, ge=1, le=MAX_READABLE_PAGES),
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     tenant = _tenant(ctx, tenant_id, auth)
+    credential = get_access(request).credential_for(
+        Caller(email=auth.email, tenant_id=tenant_id), tenant, ctx.forge_tokens)
     try:
         body = readable(
-            tenant, page, store=_store(ctx), tokens=ctx.forge_tokens, forge=ctx.forge
+            tenant, page, store=_store(ctx), tokens=ctx.forge_tokens, forge=ctx.forge,
+            credential=credential,
         )
     except ForgeReadError as refused:
         log.info("repository readable tenant=%s page=%d outcome=%s", tenant_id, page, refused.code)
@@ -424,18 +446,72 @@ def _staleness(version: dict, fresh: dict) -> dict:
             "behind_by": fresh["behind_by"], "stale": fresh["stale"], "freshness": fresh}
 
 
+#: The layers the module graph reads: every shard of each, fetched at once.
+_DRAWING_LAYERS = ("symbols", "tests", "callees")
+
+
+def _etag_of(body: dict) -> str:
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    return '"' + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32] + '"'
+
+
+def _matches(if_none_match: str | None, etag: str) -> bool:
+    """RFC 9110 §13.1.2: a weak comparison, so `W/"x"` matches `"x"`."""
+    if not if_none_match:
+        return False
+    for candidate in if_none_match.split(","):
+        candidate = candidate.strip()
+        if candidate == "*" or candidate.removeprefix("W/") == etag:
+            return True
+    return False
+
+
 @router.get("/{repo_id}/graph")
 def repository_graph(
     repo_id: str,
+    request: Request,
     sha: str | None = Query(default=None, min_length=40, max_length=40),
     cluster: Literal["module", "package"] = Query(default="module"),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
-) -> dict:
-    """The module dependency graph, aggregated for drawing (§6.1, Graph A)."""
-    _service, version, graph, document, fresh = _graph_read(ctx, tenant_id, repo_id, sha)
-    return {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
-            "graph_digest": graph.digest, **module_graph(graph, document, cluster)}
+) -> Response:
+    """The module dependency graph, aggregated for drawing (§6.1, Graph A).
+
+    QA G4-10 (2026-10-07) measured 11 s for a 24 KB answer: every shard read
+    one after another (~190 for 64 modules, two GCS round trips each), then
+    the 419 KB index document only for its hot spots. Now the manifest is
+    still read and digest-checked on every request (`service.open`, so a
+    rewritten or deleted graph is refused exactly as before), and the drawing
+    is computed once per graph digest, index digest and cluster -- both
+    digests are fixed at promotion, so the drawing cannot change under them.
+    A cold drawing reads its shards and the document concurrently. The ETag
+    is the body's, which carries the freshness, so a moved head is a new tag.
+    """
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    if version is None:
+        raise NoGraph("no index has been promoted for this repository, so it has no graph")
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is None:
+        raise NoGraph(f"the index of commit {version.get('commit_sha')} has no graph")
+
+    def draw() -> dict:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="repo-index") as pool:
+            document = pool.submit(service.index.read_version, tenant_id, version)
+            graph.prefetch(_DRAWING_LAYERS)
+            return module_graph(graph, document.result(), cluster)
+
+    drawing = service.graphs.view(
+        (tenant_id, repo_id, graph.digest, version.get("digest"), "module_graph", cluster), draw)
+    body = {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+            "graph_digest": graph.digest, **drawing}
+    etag = _etag_of(body)
+    # private: the answer is one tenant's. no-cache: a browser keeps it but
+    # asks every time, and the manifest check above runs on that ask.
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if _matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return JSONResponse(body, headers=headers)
 
 
 @router.get("/{repo_id}/symbols")
@@ -487,3 +563,40 @@ def repository_languages(
     return {**answer, **_staleness(version, fresh),
             "languages": languages_table(graph, document),
             "source": "graph" if graph is not None else "index"}
+
+
+@router.get("/{repo_id}/test-map")
+def repository_test_map(
+    repo_id: str,
+    path: str = Query(min_length=1, max_length=400),
+    cursor: str | None = Query(default=None, min_length=1, max_length=MAX_CURSOR_CHARS),
+    limit: int = Query(default=TEST_MAP_PAGE_DEFAULT, ge=1, le=TEST_MAP_PAGE_MAX),
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """One page of the test-map edges for a source path or glob (QA G4-07).
+
+    From the graph's file-level map when the index has a graph -- the whole
+    map, each edge with its confidence and other evidence -- plus the
+    document's edges; from the document alone when it has none.
+    `repoindex.page_test_map` says how a path and a glob match.
+    """
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    answer: dict = {"repo_id": repo_id, "tenant_id": tenant_id, "index_sha": None,
+                    "head_sha": fresh["head_sha"], "behind_by": fresh["behind_by"],
+                    "stale": fresh["stale"], "freshness": fresh, "graph_digest": None}
+    if version is None:
+        return {**answer, "path": path, "glob": None, "edges": [], "total": 0, "limit": limit,
+                "next_cursor": None, "sources": {"graph": False, "index": False},
+                "reason": "no index has been promoted for this repository, so no path is mapped"}
+    graph = service.open(tenant_id, repo_id, version)
+    document = service.index.read_version(tenant_id, version)
+    page = page_test_map(document, graph, path, cursor=cursor, limit=limit,
+                         commit_sha=version.get("commit_sha"))
+    # Counts only: a path or a test name is the tenant's, never a log line's.
+    log.info("repository test map tenant=%s repo_id=%s graph=%s edges=%d total=%d",
+             tenant_id, repo_id, graph is not None, len(page["edges"]), page["total"])
+    return {**answer, **_staleness(version, fresh),
+            "graph_digest": graph.digest if graph is not None else None, **page}

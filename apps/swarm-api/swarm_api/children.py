@@ -55,6 +55,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from . import gitidentity
 from .auth import bearer_tokens
 from .childkey import (
     CHILD_KEYS,
@@ -68,7 +69,8 @@ from .childkey import (
 from .codec import event_to_firestore, task_from_dict, task_to_firestore
 from .errors import ApiError, Forbidden, ValidationFailed
 from .schemas import TaskCreate
-from .store import EVENTS, LEASES, TASKS, Store
+from .executioncancel import ExecutionTarget
+from .store import EVENTS, LEASES, TASKS, Store, first_cancel_target
 from .validation import (
     CHILD_CASCADE_METADATA_KEY,
     CHILD_REQUEST_ID_METADATA_KEY,
@@ -608,6 +610,12 @@ class ChildService:
             tenant=tenant,
             ctx=None,
             submitted_by=parent.submitted_by,
+            # The person the parent's commits name, so a child's commits do
+            # too (P37); its bare submitter, or the bot, when it records none.
+            git_identity=(
+                gitidentity.from_task(parent.metadata, parent.submitted_by)
+                or dict(gitidentity.BOT_IDENTITY)
+            ),
             now=self._now(),
             dispatch=resolve_dispatch_options(
                 strategy=create.strategy,
@@ -626,6 +634,13 @@ class ChildService:
             timeout_seconds=min(task.timeout_seconds, parent.timeout_seconds),
             parent_task_id=parent.id,
             parent_attempt_id=body.attempt_id,
+            # The parent's GitHub credential and access mode (#780 OB7): the
+            # same submitter on the same repository, resolved and signed when
+            # the parent was submitted. Inherited, never widened: a child of a
+            # read grant cannot push, and the worker re-reads the grant itself
+            # before cloning (OB5).
+            forge_credential=parent.forge_credential,
+            forge_access=parent.forge_access,
         )
         task.metadata[CHILD_REQUEST_ID_METADATA_KEY] = body.request_id
         # Signed over the task as it will be stored, parent fields included
@@ -709,7 +724,16 @@ class ChildService:
 
     # -- §3.4: the cancel cascade -----------------------------------------
 
-    def cascade(self, tenant_id: str, parent_task_id: str, *, why: str, by: str) -> int:
+    def cascade(
+        self,
+        tenant_id: str,
+        parent_task_id: str,
+        *,
+        why: str,
+        by: str,
+        targets: list[ExecutionTarget] | None = None,
+        ended: list[str] | None = None,
+    ) -> int:
         """Cancel `parent`'s non-terminal children. Returns how many were changed.
 
         Called after the parent's own cancel committed. Each child goes through
@@ -718,6 +742,11 @@ class ChildService:
         holds capacity is flagged, and keeps its lease until its worker or the
         reconciler releases it (invariant 1). The scheduler's sweep makes this
         certain if this process dies part-way.
+
+        `targets`, when given, collects each newly flagged child's execution
+        for the route to ask to be stopped, as the parent's own (#627).
+        `ended`, when given, collects the id of each child this call made
+        CANCELLED, for the route to ring the finish wake for (#636).
         """
         changed = 0
         for child in self.children_of(tenant_id, parent_task_id):
@@ -732,6 +761,8 @@ class ChildService:
                     why=why,
                     by=by,
                     now=self._now(),
+                    targets=targets,
+                    ended=ended,
                 ):
                     changed += 1
             except Exception:  # one child's failure must not strand its siblings
@@ -743,10 +774,19 @@ class ChildService:
         return changed
 
 
-def cascade_children(ctx: Any, parent: Task, *, why: str, by: str) -> int:
+def cascade_children(
+    ctx: Any,
+    parent: Task,
+    *,
+    why: str,
+    by: str,
+    targets: list[ExecutionTarget] | None = None,
+    ended: list[str] | None = None,
+) -> int:
     """The cancel route's cascade (§3.4 step 1). Never fails the parent's cancel,
     which has already committed: a failure here is logged, and the scheduler's
-    sweep cancels whatever this left."""
+    sweep cancels whatever this left. `ended` receives the ids of the children
+    it made CANCELLED (`ChildService.cascade`)."""
     try:
         return ChildService(
             settings=ctx.settings,
@@ -755,7 +795,9 @@ def cascade_children(ctx: Any, parent: Task, *, why: str, by: str) -> int:
             submissions=ctx.submissions,
             verifier=None,
             now=ctx.now,
-        ).cascade(parent.tenant_id, parent.id, why=why, by=by)
+        ).cascade(
+            parent.tenant_id, parent.id, why=why, by=by, targets=targets, ended=ended
+        )
     except Exception:
         log.exception("child cascade of parent=%s failed; the scheduler sweep retries it", parent.id)
         return 0
@@ -770,8 +812,16 @@ def cascade_cancel_child(
     why: str,
     by: str,
     now: datetime,
+    targets: list[ExecutionTarget] | None = None,
+    ended: list[str] | None = None,
 ) -> bool:
     """One child, one transaction. True when it wrote anything.
+
+    `targets`, when given, receives the child's execution on its FIRST cancel
+    (`store.first_cancel_target`, #627), only once the transaction committed.
+    `ended`, when given, receives `child_id` when that commit made the child
+    CANCELLED -- it held no capacity, so no worker will ring the finish wake
+    for it (#636) -- and nothing when it only flagged a live one.
 
     Tenant first: a child whose `tenant_id` is not its parent's, or whose
     `parent_task_id` no longer names this parent, is left alone and logged.
@@ -797,6 +847,10 @@ def cascade_cancel_child(
         metadata = dict(data.get("metadata") or {})
         if data.get("cancel_requested") and metadata.get(CHILD_CASCADE_METADATA_KEY):
             return False
+        # Read before any write, as a transaction requires.
+        found[:] = [
+            first_cancel_target(db, txn, data, tenant_id=tenant_id, task_id=child_id)
+        ]
         metadata[CHILD_CASCADE_METADATA_KEY] = {"why": why, "parent_task_id": parent_task_id}
         patch: dict[str, Any] = {
             "cancel_requested": True,
@@ -804,6 +858,7 @@ def cascade_cancel_child(
             "updated_at": now,
         }
         immediate = state in PENDING_STATES
+        made_terminal[:] = [immediate]
         if immediate:
             assert_transition(state, TaskState.CANCELLED)
             patch.update(
@@ -835,4 +890,12 @@ def cascade_cancel_child(
         txn.set(ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
         return True
 
-    return _apply(db.transaction())
+    # Set by the attempt that commits: a retried transaction overwrites it.
+    found: list[ExecutionTarget | None] = []
+    made_terminal: list[bool] = []
+    wrote = _apply(db.transaction())
+    if wrote and targets is not None and found and found[0] is not None:
+        targets.append(found[0])
+    if wrote and ended is not None and made_terminal and made_terminal[0]:
+        ended.append(child_id)
+    return wrote

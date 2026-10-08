@@ -99,6 +99,12 @@
 }
 .row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
+/* THE NAME CELL STACKS (#94): the name, then the id line UNDER it. Without
+   this the cell is styles.css's `.row .agent`, a one-line flex ROW, and the
+   id sat beside the name, so a long step name and the id cut each other and
+   a phone squeezed both. `stretch` gives the id line the cell's full width to
+   cut in the middle; the shared reason stays absolutely positioned. */
+.row.is-compact > .cr-name { flex-direction: column; align-items: stretch; gap: 0; }
 .row.is-compact > .cr-name b {
   display: block;
   overflow: hidden;
@@ -121,19 +127,66 @@
   line-height: var(--lh-micro);
   color: var(--text-dim);
 }
-.cr-sub .id { font-family: var(--mono); }
-/* ONE ROW FORMAT (owner QA R13, 2026-10-04): a workflow step's row -- the
-   'upstream' step of the mock group -- prints its short id on line two, and
-   styles.css's `.row .id` (500 weight at --t-body, later in the bundle) drew
-   it bold and larger than the line it sits in. On line two it is line two's
-   size and weight, mono. */
-.row.is-compact > .cr-sub .id { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: inherit; }
 /* THE STRIP ROW'S NAME (owner QA R7): folded to 64px the row shows only its
    mark, so its accessible name was the state word ('running'). These words --
    the agent's name and id -- are drawn only in the strip, for a screen
    reader; a pointer gets them from the strip's hover card. */
 .row.is-compact > .cr-vh { display: none; }
 .cr-try.is-over { color: var(--bad); font-weight: 600; }
+/* THE TASK ID LINE (#94): the whole id, printed in mono under the agent's
+   name -- a list row's and the split header's (`TaskIdLine`) -- with its copy
+   button. It was a hover title and a tooltip, so an id had to be hovered to
+   be read. 12px (--t-micro) is the floor; every colour is a theme token, so
+   light and dark both carry it.
+   ONE LINE AT EVERY WIDTH, CUT IN THE MIDDLE: the head gives way with an
+   ellipsis and the last characters never shrink, because ids share their
+   `task_` prefix and differ along their length -- an end-ellipsis would hide
+   the part that tells two apart. The copy is always the whole id.
+   NOT `.id`, and weight 400 at line two's size: styles.css's `.row .id`
+   (500 at --t-body) drew a row's id bold and larger than the line it sits
+   in (owner QA R13, 2026-10-04). */
+.tid {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.tid-text {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  font-weight: 400;
+  color: var(--text-dim);
+  user-select: text;
+}
+.tid-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tid-tail { flex: none; white-space: nowrap; }
+.tid-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tid-copy:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+.tid-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.tid-copy > .c-ic { width: 13px; height: 13px; }
+.tid-said { flex: none; white-space: nowrap; font-family: var(--font); color: var(--text-dim); }
+.tid-said:empty { display: none; }
 
 /* --- the 64px strip: the list folded by «, [ or the divider --------------- */
 /* BY CLASS, NOT BY DOM SHAPE. The rule this replaces hid every child of
@@ -266,32 +319,22 @@
 .ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
-/* THE META LINE: profile · class · workflow · account, then the id's copy
-   and the dispatch chips. Sans; a `·` between facts, none before the copy
+/* THE META LINE: profile · class · workflow · account, then the dispatch
+   chips. Sans; a `·` between facts, none before the copy
    button or the chips. */
 .ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.ag-head-facts > li + li:not(.is-nodot)::before { content: "·"; margin-inline-end: 3px; color: var(--text-dim); }
+/* THE SEPARATOR ENDS A FACT, IT DOES NOT START ONE (G2-20, QA 2026-10-07):
+   as each fact's `::before`, a fact that wrapped on a phone took its dot to
+   the head of the next line (`· workflow wf_…`). AgentSplit `AgHeadMeta`
+   marks every fact but the last with `data-sep`. */
+.ag-head-facts > li[data-sep]::after { content: "·"; margin-inline-start: 3px; color: var(--text-dim); }
+/* The dispatch chips wrap as chips, and the `?` stays with the last one. */
+.ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
+.ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ag-head-facts > li.is-absent { color: var(--text-faint); }
 .ag-head-facts b { color: var(--text); font-weight: 550; }
 .ag-head-facts .ctl-link { font-weight: 550; }
-.ag-head-idcopy {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 24px;
-  padding: 0 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: var(--t-micro)/var(--lh-micro) var(--font);
-  cursor: pointer;
-}
-.ag-head-idcopy:hover { background: var(--surface-2); }
-.ag-head-idcopy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.ag-head-idcopy > .c-ic { width: 13px; height: 13px; }
-.ag-head-said:empty { display: none; }
 .ag-head-dchip {
   display: inline-flex;
   align-items: center;
@@ -527,14 +570,19 @@
   align-items: flex-start;
   gap: var(--ctl-s2);
   width: max-content;
-  max-width: min(420px, 80vw);
+  /* NEVER PAST THE WINDOW (G2-16, QA 2026-10-07): an attempt id ran to
+     x 1410, past the popover's edge, and the attempt select was cut. */
+  max-width: min(420px, calc(100vw - 32px));
   padding: var(--ctl-s2) var(--ctl-s3);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--ctl-shadow-pop);
 }
-.ag-logs-menu > .ag-logs-facts { margin: 0; }
+.ag-logs-menu > .ag-logs-facts { margin: 0; min-width: 0; max-width: 100%; }
+.ag-logs-menu .ctl-fact { overflow-wrap: anywhere; }
+.ag-logs-menu .ag-logs-attempt { max-width: 100%; }
+.ag-logs-menu .ag-logs-attempt select { min-width: 0; max-width: 100%; }
 .ag-logs-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -714,13 +762,16 @@
 
 /* --- the phone ------------------------------------------------------------ */
 @media (max-width: 560px) {
-  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (#503 at 390x844).
-     The header (`.sk-pbar`, styles.css) is itself sticky at top 0, 44px tall
-     and 36px once the page is scrolled, and it sits above this strip (z 15),
-     so a strip stuck at top 0 is hidden behind it. Stick it at the header's
-     foot: 44px, and 36px while `.sk-app.is-scrolled` compacts the header. */
-  .ag-list-tabs { position: sticky; top: 44px; z-index: 2; padding-top: 4px; }
-  .sk-app.is-scrolled .ag-list-tabs { top: 36px; }
+  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (#503 at 390x844), AT
+     THE SCROLLER'S TOP EDGE (#139). The header (`.sk-pbar`, styles.css) is a
+     row of the frame ABOVE the page's scroller (`.ctl-scroll`), not inside
+     it, and `top` is measured from the scroller -- whose top edge already is
+     the header's foot, at 44px and at the compacted 36px alike. The strip
+     stuck at `top: 44px` (36px when compacted), which pinned it a whole
+     header-height below the header, with rows scrolling through the gap,
+     and moved it 16px when the header compacted. At 0 it sits flush under
+     the header in both heights and moves only with the scroller's edge. */
+  .ag-list-tabs { position: sticky; top: 0; z-index: 2; padding-top: 4px; }
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
@@ -728,6 +779,16 @@
      scrolled sideways and was cut at `Chi`, and the fade that said so was
      missed. On a phone every tab is on screen, on as many lines as it takes. */
   .c-tabs.ag-split-tabs { flex-wrap: wrap; overflow-x: visible; }
+  /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
+     the header -- state, title, id, facts, chips -- and the two rows of
+     tabs held y 0-373 and never moved, so with the stat strip stuck under
+     them only about 150px of the screen scrolled. Here the COLUMN is the one
+     scroller, so the header goes up with the content and only the tabs stay
+     in view, stuck at the top. Not on Logs: the log keeps its own body as
+     the scroller, under a column that does not move (qa.u11a.logs). */
+  .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: 0; z-index: 3; background: var(--bg); }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */
@@ -793,8 +854,8 @@
 
 /* THE PAGE TITLE BESIDE AN OPEN AGENT (D6): with the list at 380px the
    title block shrank to ~60px and `Agents` wrapped as `Agent / s`. Beside
-   the split the title keeps its whole width and never breaks; the meta chip
-   and then the freshness give way, each with an ellipsis. */
+   the split the title keeps its whole width and never breaks; the head's
+   actions give way, the refresh's words with an ellipsis. */
 .app.has-inspector > .work .c-phead { flex-wrap: nowrap; }
 .app.has-inspector > .work .c-phead > div.head { flex: none; max-width: 100%; }
 .app.has-inspector > .work .c-phead > div.head > h1 {
@@ -806,7 +867,7 @@
   -webkit-line-clamp: none;
   line-clamp: none;
 }
-.app.has-inspector > .work .c-phead > .sub { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.app.has-inspector > .work .c-phead > .c-acts { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
 
 /* AT THE 64px STRIP THE PAGE HEAD IS NOT DRAWN (D28): its fragments --
    `? 2 read just` -- stayed in the strip and the `?` lay over the meta. It
@@ -824,30 +885,24 @@
   }
 }
 
-/* THE PROVENANCE KEEPS ITS CONTROL (U11a N10, owner QA 2026-10-04): beside
-   an open agent the list head's `.c-age` was cut with an ellipsis and its
-   `refresh` with it. Its words (`.c-age-say`, Shell.tsx `AgeLine`) give way
-   and keep their title; the control after them keeps its width. The meta
-   chip gives way first and carries its whole text as its title. */
-.app.has-inspector > .work .c-phead .c-age {
-  display: flex;
-  align-items: baseline;
-  gap: 0 4px;
-  flex: 1 0 auto;
-  justify-content: flex-end;
-  overflow: visible;
-}
-.app.has-inspector > .work .c-phead .c-age > * { flex: none; }
-.app.has-inspector > .work .c-phead .c-age > .c-age-say {
-  flex: 1 1 auto;
-  width: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-}
-.app.has-inspector > .work .c-phead .c-meta { flex: 0 1 auto; }
+/* THE REFRESH GIVES WAY, NOT THE TITLE (U11a N10, owner QA 2026-10-04;
+   #138). Beside an open agent the list head has ~150px for its actions; the
+   refresh control (`.c-refresh`, Shell.tsx `RefreshControl`) is the one that
+   shrinks, its words cut with an ellipsis and whole in its title and its
+   accessible name. It is one button, so cutting it can never cut the press
+   off its age. */
+.app.has-inspector > .work .c-phead .c-acts > .c-refresh { flex: 0 1 auto; }
 
 /* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
 .cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
+
+/* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
+   above's, in the same workflow, says so in place of a blank. Muted and at
+   the 12px floor -- it is a pointer to the line above, not a reason -- and
+   on the reason's own line, where the reader looks for one. */
+.row.is-compact > .why.is-same {
+  margin-top: 2px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}

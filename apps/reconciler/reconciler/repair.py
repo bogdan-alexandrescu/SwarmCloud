@@ -46,7 +46,7 @@ from urllib.parse import urlparse
 
 from swarm_common.models import EndCause, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
-from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
+from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, EventType, TaskState
 
 from .backends import (
     Backend,
@@ -58,18 +58,22 @@ from .backends import (
 )
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
+from .finishwake import FinishAnnouncer, PubSubFinishAnnouncer
 from .detect import (
     CLOUD_RUN,
     ENDED_AT_STARTUP_STATES,
     WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
+    WorkflowStall,
+    WorkflowStallKind,
     cannot_start_candidates,
     detect_all,
     detect_empty_namespaces,
     detect_lost_after_finish,
     detect_orphan_executions,
     detect_stale_leases,
+    detect_stalled_workflows,
     detect_unused_job_resources,
     normalise_executions,
     sanitised,
@@ -361,6 +365,17 @@ class ReconcileReport:
     #: Empty on a healthy pass. Persisted with the pass, so a hold is on the
     #: record even on a pass that logged no ERROR for it (see HELD_PAST_TTL).
     held_past_ttl: list[dict[str, Any]] = field(default_factory=list)
+    #: Workflows that stopped making progress (#616), worst first, one row
+    #: each: workflow id, step, task, age, reason, and whether this pass
+    #: repaired it (`WorkflowStall.entry`). Persisted with the pass, which is
+    #: where the API's workflow list, the console's Overview and `sc trouble`
+    #: read them from. Empty on a healthy pass.
+    stalled_workflows: list[dict[str, Any]] = field(default_factory=list)
+    #: What the stall check examined: `examined`, `truncated`, `repaired`,
+    #: and `read_error` -- set when the workflows could not be read at all,
+    #: so a blind check reads as blind rather than as "nothing stalled".
+    #: None only on a pass that never reached the check.
+    workflow_check: dict[str, Any] | None = None
     outcomes: list[RepairOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -391,6 +406,8 @@ class ReconcileReport:
                 for backend, namespaces in self.unreadable_namespaces.items()
             },
             "held_past_ttl": [dict(entry) for entry in self.held_past_ttl],
+            "stalled_workflows": [dict(entry) for entry in self.stalled_workflows],
+            "workflow_check": dict(self.workflow_check) if self.workflow_check else None,
             "slots_released": sum(1 for o in self.outcomes if o.released),
             "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
@@ -441,6 +458,7 @@ class Reconciler:
         logger: Any,
         checkpoint_store: CheckpointStore | None = None,
         hold_releaser: HoldReleaser | None = _FROM_ENV,
+        finish_announcer: FinishAnnouncer | None = _FROM_ENV,
     ) -> None:
         self._store = store
         self._backends = backends
@@ -459,6 +477,15 @@ class Reconciler:
         self._holds: HoldReleaser | None = (
             BrokerHoldReleaser.from_env() if hold_releaser is _FROM_ENV else hold_releaser
         )
+        # Who rings the scheduler's `task_finished` wake for a task a repair
+        # ended (#636, `finishwake`). From DISPATCH_TOPIC unless a caller
+        # supplies one; None means no wake, and the scheduler's safety tick
+        # releases the dependants as it did before.
+        self._finish: FinishAnnouncer | None = (
+            PubSubFinishAnnouncer.from_env()
+            if finish_announcer is _FROM_ENV
+            else finish_announcer
+        )
         #: lease id -> when HELD_PAST_TTL was last logged for it, so it is
         #: logged once per lease per hour. Per instance: a cold instance logs a
         #: still-held lease once more, which errs toward being heard.
@@ -467,6 +494,14 @@ class Reconciler:
         #: (`_read_finished`). Reset every pass; `_admit` judges a
         #: lost-after-finish finding on the backend this attempt names.
         self._finished: dict[str, AttemptView] = {}
+        if self._finish is None:
+            # Said once, here, for the same reason as the broker below: a
+            # deployment missing DISPATCH_TOPIC rings no wake and would
+            # otherwise look exactly like one that rang every wake (#636).
+            self._log.warning(
+                "no wake topic configured (DISPATCH_TOPIC unset); a task a repair "
+                "ends releases its dependants on the scheduler's next tick"
+            )
         if self._holds is None:
             # Said once, here, because the per-fence path returns silently: a
             # deployment missing QUOTA_BROKER_URL would otherwise look exactly
@@ -576,6 +611,10 @@ class Reconciler:
                 unstopped.add(finding.lease_id)
 
         self._watch_holds(snapshot, report)
+
+        # After the lease repairs, so a step this pass requeued is judged as it
+        # now stands. Never fatal: see `_check_workflows`.
+        self._check_workflows(snapshot, report)
 
         if self._config.enable_gc:
             self._collect_garbage(snapshot, sight, report)
@@ -708,6 +747,117 @@ class Reconciler:
         for lease_id in list(self._held_alerted):
             if lease_id not in still_held:
                 del self._held_alerted[lease_id]
+
+    # ------------------------------------------------------------------
+    # Workflows (#616)
+    # ------------------------------------------------------------------
+    def _check_workflows(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Find workflows that stopped making progress; repair what is safe.
+
+        Owner decision, 2026-10-05: on this pass's existing schedule, with no
+        service of its own, so nothing runs when no workflow does. Two repairs,
+        each the guarded write another component already makes:
+
+          * DEPENDENCIES_MET -> the step is promoted to READY in one
+            transaction that re-reads the step, its generation and every
+            parent (`ControlStore.promote_workflow_step`). A step the
+            scheduler's sweep promoted first is skipped, so it is promoted
+            once and never twice; READY holds no capacity (invariant 1).
+          * STATE_DRIFT -> the derived state is written over the stored one,
+            only while the stored one is still the value read
+            (`ControlStore.write_derived_workflow_state`).
+
+        Everything else is reported. A DRY RUN writes nothing, as for every
+        other rule here: the row says what would have been done.
+
+        A READ THAT FAILS IS A FINDING. It is recorded as `read_error` on
+        `workflow_check` and in `errors`, and it never fails the pass: the
+        lease repairs before it have already happened.
+        """
+        now = snapshot.taken_at
+        check: dict[str, Any] = {
+            "examined": 0,
+            "truncated": False,
+            "repaired": 0,
+            "read_error": None,
+            # Rows found but not kept on the pass: see below.
+            "rows_dropped": 0,
+        }
+        report.workflow_check = check
+        try:
+            read = self._store.workflows_for_stall_check(limit=self._config.workflow_scan_limit)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            check["read_error"] = message[:500]
+            report.errors.append(f"workflow_stall_check: {message[:500]}")
+            self._log.error(
+                "the workflow stall check could not read the workflows; no workflow was judged",
+                error=message[:500],
+            )
+            return
+        check["examined"] = len(read.workflows) + len(read.malformed)
+        check["truncated"] = read.truncated
+        for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
+            try:
+                repaired, repair = self._repair_stall(stall)
+            except Exception as exc:
+                repaired, repair = False, f"repair failed: {type(exc).__name__}: {exc}"[:300]
+                report.errors.append(
+                    f"workflow_stall_check {stall.kind.value} {stall.workflow_id}: {exc}"[:500]
+                )
+            if repaired:
+                check["repaired"] += 1
+            entry = stall.entry(repaired=repaired, repair=repair)
+            # Every finding is repaired, but at most `max_findings_per_pass`
+            # rows are kept: the pass is one Firestore document (1 MiB), and
+            # `record_pass` bounds only `outcomes`. The rows are worst first,
+            # so what is dropped is the least urgent, and it is counted.
+            if len(report.stalled_workflows) >= self._config.max_findings_per_pass:
+                check["rows_dropped"] += 1
+            else:
+                report.stalled_workflows.append(entry)
+            # `severity` is the structured logger's own field, so the row's
+            # grade travels as `grade`. A repair that landed is routine.
+            fields = {k: v for k, v in entry.items() if k != "severity"}
+            log = self._log.info if entry["severity"] == "note" else self._log.warning
+            log("workflow stalled", grade=entry["severity"], **fields)
+
+    def _repair_stall(self, stall: WorkflowStall) -> tuple[bool, str | None]:
+        """Repair one finding if its kind is repairable. (repaired, what happened)."""
+        if stall.kind is WorkflowStallKind.DEPENDENCIES_MET and stall.task_id:
+            if self._config.dry_run:
+                return False, "dry run: would promote the step to READY"
+            skipped = self._store.promote_workflow_step(
+                stall.task_id, generation=stall.generation, parent_task_ids=stall.parents
+            )
+            if skipped is not None:
+                return False, f"not promoted: {skipped}"
+            self._store.emit(
+                task_id=stall.task_id,
+                tenant_id=stall.tenant_id,
+                event_type=EventType.READY,
+                detail={
+                    "reason": "dependencies_satisfied",
+                    "by": "workflow_stall_check",
+                    "workflow_id": stall.workflow_id,
+                },
+                generation=stall.generation,
+            )
+            return True, "promoted to READY"
+        if (
+            stall.kind is WorkflowStallKind.STATE_DRIFT
+            and stall.stored_state is not None
+            and stall.derived_state is not None
+        ):
+            if self._config.dry_run:
+                return False, f"dry run: would write {stall.derived_state.value}"
+            skipped = self._store.write_derived_workflow_state(
+                stall.workflow_id, expected=stall.stored_state, to=stall.derived_state
+            )
+            if skipped is not None:
+                return False, f"not written: {skipped}"
+            return True, f"stored state written as {stall.derived_state.value}"
+        return False, None
 
     # ------------------------------------------------------------------
     # Seeing
@@ -1707,6 +1857,12 @@ class Reconciler:
             # started is safe only behind a fence: both are refused while the
             # task, as this transaction leaves it, still holds the lease.
             refuse_while_task_holds_it=orphan_lease or proof_by_absence_of_a_start,
+            # The attempt this finding supersedes gets its end in the same
+            # commit (#630): a fenced worker never writes one, and an attempt
+            # left open counted as running in every figure read from attempts.
+            # The store writes it only at the finding's own generation.
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
             **fence_guard,
         )
 
@@ -1728,6 +1884,7 @@ class Reconciler:
                 generation=finding.generation,
             )
             self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, done.attempt_ended)
         if done.release_refused:
             outcome.actions.append(
                 f"did NOT release {finding.lease_id}: its task still holds it at its generation"
@@ -1779,7 +1936,37 @@ class Reconciler:
                 attempt_id=finding.attempt_id,
                 lease_id=finding.lease_id,
             )
+            if repaired in TERMINAL_STATES:
+                self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
         return outcome
+
+    def _announce_finished(
+        self, task_id: str, tenant_id: str, state: TaskState, outcome: RepairOutcome
+    ) -> None:
+        """Ring the scheduler: this repair ENDED the task, its dependants may run (#636).
+
+        After the commit and its event, so the scheduler that wakes reads the
+        task terminal and its lease released (the same transaction released
+        it). Only for a terminal `repaired_to`: a requeue to READY is not an
+        end, and its dependants still wait on it. Once per repair, and a repair
+        is written once -- the next pass finds the lease released and nothing
+        to act on. Never raises: a lost wake costs one safety tick, and the
+        repair it follows has already happened.
+        """
+        if self._finish is None:
+            return
+        try:
+            published = bool(
+                self._finish.announce(task_id=task_id, tenant_id=tenant_id, state=state)
+            )
+            result = "published" if published else "refused"
+        except Exception as exc:
+            # The type only: a transport error's text can name the request.
+            result = f"error:{type(exc).__name__}"
+        outcome.actions.append(f"finish wake {result}")
+        self._log.info(
+            "finish wake", task_id=task_id, state=state.value, outcome=result
+        )
 
     def _never_started_wait(self, lease_id: str | None, snapshot: ControlSnapshot) -> float | None:
         """Seconds until this lease's never-started worker is its own evidence.
@@ -1903,7 +2090,13 @@ class Reconciler:
         if not finding.task_id or finding.generation is None:
             outcome.skipped = "nothing_to_fence"
             return outcome
-        new_generation = self._store.invalidate_generation(finding.task_id, finding.generation)
+        fenced = self._store.fence_attempt(
+            finding.task_id,
+            finding.generation,
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
+        )
+        new_generation = fenced.new_generation
         outcome.invalidated_to = new_generation
         if new_generation is None:
             # Moved on since the snapshot -- fenced by someone else, finished,
@@ -1931,9 +2124,18 @@ class Reconciler:
             generation=finding.generation,
         )
         self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, fenced.attempt_ended)
         outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
         self._log_eviction(finding, outcome)
         return outcome
+
+    def _note_attempt_end(
+        self, finding: Finding, outcome: RepairOutcome, cause: str | None
+    ) -> None:
+        """Say on the outcome that a fence's commit recorded its attempt's end (#630)."""
+        if cause is None or not finding.attempt_id:
+            return
+        outcome.actions.append(f"recorded the end of {finding.attempt_id} as {cause}")
 
     def _release_attempt_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
         """Give back the account holds of the attempt this pass just ended (#380).

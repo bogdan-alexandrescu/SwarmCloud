@@ -28,7 +28,7 @@ import pytest
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
-from conftest import seed_attempt, seed_tenant
+from worker_seeds import seed_attempt, seed_tenant
 
 
 def _task(db: Any) -> dict[str, Any]:

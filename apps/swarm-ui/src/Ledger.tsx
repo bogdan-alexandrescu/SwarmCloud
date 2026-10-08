@@ -50,16 +50,19 @@ import {
   type LatencyOutcome,
   type LedgerView,
   type Outcomes,
+  type RowOutcome,
   type SpanCoverage,
   type Stat,
 } from './outcomes'
 import { Absent, Mark } from './primitives'
+import { staleFoot } from './Shell'
+import { OpenLink } from './TimelineRows'
 import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
   PARK_NEEDS_A_PERSON,
   pluralise,
-  timeAgo,
+  reasonCopy,
   type Stats,
   type TaskPage,
 } from './types'
@@ -265,8 +268,10 @@ export function LedgerTable({ data }: { data: Outcomes }) {
           <tr>
             <th scope="col">{bucket === 'hour' ? 'Hour' : bucket === 'day' ? 'Day' : bucket === 'week' ? 'Week' : 'Month'}</th>
             <th scope="col" className="is-num">Succeeded</th>
-            <th scope="col" className="is-num">Failed</th>
-            <th scope="col" className="is-num">Dead-lettered</th>
+            {/* ONE FAILED COLUMN, FAILED + DEAD_LETTERED (#123): the count the
+                drawing and the readout use, so Succeeded + Failed + Cancelled
+                is Finished on every row. */}
+            <th scope="col" className="is-num">Failed · incl. dead-lettered</th>
             <th scope="col" className="is-num">Rate · k of n · 95 %</th>
             <th scope="col" className="is-num">Cancelled · requested or other / after a failure / after a cancel</th>
             {/* The one column on the submission-time basis says so, in the
@@ -283,7 +288,7 @@ export function LedgerTable({ data }: { data: Outcomes }) {
                 {b.in_progress && <span className="ctl-sub"> so far</span>}
               </th>
               {b.state === 'unread' ? (
-                <td colSpan={7}>
+                <td colSpan={6}>
                   <Mark
                     kind="unread"
                     say={`${bucketName(b.start, bucket, tz)} was not read: ${unreadWords(b.unread_reason)}. No count is shown for it.`}
@@ -293,8 +298,10 @@ export function LedgerTable({ data }: { data: Outcomes }) {
               ) : (
                 <>
                   <td className="is-num">{b.succeeded}</td>
-                  <td className="is-num">{b.failed}</td>
-                  <td className="is-num">{b.dead_lettered}</td>
+                  <td className="is-num">
+                    {(b.failed ?? 0) + (b.dead_lettered ?? 0)}
+                    {(b.dead_lettered ?? 0) > 0 && <span className="ctl-sub"> · {b.dead_lettered} dead-lettered</span>}
+                  </td>
                   <td className="is-num">
                     {b.rate === null ? (
                       <span className="ol-phrase">nothing decided</span>
@@ -445,7 +452,7 @@ export function WorkflowsFailedCard({
                     </span>
                   </th>
                   {/* The route sends '' as well as null for no submitter: both are an absence. */}
-                  <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : r.submitted_by}</td>
+                  <td>{r.submitted_by === null || r.submitted_by === '' ? <i className="ctl-em">—</i> : <Who address={r.submitted_by} />}</td>
                   <td>
                     <Steps row={r} />
                   </td>
@@ -732,6 +739,22 @@ const GROUP_HEAD: Record<GroupBy, string> = {
   submitted_by: 'Person',
 }
 
+/**
+ * A PERSON IS PRINTED BY THE LOCAL PART OF THEIR ADDRESS, the whole address in
+ * the title (QA G3-17, 2026-10-07). Full service-account addresses took ~410px
+ * of a 1440 table and pushed "Reported cost" and "Ended" past the card's edge.
+ * The cell is also capped (`.ol-who`, 220px with an ellipsis), so a long local
+ * part cannot do the same. A key with no `@` is printed whole.
+ */
+export function Who({ address }: { address: string }) {
+  const at = address.indexOf('@')
+  return (
+    <span className="ol-who" title={address}>
+      {at > 0 ? address.slice(0, at) : address}
+    </span>
+  )
+}
+
 /** A cost cell: `—` when nothing reported, `$0.00` only for a reported zero, partial when some attempts did not report. */
 export function CostFigure({ c, what }: { c: CostCell; what: string }) {
   if (c.sum_usd === null || c.reporting === 0) {
@@ -807,6 +830,16 @@ function Spark({ series }: { series: GroupRow['series'] }) {
 }
 
 /** Where a Reliability row leads: the page narrowed to that row's profile, tenant or person. */
+/** A Reliability figure: a link to its tasks when it counts any and one is offered, else the bare number. */
+function Cell({ n, link }: { n: number; link: RowLink | null }) {
+  if (n === 0 || link === null) return <>{n}</>
+  return (
+    <OpenLink className="ctl-link ol-cell-link" link={link}>
+      {n}
+    </OpenLink>
+  )
+}
+
 export interface RowLink {
   href: string
   open: () => void
@@ -818,6 +851,7 @@ export function ReliabilityCard({
   platform,
   onGroup,
   rowLink,
+  cellLink,
 }: {
   data: Outcomes
   group: GroupBy
@@ -828,6 +862,12 @@ export function ReliabilityCard({
    * the work with no submitter recorded. Absent, the rows are static.
    */
   rowLink?: (by: GroupBy, key: string) => RowLink | null
+  /**
+   * One cell's tasks (#116): the row's succeeded, failed or cancelled, as a
+   * list -- a person's failures, a profile's cancels. Absent, or null for a
+   * row nothing can filter on, the cells are plain figures.
+   */
+  cellLink?: (outcome: RowOutcome, key: string) => RowLink | null
 }) {
   const g = data.groups
   const choices: GroupBy[] = platform ? ['runner_profile', 'tenant_id', 'submitted_by'] : ['runner_profile', 'submitted_by']
@@ -879,7 +919,7 @@ export function ReliabilityCard({
                     {r.key === '' ? (
                       <i className="ctl-em">not recorded</i>
                     ) : link === null ? (
-                      r.key
+                      g.by === 'submitted_by' ? <Who address={r.key} /> : r.key
                     ) : (
                       <a
                         className="ctl-link ol-row-link"
@@ -890,7 +930,7 @@ export function ReliabilityCard({
                           link.open()
                         }}
                       >
-                        {r.key}
+                        {g.by === 'submitted_by' ? <Who address={r.key} /> : r.key}
                       </a>
                     )}
                     {r.declared_cost && (
@@ -906,10 +946,15 @@ export function ReliabilityCard({
                   <td>
                     <RateCell row={r} />
                   </td>
-                  <td className="is-num">{r.succeeded}</td>
-                  <td className="is-num">{r.failed + r.dead_lettered}</td>
                   <td className="is-num">
-                    {r.cancelled.total} · {r.cancelled.after_failure + r.cancelled.workflow_sweep}
+                    <Cell n={r.succeeded} link={r.key === '' ? null : (cellLink?.('succeeded', r.key) ?? null)} />
+                  </td>
+                  <td className="is-num">
+                    <Cell n={r.failed + r.dead_lettered} link={r.key === '' ? null : (cellLink?.('failed', r.key) ?? null)} />
+                  </td>
+                  <td className="is-num">
+                    <Cell n={r.cancelled.total} link={r.key === '' ? null : (cellLink?.('cancelled', r.key) ?? null)} /> ·{' '}
+                    {r.cancelled.after_failure + r.cancelled.workflow_sweep}
                   </td>
                   <td>
                     <CostFigure c={r.cost} what={r.key === '' ? 'The reported cost of work with no submitter recorded' : `${r.key}'s reported cost`} />
@@ -1101,6 +1146,26 @@ export function unfiltered(view: LedgerView): string[] {
   return out
 }
 
+/**
+ * PARK REASONS IN WORDS, NOT ENUMS (QA G3-24, 2026-10-07): the card printed
+ * `clears itself DEPENDENCY_INCOMPLETE 8`. Each reason is `reasonCopy`'s words
+ * -- the ones the Agents list and Overview use -- with its count, and the
+ * route's token in the title for whoever is matching it to a log. A reason
+ * with no copy falls back to its raw token, which is `reasonCopy`'s rule.
+ */
+function Reasons({ of }: { of: ReadonlyArray<readonly [string, number]> }) {
+  return (
+    <>
+      {of.map(([r, c], i) => (
+        <span key={r} className="ol-reason" title={r}>
+          {i > 0 && ' · '}
+          {reasonCopy(r).replace(/\.$/, '')} <b className="ol-n">{c}</b>
+        </span>
+      ))}
+    </>
+  )
+}
+
 export function OpenWorkCard({
   open,
   view,
@@ -1138,11 +1203,18 @@ export function OpenWorkCard({
   const itself = [...reasons.entries()].filter(([r]) => !PARK_NEEDS_A_PERSON.has(r))
   const more = open.parked?.status === 'ok' && open.parked.data.next_page_token !== null && open.parked.data.next_page_token !== undefined
   return (
-    // THE AGE OF THE READ ON SCREEN, never "now": this card is re-read on its
-    // own, and the head's age is the ledger's.
+    // THE AGE OF THE READ ON SCREEN, never "now", AND ONLY WHEN STALE (#98,
+    // owner ruling 2026-10-07): this card is re-read on its own, so once its
+    // read is older than `AGED_AFTER_MS` it says `from 6 min ago`; while fresh
+    // it is silent, and the head's refresh control carries the page's age.
     <Card
       title="Not finished yet"
-      note={`${s === null ? 'reading' : s.status === 'ok' ? `read ${timeAgo(s.data.generated_at, now)}` : 'not read'} · span not applied`}
+      note={[
+        s === null ? 'reading' : s.status === 'ok' ? staleFoot(Date.parse(s.data.generated_at), now) : 'not read',
+        'span not applied',
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ')}
       className="ol-open"
     >
       {s === null ? (
@@ -1176,11 +1248,13 @@ export function OpenWorkCard({
               <span className="ol-warn-mark" aria-hidden>
                 ▲
               </span>{' '}
-              needs a person {person.map(([r, c]) => `${r} ${c}`).join(' · ')}
+              needs a person <Reasons of={person} />
             </p>
           )}
           {itself.length > 0 && (
-            <p className="ol-line">clears itself {itself.map(([r, c]) => `${r} ${c}`).join(' · ')}</p>
+            <p className="ol-line ol-itself">
+              clears itself <Reasons of={itself} />
+            </p>
           )}
           {more && (
             <p className="ol-line">

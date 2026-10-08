@@ -57,7 +57,7 @@ from agent_worker.checkpoint import CheckpointManager, CheckpointRecord, checkpo
 from agent_worker.errors import CheckpointError, ExitCode
 from agent_worker.logs import build_logger
 
-from conftest import TENANT, seed_attempt
+from worker_seeds import TENANT, seed_attempt
 
 #: What uv's build environment really holds (the #286 archive's refusal).
 UV_PYTHON = ".cache/uv/builds-v0/.tmp48eWD9/bin/python"

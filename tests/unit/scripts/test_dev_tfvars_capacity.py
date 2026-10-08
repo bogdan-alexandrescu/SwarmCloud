@@ -46,16 +46,38 @@ LIVE_POOLS = {
     "runner:codex": 20,
     "runner:generic": 20,
     "runner:mock": 40,
-    "tenant:eng": 40,
-    "tenant:smoke": 8,
+    # 40 until the owner raised eng's capacity_units to 45 through the admin
+    # API on 2026-10-07 (max_active was already 45; dev.tfvars says why).
+    "tenant:eng": 45,
+    # 8 until the owner raised it to 20 through the admin API on 2026-10-07
+    # (~23:4xZ), setting max_active and capacity_units both to 20.
+    "tenant:smoke": 20,
     "tenant:u-bogdan": 80,
     "tenant:u-sw-c90291": 4,
 }
 
-#: (max_active, capacity_units) of every live dev tenant, read 2026-10-02.
+#: Pools #628 changes in dev.tfvars, which are NOT live until an operator sets
+#: them (`scripts/pool-limit.sh --pool provider:anthropic --limit 120`; the new
+#: per-tenant pool is created by the apply that adds smoke's provider). smoke
+#: declares anthropic so release acceptance can run its claude-code checks in
+#: smoke, which lifts the provider floor to 3 x provider_tenant = 120. Move
+#: these into LIVE_POOLS, with the date read, once they are live.
+PENDING_POOLS = {
+    "provider:anthropic": 120,
+    "provider:anthropic:tenant:smoke": 40,
+    # Contract request 53, accepted by the owner 2026-10-07: GKE_AUTOPILOT
+    # 40 -> 100 ahead of claude-code's move to GKE (dev.tfvars says why). Live
+    # once an operator runs
+    # `scripts/pool-limit.sh --pool backend:GKE_AUTOPILOT --limit 100`.
+    "backend:GKE_AUTOPILOT": 100,
+}
+
+#: (max_active, capacity_units) of every live dev tenant, read 2026-10-02;
+#: smoke's as the owner set it on 2026-10-07 (it was (20, 8)), and eng's as
+#: the owner set it on 2026-10-07 (it was (40, 40)).
 LIVE_TENANTS = {
-    "eng": (40, 40),
-    "smoke": (20, 8),
+    "eng": (45, 45),
+    "smoke": (20, 20),
     "u-bogdan": (80, 80),
     "u-sw-c90291": (4, 8),
 }
@@ -169,7 +191,7 @@ def test_every_live_pool_terraform_derives_is_stated_at_its_live_value():
     derived = _derived_pools()
     drift = {
         name: {"live": live, "tfvars": derived.get(name)}
-        for name, live in LIVE_POOLS.items()
+        for name, live in {**LIVE_POOLS, **PENDING_POOLS}.items()
         if name not in NOT_DERIVED_BY_TERRAFORM and derived.get(name) != live
     }
     assert not drift, f"dev.tfvars disagrees with the live pools: {drift}"

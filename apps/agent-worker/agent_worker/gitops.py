@@ -39,6 +39,8 @@ leaves either way) and would turn away public repositories that work today.
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import os
 import re
 import shlex
@@ -46,11 +48,14 @@ import shutil
 import stat
 import tempfile
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
+from .egress import EGRESS_PROBE_CAP_SECONDS, target_of
 from .forge import may_receive_forge_token
 from .procman import run_child
 
@@ -71,7 +76,221 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@/-]*$")
 
 
 class GitError(RuntimeError):
-    pass
+    #: The failed try's `clone_phase_timings`, set by the clone functions on
+    #: the way out, so `retry_clone` can record a try that failed (#742).
+    #: Empty when the failure was not a clone's, or git wrote no trace. Each
+    #: instance gets its own dict, so no timing can leak between failures.
+    phases: dict[str, Any]
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self.phases = {}
+
+
+class GitTransient(GitError):
+    """A git network step failed in a way the next try may not meet (#623).
+
+    A connect or read timeout, a DNS failure, a reset connection or a 5xx from
+    the forge: github.com did not answer, which says nothing about the
+    repository. A `GitError`, so every `except GitError` still catches it;
+    `retry_clone` and `_maybe_clone` are the callers that tell it apart.
+    `tries` is how many times `retry_clone` ran the clone before giving up.
+    """
+
+    def __init__(self, message: str, *, tries: int = 1) -> None:
+        super().__init__(message)
+        self.tries = tries
+
+
+# ---------------------------------------------------------------------------
+# Transient or permanent: what git's own words say about a failed clone
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-05 (#623): task_943349914a88 and task_cb020e97d585 failed
+# for good on attempt 1 of 3 with "Failed to connect to github.com port 443
+# after 134 s". git reports a network failure only as text on stderr, with
+# exit 128 for every kind of failure, so the text is all there is to read.
+#
+# PERMANENT is read FIRST and wins: a missing repository, refused
+# authentication, a ref that is not there, a 4xx other than 408/429, a
+# certificate the host could not prove. Asking again meets each unchanged,
+# and git often adds "the remote end hung up unexpectedly" after one of them,
+# which on its own would read as a dropped connection.
+
+_GIT_PERMANENT = re.compile(
+    "|".join(
+        (
+            r"repository not found",
+            r"repository '[^']*' not found",
+            r"does not appear to be a git repository",
+            r"authentication failed",
+            r"could not read (?:username|password)",
+            r"terminal prompts disabled",
+            r"permission denied",
+            r"remote branch \S+ not found",
+            r"couldn't find remote ref",
+            r"not our ref",
+            r"returned error: (?!408|429)4\d\d",
+            r"\bhttp (?!408|429)4\d\d\b",
+            r"ssl certificate problem",
+            r"certificate verify failed",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+_GIT_TRANSIENT = re.compile(
+    "|".join(
+        (
+            r"failed to connect to \S+ port \d+",
+            r"couldn't connect to server",
+            r"could not resolve (?:host|proxy)",
+            r"temporary failure in name resolution",
+            r"name or service not known",
+            r"timed out",
+            r"connection (?:reset|refused|closed)",
+            r"network is unreachable",
+            r"no route to host",
+            r"returned error: (?:408|429|5\d\d)",
+            r"\bhttp (?:408|429|5\d\d)\b",
+            r"rpc failed",
+            r"early eof",
+            r"unexpected disconnect",
+            r"remote end hung up unexpectedly",
+            r"transfer closed with outstanding read data",
+            r"empty reply from server",
+            r"(?:recv|send) failure",
+            r"gnutls recv error",
+            r"ssl_error_syscall",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
+def transient_git_failure(text: str) -> bool:
+    """True when a failed git network step's message says the forge did not answer.
+
+    Connect, timeout, DNS, a dropped connection and a 5xx are transient; a
+    missing repository, refused authentication and a bad ref are not, and
+    win over any transport complaint in the same message.
+    """
+    if not text or _GIT_PERMANENT.search(text):
+        return False
+    return bool(_GIT_TRANSIENT.search(text))
+
+
+#: The waits between tries of a clone that failed transiently: 10 s, then
+#: 30 s, so THREE tries in all and 40 s asleep at most. Not a third wait of
+#: 60 s: that would put the sleeping past `max_in_worker_retry_delay_seconds`
+#: (45 s), the platform's bound on an in-worker wait (invariant 4: a worker
+#: never sleeps through a long wait). Past these tries the forge has been down
+#: for minutes -- each try can itself take a connect timeout of 2+ minutes --
+#: and the attempt ends retryably so the scheduler's retry, with the capacity
+#: released, does the longer wait.
+CLONE_RETRY_WAITS_SECONDS: tuple[float, ...] = (10.0, 30.0)
+
+
+def retry_clone(
+    call: Callable[[], Any],
+    *,
+    destination: Path,
+    max_wait_seconds: float,
+    remaining_seconds: Callable[[], float],
+    logger: Any,
+    sleep: Callable[[float], Any] = time.sleep,
+    on_retry: Callable[[], Any] | None = None,
+    waits: Sequence[float] = CLONE_RETRY_WAITS_SECONDS,
+    record: list[dict[str, Any]] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> Any:
+    """`call()`, tried again after each of `waits` while it raises `GitTransient`.
+
+    Anything else, a permanent `GitError` above all, is raised at once. A
+    wait is not slept when the sleeping so far plus it would pass
+    `max_wait_seconds`, or when it would not end before the step's deadline
+    (`remaining_seconds()`): the `GitTransient` goes to the caller, which ends
+    the attempt retryably. The one that ends it carries `tries`.
+
+    `destination` is emptied before each retry: a clone that failed part way
+    may have left files there, and `git clone` refuses a folder that is not
+    empty -- a permanent-looking failure the retry itself would have caused.
+    `on_retry` runs after each wait, before the next try (the worker's
+    heartbeat).
+
+    EVERY TRY IS APPENDED TO `record`, the failed ones included (#742), in
+    order, as `try_record` builds it. Measured 2026-10-06: a clone hung about
+    134 s before a retry succeeded, and with only the successful try's
+    timings on record the worst case was missing from every clone figure.
+    """
+    tries = 0
+    waited = 0.0
+    while True:
+        tries += 1
+        started = clock()
+        try:
+            result = call()
+        except GitTransient as exc:
+            if record is not None:
+                record.append(try_record(clock() - started, error=exc))
+            exc.tries = tries
+            if tries > len(waits):
+                raise
+            wait = float(waits[tries - 1])
+            if waited + wait > max_wait_seconds or wait >= remaining_seconds():
+                raise
+            logger.warning(
+                "the clone could not reach the forge; retrying it in-process",
+                attempt=tries,
+                attempts=len(waits) + 1,
+                wait_seconds=wait,
+                reason=str(exc)[-300:],
+            )
+            sleep(wait)
+            waited += wait
+            _empty_directory(Path(destination))
+            if on_retry is not None:
+                on_retry()
+        except Exception as exc:
+            if record is not None:
+                record.append(try_record(clock() - started, error=exc))
+            raise
+        else:
+            if record is not None:
+                record.append(try_record(clock() - started, result=result))
+            return result
+
+
+def try_record(
+    seconds: float, *, result: Any = None, error: BaseException | None = None
+) -> dict[str, Any]:
+    """One clone try, as `clone_timed` lists it (#742). Numbers and a class name only.
+
+    `connect_seconds` is git's own connect time for the try
+    (`clone_phase_timings`), None when curl never connected -- the stalled
+    connect #742 is about lands there, and `seconds` (the try's wall time,
+    as this process measured it) then says how long it stalled. `ok` is the
+    outcome; `error_class` the exception's class (`GitTransient`, `GitError`)
+    on a failed try, None on one that cloned. Never the message: git's words
+    can carry a URL.
+
+    `probe_peer`, `git_peer` and `peer_pinned` (#721, P27; `PeerPin.observe`):
+    the address the egress probe reached, the address git's curl connected
+    to, and whether this try was pinned to the probe's. None, None, False on
+    a try that left no phases.
+    """
+    phases = getattr(error if error is not None else result, "phases", None)
+    if not isinstance(phases, dict):
+        phases = {}
+    return {
+        "connect_seconds": phases.get("connect_seconds"),
+        "ok": error is None,
+        "error_class": type(error).__name__ if error is not None else None,
+        "seconds": round(max(0.0, float(seconds)), 3),
+        "probe_peer": phases.get("probe_peer"),
+        "git_peer": phases.get("git_peer"),
+        "peer_pinned": bool(phases.get("peer_pinned")),
+    }
 
 
 @dataclass(frozen=True)
@@ -85,6 +304,304 @@ class CloneResult:
     #: is why `commit` is None. Established positively (no object at all), so
     #: a `rev-parse` that failed for any other reason is never read as "empty".
     empty: bool = False
+    #: Where the clone's time went, from git's own traces (`clone_phase_timings`):
+    #: numbers and git's version, nothing read from the wire. Empty when git
+    #: wrote no trace this function could read.
+    phases: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Where a clone's time goes (#667, lane OB1)
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-06 (chunk-1 observer): 229 clones in a day, median 37.8 s,
+# p90 70.9 s, clustered at ~38 s and ~71 s at every load level -- one depth-1
+# clone of a 33 MB tree, no retry, no NAT errors. A fixed stall, not bandwidth,
+# and nothing said which part of the clone it sat in.
+#
+# git says, if asked. Every clone and fetch runs with two traces, each to its
+# own file in the worker's private directory:
+#
+#   GIT_TRACE2_EVENT   JSON lines with absolute UTC times: each process's
+#                      start and exit, the index-pack child that receives the
+#                      pack, and the `unpack_trees` region that is the checkout;
+#   GIT_TRACE_CURL +   curl's own lines (`Trying`, `Connected to`, the TLS
+#   GIT_TRACE_PACKET   handshake, each request sent) and the protocol's packets
+#                      (`packfile`, the first `PACK` byte), stamped HH:MM:SS
+#                      in the process's local time, which TZ=UTC makes UTC.
+#
+# THE WIRE TRACE IS NEVER LOGGED, uploaded or kept. It holds the request
+# headers -- git redacts `Authorization` by default (GIT_TRACE_REDACT, set
+# explicitly here), and a header git does not know to redact is still a
+# header -- and the refs the forge advertised. `clone_phase_timings` reads both
+# files in this process, keeps only durations, counts and git's version, and
+# the files are removed before the clone function returns, on every path.
+# GIT_TRACE_CURL_NO_DATA keeps the pack's bytes out of the file: a 33 MB pack
+# dumped as text into a memory-backed workspace would cost more than the
+# clone it measures.
+
+#: The most of either trace file that is read. A clone's trace is tens of
+#: kilobytes; this bounds a repository that advertises a great many refs.
+CLONE_TRACE_MAX_BYTES = 8 * 1024 * 1024
+
+_TRACE_EVENTS_NAME = ".git-trace-events"
+_TRACE_WIRE_NAME = ".git-trace-wire"
+
+#: `HH:MM:SS.uuuuuu file.c:NNN   message`, git's classic trace line.
+_WIRE_LINE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{6})\s+\S+:\d+\s+(.*)$")
+_CURL_TRYING = re.compile(r"^== Info:\s+Trying\b")
+_CURL_CONNECTED = re.compile(r"^== Info:\s+Connected to\b")
+#: The address in curl's `Connected to github.com (140.82.112.3) port 443`.
+#: Kept only once `ipaddress` accepts it (`_peer_ip`): nothing else of the
+#: line leaves the parser.
+_CURL_CONNECTED_PEER = re.compile(r"^== Info:\s+Connected to \S+ \(([0-9A-Fa-f:.]{2,45})\)")
+_CURL_TLS = re.compile(r"^== Info:\s+(?:SSL connection using|TLSv|ALPN|SSL certificate verify)")
+#: One per request: the header block's own line, `=> Send header, N bytes`.
+#: Never the header lines themselves, which follow it as `=> Send header: ...`.
+_CURL_REQUEST = re.compile(r"^=> Send header, ")
+_PKT_PACKFILE = re.compile(r"^packet:\s+\S+<\s+packfile\s*$")
+_PKT_PACK = re.compile(r"^packet:\s+\S+<\s+(?:\\1)?PACK\b")
+_PACK_RECEIVERS = ("index-pack", "unpack-objects")
+_GIT_VERSION = re.compile(r"^[0-9][0-9A-Za-z._-]{0,39}$")
+
+
+def _trace2_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _seconds(start: datetime | None, end: datetime | None) -> float | None:
+    if start is None or end is None or end < start:
+        return None
+    return round((end - start).total_seconds(), 3)
+
+
+def clone_phase_timings(events_text: str, wire_text: str) -> dict[str, Any]:
+    """Durations of a clone's phases, from its trace2 events and its wire trace.
+
+    Returns only what both ends of were seen, each in seconds rounded to the
+    millisecond, plus counts and git's version:
+
+      total_seconds        the first git process's start to the last one's exit;
+      dns_seconds          that start to curl's first `Trying` (name resolution,
+                           and the few milliseconds git takes to start curl);
+      connect_seconds      the first `Trying` to `Connected to` -- a stall on an
+                           unreachable address and a fall back to the next one
+                           lands here, and `connect_tries` counts the tries;
+      tls_seconds          `Connected to` to the first request sent, when curl
+                           reported a TLS handshake in between;
+      negotiation_seconds  the first request (or the first process start, with
+                           no curl) to the server's `packfile` section: the ref
+                           advertisement, ls-refs and the want/have rounds;
+      pack_wait_seconds    `packfile` to the first byte of the pack: the forge
+                           counting and compressing objects before it sends any;
+      pack_seconds         `packfile` to the pack's receiver (index-pack or
+                           unpack-objects) exiting: the wait and the transfer;
+      checkout_seconds     the top-level `unpack_trees` regions, summed.
+
+    and `git_peer`, the address of curl's first `Connected to` (#721, P27),
+    only when it parses as an IP address.
+
+    Never raises, and returns {} for a trace it cannot read. Nothing in the
+    result is text from the trace except a version string that matches
+    `_GIT_VERSION`: the wire trace holds request headers.
+    """
+    try:
+        return _clone_phase_timings(events_text or "", wire_text or "")
+    except Exception:  # noqa: BLE001 -- a timing is never worth a failed clone
+        return {}
+
+
+def _clone_phase_timings(events_text: str, wire_text: str) -> dict[str, Any]:
+    starts: list[datetime] = []
+    exits: list[datetime] = []
+    children: dict[tuple[str, Any], bool] = {}
+    pack_end: datetime | None = None
+    pack_child_start: datetime | None = None
+    checkout = 0.0
+    checkout_seen = False
+    open_checkout: dict[str, datetime] = {}
+    version: str | None = None
+    for line in events_text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        sid = event.get("sid")
+        at = _trace2_time(event.get("time"))
+        if not isinstance(sid, str) or at is None:
+            continue
+        kind = event.get("event")
+        top = "/" not in sid
+        if kind == "version" and top and version is None:
+            exe = event.get("exe")
+            if isinstance(exe, str) and _GIT_VERSION.match(exe):
+                version = exe
+        elif kind == "start" and top:
+            starts.append(at)
+        elif kind in ("exit", "atexit") and top:
+            exits.append(at)
+        elif kind == "child_start":
+            argv = event.get("argv")
+            receives = isinstance(argv, list) and any(
+                isinstance(arg, str) and arg in _PACK_RECEIVERS for arg in argv
+            )
+            children[(sid, event.get("child_id"))] = receives
+            if receives and pack_child_start is None:
+                pack_child_start = at
+        elif kind == "child_exit":
+            if children.get((sid, event.get("child_id"))):
+                pack_end = at if pack_end is None or at > pack_end else pack_end
+        elif top and event.get("category") == "unpack_trees" and event.get("label") == "unpack_trees":
+            if kind == "region_enter":
+                open_checkout.setdefault(sid, at)
+            elif kind == "region_leave" and sid in open_checkout:
+                spent = _seconds(open_checkout.pop(sid), at)
+                if spent is not None:
+                    checkout += spent
+                    checkout_seen = True
+
+    start = min(starts) if starts else None
+    end = max(exits) if exits else None
+
+    trying: datetime | None = None
+    connected: datetime | None = None
+    first_request: datetime | None = None
+    tls_seen = False
+    packfile: datetime | None = None
+    pack_data: datetime | None = None
+    first_packet: datetime | None = None
+    tries = connections = requests = 0
+    git_peer: str | None = None
+    for line in wire_text.splitlines():
+        match = _WIRE_LINE.match(line)
+        if match is None or start is None:
+            continue
+        hour, minute, second, micro, message = match.groups()
+        try:
+            at = start.replace(
+                hour=int(hour), minute=int(minute), second=int(second), microsecond=int(micro)
+            )
+        except ValueError:
+            continue
+        # The wire trace carries a time of day only. Anchored on the day the
+        # first process started; a line half a day "before" it is past midnight.
+        if at < start - timedelta(hours=12):
+            at += timedelta(days=1)
+        if _CURL_TRYING.match(message):
+            tries += 1
+            trying = trying or at
+        elif _CURL_CONNECTED.match(message):
+            connections += 1
+            connected = connected or at
+            if connections == 1:
+                peer = _CURL_CONNECTED_PEER.match(message)
+                git_peer = _peer_ip(peer.group(1)) if peer else None
+        elif _CURL_TLS.match(message):
+            if connected is not None and first_request is None:
+                tls_seen = True
+        elif _CURL_REQUEST.match(message):
+            requests += 1
+            first_request = first_request or at
+        elif message.startswith("packet:"):
+            first_packet = first_packet or at
+            if packfile is None and _PKT_PACKFILE.match(message):
+                packfile = at
+            elif pack_data is None and _PKT_PACK.match(message):
+                pack_data = at
+
+    negotiated = packfile or pack_data or pack_child_start
+    phases: dict[str, Any] = {
+        "total_seconds": _seconds(start, end),
+        "dns_seconds": _seconds(start, trying),
+        "connect_seconds": _seconds(trying, connected),
+        "tls_seconds": _seconds(connected, first_request) if tls_seen else None,
+        "negotiation_seconds": _seconds(first_request or first_packet or start, negotiated),
+        "pack_wait_seconds": _seconds(packfile, pack_data),
+        "pack_seconds": _seconds(negotiated, pack_end),
+        "checkout_seconds": round(checkout, 3) if checkout_seen else None,
+    }
+    out: dict[str, Any] = {key: value for key, value in phases.items() if value is not None}
+    if not out:
+        return {}
+    if tries:
+        out["connect_tries"] = tries
+    if connections:
+        out["connections"] = connections
+    if requests:
+        out["http_requests"] = requests
+    if version:
+        out["git_version"] = version
+    if git_peer:
+        out["git_peer"] = git_peer
+    return out
+
+
+def _peer_ip(text: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class _CloneTrace:
+    """The two trace files one clone writes, in the worker's private directory."""
+
+    events: Path
+    wire: Path
+
+    @classmethod
+    def create(cls, private_dir: Path) -> "_CloneTrace":
+        trace = cls(private_dir / _TRACE_EVENTS_NAME, private_dir / _TRACE_WIRE_NAME)
+        # Unlinked first: git appends, so a file left by an earlier try (or a
+        # link planted at the name) would be read as part of this clone.
+        trace.discard()
+        return trace
+
+    def env(self, env: dict[str, str]) -> dict[str, str]:
+        return {
+            **env,
+            "GIT_TRACE2_EVENT": str(self.events),
+            "GIT_TRACE_CURL": str(self.wire),
+            "GIT_TRACE_CURL_NO_DATA": "1",
+            "GIT_TRACE_PACKET": str(self.wire),
+            "GIT_TRACE_REDACT": "1",
+            # The wire trace's clock is local time; this makes it UTC, the
+            # trace2 events' clock, so the two can be put on one timeline.
+            "TZ": "UTC",
+        }
+
+    def _read(self, path: Path) -> str:
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return ""
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                return handle.read(CLONE_TRACE_MAX_BYTES).decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def collect(self) -> dict[str, Any]:
+        """The timings, and both files removed. Never raises."""
+        try:
+            return clone_phase_timings(self._read(self.events), self._read(self.wire))
+        finally:
+            self.discard()
+
+    def discard(self) -> None:
+        for path in (self.events, self.wire):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def validate_repository_url(url: str) -> str:
@@ -298,14 +815,163 @@ def _run_git_steps(
         )
         total += result.duration_seconds
         if result.timed_out:
-            raise GitError(f"{label} step {index} timed out after {timeout_seconds}s")
+            # Transient: the step's own timeout is a forge that answered too
+            # slowly, which the next try may not meet (#623).
+            raise GitTransient(f"{label} step {index} timed out after {timeout_seconds}s")
         if result.exit_code != 0:
             tail = (logs_dir / f"{label}-{index}.err.log").read_text(errors="replace")[-2000:]
-            raise GitError(
+            message = (
                 f"{label} step {index} failed with exit {result.exit_code}"
                 f"{_withheld_note(url, token)}: {tail.strip()}"
             )
+            # Classified on git's own words only, never on the withheld note.
+            raise GitTransient(message) if transient_git_failure(tail) else GitError(message)
     return total
+
+
+#: The most a clone waits for the egress probe (#721 (a)). The probe's own
+#: cap: it ends by then anyway, counted from process start, so by the time the
+#: clone asks the wait left is shorter. A backstop, not a schedule.
+EGRESS_CLONE_WAIT_SECONDS = EGRESS_PROBE_CAP_SECONDS
+
+
+def await_egress(egress: Any, url: str, logger: Any) -> bool:
+    """Wait, bounded, for the egress probe to reach the clone's host (#721 (a)).
+
+    True once the host answered. False -- at once -- with no probe, for a
+    host the probe does not cover (a `file://` origin, for one), or when the
+    probe ends without an answer or the bound passes: the clone then runs
+    exactly as it did before the probe existed. Never raises.
+    """
+    if egress is None:
+        return False
+    try:
+        target = target_of(url)
+        if not egress.covers(target):
+            return False
+        started = time.monotonic()
+        ready = bool(egress.wait(target, EGRESS_CLONE_WAIT_SECONDS))
+        logger.info(
+            "egress probe: the clone waited for the forge's path to open"
+            if ready else "egress probe: no answer; cloning as before",
+            host=target[0] if target else None,
+            waited_seconds=round(time.monotonic() - started, 3),
+        )
+        return ready
+    except Exception as exc:  # a measurement never stops a clone
+        logger.warning("egress probe: wait failed; cloning as before",
+                       error=type(exc).__name__)
+        return False
+
+
+#: A connect at least this long had a SYN dropped (#721, P27): the kernel
+#: retransmits an unanswered SYN after 1 s, so a connect that took a second or
+#: more waited for at least one retransmit. The chunk-3 stalls were 7.1-35.6 s;
+#: a healthy connect to GitHub takes tens of milliseconds.
+CLONE_CONNECT_STALL_SECONDS = 1.0
+
+#: The schemes whose clone goes through curl, so `http.curloptResolve` applies.
+_CURL_SCHEMES = ("https", "http")
+
+
+def connect_stalled(phases: Any) -> bool:
+    """True when a clone try's connect stalled: it took `CLONE_CONNECT_STALL_SECONDS`
+    or more, or curl tried and never connected at all."""
+    if not isinstance(phases, dict):
+        return False
+    seconds = phases.get("connect_seconds")
+    if isinstance(seconds, (int, float)):
+        return float(seconds) >= CLONE_CONNECT_STALL_SECONDS
+    return bool(phases.get("connect_tries"))
+
+
+class PeerPin:
+    """Pin a clone's next try to the address the egress probe reached (#721, P27).
+
+    MEASURED 2026-10-06 (chunk-3 observer, P27): the probe connected 11.7-39.6 s
+    after process start, and git's own connect still stalled in 5 of 7 clones
+    (7.1-35.6 s). Each try therefore records `probe_peer` (the probe's
+    `getpeername()`, `EgressProbe.peer`) and `git_peer` (curl's `Connected to`,
+    `clone_phase_timings`). WHEN GIT'S CONNECT STALLED AND ITS ADDRESS IS NOT
+    THE PROBE'S -- a different address, or none because it never connected --
+    every later try of this clone runs with
+    `git -c http.curloptResolve=<host>:<port>:<probe ip>`. That is curl's
+    CURLOPT_RESOLVE: the URL keeps its host name, so the certificate is still
+    verified against it and the Host header is unchanged; only the lookup is
+    answered from the probe. A `-c` lives for one command, so nothing outlives
+    the clone. NEVER PINNED when the probe never answered (there is no address
+    it proved reachable), for an ssh or local clone (not curl), or when the
+    stalled connect was to the probe's own address (a pin would change nothing).
+
+    One per clone, shared by its tries (`retry_clone`): a try reads
+    `config_args()` before it runs and hands its phases to `observe` after.
+    Never raises.
+    """
+
+    def __init__(self, egress: Any, url: str | None) -> None:
+        self._egress = egress
+        self._target: tuple[str, int] | None = None
+        self._curl = False
+        try:
+            self._target = target_of(url)
+            self._curl = urlparse(str(url)).scheme in _CURL_SCHEMES
+        except Exception:  # noqa: BLE001 -- no target is no pin
+            self._target = None
+        self.resolve: str | None = None
+
+    @property
+    def pinned(self) -> bool:
+        return self.resolve is not None
+
+    def probe_peer(self) -> str | None:
+        if self._egress is None or self._target is None:
+            return None
+        try:
+            peer = self._egress.peer(self._target)
+        except Exception:  # noqa: BLE001 -- a measurement never stops a clone
+            return None
+        return _peer_ip(peer) if isinstance(peer, str) else None
+
+    def config_args(self) -> list[str]:
+        """The `-c` this try runs with: the pin, once one is decided, else none."""
+        return ["-c", f"http.curloptResolve={self.resolve}"] if self.resolve else []
+
+    def observe(self, phases: Any) -> dict[str, Any]:
+        """Record one try's peers; decide the pin for the tries after it.
+
+        Returns `{probe_peer, git_peer, peer_pinned}` for the try just run,
+        `peer_pinned` saying whether IT ran pinned.
+        """
+        pinned_now = self.pinned
+        git_peer = phases.get("git_peer") if isinstance(phases, dict) else None
+        probe_peer = self.probe_peer()
+        if (
+            not pinned_now
+            and self._curl
+            and self._target is not None
+            and probe_peer is not None
+            and git_peer != probe_peer
+            and connect_stalled(phases)
+        ):
+            host, port = self._target
+            address = f"[{probe_peer}]" if ":" in probe_peer else probe_peer
+            self.resolve = f"{host}:{port}:{address}"
+        return {"probe_peer": probe_peer, "git_peer": git_peer, "peer_pinned": pinned_now}
+
+
+#: `git config` arguments that make the clone's `origin` track every branch, as
+#: an ordinary clone does. `--single-branch` keeps the TRANSFER to one ref, and
+#: it also leaves `remote.origin.fetch` mapping only that ref -- so afterwards a
+#: `git fetch origin main` in a clone of `lane/x` updates FETCH_HEAD and never
+#: `refs/remotes/origin/main`. An `origin/main` that exists for any other reason
+#: (an earlier explicit fetch, a restored checkpoint's `.git`) then stays where
+#: it was, and `git merge origin/main` merges that stale main without a word:
+#: measured on F571b, PR #575 (#453). The wildcard changes nothing the clone
+#: transfers; it makes a later fetch by branch name move that branch's
+#: remote-tracking ref, which is what an agent told to fetch main relies on.
+TRACK_EVERY_BRANCH = (
+    "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*",
+)
 
 
 def shallow_clone(
@@ -319,8 +985,21 @@ def shallow_clone(
     logger: Any,
     token: str | None = None,
     git_binary: str = "git",
+    egress: Any = None,
+    peers: PeerPin | None = None,
+    history_days: int | None = None,
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
+
+    `history_days` (an index run, `indexrun.clone_history_days`, G4-06):
+    after the one-commit clone, deepen it to the `history_days` before the
+    head commit, and one parent past them, so the extractor's hot spots and
+    co-change read real history (`deepen_history`). A deepen that fails leaves the clone
+    one commit deep, which the extractor reports as having no history.
+
+    `peers` (#721, P27) is the clone's `PeerPin`, shared across its tries:
+    this try runs with its pin, if one is decided, and its phases gain
+    `probe_peer`, `git_peer` and `peer_pinned`.
 
     `private_dir` is the worker's own scratch directory (`workspace/private/`).
     git's HOME and the credential file both live there rather than in the
@@ -333,8 +1012,12 @@ def shallow_clone(
     destination.mkdir(parents=True, exist_ok=True)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
 
     env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
+    if peers is not None:
+        config_args += peers.config_args()
 
     is_sha = bool(ref and _SHA_RE.match(ref))
     if is_sha:
@@ -353,15 +1036,40 @@ def shallow_clone(
         if ref:
             clone += ["--branch", ref]
         clone += ["--", url, str(destination)]
-        steps = [clone]
+        steps = [
+            clone,
+            [git_binary, *config_args, "-C", str(destination), *TRACK_EVERY_BRANCH],
+        ]
 
+    # Every step is traced into the same two files, so a by-sha clone's
+    # fetch and checkout land on one timeline (`clone_phase_timings`).
+    trace = _CloneTrace.create(private_dir)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
     try:
         total = _run_git_steps(
-            steps, url=url, token=token, private_dir=private_dir, env=env,
+            steps, url=url, token=token, private_dir=private_dir, env=trace.env(env),
             logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
         )
+        if history_days:
+            # Inside the try: the credential file is still there, and the
+            # `finally` below removes it after the deepen as after the clone.
+            total += deepen_history(
+                destination, history_days, git_binary=git_binary, config_args=config_args,
+                url=url, token=token, private_dir=private_dir, env=trace.env(env),
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            )
+    except GitError as exc:
+        failed = exc
+        raise
     finally:
         _remove_credentials(cred_file, logger)
+        phases = trace.collect()
+        if peers is not None:
+            phases.update(peers.observe(phases))
+        if failed is not None:
+            # A failed try is timed too (#742): `retry_clone` records it.
+            failed.phases = phases
 
     commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     empty = commit is None and _holds_no_objects(
@@ -369,11 +1077,107 @@ def shallow_clone(
     )
     logger.info(
         "repository cloned", url=url, ref=ref, commit=commit, empty=empty,
-        seconds=round(total, 2),
+        seconds=round(total, 2), phases=phases,
     )
     return CloneResult(
-        path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty
+        path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty,
+        phases=phases,
     )
+
+
+def history_fetch_argv(
+    git_binary: str, config_args: Sequence[str], destination: Path, head_sha: str,
+    head_time: int, days: int,
+) -> list[str]:
+    """`git fetch --shallow-since=<head - days> origin <head>`.
+
+    Bounded by date, not by count: the window the extractor reads
+    (`repo_index_extract.HISTORY_DAYS`, anchored at the head commit), and
+    nothing older. The cost is the trees and blobs of the window's commits.
+    """
+    since = datetime.fromtimestamp(head_time - days * 86_400, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
+            f"--shallow-since={since}", "origin", head_sha]
+
+
+def history_parent_argv(
+    git_binary: str, config_args: Sequence[str], destination: Path, head_sha: str,
+) -> list[str]:
+    """`git fetch --deepen=1 origin <head>`: one commit past the window.
+
+    `--shallow-since` stops AT the oldest commit inside the window, without
+    its parent, and git shows a commit without its parent as adding every
+    file it holds. One more generation makes every commit in the window a
+    real diff; the extractor skips the boundary commit, now outside it.
+    """
+    return [git_binary, *config_args, "-C", str(destination), "fetch", "--quiet", "--no-tags",
+            "--deepen=1", "origin", head_sha]
+
+
+def deepen_history(
+    destination: Path,
+    days: int,
+    *,
+    git_binary: str,
+    config_args: Sequence[str],
+    url: str,
+    token: str | None,
+    private_dir: Path,
+    env: dict[str, str],
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+) -> float:
+    """Deepen a one-commit clone to `days` of history before its head. Seconds taken.
+
+    Never raises: a forge that refuses or times out the deepen leaves the
+    clone with what it fetched, and the warning says so; the extractor
+    reads the history it finds (`window_covered`, `available`). The
+    checkout is not touched: a fetch moves no branch and no working file.
+    """
+    head = run_child(
+        [git_binary, "-C", str(destination), "show", "-s", "--format=%H %ct", "HEAD"],
+        cwd=private_dir,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(private_dir),
+             "GIT_CONFIG_NOSYSTEM": "1"},
+        stdout_path=logs_dir / "git-history-head.out.log",
+        stderr_path=logs_dir / "git-history-head.err.log",
+        timeout_seconds=30,
+        grace_seconds=5,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+        logger=logger,
+    )
+    text = ""
+    if head.exit_code == 0:
+        text = (logs_dir / "git-history-head.out.log").read_text(errors="replace").strip()
+    parts = text.split()
+    if len(parts) != 2 or not _FULL_SHA_RE.match(parts[0]) or not parts[1].isdigit():
+        logger.warning("clone history: the head commit could not be read; the clone stays "
+                       "one commit deep")
+        return head.duration_seconds
+    argv = history_fetch_argv(git_binary, config_args, destination, parts[0], int(parts[1]), days)
+    try:
+        seconds = _run_git_steps(
+            [argv], url=url, token=token, private_dir=private_dir, env=env, logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds, logger=logger, label="git-history",
+        )
+        # Still shallow: the history goes back past the window. Not shallow:
+        # the window holds the whole history, root commit included.
+        if (destination / ".git" / "shallow").exists():
+            seconds += _run_git_steps(
+                [history_parent_argv(git_binary, config_args, destination, parts[0])],
+                url=url, token=token, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                timeout_seconds=timeout_seconds, logger=logger, label="git-history-parent",
+            )
+    except GitError as exc:  # GitTransient included
+        # The class only: git's own words are in logs/git-history*-0.err.log.
+        logger.warning("clone history: the deepen failed; the extractor reports the "
+                       "history the clone holds", days=days, error=type(exc).__name__)
+        return head.duration_seconds
+    logger.info("clone history deepened", days=days, seconds=round(seconds, 2))
+    return head.duration_seconds + seconds
 
 
 def clone_at_commit(
@@ -388,6 +1192,8 @@ def clone_at_commit(
     logger: Any,
     token: str | None = None,
     git_binary: str = "git",
+    egress: Any = None,
+    peers: PeerPin | None = None,
 ) -> CloneResult:
     """Check out exactly `commit` of `url` into `destination` (the workflow base pin).
 
@@ -411,8 +1217,13 @@ def clone_at_commit(
     destination.mkdir(parents=True, exist_ok=True)
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
 
     env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
+    if peers is not None:
+        # The address pin (#721, P27, `PeerPin`), not the base pin.
+        config_args += peers.config_args()
     g = [git_binary, *config_args, "-C", str(destination)]
     setup = [
         [git_binary, *config_args, "init", "--quiet", str(destination)],
@@ -423,6 +1234,10 @@ def clone_at_commit(
         [*g, "checkout", "--quiet", commit],
     ]
     total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    env = trace.env(env)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
     try:
         total += _run_git_steps(
             setup, url=url, token=token, private_dir=private_dir, env=env,
@@ -435,6 +1250,11 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-sha",
             )
+        except GitTransient:
+            # The forge did not answer, which is not a refusal of the sha: a
+            # full fetch of the branch would meet the same outage. Raised, so
+            # `retry_clone` asks again (#623).
+            raise
         except GitError as exc:
             logger.info(
                 "the forge refused a fetch by sha; fetching the branch's history instead",
@@ -451,11 +1271,18 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-branch",
             )
-    except GitError:
+    except GitError as exc:
+        failed = exc
         _empty_directory(destination)
         raise
     finally:
         _remove_credentials(cred_file, logger)
+        phases = trace.collect()
+        if peers is not None:
+            phases.update(peers.observe(phases))
+        if failed is not None:
+            # A failed try is timed too (#742): `retry_clone` records it.
+            failed.phases = phases
 
     head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     if head != commit:
@@ -463,9 +1290,12 @@ def clone_at_commit(
         raise GitError(f"the pinned checkout landed on {head!r}, not {commit}")
     logger.info(
         "repository cloned at the pinned commit", url=url, ref=branch, commit=head,
-        seconds=round(total, 2),
+        seconds=round(total, 2), phases=phases,
     )
-    return CloneResult(path=destination, url=url, ref=branch, commit=head, duration_seconds=total)
+    return CloneResult(
+        path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
+        phases=phases,
+    )
 
 
 def _empty_directory(path: Path) -> None:
@@ -647,11 +1477,18 @@ def _git_env(private_dir: Path) -> dict[str, str]:
         # graph the agent wrote; this switches graphs off for every worker
         # git as well, so none is read even where one exists. Command-scope
         # configuration outranks any repository's own `core.commitGraph`.
-        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_COUNT": "3",
         "GIT_CONFIG_KEY_0": "core.commitGraph",
         "GIT_CONFIG_VALUE_0": "false",
         "GIT_CONFIG_KEY_1": "fetch.writeCommitGraph",
         "GIT_CONFIG_VALUE_1": "false",
+        # `GIT_GRAFT_FILE=/dev/null` above makes git open a graft file, which
+        # succeeds, and print its eight-line graft-deprecation advice on every
+        # command (#808). The advice key only decides whether that message
+        # prints: grafts stay off. Command-scope configuration outranks the
+        # clone's `.git/config`, so the agent cannot turn the hint back on.
+        "GIT_CONFIG_KEY_2": "advice.graftFileDeprecated",
+        "GIT_CONFIG_VALUE_2": "false",
     }
 
 
@@ -1529,13 +2366,33 @@ def _worker_idents(run: Any, g: list[str]) -> tuple[tuple[str, str], tuple[str, 
     return idents[0], idents[1]
 
 
-def _foreign(commit: _Commit, author: tuple[str, str], committer: tuple[str, str]) -> list[str]:
-    """Every reason `commit` is not one the worker wrote. Empty when it is."""
+def _foreign(
+    commit: _Commit,
+    author: tuple[str, str],
+    committer: tuple[str, str],
+    *,
+    also: Sequence[tuple[tuple[str, str], tuple[str, str]]] = (),
+) -> list[str]:
+    """Every reason `commit` is not one the worker wrote. Empty when it is.
+
+    `also` is any other (author, committer) pair the worker writes as, each
+    asked of git by `_worker_idents` (#765: the task's person, with the bot
+    kept for a branch an earlier attempt pushed). A commit must carry ONE of
+    the pairs whole: the worker never writes one identity's author with
+    another's committer, so a mixed pair is not its.
+    """
     problems = []
-    if commit.author != author:
-        problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
-    if commit.committer != committer:
-        problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+    own = [(author, committer), *also]
+    if (commit.author, commit.committer) not in own:
+        if all(commit.author != mine for mine, _ in own):
+            problems.append(f"authored by {commit.author[0]} <{commit.author[1]}>")
+        if all(commit.committer != mine for _, mine in own):
+            problems.append(f"committed by {commit.committer[0]} <{commit.committer[1]}>")
+        if not problems:
+            problems.append(
+                f"authored by {commit.author[0]} <{commit.author[1]}> but committed by "
+                f"{commit.committer[0]} <{commit.committer[1]}>, a pair the worker never writes"
+            )
     if commit.signed:
         # The worker never signs (`commit.gpgSign=false` on every call), so a
         # signature is text from a program the worker did not choose.
@@ -1558,6 +2415,7 @@ def verify_worker_authorship(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    also_own: Sequence[tuple[str, str]] = (),
 ) -> int:
     """Refuse a push that would add a commit the worker did not write.
 
@@ -1578,6 +2436,15 @@ def verify_worker_authorship(
     the contributor commits those merges bring in are their second parents,
     and each was checked by its own worker when it pushed. A contributor branch
     pushed before this check existed is therefore not re-checked here.
+
+    WHO THE WORKER IS (#765, owner decision 2026-10-07). `author_name` and
+    `author_email` are the identity this publish writes as -- the task's
+    person when it has one -- and `also_own` every other identity the worker
+    has written this branch as: the bot, `WorkerConfig.git_author_*`, for a
+    branch an earlier attempt pushed before its person was known. Nobody else
+    joins the set; a third identity's commit is refused as before. A
+    contributor's person on its own branch is never asked about here: those
+    commits are an integrator's second parents.
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
@@ -1615,8 +2482,13 @@ def verify_worker_authorship(
         return 0
 
     author, committer = _worker_idents(run, g)
+    also = [
+        _worker_idents(run, [git_binary, *_NO_HOOKS, *_worker_identity(name, email)])
+        for name, email in also_own
+        if (name, email) != (author_name, author_email)
+    ]
     for sha in shas:
-        problems = _foreign(_read_commit(run, g, sha), author, committer)
+        problems = _foreign(_read_commit(run, g, sha), author, committer, also=also)
         if problems:
             raise GitError(
                 f"refusing to push commit {sha[:12]}: {'; '.join(problems)}. The "
@@ -1643,7 +2515,15 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:
 #: * no system file and no global file, so the only configuration read is the
 #:   clone's and the command line's;
-#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`;
+#: * grafts, replace refs and (below) the commit-graph off: see `_git_env`.
+#:   The graft file here is a path that cannot exist, not /dev/null (#808):
+#:   git prints its graft-deprecation advice whenever the graft file OPENS,
+#:   and upload-pack never loads `advice.*` -- its config callback does not
+#:   chain to git's default one (git 2.39.5 measured, master read), so
+#:   `advice.graftFileDeprecated=false` cannot reach it from the command line,
+#:   the environment or any config file. `/dev/null/no-grafts` fails to open
+#:   with ENOTDIR, which git's `fopen_or_warn` skips silently, and a graft
+#:   file that does not open means no grafts -- exactly what /dev/null gave;
 #: * `GIT_NO_LAZY_FETCH`: a clone the agent marked a partial clone
 #:   (`extensions.partialClone`, `remote.<name>.promisor`) makes a git that
 #:   misses an object FETCH it from the remote the clone's config names, with
@@ -1661,7 +2541,7 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #:   command-line one. `false` is the worker's own program and connects to
 #:   nothing.
 _UPLOAD_PACK_ENV = [
-    "GIT_GRAFT_FILE=/dev/null",
+    "GIT_GRAFT_FILE=/dev/null/no-grafts",
     "GIT_NO_REPLACE_OBJECTS=1",
     "GIT_CONFIG_NOSYSTEM=1",
     "GIT_CONFIG_GLOBAL=/dev/null",
@@ -2502,6 +3382,59 @@ def push_branch(
     head = text.strip() if code == 0 else ""
     logger.info("branch pushed", branch=branch, head=head or "unknown")
     return head
+
+
+#: The most commits a pushed branch's record lists (`branch_commits`). A
+#: step's branch carries a handful; the cap bounds the result summary, and
+#: `commits_truncated` says when it was reached.
+BRANCH_COMMITS_CAP = 50
+#: The most of a commit subject the record keeps.
+BRANCH_SUBJECT_MAX_CHARS = 200
+
+
+def branch_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    cap: int = BRANCH_COMMITS_CAP,
+) -> tuple[list[dict[str, str]], bool]:
+    """The commits HEAD adds over `base`, newest first: `[{sha, subject}]`, and
+    whether `cap` cut the list short.
+
+    Read from git in `repo`, which is the worker-owned publish repository the
+    push just ran in, so every sha here is one the push sent (#667, observer
+    P11). `base` None -- an empty repository's first push -- lists HEAD's own
+    history. A git that fails gives `([], False)`: the record then names the
+    branch and its head without commits, never commits it did not read.
+    """
+    revision = f"{base}..HEAD" if base and _FULL_SHA_RE.match(base) else "HEAD"
+    code, text = _git_text(
+        [
+            git_binary, *_NO_HOOKS, "log", "--no-color", f"--max-count={cap + 1}",
+            "--format=%H%x1f%s%x1e", revision, "--",
+        ],
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="publish-branch-commits",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    if code != 0:
+        logger.warning("could not list the pushed branch's commits", exit_code=code)
+        return [], False
+    commits: list[dict[str, str]] = []
+    for record in text.split("\x1e"):
+        sha, sep, subject = record.strip("\n").partition("\x1f")
+        if sep and _FULL_SHA_RE.match(sha):
+            # The subject is the agent's text: cut, so the record stays small.
+            commits.append({"sha": sha, "subject": subject[:BRANCH_SUBJECT_MAX_CHARS]})
+    return commits[:cap], len(commits) > cap
 
 
 @dataclass(frozen=True)

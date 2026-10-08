@@ -62,8 +62,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import secrets
+import threading
 import time
 import zlib
+from collections import OrderedDict
 from typing import Any, Callable
 
 from swarm_common.states import PENDING_STATES
@@ -155,6 +158,10 @@ _PARKED_BECAUSE = {
     # Contract request 40 (docs/design/child-tasks.md): the agent awaits the
     # child tasks it submitted, holding no capacity.
     "CHILDREN_INCOMPLETE": "it is waiting for the child tasks its agent submitted",
+    # Contract request 49 (docs/merge-step.md, 2026-10-06): a merge step parks
+    # while its pull request's CI runs, holding no capacity, and is woken when
+    # the checks settle. Waiting, not stalled.
+    "CI_PENDING": "waiting for the pull request's checks",
     "PROVIDER_QUOTA_EXHAUSTED": "the provider's quota window is exhausted; it resumes on its own",
     "PROVIDER_COOLDOWN": "the provider is cooling down; it resumes on its own",
     "PROVIDER_OUTAGE": "the provider is failing; it resumes on its own",
@@ -225,11 +232,15 @@ def _payload(token: Any) -> dict[str, Any] | None:
     if not dot:
         return None
     if checksum != _checksum(body):
+        # NEVER "or omit it" (owner, 2026-10-05): rows that took that advice
+        # dropped `since`, every call then answered at once, and three rows
+        # polled 56-60 times in minutes.
         raise SwarmError(
             "the `since` token fails its checksum: it is not the token a previous "
             "call returned, and was changed on its way back here -- a single "
-            "character is enough. Nothing was read. Pass `since` back unchanged, "
-            "exactly as it was returned, or omit it to start again from the beginning"
+            "character is enough. Nothing was read. Pass `since` back unchanged: copy "
+            "it again from the previous reply, character for character, and call "
+            "again with it"
         )
     try:
         padded = body + "=" * (-len(body) % 4)
@@ -239,6 +250,171 @@ def _payload(token: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or payload.get("v") != SINCE_VERSION:
         return None
     return payload
+
+
+#: How many tokens one bridge process keeps behind handles. A row makes at most
+#: ~60 calls and a session runs a few dozen rows; past this the OLDEST handles
+#: go first, and a handle that has gone is read as described in `Handles.resolve`.
+HANDLE_LIMIT = 4096
+
+#: A handle: `r`, four hex digits, and a Luhn mod 16 check digit.
+_HANDLE_DIGITS = 4
+
+
+def _luhn16(digits: str) -> str:
+    """The Luhn mod 16 check digit of these hex digits.
+
+    Luhn mod N catches every single-character substitution and every swap of
+    two adjacent different characters -- the two slips a hand copy makes.
+    """
+    total = 0
+    factor = 2
+    for ch in reversed(digits):
+        addend = factor * int(ch, 16)
+        total += addend // 16 + addend % 16
+        factor = 1 if factor == 2 else 2
+    return f"{(16 - total % 16) % 16:x}"
+
+
+class Handles:
+    """Each follower's `since` token, kept HERE and handed out as a short handle.
+
+    WHY (owner decision, 2026-10-05, lane review B1). Haiku `sc:step` rows
+    copied the ~175-character token by hand and corrupted it on 88 of 192
+    calls (46%). The checksum refused every one, so nothing was lost -- but
+    the refused rows then dropped `since`, every call without one answered at
+    once, and three rows polled 56-60 times in minutes: 14.9M tokens, 51% of
+    all row tokens. A handle such as `r7f3a2` is six characters to copy.
+
+    A handle is an immutable alias of ONE token: every reply issues a new one,
+    and an older handle still resumes from where IT was issued. So a call the
+    host cut, repeated with the same `since`, re-reads rather than skipping
+    what the cut reply carried -- exactly as the full token behaves.
+
+    A follower is `(format, task ids)`. A follow WITHOUT `since` for a follower
+    this process already answered resumes from the LAST token it issued that
+    follower, and therefore holds like any follow instead of answering at once.
+    The last one issued, not the last one passed back: a row that keeps
+    dropping `since` would otherwise resume, on every call, from a position
+    whose state has since moved, and answer at once each time.
+
+    In memory, per bridge process: a restarted bridge knows no handle, and
+    `resolve` says what it does then. The tokens hold byte positions, state
+    names and counts -- what the follow report already showed -- and nothing
+    secret.
+    """
+
+    def __init__(self, limit: int = HANDLE_LIMIT) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        #: handle -> (follower, token), oldest first.
+        self._tokens: OrderedDict[str, tuple[tuple[Any, ...], str]] = OrderedDict()
+        #: follower -> the last token issued to it, oldest first.
+        self._latest: OrderedDict[tuple[Any, ...], str] = OrderedDict()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._tokens.clear()
+            self._latest.clear()
+
+    @staticmethod
+    def follower(fmt: str, task_ids: list[str]) -> tuple[Any, ...]:
+        return (fmt, tuple(str(t) for t in task_ids))
+
+    @staticmethod
+    def is_handle(since: Any) -> bool:
+        """Whether `since` is SHAPED like a handle -- its check digit aside."""
+        if not isinstance(since, str):
+            return False
+        text = since.strip().lower()
+        return (
+            len(text) == _HANDLE_DIGITS + 2
+            and text[0] == "r"
+            and all(ch in "0123456789abcdef" for ch in text[1:])
+        )
+
+    def issue(self, follower: tuple[Any, ...], token: str) -> str:
+        """A new handle for `token`, which is now `follower`'s latest."""
+        with self._lock:
+            while True:
+                body = f"{secrets.randbelow(16 ** _HANDLE_DIGITS):0{_HANDLE_DIGITS}x}"
+                handle = f"r{body}{_luhn16(body)}"
+                if handle not in self._tokens:
+                    break
+            self._tokens[handle] = (follower, token)
+            self._latest[follower] = token
+            self._latest.move_to_end(follower)
+            while len(self._tokens) > self._limit:
+                self._tokens.popitem(last=False)
+            while len(self._latest) > self._limit:
+                self._latest.popitem(last=False)
+            return handle
+
+    def resolve(
+        self, since: Any, follower: tuple[Any, ...], *, resume: bool = True,
+    ) -> tuple[Any, str | None]:
+        """`(token, note)`: the full token to read from, and a sentence when it
+        is not the one the caller passed.
+
+        * no `since`: `follower`'s last token when `resume` and this process
+          issued one (the call then holds); else None, a first call;
+        * a handle whose check digit fails: refused -- it was changed on the
+          way back, and the refusal says to copy it again, never to omit it;
+        * a handle issued for OTHER tasks: refused, for the same reason;
+        * a handle this process does not have (it restarted, or the handle
+          is older than `HANDLE_LIMIT` handles): `follower`'s last token when
+          there is one, else a fresh start, and the note says so;
+        * anything else -- an old full token included -- is the token itself.
+        """
+        if since is None or since == "":
+            if not resume:
+                return None, None
+            with self._lock:
+                latest = self._latest.get(follower)
+            if latest is None:
+                return None, None
+            return latest, (
+                "no `since` was passed; this bridge resumed from the position it last "
+                "returned for these tasks, so the call held like any follow"
+            )
+        if not self.is_handle(since):
+            return since, None
+        handle = since.strip().lower()
+        if _luhn16(handle[1:-1]) != handle[-1]:
+            raise SwarmError(
+                f"the `since` handle {since.strip()!r} fails its check digit: it is not "
+                "the handle a previous call returned, and was changed on its way back "
+                "here. Nothing was read. Copy `since` again from the previous reply, "
+                "character for character -- six characters, `r` and five hex digits -- "
+                "and call again with it"
+            )
+        with self._lock:
+            known = self._tokens.get(handle)
+            latest = self._latest.get(follower)
+        if known is not None:
+            owner, token = known
+            if owner != follower:
+                raise SwarmError(
+                    f"the `since` handle {handle!r} was returned by a follow of "
+                    f"{list(owner[1])} in format {owner[0]!r}, not of these tasks in this "
+                    "format. Nothing was read. Copy `since` again from the previous reply "
+                    "for these tasks, character for character, and call again with it"
+                )
+            return token, None
+        if latest is not None:
+            return latest, (
+                f"this bridge no longer holds the position behind `since` {handle!r}, so it "
+                "resumed from the last position it returned for these tasks"
+            )
+        return None, (
+            f"this bridge holds no position behind `since` {handle!r} -- it was restarted "
+            "since that handle was issued -- so this call started each task from the "
+            "beginning; it may repeat what an earlier call showed"
+        )
+
+
+#: This bridge process's handles. One process serves one Claude Code session.
+HANDLES = Handles()
 
 
 def read_failures(token: Any) -> dict[str, int]:
@@ -579,6 +755,16 @@ def watch(
     abandoned: dict[str, str] = {}
     for task_id in task_ids:
         task = latest.get(task_id) or {}
+        if task_id in wrong_step and wrong_step[task_id] is None:
+            # A SINGLE TASK handed to a step row (#830): not another step's
+            # task, so the message says what follows it instead of naming
+            # "workflow step None".
+            abandoned[task_id] = (
+                f"task {task_id} is a single task, not workflow step {step_id!r}: it "
+                "belongs to no workflow. Follow it WITHOUT `step_id` -- the sc:task "
+                "row does. Nothing was cancelled; SwarmCloud runs it as before"
+            )
+            continue
         if task_id in wrong_step:
             abandoned[task_id] = (
                 f"task {task_id} is workflow step {wrong_step[task_id]!r}, not "
@@ -661,6 +847,12 @@ def watch(
         elif task.get("read") == "ok" and task.get("terminal"):
             try:
                 row["outcome"] = outcome(client, client.task(task_id))
+                asked = len(row["outcome"].get("questions") or [])
+                if asked:
+                    # WHAT THE AGENT ASKS THE OWNER (2026-10-05), as a line of
+                    # its own after the window's: the outcome holds the text.
+                    label = task_label(task_id, task.get("step_id"))
+                    shown.append(f"[{label}] {questions_words(asked)}")
             except SwarmError as exc:
                 # NOT all finished, then: a caller that stopped here would stop
                 # with no outcome to return. The next call re-reads it.
@@ -786,7 +978,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     `answer` is the agent's final text; `answer_json` is the last JSON object
     that text ends with, parsed, for a caller that asked the agent for one.
     `cost_usd` is the sum of every attempt's recorded spend, and null -- never
-    0 -- when no attempt recorded one. On a failure, `last_error` and `failure`
+    0 -- when no attempt recorded one; `cost_incomplete` says it is a floor.
+    `spend_totals`' fields sit beside it: `attempts`, `cost_usd_total`,
+    `duration_s_total`, `first_started_at` and the last attempt's
+    `last_attempt_cost_usd` and `last_attempt_duration_s`. On a failure, `last_error` and `failure`
     carry what the per-attempt record says, and `answer` is whatever the agent
     printed, which is not a success.
     """
@@ -797,10 +992,17 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
         "runner_profile": task.get("runner_profile"),
     }
     out.update(final_answer(client, task))
-    out.update(_cost(client, task))
+    totals = spend_totals(client, task)
+    out.update(_cost(totals))
     out.update(_duration(task))
+    # EVERY ATTEMPT, with the last one beside it (lane review P1): `cost_usd`
+    # above is the total; `duration_s` is the last attempt's.
+    out.update(totals)
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
+    # The agent's questions for the owner, read back from its questions.json
+    # (`owner_questions`); `[]` and no extra read when it asked none.
+    out.update(owner_questions(client, task))
     out["last_error"] = task.get("last_error")
     # Contract request 23 (#217): the outcome ledger's own classification,
     # read first and typed, rather than a workflow row sorting free-text
@@ -822,6 +1024,110 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     if link is not None:
         out["console"] = link
     return out
+
+
+# --------------------------------------------------------------------------
+# What the agent asks the owner
+# --------------------------------------------------------------------------
+
+#: The artifact an agent writes its questions for the owner into, and the
+#: `result_summary` key the worker counts them under (`agent_worker.questions`,
+#: owner decision 2026-10-05). Spelled again here: the bridge does not import
+#: the worker.
+QUESTIONS_NAME = "questions.json"
+QUESTIONS_KEY = "questions"
+
+#: The worker takes no file larger than this, so one window of the artifacts
+#: route reads it whole; one byte more says whether it was cut.
+QUESTIONS_MAX_BYTES = 64 * 1024
+
+
+def questions_count(task: dict[str, Any]) -> int:
+    """How many questions the worker counted in the task's `questions.json`, else 0.
+
+    The worker counts only a file it validated AND uploaded; a rejected file
+    is 0 here, with `questions_rejected` beside it in the summary.
+    """
+    count = (task.get("result_summary") or {}).get(QUESTIONS_KEY)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    return count
+
+
+def questions_words(count: int) -> str:
+    """The progress line's words for `count` questions (owner decision, 2026-10-05)."""
+    return f"? {count} question(s) for the owner"
+
+
+def _question_text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def owner_questions(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
+    """`{"questions": [...]}`: what the agent asked the owner, read from its artifact.
+
+    WHY (owner decision, 2026-10-05). An agent that meets a decision that is
+    the owner's writes it into `questions.json` instead of guessing (I310,
+    W532), and the worker counts a valid one in `result_summary.questions`.
+    This reads the file back through the artifacts route -- by NAME, from the
+    task's own manifest, redacted by the API -- so `swarm_result` and the
+    follow outcome hand the questions to whoever reads the result.
+
+    DATA, NEVER ACTED ON. The questions are returned for a person to read;
+    nothing in the bridge answers, dispatches or decides on them.
+
+    A task that asked none reads nothing more and answers `[]`. A counted file
+    that cannot be read answers `[]` with `questions_unavailable_because`, so
+    "asked none" and "asked some we could not read" are never the same.
+    """
+    count = questions_count(task)
+    if count == 0:
+        return {"questions": []}
+    task_id = task_id_of(task)
+    why = None
+    try:
+        window = client.artifact_content(
+            task_id, QUESTIONS_NAME, limit_bytes=QUESTIONS_MAX_BYTES + 1
+        )
+    except SwarmError as exc:
+        window, why = None, f"the artifact route could not be read: {exc}"
+    if window is not None:
+        if window.get("status") != "ok" or not isinstance(window.get("content"), str):
+            why = f"the artifact route says {window.get('status')}"
+        elif window.get("truncated"):
+            why = f"the file is larger than the {QUESTIONS_MAX_BYTES} bytes the worker takes"
+    if why is None:
+        try:
+            parsed = json.loads(window["content"])
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            return {"questions": [_question(entry) for entry in parsed if isinstance(entry, dict)]}
+        why = "the file the API served is not a JSON list"
+    return {
+        "questions": [],
+        "questions_unavailable_because": (
+            f"the worker counted {count} question(s) in {QUESTIONS_NAME}, and {why}; "
+            "it is in the task's artifacts"
+        ),
+    }
+
+
+def _question(entry: dict[str, Any]) -> dict[str, Any]:
+    """One question with exactly its four keys, as the worker checked them."""
+    options = []
+    for option in entry.get("options") or []:
+        if isinstance(option, dict):
+            options.append({
+                "label": _question_text(option.get("label")),
+                "description": _question_text(option.get("description")),
+            })
+    return {
+        "question": _question_text(entry.get("question")),
+        "options": options,
+        "recommended": _question_text(entry.get("recommended")),
+        "context": _question_text(entry.get("context")),
+    }
 
 
 def final_answer(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
@@ -948,32 +1254,131 @@ def last_json_object(text: Any) -> dict[str, Any] | None:
     return None
 
 
-def _cost(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
-    """The task's spend: every attempt's `cost_usd`, summed. Null is not zero."""
+#: What `swarm_api.attempt_totals` serves on a task, read back by these names.
+TOTAL_FIELDS = (
+    "attempts",
+    "attempts_with_cost",
+    "cost_usd_total",
+    "cost_incomplete",
+    "duration_s_total",
+    "duration_incomplete",
+    "first_started_at",
+    "last_attempt_cost_usd",
+    "last_attempt_duration_s",
+)
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _attempt_seconds(attempt: dict[str, Any]) -> float | None:
+    started = parse_time(attempt.get("started_at"))
+    completed = parse_time(attempt.get("completed_at"))
+    if started is None or completed is None or completed < started:
+        return None
+    return (completed - started).total_seconds()
+
+
+def _derived_totals(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """`attempt_totals`' rules over the attempts route's rows, for an API that serves none."""
+    costs = [c for c in (_number(a.get("cost_usd")) for a in attempts) if c is not None]
+    seconds = [s for s in (_attempt_seconds(a) for a in attempts) if s is not None]
+    starts = [(parse_time(a.get("started_at")), a.get("started_at")) for a in attempts]
+    starts = [(moment, raw) for moment, raw in starts if moment is not None]
+    last = max(
+        attempts,
+        key=lambda a: (a.get("generation") or 0, str(a.get("created_at") or "")),
+        default=None,
+    )
+    last_seconds = _attempt_seconds(last) if last is not None else None
+    return {
+        "attempts": len(attempts),
+        "attempts_with_cost": len(costs),
+        "cost_usd_total": round(sum(costs), 6) if costs else None,
+        "cost_incomplete": len(costs) < len(attempts),
+        "duration_s_total": round(sum(seconds), 1) if seconds else None,
+        "duration_incomplete": len(seconds) < len(attempts),
+        "first_started_at": min(starts)[1] if starts else None,
+        "last_attempt_cost_usd": _number(last.get("cost_usd")) if last is not None else None,
+        "last_attempt_duration_s": round(last_seconds, 1) if last_seconds is not None else None,
+    }
+
+
+def spend_totals(client: SwarmClient, task: dict[str, Any], *, read_attempts: bool = True) -> dict[str, Any]:
+    """The task's cost and time over EVERY attempt, with the last attempt's beside them.
+
+    WHY (owner decision, 2026-10-05, lane review P1): `swarm result` and this
+    outcome reported only the final attempt -- UR1's implement step served
+    $0.51 while its two attempts cost $9.64. The API serves the totals on the
+    task (`swarm_api.attempt_totals`) and they are read from there, as served.
+    An API from before them, or one whose attempt read failed, is totalled
+    here from `GET /v1/tasks/{id}/attempts` by the same rules: a missing
+    attempt cost makes the total a floor (`cost_incomplete`), and nothing
+    recorded is null -- never 0.
+
+    `read_attempts=False` is for a reader that promises no extra round trip
+    (`swarm_result` on a success): with no served totals it says so instead.
+    """
+    served = task.get("attempts")
+    if isinstance(served, int) and not isinstance(served, bool) and task.get("attempts_read") != "failed":
+        out = {field: task.get(field) for field in TOTAL_FIELDS}
+        if out["attempts_with_cost"] is None:
+            out.pop("attempts_with_cost")
+        return out
+    if not read_attempts:
+        why = (
+            "the API could not read this task's attempts"
+            if task.get("attempts_read") == "failed"
+            else "this API serves no attempt totals"
+        )
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": f"{why}; swarm_follow's outcome reads them per attempt"}
     task_id = task_id_of(task)
     if not task_id:
-        return {"cost_usd": None, "cost_note": "the task carries no id, so its attempts cannot be read"}
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": "the task carries no id, so its attempts cannot be read"}
     try:
         attempts = client.attempts(task_id)
     except SwarmError as exc:
-        return {"cost_usd": None, "cost_note": f"the attempts could not be read: {exc}"}
-    recorded = [
-        a.get("cost_usd") for a in attempts
-        if isinstance(a.get("cost_usd"), (int, float)) and not isinstance(a.get("cost_usd"), bool)
-    ]
-    if not recorded:
-        return {
-            "cost_usd": None,
-            "cost_note": (
-                "no attempt recorded a cost" if attempts else "the task has no attempts"
-            ) + " -- this is NOT MEASURED, not $0",
-        }
-    out: dict[str, Any] = {"cost_usd": round(sum(recorded), 6)}
-    if len(recorded) < len(attempts):
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": f"the attempts could not be read: {exc}"}
+    return _derived_totals(attempts)
+
+
+def cost_words(totals: dict[str, Any]) -> str:
+    """The total as one line, the last attempt in brackets: what a reader is shown."""
+    if totals.get("totals_unavailable_because"):
+        return f"cost unreadable: {totals['totals_unavailable_because']}"
+    count = totals.get("attempts")
+    total = _number(totals.get("cost_usd_total"))
+    if total is None:
+        return "no attempts yet" if count == 0 else "cost not recorded -- NOT MEASURED, not $0"
+    words = f"${total:.2f}"
+    if totals.get("cost_incomplete"):
+        words = f"at least {words}"
+    if not isinstance(count, int) or count <= 1:
+        return words
+    notes = []
+    with_cost = totals.get("attempts_with_cost")
+    if totals.get("cost_incomplete") and isinstance(with_cost, int):
+        notes.append(f"{count - with_cost} of {count} attempts recorded no cost")
+    last = _number(totals.get("last_attempt_cost_usd"))
+    notes.append("last attempt " + (f"${last:.2f}" if last is not None else "not recorded"))
+    return f"{words} over {count} attempts ({'; '.join(notes)})"
+
+
+def _cost(totals: dict[str, Any]) -> dict[str, Any]:
+    """`cost_usd`, the task's spend over every attempt, and why it is null or a floor."""
+    out: dict[str, Any] = {"cost_usd": totals.get("cost_usd_total")}
+    if totals.get("totals_unavailable_because"):
+        out["cost_note"] = totals["totals_unavailable_because"]
+    elif out["cost_usd"] is None:
         out["cost_note"] = (
-            f"{len(attempts) - len(recorded)} of {len(attempts)} attempt(s) recorded no "
-            "cost, so this is a floor"
-        )
+            "no attempt recorded a cost" if totals.get("attempts") else "the task has no attempts"
+        ) + " -- this is NOT MEASURED, not $0"
+    elif totals.get("cost_incomplete"):
+        out["cost_note"] = f"{cost_words(totals)}: an attempt recorded no cost, so this is a floor"
     return out
 
 
@@ -983,7 +1388,9 @@ def _duration(task: dict[str, Any]) -> dict[str, Any]:
     if started and completed and completed >= started:
         return {
             "duration_s": round((completed - started).total_seconds(), 1),
-            "duration_basis": "started_at to completed_at, across every attempt",
+            # The task's `started_at` is rewritten by every attempt's STARTING,
+            # so this span is the LAST attempt's; `duration_s_total` is all of them.
+            "duration_basis": "the last attempt's started_at to completed_at",
         }
     seconds = (task.get("result_summary") or {}).get("duration_seconds")
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):

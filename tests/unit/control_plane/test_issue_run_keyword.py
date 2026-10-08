@@ -394,3 +394,13 @@ def test_a_staged_run_reads_its_integrators_pull_request_and_its_reviews_verdict
     assert run["requirements_met"] is True, run.get("requirements_note")
     assert run["requirements_unmet"] == []
     assert "Closes #42" in _block(writes.pulls[PR]["body"], run["id"])
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

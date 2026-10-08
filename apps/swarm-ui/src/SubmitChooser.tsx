@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { agentName } from './agentlist'
 import { loadMe, loadRuns, loadTasks, loadWorkflows } from './api'
 import { Button, Chip, NamedMark } from './components'
@@ -7,9 +7,11 @@ import type { Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { runAddress } from './IssueSubmit'
 import { addressToPath } from './paths'
-import { PageHead } from './Shell'
+import { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM, shortcutsIn, typedIntoField } from './shortcuts'
+import { AGED_AFTER_MS, PageHead, RefreshControl, useClaimPageAge } from './Shell'
 import { workflowLabel } from './stepviews'
 import { timeAgo, type Task } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/submit.css'
 
 /**
@@ -34,13 +36,14 @@ import './styles/submit.css'
  * consumed, and never while something sits over the page.
  */
 
-/** The task form's and the workflow form's addresses, as `go` takes them. */
-export const TASK_FORM = 'work/new'
-export const WORKFLOW_FORM = 'work/new-workflow'
-/** The issue form (intake-tenants.html 1A): /submit/issue, key I. */
-export const ISSUE_FORM = 'work/new-issue'
+/** The three forms' addresses, as `go` takes them; owned by the shortcut table. */
+export { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM }
 
-const KEYS: Readonly<Record<string, string>> = { t: TASK_FORM, w: WORKFLOW_FORM, i: ISSUE_FORM }
+/**
+ * T, W and I, READ FROM THE SHORTCUT TABLE (G1-21) that the Help topic
+ * `keyboard` is generated from, so the page and Help cannot name different keys.
+ */
+const KEYS: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.key, s.to!]))
 
 /** What sits over the page and owns the keyboard: the same list as N's. */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
@@ -83,9 +86,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       const to = KEYS[e.key.toLowerCase()]
       if (to === undefined) return
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      const el = e.target instanceof Element ? e.target : null
-      if (el !== null && el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
-      if (el instanceof HTMLElement && el.isContentEditable) return
+      if (typedIntoField(e.target)) return
       if (document.querySelector(OVER_THE_PAGE) !== null) return
       e.preventDefault()
       go(to)
@@ -94,12 +95,27 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [go])
 
+  // THE CHOOSER READS (QA G1-05/G4-23, 2026-10-07): "Start from a recent one"
+  // reads who you are, the tasks, the workflows and the issue runs, so the
+  // head said "reads nothing" beside "Reading your recent submissions…". Its
+  // one age is that read's, on the refresh that renews it, and the frame
+  // prints none beside it (`useClaimPageAge`): one age per screen.
+  const recent = useRecentRead()
+  useClaimPageAge(true)
+  const now = useNow(AGE_TICK_MS)
+
   return (
     <section className="sb-chooser" aria-labelledby="submit-h">
       {/* The page head every page draws (Q2): the title, its `?` and the
-          head's "reads nothing" on one row. */}
+          refresh carrying the recent read's age, on one row. */}
       <PageHead title="Submit" headingId="submit-h">
-        {null}
+        <RefreshControl
+          readAt={recent.readAt}
+          now={now}
+          stale={recent.readAt !== null && now - recent.readAt > AGED_AFTER_MS}
+          reading={recent.reading}
+          onRefresh={recent.reload}
+        />
       </PageHead>
       <div className="sb-choices">
         <div className="sb-card sb-choice">
@@ -142,7 +158,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
           <HelpCard topic="recent-submissions" />
         </div>
-        <RecentSubmissions go={go} />
+        <RecentSubmissions go={go} read={recent.read} />
       </section>
       <p className="sb-note sb-foot">
         The spine&rsquo;s Submit button opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
@@ -208,17 +224,30 @@ export function recentSubmissions(
   return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, RECENT_SHOWN)
 }
 
-function RecentSubmissions({ go }: { go: (to: string) => void }) {
+/**
+ * THE RECENT READ, re-run by the head's refresh. The list on screen stays
+ * drawn while it is read again; `readAt` is the newest payload the read
+ * received (null until one lands, and when who you are was not read).
+ */
+function useRecentRead(): { read: RecentRead; readAt: number | null; reading: boolean; reload: () => void } {
   const [read, setRead] = useState<RecentRead>({ kind: 'reading' })
+  const [readAt, setReadAt] = useState<number | null>(null)
+  const [reading, setReading] = useState(true)
+  const [nonce, setNonce] = useState(0)
   useEffect(() => {
     let live = true
+    setReading(true)
     void Promise.all([loadMe(), loadTasks(), loadWorkflows(), loadRuns()]).then(([me, tasks, workflows, runs]) => {
       if (!live) return
+      setReading(false)
       const who = okData(me)
       if (who === null) {
+        setReadAt(null)
         setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing' })
         return
       }
+      const ats = [me, tasks, workflows, runs].flatMap((r) => (r.status === 'ok' || r.status === 'stale' || r.status === 'empty' ? [r.fetchedAt] : []))
+      setReadAt(Math.max(...ats))
       const t = tasks.status === 'empty' ? [] : (okData(tasks)?.tasks ?? null)
       const w = workflows.status === 'empty' ? [] : (okData(workflows)?.workflows ?? null)
       const r = runs.status === 'empty' ? [] : (okData(runs)?.runs ?? null)
@@ -234,8 +263,12 @@ function RecentSubmissions({ go }: { go: (to: string) => void }) {
     return () => {
       live = false
     }
-  }, [])
+  }, [nonce])
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+  return { read, readAt, reading, reload }
+}
 
+function RecentSubmissions({ go, read }: { go: (to: string) => void; read: RecentRead }) {
   if (read.kind === 'reading') {
     return (
       <p className="sb-empty" aria-busy="true">

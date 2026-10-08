@@ -5,6 +5,9 @@ a session's work out there a decision the session takes on its own.
 
 * `/sc` — the overview, or `/sc accounts`, `/sc agents`, `/sc capacity`,
   `/sc trouble`, `/sc task <id>`
+* `/sc:setup` — connect GitHub as yourself, enable your orgs and choose the
+  repositories SwarmCloud may use, resumed wherever the checklist stands
+  ([below](#setting-up-github-as-yourself-and-the-repositories-swarmcloud-may-use))
 * the **`sc` skill** teaches the session how to **read** that output — chiefly
   that `~12%` is a projection and `—` is "not measured", never zero. It is
   read-only and lists no tool that writes.
@@ -417,6 +420,26 @@ row read `uv run`, which outside a checkout answers `Failed to spawn: swarm`
 installed on its own and can be another version. Run what the bridge hands
 back rather than retyping it.
 
+### Acting as one of several tenants
+
+A person in more than one registered tenant group acts as the **first**
+matching group, in the order the admin registered them, unless they choose
+another (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
+the API honours it only when your verified membership includes that tenant's
+group: the header selects among your memberships, it never grants one. A
+tenant you are not a member of is refused with 403 `tenant_not_member`, and
+that refusal is shown as the API wrote it.
+
+| Surface | List your tenants | Choose one |
+|---|---|---|
+| terminal | `swarm tenants` (`--json`), the current one marked `*` | `swarm --tenant <id> ...`, or `SWARM_TENANT=<id>`; the flag wins |
+| MCP | `swarm_tenants` (read-only) | `SWARM_TENANT` in the bridge's environment, read once when it starts |
+
+Nothing chosen sends no header at all, so behaviour is exactly what it was
+before. The bridge's setting is per session, not per call: a session whose
+calls could each name a tenant would read one tenant's rows and act on
+another's. `sc` does not take a tenant yet; it acts as your default.
+
 ## Choosing a runner profile
 
 A caller names a **profile** and nothing else — never an image, a command, a
@@ -548,6 +571,16 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
+
+`indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
+the repository index's toolchain (contract request 48, #625). swarm-api runs
+index runs on it; it declares what `claude-code` does:
+
+<!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the indexer runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:indexer -->
 
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
 on a step, points a `claude-code` step at an issue of its repository. The
@@ -726,10 +759,10 @@ is a different step.
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
 
-All four agents run on **haiku at low effort** (`model` and `effort` in their
+All five agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
-spec file, submit and read — and only through the sc plugin's own server (above).
+need — `sc:remote` dispatch and follow, `sc:step` and `sc:task` follow,
+`sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
 Bash, because a workflow script has no timer of its own. A session that asks
@@ -767,8 +800,10 @@ pieces do it, and none of them submits anything.
   On a new or resumed session where the plugin is configured, it runs the
   plugin's own bridge — the same `${SWARM_MCP_FROM:-<pin>}` the MCP server
   runs, read out of `plugin.json` — as `sc workflows --session-start`, and when
-  workflows are running it hands the session `additionalContext` naming them
-  and telling it to run `/sc attach --all` first. A hook cannot start a
+  workflows or single tasks of the caller are running it hands the session
+  `additionalContext` naming them and telling it to run `/sc attach --all`
+  first. The two reads run at once and fail alone: a deployment that answers
+  one still gets that one named. A hook cannot start a
   workflow itself; this makes the attach the session's first action. It is
   read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
   silent and exits 0 when none run, when the bridge or the API fails, and when
@@ -776,6 +811,53 @@ pieces do it, and none of them submits anything.
   sc@swarmcloud`; on by default). The first session after a new plugin version
   may get no notice while uv fetches the new bridge; `/sc attach --all` works
   by hand at any time.
+
+### Every running single task, shown too (#830)
+
+Owner, 2026-10-07: "we need to be able to auto attach on single tasks too". A
+task sent with `swarm_dispatch` belongs to no workflow, so `GET /v1/workflows`
+never lists it: five lanes dispatched that day ran with no row at all. So:
+
+* **The list.** `sc workflows`, `swarm_workflows` and the SessionStart hook
+  also read the caller's **running single tasks**: not finished, in no
+  workflow (`workflow_id` null), submitted by the caller. It is one
+  `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state — both
+  existing filters, nothing new in the API — and the bridge checks every row
+  again, because a task can move state between two reads. A task a parent
+  task submitted (`parent_task_id`) is left out: it was never dispatched from
+  a session, and its parent's row is where it shows. `state` and
+  `submitted_by` together are filtered after the route's cursor, so a page
+  can come back short; past 3 pages of one state the list says it stopped
+  short (`incomplete_because`) rather than spend the hook's ten seconds.
+* **`sc:task`, the row for a task in no workflow.** `sc:step` always passes
+  its `step_id`, and the bridge stops a step row whose task is not that step —
+  for a single task it now says `task … is a single task, not workflow step
+  …: follow it WITHOUT step_id`. `sc:task` is `sc:step` without the step: it
+  calls `swarm_follow` with `format: "progress"` and no `step_id` or
+  `parents`, writes one line per state change ending with the console link,
+  and answers with the same `{state, result}`.
+* **`/sc attach --all`** launches one more run beside the workflows' —
+  `/sc:swarmcloud` with `{attach_tasks: [{task_id, title, console}]}`, written
+  by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
+  row per running single task, titled from the task's label (else its id), at
+  most **10**, the same row cap as workflows for the same reason. Launched by
+  name with `{attach: "all"}`, the run returns those args as `task_call`.
+* **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
+  `tasks`) carries `rows`: a titled copy of the run script whose args are
+  `{attach_tasks: [...]}` for exactly the ids just sent, and `start_now`,
+  which tells the session to launch it with the Workflow tool at once. The
+  `delegate` skill does so, so a dispatched task gets a row without anyone
+  asking. A bridge started outside the plugin has no run.js to copy: `rows`
+  then carries `error` and `/sc attach --all`. The dispatch itself never fails
+  over it — the task is already in SwarmCloud.
+* **A plugin reload does not re-check, because nothing fires on it.** Claude
+  Code exposes no hook event for `/reload-plugins` (its hooks reference,
+  read 2026-10-07: `SessionStart` matches `startup`, `resume`, `clear`,
+  `compact` and `fork`; `ConfigChange` fires on settings and skill files only,
+  and can block a change but cannot add context). So after
+  `/reload-plugins`, or for a task started outside this session mid-way, run
+  **`/sc attach --all`**: it covers workflows and single tasks alike. A task
+  this session dispatches needs nothing — its reply starts the row.
 
 ### What a row shows, and what it costs
 
@@ -948,6 +1030,58 @@ stops at a plan waiting for approval.
 `run --issue` and `plan approve|edit|reject` write, so no skill or command is
 granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
 grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
+
+## Setting up: GitHub as yourself, and the repositories SwarmCloud may use
+
+SwarmCloud acts **as you** at GitHub, through its GitHub App (#780,
+[docs/onboarding.md](../docs/onboarding.md)). `/sc:setup` walks the same
+checklist the console draws — `signed_in`, `github_connected`,
+`orgs_enabled`, `repos_chosen`, `access_verified`, `ready` — from wherever it
+stands, so a person who connected GitHub in the console and chooses
+repositories here sees one checklist. Every step's state is read from `GET
+/v1/onboarding`; nothing on this side decides a step is done.
+
+| Surface | Walk it | Read it | Change it later |
+|---|---|---|---|
+| `/sc:setup` | `/sc:setup` | `/sc:setup status` | `swarm_setup_grant`, `swarm_setup_revoke`, `swarm_setup_verify` |
+| MCP | `swarm_setup_connect`, `swarm_setup_orgs`, `swarm_setup_repos`, `swarm_setup_grant`, `swarm_setup_verify` | `swarm_setup_status`, `swarm_access` | `swarm_setup_revoke` |
+| terminal | `uv run sc setup` | `uv run sc setup status`, `uv run sc access list` | `uv run sc access grant o/r --read\|--write`, `revoke o/r`, `verify [o/r]`, `add-org`, `remove-org`, `disconnect` |
+
+**Connecting happens in your browser.** `sc setup` and `swarm_setup_connect`
+ask the API for an authorize link, open it, and print it once in case the
+browser did not open. You approve SwarmCloud at GitHub, and the console's
+callback page finishes the exchange under your own sign-in; the terminal (or
+`swarm_setup_status` with `wait_for_github_seconds`) only waits for the
+checklist to say GitHub is connected as you. The link lasts 10 minutes and
+works once; on a timeout, run it again for a fresh one. A step that is done
+through the **tenant's** token is not connected as you, and is not taken for
+it.
+
+**No token, code or state is printed.** No route these call returns a token.
+The authorize URL carries GitHub's `state` because GitHub requires it there;
+it is shown once, as the URL, and repeated nowhere — not in an error, not in
+a tool reply's other fields.
+
+**Choosing is yours.** Owners are enabled and repositories granted only as
+you name them, each `read` (clone) or `write` (clone, push, pull request). The
+API reads a repository once as you and refuses write on one that is archived
+or that you cannot push to, with the recovery copy of docs/onboarding.md §2.3,
+which both surfaces print word for word. Verifying reads only: nothing is
+pushed.
+
+`sc setup` exits 0 when the checklist ends ready, 3 when it stopped short (a
+step failed, the browser half timed out, nothing installed yet) and 1 when
+something could not be read; `sc setup status` the same. `sc access verify`
+exits 3 when a check did not pass.
+
+`setup` and the `access` verbs write — they change what SwarmCloud may do as
+you — so no skill or `/sc` grant reaches them
+(`tests/unit/mcp/test_plugin_commands.py`), and `/sc:setup` is granted only
+the onboarding tools, by name. Disabling an org
+(`uv run sc access remove-org <owner>`) deletes every grant under it, and
+`uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
+confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
+holds the flow against a fake API, including that no secret is printed.
 
 ## What keeps these honest
 

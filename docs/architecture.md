@@ -124,7 +124,9 @@ or the 1-minute safety tick.
 
 Strictly downstream of the lease. Cloud Run Jobs is the default;
 `browser` goes to GKE Autopilot because Chromium needs a `/dev/shm` Cloud Run
-will not size. Every dispatch failure hands the capacity straight back.
+will not size, and `claude-code` since 2026-10-08 (contract request 53) because
+it starts there in about 23 s against Cloud Run's 128 s median. Every dispatch
+failure hands the capacity straight back.
 
 Cloud Run sets the service account **on the Job resource**, and it cannot be
 overridden per execution. One shared Job would therefore run every tenant's
@@ -256,7 +258,13 @@ eviction. Every one of those is a mechanism that can end a running agent for
 reasons unrelated to the agent. Cloud Run Jobs has no nodes to upgrade, no
 autoscaler to compact workloads onto fewer machines, and no node pool to repair.
 Autopilot is retained for exactly three cases: browser work (needs a large
-`/dev/shm`), GPU work, and anything needing more than 32 GiB.
+`/dev/shm`), GPU work, and anything needing more than 32 GiB -- and one
+exception made for speed, not capability: `claude-code`, since contract
+request 53 (2026-10-08), because Cloud Run's own provisioning held its start at
+p50 128 s / p90 212 s while Autopilot starts it in about 23 s. That buys back
+the node-side failure modes above for the profile that runs nearly every step;
+mandatory periodic checkpointing makes them cost minutes, not the run, and
+does not make them free ([execution-backends.md](execution-backends.md) §4).
 
 ### Spot is disabled platform-wide
 

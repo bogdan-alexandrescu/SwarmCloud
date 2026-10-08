@@ -8,9 +8,9 @@ code is the only way those two runners stay identical in behaviour.
 
 On flags: the argv prefix has a conservative default and can be overridden with
 an environment variable set by the PLATFORM (the image, or the Cloud Run Job
-definition) -- never by a caller, whose input never reaches argv except as the
-prompt. That is what keeps these runners working across CLI releases without
-anybody guessing at flags in a Dockerfile.
+definition) -- never by a caller, whose input never reaches argv at all: the
+prompt is written to the CLI's stdin. That is what keeps these runners working
+across CLI releases without anybody guessing at flags in a Dockerfile.
 
 Two properties that are load-bearing rather than incidental:
 
@@ -39,16 +39,18 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
+from ..gitidentity import GIT_IDENTITY_ENV
 from ..logs import StructuredLogger
 from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
@@ -80,7 +82,11 @@ TRANSCRIPT_MAX_CHARS = 4_000_000
 #: never a secret, so they are passed through without being redacted -- a path
 #: appearing in output is diagnostic information worth keeping readable.
 _SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY")
-_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS")
+#: GIT_AUTHOR_* and GIT_COMMITTER_* name the person who dispatched the task
+#: (P37, `agent_worker.gitidentity`): the worker sets them from the task
+#: document, so an agent's `git commit` names that person instead of failing
+#: for want of an identity. A name and an address, never a secret.
+_PLAIN_PASSTHROUGH: tuple[str, ...] = ("NO_PROXY", "NODE_EXTRA_CA_CERTS", *GIT_IDENTITY_ENV)
 
 #: Substrings that mean "the provider said no, try later".
 _RATE_LIMIT_MARKERS = (
@@ -175,6 +181,29 @@ class CliAgentSpec:
     #: answer that announces pending work or with a background shell open
     #: (owner decision 2026-10-05; see `pending_work`). Needs `resume_flag`.
     finish_on_pending: bool = False
+    #: After the agent's turn ends, run the worker's expected-outputs check and
+    #: publish credential scan against the tree, and resume the session for up
+    #: to `REPAIR_MAX_TURNS` repair turns naming what failed (#624, owner
+    #: decision 2026-10-05; see `repair_problems`). Needs `resume_flag`.
+    repair_checks: bool = False
+    #: What follows the flags to tell the CLI its prompt is on stdin. The
+    #: prompt is ALWAYS written to the CLI's stdin, never put in its argv
+    #: (owner decision 2026-10-06, observer P9; see `run_cli_agent`).
+    #: claude-code in print mode reads stdin when no prompt argument is given,
+    #: so it needs nothing; codex reads stdin when its prompt argument is `-`.
+    stdin_arg: tuple[str, ...] = ()
+    #: Stderr lines the CLI prints on every run, which say nothing about why a
+    #: run failed. Dropped before `exit_error` chooses what to record (owner
+    #: decision 2026-10-06), so a warning every run prints is never reported as
+    #: the cause of a kill. Each pattern is matched at the start of a line.
+    benign_stderr: tuple[re.Pattern[str], ...] = ()
+    #: Where the session id is found when the CLI's stdout does not carry it:
+    #: called with the CLI's HOME and the epoch second the run started, it
+    #: returns the session that run wrote, or None. codex `exec` prints prose
+    #: and names its session only in the rollout under `$HOME/.codex`
+    #: (`codex.latest_session`); claude-code's stream-json names it on every
+    #: event, so it needs none.
+    session_locator: Callable[[Path, float], str | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +229,14 @@ class CliAgentSpec:
 # And one variable the worker sets on the restart that follows a swap:
 #
 #   RESUME_SESSION_ENV  the session to continue with `spec.resume_flag`.
+#   RESUME_REASON_ENV   why it stopped: RESUME_MOVED or RESUME_RELOADED.
+#
+# An attempt on NO account has no channel, and its credential can still be
+# refreshed out from under it (#626). For a CLI that can resume, the worker
+# names one more file there, and the reload continues what it holds:
+#
+#   SESSION_FILE_ENV    written here when the CLI exits, whatever it exited
+#                       with: `{"session_id": ...}`, mode 0600.
 #
 # THE SESSION ID IS NEVER LOGGED. It is in the channel file and the restarted
 # CLI's argv and nowhere else: the `child started` line prints the argv with
@@ -207,6 +244,12 @@ class CliAgentSpec:
 ACCOUNT_STREAM_ENV = "SWARM_ACCOUNT_STREAM"
 ACCOUNT_MOVE_ENV = "SWARM_ACCOUNT_MOVE"
 RESUME_SESSION_ENV = "SWARM_RESUME_SESSION"
+RESUME_REASON_ENV = "SWARM_RESUME_REASON"
+SESSION_FILE_ENV = "SWARM_SESSION_FILE"
+
+#: Why a session is being resumed.
+RESUME_MOVED = "moved"
+RESUME_RELOADED = "credential_reloaded"
 
 #: What a resumed CLI is told. The conversation, the tool results and the
 #: workspace are all as they were; this is the one new user message.
@@ -214,6 +257,20 @@ RESUME_PROMPT = (
     "Your session was moved to another account at a turn boundary. Continue "
     "the task exactly where you left off; nothing in the workspace changed."
 )
+#: The same after a credential reload (#626): the account did NOT change, and
+#: the CLI was stopped wherever it was, possibly mid-turn, so the last step it
+#: took may not have finished.
+RELOAD_RESUME_PROMPT = (
+    "Your session was interrupted because its credential was refreshed, and "
+    "it has been restarted on the same account. Continue the task where you "
+    "left off. The last action you took may not have completed; check its "
+    "result in the workspace before relying on it."
+)
+
+
+def resume_prompt(reason: str | None) -> str:
+    """The resumed CLI's one new message, by why it was stopped."""
+    return RELOAD_RESUME_PROMPT if reason == RESUME_RELOADED else RESUME_PROMPT
 
 #: Why this runner stopped the CLI at a turn boundary.
 STOP_EXHAUSTED = "exhausted"
@@ -406,6 +463,33 @@ class AccountStreamWatcher:
             pass
 
 
+def run_session(spec: CliAgentSpec, parsed: Any, home: Path, since: float) -> str | None:
+    """The session one start of the CLI ran, or None: its stream's, else its locator's."""
+    session = _session_of(parsed)
+    if session is None and spec.session_locator is not None:
+        try:
+            session = spec.session_locator(home, since)
+        except OSError:
+            session = None
+    return session if isinstance(session, str) and _SESSION_ID.match(session) else None
+
+
+def write_session_file(path: Path, session: str | None) -> None:
+    """The session file the worker named (SESSION_FILE_ENV), replaced atomically.
+
+    Advisory like the channel: a file that cannot be written is a reload that
+    restarts from the prompt, as before #626, never a failed run.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps({"session_id": session}))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _account_watcher(spec: CliAgentSpec, stdout_path: Path) -> AccountStreamWatcher | None:
     """The watcher, when this run holds a pool account and the CLI can resume."""
     channel = os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
@@ -427,6 +511,7 @@ def _run_watched(
     log: Any,
     log_argv: list[str],
     watcher: AccountStreamWatcher,
+    stdin_data: bytes,
 ) -> ChildResult:
     """`run_child`, with the stream read as it is produced.
 
@@ -447,6 +532,7 @@ def _run_watched(
         keep_tail=True,
         log_argv=log_argv,
         stdout_tap=watcher.tap(),
+        stdin_data=stdin_data,
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
@@ -622,6 +708,64 @@ def _tail(path: Path, limit: int = 8000) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The error a non-zero exit records
+# ---------------------------------------------------------------------------
+#
+# Owner decision 2026-10-06 (lane ERR). C1A's review (task_cb50036f4e264168b39e)
+# was killed by SIGTERM and recorded "claude-code exited 143: Ignoring 23
+# permissions.allow entries ... this workspace has not been trusted" -- a
+# warning every headless run prints, which made a kill read as a permissions
+# problem. So the spec's benign lines are dropped first, and an exit that is a
+# signal says so in words, followed by the one stderr line most likely to say
+# why. An ordinary non-zero exit records its stderr tail as before, less the
+# benign lines.
+
+#: A line that reads as the failure rather than as progress.
+_ERROR_WORD = re.compile(r"\b(?:error|fatal|exception|panic|traceback|failed)\b", re.IGNORECASE)
+
+#: Longest single stderr line kept after a signal sentence.
+_SIGNAL_DETAIL_CHARS = 500
+
+
+def _signal_of(exit_code: int) -> signal.Signals | None:
+    """The signal `exit_code` reports, or None for an ordinary exit.
+
+    Two shapes: a negative code is Popen's report of a child the signal killed
+    outright; 128+N is a shell's (or a CLI that re-raises as an exit) report of
+    one. A code above 128 that names no signal is an ordinary exit.
+    """
+    number = -exit_code if exit_code < 0 else exit_code - 128 if exit_code > 128 else 0
+    if number <= 0:
+        return None
+    try:
+        return signal.Signals(number)
+    except ValueError:
+        return None
+
+
+def _without_benign(text: str, benign: Sequence[re.Pattern[str]]) -> list[str]:
+    return [line for line in text.splitlines() if not any(p.match(line) for p in benign)]
+
+
+def exit_error(
+    name: str, exit_code: int | None, stderr: str, benign: Sequence[re.Pattern[str]]
+) -> str:
+    """The error recorded for a CLI that exited `exit_code` with `stderr`."""
+    lines = _without_benign(stderr, benign)
+    sig = _signal_of(exit_code) if exit_code is not None else None
+    if sig is None:
+        return f"{name} exited {exit_code}: " + "\n".join(lines).strip()
+    verb = "killed" if sig == signal.SIGKILL else "terminated"
+    sentence = f"{name} {verb} by {sig.name} (exit {exit_code})"
+    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
+    if not candidates:
+        return sentence
+    errors = [line for line in candidates if _ERROR_WORD.search(line)]
+    detail = (errors or candidates)[-1]
+    return f"{sentence}: {detail[:_SIGNAL_DETAIL_CHARS]}"
+
+
+# ---------------------------------------------------------------------------
 # Pending work: an answer that ends the session before the work is finished
 # ---------------------------------------------------------------------------
 #
@@ -777,17 +921,164 @@ def _session_of(parsed: Any) -> str | None:
     return None
 
 
-def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    """The spend of two invocations of one session: numbers summed, at any depth.
+# ---------------------------------------------------------------------------
+# Repair turns: the checks the worker would fail, shown while they can be fixed
+# ---------------------------------------------------------------------------
+#
+# Issue #624, owner decision 2026-10-05 (history I1). About $201, 14.9% of all
+# spend, went to agents that finished and then failed a check they never saw:
+# an expected output not written ($90.13 over 19 retried attempts), a
+# credential-shaped line in the final tree ($64.29 over 23), and 8 whole lanes
+# lost at the fix step ($96.28). The worker runs both checks only after this
+# process has exited (`lifecycle._finalise`: `_fail_for_missing_outputs`,
+# `_fail_for_final_tree_leak`), and then the session is gone.
+#
+# So after the agent's turn ends -- and after a finish pass, so the checks
+# read the tree its last turn left -- the runner runs the same two checks
+# against the tree and, when either fails, resumes the session with a prompt
+# naming exactly what failed, up to REPAIR_MAX_TURNS times inside what is left
+# of the step's budget (FINISH_MIN_SECONDS, the same floor as a finish pass:
+# one model turn that writes a file or edits a line and reports). Then the
+# attempt ends exactly as before: the worker's own checks still decide, and a
+# repair that did not take fails the attempt the way it always has.
+#
+# ONE IMPLEMENTATION OF EACH CHECK, NOT A COPY. The expected names are the ones
+# this runner told the agent (`told`), compared with
+# `expected_outputs.missing_outputs`. The credential scan is
+# `agent_worker.publish_scan.scan` from `publish_scan.default_base`: the
+# worker's own `_DiffLeakScanner` and `_credential_in`, over the diff the
+# publish will read (the clone base the worker exports as SWARM_CLONE_BASE
+# against the working tree, untracked files included). A task's REGISTERED
+# secrets are known only to the worker, so they are not checked here; the
+# publish still refuses one.
+#
+# NEVER THE MATCHED TEXT. A hit is `path:line rule` (`ScanHit` holds no part of
+# the value), and that is all the prompt, the log and the result carry.
 
-    A resumed invocation's `result` event totals that invocation only, so the
-    step's spend is both. A value that is not a number on both sides is the
-    later one's.
+#: How many repair turns a step may take. Two: a third start rarely succeeds
+#: where two named failures did not, and every start costs a model turn.
+REPAIR_MAX_TURNS = 2
+
+#: At most this many items of each kind are named in a prompt or recorded per
+#: turn. The runner's whole output reaches `result_summary.runner.output`
+#: through an 8000-character cap (`lifecycle._truncate_json`), and a tree with
+#: hundreds of hits needs the first ones fixed before the rest matter.
+REPAIR_LIST_CAP = 25
+
+
+def written_outputs_missing(names: Sequence[str], artifacts_dir: Path | str) -> list[str]:
+    """The expected names not written as regular files in the artifacts directory.
+
+    A link is not counted: the worker refuses it when it uploads (`refused`),
+    so it would fail the same check a moment later.
     """
+    root = Path(artifacts_dir)
+    produced: list[str] = []
+    for name in names:
+        path = root / name
+        try:
+            if path.is_file() and not path.is_symlink():
+                produced.append(name)
+        except OSError:
+            continue
+    return expected_mod.missing_outputs(names, produced)
+
+
+def credential_lines(repo: Path) -> tuple[list[str], str | None]:
+    """`path:line rule` for every credential-shaped line the publish would refuse.
+
+    Returns the lines and None, or no lines and why the scan could not run --
+    which is never read as clean and never as a failure to repair: a repair
+    turn needs something to name.
+    """
+    from .. import publish_scan  # lazy: imports the worker's lifecycle module
+
+    try:
+        hits = publish_scan.scan(repo, publish_scan.default_base(repo))
+    except publish_scan.ScanError as exc:
+        return [], str(exc)
+    except OSError as exc:
+        return [], f"{type(exc).__name__}: the scan could not run"
+    return [f"{hit.path}:{hit.line} {hit.rule}" for hit in hits], None
+
+
+def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str) -> str:
+    """The one user message a repair turn is given: what failed, exactly."""
+    directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
+    lines = [
+        "Before this step ends, the platform ran the checks it runs after you "
+        "exit, and they failed. Fix exactly these, then end with a short report."
+    ]
+    if missing:
+        lines.append(
+            "These files later steps need were not written. Write each one, as a "
+            "regular file, at exactly this path:"
+        )
+        lines += [f"- {directory / name}" for name in missing[:REPAIR_LIST_CAP]]
+        if len(missing) > REPAIR_LIST_CAP:
+            lines.append(f"- and {len(missing) - REPAIR_LIST_CAP} more")
+    if flagged:
+        lines.append(
+            "These added lines look like a credential, and the publish step refuses "
+            "a diff that adds one (path:line rule). Remove the value from each line; "
+            "a test value is built at runtime from pieces, never written as one literal:"
+        )
+        lines += [f"- {entry}" for entry in flagged[:REPAIR_LIST_CAP]]
+        if len(flagged) > REPAIR_LIST_CAP:
+            lines.append(f"- and {len(flagged) - REPAIR_LIST_CAP} more")
+    return "\n".join(lines)
+
+
+#: THE FIGURES A CLI's `result` EVENT REPORTS FOR THE WHOLE SESSION (#667,
+#: observer P14). Measured 2026-10-06 on C1C's implement step: the first pass
+#: reported $1.8037 and 260,533 ms of API time; the same session resumed to
+#: finish reported $1.8804 and 272,258 ms with 951 output tokens -- the CLI
+#: restores its cost tracker on `--resume`, so the cost and the API time (and
+#: `modelUsage`, which that tracker also keeps) are the session's running
+#: totals. `usage`, `num_turns` and `duration_ms` are counted by the
+#: invocation and are its own. Summing the first kind recorded $3.684 for a
+#: step that cost about $1.88.
+SESSION_SPEND_KEYS: tuple[str, ...] = ("total_cost_usd", "duration_api_ms", "modelUsage")
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def carries_session_totals(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> bool:
+    """True when `later`, from a resumed invocation, already includes `earlier`.
+
+    Read off the cost, else the API time: a session's running total never
+    falls, so a later figure at least the earlier one is the session's total.
+    A LOWER one was not carried over -- a CLI that could not restore its
+    tracker reports the invocation alone -- and then the two are added, so a
+    resume never records less than was measured. False when neither figure
+    is on both sides.
+    """
+    for key in ("total_cost_usd", "duration_api_ms"):
+        before, after = _number(earlier.get(key)), _number(later.get(key))
+        if before is not None and after is not None:
+            return after >= before
+    return False
+
+
+def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """The spend of two invocations of one session, `second` the resumed one.
+
+    `SESSION_SPEND_KEYS` are the session's running totals, so `second`'s
+    replace `first`'s whenever it carries them (`carries_session_totals`).
+    Every other number is the invocation's own and is summed, at any depth.
+    A value that is not a number on both sides is the later one's.
+    """
+    session = carries_session_totals(first, second)
     out = dict(first)
     for key, value in second.items():
         prior = out.get(key)
-        if isinstance(prior, dict) and isinstance(value, dict):
+        if session and key in SESSION_SPEND_KEYS:
+            out[key] = value
+        elif isinstance(prior, dict) and isinstance(value, dict):
             out[key] = _combined_spend(prior, value)
         elif (
             isinstance(prior, (int, float)) and isinstance(value, (int, float))
@@ -899,25 +1190,28 @@ def run_cli_agent(
     # same workspace. The original prompt is already in the session.
     resume = os.environ.get(RESUME_SESSION_ENV, "").strip()
     # The argv every start of this step shares; a finish pass (below) adds its
-    # own `--resume <id>` and prompt to it.
+    # own `--resume <id>` to it, and writes its own prompt to stdin.
     base_argv = list(argv)
     if resume and not (spec.resume_flag and _SESSION_ID.match(resume)):
         raise RunnerFailure(f"{spec.name} was asked to resume a session it cannot resume")
+    # THE PROMPT GOES ON STDIN, NEVER IN THE ARGV (owner decision 2026-10-06,
+    # observer P9). Measured on task_cb50036f4e264168b39e: the agent ran
+    # `ps aux | grep "[p]ytest tests/unit/scripts" | awk '{print $2}' | xargs
+    # -r kill`, its brief contained that very text, and the prompt was the
+    # CLI's last argument -- so the grep matched the CLI's own command line
+    # and the agent killed its own CLI (exit 143). Every process listing shows
+    # the argv; nothing caller-written is in it now. One argv string is also
+    # capped at 128 KiB (MAX_ARG_STRLEN), which a long brief could pass.
     if resume:
         argv += [spec.resume_flag, resume]
-        argv.append(RESUME_PROMPT)
+        stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
     else:
-        # The prompt is the only caller-controlled value that reaches argv,
-        # and it is passed as a single trailing argument with no shell.
-        argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
-    # ...and it is the one argument `run_child`'s `child started` line must not
-    # print (the PR #229 review): this process's stderr is served by `/logs`,
-    # and the task routes serve the prompt masked. Its length says what the
-    # line needs to say -- that a prompt was passed, and how big. A resumed
-    # session's id is masked the same way: it never reaches a log line.
-    log_argv = [*argv[:-1], f"<prompt: {len(argv[-1])} characters>"]
-    if resume:
-        log_argv = [("<session>" if arg == resume else arg) for arg in log_argv]
+        stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+    argv += spec.stdin_arg
+    # `run_child`'s `child started` line prints the argv (the PR #229 review:
+    # this process's stderr is served by `/logs`) and the prompt's size only.
+    # A resumed session's id is masked: it never reaches a log line.
+    log_argv = [("<session>" if resume and arg == resume else arg) for arg in argv]
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
@@ -1024,10 +1318,27 @@ def run_cli_agent(
         env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
     )
 
+    # When the latest start began, for `spec.session_locator`: a session file
+    # an earlier run left in the restored workspace is not this run's.
+    started_at = [time.time()]
+    # THE SESSION FILE (#626), named by the worker only for a run on no
+    # account; written after every start, refused or not, because a refused
+    # start is exactly the one the worker's credential reload continues.
+    session_file = os.environ.get(SESSION_FILE_ENV, "").strip() if spec.resume_flag else ""
+
+    def note_session(parsed_run: Any) -> None:
+        if session_file:
+            write_session_file(
+                Path(session_file), run_session(spec, parsed_run, ctx.work_dir, started_at[0])
+            )
+
     def start(
-        run_argv: list[str], run_log_argv: list[str], timeout_seconds: float
+        run_argv: list[str], run_log_argv: list[str], run_prompt: str, timeout_seconds: float
     ) -> tuple[ChildResult, AccountStreamWatcher | None]:
-        """One start of the CLI, its captures redacted before anything reads them."""
+        """One start of the CLI, `run_prompt` on its stdin, its captures redacted
+        before anything reads them."""
+        started_at[0] = time.time()
+        stdin_data = run_prompt.encode("utf-8")
         run_limits = replace(limits, timeout_seconds=timeout_seconds)
         run_watcher = _account_watcher(spec, stdout_path)
         if run_watcher is None:
@@ -1043,6 +1354,7 @@ def run_cli_agent(
                 max_stderr_bytes=run_limits.max_stderr_bytes,
                 logger=log,
                 log_argv=run_log_argv,
+                stdin_data=stdin_data,
                 # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under
                 # stream-json the stdout is the whole conversation, and its
                 # LAST line is the `result` event: the answer, the spend, the
@@ -1067,6 +1379,7 @@ def run_cli_agent(
                 log=log,
                 log_argv=run_log_argv,
                 watcher=run_watcher,
+                stdin_data=stdin_data,
             )
         # Redact before anything is read back out. Everything below this
         # either becomes an artifact in GCS or a field in Firestore, and both
@@ -1131,7 +1444,9 @@ def run_cli_agent(
             )
         if run_result.exit_code != 0:
             raise RunnerFailure(
-                f"{spec.name} exited {run_result.exit_code}: {_tail(stderr_path, 2000).strip()}",
+                exit_error(
+                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr
+                ),
                 spend=spend,
             )
 
@@ -1146,7 +1461,7 @@ def run_cli_agent(
             + _without_capture_notices(_tail(stderr_path))
         )
 
-    result, watcher = start(argv, log_argv, limits.timeout_seconds)
+    result, watcher = start(argv, log_argv, stdin_prompt, limits.timeout_seconds)
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -1169,6 +1484,7 @@ def run_cli_agent(
     # the signal instead, and `run_runner` writes it into result.json.
     raw_stdout = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
     parsed = _parse_cli_output(raw_stdout)
+    note_session(parsed)
     spend = _scrub_json(_spend_of(parsed), secrets)
     combined = detection_text(raw_stdout, parsed)
     judge(result, watcher, spend, combined)
@@ -1182,6 +1498,55 @@ def run_cli_agent(
     finish_skipped: str | None = None
     duration_seconds = result.duration_seconds
     stdout_bytes, stderr_bytes = result.stdout_bytes, result.stderr_bytes
+
+    def resume_pass(session: str, pass_prompt: str, remaining: float) -> Any:
+        """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
+
+        Shared by the finish pass and the repair turns. The step's record is
+        kept whole: the captures, the spend, the durations and what the
+        transcript and summary read cover every start.
+        """
+        nonlocal result, watcher, capture, raw_stdout, parsed, spend, combined
+        nonlocal duration_seconds, stdout_bytes, stderr_bytes
+        first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+        first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
+        first_spend = spend
+        pass_argv = [*base_argv, str(spec.resume_flag), session, *spec.stdin_arg]
+        pass_log_argv = [("<session>" if arg == session else arg) for arg in pass_argv]
+        result, watcher = start(pass_argv, pass_log_argv, pass_prompt, remaining)
+        # ONE RECORD OF THE STEP. Each start truncates the captures, so the
+        # earlier starts' are put back in front of this one's: the stdout log
+        # stays the whole conversation, in order.
+        pass_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+        stdout_path.write_bytes(first_stdout + pass_stdout)
+        stderr_path.write_bytes(
+            first_stderr + (stderr_path.read_bytes() if stderr_path.exists() else b"")
+        )
+        second = result.capture_report()
+        capture = {
+            "stdout_truncated": capture["stdout_truncated"] or second["stdout_truncated"],
+            "stderr_truncated": capture["stderr_truncated"] or second["stderr_truncated"],
+            "stdout_dropped_bytes": capture["stdout_dropped_bytes"]
+            + second["stdout_dropped_bytes"],
+            "stderr_dropped_bytes": capture["stderr_dropped_bytes"]
+            + second["stderr_dropped_bytes"],
+        }
+        ctx.report.update(capture)
+        # This pass's own output is what its outcome is judged on; the whole
+        # conversation is what the transcript and summary read.
+        pass_raw = pass_stdout.decode("utf-8", errors="replace")
+        pass_parsed = _parse_cli_output(pass_raw)
+        note_session(pass_parsed)
+        raw_stdout = stdout_path.read_text(errors="replace")
+        parsed = _parse_cli_output(raw_stdout)
+        spend = _combined_spend(first_spend, _scrub_json(_spend_of(pass_parsed), secrets))
+        combined = detection_text(pass_raw, pass_parsed)
+        judge(result, watcher, spend, combined)
+        duration_seconds += result.duration_seconds
+        stdout_bytes += result.stdout_bytes
+        stderr_bytes += result.stderr_bytes
+        return pass_parsed
+
     pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
     if pending is not None:
         remaining = limits.timeout_seconds - result.duration_seconds
@@ -1209,44 +1574,11 @@ def run_cli_agent(
                 why=pending,
                 remaining_seconds=round(remaining, 1),
             )
-            first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
-            first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
-            first_spend = spend
-            finish_argv = [*base_argv, str(spec.resume_flag), session, FINISH_PROMPT]
-            finish_log_argv = [("<session>" if arg == session else arg) for arg in finish_argv]
-            result, watcher = start(finish_argv, finish_log_argv, remaining)
-            # ONE RECORD OF THE STEP. Each start truncates the captures, so the
-            # first start's are put back in front of the second's: the stdout
-            # log stays the whole conversation, in order.
-            finish_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
-            stdout_path.write_bytes(first_stdout + finish_stdout)
-            stderr_path.write_bytes(
-                first_stderr + (stderr_path.read_bytes() if stderr_path.exists() else b"")
-            )
-            second = result.capture_report()
-            capture = {
-                "stdout_truncated": capture["stdout_truncated"] or second["stdout_truncated"],
-                "stderr_truncated": capture["stderr_truncated"] or second["stderr_truncated"],
-                "stdout_dropped_bytes": capture["stdout_dropped_bytes"]
-                + second["stdout_dropped_bytes"],
-                "stderr_dropped_bytes": capture["stderr_dropped_bytes"]
-                + second["stderr_dropped_bytes"],
-            }
-            ctx.report.update(capture)
-            # The finish pass's own output is what its outcome is judged on;
-            # the whole conversation is what the transcript and summary read.
-            finish_raw = finish_stdout.decode("utf-8", errors="replace")
-            finish_parsed = _parse_cli_output(finish_raw)
-            raw_stdout = stdout_path.read_text(errors="replace")
-            parsed = _parse_cli_output(raw_stdout)
-            spend = _combined_spend(first_spend, _scrub_json(_spend_of(finish_parsed), secrets))
-            combined = detection_text(finish_raw, finish_parsed)
+            # Said before the pass starts, so a pass that fails or parks
+            # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            judge(result, watcher, spend, combined)
-            duration_seconds += result.duration_seconds
-            stdout_bytes += result.stdout_bytes
-            stderr_bytes += result.stderr_bytes
+            finish_parsed = resume_pass(session, FINISH_PROMPT, remaining)
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(
@@ -1254,6 +1586,98 @@ def run_cli_agent(
                     "resumed again",
                     why=still,
                 )
+
+    # REPAIR TURNS (#624; see `REPAIR_MAX_TURNS`). The run, and any finish
+    # pass, succeeded; now the checks the worker runs after this process exits
+    # are run while the session can still be continued.
+    repair_turns = 0
+    repairs: list[dict[str, Any]] = []
+    repair_skipped: str | None = None
+    repair_scan_error: str | None = None
+    unresolved: dict[str, list[str]] | None = None
+    if spec.repair_checks and spec.resume_flag:
+        # The scan reads the diff the publish reads, so only a task with a
+        # checkout has one to scan.
+        scan_repo = cwd if cwd != ctx.work_dir else None
+
+        def run_checks() -> tuple[list[str], list[str]]:
+            nonlocal repair_scan_error
+            missing_now = written_outputs_missing(told, ctx.artifacts_dir)
+            flagged_now: list[str] = []
+            if scan_repo is not None:
+                flagged_now, repair_scan_error = credential_lines(scan_repo)
+            return missing_now, flagged_now
+
+        ctx.report["repair_turns"] = 0
+        missing, flagged = run_checks()
+        if repair_scan_error is not None:
+            log.warning(
+                "the publish credential scan could not run before the step ended; "
+                "the publish runs it again",
+                error=repair_scan_error,
+            )
+        while missing or flagged:
+            if repair_turns >= REPAIR_MAX_TURNS:
+                log.warning(
+                    f"the repair turns did not clear every check; after {REPAIR_MAX_TURNS} "
+                    "the attempt ends as it is and the worker's own checks decide",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                )
+                break
+            session = _session_of(parsed)
+            remaining = limits.timeout_seconds - duration_seconds
+            if session is None:
+                repair_skipped = "no_session"
+                log.warning(
+                    "a check the worker runs would fail, and the stream carried no "
+                    "session to resume; the result stands as it is",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                )
+                break
+            if remaining < FINISH_MIN_SECONDS:
+                repair_skipped = "budget"
+                log.warning(
+                    "a check the worker runs would fail, and too little of the step's "
+                    "budget is left to resume it; the result stands as it is",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                    remaining_seconds=round(remaining, 1),
+                    minimum_seconds=FINISH_MIN_SECONDS,
+                )
+                break
+            repair_turns += 1
+            ctx.report["repair_turns"] = repair_turns
+            log.register_secret(session)
+            log.warning(
+                f"a check the worker runs would fail; repair turn {repair_turns} of "
+                f"{REPAIR_MAX_TURNS}, resuming the session with what failed",
+                missing_outputs=missing[:REPAIR_LIST_CAP],
+                credential_lines=flagged[:REPAIR_LIST_CAP],
+                remaining_seconds=round(remaining, 1),
+            )
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir)
+            resume_pass(session, text, remaining)
+            after_missing, after_flagged = run_checks()
+            # What a turn fixed is what it was asked to fix and no longer fails.
+            # A credential line is named by `path:line rule`, so one that only
+            # moved when an earlier line was removed reads as fixed here and as
+            # newly flagged on the next check.
+            repairs.append({
+                "turn": repair_turns,
+                "missing_outputs": missing[:REPAIR_LIST_CAP],
+                "credential_lines": flagged[:REPAIR_LIST_CAP],
+                "fixed_outputs": [n for n in missing if n not in after_missing][:REPAIR_LIST_CAP],
+                "fixed_lines": [e for e in flagged if e not in after_flagged][:REPAIR_LIST_CAP],
+            })
+            ctx.report["repairs"] = repairs
+            missing, flagged = after_missing, after_flagged
+        if missing or flagged:
+            unresolved = {
+                "missing_outputs": missing[:REPAIR_LIST_CAP],
+                "credential_lines": flagged[:REPAIR_LIST_CAP],
+            }
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
@@ -1316,6 +1740,16 @@ def run_cli_agent(
         # in flight, and, when that was called for but not done, why not.
         "resumed_to_finish": resumed_to_finish,
         "finish_skipped": finish_skipped,
+        # The repair turns taken after the checks the worker runs failed
+        # (#624), what each was asked to fix and what it did; what still fails
+        # after them; and, when a repair was called for but not taken, why
+        # not. A scan that could not run says so here and is never read as
+        # clean. `path:line rule` only, never a matched value.
+        "repair_turns": repair_turns,
+        "repairs": repairs,
+        "repair_unresolved": unresolved,
+        "repair_skipped": repair_skipped,
+        "repair_scan_error": repair_scan_error,
         # Also in `ctx.report`, which `write_result` merges anyway; stated here
         # so this function's own return value is the whole answer.
         **capture,

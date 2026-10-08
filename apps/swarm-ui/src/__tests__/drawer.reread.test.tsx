@@ -580,7 +580,10 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
     api.loadTasks.mockImplementation(async () => page())
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
-    expect(api.loadTasks, 'the phone read asked for the full 200-row page').toHaveBeenCalledWith(50)
+    // #168: and in the summary view, so the 50 rows carry no input,
+    // metadata or result_summary. MUTATION: drop `{ view: 'summary' }` from
+    // `loadAgentsPage`.
+    expect(api.loadTasks, 'the phone read asked for the full 200-row page, or for full rows').toHaveBeenCalledWith(50, { view: 'summary' })
     expect(container.querySelector('.ag-scope')?.textContent).toMatch(/showing the 3 most recent/)
   })
 
@@ -592,7 +595,69 @@ describe('the Agents list reads the phone page at phone width (§2.5)', () => {
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
-    expect(api.loadTasks).not.toHaveBeenCalledWith(50)
+    // The first argument alone: with a second argument passed,
+    // `not.toHaveBeenCalledWith(50)` would hold whatever the limit was.
+    expect(api.loadTasks.mock.calls.map((c) => c[0] as unknown)).toEqual([200])
+    expect(api.loadTasks, 'the wide read asked for full rows').toHaveBeenCalledWith(200, { view: 'summary' })
     expect(container.querySelector('.ag-scope')?.textContent).not.toMatch(/most recent/)
+  })
+
+  /**
+   * #168: what the summary view drops, the list never needed. Each row's
+   * dropped keys are NON-ENUMERABLE getters that record a read and answer
+   * `undefined`, as the absent key would -- so a spread does not count, and
+   * only code naming the field does. The control is the probe's own first
+   * half: a direct read IS recorded, so the empty list below is a reading.
+   *
+   * MUTATION: read `t.result_summary` or `t.metadata` in a list row.
+   */
+  it('draws the list from summary rows without reading input, metadata or result_summary', async () => {
+    fakeClock()
+    media(false)
+    const touched: string[] = []
+    const trap = (row: Task): Task => {
+      const out: Record<string, unknown> = { ...row }
+      for (const key of ['input', 'input_redaction_count', 'metadata', 'metadata_redaction_count', 'result_summary', 'result_summary_redaction_count']) {
+        delete out[key]
+        Object.defineProperty(out, key, {
+          enumerable: false,
+          get: () => {
+            touched.push(`${row.id}.${key}`)
+            return undefined
+          },
+        })
+      }
+      return out as unknown as Task
+    }
+    const probe = trap(task('RUNNING', { id: 'task_probe00000000000000' }))
+    void probe.result_summary
+    expect(touched, 'the trap does not record a read').toEqual(['task_probe00000000000000.result_summary'])
+    touched.length = 0
+
+    const rows = [
+      task('RUNNING', { id: 'task_aaaaaaaa00000000000a', workflow_id: 'wf-nightly', step_id: 'build' }),
+      task('READY', { id: 'task_bbbbbbbb00000000000b' }),
+      task('PARKED', { id: 'task_dddddddd00000000000d', park_reason: 'quota' }),
+      task('SUCCEEDED', { id: 'task_cccccccc00000000000c' }),
+      task('FAILED', { id: 'task_eeeeeeee00000000000e', last_error: 'exit 1' }),
+    ].map(trap)
+    api.loadTasks.mockImplementation(async () => ok({ tasks: rows, tenant_id: 'acme', next_page_token: null }))
+    const { container } = render(<AgentsScreen onOpen={() => {}} />)
+    await advance(0)
+    expect(container.textContent, 'the Live tab never drew its row').toContain('task_aaaaaaaa00000000000a')
+    // Every tab draws its own rows, so each is opened and read in turn.
+    const tab = (name: string): HTMLElement => {
+      const found = [...container.querySelectorAll<HTMLElement>('[role="tab"], button')].find((b) => (b.textContent ?? '').trim().startsWith(name))
+      expect(found, `no ${name} tab`).toBeDefined()
+      return found!
+    }
+    for (const [name, id] of [['Waiting', 'task_bbbbbbbb00000000000b'], ['Recent', 'task_cccccccc00000000000c']] as const) {
+      await act(async () => {
+        tab(name).click()
+      })
+      await advance(0)
+      expect(container.textContent, `the ${name} tab never drew its rows`).toContain(id)
+    }
+    expect(touched, 'the Agents list read a field the summary view does not serve').toEqual([])
   })
 })

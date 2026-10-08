@@ -435,7 +435,7 @@ def _tool_error(monkeypatch, *, edge: bool) -> str:
     """The text an MCP tool call answers when its request fails, through the stdio loop."""
     import io
 
-    monkeypatch.setattr(server, "SwarmClient", lambda: _EdgeRefused(edge=edge))
+    monkeypatch.setattr(server, "SwarmClient", lambda **_: _EdgeRefused(edge=edge))
     requests = [
         json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
         json.dumps({

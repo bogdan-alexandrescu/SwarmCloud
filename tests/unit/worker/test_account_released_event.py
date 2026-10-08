@@ -16,7 +16,7 @@ import secrets
 from agent_worker.errors import ExitCode
 from swarm_common.states import EventType
 
-from conftest import TENANT, seed_attempt, seed_tenant
+from worker_seeds import TENANT, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 from test_account_lease import (
     ACCOUNT_ID,

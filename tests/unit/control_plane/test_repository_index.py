@@ -117,7 +117,7 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
     assert task["state"] in ("QUEUED", "READY") and run["state"] == task["state"]
     assert task.get("current_lease_id") is None
     # By NAME, and nothing a caller could have chosen (invariant 10).
-    assert task["runner_profile"] == "claude-code"
+    assert task["runner_profile"] == "indexer"  # contract request 48
     assert set(task["input"]) == {"prompt"}
     assert task["repository_url"] == "https://github.com/saga-xyz/widgets"
     assert task["repository_ref"] == ONE
@@ -165,11 +165,15 @@ def test_index_now_accepts_nothing_that_runs(client, db, repo_id, body):
     assert _tasks(db) == []
 
 
-def test_an_incremental_run_is_refused_with_its_reason(client, db, repo_id):
+def test_an_incremental_request_with_no_index_yet_runs_full_and_says_why(client, db, repo_id):
+    """Lane IX2: `incremental` is a request; with nothing to build on it is a full run."""
     response = _index_now(client, repo_id, kind="incremental")
-    assert response.status_code == 422
-    assert "previous index" in response.json()["message"]
-    assert _tasks(db) == []
+    assert response.status_code == 202, response.text
+    run = response.json()["run"]
+    assert run["kind"] == "full" and run["base_sha"] is None
+    assert "no promoted index" in run["kind_reason"]
+    [task] = _tasks(db)
+    assert task["metadata"]["index_kind"] == "full"
 
 
 def test_a_paused_registration_is_not_indexed(client, db, repo_id):

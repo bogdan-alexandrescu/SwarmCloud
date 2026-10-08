@@ -10,10 +10,10 @@ docs/design/child-tasks.md and from CR 14's amendment, so a design that lost
 an invariant, a limit's reason or a failure case would be built without it.
 
 Nothing here reads the code the design describes beyond checking that every
-file it cites still exists. Line NUMBERS are deliberately not checked, not even
-against a file's length: lifecycle.py, loop.py and store.py are edited by other
-lanes every wave, and a test that broke on their PRs over a moved or shortened
-file would be deleted rather than fixed. Where in the requests file requests
+citation still resolves. Line NUMBERS are not cited at all (lane CITD):
+lifecycle.py, loop.py and store.py are edited by other lanes every wave, so a
+citation is `path::qualname` or `path` (`anchor text`), which fails only when
+the symbol or the text is gone, not when a merge above it moves it. Where in the requests file requests
 40-43 sit is not pinned either; the owner may refile them.
 """
 
@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from .test_docs_spec_amendments import _assert_cites_resolve, _cited_anchor
+
 REPO = Path(__file__).resolve().parents[3]
 DESIGN = REPO / "docs" / "design" / "child-tasks.md"
 REQUESTS = REPO / "docs" / "contract-change-requests.md"
@@ -31,9 +33,6 @@ REQUESTS = REPO / "docs" / "contract-change-requests.md"
 #: The contract requests this design files. CLAUDE.md lane brief: new numbers
 #: start at 40.
 NEW_REQUESTS = (40, 41, 42, 43)
-
-_CITE = re.compile(r"`((?:apps|terraform|kubernetes|scripts|tests|images|docs)/[\w./-]+\.\w+):(\d+)(?:-(\d+))?`")
-
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -145,7 +144,12 @@ def test_the_design_does_not_pretend_the_agent_cannot_read_the_environment():
     """
     body = _section(_text(DESIGN), "### 3.2 What makes")
     assert "/proc/1/environ" in body
-    assert "agent_worker/hardening.py:42-45" in body
+    # Cited by its text, not a line number (lane CITD): the anchor fails if the paragraph goes.
+    hardening, anchor = "apps/agent-worker/agent_worker/hardening.py", "WHAT IT DOES NOT COVER"
+    assert f"`{hardening}` (`{anchor}`)" in body
+    _cited_anchor(hardening, anchor)
+    source = _text(REPO / hardening)
+    assert "/proc/1/environ" in source[source.index(anchor):].split("\n\n", 1)[0]
     assert "before the agent exists" in body
     assert "first-wins" in body or "once per generation" in body
     assert "tombstone" in body, "an unprotected worker must still spend the nonce"
@@ -202,8 +206,8 @@ def test_the_failure_cases_cover_the_ones_that_strand_or_leak():
 
 @pytest.mark.parametrize("doc", [DESIGN, REQUESTS], ids=lambda p: p.name)
 def test_every_cited_file_exists(doc: Path):
-    for path, _first, _last in _CITE.findall(_text(doc)):
-        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+    """Every citation names a file that exists and resolves as a symbol or an anchor, never a line (lane CITD)."""
+    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------

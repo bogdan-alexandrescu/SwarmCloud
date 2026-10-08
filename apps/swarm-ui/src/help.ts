@@ -16,6 +16,11 @@
  *   THE EXPLANATION -- why the em dash, what would have written the number,
  *   what may not be concluded -- lives HERE.
  *
+ * A long form says what the reader sees, what it means and what to do. WHY
+ * the console draws a state the way it does -- the screen that would have
+ * lied -- is design rationale, and it lives in docs/web-ui/help-rationale.md
+ * (#131), held there by `src/__tests__/help.rationale.test.tsx`.
+ *
  * So nothing in this file may be load-bearing. If a panel needs this module to
  * be read before it can be told apart from a zero, the panel is wrong, not
  * this module. `tests/help.test.ts` asserts that for the exemplar screen.
@@ -57,6 +62,7 @@ import {
   TERMINAL_STATES,
   type TaskState,
 } from './types'
+import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
 
 /**
  * Every topic. Adding a member here without adding an entry to `TOPICS` is a
@@ -92,8 +98,10 @@ export type TopicId =
   | 'dispatch-strategies'
   | 'event-paging'
   | 'failure-classes'
+  | 'input-as-submitted'
   | 'input-is-opaque'
   | 'integrate-needs-final-step'
+  | 'keyboard'
   | 'lease-and-pool-are-two-records'
   | 'lending'
   | 'lending-narrows-isolation'
@@ -104,6 +112,7 @@ export type TopicId =
   | 'not-a-machine-inventory'
   | 'oom-near-miss'
   | 'outcome-buckets'
+  | 'outcome-explained'
   | 'park-on-missing-credential'
   | 'partial-read'
   | 'paused-vs-full'
@@ -131,6 +140,7 @@ export type TopicId =
   | 'runtime-needs-no-provider'
   | 'second-browser-application'
   | 'sign-in-not-paste'
+  | 'strategy-on-a-task'
   | 'signin-201-no-name'
   | 'signin-deadlines'
   | 'signin-holds-label-and-lending'
@@ -166,6 +176,7 @@ export type HelpGroupId =
   | 'the-catalogue'
   | 'submitting-work'
   | 'an-account'
+  | 'using-the-console'
 
 export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'reading-a-figure', title: 'Reading a figure' },
@@ -174,6 +185,8 @@ export const HELP_GROUPS: readonly { id: HelpGroupId; title: string }[] = [
   { id: 'the-catalogue', title: 'The runtime catalogue' },
   { id: 'submitting-work', title: 'Submitting work' },
   { id: 'an-account', title: 'Running the account pool' },
+  // G1-21: the keyboard had no topic, and belongs to none of the above.
+  { id: 'using-the-console', title: 'Using the console' },
 ]
 
 /**
@@ -240,7 +253,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A digit is a measurement, and a measured zero is a digit too. A dash, or the hatched mark “not measured”, means nothing ever recorded the figure. The dashed mark “not read” means the read failed and the platform may still hold it. A tilde marks a real reading too old to trust.',
     long: [
-      'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and drawing them alike was this UI’s defining bug.',
+      'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and each is drawn with a mark of its own.',
       'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
       'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
@@ -252,7 +265,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'api-reads': {
     group: 'the-platform',
-    title: 'The reads behind a screen',
+    title: 'The dock: routes, failures and the newest payload’s age',
     short:
       'The bar at the foot of every screen summarises the routes this browser tab has called. The age it shows is of the newest SUCCESSFUL payload, not of the newest attempt \u2014 which is the part that tells a stale panel from a healthy one.',
     long: [
@@ -264,8 +277,8 @@ const SPECS: Record<TopicId, TopicSpec> = {
       // out of product copy and the fact kept.
       'A route is a path template with ids and query removed. Its status is the last attempt of any call to it, and its age is the newest successful payload of any call to it; each panel still carries its own age and its own failure, and the head beside the page title shows the screen’s own newest read.',
       'The age is the load-bearing number, and it is the age of the last SUCCESS. A panel drawn from a figure four minutes old, whose route has been failing for three of them, is indistinguishable from a healthy panel \u2014 the figure is still on screen, still formatted as a measurement, and nothing on the panel itself has changed. The age is the only thing that says otherwise.',
-      'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute, and a number labelled as though it were would be the same class of claim as a total summed over a partial response.',
-      'A 403 on an admin-only route is counted apart from failures, and deliberately. Someone who is not an admin genuinely cannot read those routes; a console that reported that as a fault would be reporting itself broken every time a non-admin opened it.',
+      'The p95 on the collapsed line is taken over the last attempt of each route: one sample per route, not one per request. This tab keeps no request history, so a percentile over every request made is not something it could compute.',
+      'A 403 on an admin-only route is counted apart from failures. Someone who is not an admin genuinely cannot read those routes, so a 403 there says who is reading, not that anything is broken.',
     ],
   },
 
@@ -279,6 +292,55 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
       'A task that counts no attempts and returned no documents is consistent, and its empty attempt list is a measurement rather than a failure.',
     ],
+  },
+
+  // G2-10 (QA 2026-10-07): THE INSPECTOR'S CARDS GET TOPICS OF THEIR OWN.
+  // The Outcome card's `?` opened `attempt-documents` (when an attempt
+  // document is written), the Input card's opened `input-is-opaque` ("whatever
+  // you type"), and the strategy chips' opened `dispatch-strategies` ("the
+  // number on each option is computed from the steps on the form"): each a
+  // Submit-side or unrelated text on a screen where nothing is typed and no
+  // form is drawn. These three say what the reader is looking at.
+  'outcome-explained': {
+    group: 'an-attempt',
+    title: 'What the outcome describes',
+    short:
+      'The outcome is what the task left when it finished: the pull request or branch it published, the files it uploaded and the answer it wrote. It is written once, when the task ends, so on a task that ran more than once it describes the last attempt only.',
+    long: [
+      'The outcome is read from the task’s result summary, which the worker writes once, at the end. It names what was published — a pull request, a branch, or nothing when the strategy publishes nothing — and counts the files uploaded as artifacts.',
+      'On a task that ran more than once, every part of it belongs to the last attempt. The earlier attempts’ output was never summarised, which is why a retried outcome is marked as the last attempt of several.',
+      'The files themselves are on the agent’s Artifacts tab, where each can be viewed or downloaded.',
+    ],
+    see: ['attempt-documents'],
+  },
+
+  'input-as-submitted': {
+    group: 'an-attempt',
+    title: 'The input, as it was submitted',
+    short:
+      'This is the input the task was submitted with, as the API serves it: masked where a value matched a credential pattern, otherwise unchanged. The platform handed it to the agent without reading it and checked nothing about it but its size.',
+    long: [
+      'The input is shown as the platform stored it at submission. The agent decided what it meant; the platform only carried it.',
+      'Values that look like credentials are masked when the input is served, and the number masked is shown beside the prompt. Masking changes the copy that is served, not the stored input.',
+      'The repository, model, priority and timeout beside it are the submission’s own fields. The image, the command and the resources come from the runner profile, never from the input.',
+    ],
+    see: ['masking-is-serve-time', 'runner-profile-by-name'],
+  },
+
+  'strategy-on-a-task': {
+    group: 'an-attempt',
+    title: 'What the task was asked to publish',
+    short:
+      'The chips name the dispatch strategy the task was submitted with — publish nothing, one pull request per step, or one for the whole workflow — and, in a workflow that integrates, this step’s role. What was actually published is the outcome, once the task ends.',
+    long: [
+      'The strategy is fixed when the task is submitted and does not change while it runs.',
+      'Under the integrating strategy each step has a role: a contributor pushes its branch and opens nothing, and the integrator opens the one pull request for the whole workflow.',
+      'The strategy is what was asked for. Whether a pull request was opened, and which one, is read from the task’s result summary once it ends.',
+    ],
+    // READ, not restated, as `dispatch-strategies` reads them.
+    values: () =>
+      DISPATCH_STRATEGIES.map((s) => ({ term: s, note: STRATEGY_LABEL[s] })),
+    see: ['outcome-explained'],
   },
 
   // AG-19. The Attempts toolbar's `?` opened "One message belongs to one
@@ -339,7 +401,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   capacity: {
     group: 'the-platform',
-    title: 'What reserves capacity',
+    title: 'Only work holding a slot costs capacity',
     short:
       'Only these states create infrastructure demand. Capacity for a task is reserved all-or-nothing across every pool it needs, in one transaction, and is counted from the moment it is held rather than from the moment an agent starts.',
     long: [
@@ -362,7 +424,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Checkpointing is mandatory and periodic: it is what makes a lost attempt cost minutes instead of everything. What is inside one is recorded nowhere — only its id, its size and its uri.',
     long: [
       'A worker can lose its attempt to a quota park-and-exit, a cancellation, a reclaim of a stale generation, or an ordinary crash. A checkpoint is what makes any of those cost minutes rather than the whole attempt, which is why it is mandatory and periodic rather than a nicety.',
-      'Nothing writes a manifest of an archive’s contents, so no screen can list the files in a checkpoint. The id, the size and the uri are the whole record, and the uri is what to fetch. A screen that drew a file tree here would be inventing it.',
+      'Nothing writes a manifest of an archive’s contents, so no screen can list the files in a checkpoint. The id, the size and the uri are the whole record, and the uri is what to fetch.',
       'A checkpoint count of zero is a measured zero — it means no attempt document lists one. It is not a failed read, and it is shown as a digit for that reason.',
     ],
   },
@@ -415,7 +477,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'When a query fails, no number derived from it appears anywhere — not a zero, not a blank. A failed read says nothing about the platform, and the panel says which of the two happened.',
     long: [
-      'This app exists because of one bug: a failed probe rendered as an absence. A sweep of the platform’s operational scripts found 56 places where a read failure was printed as “nothing to report”, including a status tool that said “no services deployed” when a session had simply expired.',
+      'A failed read is not an absence, and it is never drawn as one. A sweep of the platform’s operational scripts found 56 places where a read failure was printed as “nothing to report”, including a status tool that said “no services deployed” when a session had simply expired.',
       'So every read here returns a value that forces the question. There is no path to the rows that does not decide, separately, what an empty answer means and what a missing answer means. A component cannot render an empty list for a permission error, because a permission error never produces a list.',
       'On screen the two are told apart without colour: a failed panel carries its own marker and its own heading, and no figure under that heading may be treated as a measurement.',
     ],
@@ -544,7 +606,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A short problem list over checks that all ran and a short list over checks that could not run are the same picture, and only one of them is good news. So the panel always says how many ran, and a check that could not run is counted rather than dropped.',
     long: [
-      'Silence has two causes and they are opposites: nothing is wrong, or nothing looked. A panel that draws them alike is at its least trustworthy exactly when it matters most.',
+      'Silence has two causes and they are opposites: nothing is wrong, or nothing looked. Only the count of checks that ran tells them apart.',
       'So an all-clear here is always phrased over a count of the checks that actually completed, and a check that could not run appears as its own line with its own reason.',
       'A check blocked by an administrative gate is separated from a check that failed, because a reader who is not an administrator genuinely cannot run it and nothing is broken.',
     ],
@@ -596,7 +658,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // pool_names_for in apps/common/swarm_common), said without its names.
   'what-a-pool-is': {
     group: 'the-platform',
-    title: 'What a pool is',
+    title: 'A ceiling, a count of what holds it, and a pause switch',
     short:
       'A pool is a named ceiling on how many units of work may hold capacity at once, with a count of how many do. Every task needs several at the same moment, and it starts only when all of them have room.',
     long: [
@@ -617,7 +679,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'Both refuse admission, and on a board of figures they can look alike: nothing new starts. The difference is who has to act, and what they have to do.',
       'A full pool has as many units in use as its ceiling allows. Nothing is wrong with it: admission is doing its job, and the pool admits again as soon as running work finishes and releases its slots. Waiting, or raising the ceiling, are the two ways past it.',
       'A paused pool has been switched off by an operator. It refuses every task that needs it even with every slot free, so its headroom says nothing about whether anything can start. Work that needs it waits, costs nothing, and goes on waiting until a person resumes the pool.',
-      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. That is why the screens draw a paused pool in a treatment of its own rather than as a pool at its limit.',
+      'So raising the ceiling of a paused pool changes nothing; resuming it is the only thing that does. The Pools screen marks a paused pool with a “paused” chip, not as a pool at its limit, so look for that chip before reaching for the ceiling.',
     ],
     see: ['what-a-pool-is', 'ceiling-change-evicts-nothing'],
   },
@@ -638,8 +700,10 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // twice: the help link under the table (AH-12's, for the columns) and the
   // budget note's `Why →` (AH-21's). The short form answers the column first.
   //
-  // Enforced is min(max_active, capacity_units) because that is what every
-  // writer of the tenant pool writes as its hard limit: swarm_api/store.py
+  // Enforced is the tenant pool's `effective_limit` as /v1/capacity serves it
+  // (G5-13, QA 2026-10-07; it was min(max_active, capacity_units) computed in
+  // the browser). The pool's hard limit is min(max_active, capacity_units)
+  // because that is what every writer of the tenant pool writes: swarm_api/store.py
   // `set_tenant_limits` whenever either changes, `ensure_tenant` on a first
   // sign-in, scripts/register-tenant.sh, and terraform/infra/locals.tf
   // `pool_tenants` when Terraform creates the pool. The last two wrote a
@@ -670,11 +734,11 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'the-platform',
     title: 'What each Tenants column means',
     short:
-      'Enforced is the ceiling admission applies to a tenant: the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
+      'Enforced is the ceiling admission applies to a tenant: its pool’s effective limit, which starts from the smaller of its two configured limits, Max active and Units, because both cap the same count of units and the smaller one binds. Configured shows the two as the tenant record holds them. No budget can be set, so none is shown.',
     long: [
       'Tenant is the id every read and write is scoped by. Status says whether the tenant is enabled. A disabled tenant cannot submit tasks or workflows, reach its subscription accounts or register a provider key; its members can still list, read and cancel the tasks and workflows it already has, with their events, attempts, artifacts, checkpoints and logs, because a stopped tenant still has to see and stop what is running.',
       'Kind and Principal say who belongs to it. A group tenant takes the members of the group named in Principal; a user tenant is the one address named there.',
-      'Enforced is the ceiling admission applies to the tenant’s own pool, and it is the smaller of the two configured values. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool.',
+      'Enforced is the ceiling admission applies to the tenant’s own pool: that pool’s effective limit, read from the pool as Pools and Pool limits show it, not worked out from the two configured values. Its hard limit is the smaller of the two. Both limit the same thing — the units the tenant’s running work holds, where every task costs at least one — so the smaller is the one that binds. Every path that writes the tenant’s pool writes this figure as its hard limit: the admin routes whenever either value changes, a first sign-in that creates the tenant, scripts/register-tenant.sh, and Terraform when it creates the pool. An adaptive target lowered by rate limiting can hold the effective limit below that hard limit; a dash means the pool could not be read, does not exist, or has no limit set.',
       'Configured groups the two values as the tenant record holds them: Max active and Units. Neither is enforced on its own; a larger one beside a smaller one is headroom nobody can use until the smaller is raised.',
       'Credentials names the providers the tenant has registered a key for: names, never keys. None registered does not by itself mean the tenant cannot run work. A runtime that takes a subscription token can still run on a subscription account the tenant owns or is lent, on a deployment with an account pool; where the tenant has neither a key nor such an account, a runtime that needs a provider waits for this tenant rather than failing. Identity is the tenant’s own service account, the one its workloads run as; no service account is said in words, because a blank cell would read as fine.',
       'The tenant record carries a monthly budget field, and it is empty for every tenant. PUT /v1/admin/tenants/{id}/limits refuses it with a 422: the control plane has no cost attribution source — no billing export, no compute cost per attempt — so a budget could be stored but never enforced. Spend is bounded by the two limits the scheduler does enforce on every admission, which is what the Enforced column shows. The table leaves the field out because an empty column would read as “no budget set”. What the console’s spend figures do and do not include is a topic of its own, linked under this one.',
@@ -713,7 +777,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'tenant-scope': {
     group: 'the-platform',
-    title: 'Whose figures these are',
+    title: 'Capacity is your tenant’s, never the platform’s',
     short:
       'The capacity route answers for the calling tenant, an administrator included. So a ceiling here is how many more you could start, never how much the platform has. A platform-wide figure is not faked by substituting somebody else’s pools.',
     // WRITTEN FOR EVERY SCREEN THAT LINKS IT (AH-13 rule 2): the Timeline's
@@ -765,7 +829,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The catalogue describes how a name resolves: to a backend, an image, a size and a credential requirement. It is static in the sense that it does not move while work runs.',
       'Live load appears on the Runtimes screen only where a capacity read supplied it, and it is labelled as coming from there. Where that read did not complete, the columns are dashes rather than zeros.',
-      'A screen that drew machines would be inventing them, because nothing in this platform publishes them to a console.',
+      'Nothing in this platform publishes its machines to a console, so the catalogue lists none. What is running at this moment is on the Agents screen.',
     ],
   },
 
@@ -787,9 +851,9 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Every name, size, weight, backend and timeout on this screen came from the catalogue route in this page load. A runtime added to the catalogue appears here with nobody editing the screen, and no figure here can disagree with the platform because none is stored here.',
     long: [
-      'The catalogue is contract data that can gain entries. A console that kept its own copy would be correct until the day it mattered.',
+      'The catalogue is contract data that can gain entries, and a runtime added to it is on the Runtimes screen at the next load.',
       'So the Runtimes screen renders the response and nothing else. There is no fallback list, no hardcoded default and no enrichment from a table in the bundle.',
-      'The visible cost is that a failed read leaves the screen with nothing to show. That is the intended cost: an empty catalogue drawn from a cached copy is the failure this whole app exists to prevent.',
+      'So a failed read leaves the Runtimes screen with nothing to show rather than an older copy. An empty catalogue after a failed read is a read to retry, not a catalogue with no runtimes.',
     ],
   },
 
@@ -816,7 +880,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The comparison is computed: largest, smallest, only one of its kind, different backend from the rest. It is derived from the same response the cards are drawn from.',
       'When the computation finds nothing, the card says so rather than reaching for a sentence somebody typed. "Nothing separates it from the rest" is a measured answer.',
-      'A hand-written description would be the one thing on the Runtimes screen that could quietly stop being true.',
+      'So a line that looks wrong can be checked against the other cards on the Runtimes screen, and it changes only when the catalogue does.',
       'Disabled is the catalogue’s own flag, not a reading of load. The runtime is still served because tasks already submitted under its name have to render, and the API refuses any new submission that names it. The reason printed on its card is the platform’s, and usually names the runtime to use instead.',
     ],
   },
@@ -829,7 +893,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The catalogue distinguishes "this runtime names no provider" from "this runtime names a provider and lists no variable for it". They are different facts about the response.',
       'The first means nothing has to be registered before it will run. The second means the catalogue named a provider and published no variable name, which is what the response says and is not a failed read.',
-      'Neither is drawn as an absence, because an absence on the Runtimes screen would read as "we could not find out", and both were found out.',
+      'Neither is an absence: both were found out, so the Runtimes screen states each in words rather than with a dash.',
     ],
   },
 
@@ -917,15 +981,28 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // G1-21 (QA pass 2026-10-07). GENERATED FROM `SHORTCUTS` (shortcuts.ts), the
+  // table the handlers read: the list is that table, and the claim's two keys
+  // are its rows, so a rebound key cannot leave this topic naming the old one.
+  keyboard: {
+    group: 'using-the-console',
+    title: `${shortcut('anywhere', 'n').label} opens Submit and ${shortcut('anywhere', '?').label} opens the list of keys`,
+    short: `${shortcut('anywhere', 'n').label} opens Submit from any page, and ${shortcut('anywhere', '?').label} opens the full list of keys. A key acts only where the list says it is listened for, and a letter never acts while you are typing in a field.`,
+    long: [
+      'Each key is listed once, with where it is listened for. A letter or a symbol does nothing while focus is in a text field, a select or an editable area, where it is a character; nothing while Ctrl, Alt or Cmd is held, so the browser’s and the system’s own shortcuts are left alone; and nothing while a dialog or a side editor is open over the page, which owns the keyboard until it closes.',
+      'A key listened for inside one view is taken by that view first. In a diff, the key that opens Submit everywhere else opens the next file instead.',
+    ],
+    values: () => SHORTCUTS.map((k) => ({ term: k.label, note: `${k.does}, ${SCOPE_WORDS[k.scope]}` })),
+  },
   'workflow-stages': {
     group: 'submitting-work',
     title: 'How a workflow runs its steps',
     short:
-      'Steps run in stages. A step starts when every step it depends on has succeeded, and steps with nothing left to wait for run at the same time. A failure cancels its dependants — every step waiting on the failed one, directly or through another — and the steps that do not depend on it carry on.',
+      'Steps run in stages. A step starts when every step it depends on has succeeded, and steps with nothing left to wait for run at the same time. With the default, a failure cancels every step not yet started; with Continue, only its dependents.',
     long: [
       'A stage on Submit a workflow is a default for what a step waits for: a step in a later stage waits for every step in the stage before it, unless it is narrowed to a chosen set of earlier steps. The platform receives only the dependencies; stages are how the form lays them out.',
       'A step becomes eligible when every step it depends on has succeeded. Until then it holds no capacity and costs nothing. Steps whose dependencies have all succeeded run at the same time, within the ceilings of the pools they need.',
-      'When a step fails for good, its retries spent, the platform cancels every step that depends on it, directly or through another step, because none of them could ever start. A step that does not depend on the failed one is not touched and runs to its own end.',
+      'When a step fails for good, its retries spent, what happens next is the workflow’s failure policy, chosen in step 2 of Submit a workflow. With the default, Fail the workflow, every step not yet started is cancelled, whether or not it depends on the failed one; steps already running finish. With Continue, only its dependents are cancelled — every step that depends on it, directly or through another step, because none of them could ever start — and a step that does not depend on it is not touched.',
     ],
   },
 
@@ -976,7 +1053,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The provider’s client accepts exactly one redirect target — its own callback page, which displays a code. A third-party application cannot register a redirect back to this console, so your browser cannot be sent here and the displayed code is what closes the loop.',
       'Nothing secret passes through the sign-in panel on Accounts. The verifier stays on the server, keyed by the sign-in; a verifier the browser holds is a flow that proves nothing. What comes back is an account and an expiry, never key material and never its length.',
-      'That is the whole procedure. A screen that asked for a pasted credential was asking a person to handle key material by hand, which is the part this replaces.',
+      'That is the whole procedure. The only thing you paste is the short code the provider’s page shows; nothing in it asks for a key or a credential file.',
     ],
   },
 
@@ -988,7 +1065,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'One secret holds the pair the broker exchanges. Nothing outside the broker reads it, and no route returns it.',
       'The other holds only the short-lived token, and that is the one a tenant’s workload mounts. It expires on its own, and the sweep replaces it before it does.',
-      'Neither is ever rendered anywhere in the console, not even as a length. A console that showed a length would be publishing a fact about a secret for no operational benefit.',
+      'Neither is ever rendered anywhere in the console, not even as a length. If a pod is compromised, revoke the account’s sign-in.',
     ],
   },
 
@@ -1225,7 +1302,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
 
   'lent-account': {
     group: 'an-account',
-    title: 'An account lent to you',
+    title: 'A lent account runs your agents and has no controls',
     short:
       'Your agents can run on it. Pausing, draining, re-lending, refreshing and signing in again stay with its owner, and those routes answer here as though no such account existed — the same answer a label that does not exist gets, so asking cannot confirm somebody else’s account names.',
     long: [
@@ -1367,7 +1444,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by when it ended. Cancels are counted and drawn in a lane of their own, but left out of the rate. The band is a 95 % Wilson interval; a hollow point has under five decided, and a gap means nothing was decided.',
     long: [
-      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependants in turn; a cancel’s are the steps below one somebody stopped.',
+      'The figure on the Timeline screen is the share of decided work that succeeded: tasks that succeeded, over those that succeeded, failed or were dead-lettered, each placed by the moment it ended. Every cancel is left out of it, because a cancel is somebody’s decision rather than a verdict on the work, and the cancels get a lane of their own on the same axis, split into the ones a person asked for, the ones a failure caused, and the ones a cancel caused. A failure’s cancels are counted as the failure’s however many steps down they reach, because a step stopped by a failure stops its own dependents in turn; a cancel’s are the steps below one somebody stopped.',
       'A rate over a handful of tasks says little, so every rate carries its 95 % Wilson interval: the band behind the line, and the range printed with the figure and in the readout. A point drawn hollow covers fewer than five decided tasks. A bucket in which nothing was decided has no point at all and the line breaks there, because a rate over nothing is undefined, never zero.',
       'The comparison with the previous span is dropped, and says why, when that span has a bucket that could not be read or had nothing decided: a delta over part of a span compares two different things.',
       'Tenant scope and platform scope are never drawn side by side. Platform scope is an administrator’s view of every tenant, and the verification tenant can be left out of it in one click; the exclusion names that tenant, so a tenant created later is still counted.',
@@ -1430,7 +1507,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'Browsers refuse clipboard access outside a secure context and when the window is not focused. The link is on screen and selectable, so it can be copied by hand: it is the same value, and nothing is wrong with the sign-in.',
     long: [
-      'The button reports the refusal rather than claiming success, because a button that says "copied" when nothing was copied is the small version of the bug this whole app is about.',
+      'The button reports the refusal rather than claiming success, so a button that does not say copied has copied nothing.',
       'The value itself is always rendered, so there is never a state in which the only way to obtain the link is a control that failed.',
       'This is also the case where copying by hand matters most: the link is what you carry to a second browser application.',
     ],
@@ -1444,7 +1521,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'Each row can be missing on its own, and a missing row is drawn as an absence rather than a zero. The sum is a different claim: it asserts that everything was counted.',
       'So the rule here is stricter than for a single figure. One row that did not arrive withholds the total entirely, and the panel says how many rows are in that state.',
-      'That is deliberately more annoying than showing a number. A total quietly computed over what happened to arrive is the failure this whole app exists to prevent.',
+      'So a withheld total is neither a zero nor a fault in the platform: at least one of its rows is unread, and the total returns once every row arrives.',
     ],
   },
 
@@ -1478,7 +1555,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     short:
       'A provider quota document carries one of six states. The throttled one is the common case during a squeeze and the easiest to miss. The unknown one means no worker has reported recently: an absence of information, not an assurance.',
     long: [
-      'A chip that fell through to "unknown" for a state it did not recognise would mislabel exactly the condition the Provider quota screen exists for, so every member is drawn by name.',
+      'Every state is shown by its own name on the Provider quota screen; none is folded into unknown.',
       'Unknown is drawn as an absence rather than as health. Nothing has reported, and nothing about the provider follows from that.',
       // CP-8 (#85): the column is `Quota cap` now, and the topic names it so.
       // AH-13 (#161): a long paragraph is only ever read on the Help page, so
@@ -1534,7 +1611,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The two numbers have different owners. One is an operator’s decision; the other is the platform’s live accounting, and a console that wrote both would be able to invent capacity.',
       'So a ceiling set below what is currently in use is a legal, quiet state: the pool reads as over its ceiling until enough work finishes.',
-      'A screen that showed that as a fault would be reporting an operator’s own action back to them as breakage.',
+      'On Pool limits such a pool carries a neutral “over ceiling” mark, not a fault. Wait for the work in use to finish, or raise the ceiling again if the change was a mistake.',
     ],
   },
 
@@ -1594,7 +1671,9 @@ export interface HelpAct {
  * `subject` is the topic's NAME, two to six words -- what the Help index and
  * every footer index (`HelpLinks`) print. The `title` stays the claim, word for
  * word, because the `?` card beside a figure opens with it and renaming it is
- * the owner's choice rather than this record's.
+ * the owner's choice rather than this record's. The two never match: the
+ * owner's QA pass of 2026-10-07 (G1-16) found five topics whose "You see" row
+ * repeated the name above it, and gave them claims of their own.
  *
  * Kept as its own `Record<TopicId, ...>` rather than inside each spec so a new
  * topic without one is a type error in one place, and so the claims and
@@ -1661,6 +1740,18 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'attempt-documents': {
     subject: 'When an attempt exists',
     act: { say: 'For a task with no attempt, look at capacity, not at the worker: nothing has been reserved yet.', at: 'capacity/pools' },
+  },
+  'outcome-explained': {
+    subject: 'What an outcome describes',
+    act: { say: 'Open the agent’s Artifacts tab for the files, and its Attempts tab for what each earlier attempt did.' },
+  },
+  'input-as-submitted': {
+    subject: 'The submitted input',
+    act: { say: 'Read the prompt as the agent received it; the masked count says how much of it is hidden.' },
+  },
+  'strategy-on-a-task': {
+    subject: 'The strategy on a task',
+    act: { say: 'Read the outcome for what was published; the chips say only what was asked for.' },
   },
   'event-paging': {
     subject: 'Event paging',
@@ -1821,6 +1912,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'input-is-opaque': {
     subject: 'The task input',
     act: { say: 'Write the input for the agent; check it yourself, because nothing else will.', at: 'submit' },
+  },
+  keyboard: {
+    subject: 'Keyboard shortcuts',
+    act: { say: 'Press the key where its row says it is listened for, with focus outside any field.', at: 'submit' },
   },
   'workflow-stages': {
     subject: 'Workflow stages',

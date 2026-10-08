@@ -17,7 +17,7 @@ import pytest
 
 from agent_worker.config import WorkerConfig
 from agent_worker.errors import ConfigError, ExitCode
-from conftest import seed_attempt
+from worker_seeds import seed_attempt
 from swarm_common.states import TaskState
 
 TASK = "task_1"
@@ -126,6 +126,86 @@ def test_after_spec_legacy_until_the_flag_is_ignored_and_says_so(db, worker_fact
     assert db.doc(f"tasks/{TASK}")["result_summary"]["spec_check"]["reason"] == "unsigned"
     ignored = [r for r in _lines(log_stream) if "SPEC_LEGACY_UNTIL" in str(r.get("message"))]
     assert ignored, "the worker enforced past SPEC_LEGACY_UNTIL without saying it ignored legacy"
+
+
+# ---------------------------------------------------------------------------
+# The cutover is capped at the signing release (#355)
+# ---------------------------------------------------------------------------
+# swarm-api has signed every task it creates since swarm-api-00119-lcs took
+# traffic, 2026-09-30T21:24:36Z. An unsigned task Firestore created after that
+# moment was never written by an unsigning swarm-api: its signature was
+# stripped. So no configured SPEC_LEGACY_CUTOVER, however late, admits one.
+
+SIGNING_RELEASE = datetime(2026, 9, 30, 21, 24, 36, tzinfo=timezone.utc)
+LATE_CUTOVER = datetime(2026, 10, 15, tzinfo=timezone.utc)
+AFTER_RELEASE = datetime(2026, 10, 1, tzinfo=timezone.utc)
+INSIDE_WINDOW_LATE = datetime(2026, 10, 16, tzinfo=timezone.utc)
+
+
+def test_the_signing_release_is_in_the_code():
+    from agent_worker import specverify
+
+    assert specverify.SPEC_SIGNING_RELEASED_AT == SIGNING_RELEASE
+    assert specverify.SPEC_SIGNING_RELEASED_AT < specverify.SPEC_LEGACY_UNTIL
+
+
+def test_a_legacy_spec_after_the_signing_release_is_refused_with_its_reason(db, worker_factory):
+    """A cutover set later than the release does not reopen the window."""
+    _unsigned(db, AFTER_RELEASE)
+    rc = _run(
+        worker_factory,
+        spec_signature_mode="legacy",
+        spec_legacy_cutover=LATE_CUTOVER,
+        spec_clock=lambda: INSIDE_WINDOW_LATE,
+    )
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.FAILED
+    assert task["end_cause"] == "spec_signature_invalid"
+    assert task["result_summary"]["spec_check"]["reason"] == "unsigned"
+    assert "after the legacy cutover" in str(task.get("last_error")), task.get("last_error")
+    assert SIGNING_RELEASE.isoformat() in str(task.get("last_error"))
+
+
+def test_a_legacy_spec_at_the_signing_release_is_refused(db, worker_factory):
+    _unsigned(db, SIGNING_RELEASE)
+    rc = _run(
+        worker_factory,
+        spec_signature_mode="legacy",
+        spec_legacy_cutover=LATE_CUTOVER,
+        spec_clock=lambda: INSIDE_WINDOW_LATE,
+    )
+    assert rc == ExitCode.FAILED
+    assert db.doc(f"tasks/{TASK}")["result_summary"]["spec_check"]["reason"] == "unsigned"
+
+
+def test_a_task_parked_before_the_signing_release_still_runs_under_a_late_cutover(
+    db, worker_factory
+):
+    """The constraint in #355: tightening must not refuse a task parked
+    before the signing release."""
+    _unsigned(db, BEFORE_CUTOVER)
+    rc = _run(
+        worker_factory,
+        spec_signature_mode="legacy",
+        spec_legacy_cutover=LATE_CUTOVER,
+        spec_clock=lambda: INSIDE_WINDOW_LATE,
+    )
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.OK, task.get("last_error")
+    assert task["state"] == TaskState.SUCCEEDED.value
+
+
+def test_a_legacy_refusal_names_the_cutover_it_was_judged_against(db, worker_factory):
+    _unsigned(db, AFTER_CUTOVER)
+    rc = _run(
+        worker_factory,
+        spec_signature_mode="legacy",
+        spec_legacy_cutover=CUTOVER,
+        spec_clock=lambda: INSIDE_WINDOW,
+    )
+    assert rc == ExitCode.FAILED
+    last_error = str(db.doc(f"tasks/{TASK}").get("last_error"))
+    assert "after the legacy cutover" in last_error and CUTOVER.isoformat() in last_error
 
 
 # ---------------------------------------------------------------------------

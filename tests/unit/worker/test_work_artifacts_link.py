@@ -51,7 +51,7 @@ from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.states import TaskState
 
-from conftest import TENANT, record_as_earlier_attempt, seed_attempt
+from worker_seeds import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
 
@@ -72,14 +72,14 @@ MISSING_KEY = "expected_outputs_missing"
 
 #: A stand-in for `claude --print --output-format json`.
 #:
-#: The prompt is the last argv element. It starts with a JSON plan, and may be
+#: The prompt arrives on stdin. It starts with a JSON plan, and may be
 #: followed by the instructions the claude-code runner appends when later steps
 #: expect files from this one, so only the leading JSON value is decoded.
 FAKE_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
 try:
-    plan, _end = json.JSONDecoder().raw_decode(sys.argv[-1])
+    plan, _end = json.JSONDecoder().raw_decode(sys.stdin.read())
 except (ValueError, IndexError):
     plan = {}
 

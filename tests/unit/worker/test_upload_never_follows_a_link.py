@@ -33,7 +33,7 @@ from agent_worker import artifact_manifest as manifest_mod
 from agent_worker import workspace as workspace_mod
 from agent_worker.standalone_outputs import SHOWN_NAME_CHARS
 
-from conftest import TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import TENANT, build_worker, seed_attempt, seed_tenant
 from fakes import FakeSecretClient
 
 KEY = "sk-ant-supersecret-value-0123456789"
@@ -287,11 +287,15 @@ def _deep(root: Path) -> Path:
 
 
 def _remove_deep(root: Path) -> None:
-    """Bottom-up and without recursion: `shutil.rmtree` recurses per folder."""
-    deepest = root.joinpath(*(["d"] * DEPTH))
-    (deepest / "bottom.txt").unlink(missing_ok=True)
-    for level in range(DEPTH, 0, -1):
-        os.rmdir(root.joinpath(*(["d"] * level)))
+    """Without recursion (`shutil.rmtree` recurses per folder), and whatever
+    part of the tree `_deep` got to make.
+
+    The tree is under pytest's `tmp_path`, never a live workspace -- but in a
+    SwarmCloud run `tmp_path` is itself under the attempt's TMPDIR, so a tree
+    left behind here was one the worker's own teardown had to remove (#737).
+    A run killed mid-test still leaves it; `workspace.destroy` no longer
+    recurses, so that costs disk, not the attempt's exit code."""
+    workspace_mod._remove_tree(root / "d")
 
 
 def test_a_tree_a_thousand_folders_deep_does_not_abort_the_upload(db, store, tmp_path):
@@ -301,8 +305,8 @@ def test_a_tree_a_thousand_folders_deep_does_not_abort_the_upload(db, store, tmp
     hold any storable name is listed as skipped, and the rest is uploaded."""
     worker, config, ws = _worker(db, store, tmp_path)
     (ws.artifacts / "ok.txt").write_text("an ordinary artifact\n")
-    _deep(ws.artifacts)
     try:
+        _deep(ws.artifacts)
         summary = worker._upload_outputs()
     finally:
         _remove_deep(ws.artifacts)
@@ -323,8 +327,8 @@ def test_a_deep_tree_does_not_stop_the_expected_outputs_check_before_the_upload(
     worker, config, ws = _worker(db, store, tmp_path)
     worker._expected_outputs = ("notes.md",)
     (ws.artifacts / "notes.md").write_text("the declared output\n")
-    _deep(ws.artifacts)
     try:
+        _deep(ws.artifacts)
         withheld = worker._publish_withheld(True)
     finally:
         _remove_deep(ws.artifacts)

@@ -346,7 +346,9 @@ class SchedulerSettings:
     #: (terraform/infra/locals.tf writes it from `local.runner_models`, today
     #: `{"claude-code": "claude-opus-5-5"}`). Set as `MODEL` on every Cloud Run
     #: Job this scheduler CREATES, so a tenant Terraform does not list runs the
-    #: model a listed one does (#226). Never in the per-execution environment:
+    #: model a listed one does (#226), and on every GKE pod of a pinned profile
+    #: (`profile_model`), which since contract request 53 is how claude-code's
+    #: model reaches it. Never in the per-execution environment:
     #: `worker_env` carries identifiers and endpoints, and a task's own `model`
     #: is attribution. Excluded from the hash, like `worker_image_refs`.
     worker_models: dict[str, str] = field(default_factory=dict, hash=False)

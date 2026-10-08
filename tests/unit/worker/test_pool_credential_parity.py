@@ -34,7 +34,7 @@ from quota_broker.accounts import Account
 from swarm_common.models import Tenant, utcnow
 from swarm_common.profiles import RUNNER_PROFILES
 
-from conftest import PROJECT, TENANT, build_worker, seed_attempt, seed_tenant
+from worker_seeds import PROJECT, TENANT, build_worker, seed_attempt, seed_tenant
 from fakes import FakeFirestore, FakeSecretClient
 
 ACCOUNT_ID = f"{TENANT}:personal"

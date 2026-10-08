@@ -27,6 +27,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from .application_paths import app_paths, reaches
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "ci-fix.sh"
 WORKFLOW = REPO / ".github" / "workflows" / "ci-fix.yml"
@@ -295,6 +297,9 @@ def test_a_red_swarm_pr_gets_one_fix_step_that_names_a_profile_and_nothing_else(
         "run_id": int(RUN_ID),
         "head_sha": HEAD,
         "attempt": 1,
+        # The cap travels with the attempt, so the API can hold it and the
+        # post-back can say when it is reached (#263).
+        "max_attempts": _constant("MAX_FIX_ATTEMPTS"),
     }
 
     (comment,) = _comments(state)
@@ -529,7 +534,6 @@ def test_the_workflow_is_linted_and_its_tests_run_on_the_prs_that_change_it():
     """It runs only after a red CI on a swarm branch, so a broken expression in
     it would first show on the PR it was meant to fix."""
     app = yaml.safe_load(APPLICATION.read_text())
-    on = app.get("on", app.get(True))
-    assert ".github/workflows/ci-fix.yml" in on["pull_request"]["paths"]
+    assert reaches(".github/workflows/ci-fix.yml"), app_paths()
     runs = "\n".join(step.get("run", "") for step in app["jobs"]["workflows"]["steps"])
     assert ".github/workflows/ci-fix.yml" in runs, "ci-fix.yml is not linted"

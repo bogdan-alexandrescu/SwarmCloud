@@ -43,6 +43,9 @@ credential with an expiry, so it is never logged, stored or put in an error.
 A token that cannot read Actions, or any failure on the way, answers None:
 the check run's own output is still the excerpt.
 
+Since #646 it also CLOSES an issue (`close_issue`, `issues: write`): an
+issue run whose build found every planned requirement already met on main.
+
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
 """
@@ -54,7 +57,7 @@ import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
 
 from .errors import ApiError
@@ -223,10 +226,21 @@ class PullSnapshot:
     #: Its title: a squash merge makes it a commit message on the base branch,
     #: where a closing keyword in it closes the issue (`issuesync`).
     title: str = ""
+    #: `owner/repo` of the head's and the base's repositories, "" when GitHub
+    #: named none: a head in another repository is a fork (`resolve_merge_pr`).
+    head_repo: str = ""
+    base_repo: str = ""
 
 
 def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _full_name(side: Mapping[str, Any]) -> str:
+    """`owner/repo` of a pull request's head or base, "" when GitHub named none."""
+    repo = side.get("repo")
+    name = repo.get("full_name") if isinstance(repo, Mapping) else None
+    return name if isinstance(name, str) else ""
 
 
 def _comment(data: Any, what: str) -> CommentRef:
@@ -376,6 +390,22 @@ class GitHubWriter:
                 return None
         return None
 
+    # -- the issue itself (#646) -------------------------------------------------
+
+    def close_issue(self, ref: IssueRef, token: str) -> None:
+        """Close the issue as completed.
+
+        Called only for an `already_on_main` run whose build steps' tables
+        say every planned requirement is met on main (`issuesync`), after the
+        table is posted: the comment is the evidence the close cites. Needs
+        the same `issues: write` as the comments.
+        """
+        self._call(
+            "PATCH", self._url(ref, f"issues/{int(ref.number)}"), token,
+            f"closing {ref.short}", needs=ISSUES_WRITE,
+            payload={"state": "closed", "state_reason": "completed"},
+        )
+
     # -- pull requests ----------------------------------------------------------
 
     def read_pull(self, ref: IssueRef, number: int, token: str) -> PullSnapshot:
@@ -401,6 +431,8 @@ class GitHubWriter:
             merged=data.get("merged") is True,
             base_ref=str(base.get("ref") or ""),
             title=title if isinstance(title, str) else "",
+            head_repo=_full_name(head),
+            base_repo=_full_name(base),
         )
 
     def edit_pull_body(
