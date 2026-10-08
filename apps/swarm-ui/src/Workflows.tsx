@@ -2743,7 +2743,28 @@ function WorkflowGraph({
   const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
   const auto = beside ? autoTier(workflow.steps, column, noted, false, settled) : fullAuto
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
-  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column, settled)
+  // A STAGE BAND HOLDING THE PICKED STEP OPENS TO IT (WF-10, epic #83). When
+  // the scrubber carries a step into this workflow, or a step picked in the
+  // Table is looked at on the Graph, the step may be one of thirteen folded
+  // into a band -- picked, and nowhere on the canvas. So the stage opens, and
+  // the canvas is brought round to the step (below). Only when the pick
+  // ARRIVES: a reader who closes the stage again while the step is still
+  // picked is not overruled on the next render.
+  //
+  // OPEN IN THE SAME RENDER THE PICK ARRIVES IN. Recording the open is an
+  // effect, so waiting for `openStages` to carry it drew the picked step folded
+  // inside its band for one render first. So while the arrival is not yet
+  // committed (`arrived` still holds the previous pick), the picked level is
+  // laid out open here; the commit below still records it through
+  // `onToggleStage`, and from the next render on `openStages` alone decides --
+  // which is what leaves a reader's re-close standing. Adding a level that is
+  // not wide is harmless: `layoutOf` only opens a level that is.
+  const pickedLevel = picked === null ? -1 : levels.findIndex((l) => l.some((s) => s.step_id === picked))
+  const arrival = `${workflow.workflow_id}\u0000${picked ?? ''}`
+  const arrived = useRef<string | null>(null)
+  const opensOnArrival = arrived.current !== arrival && pickedLevel >= 0 && !expandedStages.has(pickedLevel)
+  const shownStages = opensOnArrival ? new Set([...expandedStages, pickedLevel]) : expandedStages
+  const layout = layoutOf(workflow.steps, shownStages, tier, noted, column, settled)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -2788,17 +2809,13 @@ function WorkflowGraph({
     [syncView],
   )
 
-  // A STAGE BAND HOLDING THE PICKED STEP OPENS TO IT (WF-10, epic #83). When
-  // the scrubber carries a step into this workflow, or a step picked in the
-  // Table is looked at on the Graph, the step may be one of thirteen folded
-  // into a band -- picked, and nowhere on the canvas. So the stage opens, and
-  // the canvas is brought round to the step (below). Only when the pick
-  // ARRIVES: a reader who closes the stage again while the step is still
-  // picked is not overruled on the next render.
-  const pickedLevel = picked === null ? -1 : levels.findIndex((l) => l.some((s) => s.step_id === picked))
-  const pickedFolded = pickedLevel >= 0 && layout.wide[pickedLevel] === true && !expandedStages.has(pickedLevel)
+  // RECORDING THE ARRIVAL'S OPEN (WF-10, above). A LAYOUT effect, declared
+  // before the scroll below, so `bringIntoView` is set by the time the scroll
+  // runs in the same commit -- the stage drawn open above is what it scrolls.
+  const pickedFolded = opensOnArrival && layout.wide[pickedLevel] === true
   const bringIntoView = useRef<'picked' | null>(null)
-  useEffect(() => {
+  useLayoutEffect(() => {
+    arrived.current = arrival
     if (!pickedFolded) return
     bringIntoView.current = 'picked'
     onToggleStage(stageKey(workflow.workflow_id, pickedLevel), false)
@@ -2817,7 +2834,11 @@ function WorkflowGraph({
   // in the part of the column the sticky rail does not cover. When the stage
   // opened because the picked step was in it, the picked step is brought into
   // view instead.
-  const opened = [...expandedStages].sort((a, b) => a - b).join(',')
+  // The stages DRAWN open: on a pick's arrival that includes the level opened
+  // for it, so this commit's scroll is the one that brings the step round. Only
+  // when that level is wide -- a narrow level added above opens nothing, and
+  // counting it would scroll back to the roots on every pick.
+  const opened = [...(pickedFolded ? shownStages : expandedStages)].sort((a, b) => a - b).join(',')
   const seenOpen = useRef<string | null>(null)
   useLayoutEffect(() => {
     const before = seenOpen.current

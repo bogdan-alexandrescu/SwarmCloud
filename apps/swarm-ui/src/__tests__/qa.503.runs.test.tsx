@@ -198,3 +198,78 @@ describe('#503: at DONE the card says whether the PR merged and the issue closed
     expect(visible(fact('issue'))).toMatch(/state not served/)
   })
 })
+
+/**
+ * THE FIELDS SWARM-API NOW SERVES (#503 boxes 5985235915 and 5985301167):
+ * `pull_request.check_counts`, `check_list`, `ci_url`, `merged`, `merged_at`.
+ *
+ * MUTATIONS: drop the served counts from the "by check" fact, the CI run link,
+ * or `mergeKnown`'s `pull_request.merged` read -- a case below turns red.
+ */
+describe('#503: the counts, the checks and the merge swarm-api serves', () => {
+  const RUN_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/' + '1'.repeat(10)
+  const checkList = [
+    ...Array.from({ length: 7 }, (_, i) => ({ name: `pending ${i}`, state: 'pending', url: i === 0 ? `${RUN_URL}/job/7` : null })),
+    ...Array.from({ length: 5 }, (_, i) => ({ name: `passed ${i}`, state: 'passed', url: `${RUN_URL}/job/${i}` })),
+    ...Array.from({ length: 3 }, (_, i) => ({ name: `skipped ${i}`, state: 'skipped', url: null })),
+  ]
+  const checking = (over: Record<string, unknown> = {}) => run({
+    pull_request: {
+      number: 564, url: PR_URL, head_sha: HEAD, checks: 'pending', merged: false, merged_at: null,
+      check_counts: { passed: 5, failed: 0, pending: 7, skipped: 3 }, check_list: checkList,
+      check_list_truncated: false, ci_url: `${RUN_URL}/job/7`, ...over,
+    },
+  })
+
+  it('prints the three counts, a folded list linking each check, and a CI run link at CHECKING', async () => {
+    const { ci, fact } = await mount(checking())
+    await waitFor(() => expect(said(fact('by check'))).toBe('5 passed · 7 pending · 3 skipped'), WAIT)
+    const list = fact('each check')!
+    expect(list.querySelector('details')).not.toBeNull()
+    expect(list.querySelector('details')!.hasAttribute('open')).toBe(false)
+    expect(visible(list.querySelector('summary'))).toBe('15 checks')
+    const links = [...list.querySelectorAll('a')]
+    expect(links.map((a) => a.getAttribute('href'))).toContain(`${RUN_URL}/job/0`)
+    expect(links).toHaveLength(6)
+    const run = [...ci.querySelectorAll('a')].find((a) => visible(a) === 'CI run →')
+    expect(run?.getAttribute('href')).toBe(`${RUN_URL}/job/7`)
+    expect(said(fact('merge'))).toBe('open · not merged at the last read')
+  })
+
+  it('says the list was cut when the server truncated it', async () => {
+    const { fact } = await mount(checking({ check_list_truncated: true }))
+    await waitFor(() => expect(visible(fact('each check')!.querySelector('summary'))).toBe('15 checks shown · the rest not kept'), WAIT)
+  })
+
+  it('says merged with its age and UTC time at DONE when merged is true, with no merge step', async () => {
+    const { container, fact } = await mount(run({
+      state: 'DONE', terminal: true, green_sha: HEAD,
+      pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'green', merged: true,
+        merged_at: '2026-10-04T22:41:07Z', check_counts: { passed: 12, failed: 0, pending: 0, skipped: 3 } },
+    }))
+    await waitFor(() => expect(fact('merge')!.getAttribute('data-merge')).toBe('merged'), WAIT)
+    expect(said(fact('merge'))).toMatch(/^merged \S+ ago$/)
+    expect(fact('merge')!.querySelector('[title="2026-10-04 22:41:07 UTC"]')).not.toBeNull()
+    expect(visible(fact('merge'))).not.toMatch(/not reported|not served/)
+    expect(visible(container.querySelector('.rn-state'))).toContain('The pull request merged, with every required check green.')
+  })
+
+  it('says not merged at DONE when merged is false', async () => {
+    const { fact } = await mount(run({
+      state: 'DONE', terminal: true, green_sha: HEAD,
+      pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'green', merged: false, merged_at: null },
+    }))
+    await waitFor(() => expect(said(fact('merge'))).toBe('not merged'), WAIT)
+  })
+
+  it('still says "merge not reported" where merged is null', async () => {
+    const { fact } = await mount(run({
+      state: 'DONE', terminal: true, green_sha: HEAD,
+      pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'green', merged: null, merged_at: null,
+        check_counts: null, check_list: null, check_list_truncated: null, ci_url: null },
+    }))
+    await waitFor(() => expect(said(fact('merge'))).toBe('merge not reported'), WAIT)
+    expect(said(fact('by check'))).toBe('per-check counts not served')
+    expect(fact('each check')).toBeNull()
+  })
+})

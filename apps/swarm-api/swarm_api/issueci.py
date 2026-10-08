@@ -127,6 +127,7 @@ from swarm_common.states import TaskState
 
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
 from .forgechecks import (
+    FAILED,
     GREEN,
     NONE,
     PENDING,
@@ -674,6 +675,32 @@ def ci_fix_continuation(
     })
 
 
+#: The most checks a run document keeps a line for. A monorepo's matrix can
+#: report hundreds; the page needs enough to find the red one, and the counts
+#: are kept over all of them.
+MAX_CHECK_LIST = 50
+
+
+def check_summary(reading: CiReading) -> dict[str, Any]:
+    """What the run page shows of one CI reading (#503): the count per bucket,
+    the checks (capped at `MAX_CHECK_LIST`, `check_list_truncated` saying so)
+    and `ci_url`, the first failing check's link, else the first pending one's,
+    else the first link at all -- None when GitHub gave none."""
+    checks = reading.checks
+    linked = [check for check in checks if check.get("url")]
+    first = (
+        next((c for c in linked if c["state"] == FAILED), None)
+        or next((c for c in linked if c["state"] == PENDING), None)
+        or (linked[0] if linked else None)
+    )
+    return {
+        "check_counts": reading.counts,
+        "check_list": [dict(check) for check in checks[:MAX_CHECK_LIST]],
+        "check_list_truncated": len(checks) > MAX_CHECK_LIST,
+        "ci_url": first["url"] if first else None,
+    }
+
+
 def _read_ci(
     writer: GitHubWriter, run: IssueRun, number: int, token: str
 ) -> tuple[PullSnapshot, CiReading]:
@@ -736,7 +763,9 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
             "url": pull.url,
             "head_sha": head,
             "merged": pull.merged,
+            "merged_at": (pull.merged_at or None) if pull.merged else None,
             "checks": reading.state,
+            **check_summary(reading),
             "checked_at": now,
             "head_seen": head,
             "head_since": seen_since,
