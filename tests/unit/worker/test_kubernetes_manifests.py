@@ -2520,3 +2520,39 @@ def test_no_cluster_role_binding_exists_anywhere_in_kubernetes():
         "xWORKSPACE_DEPLOYER_GSAx",
         "xWORKSPACE_DEPLOYER_UIDx",
     }
+
+
+_PROBES = ("livenessProbe", "readinessProbe", "startupProbe")
+
+
+def _exec_probe_commands(node: Any, where: str) -> list[tuple[str, list[str]]]:
+    """Every exec probe's command under NODE, with the container it is on."""
+    found: list[tuple[str, list[str]]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _PROBES and isinstance(value, dict) and "exec" in value:
+                found.append((f"{where} {node.get('name', '?')}.{key}", value["exec"]["command"]))
+            else:
+                found.extend(_exec_probe_commands(value, where))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_exec_probe_commands(item, where))
+    return found
+
+
+def test_every_exec_probe_runs_a_binary_some_image_installs():
+    """worker-job-v2.yaml once probed /usr/local/bin/swarm-healthcheck, which no
+    Dockerfile installed: the kubelet's exec fails, three failures kill the
+    container, and every gVisor attempt dies a minute in. A probe is held to
+    the images, because nothing else runs the binary before a pod does."""
+    dockerfiles = "\n".join(p.read_text() for p in sorted((REPO / "images").glob("*/Dockerfile")))
+    templates = sorted((KUBERNETES / "worker-templates").glob("*.yaml"))
+    assert templates, "no worker templates found"
+    missing = []
+    for path in templates:
+        for doc in documents(path.read_text().replace("__", "x")):
+            for where, command in _exec_probe_commands(doc, path.name):
+                binary = command[0]
+                if not binary.startswith("/") or not re.search(rf"{re.escape(binary)}(?![\w.-])", dockerfiles):
+                    missing.append(f"{where}: {binary}")
+    assert not missing, f"exec probes name a binary no images/*/Dockerfile installs: {missing}"

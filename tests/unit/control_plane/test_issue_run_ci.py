@@ -617,6 +617,142 @@ def test_red_wins_over_pending():
 
 
 # --------------------------------------------------------------------------
+# what the run page shows of a reading (#503)
+# --------------------------------------------------------------------------
+
+ACTIONS = "https://github.com/saga-xyz/widgets/actions/runs/"
+
+
+def _linked(name, conclusion, status="completed", n=0):
+    run = _run_doc(name, conclusion, status)
+    run["html_url"] = f"{ACTIONS}{n}/job/{n}"
+    return run
+
+
+def _seven_five_three():
+    """GitHub's view of PR #564 on 2026-10-04: 7 pending, 5 passed, 3 skipped."""
+    return (
+        [_linked(f"pending {i}", None, "in_progress", n=i) for i in range(7)]
+        + [_linked(f"passed {i}", "success", n=10 + i) for i in range(5)]
+        + [_linked("neutral", "neutral", n=20), _linked("skipped", "skipped", n=21),
+           _linked("cancelled", "cancelled", n=22)]
+    )
+
+
+def test_evaluate_counts_each_check_into_its_bucket():
+    reading = forgechecks.evaluate([], _seven_five_three(), [])
+
+    assert reading.counts == {"passed": 5, "failed": 0, "pending": 7, "skipped": 3}
+    # The state rule is unchanged: a cancelled run is skipped in the count
+    # and still red in the reading, as the merge step reads it.
+    assert reading.state == "red" and reading.failing_names() == ["cancelled"]
+    assert len(reading.pending) == 7
+    without_cancel = forgechecks.evaluate([], _seven_five_three()[:-1], [])
+    assert without_cancel.state == "pending"
+    assert without_cancel.counts == {"passed": 5, "failed": 0, "pending": 7, "skipped": 2}
+
+
+def test_evaluate_lists_each_check_with_its_link_or_none():
+    detailed = _run_doc("lint", "failure")
+    detailed["details_url"] = "https://ci.example.com/build/9"
+    bare = _run_doc("unit", "success")
+    statuses = [
+        {"context": "deploy", "state": "pending", "target_url": "https://ci.example.com/deploy/3"},
+        {"context": "docs", "state": "error"},
+    ]
+    reading = forgechecks.evaluate([], [_linked("e2e", "timed_out", n=4), detailed, bare], statuses)
+
+    assert reading.checks == [
+        {"name": "e2e", "state": "failed", "url": f"{ACTIONS}4/job/4"},
+        {"name": "lint", "state": "failed", "url": "https://ci.example.com/build/9"},
+        {"name": "unit", "state": "passed", "url": None},
+        {"name": "deploy", "state": "pending", "url": "https://ci.example.com/deploy/3"},
+        {"name": "docs", "state": "failed", "url": None},
+    ]
+    assert reading.counts == {"passed": 1, "failed": 3, "pending": 1, "skipped": 0}
+
+
+def test_a_required_check_nothing_reports_is_listed_pending_without_a_link():
+    required = [forgechecks.RequiredCheck("unit", 1), forgechecks.RequiredCheck("lint", None)]
+    reading = forgechecks.evaluate(required, [_linked("unit", "success", n=1)], [])
+
+    assert reading.checks == [
+        {"name": "unit", "state": "passed", "url": f"{ACTIONS}1/job/1"},
+        {"name": "lint", "state": "pending", "url": None},
+    ]
+    assert reading.state == "pending"
+
+
+def test_the_summary_caps_the_list_and_points_ci_url_at_the_first_failure():
+    runs = [_linked(f"ok {i}", "success", n=i) for i in range(60)]
+    runs[55] = _linked("broken", "failure", n=55)
+    runs[57] = _linked("slow", None, "queued", n=57)
+    summary = issueci.check_summary(forgechecks.evaluate([], runs, []))
+
+    assert len(summary["check_list"]) == issueci.MAX_CHECK_LIST == 50
+    assert summary["check_list_truncated"] is True
+    # The counts are over every check, not the kept 50.
+    assert summary["check_counts"] == {"passed": 58, "failed": 1, "pending": 1, "skipped": 0}
+    assert summary["ci_url"] == f"{ACTIONS}55/job/55"
+
+    pending_first = issueci.check_summary(forgechecks.evaluate([], runs[56:], []))
+    assert pending_first["ci_url"] == f"{ACTIONS}57/job/57"
+    assert pending_first["check_list_truncated"] is False
+    green = issueci.check_summary(forgechecks.evaluate([], runs[:2], []))
+    assert green["ci_url"] == f"{ACTIONS}0/job/0"
+    assert issueci.check_summary(forgechecks.evaluate([], [_run_doc("x", "success")], []))["ci_url"] is None
+
+
+def test_a_checking_run_serves_its_counts_list_and_ci_url(client, db, objects, writes, clock):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.rules = []  # nothing required: every check counts, as on GitHub's page
+    writes.check_runs[SHA_A] = [
+        {**doc, "id": index + 1, "head_sha": SHA_A, "app": {"id": 15368, "slug": "github-actions"}}
+        for index, doc in enumerate(_seven_five_three()[:-1])
+    ]
+
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING" and pr["checks"] == "pending"
+    assert pr["check_counts"] == {"passed": 5, "failed": 0, "pending": 7, "skipped": 2}
+    assert len(pr["check_list"]) == 14 and pr["check_list_truncated"] is False
+    assert pr["check_list"][0] == {"name": "pending 0", "state": "pending", "url": f"{ACTIONS}0/job/0"}
+    assert pr["ci_url"] == f"{ACTIONS}0/job/0"
+    assert pr["merged"] is False and pr["merged_at"] is None
+
+
+def test_a_merged_pull_request_serves_merged_and_merged_at(client, db, objects, writes, clock):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    writes.pulls[PR].update(state="closed", merged=True, merged_at="2026-10-03T12:00:30Z")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE"
+    assert run["pull_request"]["merged"] is True
+    assert run["pull_request"]["merged_at"] == "2026-10-03T12:00:30Z"
+    assert run["pull_request"]["check_counts"] == {"passed": 1, "failed": 0, "pending": 0, "skipped": 0}
+
+
+def test_a_legacy_run_document_serves_null_never_zero(client, db, objects, writes, clock):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    _read(client, clock, running["id"])
+    # A document the CI loop wrote before #503: number, url, head, checks only.
+    stored = _stored(db, running["id"])
+    stored["pull_request"] = {
+        key: stored["pull_request"][key] for key in ("number", "url", "head_sha", "checks")
+    }
+
+    pr = _read(client, clock, running["id"])["pull_request"]
+
+    for key in ("merged", "merged_at", "check_counts", "check_list", "check_list_truncated", "ci_url"):
+        assert pr[key] is None, key
+    assert pr["checks"] == "green"
+
+
+# --------------------------------------------------------------------------
 # the submitter is still a member of the tenant
 # --------------------------------------------------------------------------
 
