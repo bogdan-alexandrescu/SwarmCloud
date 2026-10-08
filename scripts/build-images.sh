@@ -67,8 +67,39 @@
 #                         is uncached, so every RUN self-test runs. Nothing is
 #                         pushed, loaded, tagged in a registry or logged in to.
 #
+# MAIN REBUILDS ONLY WHAT A COMMIT CHANGED (owner decision 2026-10-08,
+# observer proposal H; docs/ci.md "Main builds only the images a commit
+# changed"). Measured that day: every push to main rebuilt all 9 images in
+# 9.0-10.4 min, and a uv.lock change alone reached 7 of 9. application.yml
+# now runs
+#
+#   --incremental PREV    PREV is the newest record CI made of an ancestor
+#                         commit (scripts/lib/ci-built-images.sh --previous),
+#                         or `none`. An image is rebuilt iff --affected-by's
+#                         closure reaches it from `git diff <the commit its
+#                         previous digest was built from> HEAD`; every other
+#                         image keeps its previous digest, which gains this
+#                         commit's tag (`gcloud artifacts docker tags add`).
+#                         So every digest in the manifest carries this tag,
+#                         and push-images.sh, image-refs.sh and deploy.sh
+#                         cannot tell a reused image from a rebuilt one. Each
+#                         manifest entry says which it is: `reused`,
+#                         `built_from` (the commit whose build made the digest)
+#                         and `built_at`.
+#   --full-build REASON   rebuild every image anyway, recording REASON.
+#
+#   A uv.lock change rebuilds a Python image only if that image's own pruned
+#   `uv export` line (read from its Dockerfile) exports something different at
+#   the two commits. Everything is rebuilt -- the build before this change --
+#   when: build logic changed since a reused digest was built (this script,
+#   lib/common.sh, lib/ci-built-images.sh, application.yml); there is no
+#   ancestor record, or it cannot be trusted; a reused digest is older than
+#   BUILD_REUSE_MAX_AGE_DAYS (default 7), so base-image patches arrive; the
+#   working tree is dirty; --full-build; or the environment is prod.
+#
 # Usage: scripts/build-images.sh [TARGET...] [--tag SHA] [--parallel N]
 #                                [--create-repo] [--async] [--digests-only]
+#        scripts/build-images.sh --incremental PREV|none [--full-build REASON]
 #        scripts/build-images.sh --reuse-ci only|or-build
 #        scripts/build-images.sh --build-only [TARGET...] [--tag SHA] [--parallel N]
 #        scripts/build-images.sh --build-only --local [TARGET...] [--tag SHA]
@@ -81,7 +112,7 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify)
+ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify workspace-apply)
 
 # Find the build recipe for a target. Track B owns images/ and the service
 # Dockerfiles, so both layouts are accepted rather than assumed.
@@ -234,6 +265,8 @@ BUILD_ONLY=0
 LOCAL_BUILD=0
 AFFECTED_BY=""
 LIST_INPUTS=0
+INCREMENTAL=""
+FULL_BUILD_REASON=""
 
 # HOW MANY BUILDS AT ONCE, and why the default is 4 rather than "all of them".
 #
@@ -248,9 +281,9 @@ LIST_INPUTS=0
 # take what it needs and no more. And 4 is what it needs. agent-runtime-browser
 # and agent-runtime-indexer cannot be submitted until agent-runtime-base has
 # FINISHED, so the critical path is two builds long whatever the bound; four
-# slots fit the other six images inside that path, and the two derived images
-# share the slots the base frees, so nine images would only finish at the same
-# time with more.
+# slots fit the other seven images inside that path (workspace-apply, #847,
+# made it seven), and the two derived images share the slots the base frees,
+# so ten images would only finish at the same time with more.
 PARALLELISM="${BUILD_PARALLELISM:-4}"
 # How often the scheduler looks for finished builds. A build takes minutes.
 POLL_INTERVAL="${BUILD_POLL_INTERVAL:-2}"
@@ -278,7 +311,9 @@ while [[ $# -gt 0 ]]; do
     --local)       LOCAL_BUILD=1; shift ;;
     --affected-by) AFFECTED_BY="$2"; shift 2 ;;
     --inputs)      LIST_INPUTS=1; shift ;;
-    -h|--help)     sed -n '2,77p' "$0"; exit 0 ;;
+    --incremental) INCREMENTAL="$2"; shift 2 ;;
+    --full-build)  FULL_BUILD_REASON="$2"; shift 2 ;;
+    -h|--help)     sed -n '2,108p' "$0"; exit 0 ;;
     -*)            die "unknown flag: $1" ;;
     *)             TARGETS+=("$1"); shift ;;
   esac
@@ -291,6 +326,7 @@ if [[ -n "${AFFECTED_BY}" || "${LIST_INPUTS}" -eq 1 ]]; then
   [[ -z "${AFFECTED_BY}" ]] || MODE="--affected-by"
   [[ "${#TARGETS[@]}" -eq 0 && -z "${TAG}" && -z "${REUSE_CI}" \
      && "${BUILD_ONLY}${LOCAL_BUILD}${DIGESTS_ONLY}${ASYNC}${CREATE_REPO}" == 00000 \
+     && -z "${INCREMENTAL}${FULL_BUILD_REASON}" \
      && ( -z "${AFFECTED_BY}" || "${LIST_INPUTS}" -eq 0 ) ]] \
     || die "${MODE} reads every image's inputs and builds nothing; it takes no target and no other flag"
   if [[ "${LIST_INPUTS}" -eq 1 ]]; then
@@ -331,6 +367,17 @@ if [[ -n "${REUSE_CI}" ]]; then
   [[ "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 ]] \
     || die "--reuse-ci cannot be combined with --digests-only or --async"
 fi
+# --incremental is main's build of EVERY image, some of them by re-tagging the
+# digest an earlier build made. Anything that narrows, retags, defers or
+# skips the push is a different build.
+if [[ -n "${INCREMENTAL}" ]]; then
+  [[ "${#TARGETS[@]}" -eq 0 ]] \
+    || die "--incremental decides which images to rebuild itself; it cannot be narrowed to ${TARGETS[*]}"
+  [[ -z "${REUSE_CI}" && "${BUILD_ONLY}${DIGESTS_ONLY}${ASYNC}" == 000 ]] \
+    || die "--incremental cannot be combined with --reuse-ci, --build-only, --digests-only or --async"
+fi
+[[ -z "${FULL_BUILD_REASON}" || -n "${INCREMENTAL}" ]] \
+  || die "--full-build REASON says why an --incremental build rebuilds everything; without --incremental every image is built anyway"
 [[ "${#TARGETS[@]}" -gt 0 ]] || TARGETS=("${ALL_TARGETS[@]}")
 [[ "${PARALLELISM}" =~ ^[1-9][0-9]*$ ]] \
   || die "--parallel (or BUILD_PARALLELISM) must be a positive whole number, not '${PARALLELISM}'"
@@ -379,6 +426,234 @@ if [[ -n "${REUSE_CI}" ]]; then
   esac
 fi
 
+# ---------------------------------------------------------------------------
+# --incremental: which images this commit changed, offline (git and jq only).
+# ---------------------------------------------------------------------------
+# One row per image of ALL_TARGETS, in parallel indexed arrays (bash 3.2):
+# P_ACTION is build or reuse, P_WHY says why, and a reused row carries the
+# digest, the commit it was built from and when.
+P_NAME=(); P_ACTION=(); P_WHY=(); P_DIGEST=(); P_FROM=(); P_AT=()
+PREV_COMMIT=""
+
+# The files whose change changes HOW every image is built, not what goes into
+# one: a change to any of them since a reused digest was built rebuilds all.
+BUILD_LOGIC=(scripts/build-images.sh scripts/lib/common.sh scripts/lib/ci-built-images.sh .github/workflows/application.yml)
+# A reused digest older than this is rebuilt, so the patches its base images
+# (python:3.11-slim, node, nginx...) have shipped since arrive within a week
+# even on a part of the tree nobody touches.
+REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
+
+plan_row() {
+  local want="$1" i
+  for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+    if [[ "${P_NAME[$i]}" == "${want}" ]]; then printf '%s' "${i}"; return 0; fi
+  done
+  return 1
+}
+
+plan_full() {
+  local t
+  FULL_BUILD_REASON="$1"
+  P_NAME=(); P_ACTION=(); P_WHY=(); P_DIGEST=(); P_FROM=(); P_AT=()
+  for t in "${ALL_TARGETS[@]}"; do
+    P_NAME+=("${t}"); P_ACTION+=(build); P_WHY+=("full build: $1")
+    P_DIGEST+=(""); P_FROM+=(""); P_AT+=("")
+  done
+}
+
+# The changed paths among image $1's inputs, one per line, from the list in $2.
+matched_inputs() {
+  local pats p f
+  pats="$(image_inputs "$1")" || exit 1
+  while IFS= read -r f || [[ -n "${f}" ]]; do
+    [[ -n "${f}" ]] || continue
+    while IFS= read -r p; do
+      # shellcheck disable=SC2053 # the right side is a glob, on purpose
+      if [[ "${f}" == ${p} ]]; then printf '%s\n' "${f}"; break; fi
+    done <<<"${pats}"
+  done <"$2"
+}
+
+# The arguments of image $1's `uv export` line, one per line, read from its
+# Dockerfile (test_service_image_install.py holds that line). Fails when the
+# Dockerfile has none, or one this cannot repeat word for word.
+uv_export_args() {
+  local dockerfile line word words=()
+  dockerfile="$(recipe_dockerfile "$1")" || return 1
+  line="$(awk '
+      !on && /^[[:space:]]*RUN[[:space:]].*uv export/ { on = 1 }
+      on {
+        cont = ($0 ~ /\\[[:space:]]*$/)
+        text = $0
+        sub(/\\[[:space:]]*$/, "", text)
+        printf "%s ", text
+        if (!cont) exit
+      }' "${REPO_ROOT}/${dockerfile}")"
+  [[ "${line}" == *"uv export"* ]] || return 1
+  line="${line#*uv export}"
+  line="${line%%>*}"
+  read -r -a words <<<"${line}"
+  [[ "${#words[@]}" -gt 0 ]] || return 1
+  for word in "${words[@]}"; do
+    [[ "${word}" =~ ^[A-Za-z0-9_.=-]+$ ]] || return 1
+    printf '%s\n' "${word}"
+  done
+}
+
+# A hash of what image $2's `uv export` line exports at commit $1, comments
+# dropped (uv writes the command it ran into the first lines).
+uv_export_hash() {
+  local rev="$1" target="$2" dir args=() a rc=0
+  while IFS= read -r a; do args+=("${a}"); done < <(uv_export_args "${target}")
+  [[ "${#args[@]}" -gt 0 ]] || return 1
+  dir="${PLAN_DIR}/uv-${rev}"
+  if [[ ! -d "${dir}" ]]; then
+    mkdir -p "${dir}"
+    git -C "${REPO_ROOT}" show "${rev}:pyproject.toml" >"${dir}/pyproject.toml" 2>/dev/null || return 1
+    git -C "${REPO_ROOT}" show "${rev}:uv.lock" >"${dir}/uv.lock" 2>/dev/null || return 1
+  fi
+  (cd "${dir}" && uv export "${args[@]}" 2>/dev/null </dev/null) >"${dir}/export.${target}" || rc=$?
+  [[ "${rc}" -eq 0 && -s "${dir}/export.${target}" ]] || return 1
+  grep -v '^#' "${dir}/export.${target}" | git hash-object --stdin
+}
+
+# `build<TAB>why` when image $1, built from $2, takes a path listed in $3;
+# `reuse<TAB>why` when it does not. uv.lock alone is narrowed to the image's
+# own export.
+rebuild_why() {
+  local target="$1" from="$2" diff_list="$3" hits others before after
+  hits="$(matched_inputs "${target}" "${diff_list}")"
+  if [[ -z "${hits}" ]]; then
+    printf 'reuse\tno input changed'; return 0
+  fi
+  others="$(grep -vxF uv.lock <<<"${hits}" || true)"
+  if [[ -n "${others}" ]]; then
+    printf 'build\tchanged: %s' "$(head -n 3 <<<"${others}" | paste -sd ' ' -)"
+    [[ "$(wc -l <<<"${others}" | tr -d ' ')" -le 3 ]] || printf ' (and %s more)' "$(( $(wc -l <<<"${others}" | tr -d ' ') - 3 ))"
+    return 0
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    printf 'build\tuv.lock changed, and without uv its own export cannot be compared'; return 0
+  fi
+  if ! before="$(uv_export_hash "${from}" "${target}")" || ! after="$(uv_export_hash HEAD "${target}")"; then
+    printf 'build\tuv.lock changed, and its own uv export could not be read at both commits'; return 0
+  fi
+  if [[ "${before}" != "${after}" ]]; then
+    printf 'build\tuv.lock changed what its own uv export installs'
+  else
+    printf 'reuse\tuv.lock changed, but not what its own uv export installs'
+  fi
+}
+
+plan_incremental() {
+  local prev="$1" t i row digest from at img why prereq grew age_ok logic diff_list
+  if [[ -n "${FULL_BUILD_REASON}" ]]; then plan_full "${FULL_BUILD_REASON}"; return 0; fi
+  if [[ "${ENVIRONMENT}" == prod ]]; then plan_full "prod is always built whole"; return 0; fi
+  if [[ "${prev}" == none || ! -f "${prev}" ]]; then
+    plan_full "no previous build of an ancestor commit was found"; return 0
+  fi
+  if ! jq -e 'type == "object" and ((.images // null) | type) == "array"' "${prev}" >/dev/null 2>&1; then
+    plan_full "${prev} is not a build manifest"; return 0
+  fi
+  PREV_COMMIT="$(jq -r '.commit // ""' "${prev}")"
+  if [[ "$(jq -r '.environment // ""' "${prev}")" != "${ENVIRONMENT}" ]]; then
+    plan_full "the previous build was not built for ${ENVIRONMENT}"; return 0
+  fi
+  if ! [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+    plan_full "this is not a git checkout, so what changed cannot be read"; return 0
+  fi
+  if ! [[ "${PREV_COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
+     || ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${PREV_COMMIT}" "${COMMIT}" 2>/dev/null; then
+    plan_full "the previous build's commit '${PREV_COMMIT}' is not an ancestor of ${COMMIT} in this checkout"; return 0
+  fi
+  if git_dirty; then
+    plan_full "the working tree is dirty, so git cannot say what changed"; return 0
+  fi
+  [[ "${REUSE_MAX_AGE_DAYS}" =~ ^[0-9]+$ ]] \
+    || die "BUILD_REUSE_MAX_AGE_DAYS must be a whole number of days, not '${REUSE_MAX_AGE_DAYS}'"
+
+  for t in "${ALL_TARGETS[@]}"; do
+    # A digest is the previous record's; the commit and time it was BUILT are
+    # the image's own when the previous build reused it too, so a chain of
+    # reuses still diffs from, and ages from, the build that made the digest.
+    IFS=$'\t' read -r img digest from at < <(jq -r --arg n "${t}" '
+        . as $r | [ .images[] | select(.name == $n) ] as $m
+        | if ($m | length) != 1 then ["-", "-", "-", "-"]
+          else [ ($m[0].image // "-"), ($m[0].digest // "-"),
+                 ($m[0].built_from // $r.commit // "-"), ($m[0].built_at // $r.built_at // "-") ] end
+        | @tsv' "${prev}")
+    if [[ "${img}" != "${IMAGE_REPO}/${t}" ]]; then
+      plan_full "the previous build records ${t} as ${img}, not ${IMAGE_REPO}/${t}"; return 0
+    fi
+    if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      plan_full "the previous build records no sha256 digest for ${t}"; return 0
+    fi
+    if ! [[ "${from}" =~ ^[0-9a-f]{40}$ ]] \
+       || ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${from}" "${COMMIT}" 2>/dev/null; then
+      plan_full "${t}'s digest was built from '${from}', which is not an ancestor of ${COMMIT} in this checkout"; return 0
+    fi
+    age_ok="$(jq -rn --arg at "${at}" --argjson days "${REUSE_MAX_AGE_DAYS}" '
+        try (if (now - ($at | fromdateiso8601)) <= ($days * 86400) then "yes" else "no" end) catch "unreadable"')"
+    case "${age_ok}" in
+      yes) ;;
+      no) plan_full "${t}'s digest was built at ${at}, more than ${REUSE_MAX_AGE_DAYS} days ago, so base-image patches are due"; return 0 ;;
+      *)  plan_full "${t}'s build time '${at}' cannot be read, so its age is unknown"; return 0 ;;
+    esac
+    diff_list="${PLAN_DIR}/diff-${from}"
+    if [[ ! -f "${diff_list}" ]]; then
+      # --no-renames: a rename is its old path AND its new one, so moving a
+      # file out of an image's inputs reaches that image too.
+      git -C "${REPO_ROOT}" diff --no-renames --name-only "${from}" "${COMMIT}" >"${diff_list}.tmp" \
+        || die "git could not list what changed between ${from} and ${COMMIT}"
+      mv -f "${diff_list}.tmp" "${diff_list}"
+    fi
+    for logic in "${BUILD_LOGIC[@]}"; do
+      if grep -qxF -- "${logic}" "${diff_list}"; then
+        plan_full "${logic} changed since ${from:0:12}, and it decides how every image is built"; return 0
+      fi
+    done
+    why="$(rebuild_why "${t}" "${from}" "${diff_list}")"
+    P_NAME+=("${t}"); P_DIGEST+=("${digest}"); P_FROM+=("${from}"); P_AT+=("${at}")
+    P_ACTION+=("${why%%$'\t'*}"); P_WHY+=("${why#*$'\t'} since ${from:0:12}")
+  done
+
+  # An image built FROM a rebuilt one is rebuilt on it (build_after), as
+  # --affected-by closes over it.
+  grew=1
+  while [[ "${grew}" -eq 1 ]]; do
+    grew=0
+    for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+      [[ "${P_ACTION[$i]}" == reuse ]] || continue
+      prereq="$(build_after "${P_NAME[$i]}")"
+      [[ -n "${prereq}" ]] || continue
+      row="$(plan_row "${prereq}")" || continue
+      if [[ "${P_ACTION[$row]}" == build ]]; then
+        P_ACTION[i]=build; P_WHY[i]="built FROM ${prereq}, which is rebuilt"; grew=1
+      fi
+    done
+  done
+}
+
+if [[ -n "${INCREMENTAL}" ]]; then
+  require_cmd git
+  step "Incremental build"
+  PLAN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swarm-incremental.XXXXXX")"
+  trap 'rm -rf "${PLAN_DIR}"' EXIT
+  plan_incremental "${INCREMENTAL}"
+  rm -rf "${PLAN_DIR}"
+  trap - EXIT
+  if [[ -n "${FULL_BUILD_REASON}" ]]; then
+    info "rebuilding every image: ${FULL_BUILD_REASON}"
+  else
+    info "previous build: ${PREV_COMMIT}"
+  fi
+  TARGETS=()
+  for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+    printf '  %-22s %-7s %s\n' "${P_NAME[$i]}" "${P_ACTION[$i]}" "${P_WHY[$i]}" >&2
+    [[ "${P_ACTION[$i]}" == reuse ]] || TARGETS+=("${P_NAME[$i]}")
+  done
+fi
+
 # Advisory only. The check that can actually stop a bad image is the one made
 # before every submission below -- see the comment there for why a single check
 # here is not enough.
@@ -418,6 +693,48 @@ else
       die "run 'make infra' first, or re-run with --create-repo."
     fi
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# --incremental: the previous digest of every unchanged image gains this tag.
+# ---------------------------------------------------------------------------
+# BEFORE any build is submitted: agent-runtime-browser's and -indexer's
+# recipes pull agent-runtime-base:<tag>, so a derived image rebuilt on a
+# reused base finds the base under this commit's tag. In ALL_TARGETS order,
+# base first, so a base whose re-tag fails is rebuilt and so is everything
+# built FROM it. A re-tag that fails for any reason but a dead session
+# rebuilds that image instead: a full build is always a correct answer.
+REUSED=()
+if [[ -n "${INCREMENTAL}" ]]; then
+  for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+    [[ "${P_ACTION[$i]}" == reuse ]] || continue
+    target="${P_NAME[$i]}"
+    prereq="$(build_after "${target}")"
+    if [[ -n "${prereq}" ]] && row="$(plan_row "${prereq}")" && [[ "${P_ACTION[$row]}" == build ]]; then
+      P_ACTION[i]=build; P_WHY[i]="built FROM ${prereq}, which is rebuilt"
+      TARGETS+=("${target}")
+      continue
+    fi
+    tag_err=""
+    if tag_err="$(gcloud artifacts docker tags add "${IMAGE_REPO}/${target}@${P_DIGEST[$i]}" \
+         "${IMAGE_REPO}/${target}:${TAG}" --project "${PROJECT_ID}" </dev/null 2>&1 >/dev/null)"; then
+      ok "${target}: reused ${P_DIGEST[$i]} (built from ${P_FROM[$i]:0:12}), now also :${TAG}"
+      REUSED+=("${target}")
+    else
+      die_if_auth_failure "${tag_err}"
+      warn "${target}: could not tag ${P_DIGEST[$i]} as :${TAG}, so it is rebuilt instead"
+      [[ -z "${tag_err}" ]] || printf '%s\n' "${tag_err}" | redact | head -n 2 | sed 's/^/     /' >&2
+      P_ACTION[i]=build; P_WHY[i]="its previous digest could not be tagged :${TAG}"
+      TARGETS+=("${target}")
+    fi
+  done
+  # Built in ALL_TARGETS order, as a full build is.
+  ordered=()
+  for target in "${ALL_TARGETS[@]}"; do
+    if in_list "${target}" ${TARGETS[@]+"${TARGETS[@]}"}; then ordered+=("${target}"); fi
+  done
+  TARGETS=(${ordered[@]+"${ordered[@]}"})
+  info "${#TARGETS[@]} image(s) to build, ${#REUSED[@]} reused"
 fi
 
 # A Dockerfile with no cloudbuild.yaml gets a generated one. It is written to
@@ -1291,7 +1608,8 @@ trap 'rm -f "${DIGEST_OUT}"' EXIT INT TERM
 
 entries='[]'
 MISSING=()
-for target in ${BUILT[@]+"${BUILT[@]}"}; do
+BUILT_AT="$(iso_now)"
+for target in ${BUILT[@]+"${BUILT[@]}"} ${REUSED[@]+"${REUSED[@]}"}; do
   image="${IMAGE_REPO}/${target}"
   digest=""
   digest_err=""
@@ -1335,19 +1653,48 @@ for target in ${BUILT[@]+"${BUILT[@]}"}; do
     MISSING+=("${target}")
     continue
   fi
-  printf '  %-22s %s\n' "${target}" "${digest}" >&2
+  # A reused image is described by the build that MADE its digest: the next
+  # incremental build diffs from that commit and ages from that time.
+  built_from="${COMMIT}"; built_at="${BUILT_AT}"; reused=false
+  if in_list "${target}" ${REUSED[@]+"${REUSED[@]}"}; then
+    row="$(plan_row "${target}")"
+    if [[ "${digest}" != "${P_DIGEST[$row]}" ]]; then
+      err "${target}: :${TAG} points at ${digest}, not the reused ${P_DIGEST[$row]}"
+      MISSING+=("${target}")
+      continue
+    fi
+    built_from="${P_FROM[$row]}"; built_at="${P_AT[$row]}"; reused=true
+  fi
+  printf '  %-22s %s%s\n' "${target}" "${digest}" "$([[ "${reused}" == false ]] || printf ' (reused, built from %s)' "${built_from:0:12}")" >&2
   entries="$(jq -c --arg n "${target}" --arg i "${image}" --arg t "${TAG}" --arg d "${digest}" \
-    '. + [{name:$n, image:$i, tag:$t, digest:$d, ref:($i + "@" + $d)}]' <<<"${entries}")"
+    --arg from "${built_from}" --arg at "${built_at}" --argjson reused "${reused}" \
+    '. + [{name:$n, image:$i, tag:$t, digest:$d, ref:($i + "@" + $d),
+           built_from:$from, built_at:$at, reused:$reused}]' <<<"${entries}")"
 done
 
 if [[ "${#MISSING[@]}" -gt 0 ]]; then
-  die "no manifest written: ${#MISSING[@]} of ${#BUILT[@]} image(s) built but unreadable (${MISSING[*]-}). The images may well exist; what is not true is that this run can describe them, and a manifest that omits them would deploy the previous revision of each without saying so."
+  die "no manifest written: ${#MISSING[@]} of $(( ${#BUILT[@]} + ${#REUSED[@]} )) image(s) built or reused but unreadable (${MISSING[*]-}). The images may well exist; what is not true is that this run can describe them, and a manifest that omits them would deploy the previous revision of each without saying so."
 fi
 
-jq -n --arg tag "${TAG}" --arg at "$(iso_now)" --arg env "${ENVIRONMENT}" \
-      --arg commit "${COMMIT}" --argjson images "${entries}" \
-   '{tag:$tag, commit:$commit, built_at:$at, environment:$env, images:$images}' >"${MANIFEST}"
+# In ALL_TARGETS order whichever way each image was obtained, so a reader
+# (and application.yml's step summary) sees the same list every time.
+order="$(printf '%s\n' "${ALL_TARGETS[@]}" | jq -R . | jq -sc .)"
+incremental='null'
+if [[ -n "${INCREMENTAL}" ]]; then
+  incremental="$(jq -cn --arg prev "${PREV_COMMIT}" --arg why "${FULL_BUILD_REASON}" \
+    '{previous: (if $prev == "" then null else $prev end), full_build: (if $why == "" then null else $why end)}')"
+fi
+jq -n --arg tag "${TAG}" --arg at "${BUILT_AT}" --arg env "${ENVIRONMENT}" \
+      --arg commit "${COMMIT}" --argjson images "${entries}" --argjson order "${order}" \
+      --argjson incremental "${incremental}" '
+   {tag:$tag, commit:$commit, built_at:$at, environment:$env,
+    images: ($images | sort_by(.name as $n | ($order | index($n)) // 999))}
+   + (if $incremental == null then {} else {incremental:$incremental} end)' >"${MANIFEST}"
 
 hr
-ok "built ${#BUILT[@]} image(s) at tag ${TAG}"
+if [[ "${#REUSED[@]}" -gt 0 ]]; then
+  ok "built ${#BUILT[@]} image(s) and reused ${#REUSED[@]} at tag ${TAG}: ${REUSED[*]}"
+else
+  ok "built ${#BUILT[@]} image(s) at tag ${TAG}"
+fi
 info "manifest: ${MANIFEST}"

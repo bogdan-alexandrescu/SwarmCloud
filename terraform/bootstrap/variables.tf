@@ -673,3 +673,161 @@ variable "image_puller_permissions" {
     error_message = "the pull role is read-only: no runtime identity may push, delete or export an image."
   }
 }
+
+# ---------------------------------------------------------------------------
+# The personal-workspace job (workspace_deployer.tf, docs/workspaces.md §2,
+# lane W4 of #847)
+# ---------------------------------------------------------------------------
+
+variable "enable_workspace_deployer" {
+  description = <<-EOT
+    Create swarm-workspace-deployer, its roles and grants, the
+    swarm-workspace-apply topic and Cloud Build trigger, and the restricted log
+    bucket its builds write to (workspace_deployer.tf). Off until the owner's
+    one-time steps are done (docs/workspaces.md §10): this repository connected
+    to Cloud Build (workspace_apply_repository), the workspace-apply image
+    built and promoted (workspace_apply_builder_image), and the GitHub user
+    slots on (enable_forge_user_slots), whose swarmForgeSlotCreator the
+    identity is granted.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "workspace_apply_repository" {
+  description = <<-EOT
+    The second-generation Cloud Build repository the trigger builds,
+    `projects/<project>/locations/<region>/connections/<connection>/repositories/<repository>`:
+    this repository, connected read-only by the owner (docs/workspaces.md §10,
+    "Connect this repository to Cloud Build"). The trigger is created in the
+    same region, because a second-generation connection is regional.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.workspace_apply_repository == "" || can(regex("^projects/[^/]+/locations/[a-z0-9-]+/connections/[^/]+/repositories/[^/]+$", var.workspace_apply_repository))
+    error_message = "workspace_apply_repository must be a second-generation repository's full name, projects/<p>/locations/<region>/connections/<c>/repositories/<r>."
+  }
+}
+
+variable "workspace_apply_builder_image" {
+  description = <<-EOT
+    The workspace-apply image the job's three steps run in, BY DIGEST:
+    `<region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>`,
+    read from the release's promotion manifest
+    (build/deployed-images-<env>.json). A digest and not a tag, so what runs
+    as swarm-workspace-deployer changes only when the owner applies this root
+    with a new value -- a push to main that rebuilds the image does not reach
+    the identity by itself (docs/workspaces.md §2.4 R1).
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.workspace_apply_builder_image == "" || can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[^/@:]+/[^/@:]+/workspace-apply@sha256:[0-9a-f]{64}$", var.workspace_apply_builder_image))
+    error_message = "workspace_apply_builder_image must be the workspace-apply image in Artifact Registry, by digest with no tag: <region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>."
+  }
+}
+
+variable "workspace_log_readers" {
+  description = <<-EOT
+    Who may read the workspace job's build logs, which name a person's tenant
+    id and email (docs/workspaces.md §2.6): the platform's admins, as `user:`
+    or `group:` members. Each gets roles/logging.viewAccessor conditioned on
+    the restricted bucket's _AllLogs view and nothing else. The project's
+    owners read it through their own role and need no entry.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for m in var.workspace_log_readers : can(regex("^(user|group):[^@\\s]+@[^@\\s]+$", m))])
+    error_message = "workspace_log_readers are people or groups (user:<email>, group:<email>). A service account reading a person's build log is a decision for this file, not a tfvars entry, and domain: or allUsers would hand the log to everyone the restriction exists to keep out."
+  }
+}
+
+variable "workspace_log_retention_days" {
+  description = "How long the restricted bucket keeps the workspace job's build logs. 30 matches _Default's retention in this project, so routing the log away from _Default neither shortens nor lengthens how long a person's id is kept."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.workspace_log_retention_days >= 1 && var.workspace_log_retention_days <= 3650
+    error_message = "workspace_log_retention_days must be between 1 and 3650, Cloud Logging's bounds."
+  }
+}
+
+variable "workspace_deployer_roles" {
+  description = <<-EOT
+    The roles swarm-workspace-deployer holds, by the name each grant in
+    workspace_deployer.tf is made under (a custom role by its id). The
+    default is exactly docs/workspaces.md §2.3's table on the WD9 FALLBACK --
+    W0 (2026-10-08) found IAM supports no principal set naming only the
+    swarm-agent-worker-u-* accounts -- plus swarmImagePuller on the builder
+    image's repository, without which the build cannot pull its own steps'
+    image.
+
+    A role may be taken off this list, which removes its grant. A role may be
+    ADDED only by adding it to the reviewed list in the validation below in
+    the same change: that is the review (#334's rule now reads "the release
+    deployer never holds project-wide account admin; one guarded Cloud Build
+    job does", and this validation is how that stays one job's list).
+  EOT
+  type        = list(string)
+  default = [
+    # §2.3, row by row.
+    "swarmWorkspaceAccountAdmin",
+    "swarmWorkspaceProjectReader",
+    "roles/resourcemanager.projectIamAdmin",
+    "swarmWorkspaceBucketIam",
+    "roles/storage.objectCreator",
+    "swarmWorkspaceSecretBinder",
+    "swarmForgeSlotCreator",
+    "swarmWorkspaceFirestore",
+    "roles/container.clusterViewer",
+    "roles/logging.logWriter",
+    # Not in §2.3: the pull of the job's own builder image.
+    "swarmImagePuller",
+  ]
+
+  validation {
+    condition = alltrue([for r in var.workspace_deployer_roles : contains([
+      "swarmWorkspaceAccountAdmin",
+      "swarmWorkspaceProjectReader",
+      "roles/resourcemanager.projectIamAdmin",
+      "swarmWorkspaceBucketIam",
+      "roles/storage.objectCreator",
+      "swarmWorkspaceSecretBinder",
+      "swarmForgeSlotCreator",
+      "swarmWorkspaceFirestore",
+      "roles/container.clusterViewer",
+      "roles/logging.logWriter",
+      "swarmImagePuller",
+    ], r)])
+    error_message = "workspace_deployer_roles names a role nobody reviewed for swarm-workspace-deployer. Its roles are docs/workspaces.md §2.3's list and nothing else; adding one means adding it to this validation's list too, in a change the owner reviews."
+  }
+
+  validation {
+    condition     = length(distinct(var.workspace_deployer_roles)) == length(var.workspace_deployer_roles)
+    error_message = "workspace_deployer_roles lists a role twice."
+  }
+
+  # Belt and braces for the roles #334 and #79 took off the release deployer:
+  # none of them may reach this identity either, even by editing the list above.
+  validation {
+    condition = length(setintersection(toset(var.workspace_deployer_roles), toset([
+      "roles/owner",
+      "roles/editor",
+      "roles/iam.serviceAccountAdmin",
+      "roles/iam.serviceAccountKeyAdmin",
+      "roles/iam.serviceAccountTokenCreator",
+      "roles/iam.serviceAccountUser",
+      "roles/iam.roleAdmin",
+      "roles/iam.workloadIdentityPoolAdmin",
+      "roles/secretmanager.admin",
+      "roles/storage.admin",
+    ]))) == 0
+    error_message = "swarm-workspace-deployer may not hold owner, editor, serviceAccountAdmin, key admin, token creator, actAs, roleAdmin, WIF pool admin, secretmanager.admin or storage.admin: its account power is the custom swarmWorkspaceAccountAdmin, which has no key, token, actAs or delete permission."
+  }
+}

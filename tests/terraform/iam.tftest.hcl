@@ -272,7 +272,8 @@ run "custom_role_ids_are_legal_and_named_in_this_project" {
   }
 
   assert {
-    condition = length(output.ids) == 10 && alltrue([
+    # 10 platform and forge roles, and the five swarmWorkspace* roles (#847).
+    condition = length(output.ids) == 15 && alltrue([
       for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
     ])
     error_message = "every custom role id must be 3 to 64 letters, digits, underscores or dots"

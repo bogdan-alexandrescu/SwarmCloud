@@ -61,7 +61,10 @@ pytestmark = pytest.mark.skipif(
 
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify"}
+# workspace-apply (#847, lane W4) copies nothing from the repository: the job's
+# code is the checkout Cloud Build hands each step, so only its own directory
+# and the two ignore files reach it.
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -122,6 +125,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-browser/Dockerfile"], {"agent-runtime-browser"}),
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
+        (["images/workspace-apply/Dockerfile"], {"workspace-apply"}),
+        # The guard and the build file are the workspace job's checkout, not
+        # its image's: they rebuild swarm-verify (which copies all of
+        # scripts/) and never workspace-apply.
+        (["scripts/lib/workspace-guard.sh", "scripts/cloudbuild/workspace-apply.yaml"], {"swarm-verify"}),
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER),
         (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
@@ -431,6 +439,11 @@ def test_mains_build_and_push_is_unchanged():
     # ...and not on a merge queue entry, whose ref the pool rejects as it
     # rejects a pull request's (test_merge_queue_workflows.py).
     assert build["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
-    runs = [str(s.get("run", "")).strip() for s in build["steps"] if s.get("run")]
-    assert "./scripts/build-images.sh" in runs, runs
+    runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
+    # Main builds and pushes: incrementally since observer proposal H
+    # (test_build_images_incremental.py), never without pushing.
+    builds = [r for r in runs if "./scripts/build-images.sh" in r]
+    assert len(builds) == 1, runs
+    assert "./scripts/build-images.sh --incremental" in builds[0], builds[0]
+    assert not re.search(r"--(build-only|local)\b", builds[0]), builds[0]
     assert "build-not-run" not in _jobs(), "the 'not built' notice outlived the pull-request build"

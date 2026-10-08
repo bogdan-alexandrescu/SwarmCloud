@@ -42,6 +42,7 @@ Three reasons, in the order they cost the most:
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
@@ -262,6 +263,82 @@ actionlint. It cannot show that the job receives `actions: read`, that
 GitHub's API returns what the fake returns, that `gh run download` fetches the
 artifact across runs, or that a release actually gets faster. The first push
 to `main` after this lands is the first real proof — read its release run.
+
+## Main builds only the images a commit changed
+
+Owner decision 2026-10-08 (observer proposal H). `build images` on main used to
+rebuild all 9 images on every push. Measured that day, the job took **9.0-10.4
+min**: `agent-runtime-base` alone 5m04, then `agent-runtime-browser` 3m21 on
+top of it, and each service image 2m09-2m42. A `uv.lock` change, the most
+common kind of dependency bump, reached 7 of the 9. Most pushes change one
+service, or docs and tests that no image reads, and still paid for all of it.
+That is Cloud Build quota in a project shared with another team, and minutes
+on the critical path of every release.
+
+**What happens now.** The job runs two scripts in one step:
+
+1. `scripts/lib/ci-built-images.sh --previous` finds the newest `build images`
+   job on main that succeeded for an **ancestor** of this commit and kept its
+   `images-dev` record. It reads at most `CI_PREVIOUS_LOOK` (20) runs. It
+   never waits for a build that is still running and never picks a later
+   merge whose run happened to finish first. It never picks this commit
+   either, so re-running a commit's build rebuilds it.
+2. `scripts/build-images.sh --incremental <that record>` rebuilds image X only
+   if `--affected-by` reaches it from `git diff <the commit X's previous
+   digest was built from> HEAD`. That is the same input mapping and the same
+   `build_after` closure a pull request's `build-check` uses, so a base change
+   still rebuilds the browser and the indexer. Every other image keeps its
+   previous digest, and this commit's tag is added to it with `gcloud
+   artifacts docker tags add`. The tags are added **before** any build is
+   submitted, because the browser's and the indexer's recipes pull
+   `agent-runtime-base:<tag>`. If a tag cannot be added, that image is rebuilt
+   instead, together with everything built FROM it.
+
+**Why tag rather than record the old tag.** Every digest in the manifest then
+carries this commit's tag. `push-images.sh`, `image-refs.sh`, `deploy.sh` and
+`release.yml` read a manifest that is indistinguishable from a full build's,
+and none of them changed. The proof is unchanged too: the manifest still names
+all 9 digests, both trivy scans still run on all 9, and `deploy.sh
+--verify-only` and acceptance run against the full set. Each manifest entry
+adds `reused`, `built_from` (the commit whose build made the digest) and
+`built_at`. Through a chain of reuses, the next build diffs from `built_from`
+and ages from `built_at`, never from the record's own commit. Otherwise a
+change made two builds ago could hide behind a build that reused its image.
+The job's summary lists every image as rebuilt or reused.
+
+**`uv.lock` is narrowed to each image.** When `uv.lock` is the only input of a
+Python image that changed, the script runs that image's own `uv export ...
+--prune ...` line, read from its Dockerfile (held by
+`test_service_image_install.py`), at both commits. The image is rebuilt only if
+the two exports differ. Without `uv`, or if an export cannot be read, the
+image is rebuilt.
+
+**When everything is rebuilt anyway**, with the reason in the log, the
+summary and the manifest's `incremental.full_build`:
+
+* **build logic changed** since a reused digest was built: `build-images.sh`,
+  `scripts/lib/common.sh`, `ci-built-images.sh` or `application.yml`. These
+  decide how every image is built, so no diff of inputs can vouch for them;
+* **there is no ancestor record**: the first build, a record past its 30-day
+  retention, a shallow checkout (the job checks out with `fetch-depth: 0` for
+  this), or a GitHub API that could not be read. A full build is the safe
+  answer to "I could not tell", only a slower one;
+* **a reused digest is more than 7 days old** (`BUILD_REUSE_MAX_AGE_DAYS`), so
+  patches to `python:3.11-slim`, node and nginx arrive within a week even in a
+  corner of the tree nobody touches;
+* the **`full_build` input** is set on a `workflow_dispatch` of
+  application.yml;
+* the **environment is prod**. A prod release builds its own images
+  (`--reuse-ci or-build`, which is never incremental). `swarm-ui` bakes its
+  environment in, and prod is always built whole;
+* the **working tree is dirty**, so git cannot say what changed.
+
+**What this does not prove.** The tests (`test_build_images_incremental.py`,
+`test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
+remembers tags and a fake `gh`. They cannot show that Artifact Registry moves
+a tag exactly as the fake does. `push-images.sh` relies on the same command to
+move a channel tag. Read the first incremental `build images` run on main and
+its summary.
 
 ## Images are built on a pull request, without pushing
 
@@ -760,6 +837,161 @@ It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
 
+## Hotfix releases
+
+Owner decision 2026-10-08 (observer proposal H). A pull request labelled
+**`hotfix`** ships to dev on its own lane, `hotfix.yml`, minutes after it
+merges, instead of waiting behind the normal release.
+
+### Why a second lane
+
+Measured 2026-10-08 over 22 successful `release.yml` runs:
+
+| | p50 | p90 |
+|---|---|---|
+| new digests live, from the run's creation | 43 min | 97 min |
+| `release-dev` concurrency lock held | 100 min (verify 26, deploy + smoke 24, acceptance 45) | |
+| queue wait before the run starts | 10 min | 56 min |
+
+78 of the last 100 release runs were cancelled while pending, superseded by a
+newer push: `release-dev` is `cancel-in-progress: false`, so it holds one
+running release and one pending, and each new push replaces the pending one. A
+hotfix (#857) waited about 1 h 45 min to reach dev.
+
+### When to use the label
+
+Put `hotfix` on the pull request **before it merges**, for a fix dev needs now:
+a broken dispatch path, a crash loop, a release that left dev unusable. Not for
+routine work -- the normal release still runs for every push, and it is the one
+that runs acceptance. The label is read from the pull request the push to
+`main` merged (`GET /repos/{repo}/commits/{sha}/pulls`,
+`scripts/lib/hotfix-gate.sh`): only a pull request **merged into `main`** with
+the label counts. A label added after the merge does nothing until the lane is
+dispatched by hand on `main` (`gh workflow run hotfix.yml --ref main`), which
+reads the label of the commit at `main`'s head.
+
+### Why it is a workflow of its own
+
+* GitHub evaluates `concurrency:` **before any job**, so nothing a run learns
+  -- a label -- can move it out of `release-dev`. `hotfix.yml` is in
+  the `hotfix-dev` group is on its work jobs only. The workflow runs on every
+  push that would start a release, and its first job, `is this a hotfix`,
+  decides; every other job runs only on its answer. A commit without the
+  label ends there, green, in seconds.
+* **The gate is deliberately outside the group.** GitHub keeps one running
+  plus one pending run per group and cancels the older pending one when a
+  newer arrives. With the group on the workflow, an ordinary push's gate-only
+  run would displace a queued hotfix, which would then silently never run.
+  A job the gate skips never enters the group. The ordering between hotfixes
+  is held by `scripts/lib/release-order.sh`, not by the group.
+* A re-run of an old release, or a dispatch whose SHA is older than
+  `applied.json`, ends green as "superseded" and changes nothing on dev too.
+  A deliberate dev rollback therefore needs the documented path, not a re-run.
+* It runs on `main` only, never on a pull request: workload identity admits
+  only `refs/heads/main` (the comment on `application.yml`'s `build images`
+  auth step), and a pull request's ref is refused by the pool's condition.
+* It authenticates as the deployer **as `hotfix.yml`**, which is therefore on
+  the deployer's trust pin (`terraform/bootstrap/wif.tf`,
+  `deployer_workflows`). That pin is IAM in the bootstrap root, which only the
+  owner applies; until that apply the lane's first authenticating job fails
+  with `Permission 'iam.serviceAccounts.getAccessToken' denied`, having
+  changed nothing.
+
+### What it runs, and that it is the same thing the release runs
+
+`release.yml` and `hotfix.yml` run each stage through the same composite
+actions, so the two cannot drift:
+
+| stage | `.github/actions/` | what |
+|---|---|---|
+| images | `release-images` | the record `application.yml` built for this SHA (`--reuse-ci only`, never a build of its own), every digest scanned with `--scan-only` |
+| promote | `release-promote` | scan again and move `:dev` to exactly those digests, all or nothing |
+| apply | `release-apply` | pin by digest, plan, shared-project guard (`plan-guard.sh`), IAM classification, apply |
+| verify | `release-verify` | `deploy.sh --verify-only`: every service, job and worker image runs the pinned digests |
+| namespaces | `release-namespaces` | tenant namespaces and their step-spec keys, when `vars.APPLY_TENANT_NAMESPACES` is on |
+
+then the smoke test inside the VPC. **Composite actions, not a reusable
+workflow** (the first design asked for `release-steps.yml` with
+`workflow_call`): the deployer trusts workflow *files* by `job_workflow_ref`,
+and for a reusable workflow that names the called file. The called file would
+have to be on the trust pin and callable at once, so any workflow on `main`
+granting `id-token` could call it and mint the deployer -- exactly what
+`test_no_deployer_pinned_workflow_is_callable` (#457) forbids. A composite
+action runs inside the caller's job, so the token still names `release.yml` or
+`hotfix.yml`. Every gate -- `approval`, `dev-iam`, each job's `if:` -- stays in
+the workflow files, and the release tests flatten each composite action into
+the job that runs it (`_workflow` in
+`tests/unit/scripts/test_release_reuses_ci_images.py`), so
+`test_release_prod_gate.py` still reads every prod-facing step.
+
+### What it skips, and why that is safe
+
+* **`verify`**. `application.yml`'s `build images` needs `[python, shell,
+  manifests]`, so CI's image record for this SHA cannot exist unless its unit
+  tests, shellcheck and manifests passed -- and the images stage refuses to
+  build anything itself.
+* **Warming the worker jobs, acceptance, the GKE proof and the plugin tag.**
+  The same push still starts the normal release, which runs all four.
+  Acceptance is **delayed, not dropped**: it runs on the normal release, and
+  if it finds a defect the hotfix put on dev, that release goes red as it
+  would have.
+* **Any change to IAM.** A plan that changes IAM **fails** the hotfix lane
+  before anything is applied, with "the change must go through release.yml
+  and the dev-iam gate". The hotfix never applies IAM, so the owner's
+  `dev-iam` gate is untouched; the normal release holds that plan for it as
+  always. (The hotfix's promote has already moved `:dev` by then; the normal
+  release promotes the same digests again.)
+* **prod.** Every hotfix job is pinned to `ENVIRONMENT: dev` and names no
+  environment.
+
+### The two lanes never move dev backwards
+
+The lanes are in different concurrency groups, so GitHub no longer serialises
+them. `scripts/lib/release-order.sh` does, through the state bucket:
+
+* **One lock**, `gs://$TF_STATE_BUCKET/releases/dev/apply.lock`, created with
+  `--if-generation-match=0` (create only if absent, atomically). Each promote,
+  each apply (from before its plan to after its apply) and the dev-iam apply
+  takes it; a lane waits up to 30 minutes for it; it is released by
+  generation in an `always()` step, and a lock older than an hour -- a runner
+  that died holding it -- is broken.
+* **Two records**, `releases/dev/promoted.json` and `applied.json`: the SHA
+  the last successful promote and apply shipped.
+* **The rule**: under the lock, a lane proceeds only if every recorded SHA is
+  an ancestor of (or equal to) its own commit. Otherwise a newer commit is
+  already out, and the lane is **superseded**: it moves nothing, applies
+  nothing, and ends **green** -- the newer commit contains this one. The
+  check runs before promote too, so `:dev` never moves backwards, and again
+  at the start of the deploy; a verification or smoke test that fails
+  *because* a newer commit reached dev meanwhile also ends green
+  (`release-order.sh unless-superseded`), and `acceptance` does not run for
+  a superseded release.
+* A hotfix's apply waits up to 900 s for Terraform's own state lock
+  (`-lock-timeout=900s`), where a release waits 180 s.
+* **Not on prod.** A prod release is a person's choice of commit behind
+  `approval (prod)` and may be a deliberate rollback; ordering it would refuse
+  exactly that. The comparison needs `main`'s history, so every job that
+  orders checks out with `fetch-depth: 0`; a shallow checkout is refused, not
+  guessed.
+
+In the usual case the hotfix lands first and the normal release of the same
+commit follows it -- same SHA, so it proceeds, re-applies the same digests and
+runs acceptance. The normal release of an *older* commit that reaches its
+promote or apply after the hotfix stops there, superseded.
+
+### What the tests hold, and what they cannot
+
+`tests/unit/scripts/test_hotfix_release.py`: the gate proceeds only for a
+merged, labelled pull request into `main` and nothing that promotes, applies
+or deploys starts otherwise; an IAM plan fails the hotfix and is still held
+for dev-iam by the release; `release-order.sh` refuses a non-ancestor, its
+lock is exclusive and released by generation; release.yml keeps its prod gate
+and its dev-iam gate; both lanes run the same stages and pin the same tools.
+They cannot prove that GitHub runs the workflows as read, that GCS's
+generation precondition is atomic (it is documented to be), or that the
+deployer admits `hotfix.yml` before the owner applies the bootstrap root. The
+first labelled merge after that apply is the proof.
+
 ## The plugin's bridge tag is made by the release
 
 [`plugin/.claude-plugin/plugin.json`](../plugin/.claude-plugin/plugin.json)
@@ -1181,8 +1413,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the fifteen grantable roles no longer fit in a
-single call. Every chunk still authorises only a `setIamPolicy` whose modified
+list over 10 elements, and the 14 grantable roles (15 until #150 took
+`swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -1254,7 +1486,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   been used, preflight finds the permission on the role and stops. It does not
   show that the route is shut.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the fifteen, unconditioned, to
+  grant changes. CI can still grant any of the 14, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
@@ -2575,6 +2807,22 @@ under `!cancelled()`, because it executes jobs in the environment. That puts it
 under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
 `tests/unit/scripts/test_warm_jobs.py` and
 `tests/unit/worker/test_worker_self_test.py` hold all of this.
+
+**Nothing is warmed when the runner digests did not change** (observer
+proposal H, 2026-10-08). Since main reuses the digests of unchanged images
+(above), most releases ship the three runner images unchanged. A warm run on a
+digest every job has already started pays no import. It only occupies a worker
+shape. With `--previous FILE` (or `WARM_PREVIOUS_MANIFEST`), the script
+compares the three runner digests in this release's deployed manifest with
+those of the release before. If all three are equal, it warms nothing and says
+so. `release.yml` does not pass that file yet: its deploy job has no `actions:
+read` to fetch the earlier artifact, and another lane is restructuring that
+workflow. Until it does, the script skips, by name, each listed job that is
+pinned by digest and already has a successful execution on that same image.
+That is the import already paid, by the last warm run or by a tenant task. A
+job new in this release (a new tenant or profile) has no such execution and is
+warmed even when no digest changed, which comparing manifests alone would
+miss.
 
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
