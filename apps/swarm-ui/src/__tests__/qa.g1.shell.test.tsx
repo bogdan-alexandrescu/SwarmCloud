@@ -143,7 +143,7 @@ describe('G3-04: Recent marks only states a read of this page load gave', () => 
       </Spine.SkyShell>,
     )
     const group = screen.getByRole('group', { name: 'Recent workflows' })
-    const row = (name: string) => [...group.querySelectorAll<HTMLElement>('button')].find((b) => b.textContent?.includes(name))!
+    const row = (name: string) => [...group.querySelectorAll<HTMLElement>('a')].find((b) => b.textContent?.includes(name))!
     const old = row('old-lane').querySelector('.sk-st')!
     expect(old.getAttribute('data-mark')).toBe(STATE_MARK.SUCCEEDED.mark)
     const gone = row('gone-lane').querySelector('.sk-st')!

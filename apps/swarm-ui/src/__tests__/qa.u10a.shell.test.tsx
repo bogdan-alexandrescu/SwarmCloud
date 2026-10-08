@@ -127,7 +127,7 @@ describe('D14: a recent workflow is one line, never broken mid-id', () => {
     localStorage.setItem(RECENT_WORKFLOWS_KEY, JSON.stringify([{ id, state: 'RUNNING', name: null }]))
     const c = await at('/workflows')
     const button = await waitFor(() => {
-      const b = c.querySelector<HTMLElement>('.sk-recent > button.sk-kid[title]')
+      const b = c.querySelector<HTMLElement>('.sk-recent > a.sk-kid[title]')
       expect(b).not.toBeNull()
       return b!
     })
