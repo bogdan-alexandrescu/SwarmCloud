@@ -1,0 +1,159 @@
+# release-images: the images CI built for this commit, scanned; nothing moves.
+#
+# THE STEPS ARE SHARED, THE GATES ARE NOT. This composite action is one stage
+# of a dev or prod release, run by BOTH release lanes: release.yml (the
+# normal release) and hotfix.yml (the hotfix lane, owner decision 2026-10-08,
+# observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
+# cannot drift. Each caller's JOB keeps its permissions, its checkout and
+# Google authentication, its `needs:` and its `if:` -- every gate stays in the
+# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
+# with this action's steps inlined (test_release_reuses_ci_images.py,
+# `_workflow`).
+#
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
+# workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, #457), and
+# for a reusable workflow that names the CALLED file -- which would have to be
+# pinned and callable at once, so any workflow on main that grants id-token
+# could call it and mint the deployer
+# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# A composite action runs inside the caller's job, so the token still names
+# release.yml or hotfix.yml.
+#
+# The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
+# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
+# below must be the same value as ENVIRONMENT.
+
+name: release-images
+description: Fetch the digests application.yml built for this commit and scan them, moving nothing.
+inputs:
+  environment:
+    description: "dev | prod"
+    required: true
+  lane:
+    description: "release | hotfix"
+    required: true
+  reuse_ci:
+    description: "build-images.sh --reuse-ci mode: only | or-build"
+    required: true
+outputs:
+  tag:
+    description: The image tag the record carries.
+    value: ${{ steps.images.outputs.tag }}
+runs:
+  using: composite
+  steps:
+    - name: the images CI built for this commit
+      id: images
+      # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
+      # application.yml's `build images` job for this exact commit (up to 45
+      # minutes -- it is usually ~11 behind the push) and fetches the manifest
+      # it recorded. That run exists and is not stopped by later pushes:
+      # application.yml gives each commit on main a concurrency group of its
+      # own, because GitHub cancels a PENDING run when a newer one joins its
+      # group, and release.yml's path filter means the newer push may start
+      # no release to take this one's place. If that job FAILED, or never
+      # built this commit (someone cancelled it), this step fails and says
+      # which, with the URL and the re-runs that would ship THIS commit; it
+      # does not quietly build instead.
+      #
+      # That record is also why a hotfix may skip `verify`: application.yml's
+      # `build images` needs [python, shell, manifests], so a record for this
+      # SHA exists only if its unit tests, shellcheck and manifests passed.
+      #
+      # DISPATCHED BY HAND, release.yml passes `or-build`: a commit CI never
+      # built for this environment is built here, by the same script with
+      # the same tag -- one path, not a second copy of it. That includes
+      # every prod release, because application.yml builds for dev and
+      # swarm-ui bakes its environment into the bundle when it is compiled.
+      # A build CI tried and FAILED is still a failure, dispatched or not.
+      # The hotfix lane always passes `only`.
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REUSE_CI: ${{ inputs.reuse_ci }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        ./scripts/build-images.sh --reuse-ci "${REUSE_CI}"
+        echo "tag=$(jq -r '.tag' "build/images-${ENVIRONMENT}.json")" >> "$GITHUB_OUTPUT"
+
+    #
+    # `push-images.sh --scan` runs trivy against each digest and refuses to
+    # attach a channel tag to an image with fixable HIGH/CRITICAL findings.
+    # This job, when it still built its own images, authenticated, built
+    # every image through Cloud Build -- about eighteen minutes of work --
+    # and then failed on:
+    #
+    #     fail trivy not found but scanning is on; install it or pass --no-scan
+    #
+    # measured on run 35954830712, the first release run that ever got past
+    # authentication. The script's message is exactly right and names both
+    # remedies; `--no-scan` is the wrong one, because the scan is what stands
+    # between a fixable CRITICAL and a channel tag pointing at it.
+    #
+    # security.yml reaches trivy through `aquasecurity/trivy-action`, which is
+    # the right shape there -- it scans and uploads SARIF. Here a SCRIPT needs
+    # the binary on PATH, so it is installed with the project's own installer
+    # at the same pinned version rather than by a second action whose output
+    # nothing would read.
+
+    # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
+    - name: install trivy
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+          | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+        trivy --version
+
+    - name: scan the recorded digests (nothing is promoted yet)
+      # BEFORE THE APPROVAL, AND ONLY READING. `--scan-only` makes every
+      # check the promotion makes -- each recorded digest confirmed in
+      # Artifact Registry, a record built for another environment refused,
+      # every digest trivy-scanned, one refusal failing the lot -- and then
+      # stops: no channel tag moves and no deploy manifest is written
+      # (tests/unit/scripts/test_push_images_scan_only.py). So a prod
+      # reviewer approves a set that has already passed, instead of one the
+      # promotion refuses a minute after the approval.
+      shell: bash
+      run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan-only
+
+    - name: hand the scanned record to the promotion
+      # The record the step above scanned, uploaded only once it passed, so
+      # the promotion after the approval promotes exactly these digests and
+      # not a second reading of anything.
+      uses: actions/upload-artifact@v6
+      with:
+        name: scanned-images-${{ inputs.environment }}
+        path: build/images-${{ inputs.environment }}.json
+        retention-days: 30
+
+    - name: what the approval would release
+      # Written BEFORE the approval, so a prod reviewer can read it on the
+      # run's summary page while the run waits.
+      #
+      # The prose below never names the apply by its command: the gate test
+      # (test_release_prod_gate.py) reads every `run:` as text and errs
+      # toward calling a step prod-facing, so an echoed "terraform apply"
+      # made this pre-approval step count as an apply.
+      env:
+        LANE: ${{ inputs.lane }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        record="build/images-${ENVIRONMENT}.json"
+        {
+          echo "### Scanned, not promoted: $(jq -r '.tag' "${record}") for ${ENVIRONMENT}"
+          echo
+          if [ "${LANE}" = hotfix ]; then
+            echo "Nothing has moved yet. The hotfix lane's \`promote\` scans these digests again and moves"
+            echo "\`:${ENVIRONMENT}\` to exactly them, unless a newer commit is already out."
+          else
+            echo "Nothing has moved yet. Once \`approval (${ENVIRONMENT})\` succeeds -- for prod, once its"
+            echo "required reviewer approves -- \`promote\` scans these digests again and moves"
+            echo "\`:${ENVIRONMENT}\` to exactly them, and the apply job after it deploys them."
+          fi
+          echo
+          echo "| image | digest |"
+          echo "|---|---|"
+          jq -r '.images[] | "| \(.name) | `\(.digest)` |"' "${record}"
+        } >> "$GITHUB_STEP_SUMMARY"

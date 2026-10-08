@@ -129,6 +129,9 @@ def test_terraform_apply_applies_in_job_only_a_plan_classified_free_of_iam(envir
     text = _condition(f"{INFRA} job's apply", step.get("if"))
     values = {
         "env.ENVIRONMENT": environment,
+        # The step is .github/actions/release-apply's, flattened: its
+        # `inputs.environment` is the job's ENVIRONMENT, which reads this.
+        "github.event.inputs.environment": environment,
         f"steps.{step_id}.outputs.{output}": iam,
         "always()": True,
         "success()": True,
@@ -171,10 +174,13 @@ def test_an_approved_iam_plan_is_applied_and_deployed(release):
     jobs = _jobs()
     gate = _iam_job(jobs)
     deploys = sorted(_holders(jobs, "deploys"))
+    # A deploy a newer commit superseded (the hotfix lane; release-order.sh)
+    # ends green and skips acceptance on purpose: test_release_acceptance_job.py
+    # holds that. Every other run must reach every deploying job.
     runs = [
         results
         for results, outs in _attempts(jobs, ctx, endings=("success",))
-        if outs[INFRA].get("iam") == "true"
+        if outs[INFRA].get("iam") == "true" and outs["deploy"].get("superseded") != "true"
     ]
     assert runs, "no schedule classified the plan as IAM"
     for results in runs:
@@ -227,7 +233,7 @@ def test_a_routine_dev_release_flows_without_dev_iam(release):
     runs = [
         results
         for results, outs in _attempts(jobs, ctx, endings=("success",))
-        if outs[INFRA].get("iam") == "false"
+        if outs[INFRA].get("iam") == "false" and outs["deploy"].get("superseded") != "true"
     ]
     assert runs, "no schedule classified the plan free of IAM"
     for results in runs:

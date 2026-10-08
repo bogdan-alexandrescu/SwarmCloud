@@ -1,0 +1,243 @@
+# release-apply: pin, plan, guard, classify and apply -- on dev under the
+# release lock, never backwards, and never an IAM change outside dev-iam.
+#
+# THE STEPS ARE SHARED, THE GATES ARE NOT. This composite action is one stage
+# of a dev or prod release, run by BOTH release lanes: release.yml (the
+# normal release) and hotfix.yml (the hotfix lane, owner decision 2026-10-08,
+# observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
+# cannot drift. Each caller's JOB keeps its permissions, its checkout and
+# Google authentication, its `needs:` and its `if:` -- every gate stays in the
+# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
+# with this action's steps inlined (test_release_reuses_ci_images.py,
+# `_workflow`).
+#
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
+# workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, #457), and
+# for a reusable workflow that names the CALLED file -- which would have to be
+# pinned and callable at once, so any workflow on main that grants id-token
+# could call it and mint the deployer
+# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# A composite action runs inside the caller's job, so the token still names
+# release.yml or hotfix.yml.
+#
+# The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
+# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
+# below must be the same value as ENVIRONMENT.
+#
+# The caller checks out with fetch-depth: 0 and sets up Terraform first.
+
+name: release-apply
+description: Pin every image by digest, plan, run the shared-project guard, classify IAM and apply.
+inputs:
+  environment:
+    description: "dev | prod"
+    required: true
+  lane:
+    description: "release | hotfix"
+    required: true
+  promoted:
+    description: "'true' when this run's promote succeeded (pin its manifest); otherwise pin what the channel holds now"
+    required: true
+  lock_timeout:
+    description: "Terraform's -lock-timeout: 180s for a release, 900s for a hotfix"
+    required: true
+outputs:
+  iam:
+    description: "'true' or 'false' on dev; empty on prod and on a superseded release"
+    value: ${{ steps.iam.outputs.iam }}
+  plan_uri:
+    description: Where a dev plan that changes IAM is held for dev-iam (release lane).
+    value: ${{ steps.held.outputs.uri }}
+  plan_sha256:
+    description: The held plan's sha256.
+    value: ${{ steps.held.outputs.sha256 }}
+runs:
+  using: composite
+  steps:
+    - name: take the release lock
+      id: lock
+      if: inputs.environment != 'prod'
+      shell: bash
+      run: ./scripts/lib/release-order.sh lock --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+    - name: is a newer commit already out
+      id: order
+      if: inputs.environment != 'prod'
+      shell: bash
+      run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
+
+    - name: init
+      shell: bash
+      run: |
+        terraform -chdir="${TF_ROOT}" init -input=false -reconfigure \
+          -backend-config="bucket=${TF_STATE_BUCKET}" \
+          -backend-config="prefix=infra/${ENVIRONMENT}"
+
+    # THE APPLY IS THE DEPLOY, AND IT DEPLOYS DIGESTS.
+    #
+    # terraform/infra takes `image_refs` -- one sha256 digest per image -- and
+    # refuses to plan while any image has none. This job used to plan with the
+    # tfvars alone, which meant `image_tag = "bootstrap"`: every service and
+    # every worker job planned onto a tag that does not exist. It never got
+    # that far only because no release had yet passed its build.
+    - name: fetch the promotion manifest
+      if: inputs.promoted == 'true' && steps.order.outputs.superseded != 'true'
+      uses: actions/download-artifact@v7
+      with:
+        name: deployed-images-${{ inputs.environment }}
+        path: build/
+
+    - name: pin every image by digest
+      # From this run's promotion when it built; otherwise from what the
+      # channel tag points at NOW, written down as a manifest so the deploy
+      # job verifies exactly what this apply pinned even if someone moves
+      # the tag in between. scripts/lib/image-refs.sh refuses a tag.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        manifest="build/deployed-images-${ENVIRONMENT}.json"
+        if [ -f "${manifest}" ]; then
+          ./scripts/lib/image-refs.sh --manifest "${manifest}" \
+            --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
+        else
+          ./scripts/lib/image-refs.sh --channel "${ENVIRONMENT}" --write-manifest "${manifest}" \
+            --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
+        fi
+
+    - uses: actions/upload-artifact@v6
+      if: steps.order.outputs.superseded != 'true'
+      with:
+        name: pinned-images-${{ inputs.environment }}
+        path: build/deployed-images-*.json
+        retention-days: 30
+
+    - name: plan
+      if: steps.order.outputs.superseded != 'true'
+      env:
+        TF_LOCK_TIMEOUT: ${{ inputs.lock_timeout }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        terraform -chdir="${TF_ROOT}" plan -input=false -lock-timeout="${TF_LOCK_TIMEOUT}" \
+          -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
+          -var-file="${GITHUB_WORKSPACE}/build/image-refs-${ENVIRONMENT}.tfvars.json" \
+          -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
+        terraform -chdir="${TF_ROOT}" show -json plan.tfplan > "${TF_ROOT}/plan.json"
+
+    - name: shared-project guard
+      # The SAME implementation `make destroy` uses -- scripts/lib/plan-guard.sh
+      # over scripts/lib/destroy-guard.jq -- not a restatement of it.
+      #
+      # This step used to re-implement the rule as an awk type regex, and the
+      # two drifted. destroy-guard.jq exempts IAM edges by SHAPE
+      # (`_iam_(member|binding|policy)$`); the awk exempted only
+      # `google_project_iam`, so a plan deleting any of
+      # google_storage_bucket_iam_member, google_pubsub_topic_iam_member,
+      # google_secret_manager_secret_iam_binding,
+      # google_artifact_registry_repository_iam_member,
+      # google_cloud_run_v2_service_iam_member or
+      # google_pubsub_subscription_iam_member was blocked from production.
+      # Those are exactly the resources that disappear when a tenant is
+      # removed or a tenant's provider list changes -- routine applies.
+      # (The awk also exempted `google_firestore_` while destroy.sh's own list
+      # did not, so the two Track D guards disagreed in both directions.)
+      #
+      # It also now enforces the forward half of the rule: everything the plan
+      # CREATES must carry managed-by=swarm-terraform, because `make destroy`
+      # refuses to delete anything that does not.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: ./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --mode apply
+
+    - name: does this plan change IAM
+      id: iam
+      # DEV ONLY, and prod is untouched: its one approval is `approval
+      # (prod)` in release.yml, which already covers every plan.
+      #
+      # Owner decision, 2026-09-28 (#268): a dev plan that creates, updates,
+      # replaces, deletes or forgets a custom role or an IAM member, binding
+      # or policy is applied only in the `dev-iam` environment, behind the
+      # owner's review; every other dev plan applies here, as before. The rule
+      # is scripts/lib/iam-plan.jq, reached through plan-guard.sh, and it
+      # classifies the JSON of plan.tfplan -- the one file either apply
+      # applies. The IAM rows go to this job's summary, on the run's page,
+      # where the reviewer reads them while `dev-iam` waits.
+      #
+      # stdout is exactly `true` or `false`; anything the classifier cannot
+      # read exits non-zero, which fails this job, and nothing is applied.
+      if: inputs.environment != 'prod' && steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        iam="$(./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --classify-iam --summary "${GITHUB_STEP_SUMMARY}")"
+        case "${iam}" in
+          true|false) echo "iam=${iam}" >> "$GITHUB_OUTPUT" ;;
+          *) echo "::error::the IAM classification answered '${iam}'"; exit 1 ;;
+        esac
+
+    - name: a hotfix never changes IAM
+      # THE HOTFIX LANE'S ONE REFUSAL. It skips the owner's dev-iam review by
+      # construction -- there is no `infrastructure-iam` in hotfix.yml -- so a
+      # plan that changes IAM is not its to make. It fails here, before
+      # anything is applied, and says where the change goes instead. (The
+      # promote before it has moved :dev; the normal release of the same
+      # push re-promotes the same digests and holds this plan for dev-iam.)
+      if: inputs.lane == 'hotfix' && steps.iam.outputs.iam == 'true'
+      shell: bash
+      run: |
+        echo "::error title=This change cannot ship as a hotfix::its plan changes IAM (the rows are in this job's summary). The hotfix lane never changes IAM, so it changed nothing in ${ENVIRONMENT}. The change must go through release.yml and the dev-iam gate: the normal release started by the same push to main holds this plan for the owner's approval in dev-iam."
+        exit 1
+
+    - name: hold the saved plan for the dev-iam review
+      id: held
+      # THE SAME PLAN, NOT A RE-PLAN. The rows the owner approves were read
+      # from plan.tfplan, so plan.tfplan is what the dev-iam job applies:
+      # this step records its sha256 as a job output and copies it to the
+      # state bucket, and that job refuses a file whose sha256 differs.
+      # Terraform itself refuses a saved plan whose state has moved on.
+      #
+      # THE STATE BUCKET, NOT A WORKFLOW ARTIFACT. This repository is public,
+      # and a saved plan holds every planned value in plaintext; the state
+      # bucket already holds the same values in the state, has public access
+      # prevention enforced, and the deployer is objectAdmin on it
+      # (terraform/bootstrap). The object is deleted once it is applied.
+      if: inputs.lane == 'release' && steps.iam.outputs.iam == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        uri="gs://${TF_STATE_BUCKET}/plans/${ENVIRONMENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.tfplan"
+        sha="$(sha256sum "${TF_ROOT}/plan.tfplan" | cut -d' ' -f1)"
+        gcloud storage cp --no-user-output-enabled "${TF_ROOT}/plan.tfplan" "${uri}"
+        echo "uri=${uri}" >> "$GITHUB_OUTPUT"
+        echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+        {
+          echo "Held for review: \`${uri}\`, sha256 \`${sha}\`. Nothing in this plan has been applied."
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: apply
+      id: apply
+      # prod: always, as before. dev: only a plan classified free of IAM --
+      # an explicit 'false'. 'true' is applied by the dev-iam job (release)
+      # or refused (hotfix); an empty answer -- including a superseded
+      # release, which never classified -- is applied nowhere.
+      if: inputs.environment == 'prod' || steps.iam.outputs.iam == 'false'
+      env:
+        TF_LOCK_TIMEOUT: ${{ inputs.lock_timeout }}
+      shell: bash
+      run: terraform -chdir="${TF_ROOT}" apply -input=false -lock-timeout="${TF_LOCK_TIMEOUT}" plan.tfplan
+
+    - name: record what dev now runs
+      if: inputs.environment != 'prod' && steps.apply.outcome == 'success'
+      shell: bash
+      run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what applied
+
+    - name: release the release lock
+      # always(): a failed or cancelled apply must not leave dev locked until
+      # the lock goes stale. It deletes only THIS lane's lock (by generation).
+      if: always() && steps.lock.outputs.generation != ''
+      env:
+        GENERATION: ${{ steps.lock.outputs.generation }}
+      shell: bash
+      run: ./scripts/lib/release-order.sh unlock --environment "${ENVIRONMENT}" --generation "${GENERATION}"

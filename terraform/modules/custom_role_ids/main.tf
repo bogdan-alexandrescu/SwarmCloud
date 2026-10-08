@@ -1,7 +1,8 @@
 # The ids of the platform's custom roles, spelled once for both roots: the
-# eight terraform/bootstrap/platform_roles.tf defines, and swarmForgeSlotCreator
+# eight terraform/bootstrap/platform_roles.tf defines, swarmForgeSlotCreator
 # and swarmForgeSlotVersionManager (terraform/bootstrap/forge_user_slots.tf,
-# #780).
+# #780), and the five swarmWorkspace* roles of swarm-workspace-deployer
+# (terraform/bootstrap/workspace_deployer.tf, #847).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -52,5 +53,13 @@ locals {
     # forge_user_slots.tf there.
     forge_slot_creator         = "swarmForgeSlotCreator${local.role_suffix}"
     forge_slot_version_manager = "swarmForgeSlotVersionManager${local.role_suffix}"
+    # swarm-workspace-deployer's (docs/workspaces.md §2.3, #847). Defined and
+    # granted by terraform/bootstrap/workspace_deployer.tf alone; terraform/infra
+    # never names them.
+    workspace_account_admin  = "swarmWorkspaceAccountAdmin${local.role_suffix}"
+    workspace_project_reader = "swarmWorkspaceProjectReader${local.role_suffix}"
+    workspace_bucket_iam     = "swarmWorkspaceBucketIam${local.role_suffix}"
+    workspace_secret_binder  = "swarmWorkspaceSecretBinder${local.role_suffix}"
+    workspace_firestore      = "swarmWorkspaceFirestore${local.role_suffix}"
   }
 }

@@ -96,6 +96,38 @@ ESTABLISHED_CODES = frozenset({
     "writeback_unauthorized",
 })
 
+#: Refusals that arrived with the personal workspace (#868) and are NOT
+#: switches, each for a stated reason. Not ESTABLISHED (they were not on main
+#: on 2026-10-08) and not a precedent: a refusal on an existing path still
+#: goes behind a switch. Owner to confirm (questions.json on #868's fix).
+NOT_SWITCHABLE_CODES = frozenset({
+    # Already behind their own setting, WORKSPACE_GATE (off, read once in
+    # `workspaces.gate_from_env`), as REPOSITORY_NOT_GRANTED is behind
+    # REPOSITORY_GRANTS_ENFORCED. The gate also withholds a person's tenant
+    # (`withholds_tenant`), so a REFUSAL_ switch that let the submission
+    # through with the gate on would run it without a tenant.
+    "WORKSPACE_NOT_READY",
+    "NO_CLAUDE_ACCOUNT",
+    # Raised only by the workspace endpoints this change introduces, so no
+    # existing caller can be refused by them (#845's failure). Continuing past
+    # any of them is the breach itself: a service account or a secret admin
+    # owning a workspace, a workspace on another identity's tenant, lending
+    # another tenant's account, or a record moved out of its state machine.
+    "WORKSPACE_NOT_FOR_SERVICE_ACCOUNTS",
+    "WORKSPACE_PRINCIPAL_FORBIDDEN",
+    "WORKSPACE_ID_TAKEN",
+    "WORKSPACE_REQUEST_TOO_SOON",
+    "WORKSPACE_FAILED",
+    "WORKSPACE_NOT_REQUESTED",
+    "WORKSPACE_NOT_FOUND",
+    "WORKSPACE_WRONG_STATE",
+    "ACCOUNT_NOT_LENDABLE",
+    "ACCOUNT_IS_THEIRS",
+})
+
+#: What the guard lets through without a switch.
+ALLOWED_CODES = ESTABLISHED_CODES | NOT_SWITCHABLE_CODES
+
 #: `onboarding.COPY`'s failure codes on 2026-10-08, served as
 #: `detail.failure_code` by AccessRefused and AuthorisationRefused.
 ESTABLISHED_FAILURE_CODES = frozenset({
@@ -170,7 +202,7 @@ def codes() -> dict[str, str]:
 
 
 def test_every_4xx_code_is_established_or_switched(codes):
-    missing = unlisted(codes, ESTABLISHED_CODES)
+    missing = unlisted(codes, ALLOWED_CODES)
     assert not missing, (
         "a 4xx code swarm-api can raise is neither established nor behind a switch. "
         "A NEW refusal ships off (observer proposal I): register a Switch for it in "
@@ -206,14 +238,15 @@ def test_the_enumeration_reaches_every_kind_of_declaration(codes):
 
 def test_the_established_lists_name_nothing_that_no_longer_exists(codes):
     """A stale entry is an allow-list slot a new refusal could quietly take."""
-    assert sorted(ESTABLISHED_CODES - set(codes)) == []
+    assert sorted(ALLOWED_CODES - set(codes)) == []
+    assert not ESTABLISHED_CODES & NOT_SWITCHABLE_CODES
     assert sorted(ESTABLISHED_FAILURE_CODES - set(onboarding.COPY)) == []
 
 
 def test_a_switch_is_never_also_established(codes):
     for code, switch in refusals.SWITCHES.items():
         assert switch.code == code
-        assert code not in ESTABLISHED_CODES | ESTABLISHED_FAILURE_CODES, code
+        assert code not in ALLOWED_CODES | ESTABLISHED_FAILURE_CODES, code
         assert code in codes or code in onboarding.COPY, f"switch {code} gates nothing"
 
 
@@ -226,11 +259,11 @@ def test_the_guard_refuses_a_new_unswitched_refusal(codes, monkeypatch):
 
     probe = dict(codes)
     probe[ProbeRefusal.code] = "probe"
-    assert unlisted(probe, ESTABLISHED_CODES) == ["probe_new_refusal (probe)"]
+    assert unlisted(probe, ALLOWED_CODES) == ["probe_new_refusal (probe)"]
 
     monkeypatch.setitem(refusals.SWITCHES, ProbeRefusal.code,
                         Switch(code=ProbeRefusal.code, why="probe"))
-    assert unlisted(probe, ESTABLISHED_CODES) == []
+    assert unlisted(probe, ALLOWED_CODES) == []
 
 
 # --------------------------------------------------------------------------

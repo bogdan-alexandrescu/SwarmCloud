@@ -24,7 +24,12 @@ that decides "reuse only" versus "reuse or build" evaluated for each event:
     behind the approval);
   * application.yml builds every commit the release would ship, with no tag of
     its own, and a run on main is neither cancelled nor -- while still queued
-    -- replaced by the next push.
+    -- replaced by the next push;
+  * since observer proposal H (2026-10-08) application.yml's build is
+    INCREMENTAL -- unchanged images keep their previous digest under this
+    commit's tag, and the record still names every image -- while the
+    release's own build, when it has to make one (a dispatch, or prod), is
+    always whole.
 
 WHAT THIS CANNOT PROVE: that GitHub runs these workflows as read -- that the
 job gets the token scopes it asks for, that the API returns what the scripts
@@ -45,12 +50,151 @@ REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
 
 
-def _workflow(name: str) -> dict:
+def _load_workflow(name: str) -> dict:
     data = yaml.safe_load((WORKFLOWS / name).read_text())
     # PyYAML reads the bare key `on` as the boolean True.
     if True in data:
         data["on"] = data.pop(True)
     return data
+
+
+ACTIONS = REPO / ".github" / "actions"
+
+
+def _workflow(name: str) -> dict:
+    """The workflow, with every step that runs a composite action of this
+    repository (`uses: ./.github/actions/<name>`) FLATTENED into the steps it
+    runs, each with every `inputs.<name>` replaced by the expression the step
+    passes in `with:`.
+
+    release.yml and hotfix.yml run each release stage through
+    .github/actions/release-* (owner decision 2026-10-08, observer proposal
+    H). Without this, a stage would be one `uses:` step with no `run:`, and
+    every test here that looks for a prod-facing step would pass over it
+    without checking anything.
+
+    Flattening is exact under one rule this enforces: a composite step's
+    `if:` and the `if:`s of the steps inside it are not both set. The job's
+    other steps read a composite's outputs (`steps.<id>.outputs.<name>`); those
+    references become the expression the action declares for that output, so
+    a job output or a later `if:` reads the step that really writes it."""
+    data = _load_workflow(name)
+    for job in (data.get("jobs") or {}).values():
+        if isinstance(job, dict) and job.get("steps"):
+            _flatten(job, {**(data.get("env") or {}), **(job.get("env") or {})})
+    return data
+
+
+_INPUT = re.compile(r"(?<![\w.])inputs\.([\w-]+)\b")
+
+
+def _input_expression(value) -> str:
+    """What a `with:` value is, as an expression to put in place of
+    `inputs.<name>`: the expression itself, or a quoted literal."""
+    body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(value), re.S)
+    if body:
+        return f"({body.group(1).strip()})"
+    assert "${{" not in str(value), f"a `with:` value mixing text and an expression is not modelled: {value!r}"
+    if isinstance(value, bool):
+        value = "true" if value else "false"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _rewrite(node, pattern: re.Pattern, replace, *, bare: bool):
+    """`node` with `pattern` replaced: everywhere in a bare `if:` expression,
+    and only inside `${{ }}` everywhere else (a `run:` may mention the words
+    in prose outside them)."""
+    if isinstance(node, dict):
+        return {k: _rewrite(v, pattern, replace, bare=(k == "if")) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_rewrite(v, pattern, replace, bare=False) for v in node]
+    if not isinstance(node, str):
+        return node
+    if bare and "${{" not in node:
+        return pattern.sub(replace, node)
+    return re.sub(r"\$\{\{(.*?)\}\}", lambda m: "${{" + pattern.sub(replace, m.group(1)) + "}}", node, flags=re.S)
+
+
+def _action(uses: str) -> dict:
+    path = REPO / uses[2:] / "action.yml"
+    assert path.is_file(), f"{uses} has no action.yml"
+    action = yaml.safe_load(path.read_text())
+    assert (action.get("runs") or {}).get("using") == "composite", f"{uses} is not a composite action"
+    return action
+
+
+def _expression_body(value) -> str:
+    body = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", str(value), re.S)
+    assert body, f"an action output that is not one expression is not modelled: {value!r}"
+    return body.group(1).strip()
+
+
+def _flatten(job: dict, env: dict) -> None:
+    """`env` is the job's environment, workflow level included: a `with:`
+    value that is only `${{ env.X }}` stands for what X is set to there."""
+    steps: list[dict] = []
+    renamed: dict[str, dict[str, str]] = {}  # composite step id -> {output: expression}
+    for step in job["steps"]:
+        uses = str(step.get("uses", ""))
+        if not uses.startswith("./.github/actions/"):
+            steps.append(step)
+            continue
+        action = _action(uses)
+        declared = action.get("inputs") or {}
+        given = step.get("with") or {}
+        unknown = sorted(set(given) - set(declared))
+        assert not unknown, f"{uses} is passed {unknown}, which it does not declare"
+        inputs: dict[str, str] = {}
+        for name, spec in declared.items():
+            if name in given:
+                value = given[name]
+                named = re.fullmatch(r"\s*\$\{\{\s*env\.([\w-]+)\s*\}\}\s*", str(value))
+                if named and named.group(1) in env:
+                    value = env[named.group(1)]
+                inputs[name] = _input_expression(value)
+            else:
+                assert not (spec or {}).get("required"), f"{uses} is not passed its required input {name!r}"
+                inputs[name] = _input_expression((spec or {}).get("default", ""))
+
+        def one(match: re.Match, inputs=inputs, uses=uses) -> str:
+            assert match.group(1) in inputs, f"{uses} reads inputs.{match.group(1)}, which it does not declare"
+            return inputs[match.group(1)]
+
+        inner = _rewrite(action["runs"]["steps"], _INPUT, one, bare=False)
+        outer_if = step.get("if")
+        for s in inner:
+            assert not (outer_if is not None and s.get("if") is not None), (
+                f"{uses} has an `if:` on the step that runs it and on its own step {s.get('name')!r}; "
+                "the model flattens one or the other, not both"
+            )
+            if outer_if is not None:
+                s["if"] = outer_if
+        steps.extend(inner)
+        if step.get("id"):
+            renamed[step["id"]] = {
+                name: _rewrite(_expression_body(spec.get("value")), _INPUT, one, bare=True)
+                for name, spec in (action.get("outputs") or {}).items()
+            }
+
+    if renamed:
+        pattern = re.compile(r"(?<![\w.])steps\.(" + "|".join(map(re.escape, renamed)) + r")\.outputs\.([\w-]+)\b")
+
+        def output(match: re.Match) -> str:
+            outputs = renamed[match.group(1)]
+            assert match.group(2) in outputs, f"steps.{match.group(1)} declares no output {match.group(2)!r}"
+            return f"({outputs[match.group(2)]})"
+
+        steps = [_rewrite(s, pattern, output, bare=False) for s in steps]
+        if job.get("outputs"):
+            job["outputs"] = {
+                k: (
+                    "${{ " + output(m) [1:-1] + " }}"
+                    if (m := re.fullmatch(r"\s*\$\{\{\s*" + pattern.pattern + r"\s*\}\}\s*", str(v)))
+                    else _rewrite(v, pattern, output, bare=False)
+                )
+                for k, v in job["outputs"].items()
+            }
+    job["steps"] = steps
 
 
 def _code(run: str) -> str:
@@ -142,6 +286,12 @@ def test_the_release_builds_only_through_reuse_and_on_a_push_only_reuses():
         assert _reuse_mode(step, "workflow_dispatch") == "or-build", (
             "a release dispatched by hand for a commit CI never built cannot build it: "
             f"{_reuse_mode(step, 'workflow_dispatch')!r}"
+        )
+        # The build a release makes for itself is prod's, or a commit CI never
+        # built: it has no previous record of its own to build on, and prod
+        # is always built whole (build-images.sh plan_incremental).
+        assert "--incremental" not in _code(step["run"]), (
+            f"release.yml's {job_id} job builds incrementally; only application.yml's build may"
         )
     for job_id, job in release["jobs"].items():
         for step in job.get("steps") or []:
@@ -275,6 +425,10 @@ def test_application_builds_every_commit_the_release_would_ship():
     )
     code = _code(step["run"])
     assert "--reuse-ci" not in code, "application.yml's build reuses instead of building"
+    # Incremental, and the record it uploads still describes the whole build:
+    # build-images.sh writes every image to it, reused or rebuilt
+    # (test_build_images_incremental.py), so the release promotes all of them.
+    assert "build-images.sh --incremental" in code, "application.yml's build is not incremental"
     assert "--tag" not in code, (
         "application.yml's build names its own tag; the tag is the commit's, derived once "
         "(git_sha), so a release that builds a commit itself tags it the same way"
