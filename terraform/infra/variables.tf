@@ -807,6 +807,19 @@ variable "enable_quota_refresh" {
   default     = true
 }
 
+variable "enable_issue_sweep" {
+  description = <<-EOT
+    swarm-api's SWEEP_ENABLED: whether POST /v1/admin/issues/sweep -- the
+    per-tenant issue_sweep Cloud Scheduler job, every 30 minutes -- may start
+    issue runs at all (docs/issue-runs.md "Sweeper"). OFF by default, by the
+    new-refusals-ship-off rule: a swept run auto-approves its plan and
+    auto-merges its pull request. A tenant is swept only when this AND its own
+    `issue_sweep.enabled` (PUT /v1/admin/tenants/<id>/issue-sweep) are on.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool

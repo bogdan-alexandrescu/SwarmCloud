@@ -445,6 +445,15 @@ class ApiSettings:
     #: switched on in the migration step (OB10), after the owner's connection
     #: test (REPOSITORY_GRANTS_ENFORCED=true).
     repository_grants_enforced: bool = False
+
+    # --- the issue sweeper (owner decisions 2026-10-08) ----------------------
+    #: Whether POST /v1/admin/issues/sweep starts issue runs at all
+    #: (`swarm_api.issuesweep`). OFF by default (SWEEP_ENABLED), by the
+    #: new-refusals-ship-off rule of PR 873: a sweep starts planners, then
+    #: auto-approved workflows whose pull requests auto-merge, in a tenant's
+    #: repositories, so it starts only once an operator has chosen it -- and
+    #: then only for a tenant whose own `issue_sweep.enabled` is also on.
+    sweep_enabled: bool = False
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
     #: service, holds the stop permissions. Empty means a cancel is left to the
@@ -537,6 +546,7 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
+            sweep_enabled=_bool("SWEEP_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
