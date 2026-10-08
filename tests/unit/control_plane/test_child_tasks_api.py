@@ -342,6 +342,40 @@ def test_a_child_is_signed_at_format_2_over_its_parent_fields(db, worker_tokens,
     assert not signer.verifies({**doc, "parent_task_id": "task_elsewhere"}, child_id)
 
 
+
+@pytest.mark.parametrize("access", ["read", "write"])
+def test_a_child_inherits_its_parents_github_credential_inside_its_signature(
+    db, worker_tokens, group_map, objects, access
+):
+    """#780 OB7: a child runs on its parent's repository as its parent's
+    submitter, so it carries the parent's resolved forge credential and mode,
+    never a wider one, signed at format 3 so a rewrite fails."""
+    from swarm_api.gittokens import Scope, provider_suffix
+
+    from .spec_signer import LocalSpecSigner
+
+    signer = LocalSpecSigner()
+    ctx = build_context(
+        settings=api_settings(child_key=KEY), db=db,
+        verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, signer=signer,
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    slot = provider_suffix(Scope.USER, user="alice@saga.xyz")
+    ready_parent(client, db, attempt, forge_credential=slot, forge_access=access)
+    made = submit(client, attempt)
+    assert made.status_code == 201, made.text
+    child_id = made.json()["task"]["id"]
+    doc = db.docs[f"tasks/{child_id}"]
+    assert doc["forge_credential"] == slot and doc["forge_access"] == access
+    assert doc["spec_format"] == 3
+    assert signer.verifies(doc, child_id)
+    assert not signer.verifies({**doc, "forge_access": "write" if access == "read" else "read"},
+                               child_id)
+
 def test_a_created_child_is_counted_as_a_submitted_task_and_a_dedupe_is_not(
     db, worker_tokens, group_map, objects
 ):

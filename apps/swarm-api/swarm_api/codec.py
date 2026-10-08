@@ -212,6 +212,27 @@ def _forge_access(value: Any) -> str | None:
     return value if isinstance(value, str) and value in FORGE_ACCESS else None
 
 
+#: What `task_to_api` says a task's `forge_credential` is, by its prefix.
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+_FORGE_SOURCES = (
+    ("git-u-", "the submitter's GitHub credential"),
+    ("git-r-", "the repository's token"),
+)
+
+
+def forge_credential_source(value: str | None) -> str | None:
+    """The words for a task's forge credential, or None when it names none
+    (no repository, not GitHub, or submitted before #780)."""
+    if value is None:
+        return None
+    if value == "git":
+        return "tenant token, service submission"
+    for prefix, words in _FORGE_SOURCES:
+        if value.startswith(prefix):
+            return words
+    return None
+
+
 def _spec_format(value: Any) -> int | None:
     # `bool` is an `int`; a stored True is not format 1.
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -389,6 +410,12 @@ def task_to_api(
         # child was submitted by, set by swarm-api, null for everything else.
         "parent_task_id": task.parent_task_id,
         "parent_attempt_id": task.parent_attempt_id,
+        # #780 OB7: which GitHub credential the task runs with, by NAME (a
+        # slot suffix, never a value), and whether it may push. The owner's
+        # D4 for automation (2026-10-07): "the task says so".
+        "forge_credential": task.forge_credential,
+        "forge_access": task.forge_access,
+        "forge_credential_source": forge_credential_source(task.forge_credential),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,

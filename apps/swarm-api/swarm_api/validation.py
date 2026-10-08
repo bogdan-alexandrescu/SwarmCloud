@@ -36,7 +36,7 @@ from swarm_common.profiles import (
     check_inputs,
 )
 
-from .errors import ValidationFailed
+from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
 #: models already forbid extras; this list is the explicit, greppable statement
@@ -2330,6 +2330,113 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+
+# --------------------------------------------------------------------------
+# Whose GitHub credential a task runs with (#780 lane OB7, decision D4)
+# --------------------------------------------------------------------------
+#
+# Contract request 54: `Task.forge_credential` names the slot the worker reads
+# its forge token from and `Task.forge_access` whether it may push. Only
+# swarm-api writes them, at submission, from the grants the person chose
+# under Access (`access.py`, `forge_grants`) -- never from the request body,
+# which `extra="forbid"` refuses them in (invariant 10) -- and BEFORE the spec
+# is signed, so a rewritten value fails the worker's check.
+#
+# D4 as the owner decided it on 2026-10-07: a PERSON's task on a GitHub
+# repository they hold no grant for is refused, 403 REPOSITORY_NOT_GRANTED,
+# until they choose it under Access; a SERVICE ACCOUNT's submission (tenant
+# automation, the release's acceptance suite) and a repository index run
+# use the tenant token, `git`, with write, as before #780. A task with no
+# repository, or one on a host that is not GitHub (grants exist only for
+# GitHub), carries neither field and reads the tenant token as it always has.
+
+#: The code a client branches on. Upper case, like the access API's own
+#: refusals (`access.AccessRefused`), because the console's Access page reads
+#: them side by side.
+REPOSITORY_NOT_GRANTED = "REPOSITORY_NOT_GRANTED"
+
+#: `Task.forge_access` for a service submission: the tenant token's reach, as
+#: before #780. A person's task carries their grant's mode instead.
+SERVICE_FORGE_ACCESS = "write"
+
+#: The domain every Google service account's email ends in, user-managed
+#: (`SERVICE_ACCOUNT_EMAIL`) and Google-managed alike. No person's address
+#: can: no Workspace domain ends in it.
+_SERVICE_ACCOUNT_DOMAIN = ".gserviceaccount.com"
+
+
+class RepositoryNotGranted(Forbidden):
+    """A person submitted work on a GitHub repository they hold no grant for."""
+
+    code = REPOSITORY_NOT_GRANTED
+
+
+def is_service_submitter(email: str | None) -> bool:
+    """Whether the submitter is a service account rather than a person (D4)."""
+    return (email or "").strip().lower().endswith(_SERVICE_ACCOUNT_DOMAIN)
+
+
+def github_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a repository on GitHub, else None.
+
+    Wider than `merge_repository` on purpose: that one answers "can a merge
+    step act here" and says None for a URL with a port or a trailing path.
+    This one answers "would the worker clone from GitHub", so a GitHub host
+    is GitHub whatever port or trailing dot it is written with, and a GitHub
+    URL that names no `owner/repo` is REFUSED rather than read as "not
+    GitHub", which would hand it the tenant token D4 withholds.
+    """
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if not text:
+        return None
+    if text.startswith("git@"):
+        head, _, tail = text.partition(":")
+        text = f"ssh://{head}/{tail}"
+    try:
+        parts = urlsplit(text)
+        # `.hostname` only: `.port` raises on a malformed port, and a host
+        # read as "" there would be "not GitHub".
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        host = ""
+        parts = None
+    if host not in MERGE_FORGE_HOSTS:
+        return None
+    segments = [seg for seg in parts.path.strip("/").split("/") if seg] if parts else []
+    if len(segments) == 2 and segments[1].lower().endswith(".git"):
+        segments[1] = segments[1][:-4]
+    if len(segments) != 2 or not all(segments):
+        raise ValidationFailed(
+            "repository_url on GitHub must name one repository as "
+            "https://github.com/<owner>/<repo>",
+            detail={"field": "repository_url"},
+        )
+    return segments[0], segments[1]
+
+
+def repository_not_granted(refused: Sequence[tuple[str | None, str]]) -> RepositoryNotGranted:
+    """The refusal for every `(step_id, "owner/repo")` the person holds no grant on.
+
+    One refusal for the whole submission, naming each repository and, in a
+    workflow, each step: nothing is stored, so a person fixes all of it at
+    once under Access rather than one resubmission per step.
+    """
+    repositories = sorted({name for _, name in refused}, key=str.lower)
+    if len(repositories) == 1:
+        message = (f"repository {repositories[0]} is not granted to you: "
+                   "choose it under Access")
+    else:
+        message = (f"repositories {', '.join(repositories)} are not granted to you: "
+                   "choose them under Access")
+    detail: dict[str, Any] = {"repository": repositories[0], "repositories": repositories}
+    steps = [{"step_id": step, "repository": name} for step, name in refused if step]
+    if steps:
+        detail["steps"] = steps
+    return RepositoryNotGranted(message, detail=detail)
 
 
 # --------------------------------------------------------------------------
