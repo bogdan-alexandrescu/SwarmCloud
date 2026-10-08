@@ -202,8 +202,9 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
    * ONE OF SEVERAL GONE. The listing still holds ckpt-00002, the attempt
    * document records ckpt-00001 as well, and the listing is whole -- so the
    * section has to account for the one it lost rather than draw a list one
-   * shorter than the figure above it. Ids restart per attempt, so the match is
-   * attempt AND id. MUTATION: only explain an absence when the list is empty.
+   * shorter than the figure above it. Two attempts can share an id (a resume
+   * from an older checkpoint), so the match is attempt AND id. MUTATION: only
+   * explain an absence when the list is empty.
    */
   it('names a recorded checkpoint the listing lost even when others remain', async () => {
     const section = await checkpointsSection(
