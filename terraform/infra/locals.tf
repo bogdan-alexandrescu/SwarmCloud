@@ -709,6 +709,14 @@ locals {
       PUSH_SERVICE_ACCOUNT = module.iam.tick_service_account
       PUSH_AUDIENCE        = local.push_audiences["swarm-scheduler"]
 
+      # #748: how long a MERGE verdict's integrator stays PARKED for swarm-api
+      # to open its pull request without a worker, after its last parent
+      # ended. swarm-api hears the same wake through modules/scheduler's
+      # `api_task_finished` subscription and decides in a few seconds; 60 s
+      # bounds what a lost push costs. Inert until contract request 52 lets a
+      # step end SUCCEEDED from PARKED (scheduler/loop.py checks it).
+      CONTROL_PUBLISH_HOLD_SECONDS = "60"
+
       GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION = var.region
       # Required for a client running OUTSIDE the cluster. Without both, the GKE

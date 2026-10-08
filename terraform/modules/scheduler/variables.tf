@@ -109,7 +109,7 @@ variable "quota_broker_path" {
 }
 
 variable "api_endpoint" {
-  description = "HTTPS base URL of the swarm-api service, which the workflow-rollup jobs call. Unused when rollup_tenant_ids is empty."
+  description = "HTTPS base URL of the swarm-api service, which the workflow-rollup jobs call and the task_finished push subscription (#748) pushes to. The push subscription is gated by enable_task_finished_push, not by this value; the rollup jobs are made per rollup_tenant_ids."
   type        = string
   default     = ""
 
@@ -117,6 +117,12 @@ variable "api_endpoint" {
     condition     = var.api_endpoint == "" || startswith(var.api_endpoint, "https://")
     error_message = "the API endpoint must be https; the rollup jobs carry an OIDC token."
   }
+}
+
+variable "enable_task_finished_push" {
+  description = "Create the subscription that pushes `task_finished` wakes to swarm-api (#748). A bool, not derived from api_endpoint: the root passes api_endpoint from a Cloud Run resource attribute, which is unknown at plan time, and a count cannot depend on an unknown."
+  type        = bool
+  default     = false
 }
 
 variable "api_audience" {
