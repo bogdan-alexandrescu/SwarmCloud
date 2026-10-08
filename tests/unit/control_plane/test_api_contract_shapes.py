@@ -100,6 +100,13 @@ MOMENT = datetime(2026, 9, 22, 11, 0, tzinfo=timezone.utc)
 def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
     base = annotation.replace(" | None", "").strip()
 
+    # Contract request 54: two strings the model holds to a shape, so the
+    # generic "<name>-value" would be refused at construction.
+    if name == "forge_credential":
+        return "git-u-" + "0123456789abcdef"
+    if name == "forge_access":
+        return "read"
+
     if base == "str":
         return f"{name}-value"
     if base == "int":
@@ -233,6 +240,12 @@ CODECS: tuple[Codec, ...] = (
             "spec_signature": "worker-only attestation; the worker reads the document itself",
             "spec_key_version": "describes spec_signature, which is not served",
             "spec_format": "describes spec_signature, which is not served",
+            # Contract request 54 (request E, docs/onboarding.md §3.3). Which
+            # forge secret and mode swarm-api resolved for the task, for the
+            # worker; serving them is a public shape lane OB7 decides with the
+            # submission that writes them.
+            "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
+            "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
@@ -245,11 +258,14 @@ CODECS: tuple[Codec, ...] = (
         # 2026-10-01: the API is the one source of a console link). The three
         # heartbeat fields (#179) are the task's current LEASE, read by
         # `swarm_api.heartbeats`, never stored on the task.
+        # `forge_credential_source` (#780 OB7) is the words for the stored
+        # `forge_credential`, `codec.forge_credential_source`.
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
+            "forge_credential_source",
         ),
     ),
     Codec(

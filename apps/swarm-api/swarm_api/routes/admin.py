@@ -24,7 +24,7 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Body, Depends, Query
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState
+from swarm_common.models import ProviderState, SlotPool, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
@@ -301,11 +301,45 @@ def set_tenant_concurrency(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = ctx.store.set_tenant_limits(tenant_id, max_active=body.limit, by=auth.email)
+    """The tenant's ceiling: ONE number, the one the admin typed.
+
+    Both `max_active` and `capacity_units` are written to `body.limit`, so the
+    pool -- the smaller of the two, `Store.set_tenant_limits` -- becomes exactly
+    the limit. Writing `max_active` alone is what held tenant `smoke` at 8 on
+    2026-10-07: the owner raised it 8 -> 20 in the console, `capacity_units`
+    stayed 8, the pool stayed 8, and this route answered 200 with a pool of 8
+    that the console reported as saved (owner decision, same day: the ceiling
+    is one number). PUT /v1/admin/tenants/{id}/limits still sets the two
+    separately and keeps the min() rule.
+
+    `capped_by` names what held the pool below the limit, for the console to
+    say instead of a success: null when the pool is the limit. With both
+    fields written it is null unless something wrote the tenant between the
+    write and the read-back.
+    """
+    tenant = ctx.store.set_tenant_limits(
+        tenant_id, max_active=body.limit, capacity_units=body.limit, by=auth.email
+    )
     ctx.metrics.admin_actions.labels(action="limit_tenant").inc()
-    return {"tenant": tenant_to_api(tenant), "pool": pool_to_api(
-        ctx.store.get_pool(f"tenant:{tenant_id}")
-    )}
+    pool = ctx.store.get_pool(f"tenant:{tenant_id}")
+    return {
+        "tenant": tenant_to_api(tenant),
+        "pool": pool_to_api(pool) if pool is not None else None,
+        "capped_by": _tenant_capped_by(tenant, pool, body.limit),
+    }
+
+
+def _tenant_capped_by(tenant: Tenant, pool: SlotPool | None, limit: int) -> str | None:
+    """Why `tenant:<id>` is not at `limit` after a ceiling write, or None if it is."""
+    if pool is not None and pool.hard_limit == limit:
+        return None
+    if pool is None:
+        return "pool_missing"
+    if tenant.capacity_units < limit:
+        return "capacity_units"
+    if tenant.max_active < limit:
+        return "max_active"
+    return "unknown"
 
 
 @router.put("/tenants/{tenant_id}/limits")
@@ -691,13 +725,60 @@ def list_quota(
     platform computed them (docs/audits/2026-09-20/data-gaps-found-by-fanout.md
     section 2). Each row's own `updated_at` is a different fact -- when the
     broker last wrote that document -- and is not a substitute.
+
+    `truncated` says the store's window (500 documents, in document-id
+    order) left matching documents out. Without it a cut set and the whole
+    set were the same response (#76).
+
+    `feeds_pool` (G5-02, QA 2026-10-07) is the pool each row's cap feeds,
+    `provider:<provider>:tenant:<tenant>`, as `/v1/capacity` serves it, or
+    null when no such pool document exists. The row's own `effective_limit`
+    is the QUOTA DOCUMENT's (`QuotaState.effective_limit`) and is one input to
+    that pool; the pool's `effective_limit` is what admission enforces
+    (`SlotPool.has_capacity`). The live console drew `Quota cap 50` for a pool
+    Pools showed at 40, and nothing on this route could say which binds.
+    Served here rather than joined in the client so the two figures come
+    from one request and cannot be of different ages. Additive: no existing
+    key changed.
     """
-    states = ctx.store.list_quota(tenant_id)
+    scan = ctx.store.scan_quota(tenant_id)
+    pools = _provider_pools(ctx, {(q.provider, q.tenant_id) for q in scan.states})
     return {
-        "quota": [quota_to_api(q) for q in sorted(states, key=lambda q: (q.provider, q.tenant_id))],
+        "quota": [
+            {**quota_to_api(q), "feeds_pool": pools.get(_provider_pool_name(q.provider, q.tenant_id))}
+            for q in sorted(scan.states, key=lambda q: (q.provider, q.tenant_id))
+        ],
+        "truncated": scan.truncated,
         "tenant_id": tenant_id,
         "generated_at": ctx.now(),
     }
+
+
+def _provider_pool_name(provider: str, tenant_id: str) -> str:
+    # The name `swarm_common.models.pool_names_for` gives a profile's
+    # per-tenant provider pool.
+    return f"provider:{provider}:tenant:{tenant_id}"
+
+
+def _provider_pools(ctx: AppContext, pairs: set[tuple[str, str]]) -> dict[str, dict[str, Any]]:
+    """The provider pools the quota rows feed, by name, as `pool_to_api` serves them.
+
+    One listing read, as `/v1/capacity` does. A listing that filled its window
+    is not evidence a name outside it is absent, so only then is each missing
+    name read by itself; a name absent after that has no pool document.
+    """
+    if not pairs:
+        return {}
+    page = 500
+    listed = ctx.store.list_pools(limit=page)
+    by_name = {pool.name: pool for pool in listed}
+    wanted = {_provider_pool_name(provider, tenant) for provider, tenant in pairs}
+    if len(listed) >= page:
+        for name in sorted(wanted - set(by_name)):
+            pool = ctx.store.get_pool(name)
+            if pool is not None:
+                by_name[name] = pool
+    return {name: pool_to_api(by_name[name]) for name in wanted if name in by_name}
 
 
 @router.get("/tenants")

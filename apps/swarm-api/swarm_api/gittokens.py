@@ -57,6 +57,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Iterable
 from urllib.parse import quote as _quote
+from urllib.parse import urlparse as _urlparse
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -79,7 +80,10 @@ COLLECTION = "git_tokens"
 FORGE = "github"
 
 #: What `kind` may say once the probe (lane GT2) has read it; None until then.
-TOKEN_KINDS = ("fine_grained_pat", "classic_pat", "app_installation")
+#: `app_user` is a SwarmCloud GitHub App user access token in a user slot,
+#: written by the exchange and kept fresh by the refresh sweep
+#: (`swarm_api.forgeapp`, docs/onboarding.md §3.1; #780, lane OB3).
+TOKEN_KINDS = ("fine_grained_pat", "classic_pat", "app_installation", "app_user")
 
 #: Who `registered_by` names for the tenant default, which nobody registers:
 #: it is created from the slot the tenant document already lists.
@@ -255,6 +259,23 @@ class GitTokenRecord:
     #: The last time a step reported a 401 or 403 from the forge for this
     #: token (`report_refusal`): the pair it names is due on the next pass.
     refusal_reported_at: datetime | None = None
+    #: What the token reaches, read by the probe (docs/onboarding.md §2.3;
+    #: #780, lane OB0b), so a refused registration can name its likely
+    #: cause. Org logins and GitHub's numeric org ids; never the
+    #: `X-GitHub-SSO` URL, whose `authorization_request` part is a one-time
+    #: credential. An org whose SAML SSO this token is not authorised for:
+    sso_required_orgs: list[str] = field(default_factory=list)
+    #: GitHub's `partial-results` answer: orgs it hid behind SSO, by id only.
+    sso_partial_org_ids: list[int] = field(default_factory=list)
+    #: An org that answered "forbids access via a personal access token
+    #: (classic)".
+    classic_blocked_orgs: list[str] = field(default_factory=list)
+    #: `GET /user/orgs`, logins only; None until a probe read it.
+    orgs: list[str] | None = None
+    #: The list stopped at MAX_ORG_PAGES: the token reaches more.
+    orgs_capped: bool = False
+    #: When the evidence above was last read.
+    access_evidence_at: datetime | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -284,6 +305,12 @@ class GitTokenRecord:
             "probe_error": self.probe_error,
             "rate_remaining": self.rate_remaining,
             "refusal_reported_at": self.refusal_reported_at,
+            "sso_required_orgs": list(self.sso_required_orgs),
+            "sso_partial_org_ids": list(self.sso_partial_org_ids),
+            "classic_blocked_orgs": list(self.classic_blocked_orgs),
+            "orgs": list(self.orgs) if self.orgs is not None else None,
+            "orgs_capped": self.orgs_capped,
+            "access_evidence_at": self.access_evidence_at,
         }
 
     @classmethod
@@ -318,6 +345,14 @@ class GitTokenRecord:
             probe_error=data.get("probe_error"),
             rate_remaining=data.get("rate_remaining"),
             refusal_reported_at=data.get("refusal_reported_at"),
+            # Additive (#780): a record written before the probe read them has none.
+            sso_required_orgs=_logins(data.get("sso_required_orgs")),
+            sso_partial_org_ids=sorted({int(i) for i in data.get("sso_partial_org_ids") or []
+                                        if _is_org_id(i)}),
+            classic_blocked_orgs=_logins(data.get("classic_blocked_orgs")),
+            orgs=_logins(data.get("orgs")) if data.get("orgs") is not None else None,
+            orgs_capped=data.get("orgs_capped") is True,
+            access_evidence_at=data.get("access_evidence_at"),
         )
 
     def to_api(self, pair_docs: Iterable[dict[str, Any]] = (), *,
@@ -338,13 +373,25 @@ class GitTokenRecord:
         body["owner"] = body["user"] if self.scope is Scope.USER else None
         body["yours"] = yours
         for key in ("expires_at", "registered_at", "rotated_at", "verified_at", "revoked_at",
-                    "probe_attempted_at", "refusal_reported_at"):
+                    "probe_attempted_at", "refusal_reported_at", "access_evidence_at"):
             body[key] = _iso(body[key])
         body["last4"] = self.last4
         body["store_command"] = store_command(self.tenant_id, self.provider_suffix)
         body["probe"] = probe_summary(self, pair_docs)
         body["expiry"] = expiry_status(self, now or utcnow())
+        body["access_evidence"] = self.access_evidence()
         return body
+
+    def access_evidence(self) -> dict[str, Any]:
+        """What the probe last read of the token's reach, as served."""
+        return {
+            "read_at": _iso(self.access_evidence_at),
+            "sso_required_orgs": list(self.sso_required_orgs),
+            "sso_partial_org_ids": list(self.sso_partial_org_ids),
+            "classic_blocked_orgs": list(self.classic_blocked_orgs),
+            "orgs": list(self.orgs) if self.orgs is not None else None,
+            "orgs_capped": self.orgs_capped,
+        }
 
 
 def record_for_slot(
@@ -442,6 +489,14 @@ class GitTokens:
         if data.get("tenant_id") != tenant_id:
             raise self._not_found(token_id)
         return GitTokenRecord.from_firestore(data)
+
+    def tenant_default(self, tenant_id: str) -> GitTokenRecord | None:
+        """The tenant default's record, None when it has none: what a
+        refusal of the tenant token reads its evidence from (#780)."""
+        try:
+            return self.get(tenant_id, token_id_for(tenant_id, Scope.TENANT, ""))
+        except NotFound:
+            return None
 
     def list(self, tenant_id: str) -> list[GitTokenRecord]:
         """The tenant's records: the default first, then repositories, then users."""
@@ -645,6 +700,7 @@ class GitTokens:
                 )
                 if rotated:
                     fresh.rotated_at = now
+                _merge_reach(fresh, result, rotated=rotated)
                 fresh.last4 = result.last4
                 fresh.secret_version = result.version
                 if result.complete and scoped is None and whole:
@@ -1029,6 +1085,13 @@ MAX_GETS_PER_REPOSITORY = 8
 #: re-probed until they are named again.
 MAX_KNOWN_REPOSITORIES = 50
 
+#: `GET /user/orgs` pages the probe reads per token (ORG_PAGE_SIZE each), on
+#: top of the per-repository GETs: the account reads are made once per token.
+#: A token in more orgs than this is `orgs_capped`; its refusals still name
+#: SSO and the classic-token policy, which are read from the org's own answer.
+MAX_ORG_PAGES = 3
+ORG_PAGE_SIZE = 100
+
 #: Wall clock for one probe. The console waits on a registration or a
 #: "Verify now"; repositories not reached in time leave the probe partial.
 PROBE_BUDGET_SECONDS = 45.0
@@ -1054,8 +1117,10 @@ def token_kind(value: str) -> str | None:
 
     GitHub's documented prefixes: `github_pat_` fine-grained, `ghp_` classic
     (and `gho_`, an OAuth app's token, which carries classic scopes), `ghs_`
-    an App installation token. Anything else is None, and its unreadable rows
-    are `unknown` as a fine-grained token's are.
+    an App installation token, `ghu_` an App user access token. Anything else
+    is None. A user access token's grant is the App's permissions narrowed
+    to the user's, which no read here returns, so its unreadable rows are
+    `unknown` as a fine-grained token's are.
     """
     if value.startswith("github_pat_"):
         return "fine_grained_pat"
@@ -1063,6 +1128,8 @@ def token_kind(value: str) -> str | None:
         return "classic_pat"
     if value.startswith("ghs_"):
         return "app_installation"
+    if value.startswith("ghu_"):
+        return "app_user"
     return None
 
 
@@ -1192,6 +1259,14 @@ class ProbeResult:
     last4: str | None = None
     version: str | None = None
     read_value: bool = False
+    #: The token's reach (#780): see `_note_reach` and `_read_orgs`.
+    sso_required_orgs: list[str] = field(default_factory=list)
+    sso_partial_org_ids: list[int] = field(default_factory=list)
+    classic_blocked_orgs: list[str] = field(default_factory=list)
+    orgs: list[str] | None = None
+    orgs_capped: bool = False
+    #: Owners of the repositories this probe read with a 200.
+    readable_orgs: list[str] = field(default_factory=list)
 
 
 class _Unanswered(Exception):
@@ -1271,6 +1346,8 @@ class _Forge:
             except Exception:
                 data = None
         message = "" if status == 200 else self._message(bytes(response.body or b""))
+        if not git or status == 403:
+            _note_reach(self._result, url, status, answer_headers, message)
         evidence = f"GET {label} -> HTTP {status}" + (f": {message}" if message else "")
         answer = _Answer(status=status, data=data, evidence=evidence)
         self._cache[url] = answer
@@ -1567,6 +1644,10 @@ def probe_token(
             except _Unanswered as unanswered:
                 user_complete = False
                 errors.append(str(unanswered))
+            if not result.rejected:
+                # Evidence, not a capability: an org list that does not come
+                # back leaves the previous one standing and the probe complete.
+                _read_orgs(forge, result)
         pairs: list[PairResult] = []
         cut: list[str] = []
         for repo_id, repository in repositories:
@@ -1647,6 +1728,205 @@ def run_probe(
         return result
     finally:
         value = ""
+
+
+# --------------------------------------------------------------------------
+# what a token reaches: SSO, orgs, the classic-token policy (#780, OB0b)
+# --------------------------------------------------------------------------
+#
+# docs/onboarding.md §0: the likely reason a token cannot see an org's
+# repositories is SAML SSO it is not authorised for, or an org that refuses
+# classic tokens -- and until this lane nothing stored could say which. The
+# probe reads both from GitHub's own answers and the orgs the token reaches
+# from `GET /user/orgs`; a refused registration names the likely cause from
+# them (`refusal_cause`, §2.3's copy).
+#
+# THE SSO HEADER CARRIES A CREDENTIAL. `required; url=...sso?
+# authorization_request=<value>` -- that value starts an authorisation, so
+# only the org login in the URL's path is kept. `partial-results;
+# organizations=<ids>` names orgs GitHub hid from the token, by id.
+
+#: Where a classic token's SSO authorisation is granted (Configure SSO). A
+#: GitHub page, never a URL that carries a token.
+SSO_SETTINGS_URL = "https://github.com/settings/tokens"
+
+#: A GitHub login: what an org is stored as.
+_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+_SSO_ORG_URL = re.compile(r"^https://github\.com/orgs/([A-Za-z0-9-]{1,39})/sso(?:[?#]|$)")
+#: GitHub's sentence for an org that refuses classic tokens.
+_CLASSIC_BLOCKED = re.compile(r"forbids access via a personal access tokens? \(classic\)",
+                              re.IGNORECASE)
+_REPOS_PATH = re.compile(r"^/repos/([^/]+)/([^/]+)(/.*)?$")
+_GIT_PATH = re.compile(r"^/([^/]+)/[^/]+\.git/")
+
+#: §2.3's code for each cause a refused registration names.
+SSO_NOT_AUTHORISED = "SSO_NOT_AUTHORISED"
+CLASSIC_PAT_BLOCKED = "CLASSIC_PAT_BLOCKED"
+ACCOUNT_CANNOT_SEE = "ACCOUNT_CANNOT_SEE"
+
+
+def _logins(values: Any) -> list[str]:
+    """Distinct org logins, in first-seen order; anything else is dropped."""
+    seen: dict[str, str] = {}
+    for value in values or []:
+        if isinstance(value, str) and _LOGIN.match(value):
+            seen.setdefault(value.lower(), value)
+    return list(seen.values())
+
+
+def _is_org_id(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value > 0
+    return isinstance(value, str) and value.isdigit() and int(value) > 0
+
+
+def _has(logins: Iterable[str], owner: str) -> bool:
+    return owner.lower() in {login.lower() for login in logins}
+
+
+def parse_sso_header(value: str | None) -> dict[str, Any] | None:
+    """`X-GitHub-SSO` as stored: `{"mode": "required" | "partial", "org",
+    "organization_ids"}`, None when absent or unreadable. The URL itself is
+    never returned: only the org login in its path."""
+    if not value or not isinstance(value, str):
+        return None
+    parts = [part.strip() for part in value.split(";")]
+    mode = parts[0].lower()
+    params: dict[str, str] = {}
+    for part in parts[1:]:
+        name, _, raw = part.partition("=")
+        params[name.strip().lower()] = raw.strip()
+    if mode == "required":
+        match = _SSO_ORG_URL.match(params.get("url", ""))
+        return {"mode": "required", "org": match.group(1) if match else None,
+                "organization_ids": []}
+    if mode == "partial-results":
+        ids = sorted({int(i) for i in params.get("organizations", "").split(",")
+                      if i.strip().isdigit() and int(i) > 0})
+        return {"mode": "partial", "org": None, "organization_ids": ids}
+    return None
+
+
+def _url_owner(url: str) -> str | None:
+    """The owner of the repository a probe URL reads, if it reads one."""
+    path = _urlparse(url).path
+    match = _REPOS_PATH.match(path) or _GIT_PATH.match(path)
+    if match and _LOGIN.match(match.group(1)):
+        return match.group(1)
+    return None
+
+
+def _note_reach(result: "ProbeResult", url: str, status: int, headers: dict[str, str],
+                message: str) -> None:
+    """Record what one answer says about the token's reach. Logins and ids only."""
+    owner = _url_owner(url)
+    sso = parse_sso_header(headers.get("x-github-sso"))
+    if sso is not None and sso["mode"] == "required":
+        org = sso["org"] or owner
+        if org:
+            result.sso_required_orgs = _logins([*result.sso_required_orgs, org])
+    elif sso is not None:
+        result.sso_partial_org_ids = sorted(
+            set(result.sso_partial_org_ids) | set(sso["organization_ids"]))
+    if status == 403 and owner and _CLASSIC_BLOCKED.search(message):
+        result.classic_blocked_orgs = _logins([*result.classic_blocked_orgs, owner])
+    path = _urlparse(url).path
+    match = _REPOS_PATH.match(path)
+    if status == 200 and owner and match is not None and match.group(3) is None:
+        result.readable_orgs = _logins([*result.readable_orgs, owner])
+
+
+def _read_orgs(forge: "_Forge", result: "ProbeResult") -> None:
+    """`GET /user/orgs`, paged, logins only. A page that does not come back,
+    or comes back refused, leaves `orgs` None: unread, never empty."""
+    logins: list[str] = []
+    for page in range(1, MAX_ORG_PAGES + 1):
+        url = (f"https://{_forge.GITHUB_API_HOST}/user/orgs"
+               f"?per_page={ORG_PAGE_SIZE}&page={page}")
+        try:
+            answer = forge.get(url, "/user/orgs")
+        except _Unanswered:
+            return
+        if answer.status != 200 or not isinstance(answer.data, list):
+            return
+        logins.extend(entry.get("login") for entry in answer.data if isinstance(entry, dict))
+        if len(answer.data) < ORG_PAGE_SIZE:
+            result.orgs = _logins(logins)
+            return
+    result.orgs = _logins(logins)
+    result.orgs_capped = True
+
+
+def _merge_reach(fresh: GitTokenRecord, result: "ProbeResult", *, rotated: bool) -> None:
+    """Fold one probe's reach into the record. Marks accumulate across probes
+    (a daily pass probes registered repositories only, so the org a refused
+    registration named is not probed again) and are cleared by evidence to
+    the contrary: a repository in that org read with a 200. A rotation is a
+    different token: what the old one reached says nothing about it."""
+    if rotated:
+        fresh.sso_required_orgs, fresh.classic_blocked_orgs = [], []
+        fresh.sso_partial_org_ids, fresh.orgs, fresh.orgs_capped = [], None, False
+    cleared = {login.lower() for login in result.readable_orgs}
+    if result.orgs is not None and not result.sso_partial_org_ids:
+        # GitHub listed every org the account is in, hiding none behind SSO.
+        cleared |= {login.lower() for login in result.orgs}
+    fresh.sso_required_orgs = [
+        org for org in _logins([*fresh.sso_required_orgs, *result.sso_required_orgs])
+        if org.lower() not in cleared or _has(result.sso_required_orgs, org)]
+    fresh.classic_blocked_orgs = [
+        org for org in _logins([*fresh.classic_blocked_orgs, *result.classic_blocked_orgs])
+        if org.lower() not in {login.lower() for login in result.readable_orgs}
+        or _has(result.classic_blocked_orgs, org)]
+    if result.orgs is not None:
+        fresh.orgs = list(result.orgs)
+        fresh.orgs_capped = result.orgs_capped
+        fresh.sso_partial_org_ids = list(result.sso_partial_org_ids)
+    elif result.sso_partial_org_ids:
+        fresh.sso_partial_org_ids = sorted(
+            set(fresh.sso_partial_org_ids) | set(result.sso_partial_org_ids))
+    fresh.access_evidence_at = result.attempted_at
+
+
+def refusal_cause(owner: str, repo: str, record: GitTokenRecord | None) -> dict[str, Any]:
+    """The likely cause of a 404/403 on `owner/repo`, from what the probe
+    last read of the token that was refused (docs/onboarding.md §2.3).
+    Pure. `record` is that token's record, None when there is none.
+
+    Likely, not proven: the evidence is the last probe's, and GitHub answers
+    404 alike for a repository that does not exist and one it hides."""
+    at = _iso(record.access_evidence_at) if record is not None else None
+    if record is not None and _has(record.sso_required_orgs, owner):
+        message = (
+            f"SSO not authorised for {owner} on this token -- authorise it at "
+            f"{SSO_SETTINGS_URL}. {owner} uses SAML single sign-on and GitHub has not "
+            f"linked this token to it yet. Open {SSO_SETTINGS_URL}, choose Configure SSO "
+            f"for the token and authorise {owner} with {owner}'s identity provider, then "
+            f"register {owner}/{repo} again. Nothing in SwarmCloud has to change.")
+        return {"code": SSO_NOT_AUTHORISED, "org": owner, "message": message,
+                "evidence_at": at}
+    if record is not None and _has(record.classic_blocked_orgs, owner):
+        message = (
+            f"the org restricts classic tokens: {owner} does not accept classic personal "
+            f"access tokens. Create a fine-grained token whose resource owner is {owner} "
+            f"and store it with {store_command(record.tenant_id, record.provider_suffix)}.")
+        return {"code": CLASSIC_PAT_BLOCKED, "org": owner, "message": message,
+                "evidence_at": at}
+    message = (f"the token's account cannot see this repository: GitHub shows {owner}/{repo} "
+               "to this token as missing (it answers so for a private repository it hides).")
+    if record is not None:
+        login = record.forge_login
+        if (record.orgs is not None and not record.orgs_capped and login
+                and login.lower() != owner.lower() and not _has(record.orgs, owner)):
+            message += f" {login} is not a member of {owner}."
+        hidden = len(record.sso_partial_org_ids)
+        if hidden:
+            message += (
+                f" GitHub hid {hidden} organisation{'' if hidden == 1 else 's'} from this "
+                f"token behind SAML single sign-on; if {owner} is one, authorise the token "
+                f"for it at {SSO_SETTINGS_URL}.")
+    return {"code": ACCOUNT_CANNOT_SEE, "org": owner, "message": message, "evidence_at": at}
 
 
 # --------------------------------------------------------------------------
@@ -1866,6 +2146,14 @@ def expiry_status(record: GitTokenRecord, now: datetime) -> dict[str, Any]:
         return {"level": "by_design", "days": None, "expires_at": None,
                 "message": "an installation token is minted per use and expires in an hour by "
                            "design; the App key behind it has no expiry"}
+    if record.kind == "app_user":
+        # Eight hours by design, renewed by the refresh sweep long before it
+        # runs out: counted in days it would read `danger` all its life. A
+        # connection whose refresh GitHub refused says so on the connection
+        # (REFRESH_FAILED), and its record turns `expired`.
+        return {"level": "by_design", "days": None, "expires_at": expires,
+                "message": "a GitHub App user access token lasts eight hours by design; "
+                           "SwarmCloud refreshes it before it expires"}
     if record.expires_at is None:
         if record.verified_at is None:
             return {"level": "unknown", "days": None, "expires_at": None,

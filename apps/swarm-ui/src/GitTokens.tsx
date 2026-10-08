@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { loadGitTokens, loadRepositories, loadTokenPermissions, registerTokenSlot, verifyGitToken } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, ToneMark } from './components'
 import {
   CAPABILITIES, SCOPE_WORD, createSecretsCommand, daysUntil, expiryWords, kindWords, normToken, repoName,
   type GitToken, type PermissionRow, type RepoRecord, type TokenScope,
 } from './RepositoriesData'
-import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
-import { PageHead } from './Shell'
+import { LIST, PERMISSIONS, GT_PAGE, UrCap, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { CountNote, PageHead } from './Shell'
+import { GitHubConnectCard } from './GitHubConnect'
 import { timeAgo } from './types'
 
 /**
@@ -65,6 +66,13 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
   const repos = useUrRead(loadRepositories, 'repos')
   const [scope, setScope] = useState<ScopeFilter>('all')
   const [slot, setSlot] = useState<GitToken | null>(null)
+  // G4-22: ONE entry point to registering. The card stays folded behind the
+  // header's "Register token" button, and Rotate opens it on its slot; an
+  // always-open card next to a button that scrolls to it was two ways in.
+  const [regOpen, setRegOpen] = useState(false)
+  useEffect(() => {
+    if (regOpen) document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })
+  }, [regOpen, slot?.token_id])
   const regs = repos.state.status === 'ok' || repos.state.status === 'stale' ? repos.state.data : []
   const n = tokens.state.status === 'ok' || tokens.state.status === 'stale' ? tokens.state.data.length : tokens.state.status === 'empty' ? 0 : null
   const now = Date.now()
@@ -72,32 +80,36 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
   return (
     <div className="ur-page ur-tokens">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens' }]} go={go} />
-      <PageHead
-        title="Git tokens"
-        meta={n === null ? undefined : `${n} token${n === 1 ? '' : 's'}`}
-        action={
-          <UrRadio<ScopeFilter>
-            label="Scope"
-            value={scope}
-            onChange={setScope}
-            options={[
-              { key: 'all', label: 'All' },
-              { key: 'tenant', label: 'Tenant' },
-              { key: 'repository', label: 'Repository' },
-              { key: 'user', label: 'User' },
-            ]}
-          />
-        }
-      >
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the scope filter is an action of
+          the page, and the count is the note over its first card. */}
+      <PageHead title="Git tokens">
+        {/* The page's one age, on the control that renews it (#98). */}
+        <UrRefresh reads={[tokens, repos]} />
+        <UrRadio<ScopeFilter>
+          label="Scope"
+          value={scope}
+          onChange={setScope}
+          options={[
+            { key: 'all', label: 'All' },
+            { key: 'tenant', label: 'Tenant' },
+            { key: 'repository', label: 'Repository' },
+            { key: 'user', label: 'User' },
+          ]}
+        />
         <span className="ur-acts">
           <UrNavButton to={PERMISSIONS} go={go} size="sm">
             Permissions
           </UrNavButton>
-          <Button kind="primary" size="sm" onClick={() => document.getElementById('ur-reg')?.scrollIntoView?.({ block: 'start' })}>
+          <Button kind="primary" size="sm" aria-expanded={regOpen} aria-controls="ur-reg" onClick={() => setRegOpen((o) => !o)}>
             Register token
           </Button>
         </span>
       </PageHead>
+      {/* CONNECT GITHUB (#780, OB3): a person's own account through the App,
+          first, because it is the way in that needs no terminal. A disconnect
+          changes the records below, so it re-reads them. */}
+      <GitHubConnectCard onChange={tokens.reload} />
+      <CountNote>{n === null ? null : `${n} token${n === 1 ? '' : 's'}`}</CountNote>
       <UrRegion
         state={tokens.state}
         route="GET /v1/git-tokens"
@@ -105,7 +117,7 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
         onRetry={tokens.reload}
         empty={
           <EmptyState kind="empty" heading="No git tokens registered">
-            Register a slot below, then store its value from your terminal with the command it shows.
+            Register a slot with Register token, then store its value from your terminal with the command it shows.
           </EmptyState>
         }
       >
@@ -118,7 +130,13 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
                   <div className="ur-tok-h">
                     <Chip>{SCOPE_WORD[t.scope]}</Chip>
                     <h2>{tokenTitle(t, regs)}</h2>
-                    <Button size="sm" onClick={() => setSlot(t)}>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setSlot(t)
+                        setRegOpen(true)
+                      }}
+                    >
                       Rotate
                     </Button>
                   </div>
@@ -148,7 +166,17 @@ export function GitTokensPage({ go }: { go: (to: string) => void }) {
           )
         }}
       </UrRegion>
-      <RegisterSlot slot={slot} onSlot={(t) => { setSlot(t); tokens.reload() }} onClear={() => setSlot(null)} repos={regs} />
+      {regOpen && (
+        <RegisterSlot
+          slot={slot}
+          onSlot={(t) => {
+            setSlot(t)
+            tokens.reload()
+          }}
+          onClear={() => setSlot(null)}
+          repos={regs}
+        />
+      )}
     </div>
   )
 }
@@ -348,17 +376,18 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
   return (
     <div className="ur-page ur-perms">
       <UrCrumb trail={[{ label: 'Work' }, { label: 'Repositories', to: LIST }, { label: 'Git tokens', to: GT_PAGE }, { label: 'Permissions' }]} go={go} />
-      <PageHead
-        title="Permissions"
-        meta={data === null ? undefined : `${tokenIds.length} token${tokenIds.length === 1 ? '' : 's'} × ${repoIds.length} repositor${repoIds.length === 1 ? 'y' : 'ies'}`}
-        action={data?.order != null ? <Chip>{`order ${data.order}`}</Chip> : undefined}
-      >
+      <PageHead title="Permissions">
+        <UrRefresh reads={[perms]} />
+        {data?.order != null && <Chip>{`order ${data.order}`}</Chip>}
         <span className="ur-acts">
           <Button size="sm" busy={busy} disabled={tokenIds.length === 0} onClick={() => void verifyAll()}>
             Verify all
           </Button>
         </span>
       </PageHead>
+      <CountNote>
+        {data === null ? null : `${tokenIds.length} token${tokenIds.length === 1 ? '' : 's'} × ${repoIds.length} repositor${repoIds.length === 1 ? 'y' : 'ies'}`}
+      </CountNote>
       <UrRadio<RowFilter>
         label="Rows"
         value={filter}
@@ -394,10 +423,16 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
                     <tr>
                       <th className="is-l">Token</th>
                       {CAPABILITIES.map((c) => (
-                        <th key={c.key}>{c.label}</th>
+                        <th key={c.key} className="is-cap">
+                          {c.label}
+                        </th>
                       ))}
                       <th className="is-l">Expires in</th>
-                      <th className="is-l">Last verified</th>
+                      {/* G4-17: "Last verified" on one line was the head clipped
+                          to "Last verifi" at 1440; the title keeps the full words. */}
+                      <th className="is-l" title="Last verified">
+                        Verified
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

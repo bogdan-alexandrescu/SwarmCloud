@@ -3,21 +3,26 @@
  * 1440x900 light + dark + 390px), items Q1, Q2 and Q10, as behaviour.
  *
  * Q1  MONO IS FOR IDS, VALUES, CODE AND TIMESTAMPS. Table heads, the panel's
- *     group labels, the tenant block's words, the page head's meta chip and
- *     freshness, form labels, placeholders and the honesty marks are the sans
+ *     group labels, the tenant block's words, the page head's actions (its
+ *     refresh with its age) and the screen's count note, form labels,
+ *     placeholders and the honesty marks are the sans
  *     UI face (components.html A). Asked of the cascade the app ships
  *     (`cssgate.cascade` through `marks.painted`), on elements `<App />`
  *     actually rendered, so a rule that never matches proves nothing.
- * Q2  ONE PAGE HEAD: the title, the meta chip beside it, the freshness
- *     right-aligned on the same row, the `?` by the title -- and no breadcrumb
- *     row on a section page. A breadcrumb only inside an open object.
- *     "just now·refresh" and "nowrefresh": the freshness group is inline text,
- *     not a flex box whose anonymous items drop the spaces between them.
- * Q10 The same head at 390px: no breadcrumb, no stacked meta line.
+ * Q2  ONE PAGE HEAD: the title and the `?` by it on the left, the freshness
+ *     right-aligned in the head's actions on the same row -- and no
+ *     breadcrumb row on a section page. A breadcrumb only inside an open
+ *     object. Since #138 (owner ruling 2026-10-07) the meta chip is gone from
+ *     the row (the count is `.c-count-note` over the first card) and the
+ *     freshness is the refresh control itself (`.c-refresh`, `⟳ 12 s`).
+ *     "just now·refresh" and "nowrefresh": the control's words are inline
+ *     text, not a flex box whose anonymous items drop the spaces between them.
+ * Q10 The same head at 390px: no breadcrumb, no stacked line under the title.
  *
- * MUTATIONS: put `var(--mono)` back on `.c-meta`, `.sk-pt` or `.c-tbl th` and
- * Q1 goes red; render `Head`'s crumb row on a section page and Q2 does; make
- * `.c-age` an inline-flex box again and the spacing case does.
+ * MUTATIONS: put `var(--mono)` on `.c-refresh`, `.c-count-note`, `.sk-pt` or
+ * `.c-tbl th` and Q1 goes red; render `Head`'s crumb row on a section page, or
+ * take a page's freshness out of its head's actions, and Q2 does; make
+ * `.c-refresh` a flex box and the spacing case does.
  */
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -61,13 +66,13 @@ describe('Q1: mono only for ids, values, code and timestamps', () => {
     expect(monoAmong(tenantWords)).toEqual([])
   })
 
-  it('draws every table head, page-head meta and freshness in the sans face', async () => {
+  it('draws every table head, page-head action, freshness and count note in the sans face', async () => {
     const seen: string[] = []
     for (const path of ['/capacity/pools', '/admin/limits', '/workflows', '/capacity/accounts']) {
       const { unmount } = at(path)
-      await waitFor(() => expect(document.querySelector('main.work th, main.work .c-meta')).not.toBeNull(), WAIT)
+      await waitFor(() => expect(document.querySelector('main.work th, main.work .c-phead .c-refresh')).not.toBeNull(), WAIT)
       const heads = [...document.querySelectorAll('main.work th')]
-      const meta = [...document.querySelectorAll('main.work .c-phead .c-meta, main.work .c-phead .c-age')]
+      const meta = [...document.querySelectorAll('main.work .c-phead .c-acts > *, main.work .c-count-note')]
       seen.push(`${path}: ${heads.length} heads, ${meta.length} head parts`)
       expect(monoAmong([...heads, ...meta]), path).toEqual([])
       unmount()
@@ -123,6 +128,10 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
   ]
 
   it('draws no breadcrumb row, and the title, its ? and the freshness share one head', async () => {
+    // The freshness is the head's own, in its actions: a Screen's, Overview's
+    // and the Timeline's refresh control (`.c-refresh`), Platform counts'
+    // provenance (`.counts-prov`), or -- on a head with no age of its own,
+    // the Submit chooser -- the frame's (`.ctl-head-age`).
     const visited: string[] = []
     for (const path of PAGES) {
       const { unmount } = at(path)
@@ -133,7 +142,21 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
       const head = h1.closest('.c-phead')
       expect(head, `${path}: the h1 is not in the page head`).not.toBeNull()
       expect(head!.querySelector('.ctl-q-glyph, .helpcard-trigger, button[aria-label^="Help"]'), `${path}: no ? by the title`).not.toBeNull()
-      expect(head!.querySelector('.c-age'), `${path}: the freshness is not on the title row`).not.toBeNull()
+      await waitFor(() => {
+        // AN ADMIN GATE IS NOT A READ TO RENEW (#138): a Screen that met it
+        // draws no refresh control, and its panel says `admin only` instead
+        // (the fixture API answers some admin routes with the gate). Then
+        // the actions hold nothing at all -- not the frame's age either.
+        if (document.querySelector('main.work .admin-gate') !== null) {
+          expect(head!.querySelector(':scope > .c-acts')?.children.length ?? 0, `${path}: an admin gate with a control`).toBe(0)
+          return
+        }
+        expect(
+          head!.querySelector(':scope > .c-acts > .c-refresh, :scope > .c-acts > .ctl-head-age, :scope > .c-acts > .counts-prov'),
+          `${path}: the freshness is not in the title row's actions`,
+        ).not.toBeNull()
+      }, WAIT)
+      expect(head!.querySelector('.sub'), `${path}: a line under the title`).toBeNull()
       unmount()
     }
     expect(visited).toHaveLength(PAGES.length)
@@ -161,12 +184,14 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
     unmount()
   })
 
-  it('lays the freshness out as inline text, so the spaces before refresh survive', () => {
+  it('lays the freshness out as inline text, so the spaces in its words survive', () => {
     const host = document.createElement('div')
-    host.innerHTML = '<div class="c-phead"><div class="head"><h1>x</h1></div><p class="sub"><span class="c-meta">m</span><span class="c-age">a · <button>refresh</button></span></p></div>'
+    host.innerHTML =
+      '<div class="c-phead"><div class="head"><h1>x</h1></div><div class="c-acts"><button type="button" class="c-refresh">⟳ every 30 s · read 4 s ago</button></div></div>' +
+      '<p class="c-count-note">3 pools</p>'
     document.body.appendChild(host)
     try {
-      const age = host.querySelector('.c-age')!
+      const age = host.querySelector('.c-refresh')!
       for (const env of [WIDE, PHONE]) {
         expect(painted(age, ['display'], env) ?? 'inline', `${env.width}px`).not.toMatch(/flex|grid/)
       }
@@ -174,7 +199,8 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
       // freshness under the title, but it is still the same head.
       expect(painted(host.querySelector('.c-phead')!, ['flex-wrap'], WIDE)).toBe('nowrap')
       expect(painted(host.querySelector('.c-phead')!, ['flex-direction'], PHONE) ?? 'row').toBe('row')
-      expect(familyOf(host.querySelector('.c-meta')!, PHONE)).toBe('sans')
+      expect(familyOf(age, PHONE)).toBe('sans')
+      expect(familyOf(host.querySelector('.c-count-note')!, PHONE)).toBe('sans')
     } finally {
       host.remove()
     }

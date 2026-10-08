@@ -48,7 +48,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, TypeVar
 from urllib.parse import quote, urlencode, urlparse
 
@@ -323,14 +323,26 @@ class PullRequest:
     #: False when an open pull request for this branch already existed. A
     #: resumed attempt pushing again must update that one, never open a second.
     created: bool
-    #: True when that existing pull request's title and body were replaced
-    #: (`open_pull_request(update_existing=True)`, #214).
+    #: True when an adopted pull request was edited at all: retitled, a
+    #: section appended to its body, or both (`retitled`, `appended`).
     updated: bool = False
     #: The title GitHub reports for an ADOPTED pull request (empty on one this
     #: call created). Read only so `open_pull_request` can tell a title a
     #: human may have written from the platform's own stale one (`retitle_if`,
     #: #259 follow-up); nothing else in this module or its caller uses it.
     title: str = ""
+    #: The body GitHub reports for an ADOPTED pull request (empty on one this
+    #: call created): what an amendment is appended to, and what the
+    #: closing-line guard compares a new body against (#807).
+    body: str = ""
+    #: The adopted pull request's title was replaced.
+    retitled: bool = False
+    #: A section was appended to the adopted pull request's body (#807).
+    appended: bool = False
+    #: The closing-keyword lines a proposed body would have dropped, when the
+    #: guard in `_update_pull_request` refused to send it (#807). Empty when
+    #: no body was refused.
+    body_refused: tuple[str, ...] = ()
 
 
 def parse_repo(url: str) -> RepoRef | None:
@@ -604,8 +616,12 @@ def _request(
 def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     """Ask the forge what this token may do. One GET, no side effect.
 
-    None means "this is not a forge I can publish to" -- an unrecognised host,
-    or no credential at all. The caller harvests a patch and says so.
+    None means the URL does not parse as a forge repository URL (no host, or
+    fewer than two path segments); there is no host allow-list, so any host
+    that parses is treated as GitHub. A missing credential, or a host the
+    tenant's credential may not be sent to, returns a `RepoAccess` with
+    `can_push=False` and the reason. Either way the caller harvests a patch
+    and says so.
     """
     ref = parse_repo(url)
     if ref is None:
@@ -682,6 +698,65 @@ def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     )
 
 
+#: GitHub's own cap on a pull request body, in characters. An appended
+#: section is cut to fit under it; the existing body never is (#807).
+PR_BODY_MAX_CHARS = 65536
+
+#: A line GitHub reads as closing an issue on merge -- `close`, `fix` or
+#: `resolve` in any tense, an optional colon, then `#N` or `owner/repo#N` --
+#: or a `part of #N` line, which is how the platform says an issue is NOT
+#: closed. Either, dropped from a body, changes what the merge does to an
+#: issue without anyone deciding it (#807: #775 lost three).
+_CLOSING_LINE_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:[\w.-]+/[\w.-]+)?#\d+"
+    r"|\bpart\s+of\s+(?:[\w.-]+/[\w.-]+)?#\d+",
+    re.IGNORECASE,
+)
+#: Said where an appended section had to be cut to fit `PR_BODY_MAX_CHARS`.
+_AMENDMENT_CUT_NOTE = "\n\n_[section cut to fit GitHub's body limit by the worker]_"
+
+
+def closing_lines(body: str | None) -> list[str]:
+    """Every line of `body`, stripped, that names a closing keyword or `part of #N`."""
+    return [
+        line.strip() for line in (body or "").splitlines() if _CLOSING_LINE_RE.search(line)
+    ]
+
+
+def dropped_closing_lines(current: str | None, proposed: str | None) -> list[str]:
+    """The closing lines of `current` that `proposed` no longer has, in order."""
+    kept = {line.strip() for line in (proposed or "").splitlines()}
+    return [line for line in closing_lines(current) if line not in kept]
+
+
+def appended_body(current: str | None, section: str) -> str | None:
+    """`current`, verbatim, with `section` appended after a blank line -- or
+    None when there is nothing to send.
+
+    None when `section`'s first line (its heading) is already a line of
+    `current`, so a publish retried by the same attempt appends nothing the
+    second time, and when not even the heading fits under
+    `PR_BODY_MAX_CHARS`. Only the SECTION is ever cut to fit: the existing
+    body is a human's or another task's, and its closing lines are the point.
+    """
+    current = current or ""
+    section = section.strip()
+    if not section:
+        return None
+    heading = section.splitlines()[0].strip()
+    if heading in {line.strip() for line in current.splitlines()}:
+        return None
+    base = current.rstrip()
+    joiner = "\n\n" if base else ""
+    body = f"{base}{joiner}{section}\n"
+    if len(body) <= PR_BODY_MAX_CHARS:
+        return body
+    room = PR_BODY_MAX_CHARS - len(base) - len(joiner) - len(_AMENDMENT_CUT_NOTE) - 1
+    if room < len(heading):
+        return None
+    return f"{base}{joiner}{section[:room].rstrip()}{_AMENDMENT_CUT_NOTE}\n"
+
+
 def open_pull_request(
     *,
     access: RepoAccess,
@@ -690,7 +765,7 @@ def open_pull_request(
     base: str,
     title: str,
     body: str,
-    update_existing: bool = False,
+    amendment: str | None = None,
     retitle_if: Callable[[str], bool] | None = None,
 ) -> PullRequest:
     """Open one pull request, or adopt the open one this branch already has.
@@ -700,21 +775,25 @@ def open_pull_request(
     noise that a human has to close by hand. GitHub answers 422 for the
     duplicate; that is looked up rather than treated as a failure.
 
-    `update_existing` replaces an adopted pull request's title and body with
-    these (#214). The worker asks for it only when the AGENT wrote them
-    (`pr-title.txt`, `pr-body.md`): a retry whose agent wrote a new
-    `Closes #N` must put it on the pull request it reuses, and a retry with
-    nothing of the agent's to say must not overwrite a title or body a human
-    edited by hand. A refused update is not a failure -- the pull request is
-    still adopted, with `updated` False.
+    `title` and `body` are used ONLY for a pull request this call opens. AN
+    ADOPTED PULL REQUEST'S BODY IS NEVER REPLACED (#807): it is the
+    implementer's, or a human's, and its `Closes #N` lines are what the merge
+    closes issues by -- a CI fixer's republish that replaced it with its own
+    provenance left three issues open on #775. `amendment`, when given, is
+    APPENDED to the adopted body as one marked section (`appended_body`:
+    once per heading, cut to fit, the existing text verbatim); without one
+    the body is not touched. A pull request whose body was added to says so
+    with `appended`.
 
-    `retitle_if`, separately, retitles an adopted pull request whose CURRENT
-    title it answers True for -- the worker passes the owner's 2026-09-28 rule
-    that a title never carries the task id, so a pull request left with the
-    old `[swarm] task_...` fallback is retitled the next time this task's
-    branch is pushed, whether or not the agent wrote anything of its own. Only
-    the title is replaced on that path: the body may be a human's, and
-    nothing about it broke the rule.
+    `retitle_if` retitles an adopted pull request whose CURRENT title it
+    answers True for, to `title`. The worker passes two rules: the owner's
+    2026-09-28 rule that a title never carries the task id (a pull request
+    left with the old `[swarm] task_...` fallback), and #807's -- the agent
+    wrote `pr-title.txt` and the current title is the worker's own default.
+    Any other title, a human's or the implementer's, is kept.
+
+    A refused update is not a failure -- the pull request is still adopted,
+    with `updated` False.
     """
     ref = access.ref
     if not may_receive_forge_token(ref.host):
@@ -741,15 +820,19 @@ def open_pull_request(
     if status == 422:
         existing = _find_open_pull_request(access=access, token=token, head=head)
         if existing is not None:
-            if update_existing and existing.number:
-                return _update_pull_request(
-                    access=access, token=token, existing=existing, title=title, body=body
-                )
-            if retitle_if is not None and existing.number and retitle_if(existing.title):
-                return _update_pull_request(
-                    access=access, token=token, existing=existing, title=title, body=None
-                )
-            return existing
+            if not existing.number:
+                return existing
+            new_title = (
+                title if retitle_if is not None and retitle_if(existing.title) else None
+            )
+            new_body = (
+                appended_body(existing.body, amendment) if amendment is not None else None
+            )
+            if new_title is None and new_body is None:
+                return existing
+            return _update_pull_request(
+                access=access, token=token, existing=existing, title=new_title, body=new_body
+            )
         message = ""
         if isinstance(data, dict):
             errors = data.get("errors")
@@ -791,18 +874,36 @@ def _find_open_pull_request(
         state=str(first.get("state") or "open"),
         created=False,
         title=str(first.get("title") or ""),
+        body=str(first.get("body") or ""),
     )
 
 
 def _update_pull_request(
-    *, access: RepoAccess, token: str, existing: PullRequest, title: str, body: str | None
+    *,
+    access: RepoAccess,
+    token: str,
+    existing: PullRequest,
+    title: str | None,
+    body: str | None,
 ) -> PullRequest:
-    """PATCH an adopted pull request's title and body (title only when `body`
-    is None); `updated` says whether it took."""
+    """PATCH an adopted pull request's title and/or body (each only when not
+    None); `updated` says whether it took.
+
+    THE GUARD (#807): a body that drops any closing-keyword or `part of #N`
+    line the CURRENT body has is never sent, whoever built it. The title, if
+    any, still goes; `body_refused` names the lines that would have been lost.
+    """
     ref = access.ref
-    payload: dict[str, Any] = {"title": title}
+    payload: dict[str, Any] = {}
+    if title is not None:
+        payload["title"] = title
+    refused: tuple[str, ...] = ()
     if body is not None:
-        payload["body"] = body
+        refused = tuple(dropped_closing_lines(existing.body, body))
+        if not refused:
+            payload["body"] = body
+    if not payload:
+        return replace(existing, updated=False, body_refused=refused)
     try:
         status, _ = _request(
             f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls/{existing.number}",
@@ -814,12 +915,18 @@ def _update_pull_request(
         # The pull request exists either way; an unreachable forge on the
         # update must not read as "no pull request was opened".
         status = 0
+    took = status == 200
     return PullRequest(
         number=existing.number,
         url=existing.url,
         state=existing.state,
         created=False,
-        updated=status == 200,
+        updated=took,
+        title=existing.title,
+        body=existing.body,
+        retitled=took and "title" in payload,
+        appended=took and "body" in payload,
+        body_refused=refused,
     )
 
 

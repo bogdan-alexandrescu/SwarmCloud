@@ -49,6 +49,8 @@
   margin-bottom: var(--ctl-s3);
 }
 .tl-zoom { display: inline-flex; gap: 4px; }
+/* The way back from a zoom, on its own line under the controls (QA G3-31). */
+.tl-back { margin: calc(-1 * var(--ctl-s2)) 0 var(--ctl-s3); }
 /* The back-to-span chip is the canonical button Chip (#503 swap). */
 .tl-flt {
   position: relative;
@@ -69,8 +71,22 @@
   background: color-mix(in srgb, var(--info) 12%, var(--surface));
   color: var(--info);
 }
-.tl-flt i { font-style: normal; color: var(--text-dim); }
+/* BOUNDED (QA G3-31): a picker's summary grew with each value ticked and a
+   long workflow id widened its select, so one choice moved every control
+   after it. Each holds a ceiling and ends in an ellipsis; the full value is
+   in the open checklist and the select's own list. */
+.tl-flt i {
+  display: inline-block;
+  max-width: 12em;
+  overflow: hidden;
+  font-style: normal;
+  color: var(--text-dim);
+  white-space: nowrap;
+  vertical-align: bottom;
+  text-overflow: ellipsis;
+}
 .tl-flt select {
+  max-width: 16em;
   font: inherit;
   color: inherit;
   background: transparent;
@@ -202,7 +218,11 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  overflow: hidden;
+  /* CLIP, NOT HIDDEN (QA G3-12): `hidden` makes the chart a scroll container,
+     and the sticky axis inside it stuck to the chart, which never scrolls,
+     so at the failed groups the axis sat 7,090 px above the viewport. `clip`
+     keeps the rounded corners and lets the axis stick to the page scroller. */
+  overflow: clip;
   position: relative;
 }
 .tl-row {
@@ -241,6 +261,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A workflow read the route refused offers its retry in the subtitle's own
+   type, so the line keeps one size (QA G3-07). */
+.tl-lab .c-link.tl-wf-retry { font: inherit; padding: 0; }
 .tl-lab a { color: var(--info); }
 .tl-name {
   min-width: 0;
@@ -274,7 +297,15 @@
   background-image: var(--tl-grid, none);
   overflow: hidden;
 }
-.tl-axis { background: var(--surface-2); }
+/* THE TIME SCALE STAYS IN VIEW (QA G3-12, 2026-10-07): sticky at the top of
+   the page scroller (`.ctl-scroll`; the phone header is outside it), over the
+   lanes' bars and marks, painted so they do not show through. */
+.tl-axis {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--surface-2);
+}
 .tl-axis .tl-trk {
   height: 30px;
   background-image: none;

@@ -1,6 +1,6 @@
 import './styles/overview.css'
 import './styles/names.css'
-import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, waitGroups } from './OverviewRegions'
+import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, rowLabel, useRowTitles, waitGroups } from './OverviewRegions'
 import { addressToPath } from './paths'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
@@ -15,7 +15,7 @@ import {
   TASK_PAGE_LIMIT,
   type SpendRollup,
 } from './api'
-import { PHONE_PAGE_LIMIT, agentName } from './agentlist'
+import { PHONE_PAGE_LIMIT } from './agentlist'
 import { totalCostCell, totalCostOf } from './dag'
 import { usd } from './measure'
 import { blindness, deriveChecks, type Check, type Problem } from './checks'
@@ -24,7 +24,9 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
-import { PageHead, timeAgo } from './Shell'
+import { disabledSentence } from './ProfileMatrix'
+import { AGED_AFTER_MS, CountNote, PageHead, RefreshControl, staleFoot, timeAgo, useClaimPageAge, useIdleStop, usePoll } from './Shell'
+import { AGE_TICK_MS, PageClock, usePageClock, useNow as useAgeClock } from './useNow'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
@@ -59,7 +61,7 @@ import {
  *      title, a line and the link out. No figure over a bar and no list.
  *   2. The lifecycle band -- Waiting / Holding capacity / Finished today, each
  *      broken down by state under its own mark (marks.tsx).
- *   3. Running now beside Cost so far.
+ *   3. Running now beside Recent token cost.
  *   4. Waiting, and why (grouped by reason) beside Headroom.
  *   5. Recent failures, each ending in its age and an Open link.
  *
@@ -77,13 +79,16 @@ import {
  * WHAT THIS SCREEN DOES NOT DRAW, and why it is not a placeholder:
  *   - a task's cost so far. `/v1/tasks` serves no cost; it lives on the
  *     attempts, one read per task. The Running card's last column is an em
- *     dash that says so, and Cost so far sums a named sample on refresh.
+ *     dash that says so, and Recent token cost sums a named sample on refresh.
  *   - infrastructure cost in dollars. No billing integration records Cloud
  *     Run, Firestore or GCS spend, and the cost card's foot names the scope.
  *   - an alert inbox. Nothing stores, routes or acknowledges an alert. The
  *     checks are DERIVED from state that exists, re-derived on every read.
+ *
+ * `setup` is the onboarding card (#780 OB8, Entry A), passed in by App rather
+ * than imported here, so this screen reads only its own routes.
  */
-export function OverviewScreen() {
+export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
   // THREE REFRESH CADENCES, on purpose. `live` drives the six cheap reads
   // every twenty seconds; `counted` drives `/v1/stats` -- twelve count()
   // queries -- every sixty (OV-16, owner decision 2026-09-25); `heavy` drives
@@ -97,9 +102,20 @@ export function OverviewScreen() {
     setHeavy((n) => n + 1)
   }, [])
 
-  // NEITHER TIMER RUNS WHILE THE TAB IS HIDDEN (#168, docs/web-ui §2.5).
-  usePoll(POLL_MS, () => setLive((n) => n + 1))
-  usePoll(STATS_POLL_MS, () => setCounted((n) => n + 1))
+  // NEITHER TIMER RUNS WHILE THE TAB IS HIDDEN (#168, docs/web-ui §2.5), AND
+  // NEITHER RUNS AFTER FIFTEEN MINUTES WITHOUT INPUT (#117): the head's
+  // control says `Paused · resume`, and resuming reads everything at once.
+  const { idle, resume } = useIdleStop(true)
+  usePoll(OVERVIEW_POLL_MS, () => setLive((n) => n + 1), idle)
+  usePoll(STATS_POLL_MS, () => setCounted((n) => n + 1), idle)
+  const resumePoll = useCallback(() => {
+    resume()
+    refresh()
+  }, [resume, refresh])
+  // ONE AGE ON THIS SCREEN (#98): the head's refresh control carries it, so
+  // the frame's head prints none.
+  useClaimPageAge(true)
+  const clock = useAgeClock(AGE_TICK_MS)
 
   const capacity = useRead(loadCapacity, live)
   const tasks = useRead(loadListPage, live)
@@ -151,38 +167,62 @@ export function OverviewScreen() {
       ),
     [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
+  // The newest reading behind this screen, for the head's one age (#98).
+  const newest = reads.reduce<number | null>((m, r) => {
+    const at = ageOf(r)
+    return at === null ? m : m === null ? at : Math.max(m, at)
+  }, null)
   const tenant = dataOf(tasks)?.tenant_id ?? null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
   const failures = page === null ? null : failuresOf(page, Date.now())
+  const spent = dataOf(spend)
 
   return (
+    // THE HEAD'S CLOCK IS EVERY FOOT'S (#98): a stale foot below and the
+    // refresh control above read the same instant, so they cannot disagree.
+    <PageClock.Provider value={clock}>
     <div className="ov-page">
-      {/* TITLE, TENANT, PROVENANCE ON ONE LINE (O1 `.phead`). The scope is
-          not decoration: `/v1/stats` and `/v1/tasks` are tenant-scoped while
-          the `global` pool is platform-wide. Still reading is not missing
-          (OV-9): the dash is for a read that landed without a tenant. */}
-      {/* THE CANONICAL PAGE HEAD (`PageHead`, #503 Q2): the title, the
-          section's `?` by it, the tenant as its meta chip, and the tally,
-          the poll and refresh right-aligned on the same row. */}
-      <PageHead
-        title="Overview"
-        meta={
-          tasks.status === 'loading' ? (
-            <span className="ov-reading">tenant reading…</span>
-          ) : tenant === null ? (
-            <>
-              tenant <i className="ctl-em" title="The task read carried no tenant id.">&mdash;</i>
-            </>
-          ) : (
-            `tenant ${tenant}`
-          )
-        }
-      >
-        {/* THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
-            the reads behind the cards below did not land, and every em dash
-            further down is one of those two. Its dot is the severity, its
-            accessible name the sentence. */}
+      {/* TITLE LEFT, ACTIONS RIGHT, NOTHING UNDER IT (#138, owner ruling
+          2026-10-07): the title and the section's `?`, and on the right the
+          quiet refresh carrying this screen's one ticking age and its
+          cadence (#98, #117). */}
+      <PageHead title="Overview">
+        <RefreshControl
+          readAt={newest}
+          now={clock}
+          cadence={{ base: OVERVIEW_POLL_MS, wait: OVERVIEW_POLL_MS }}
+          // NOT REFRESHED when any read behind the cards failed its refresh
+          // and is showing older data, or when the newest is past
+          // `AGED_AFTER_MS` -- the same two cases `Screen` says it for.
+          stale={reads.some((r) => r.status === 'stale') || (newest !== null && clock - newest > AGED_AFTER_MS)}
+          reading={pending > 0}
+          idle={idle}
+          onRefresh={refresh}
+          onResume={resumePoll}
+        />
+      </PageHead>
+
+      {/* THE COUNT, AS THE NOTE OVER THE FIRST CARD (#138). The scope is not
+          decoration: `/v1/stats` and `/v1/tasks` are tenant-scoped while the
+          `global` pool is platform-wide. Still reading is not missing (OV-9):
+          the dash is for a read that landed without a tenant.
+
+          THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
+          the reads behind the cards below did not land, and every em dash
+          further down is one of those two. Its dot is the severity, its
+          accessible name the sentence. */}
+      <CountNote>
+        {tasks.status === 'loading' ? (
+          <span className="ov-reading">tenant reading…</span>
+        ) : tenant === null ? (
+          <>
+            tenant <i className="ctl-em" title="The task read carried no tenant id.">&mdash;</i>
+          </>
+        ) : (
+          `tenant ${tenant}`
+        )}
+        {' · '}
         <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
           <ToneMark tone={tallyTone(pending, refused, broken)} />
           <span className="ov-num">
@@ -191,14 +231,13 @@ export function OverviewScreen() {
           reads
           <HelpCard topic="absent-vs-zero" />
         </span>
-        {' · '}
-        <span aria-label={`re-read every ${POLL_MS / 1000} seconds`}>
-          poll <span className="ov-num">{POLL_MS / 1000}s</span>
-        </span>
-        {' · '}
-        {/* The head's own refresh, as every screen's head draws it (`.sub button`). */}
-        <button onClick={refresh}>refresh</button>
-      </PageHead>
+      </CountNote>
+
+      {/* SETUP, ENTRY A (#780 OB8, owner pick D10): the onboarding checklist
+          where a person already lands, above the tiles until every step is
+          done. App passes Onboarding.tsx's `SetupCard` in; it draws nothing
+          while its read is pending or failed. */}
+      {setup}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
@@ -211,7 +250,7 @@ export function OverviewScreen() {
           card, and the shorter one's column was blank beside it: ~157px
           beside Cost so far and ~388px beside Headroom. Each column now
           stacks its own cards at their own heights -- Running now, Waiting
-          and Recent failures on the left, Cost so far and Headroom on the
+          and Recent failures on the left, Recent token cost and Headroom on the
           right -- so a short card is followed by the next card in its
           column, not by blank. The pools stay a full-width row under both
           (N17). On a narrower screen it is one column in O1's order. */}
@@ -233,7 +272,10 @@ export function OverviewScreen() {
             <CardHead
               title="Recent failures"
               note={failures === null ? undefined : failures.note}
-              href="/agents/recent?state=failed"
+              // THE WHOLE RECENT TAB (QA G1-10, 2026-10-07): the card lists
+              // failed, dead-lettered and cancelled rows, and `?state=` takes
+              // one state, so the failed filter dropped half of what it listed.
+              href="/agents/recent"
               cta="All recent"
             />
             <RecentFailures tasks={tasks} />
@@ -241,7 +283,17 @@ export function OverviewScreen() {
         </div>
         <div className="ov-col">
           <section className="ctl-card ov-card ov-spend" id="ov-spend">
-            <CardHead title="Cost so far" href="/timeline" cta="Timeline" explain="token-cost" />
+            {/* A ROLLING SAMPLE IS NOT "SO FAR" (QA G1-03, 2026-10-07): the
+                figure sums the newest attempts, so it fell $8.78 -> $7.99 in
+                ten minutes under a title that read as cumulative. No route
+                sums today's attempts; the note says which window this is. */}
+            <CardHead
+              title="Recent token cost"
+              note={spent === null ? undefined : `last ${countOf(spent.attempts, 'attempt')}`}
+              href="/timeline"
+              cta="Timeline"
+              explain="token-cost"
+            />
             <SpendBody state={spend} tasks={tasks} />
           </section>
           <section className="ctl-card ov-card ov-headroom" id="ov-headroom">
@@ -259,6 +311,7 @@ export function OverviewScreen() {
         </section>
       </div>
     </div>
+    </PageClock.Provider>
   )
 }
 
@@ -309,13 +362,14 @@ function tallyTone(pending: number, refused: number, broken: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * How often the cheap reads re-run.
+ * How often the cheap reads re-run: every 20 seconds, unchanged by the
+ * 2026-10-07 cadence ruling (#117, "Overview stays 20000").
  *
  * NAMED, because the spend panel has to say that it does NOT move on this
  * cadence, and the only honest way to say that is to render the figure the
  * timer actually uses.
  */
-const POLL_MS = 20_000
+export const OVERVIEW_POLL_MS = 20_000
 
 /**
  * How often `/v1/stats` re-runs while this screen is open (OV-16).
@@ -362,66 +416,6 @@ const STATS_POLL_MS = 60_000
  */
 function loadListPage(): Promise<Result<TaskPage>> {
   return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
-}
-
-/** `document.hidden`, false where there is no document (tests/run.mjs). */
-function tabHidden(): boolean {
-  return typeof document !== 'undefined' && document.hidden === true
-}
-
-/**
- * Call `tick` every `ms` while the tab can be seen, and never while it cannot.
- *
- * §2.5: polling "stop[s] entirely when `document.hidden`". A hidden tab reads
- * nothing; a tab coming back reads at once if a tick fell due while it was
- * away, and otherwise finishes the wait it was part-way through -- so flipping
- * away and back inside twenty seconds costs nothing, and coming back after an
- * hour shows the platform now rather than twenty seconds from now. The same
- * rule `Screen` (Shell.tsx) applies to every other polled screen.
- *
- * A timeout re-armed per tick rather than an interval, because the due time
- * has to survive a pause: an interval restarted on return would either fire
- * late or need the same bookkeeping. Every REGULAR tick schedules with `ms`
- * itself (not a delta against `Date.now()`), so the timer this hook creates
- * on mount and on every tick after that is `setTimeout(fire, ms)` exactly --
- * OV-16 (layout.overview.test.tsx) spies on `setTimeout` and keys its
- * assertion on that literal `ms`, for the 20 s poll and the 60 s stats read
- * each having their own hook instance. Only the resume-from-hidden path
- * schedules a shorter, computed delay, to finish the wait a tick was
- * part-way through rather than restart it.
- */
-function usePoll(ms: number, tick: () => void): void {
-  const latest = useRef(tick)
-  latest.current = tick
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let dueAt = Date.now() + ms
-    const disarm = () => {
-      if (timer !== null) clearTimeout(timer)
-      timer = null
-    }
-    const schedule = (delay: number) => {
-      disarm()
-      dueAt = Date.now() + delay
-      timer = setTimeout(fire, delay)
-    }
-    const fire = () => {
-      timer = null
-      latest.current()
-      schedule(ms)
-    }
-    const onVisibility = () => {
-      if (tabHidden()) disarm()
-      else if (dueAt <= Date.now()) fire()
-      else schedule(dueAt - Date.now())
-    }
-    if (!tabHidden()) schedule(ms)
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      disarm()
-      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [ms])
 }
 
 // ---------------------------------------------------------------------------
@@ -634,10 +628,15 @@ function sourceList(checks: Check[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-/** "read 40s ago", or nothing at all when there is no reading to date. */
-function footFor(r: Result<unknown>, verb: string): string | undefined {
+/**
+ * A card foot's freshness clause: `absent` when there is no reading to date,
+ * `from 6 min ago` when the reading is stale (a failed refresh, or older than
+ * `AGED_AFTER_MS`), and nothing at all while it is fresh -- the head's
+ * refresh control carries a fresh age (#98, owner ruling 2026-10-07).
+ */
+function footFor(r: Result<unknown>, absent: string, now: number): string | null {
   const at = ageOf(r)
-  return at === null ? undefined : `${verb} ${timeAgo(at)}`
+  return at === null ? absent : staleFoot(at, now, r.status === 'stale')
 }
 // ---------------------------------------------------------------------------
 // Card chrome
@@ -775,9 +774,12 @@ function NeedsALook({ checks }: { checks: Check[] }) {
             ` Derived on every read from ${sourceList(checks)}. Nothing stores, routes or acknowledges an alert on this platform, so this is not an inbox.`
           }
         >
+          {/* THE LEAD FRACTION, LABELLED (#98, owner ruling 2026-10-07):
+              `checks 8/8` is how many of the checks ran, so it cannot be
+              read as the reads tally or as a count of problems. */}
           {reading.length > 0
             ? `${reading.length} of ${checks.length} checks still reading`
-            : `${found} ${found === 1 ? 'check' : 'checks'} of ${checks.length} · derived on this read`}
+            : `checks ${ran}/${checks.length} · ${found} found something`}
           {blind.length > 0 && (
             <span className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}> · {blind.length} blind</span>
           )}
@@ -946,6 +948,7 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
 }
 
 function CapacityStacks({ state }: { state: Result<Capacity> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={3} />
   if (state.status === 'error') {
     const b = blindness(state.error)
@@ -997,7 +1000,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
         <FootRun>
           <span>{countOf(cap.pools.length, 'pool')}</span>
           <span>{tenant === undefined ? 'no tenant pool read' : `tenant ${tenant}`}</span>
-          <span>{footFor(state, 'read') ?? 'not read'}</span>
+          {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
     </>
@@ -1050,7 +1053,7 @@ export function ProfileTile({
   if (profile.available === false) {
     const reason = profile.disabled_reason || 'refused by the platform'
     return (
-      <div className="ov-hp is-off" title={`${name} is disabled: ${reason}. Nothing can start on it, whatever the pools hold.`}>
+      <div className="ov-hp is-off" title={`${disabledSentence(name, profile.disabled_reason)} Nothing can start on it, whatever the pools hold.`}>
         <span className="ov-idc" title={name}>{name}</span>
         <b className="ov-hp-off">disabled</b>
         <small title={reason}>{reason}</small>
@@ -1148,6 +1151,7 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
  * unpolled, paused or skipped account never counts as room.
  */
 function AccountLine({ state }: { state: Result<AccountsPage> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={1} />
   if (state.status === 'error') {
     const b = blindness(state.error)
@@ -1183,11 +1187,22 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       ) : (
         <span title={pool.sub}>
-          {/* THE AGE IS PART OF THE FIGURE: a percentage with nothing saying
-              whether it was read a minute or four days ago is a claim without
-              provenance. */}
+          {/* THE AGE IS PART OF THE FIGURE WHEN IT IS OLD: a percentage read
+              four days ago is a claim without provenance, so a reading older
+              than `AGED_AFTER_MS` says `from 7 min ago`. A fresh one is silent
+              (#98, owner ruling 2026-10-07: a tile states freshness only when
+              stale); the whole sentence, age included, is the line's title. */}
           best {pool.best.label} at <span className="ov-num">{Math.round(pool.pct)}%</span> of its {pool.best.window} window
-          {' · '}read {timeAgo(pool.best.observedAt)}
+          {staleFoot(Date.parse(pool.best.observedAt), now) !== null && ` · ${staleFoot(Date.parse(pool.best.observedAt), now)}`}
+        </span>
+      )}
+      {/* NAMED, NOT COUNTED (QA G5-05, 2026-10-07): an account whose window
+          has reset since it was read is kept out of `best` -- a projection is
+          not headroom -- and it is usually the one with the most room, so the
+          line says which ones it left out rather than reading as if they had none. */}
+      {pool.projected.length > 0 && (
+        <span className="ov-acc-proj" title="Their last figure describes a window that has since reset or gone stale, so it is not counted as room. Accounts shows them with ~.">
+          · {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
@@ -1214,7 +1229,7 @@ const RUNNING_ROWS = 8
  * `GET /v1/tasks` carried no cost.
  */
 const COST_NOT_SERVED =
-  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Cost so far card sums a sample on refresh instead.'
+  'not served: this API’s GET /v1/tasks carries no attempt totals. A task’s cost is on its attempts; the Recent token cost card sums a sample on refresh instead.'
 
 /** Why the column is a dash when the API read the attempts and none reported. */
 const COST_NOT_YET =
@@ -1271,6 +1286,7 @@ function RunningCard({
   stats: Result<Stats>
   leases: Result<LeasePage>
 }) {
+  const now = usePageClock()
   const page = dataOf(tasks)
   const silent = silentByTask(leases)
   const leased = leasedAtByTask(leases)
@@ -1281,6 +1297,7 @@ function RunningCard({
           .filter((t) => CONCURRENCY_STATES.has(t.state))
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
+  const titleOf = useRowTitles(running)
   const head = (
     <CardHead
       title="Running now"
@@ -1334,7 +1351,10 @@ function RunningCard({
           .filter(([s]) => CONCURRENCY_STATES.has(s as TaskState))
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
   const countedAt = ageOf(stats)
-  const countedAge = countedAt === null ? null : timeAgo(countedAt)
+  // Said only when stale (#98): a fresh count's age is the head's.
+  const countedAge = countedAt === null ? null : staleFoot(countedAt, now, stats.status === 'stale')
+  // The sentence below names the counts' age on the same rule: only when stale.
+  const counts = countedAge === null ? '' : `, ${countedAge},`
   const foot = (
     <p className="ov-foot">
       <FootRun>
@@ -1359,8 +1379,8 @@ function RunningCard({
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0
-                ? `The state counts, read ${countedAge ?? 'at an unknown time'}, agree: zero.`
-                : `The state counts, read ${countedAge ?? 'at an unknown time'}, say ${counted}; those agents were created before this page begins.`)
+                ? `The state counts${counts} agree: zero.`
+                : `The state counts${counts} say ${counted}; those agents were created before this page begins.`)
           }
         />
         {foot}
@@ -1392,7 +1412,7 @@ function RunningCard({
           </thead>
           <tbody>
             {shown.map((t) => (
-              <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
+              <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
             ))}
           </tbody>
         </table>
@@ -1402,7 +1422,7 @@ function RunningCard({
             <table className="ov-tbl">
               <tbody>
                 {running.slice(RUNNING_ROWS).map((t) => (
-                  <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
+                  <RunningRow key={t.id} task={t} title={titleOf(t)} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
                 ))}
               </tbody>
             </table>
@@ -1415,9 +1435,26 @@ function RunningCard({
         {running.map((t) => (
           <li key={t.id}>
             <StateMark state={t.state} />
-            <a className="ov-prun-n" href={agentPath(t)} title={`${agentName(t)} · ${t.id}`}>
-              {agentName(t)}
-            </a>
+            <span className="ov-prun-m">
+              <a className="ov-prun-n" href={agentPath(t)} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
+                {rowLabel(t, titleOf(t))}
+              </a>
+              {/* THE SECOND LINE IS THE DESKTOP'S STATE AND PROFILE COLUMNS
+                  (QA G1-08, 2026-10-07): a dot and "implement" twice could
+                  not be told apart. State, profile, and the workflow by its
+                  short id, whole in the link's title. */}
+              <span className="ov-prun-sub">
+                {t.state.toLowerCase().replace('_', '-')} · {t.runner_profile}
+                {t.workflow_id && (
+                  <>
+                    {' · '}
+                    <a className="ctl-link ov-wf" href={`/workflows/${encodeURIComponent(t.workflow_id)}`} title={t.step_id ? `step ${t.step_id} of ${t.workflow_id}` : t.workflow_id}>
+                      {shortWorkflowId(t.workflow_id)}
+                    </a>
+                  </>
+                )}
+              </span>
+            </span>
             <em>
               <Runtime task={t} leasedAt={leased.get(t.id)} />
             </em>
@@ -1437,10 +1474,13 @@ function RunningCard({
  */
 export function RunningRow({
   task,
+  title = null,
   silentFor,
   leasedAt,
 }: {
   task: Task
+  /** Its workflow's title (`useRowTitles`), or null: the step alone. */
+  title?: string | null
   silentFor?: number | undefined
   /** When the lease this attempt holds was granted (`leasedAtByTask`). */
   leasedAt?: string | undefined
@@ -1451,9 +1491,10 @@ export function RunningRow({
         <StateMark state={task.state} />
       </td>
       <th scope="row">
-        {/* NAMED BY ITS STEP (#94), else its id; the profile under it. */}
-        <a className="ov-name" href={agentPath(task)} title={`${agentName(task)} · ${task.id}`}>
-          {agentName(task)}
+        {/* NAMED BY ITS TITLE, THEN ITS STEP (QA G1-09; #94 named the step),
+            else its id; the profile under it. */}
+        <a className="ov-name" href={agentPath(task)} title={`${rowLabel(task, title)} · ${task.id}`}>
+          {rowLabel(task, title)}
         </a>
         {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}
         {silentFor !== undefined && (
@@ -1497,7 +1538,10 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   const page = dataOf(leases)
   if (page === null) return out
   for (const l of page.leases) {
-    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+    // `starting` is a worker that has not beaten yet inside its dispatch
+    // deadline (G5-01): booting, not silent, so it is not one of the item's.
+    const { kind } = leaseLiveliness(l, page.thresholds)
+    if (kind === 'silent' || kind === 'presumed-dead') out.set(l.task_id, l.silent_seconds)
   }
   return out
 }
@@ -1517,6 +1561,11 @@ function leasedAtByTask(leases: Result<LeasePage>): Map<string, string> {
     if (had === undefined || l.generation > had.generation) out.set(l.task_id, { at: l.created_at, generation: l.generation })
   }
   return new Map([...out].map(([id, v]) => [id, v.at]))
+}
+
+/** `wf_ccdd1422ab` -> `wf_ccdd14…`: what a phone row has room for. A short id stays whole. */
+function shortWorkflowId(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 9)}…`
 }
 
 function startKey(t: Task): number {
@@ -1575,6 +1624,7 @@ function Runtime({ task, leasedAt }: { task: Task; leasedAt?: string | undefined
  * carried no figure and draws that count rather than folding them in as zeros.
  */
 function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result<TaskPage> }) {
+  const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={4} />
   if (state.status === 'error') {
     // TWO FAILURES, AND WHAT THE READER DOES NEXT DIFFERS. This rollup is
@@ -1704,7 +1754,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
               only a press of refresh re-sums it (OV-16 set the cadence of
               `/v1/stats`, not of this). IN PLAIN WORDS (#97): it read `no
               re-poll`, which is the poll's jargon for the same fact. */}
-          <span>{footFor(state, 'summed') ?? 'not summed'}</span>
+          {footFor(state, 'not summed', now) !== null && <span>{footFor(state, 'not summed', now)}</span>}
           <span>updates only on refresh</span>
         </FootRun>
       </p>
@@ -1843,6 +1893,13 @@ export function accountHeadroom(state: Result<AccountsPage>): {
   usable: number | null
   /** Accounts in scope, whether or not any reading arrived. */
   total: number
+  /**
+   * Accounts with a real figure that is no longer current -- stale, or a
+   * window that has reset since -- by label. Kept out of `best` and `usable`,
+   * and NAMED on the account line (QA G5-05): they are often the accounts with
+   * the most room, and a line that drops them silently reads as if they had none.
+   */
+  projected: string[]
 } {
   if (state.status === 'loading') {
     return {
@@ -1854,6 +1911,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: null,
       usable: null,
       total: 0,
+      projected: [],
     }
   }
   if (state.status === 'error') {
@@ -1866,6 +1924,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: null,
       usable: null,
       total: 0,
+      projected: [],
     }
   }
   if (state.status === 'empty') {
@@ -1878,6 +1937,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: 'no accounts',
       usable: 0,
       total: 0,
+      projected: [],
     }
   }
 
@@ -1971,6 +2031,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       absent: 'nothing measured',
       usable: 0,
       total: accounts.length,
+      projected,
     }
   }
 
@@ -1995,6 +2056,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
     absent: null,
     usable,
     total: accounts.length,
+    projected,
   }
 }
 

@@ -142,6 +142,7 @@ from . import children as children_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
+from . import gitops as gitops_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import questions as questions_mod
@@ -206,6 +207,7 @@ from .gitops import (
     GitError,
     GitTransient,
     MergeOutcome,
+    PeerPin,
     branch_commits,
     clone_at_commit,
     commit_dirty,
@@ -234,6 +236,7 @@ from .gitops import (
     _git_text_full,
     _worker_identity,
 )
+from .gitidentity import BOT_GIT_IDENTITY, commit_identity, git_identity_env
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
     ResourceSampler,
@@ -263,11 +266,16 @@ from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
     GIT_PROVIDER,
     CredentialMissing,
+    ForgeWriteRefused,
     SecretError,
     SecretManagerClient,
+    forge_read_only,
+    forge_suffix,
+    grant_refusal,
     load_tenant,
     resolve_credentials,
     resolve_git_token,
+    user_slot_hash,
 )
 from .startup import (
     CONTROL_PLANE_READ_SCHEDULE_SECONDS,
@@ -337,6 +345,14 @@ EXPECTED_OUTPUT_RETRY_DELAY_SECONDS = 0
 #: not a frozen EndCause: the task's end cause is CANNOT_START. NOT RETRIED:
 #: the next attempt reads the same secret and asks the same forge.
 FORGE_READ_ONLY = "forge_read_only"
+#: The cause a `carrier: branches` attempt fails with, before its agent runs,
+#: when this worker's memory guard refuses to hold the tenant git token at all
+#: (`hardening.MemoryProtection.git_token_refusal`, #453). Such a worker can
+#: never push the step's branch, and the carrier is what a dependant starts
+#: from, so the agent is not run for work that could not be carried. NOT
+#: RETRIED: the next attempt runs the same image in the same sandbox, and the
+#: refusal is that sandbox's, not the forge's.
+GIT_TOKEN_REFUSED = "git_token_refused"
 #: The retryable sibling: the forge could not be asked (a network failure, a
 #: 429, a 5xx), which the next attempt may not meet.
 FORGE_UNREACHABLE = "forge_unreachable"
@@ -345,6 +361,23 @@ FORGE_UNREACHABLE = "forge_unreachable"
 #: delay keeps the retry from meeting the same outage at once. Bounded by
 #: `max_attempts`, like every retry.
 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: Why the worker refused a forge write the task's credential does not allow
+#: (docs/onboarding.md §3.3 steps 3-4, #780 lane OB5). Worker vocabulary in
+#: the error text and `result_summary.forge_check`, like the three above; the
+#: task's end cause is the frozen CANNOT_START before the agent ran and
+#: PUBLISH_REFUSED after it.
+#:
+#: FORGE_READ_GRANT: the task's signed `forge_access` is `read` (D9), and the
+#: step pushes or opens a pull request. NOT RETRIED: the next attempt reads the
+#: same signed document.
+FORGE_READ_GRANT = "forge_read_grant"
+#: FORGE_GRANT_REVOKED: the submitter's grant on the repository was deleted,
+#: or changed to `read`, after submission. NOT RETRIED: the next attempt would
+#: read the same grant; a person who grants again submits again.
+FORGE_GRANT_REVOKED = "forge_grant_revoked"
+#: FORGE_GRANT_UNREADABLE: the grant document could not be read. Retryable,
+#: like an unreachable forge: it says nothing about the grant.
+FORGE_GRANT_UNREADABLE = "forge_grant_unreadable"
 #: The answers `forge.probe_repository` turns into a `can_push=False` access
 #: whose reason starts "the forge answered <status>", and which say the forge
 #: could not answer now rather than that the token cannot push. Matched on
@@ -452,12 +485,34 @@ FOLDED_COMMIT_SUBJECT = "Everything the agent changed, as one commit"
 #: title that matches is treated as carrying the task id even when the id in
 #: it is not this task's (an agent that copied another task's old title).
 _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+#: The issue-number title `_title_from_issue_input` writes without an issue
+#: title. Like the retired shape, a worker's default a written title replaces.
+_DEFAULT_ISSUE_TITLE_RE = re.compile(r"^Work on issue #\d+ \(part of #\d+\)$")
 
 #: One path segment of a checkpoint's key, as a manifest's `attempt_id` and
 #: `checkpoint_id` must be before a restore builds a key from them (#347). A
 #: manifest is bucket data: an id carrying `/` or `..` would name a key that
 #: starts with this task's prefix and leaves it.
 _KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
+
+
+def _issue_title_from(path: Path, number: int) -> str | None:
+    """The issue's title from the header `issue.render` writes, or None.
+
+    `# Issue #<number>: <title>` is the file's first line, with the title
+    already scrubbed of every registered secret and folded onto one line;
+    `(no title)` is what an untitled issue reads as, and is no title.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first = handle.readline().rstrip("\n")
+    except OSError:
+        return None
+    prefix = f"# Issue #{number}: "
+    if not first.startswith(prefix):
+        return None
+    title = first[len(prefix):].strip()
+    return title if title and title != "(no title)" else None
 
 
 def _as_issue_number(value: Any) -> int | None:
@@ -548,6 +603,29 @@ def _skip_cause(reason: str) -> str:
     if reason in (standalone_mod.UPLOAD_FAILED, standalone_mod.UNREADABLE):
         return expected_mod.CAUSE_UPLOAD_ERROR
     return expected_mod.CAUSE_REFUSED
+
+
+def published_nothing(summary: Any) -> bool:
+    """True when a SUCCEEDED contributor's `result_summary` says it had no
+    branch to push (#760): its harvest ran (no `error`), recorded
+    `published: false`, and found no commit and no uncommitted path.
+
+    A review step under `integrate` -- one that writes only `verdict.json`
+    and leaves its clone as cloned -- ends exactly so. Every condition is
+    read, none defaulted: a contributor that committed, left work
+    uncommitted, or whose harvest failed could have pushed, and its absent
+    branch is "missing" on the pull request as before.
+    """
+    if not isinstance(summary, dict):
+        return False
+    git = summary.get("git")
+    if not isinstance(git, dict) or git.get("error"):
+        return False
+    return (
+        git.get("published") is False
+        and git.get("commit_count") == 0
+        and git.get("dirty_count", 0) == 0
+    )
 
 
 @dataclass
@@ -649,6 +727,11 @@ class Worker:
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
+        #: True once `_verify_spec` VERIFIED the signature over `_task` -- not
+        #: for a legacy unsigned task. Only then is its `forge_credential`
+        #: trusted (`_forge_suffix`): the generation check, then the
+        #: signature, then the credential read (invariant 5).
+        self._forge_signed = False
         #: An `input.issue` number's title, when something upstream of the pull
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
@@ -656,6 +739,13 @@ class Worker:
         #: `_title_from_issue_input` names the work by the issue number,
         #: always as "part of #N", never "Fixes #N".
         self._issue_title: str | None = None
+        #: The issue fetch started beside the clone (#721, P29,
+        #: `_start_issue_prefetch`), joined at STEP 6b. None when the task
+        #: asks for no issue, or nothing let it start early.
+        self._issue_prefetch: issue_mod.IssuePrefetch | None = None
+        #: When the issue fetch started and ended, seconds since process
+        #: start, for `agent_started`. None until a fetch has been joined.
+        self._issue_fetch_timing: dict[str, Any] | None = None
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -688,6 +778,10 @@ class Worker:
         # The contributors this integrator left out of its merge because they
         # changed nothing (`_integrates_with_changes`, 2026-10-05).
         self._no_change_contributors: list[str] = []
+        # The contributors it left out because they SUCCEEDED having
+        # published nothing by design -- a review that writes only a verdict
+        # (`_integrates_with_changes`, #760).
+        self._read_only_contributors: list[str] = []
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -1779,22 +1873,36 @@ class Worker:
         return key
 
     def _read_action_git_token(self) -> str:
-        """The tenant's `-git` token, for the merge (contract request 47).
+        """The task's forge token, for the merge (contract request 47).
 
-        The secret `swarm-tenant-<tenant>-git`, read by the Job's account --
-        the tenant's worker account, the secret's ordinary reader -- through
-        `resolve_git_token`, which registers the value with the logger's
-        redaction before returning it and logs the secret's NAME only. Held in
-        this process's heap and nowhere else: never written to the workspace,
-        a file, an environment or an event. A tenant that has not registered
-        one raises `CredentialMissing`, which parks the step at no cost.
+        The secret `swarm-tenant-<tenant>-<suffix>`, the suffix being the
+        signed `forge_credential` (`_forge_suffix`, `git` when it names none,
+        contract request 54), read by the Job's account -- the tenant's worker
+        account, the secret's ordinary reader -- through `resolve_git_token`,
+        which registers the value with the logger's redaction before returning
+        it and logs the secret's NAME only. Held in this process's heap and
+        nowhere else: never written to the workspace, a file, an environment
+        or an event. A tenant that has not registered its `-git` token raises
+        `CredentialMissing`, which parks the step at no cost.
+
+        A merge is a forge write, so a read grant, or a grant gone since
+        submission, raises `ForgeWriteRefused` before any token is read; the
+        merge ends the step FAILED and names that type.
         """
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            raise ForgeWriteRefused(*forge_refused)
+        suffix = self._forge_suffix()
         tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
-        if GIT_PROVIDER not in tenant.credentials or self.secret_client is None:
-            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
-        token = resolve_git_token(tenant=tenant, client=self.secret_client, logger=self.log)
+        if self.secret_client is None or (
+            suffix == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials
+        ):
+            raise CredentialMissing(self.cfg.tenant_id, suffix)
+        token = resolve_git_token(
+            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix
+        )
         if not token:
-            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
+            raise CredentialMissing(self.cfg.tenant_id, suffix)
         return token
 
     def _action_recheck(self) -> bool:
@@ -1837,6 +1945,15 @@ class Worker:
                 end_cause=outcome.end_cause,
             )
             self.log.warning("worker action failed retryably", action=action.value, code=code)
+            if state is TaskState.FAILED:
+                # The last attempt: the task ended as `end_cause` (an outage
+                # that spent its retries is how most MERGE_FAILED /
+                # VERDICT_FAILED end; CANCELLED ends as the cancel's cause and
+                # is not logged here). The same line as the non-retryable end
+                # below, which the monitoring module's worker-action-ended
+                # metric counts.
+                self.log.error("worker action ended", action=action.value, code=code,
+                               end_cause=outcome.end_cause.value if outcome.end_cause else None)
             return Outcome(exit_code=ExitCode.FAILED, state=state)
         self.control.finish(
             state=outcome.state,
@@ -1999,6 +2116,7 @@ class Worker:
             )
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
+            self._forge_signed = True
 
     def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
         """The signed parents of `task` that have not SUCCEEDED, with their state.
@@ -2199,6 +2317,20 @@ class Worker:
         # second read of a document that cannot have changed. It is the
         # VERIFIED document: nothing later reads a covered field from Firestore.
         self._task = task
+
+        # ---- STEP 4b': the submitter's grant still stands (OB5) -----------
+        # docs/onboarding.md §3.3 step 4. A task signed for a person's user
+        # slot re-reads that person's grant on the repository BEFORE a
+        # checkpoint is restored, the issue prefetch reads the token, or the
+        # repository is cloned: a grant deleted since submission ends the
+        # attempt here, before the agent starts, and the end releases the lease
+        # and touches it no further. After `verify_spec`, so the slot it reads
+        # by is the signed one. A tenant or repository token reads nothing.
+        if user_slot_hash(self._forge_suffix()) is not None:
+            self.phases.enter("forge_grant")
+            revoked = self._forge_grant_refusal(write=False)
+            if revoked is not None:
+                return functools.partial(self._end_forge_refused_before_start, *revoked)
         self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task)
         if self._standalone and self._restored_from is not None:
@@ -2213,6 +2345,9 @@ class Worker:
         self._heartbeat()
 
         # ---- STEP 5: optional shallow clone -----------------------------
+        # The issue fetch starts first, in a thread, and runs beside the
+        # clone (#721, P29): it needs only the token and the issue number.
+        self._start_issue_prefetch(task)
         self.phases.enter("clone")
         try:
             repo_info = self._clone_keeping_lease(task)
@@ -2224,6 +2359,23 @@ class Worker:
         # one most likely to vary with repository size.
         self._heartbeat()
 
+        # ---- before STEP 5a: a READ grant on a step that must push (D9, OB5) -
+        # A step whose job is to open a pull request, or to carry its work on a
+        # branch, could only ever be refused at its push, so it is refused now,
+        # before the agent spends time and provider quota on work that can
+        # never be delivered, and before `carrier_scope` reads a token to ask
+        # the forge a question whose answer would not matter. A step that
+        # pushes only incidentally (a contributor's branch) is refused at that
+        # push instead (`_forge_write_refusal`).
+        if forge_read_only(task) and (
+            self._opens_pull_request() or self._dispatch_carrier() == "branches"
+        ):
+            return functools.partial(
+                self._end_forge_refused_before_start,
+                FORGE_READ_GRANT,
+                "this task's grant on its repository is read-only, and this step "
+                "pushes or opens a pull request",
+            )
         # ---- STEP 5a: carrier: branches needs a token that can push (D13) --
         # Asked HERE, by the worker, and not by swarm-api at submission: the
         # answer needs the tenant's git secret, and exactly one identity may
@@ -2376,20 +2528,39 @@ class Worker:
         # A forge that did not answer is retried in-process (`_forge_retry`),
         # and if it stays down the ATTEMPT fails retryably -- never
         # INPUTS_UNAVAILABLE, which is for a forge that answered "no" (F1).
+        #
+        # BESIDE THE CLONE (#721, P29): the network read started before the
+        # clone (`_start_issue_prefetch`) and is joined here; the scrub and
+        # the write still happen here, after the credentials. A fetch that
+        # cannot be used -- none started, or for another repository URL than
+        # the clone settled on -- is made here as it always was. Either way
+        # a failure is raised from `stage_issue` exactly as before.
         issue_number = issue_mod.requested(task.get("input"), cfg.profile)
         if issue_number is not None:
             self.phases.enter("fetch_issue")
+            prefetch = self._issue_prefetch
+            if prefetch is not None and (
+                prefetch.number != issue_number or prefetch.repository_url != self._repo_url
+            ):
+                prefetch = None
+            if prefetch is not None and prefetch.running:
+                # Still reading after the clone: the lease is beaten while
+                # this waits, as it was while the clone ran.
+                with self._heartbeat_meanwhile("fetch_issue"):
+                    prefetch.wait()
+            fetch_started = float(self.phases.seconds_since_start())
             try:
-                issue_mod.stage_issue(
+                staged = issue_mod.stage_issue(
                     number=issue_number,
                     repository_url=self._repo_url,
-                    token=self._git_token(),
+                    token=prefetch.token if prefetch is not None else self._git_token(),
                     refusal=self._git_token_refusal(),
                     work_dir=ws.work,
                     scrub=self._scrub,
                     logger=self.log,
                     on_request=self._heartbeat,
                     retry=self._forge_retry(),
+                    prefetched=prefetch,
                 )
             except forge_mod.ForgeUnavailable as exc:
                 return functools.partial(
@@ -2399,6 +2570,20 @@ class Worker:
                     exc.retry_after_seconds,
                     exc.tries,
                 )
+            # The pull request's title names the issue by its title (#453):
+            # read back from the file just written -- scrubbed, one line --
+            # here, before the agent starts and can write that file.
+            self._issue_title = _issue_title_from(staged, issue_number)
+            self._issue_fetch_timing = (
+                {**prefetch.timing(), "beside_clone": True}
+                if prefetch is not None
+                else {
+                    "started_seconds": round(fetch_started, 3),
+                    "ended_seconds": float(self.phases.seconds_since_start()),
+                    "ok": True,
+                    "beside_clone": False,
+                }
+            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -2702,7 +2887,19 @@ class Worker:
                 "task, or fails it when its attempts are spent"
             ),
         )
-        self._checkpoint(CONTROL_PLANE_OUTAGE)
+        try:
+            self._checkpoint(CONTROL_PLANE_OUTAGE)
+        except (FencedError, TenantMismatchError):
+            # STOP THE RUNNER FIRST, then let the fence end the attempt (#453).
+            # `child` need not be `self._child` -- an index phase's is not --
+            # so the stand-down's `_stop_runner` would leave it running, an
+            # agent at work on a task this attempt no longer owns.
+            if child is not None:
+                if child.poll() is None:
+                    child.terminate(cfg.termination_grace_seconds, reason="generation fenced")
+                child.finish()
+                self._child_ended()
+            raise
         if child is not None:
             child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
             child.finish()
@@ -2818,13 +3015,21 @@ class Worker:
             # way the control poll's cancel ends it.
             self.log.warning("SIGTERM on a task whose cancel was requested; ending it cancelled")
             try:
-                return self._finish_cancelled()
+                return self._finish_cancelled(push=False)
             except FencedError as exc:
                 return Outcome(
                     exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
                 )
         try:
-            self._checkpoint("interrupted")
+            # NO CARRIER PUSH IN THE GRACE WINDOW (#453). The fetch of the
+            # branch's tip and the push are forge calls, each bounded only by
+            # `git_clone_timeout_seconds`, and they ran here, before the park:
+            # a slow forge let SIGKILL land first, leaving a task neither
+            # parked nor released for the reconciler to find. The checkpoint
+            # still holds the committed work, the next attempt restores it,
+            # and its own checkpoints and finish push it -- a dependant starts
+            # only from a SUCCEEDED parent's recorded head, which is the finish's.
+            self._checkpoint("interrupted", push=False)
             summary = self._upload_outputs()
             with self._metrics_after_the_record():
                 self.control.park(
@@ -2854,14 +3059,15 @@ class Worker:
             )
             return False
 
-    def _finish_cancelled(self) -> Outcome:
+    def _finish_cancelled(self, *, push: bool = True) -> Outcome:
         """End a cancelled task once its runner has stopped and been collected.
 
         The checkpoint, then the uploads (which record the attempt's spend,
         `_upload_outputs`), then the terminal write, which records the
-        attempt's end and releases the lease (`control.finish`).
+        attempt's end and releases the lease (`control.finish`). `push=False`
+        from a SIGTERM (#627): no carrier push inside the grace window (#453).
         """
-        self._checkpoint("cancellation")
+        self._checkpoint("cancellation", push=push)
         summary = self._upload_outputs()
         self._add_runner_block(summary)
         with self._metrics_after_the_record():
@@ -3123,6 +3329,11 @@ class Worker:
             leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
             if leak:
                 return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
+            forge_refused = (
+                git_summary.get("forge_write_refused") if isinstance(git_summary, dict) else None
+            )
+            if isinstance(forge_refused, dict):
+                return self._fail_for_forge_write_refused(forge_refused, summary, exit_code=0)
             nothing = self._published_nothing(summary)
             if nothing is not None:
                 return self._fail_for_published_nothing(nothing, summary, exit_code=0)
@@ -3849,6 +4060,48 @@ class Worker:
             return None
         return record
 
+    def _start_issue_prefetch(self, task: dict[str, Any]) -> None:
+        """Start the issue fetch in a thread, beside the clone (#721, P29). Never raises.
+
+        Owner decision 2026-10-06 (chunk-3 observer P29): the fetch needs only
+        the token and the issue number, and both are known here, before the
+        clone. Started only when the task asks for an issue and names a
+        repository the clone will accept; in every other case nothing starts
+        and STEP 6b fetches, or refuses, exactly as it always did -- so a
+        refusal that never needed the forge (no repository, an input the
+        profile refuses) is still raised there and nowhere else.
+
+        The token is read here, by the same `_git_token` the fetch always
+        used, and only when an issue is asked for: a task without one reads
+        no extra secret. The URL is the one `_maybe_clone` settles on
+        (`validate_repository_url` of the same field it reads), so the join
+        uses this fetch; a different one is dropped there.
+        """
+        try:
+            number = issue_mod.requested(task.get("input"), self.cfg.profile)
+            raw = self.cfg.repository_url or task.get("repository_url")
+            if number is None or not raw:
+                return
+            try:
+                url = gitops_mod.validate_repository_url(raw)
+            except GitError:
+                return
+            self.phases.enter("issue_prefetch", issue=number)
+            prefetch = issue_mod.IssuePrefetch(
+                number=number,
+                repository_url=url,
+                token=self._git_token(),
+                retry=self._forge_retry(),
+                clock=self.phases.seconds_since_start,
+            )
+            prefetch.start()
+            self._issue_prefetch = prefetch
+        except Exception as exc:  # noqa: BLE001 -- STEP 6b fetches as before
+            self.log.warning(
+                "the issue fetch could not start beside the clone; fetching it later",
+                error=type(exc).__name__,
+            )
+
     def _clone_keeping_lease(self, task: dict[str, Any]) -> dict[str, Any] | None:
         """`_maybe_clone`, with the lease heartbeated from a thread meanwhile (#742).
 
@@ -3932,7 +4185,9 @@ class Worker:
         # branch starts from that branch, instead of from the default branch
         # with the parent's patch to apply. Asked only when nothing above
         # chose a branch, so `continues` and `builds_on` keep their meaning.
-        carried = "" if pr_branch or continued or builds_on else self._carrier_parent(task)
+        carried, carried_head = (
+            ("", None) if pr_branch or continued or builds_on else self._carrier_parent(task, url)
+        )
         ref = (
             pr_branch
             or continued
@@ -3951,6 +4206,14 @@ class Worker:
         pinned_sha: str | None = None
         if not (pr_branch or continued or builds_on or carried):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
+        if carried:
+            # THE PARENT'S RECORDED HEAD, NOT THE BRANCH'S TIP (#453). The tip
+            # is whatever was pushed last, and the parent's record is the one
+            # thing this worker trusts about what the parent finished with: a
+            # stale attempt of the parent, or anything else holding a token,
+            # can move the tip after the record was written. Pinned with no
+            # fall back to the tip (see the GitError below).
+            pinned_sha = carried_head
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
         # clones; a private one fails, and the error below says why.
@@ -3967,6 +4230,11 @@ class Worker:
         # Every try recorded, the pinned fetch's and the failed ones included
         # (#742): the clone's mark (`_mark_clone_timed`) lists them in order.
         tries: list[dict[str, Any]] = []
+        # Which address git and the egress probe each reached, per try, and
+        # the pin to the probe's after a stalled connect elsewhere (#721, P27;
+        # `gitops.PeerPin`). One for the whole clone, so a pin decided on the
+        # base pin's fetch carries to the branch-tip clone of the same host.
+        peers = PeerPin(self._egress, url)
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
             return retry_clone(
@@ -3997,6 +4265,7 @@ class Worker:
                     logger=self.log,
                     token=None if refusal else self._git_token(),
                     egress=self._egress,
+                    peers=peers,
                 ))
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
@@ -4005,6 +4274,19 @@ class Worker:
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
+                if carried:
+                    # Never the tip instead: the tip is exactly what the pin
+                    # refuses to trust. The parent's head is not on the
+                    # branch any more, which only a force push or a deleted
+                    # branch does -- neither of them this platform's.
+                    self._mark_clone_timed(None, tries=tries, pinned=True)
+                    self._mark_egress_ready()
+                    raise WorkerError(
+                        f"repository clone failed: this step starts from task "
+                        f"{carried}'s branch {ref} at the head that step recorded, "
+                        f"{pinned_sha}, and that commit could not be fetched: "
+                        f"{self._scrub(str(exc)[:500])}"
+                    ) from exc
                 # Not the end of the step: the branch tip is what every step
                 # started from before the pin existed. Said, so a patch that
                 # then fails to apply has its cause on record.
@@ -4031,6 +4313,10 @@ class Worker:
                 logger=self.log,
                 token=None if refusal else self._git_token(),
                 egress=self._egress,
+                peers=peers,
+                # An index run reads 90 days of history (hot spots,
+                # co-change); every other step stays one commit deep.
+                history_days=indexrun_mod.clone_history_days(self.cfg.runner_profile),
             ))
         except GitTransient as exc:
             self._mark_clone_timed(None, tries=tries, pinned=False)
@@ -4080,6 +4366,7 @@ class Worker:
             info["pr_role"] = self._pr_role()
         if carried:
             info["carried_from"] = carried
+            info["carried_head"] = carried_head
         if self._base_pin is not None:
             info["base_pin"] = dict(self._base_pin)
         if refusal:
@@ -4183,8 +4470,10 @@ class Worker:
         )
         return None, {"pinned": False, "reason": reason}
 
-    def _carrier_parent(self, task: dict[str, Any]) -> str:
-        """The parent task whose pushed branch this step starts from (D13), or "".
+    def _carrier_parent(self, task: dict[str, Any], url: str) -> tuple[str, str | None]:
+        """`(parent, head)`: the parent whose pushed branch this step starts from (D13).
+
+        `("", None)` when there is none.
 
         `carrier: branches` only, and never for an integrator: an integrator
         has several parents and merges their branches in step order at its
@@ -4199,9 +4488,18 @@ class Worker:
         default branch, and says so: which parent's branch it should start
         from is not something this worker can decide. A parent that recorded
         no branch (it changed nothing, or its push failed) is said too.
+
+        PINNED AND SAME-REPOSITORY (#453, the #463 security review). `head` is
+        the full sha the parent recorded in `result_summary.branch.head`, and
+        `_maybe_clone` checks out exactly that commit, never the branch's
+        current tip. And the branch is cloned from THIS step's repository
+        (`url`), so the parent's own `repository_url` must name the same
+        repository: a `swarm/<parent>` in another repository is not the
+        parent's work. A record with no full sha, or a parent in another
+        repository, starts this step from the default branch, and says so.
         """
         if self._dispatch_carrier() != "branches" or self._dispatch_role() == "integrator":
-            return ""
+            return "", None
         parents = [
             parent.strip()
             for parent in (task.get("depends_on") or [])
@@ -4214,7 +4512,7 @@ class Worker:
                     "it starts from the default branch",
                     parents=parents,
                 )
-            return ""
+            return "", None
         parent = parents[0]
         upstream = inputs_mod.fetch_upstream_task(
             self.db,
@@ -4231,7 +4529,27 @@ class Worker:
                 "from the default branch",
                 parent=parent,
             )
-            return ""
+            return "", None
+        head = branch.get("head")
+        if not (isinstance(head, str) and _FULL_SHA_RE.fullmatch(head)):
+            self.log.warning(
+                "carrier: the parent's branch record names no full commit, so there "
+                "is nothing to pin to; this step starts from the default branch",
+                parent=parent,
+            )
+            return "", None
+        parent_url = upstream.get("repository_url") or self.cfg.repository_url
+        if not (isinstance(parent_url, str) and _same_repository(parent_url, url)):
+            self.log.warning(
+                "carrier: the parent's repository is not this step's; its branch "
+                "is not cloned and this step starts from the default branch",
+                parent=parent,
+                repository=self._scrub(url),
+                parent_repository=(
+                    self._scrub(parent_url) if isinstance(parent_url, str) else None
+                ),
+            )
+            return "", None
         declared = (task.get("metadata") or {}).get("input_from")
         if isinstance(declared, dict) and declared.get(parent) == "swarm-work.patch":
             # Harmless but redundant: the clone already holds the parent's
@@ -4242,7 +4560,7 @@ class Worker:
                 "parent's swarm-work.patch it also declared is redundant",
                 parent=parent,
             )
-        return parent
+        return parent, head
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -4319,6 +4637,11 @@ class Worker:
         on to meet the refusal where it always did (staging, the clone, the
         merge's "missing"), with the words those give.
         """
+        return expected_mod.left_nothing(self._succeeded_upstream_summary(task_id))
+
+    def _succeeded_upstream_summary(self, task_id: str) -> Any:
+        """One upstream's `result_summary`, read through the tenant-checked
+        upstream read; None for one that did not SUCCEED or cannot be read."""
         try:
             upstream = inputs_mod.fetch_upstream_task(
                 self.db,
@@ -4330,7 +4653,7 @@ class Worker:
             return None
         if upstream.get("state") != TaskState.SUCCEEDED.value:
             return None
-        return expected_mod.left_nothing(upstream.get("result_summary"))
+        return upstream.get("result_summary")
 
     def _nothing_to_work_on(self, task: dict[str, Any]) -> list[str]:
         """The upstream task ids whose missing change leaves this step nothing
@@ -4406,17 +4729,30 @@ class Worker:
         one that ended with nothing to change (`no_change`, or skipped). Those
         pushed no branch, so merging them would name them "missing" on the
         pull request, as an incomplete integration they are not. They are
-        recorded in `_no_change_contributors`, and the publish says so."""
+        recorded in `_no_change_contributors`, and the publish says so.
+
+        Left out too, into `_read_only_contributors` (#760): one that
+        SUCCEEDED having published nothing (`published_nothing`) -- under
+        `integrate` a review step is a contributor, and one that writes only
+        `verdict.json` never had a branch to push. "missing" means a step
+        that should have pushed and did not; a FAILED contributor, or one
+        that says it published, is still merged and still named missing when
+        its branch is absent."""
         kept: list[str] = []
         self._no_change_contributors = []
+        self._read_only_contributors = []
         for task_id in self._dispatch_integrates():
             # One that cannot be read is merged as before, and the merge
             # names a branch it cannot find.
-            left = self._upstream_left(task_id) if _TASK_ID_RE.match(task_id) else None
-            if left is None:
-                kept.append(task_id)
-            else:
+            summary = (
+                self._succeeded_upstream_summary(task_id) if _TASK_ID_RE.match(task_id) else None
+            )
+            if expected_mod.left_nothing(summary) is not None:
                 self._no_change_contributors.append(task_id)
+            elif published_nothing(summary):
+                self._read_only_contributors.append(task_id)
+            else:
+                kept.append(task_id)
         return kept
 
     def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
@@ -4496,6 +4832,13 @@ class Worker:
                 "this step's repository is not on github.com, where the tenant's git "
                 "credential may be sent, so the minor findings were not posted",
                 **extra,
+            )
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            # A comment on the epic is a forge write: a read grant, or a grant
+            # gone since submission, posts nothing (OB5).
+            return findings_epic_mod.not_filed(
+                epic, len(minors), f"{forge_refused[0]}: {forge_refused[1]}", **extra
             )
         refusal = self._git_token_refusal()
         if refusal:
@@ -5648,13 +5991,21 @@ class Worker:
         return text or None
 
     def _git_token(self) -> str | None:
-        """The TENANT's own clone token, or None.
+        """The TASK's forge token, or None.
 
-        Read from `swarm-tenant-<tenant>-git` through the same per-tenant Secret
-        Manager path as a provider key, never from a platform-wide `GIT_TOKEN`
-        in the worker's environment: one token able to clone every tenant's
+        Read from `swarm-tenant-<tenant>-<suffix>`, the suffix being the task's
+        signed `forge_credential` (`_forge_suffix`; `git`, the tenant's own
+        token, when it names none), through the same per-tenant Secret Manager
+        path as a provider key, never from a platform-wide `GIT_TOKEN` in the
+        worker's environment: one token able to clone every tenant's
         repositories would make a single malicious repository in one tenant a
         credential compromise for all of them (invariant 9).
+
+        READ AGAIN AT EVERY CALL, never cached: the clone, each carrier push
+        and the publish each call this, so each reads the `latest` version at
+        that moment. A user token lives 8 hours and an attempt can outlive it;
+        swarm-api's refresher keeps the latest version at least two hours from
+        expiry (docs/onboarding.md §3.3 step 3).
 
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
@@ -5675,7 +6026,8 @@ class Worker:
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
             return resolve_git_token(
-                tenant=tenant, client=self.secret_client, logger=self.log
+                tenant=tenant, client=self.secret_client, logger=self.log,
+                provider=self._forge_suffix(),
             )
         except SecretError as exc:
             self.log.warning(
@@ -5683,6 +6035,159 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _forge_suffix(self) -> str:
+        """The provider suffix of this task's forge secret (contract request 54).
+
+        The VERIFIED document's `forge_credential` (`secrets.forge_suffix`),
+        and only once `_verify_spec` verified its signature. A task admitted
+        unsigned by the legacy window has no signature over the field, so it
+        reads the tenant token, as every task did before request 54: a field
+        anyone with write on the document could set must not choose which
+        member's slot this worker reads.
+        """
+        task = self._task or {}
+        if not self._forge_signed:
+            named = task.get("forge_credential")
+            if named not in (None, GIT_PROVIDER):
+                self.log.warning(
+                    "an unsigned task names a forge credential; reading the tenant token",
+                )
+            return GIT_PROVIDER
+        return forge_suffix(task)
+
+    def _forge_grant_refusal(self, *, write: bool) -> tuple[str, str] | None:
+        """`(cause, reason)` when the submitter's grant does not cover this, or None.
+
+        docs/onboarding.md §3.3 step 4: read again, by id, at every call
+        (`secrets.grant_refusal`). Nothing for a tenant or repository token.
+        The repository is the VERIFIED document's, which is the one the clone
+        reads. A grant that could not be read is not a revoked grant: it is
+        `FORGE_GRANT_UNREADABLE`, which the callers end retryably.
+        """
+        suffix = self._forge_suffix()
+        if user_slot_hash(suffix) is None:
+            return None
+        task = self._task or {}
+        url = task.get("repository_url") or self.cfg.repository_url or self._repo_url
+        try:
+            reason = grant_refusal(
+                self.db,
+                tenant_id=self.cfg.tenant_id,
+                suffix=suffix,
+                repository_url=url if isinstance(url, str) else None,
+                write=write,
+                call_options=self.control.call_options(),
+            )
+        except Exception as exc:  # noqa: BLE001 -- a read failure, said by type
+            self.log.warning("the forge grant could not be read", error=type(exc).__name__)
+            return FORGE_GRANT_UNREADABLE, (
+                f"the submitter's grant could not be read ({type(exc).__name__})"
+            )
+        if reason is None:
+            self.log.info("forge grant re-read: it still covers this", write=write)
+            return None
+        self.log.warning("forge grant re-read: refused", reason=reason, write=write)
+        return FORGE_GRANT_REVOKED, reason
+
+    def _forge_write_refusal(self) -> tuple[str, str] | None:
+        """`(cause, reason)` when this attempt may not push or open a pull request.
+
+        Asked before every forge write (the publish, each carrier push, the
+        findings epic, the merge) and BEFORE the token for it is read, so a
+        refused write never holds a push credential:
+
+          * the task's signed `forge_access` is `read` (D9): never a push;
+          * the submitter's grant, read again now, was deleted or turned
+            `read` since submission (§3.3 step 4).
+        """
+        if forge_read_only(self._task or {}):
+            return FORGE_READ_GRANT, "this task's grant on its repository is read-only"
+        return self._forge_grant_refusal(write=True)
+
+    def _end_forge_refused_before_start(self, cause: str, reason: str) -> Outcome:
+        """End the attempt before the agent ran: the grant does not allow the work.
+
+        Called after the startup window closes, like every ending `_prepare`
+        decides on. The agent never started and nothing was cloned with the
+        credential. `control.finish` (or `fail_retryably`) writes the task's
+        state and releases the lease, and that release is all this does to the
+        lease: no extension, no other write. An unreadable grant fails
+        retryably; a revoked or read grant does not, because the next attempt
+        would read the same.
+        """
+        reason = self._scrub(reason)
+        error = self._scrub(
+            f"{cause}: {reason}. The agent was not started. The submitter can "
+            "choose the repository again under Access (Write for a step that "
+            "pushes) and submit the task again."
+        )
+        self.log.error(
+            "the task's forge grant does not allow this work; ending before the agent runs",
+            cause=cause,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["forge_check"] = {"cause": cause, "reason": reason}
+        with self._metrics_after_the_record():
+            if cause == FORGE_GRANT_UNREADABLE:
+                state = self.control.fail_retryably(
+                    exit_code=None,
+                    error=error,
+                    cause=cause,
+                    result_summary=summary,
+                    retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                    detail={"forge_check": cause},
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=state)
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _fail_for_forge_write_refused(
+        self, refused: dict[str, Any], summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """End the attempt: its push or pull request was refused by the grant (OB5).
+
+        The final checkpoint is already taken (`_record_finalised` takes it
+        first, invariant 8), so the work is kept; the push was refused before
+        its token was read (`_publish_git`). PUBLISH_REFUSED: the worker
+        refused to publish. An unreadable grant fails the attempt retryably;
+        a read or revoked grant ends the task, because the next attempt would
+        read the same.
+        """
+        cause = str(refused.get("cause") or FORGE_GRANT_REVOKED)
+        reason = self._scrub(str(refused.get("reason") or ""))
+        error = self._scrub(
+            f"{cause}: {reason}. Nothing was pushed and no pull request was opened; "
+            "the work is in the attempt's final checkpoint and its patch artifact."
+        )
+        summary["forge_check"] = {"cause": cause, "reason": reason}
+        if cause == FORGE_GRANT_UNREADABLE:
+            state = self.control.fail_retryably(
+                exit_code=exit_code,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"forge_check": cause},
+                end_cause=EndCause.PUBLISH_REFUSED,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=state)
+        self.control.finish(
+            state=TaskState.FAILED,
+            exit_code=exit_code,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.PUBLISH_REFUSED,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _git_token_refusal(self) -> str | None:
         """Why this worker must not hold the tenant git token, or None.
@@ -5783,6 +6288,10 @@ class Worker:
                 base[passthrough] = value
         if self.cfg.model:
             base["MODEL"] = self.cfg.model
+        # WHO THE AGENT'S COMMITS NAME (P37): the person who dispatched the
+        # task, from its document as swarm-api recorded it at submission --
+        # never from `input` (invariant 10). See `gitidentity`.
+        base.update(git_identity_env(self._task))
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -6495,6 +7004,12 @@ class Worker:
         reader of the fields before this one. A clone that never landed --
         the forge never answered, or refused -- is marked too, `ok: False`,
         with `seconds` the tries' wall time summed and no phase numbers.
+
+        WHICH ADDRESS EACH SIDE REACHED (#721, P27): every `try_log` entry
+        also carries `probe_peer`, `git_peer` and `peer_pinned`
+        (`gitops.PeerPin`), and the top level the last try's two peers and
+        `peer_pinned`, true when any try ran pinned to the probe's address.
+        Distinct from `pinned`, which is the workflow BASE pin.
         """
         if self._clone_marked:
             return
@@ -6511,6 +7026,10 @@ class Worker:
             "try_log": log,
             **(clone.phases if clone is not None else {}),
         }
+        last = log[-1] if log else {}
+        timings.setdefault("probe_peer", last.get("probe_peer"))
+        timings.setdefault("git_peer", last.get("git_peer"))
+        timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
         # Set before the write, so a failed write is not tried again later.
         self._clone_marked = True
         self._emit_startup_mark("clone_timed", {"clone": timings})
@@ -6527,17 +7046,22 @@ class Worker:
         once, never an in-place restart. `seconds_since_process_start` is the
         worker's own clock from its first line; `cloned` says whether this
         attempt made a clone (a checkpoint can bring one back instead).
+
+        `issue_fetch` (#721, P29), when the step was pointed at an issue:
+        `started_seconds` and `ended_seconds` of the fetch on the same clock,
+        `ok`, and `beside_clone` -- true when it ran in its thread beside the
+        clone (`_start_issue_prefetch`), false when it was made at STEP 6b.
         """
         if self._agent_start_marked:
             return
         self._agent_start_marked = True
-        self._emit_startup_mark(
-            "agent_started",
-            {
-                "seconds_since_process_start": float(self.phases.seconds_since_start()),
-                "cloned": self._clone_marked,
-            },
-        )
+        detail: dict[str, Any] = {
+            "seconds_since_process_start": float(self.phases.seconds_since_start()),
+            "cloned": self._clone_marked,
+        }
+        if self._issue_fetch_timing is not None:
+            detail["issue_fetch"] = dict(self._issue_fetch_timing)
+        self._emit_startup_mark("agent_started", detail)
 
     def _release_account(self) -> None:
         """Give the account back, on whatever path this attempt is leaving by.
@@ -6888,7 +7412,7 @@ class Worker:
         """
         return self._sized_resource_class() or self.cfg.profile_resource_class
 
-    def _checkpoint(self, label: str) -> CheckpointRecord | None:
+    def _checkpoint(self, label: str, *, push: bool = True) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
 
         The one thing a failed checkpoint must not do is end the attempt: the
@@ -6916,6 +7440,10 @@ class Worker:
         written, None is returned, and `checkpoints.last_unchanged` says so.
         The final, park, cancellation, interruption, outage and child-await
         checkpoints are written whatever changed (invariant 8).
+
+        `push=False` takes the checkpoint without the carrier push. Only the
+        SIGTERM exits ask for it (#453): the forge is not called inside the
+        grace window that the park or terminal write has to land in.
         """
         if self.ws is None:
             return None
@@ -6924,7 +7452,8 @@ class Worker:
         if record is None:
             return None
         self._last_checkpoint = record
-        self._push_carrier_branch(label)
+        if push:
+            self._push_carrier_branch(label)
         return record
 
     def _write_checkpoint(
@@ -7050,9 +7579,18 @@ class Worker:
         its reach. A checkpoint taken with the runner alive -- the periodic
         one, and the control-plane-outage one, which #70 takes BEFORE it stops
         the runner -- pushes nothing and says so. The checkpoints taken once
-        the runner has stopped (final, park, cancellation, SIGTERM) push.
-        The owner accepted this narrowing of D13's "every checkpoint" on
-        2026-10-02: periodic checkpoints do not push.
+        the runner has stopped (final, park, cancellation) push. The owner
+        accepted this narrowing of D13's "every checkpoint" on 2026-10-02:
+        periodic checkpoints do not push. The SIGTERM checkpoints do not push
+        either (#453): the forge is not called inside the grace window the
+        park has to land in (`_handle_interruption`).
+
+        A FENCE IS RE-CHECKED RIGHT BEFORE THE PUSH (#453), and raised like
+        the checkpoint's own: the fold onto the tip, the scan and the
+        authorship check take long enough for a reclaim to land after the
+        checkpoint's pointer write, and a superseded worker must not move
+        `swarm/<task>` under the attempt that replaced it (invariant 5). A
+        check that could not be made is not an owner: nothing is pushed.
 
         A FAILED PUSH IS LOGGED AND NEVER ENDS THE ATTEMPT. The checkpoint is
         the durable record either way.
@@ -7065,6 +7603,10 @@ class Worker:
             # beaten meanwhile exactly as it is under the archive.
             with self._heartbeat_meanwhile(f"carrier push ({label})"):
                 self._carrier_push(label)
+        except (FencedError, TenantMismatchError):
+            # Not a failed push: the attempt is over (invariant 5), and every
+            # caller of `_checkpoint` already ends it on these.
+            raise
         except Exception as exc:
             self.log.warning(
                 "carrier: the step's branch was not pushed at this checkpoint; the "
@@ -7126,6 +7668,11 @@ class Worker:
             return "the repository URL is unknown"
         if self._publish_base is None:
             return "the clone base is unknown, so the agent's commits cannot be told apart"
+        # Before the token, as the publish asks it (OB5): a read grant, or a
+        # grant gone since submission, pushes nothing and reads no token.
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            return f"{forge_refused[0]}: {forge_refused[1]}"
         refusal = self._git_token_refusal()
         if refusal:
             return f"the tenant git token is refused: {refusal}"
@@ -7164,11 +7711,15 @@ class Worker:
           * The forge could not be asked -- a network failure (`ForgeError`),
             a 429 or a 5xx: the attempt fails RETRYABLY, cause
             `forge_unreachable`.
+          * A TOKEN THE MEMORY GUARD REFUSES TO READ (#453): FAILED now, NOT
+            retried, cause `git_token_refused`. It used to proceed, and the
+            agent then worked for an attempt whose branch no checkpoint and no
+            finish could ever push, with nothing on the task to say so.
           * Everything else proceeds unchanged. A worker with publishing
-            disabled, a token the memory guard refuses to read, or a host that
-            is not a forge this worker publishes to pushes nothing at its
-            checkpoints, exactly as `_carrier_target` already says in its log
-            line; none of those is a statement about the token's scope.
+            disabled, or a host that is not a forge this worker publishes to,
+            pushes nothing at its checkpoints, exactly as `_carrier_target`
+            already says in its log line; neither is a statement about the
+            token's scope.
 
         Returned as a callable, like `_prepare`'s parks, so the terminal writes
         happen after the startup window closes. Never logs or quotes the
@@ -7182,8 +7733,9 @@ class Worker:
             # swarm-api refuses `branches` without a repository (422), so this
             # is a task written by another path; the carrier logs and skips.
             return None
-        if self._git_token_refusal():
-            return None
+        refusal = self._git_token_refusal()
+        if refusal:
+            return functools.partial(self._fail_git_token_refused, refusal)
         token = self._git_token()
         if not token:
             return functools.partial(
@@ -7209,6 +7761,33 @@ class Worker:
         if _FORGE_TRANSIENT_ANSWER.match(reason):
             return functools.partial(self._fail_forge_unreachable, url, self._scrub(reason))
         return functools.partial(self._fail_forge_read_only, url, self._scrub(reason))
+
+    def _fail_git_token_refused(self, refusal: str) -> Outcome:
+        """FAILED, not retried, before the agent ran: this worker may not hold the token."""
+        reason = self._scrub(refusal)
+        error = self._scrub(
+            f"{GIT_TOKEN_REFUSED}: carrier 'branches' pushes the step's work to its "
+            f"branch, and this worker cannot hold the tenant git token to push it: "
+            f"{reason}. The agent was not started. Choose carrier 'checkpoints', or "
+            "run the worker where its memory can be made unreadable to the agent."
+        )
+        self.log.error(
+            "carrier: the memory guard refuses the git token, so the branch could "
+            "never be pushed; failing before the agent runs",
+            cause=GIT_TOKEN_REFUSED,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["carrier_check"] = {"cause": GIT_TOKEN_REFUSED, "reason": reason}
+        with self._metrics_after_the_record():
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _fail_forge_read_only(self, url: str, reason: str) -> Outcome:
         """FAILED, not retried, before the agent ran: the token cannot push (D13)."""
@@ -7326,6 +7905,107 @@ class Worker:
             )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
+    def _scan_floor(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The commit the publish scans read from when it is not the clone base, or None.
+
+        A LANE THAT MERGED THE DEFAULT BRANCH (#453). The scans read what the
+        push adds as a diff from the clone base, so a lane that merged a newer
+        `main` carried every line `main` gained since the clone into it, and a
+        credential-shaped fixture on `main` refused the lane. Those lines are
+        published already: they are on the repository's default branch.
+
+        So when HEAD's first-parent line since the base holds a merge, the
+        default branch's tip is fetched from the FORGE into the worker's
+        publish repository (`fetch_branch_tip`, the token-bearing fetch the
+        carrier uses), and the floor is the newest commit HEAD and that tip
+        share -- where the lane merged, as the forge's own pull-request diff
+        reads it. Every line the floor's tree holds is on the default branch,
+        so reading from it hides nothing unpublished. Proven against the
+        forge, never the agent's clone: a side branch the agent made and
+        merged is no ancestor of the tip, the floor stays the base, and its
+        lines are scanned as before.
+
+        No merge, no default branch, a fetch that fails, or a floor that is
+        the base itself: None, and the scans read from the clone base.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        base = (self._publish_base or "").strip()
+        if not default_branch or not _SHA_RE.match(base):
+            return None
+        g = ["git", *_NO_HOOKS]
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                argv,
+                repo=Path(publish_repo),
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                slug=slug,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                logger=self.log,
+            )
+
+        code, merges = run(
+            [*g, "rev-list", "--first-parent", "--merges", f"{base}..HEAD"], "publish-floor-merges"
+        )
+        if code != 0 or not merges.split():
+            return None
+        try:
+            tip = fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch; scanning from the clone base",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+        if not tip:
+            return None
+        code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
+        floor = found.strip()
+        if code != 0 or not _SHA_RE.match(floor) or floor == base:
+            return None
+        self.log.info(
+            "the lane merged the default branch; the publish scans read from where it merged",
+            floor=floor,
+            base=base,
+        )
+        return floor
+
+    def _publish_identity(self) -> tuple[str, str]:
+        """(name, email) every commit the worker pushes is written as.
+
+        THE PERSON WHO DISPATCHED THE WORK, as author AND committer (#765,
+        owner decision 2026-10-07: publish fully as the person). Read through
+        `gitidentity.commit_identity` -- the one reader of the
+        `metadata.dispatch.git_identity` record #764 writes at submission,
+        from the verified task document and never from `input` (invariant
+        10) -- so the agent's commits and the worker's name the same person.
+
+        When it names nobody (a service account's task with no usable
+        record, or no submitter) it answers `BOT_GIT_IDENTITY`, and the
+        worker keeps today's identity, `WorkerConfig.git_author_*`: the
+        bot every SwarmCloud branch was published as before.
+        """
+        person = commit_identity(self._task)
+        if person == BOT_GIT_IDENTITY:
+            return self.cfg.git_author_name, self.cfg.git_author_email
+        return person
+
     def _carrier_fold_onto_tip(
         self, publish_repo: Path, *, url: str, token: str, branch: str, message: str
     ) -> str | None:
@@ -7363,12 +8043,13 @@ class Worker:
                 "the repository was empty when it was cloned and the branch does "
                 "not exist yet; there is no commit to push the work onto"
             )
+        author_name, author_email = self._publish_identity()
         return commit_tree_onto(
             repo=publish_repo,
             parent=parent,
             message=message,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -7398,6 +8079,10 @@ class Worker:
             timeout_seconds=cfg.git_harvest_timeout_seconds,
             logger=self.log,
             overlap=self._scan_overlap(),
+            floor=self._scan_floor(
+                publish_repo, url=url, token=token,
+                default_branch=protected[0] if protected else None,
+            ),
         )
         if leak is not None:
             raise GitError(f"refusing to push: {self._scrub(leak)}")
@@ -7407,16 +8092,23 @@ class Worker:
         if made is None:
             self.log.info("carrier: the branch already holds this work", branch=branch)
             return
+        author_name, author_email = self._publish_identity()
         verify_worker_authorship(
             repo=publish_repo,
             base=self._publish_base,
-            author_name=cfg.git_author_name,
-            author_email=cfg.git_author_email,
+            author_name=author_name,
+            author_email=author_email,
+            also_own=((cfg.git_author_name, cfg.git_author_email),),
             private_dir=ws.private,
             logs_dir=ws.logs,
             timeout_seconds=cfg.git_harvest_timeout_seconds,
             logger=self.log,
         )
+        # THE LAST THING BEFORE THE PUSH (#453): this attempt still owns its
+        # task. Raises `FencedWriteRefused` when it does not, and anything
+        # else when the check could not be made -- either way nothing is
+        # pushed (`_push_carrier_branch`).
+        self.control.ensure_owner(write="carrier push")
         pushed = push_branch(
             repo=publish_repo,
             url=url,
@@ -8559,6 +9251,22 @@ class Worker:
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
 
+        # THE GRANT, BEFORE THE TOKEN (docs/onboarding.md §3.3 steps 3-4, OB5).
+        # A read grant never reads a push credential, and the submitter's
+        # grant is read again here, before this push and pull request. A
+        # refusal is recorded as `forge_write_refused`, which ends the attempt
+        # PUBLISH_REFUSED after the final checkpoint (`_record_finalised`).
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            cause, reason = forge_refused
+            self.log.error("not publishing: the task's forge grant refuses it",
+                           cause=cause, reason=reason)
+            return {
+                "published": False,
+                "publish_reason": f"{cause}: {reason}",
+                "forge_write_refused": {"cause": cause, "reason": reason},
+            }
+
         # Before the token is read, not after: see `_git_token_refusal`. Asked
         # here as well as inside `_git_token`, so the publish says WHY it did
         # not happen instead of reporting a forge that refused an anonymous probe.
@@ -8731,6 +9439,16 @@ class Worker:
             # object-checked fetch.
             if publish_repo is None:
                 publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
+            # EVERY COMMIT BELOW IS WRITTEN AS THE PERSON WHO DISPATCHED THE
+            # WORK (#765, owner decision 2026-10-07): the auto-commit, the
+            # replay or the fold, the integrator's merges. The bot only when
+            # the task names nobody. See `_publish_identity`.
+            author_name, author_email = self._publish_identity()
+            # Read before the replay or the fold rewrites the agent's merges
+            # away. See `_scan_floor`.
+            scan_floor = self._scan_floor(
+                publish_repo, url=url, token=token, default_branch=access.default_branch
+            )
             new_sha = commit_dirty(
                 repo=publish_repo,
                 message=self._worker_commit_message(
@@ -8739,8 +9457,8 @@ class Worker:
                     "the agent edited but did not commit is not lost between the "
                     "workspace and this branch.",
                 ),
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8772,8 +9490,8 @@ class Worker:
                     keep=new_sha,
                     task_id=cfg.task_id,
                     scrub=lambda text: str(self._scrub(text)),
-                    author_name=cfg.git_author_name,
-                    author_email=cfg.git_author_email,
+                    author_name=author_name,
+                    author_email=author_email,
                     private_dir=ws.private,
                     logs_dir=ws.logs,
                     timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8788,6 +9506,7 @@ class Worker:
                     # file ADDS, `+` removed, in overlapping windows.
                     leaks=self._leaks_in_added_text,
                     overlap=self._scan_overlap(),
+                    upstream=scan_floor or "",
                 )
                 if replayed is not None:
                     kept = replayed
@@ -8804,8 +9523,8 @@ class Worker:
                             "every commit it pushes, so no author, trailer or footer "
                             "added inside the agent's container reaches this branch.",
                         ),
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -8833,6 +9552,7 @@ class Worker:
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
                 overlap=self._scan_overlap(),
+                floor=scan_floor,
             )
             if leak is not None:
                 reason = str(self._scrub(leak))
@@ -8875,8 +9595,8 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_clone_timeout_seconds,
                         logger=self.log,
-                        author_name=cfg.git_author_name,
-                        author_email=cfg.git_author_email,
+                        author_name=author_name,
+                        author_email=author_email,
                         branch_prefix=cfg.git_branch_prefix,
                     )
                     out["integrated"] = {
@@ -8891,6 +9611,12 @@ class Worker:
                     out.setdefault("integrated", {})["no_change"] = [
                         f"{cfg.git_branch_prefix}{tid}" for tid in self._no_change_contributors
                     ]
+                if self._read_only_contributors:
+                    # Not merged, and not missing: they SUCCEEDED having
+                    # published nothing by design (#760).
+                    out.setdefault("integrated", {})["read_only"] = [
+                        f"{cfg.git_branch_prefix}{tid}" for tid in self._read_only_contributors
+                    ]
 
             # THE PROPERTY, CHECKED WHERE THE WORK LEAVES. The fold and the
             # identity arguments are how every pushed commit is made the
@@ -8901,8 +9627,9 @@ class Worker:
             verify_worker_authorship(
                 repo=publish_repo,
                 base=self._publish_base,
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
+                author_name=author_name,
+                author_email=author_email,
+                also_own=((cfg.git_author_name, cfg.git_author_email),),
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
@@ -9008,6 +9735,22 @@ class Worker:
             workflow_id=str((self._task or {}).get("workflow_id") or "") or None,
             enabled=cfg.pr_console_links,
         )
+        # WHAT AN ADOPTED PULL REQUEST GAINS (#807): its body is kept and this
+        # one marked section is appended -- the agent's body, if it wrote one,
+        # then a short provenance block. `body` above is for a pull request
+        # this attempt OPENS; a CI fixer's republish that sent it as a
+        # replacement is what dropped #775's `Closes #N` lines.
+        amendment = pr_body_with_console_links(
+            _neutralise_mentions(
+                self._pull_request_amendment(
+                    agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
+                )
+            ),
+            origin=cfg.console_url,
+            task_id=cfg.task_id,
+            workflow_id=str((self._task or {}).get("workflow_id") or "") or None,
+            enabled=cfg.pr_console_links,
+        )
         out["pull_request_text"] = {
             "title": "agent" if agent_title else "platform",
             "body": "agent" if agent_body else "platform",
@@ -9041,16 +9784,19 @@ class Worker:
                     base=access.default_branch,
                     title=title,
                     body=body,
-                    # A reused pull request takes the agent's text too; generated
-                    # text never overwrites one a human may have edited.
-                    update_existing=bool(agent_title or agent_body),
-                    # An adopted pull request whose title carries the task id --
-                    # the OLD generated `[swarm] <task id>`, from before this
-                    # rule -- is retitled (title only) even when nothing here
-                    # asked for an update: the owner's rule is that a title never
-                    # carries the task id, and that has to reach a pull request
-                    # this attempt only adopts, not just one it opens.
-                    retitle_if=self._title_carries_task_id,
+                    # A reused pull request keeps its body and gains this
+                    # section; nothing it already says is replaced (#807).
+                    amendment=amendment,
+                    # An adopted pull request is retitled only when its title
+                    # carries the task id (the OLD generated `[swarm] <task
+                    # id>`: the owner's rule is that a title never does, and
+                    # that has to reach a pull request this attempt only
+                    # adopts), or when the agent wrote `pr-title.txt` and the
+                    # title is the worker's own default (#807). The
+                    # implementer's title, or a human's, is kept.
+                    retitle_if=lambda current: self._title_carries_task_id(current) or (
+                        agent_title is not None and self._is_default_title(current)
+                    ),
                 ),
                 policy=self._forge_retry(),
                 what="the pull request",
@@ -9077,6 +9823,21 @@ class Worker:
             return out
 
         updated = bool(getattr(pr, "updated", False))
+        retitled = bool(getattr(pr, "retitled", False))
+        appended = bool(getattr(pr, "appended", False))
+        refused_lines = list(getattr(pr, "body_refused", ()) or ())
+        if refused_lines:
+            # Never reached by the worker's own append, which keeps every line;
+            # said out loud if it ever is, since it means a body was withheld.
+            out["pull_request_body_refused"] = (
+                f"{len(refused_lines)} closing-keyword line(s) would have been dropped; "
+                "the body was not sent"
+            )
+            self.log.warning(
+                "an adopted pull request's body was not replaced: it would have "
+                "dropped closing-keyword lines",
+                lines=len(refused_lines),
+            )
         out.update(
             {
                 "published": True,
@@ -9086,20 +9847,15 @@ class Worker:
                     "state": pr.state,
                     "created": pr.created,
                     "updated": updated,
+                    "retitled": retitled,
+                    "appended": appended,
                 },
                 "publish_reason": (
                     "opened"
                     if pr.created
-                    else "an open pull request already existed and was reused"
-                    + (
-                        (
-                            ", with the agent's title and body"
-                            if agent_title or agent_body
-                            else ", retitled because its title carried the task id"
-                        )
-                        if updated
-                        else ""
-                    )
+                    else "an open pull request already existed and was reused, its body kept"
+                    + (", with this attempt's section appended" if appended else "")
+                    + (", retitled" if retitled else "")
                 ),
             }
         )
@@ -9178,6 +9934,15 @@ class Worker:
         if merge is not None:
             lines += ["", f"Integrates {len(merge.merged)} contributor branch(es):"]
             lines += [f"- merged: `{b}`" for b in merge.merged] or ["- none"]
+            if self._read_only_contributors:
+                # A neutral line, never under a NOT included heading: these
+                # steps finished having published nothing by design (#760),
+                # and a reviewer reading "missing" would re-run them for a
+                # branch they were never to push.
+                read_only = ", ".join(
+                    f"`{cfg.git_branch_prefix}{tid}`" for tid in self._read_only_contributors
+                )
+                lines += ["", f"read-only, nothing to merge: {read_only}"]
             if merge.conflicted:
                 lines += [
                     "",
@@ -9202,6 +9967,63 @@ class Worker:
             lines += verdict_mod.pull_request_lines(self._verdict)
 
         return "\n".join(lines)
+
+    def _pull_request_amendment(
+        self, *, agent_body: str | None, branch: str, head: str
+    ) -> str:
+        """The section an ADOPTED pull request's body gains (#807).
+
+        Headed `## Continuation (attempt N): <task>` when this task continues
+        another's branch (the CI fixer), `## Republished (attempt N): <task>`
+        when it is this task's own branch on a later attempt. The heading is
+        unique per attempt, which is what `forge.appended_body` dedups on.
+        Under it: the agent's `pr-body.md` when it wrote one (already scrubbed
+        and cut by `_agent_pull_request_text`), then a short provenance block
+        -- never the "Opened by SwarmCloud" block, which claims the branch for
+        this task. The review's verdict, when there is one, follows it.
+        """
+        cfg = self.cfg
+        task = self._task or {}
+        try:
+            continued = continuation_mod.continued_task(task.get("metadata"))
+        except WorkerError:
+            continued = None
+        kind = "Continuation" if continued else "Republished"
+        count = task.get("attempt_count")
+        attempt = (
+            f"attempt {int(count)}"
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+            else f"attempt `{cfg.attempt_id}`"
+        )
+        lines = [f"## {kind} ({attempt}): `{cfg.task_id}`", ""]
+        if agent_body:
+            lines += [agent_body, ""]
+        lines += [
+            f"- task: `{cfg.task_id}`",
+            f"- attempt: `{cfg.attempt_id}`",
+            f"- runner profile: `{cfg.profile.name}`",
+            f"- branch: `{branch}`",
+        ]
+        if continued:
+            lines.append(f"- continues: `{continued}`")
+        if head:
+            lines.append(f"- head commit: `{head}`")
+        if self._verdict is not None:
+            lines += verdict_mod.pull_request_lines(self._verdict)
+        return "\n".join(lines)
+
+    def _is_default_title(self, title: str) -> bool:
+        """True when `title` is one the worker writes itself, never a person:
+        this attempt's own default (`_generated_pull_request_title`), the
+        issue-number fallback `Work on issue #N (part of #N)`, or the retired
+        `[swarm] task_...` (#807: a fixer's `pr-title.txt` replaces only these).
+        """
+        text = (title or "").strip()
+        if not text:
+            return False
+        if text == (self._generated_pull_request_title() or "").strip():
+            return True
+        return bool(_DEFAULT_ISSUE_TITLE_RE.match(text) or _RETIRED_TITLE_RE.search(text))
 
     def _worker_commit_message(self, fallback_subject: str, explanation: str) -> str:
         """The message of a commit the worker makes on the published branch.
@@ -9420,8 +10242,9 @@ class Worker:
         integer or a numeric string, also tolerating a mapping with a
         `number`/`issue_number` key in case the shape changes before it
         lands -- and returns None, not a guess, when there is no number at
-        all. `self._issue_title` is the hook the fetch fills in once it
-        exists; until then it is always None and the number names the work.
+        all. `self._issue_title` is the fetched issue's title, set in
+        `_prepare` when the fetch lands (`_issue_title_from`); without one --
+        no fetch, or an untitled issue -- the number names the work.
         """
         payload = task.get("input")
         issue = payload.get("issue") if isinstance(payload, dict) else None
@@ -11297,6 +12120,7 @@ def _first_leaking_commit(
     logger: Any,
     overlap: int = SCAN_OVERLAP_CHARS,
     floor: str = "",
+    upstream: str = "",
 ) -> int | None:
     """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
 
@@ -11313,6 +12137,13 @@ def _first_leaking_commit(
     what each file ADDS, `+` removed: a removed line was in the parent's tree
     already. The worker's own `keep` commit is skipped here; its tree is the
     final tree, which `final_tree_leak` scans before any push.
+
+    `upstream` is the default-branch commit the lane merged, proven on the
+    forge (`Worker._scan_floor`, #453), or "". A merge whose second parent is
+    that commit or one of its ancestors is diffed against its second parent:
+    what it adds over a published tree, so `main`'s own lines never fold the
+    lane's history. Every other commit, a merge of anything else included,
+    is diffed against its first parent as before.
     """
 
     def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
@@ -11352,6 +12183,13 @@ def _first_leaking_commit(
             continue
         if expected is not None:
             before = expected
+            if upstream and len(parents) == 2:
+                code, _, _ = run(
+                    [*git, "merge-base", "--is-ancestor", parents[1], upstream],
+                    "publish-scan-upstream",
+                )
+                if code == 0:
+                    before = parents[1]
         else:
             if empty_tree is None:
                 code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
@@ -11397,6 +12235,7 @@ def final_tree_leak(
     logger: Any,
     git_binary: str = "git",
     overlap: int = SCAN_OVERLAP_CHARS,
+    floor: str | None = None,
 ) -> str | None:
     """Why the branch about to be pushed must not be, or None when it may.
 
@@ -11426,6 +12265,11 @@ def final_tree_leak(
     `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
     of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
     `core.quotePath=false`, stay as a second belt.
+
+    `floor`, when given, is read from instead of `base`: a commit of the
+    repository's default branch the lane merged, proven on the forge
+    (`Worker._scan_floor`, #453). Every line its tree holds is published
+    already, so only what the branch adds over it is asked about.
     """
     g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
     run_kwargs: dict[str, Any] = {
@@ -11455,6 +12299,8 @@ def final_tree_leak(
             "the clone base is unknown, so the worker cannot read what the push "
             "would add; nothing was pushed"
         )
+    if floor and _SHA_RE.match(floor.strip()):
+        before = floor.strip()
     code, hit = _scan_diff_stream(
         [
             *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
@@ -11491,6 +12337,7 @@ def replay_agent_commits(
     git_binary: str = "git",
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
+    upstream: str = "",
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -11597,6 +12444,7 @@ def replay_agent_commits(
             logs_dir=logs_dir,
             timeout_seconds=timeout_seconds,
             logger=logger,
+            upstream=upstream,
         )
         if index is not None:
             logger.warning(
@@ -11759,6 +12607,29 @@ def _generation_check_retryable(exc: BaseException) -> bool:
     if not _control_plane_unreachable(exc):
         return False
     return _unavailable_cause(exc) is not None or _refusal_cause(exc) is None
+
+
+def _same_repository(a: str, b: str) -> bool:
+    """Whether two clone URLs name the same repository (the carrier's check, #453).
+
+    Forge URLs compare by host, owner and name, case-insensitively, so
+    `https://github.com/Acme/Widgets.git` and `git@github.com:acme/widgets`
+    agree. Anything `forge.parse_repo` does not understand compares as text,
+    less a trailing `/` and `.git`.
+    """
+    left, right = forge_mod.parse_repo(a), forge_mod.parse_repo(b)
+    if left is not None and right is not None:
+        return (left.host, left.owner.lower(), left.name.lower()) == (
+            right.host, right.owner.lower(), right.name.lower()
+        )
+    if left is not None or right is not None:
+        return False
+
+    def bare(url: str) -> str:
+        url = url.strip().rstrip("/")
+        return url[: -len(".git")] if url.endswith(".git") else url
+
+    return bare(a) == bare(b)
 
 
 def _one_line(value: Any, limit: int = 600) -> str:

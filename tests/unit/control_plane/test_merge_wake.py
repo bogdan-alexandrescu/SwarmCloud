@@ -718,3 +718,13 @@ def test_the_queued_park_code_is_the_workers():
     from agent_worker import merge as worker_merge
 
     assert mergewake.MERGE_QUEUED == worker_merge.MERGE_QUEUED == "merge_queued"
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

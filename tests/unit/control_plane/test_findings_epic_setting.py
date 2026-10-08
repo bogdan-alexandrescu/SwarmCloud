@@ -14,6 +14,8 @@ The worker half is tests/unit/worker/test_findings_epic.py.
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from .conftest import auth_header, seed_tenant
@@ -97,3 +99,13 @@ def test_the_epic_is_covered_by_the_spec_signature():
         builds_on=None, gate_task_id=None, findings_epic=9,
     )
     assert "findings_epic" not in ungated.to_metadata()
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

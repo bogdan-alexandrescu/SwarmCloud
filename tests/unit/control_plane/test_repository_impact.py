@@ -784,6 +784,107 @@ def test_the_graph_route_draws_modules_and_weighted_edges(client, indexed):
     assert {m["id"] for m in clustered["modules"]} == {"src", "tests"}
 
 
+# --------------------------------------------------------------------------
+# G4-10: the graph route's cost (11 s for 24 KB, QA 2026-10-07)
+# --------------------------------------------------------------------------
+# Reading the code path: one draw read every symbols, tests and callees shard
+# ONE AT A TIME (impact.module_graph through Graph.shard), and every
+# GcsObjectReader.read_range is two round trips (get_blob, then a
+# generation-pinned download). 64 modules x 3 layers is ~190 shards, ~380
+# serial round trips: the 11 s. The 419 KB index document (1 s) was read on
+# every request too, only for its hot spots. These tests hold the fix.
+
+def _recording(objects: InMemoryObjectReader, monkeypatch, delay: float = 0.0) -> dict:
+    """Every key read, and the most reads ever in flight at once."""
+    import threading
+    import time
+
+    seen: dict = {"keys": [], "inflight": 0, "peak": 0}
+    lock = threading.Lock()
+    real = objects.read_range
+
+    def read_range(key: str, *, offset: int, length: int):
+        with lock:
+            seen["keys"].append(key)
+            seen["inflight"] += 1
+            seen["peak"] = max(seen["peak"], seen["inflight"])
+        try:
+            if delay:
+                time.sleep(delay)
+            return real(key, offset=offset, length=length)
+        finally:
+            with lock:
+                seen["inflight"] -= 1
+
+    monkeypatch.setattr(objects, "read_range", read_range)
+    return seen
+
+
+def test_a_cold_graph_read_fetches_its_shards_concurrently(client, objects, indexed,
+                                                           monkeypatch):
+    seen = _recording(objects, monkeypatch, delay=0.05)
+    answer = client.get(f"/v1/repositories/{indexed['repo_id']}/graph",
+                        headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    blobs = [k for k in seen["keys"] if "/graph/blobs/" in k]
+    # The control: this graph has several shards, so one-at-a-time is observable.
+    assert len(blobs) >= 4
+    assert seen["peak"] > 1, "every shard was read one after another"
+
+
+def test_a_second_graph_read_of_one_version_reads_only_its_manifest(client, objects, indexed,
+                                                                    monkeypatch):
+    path = f"/v1/repositories/{indexed['repo_id']}/graph"
+    first = client.get(path, headers=auth_header("alice"))
+    assert first.status_code == 200, first.text
+    seen = _recording(objects, monkeypatch)
+    second = client.get(path, headers=auth_header("alice"))
+    assert second.status_code == 200, second.text
+    assert second.json() == first.json()
+    # The manifest is still read and digest-checked on every request; no
+    # shard and not the index document.
+    assert seen["keys"] and all(k.endswith("/manifest.json") for k in seen["keys"]), \
+        seen["keys"]
+    # Another cluster is another drawing, not the cached one.
+    package = client.get(f"{path}?cluster=package", headers=auth_header("alice")).json()
+    assert {m["id"] for m in package["modules"]} == {"src", "tests"}
+
+
+def test_a_manifest_rewritten_after_the_drawing_was_cached_is_still_refused(
+    client, objects, indexed
+):
+    path = f"/v1/repositories/{indexed['repo_id']}/graph"
+    assert client.get(path, headers=auth_header("alice")).status_code == 200
+    key = next(k for k in objects.objects if k.endswith(f"/graph/{BASE}/manifest.json"))
+    objects.put(key, objects.objects[key] + b" ")
+    refused = client.get(path, headers=auth_header("alice"))
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["code"] == "graph_digest_mismatch"
+
+
+def test_the_graph_route_carries_an_etag_and_answers_a_match_with_304(client, db, indexed):
+    path = f"/v1/repositories/{indexed['repo_id']}/graph"
+    first = client.get(path, headers=auth_header("alice"))
+    assert first.status_code == 200, first.text
+    etag = first.headers.get("etag")
+    assert etag and etag.startswith('"') and etag.endswith('"')
+    assert "private" in first.headers.get("cache-control", "")
+    same = client.get(path, headers={**auth_header("alice"), "If-None-Match": etag})
+    assert same.status_code == 304 and same.content == b""
+    assert same.headers.get("etag") == etag
+    weak = client.get(path, headers={**auth_header("alice"),
+                                     "If-None-Match": f'"other", W/{etag}'})
+    assert weak.status_code == 304
+    # The control: another etag is a full answer.
+    other = client.get(path, headers={**auth_header("alice"), "If-None-Match": '"other"'})
+    assert other.status_code == 200 and other.json() == first.json()
+    # The body carries the freshness, so a moved head is a new etag.
+    db.docs[f"repositories/{indexed['repo_id']}"]["index"]["head_sha"] = HEAD
+    moved = client.get(path, headers={**auth_header("alice"), "If-None-Match": etag})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["head_sha"] == HEAD and moved.headers.get("etag") != etag
+
+
 def test_the_symbols_route_searches_walks_and_maps_tests(client, indexed):
     base = f"/v1/repositories/{indexed['repo_id']}/symbols"
     found = client.get(f"{base}?q=total", headers=auth_header("alice"))

@@ -18,7 +18,11 @@
 //     title, expires-in and last verified; an unknown cell is never ok;
 //   * Verify all re-probes every token;
 //   * a route that is not there yet is "not served yet", naming it;
-//   * at 390 the grid becomes per-repository cards.
+//   * at 390 the grid becomes per-repository cards;
+//   * G4-22: the register card is ONE entry point, folded behind the header's
+//     "Register token" button (or opened by Rotate), never always open;
+//   * G4-17: at 1440 the grid fits its card: the capability heads wrap in
+//     72 px columns and the last head is "Verified", never clipped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -196,6 +200,7 @@ describe('Git tokens are cards by scope (pick B)', () => {
     )
     await mount('page=tokens')
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Register token' }))
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
     expect(visible(reg.querySelector('h2'))).toBe('Register token: from your terminal')
     expect(visible(reg)).toContain('value never enters the console')
@@ -214,15 +219,43 @@ describe('Git tokens are cards by scope (pick B)', () => {
     serve(() => null)
     await mount('page=tokens')
     await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/git-tokens"]')).not.toBeNull(), WAIT)
-    // The command-line path still draws: it needs only the slot's record.
+    // The command-line path still opens: it needs only the slot's record.
+    fireEvent.click(screen.getByRole('button', { name: 'Register token' }))
     expect(document.querySelector('.ur-reg')).not.toBeNull()
+  })
+
+  it('G4-22: the register card is folded behind the header button, its one entry point; Rotate opens it too', async () => {
+    tokenRoutes()
+    await mount('page=tokens')
+    await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
+    const open = screen.getByRole('button', { name: 'Register token' })
+    // Folded on arrival: one entry point, not a button and an open card.
+    expect(document.querySelector('.ur-reg')).toBeNull()
+    expect(open.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(open)
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    const reg = document.querySelector<HTMLElement>('.ur-reg')!
+    expect(reg.id).toBe(open.getAttribute('aria-controls'))
+    expect(visible(reg.querySelector('h2'))).toBe('Register token: from your terminal')
+    // The same button folds it again.
+    fireEvent.click(open)
+    expect(document.querySelector('.ur-reg')).toBeNull()
+    expect(open.getAttribute('aria-expanded')).toBe('false')
+    // Rotate opens the card on that slot's command.
+    fireEvent.click(within(tokCards()[1]!).getByRole('button', { name: 'Rotate' }))
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    expect(visible(document.querySelector('.ur-reg pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-r-0a1b2c3d4e5f6071 --stdin')
+    // Still exactly one control that says "Register token".
+    expect(screen.getAllByRole('button', { name: /register token/i })).toHaveLength(1)
   })
 
   it('no tokens is an empty state that points at the command line', async () => {
     serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: { git_tokens: [] } } : null))
     await mount('page=tokens')
-    await waitFor(() => expect(document.querySelector('.c-emp')).not.toBeNull(), WAIT)
-    expect(visible(document.querySelector('.c-emp'))).toContain('No git tokens registered')
+    // The token region's empty state, not the first on the page: the Connect
+    // GitHub card above it (#780) draws its own when its route is not served.
+    const empties = () => Array.from(document.querySelectorAll('.c-emp')).map(visible)
+    await waitFor(() => expect(empties().some((t) => t.includes('No git tokens registered'))).toBe(true), WAIT)
   })
 })
 
@@ -266,10 +299,12 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Permissions')
     expect(visible(document.querySelector('.ur-crumb'))).toBe('Work › Repositories › Git tokens › Permissions')
-    expect(visible(document.querySelector('.c-phead'))).toContain('2 tokens × 2 repositories')
-    expect(visible(document.querySelector('.c-phead'))).toContain('order R2')
+    // #138: the order chip is an action in the head; the tokens × repositories count is the note over the grid.
+    expect(visible(document.querySelector('.c-count-note'))).toContain('2 tokens × 2 repositories')
+    expect(visible(document.querySelector('.c-phead .c-acts'))).toContain('order R2')
+    expect(visible(document.querySelector('.c-phead'))).not.toContain('tokens ×')
     const heads = Array.from(document.querySelectorAll('table.ur-mx thead th')).map((t) => visible(t))
-    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Last verified'])
+    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Verified'])
     expect(Array.from(document.querySelectorAll('tr.ur-grp')).map((g) => visible(g))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(visible(gridRows()[0]!.cells[0]!)).toBe('example-api-bot · repository resolves')
     expect(visible(gridRows()[1]!.cells[0]!)).toBe('eng-swarm-bot · tenant')
@@ -328,6 +363,29 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await mount('page=permissions')
     await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/git-tokens"]')).not.toBeNull(), WAIT)
     expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
+  })
+
+  it('G4-17: at 1440 the capability heads wrap in 72 px columns and the last head reads "Verified"', async () => {
+    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: PERMS_TOKENS } : null))
+    await mount('page=permissions')
+    await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
+    const sheets = ALL.map(([, t]) => t).join('\n')
+    const heads = Array.from(document.querySelectorAll<HTMLElement>('table.ur-mx thead th'))
+    const caps = heads.slice(1, 9)
+    expect(caps.map((h) => visible(h))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
+    // Each nowrap head held its whole label on one line, which is what pushed the
+    // table 18 px past its card at 1440. The eight capability heads now wrap and
+    // their columns are 72 px, free to shrink to it.
+    for (const h of caps) {
+      expect(cascade(sheets, h, 'white-space', { width: 1440 }).winner?.value).toBe('normal')
+      expect(cascade(sheets, h, 'width', { width: 1440 }).winner?.value).toBe('72px')
+      expect(cascade(sheets, h, 'min-width', { width: 1440 }).winner?.value).toBe('0')
+    }
+    // The last head is one short word on one line, and says in full what it is.
+    const last = heads[heads.length - 1]!
+    expect(visible(last)).toBe('Verified')
+    expect(last.getAttribute('title')).toBe('Last verified')
+    expect(cascade(sheets, last, 'white-space', { width: 1440 }).winner?.value).toBe('nowrap')
   })
 
   it('at 390 the grid gives way to per-repository cards', async () => {

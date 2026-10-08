@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from swarm_common.models import (
     Task,
@@ -47,12 +47,17 @@ from swarm_common.models import (
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
+from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
-from .continuation import resolve_continuation
-from .errors import Forbidden, ValidationFailed
+from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
+from .access import MODES, grant_id_for
+from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
+from .forge import GIT_PROVIDER
+from .forgeapp import GRANTS, Caller
+from .gittokens import Scope, provider_suffix
 from .metrics import ApiMetrics
 from .repositories import Repositories, repo_id_for
 from .runnerinputs import input_contract
@@ -61,14 +66,15 @@ from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
+from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
+    APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
-    MERGE_LABEL_DROPPED_KEY,
     MERGE_METADATA_KEY,
     MERGE_STEP_MAX_ATTEMPTS,
-    READY_LABEL,
+    SERVICE_FORGE_ACCESS,
     SINGLE_PR,
     DispatchOptionError,
     DispatchOptions,
@@ -81,8 +87,6 @@ from .validation import (
     merge_repository,
     merge_step_for,
     plan_merge,
-    ready_label_dropped,
-    refuse_merge_label_record,
     refuse_unmergeable_forge,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
@@ -92,6 +96,9 @@ from .validation import (
     resolve_integrator_step,
     resolve_merge_choice,
     resolve_merge_fix_rounds,
+    github_repository,
+    is_service_submitter,
+    repository_not_granted,
     validate_batch_size,
     validate_dag,
     validate_input_size,
@@ -142,6 +149,8 @@ class SubmissionService:
         metrics: ApiMetrics,
         now=utcnow,
         signer: SpecSigner | None = None,
+        forge_tokens: Any = None,
+        forge_writer: Any = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -152,6 +161,11 @@ class SubmissionService:
         #: in local development: `build_context` refuses a hardened
         #: environment without a key.
         self._signer = signer
+        #: The tenant's `-git` token reader and the pinned GitHub client, for
+        #: the one read a `merge_pr` workflow makes at submission (#352,
+        #: `continuation.resolve_merge_pr`). Neither builds a client until used.
+        self._forge_tokens = forge_tokens
+        self._forge_writer = forge_writer
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -164,6 +178,79 @@ class SubmissionService:
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
+
+    def _resolve_forge(self, tenant_id: str, tasks: Sequence[Task], *, service: bool) -> None:
+        """Set `forge_credential` and `forge_access` on every task (#780 OB7, D4).
+
+        BEFORE `_sign`, so the signature covers both (contract request 54).
+        A person's task on a GitHub repository runs with the person's own
+        user slot, `git-u-<hex>`, and their grant's mode; a person with no
+        grant on it is refused, every refused task named in one 403
+        (`validation.repository_not_granted`), before anything is stored. A
+        service submission runs with the tenant token, `git`, with write. A
+        task with no repository, or not on GitHub, is left with neither.
+
+        Never from the request: `TaskCreate` and `WorkflowCreate` refuse both
+        names (`extra="forbid"`), and each task's `submitted_by` is the
+        authenticated caller's, a child's parent's, or the stored submitter
+        `run_owner_auth` and its kind rebuild (invariant 10).
+        """
+        refused: list[tuple[str | None, str]] = []
+        for task in tasks:
+            named = github_repository(task.repository_url)
+            if named is None:
+                continue
+            if service:
+                # The tenant's own slot, the one every task read before #780.
+                task.forge_credential = GIT_PROVIDER
+                task.forge_access = SERVICE_FORGE_ACCESS
+                continue
+            owner, repo = named
+            mode = self._grant_mode(tenant_id, task.submitted_by or "",
+                                    repo_id_for(tenant_id, owner, repo))
+            if mode is None:
+                if not getattr(self._settings, "repository_grants_enforced", False):
+                    # The switch is off (REPOSITORY_GRANTS_ENFORCED, owner
+                    # 2026-10-08): no grant runs with the tenant token, as
+                    # before #780, until the migration turns refusal on.
+                    task.forge_credential = GIT_PROVIDER
+                    task.forge_access = SERVICE_FORGE_ACCESS
+                    continue
+                refused.append((task.step_id, f"{owner}/{repo}"))
+                continue
+            task.forge_credential = provider_suffix(Scope.USER, user=task.submitted_by)
+            task.forge_access = mode
+        if refused:
+            error = repository_not_granted(refused)
+            self._metrics.tasks_rejected.labels(reason=error.code).inc()
+            log.info("submission refused tenant=%s code=%s repositories=%s",
+                     tenant_id, error.code, ",".join(error.detail["repositories"]))
+            raise error
+
+    def _grant_mode(self, tenant_id: str, email: str, repo_id: str) -> str | None:
+        """The mode of `email`'s grant on `repo_id` in `tenant_id`, or None.
+
+        The document `AccessService.grant` writes, read by the id it is
+        stored under and checked again on its own fields, as `AccessService._doc`
+        checks it: another person's or another tenant's grant is no grant
+        (invariant 9). A mode that is neither `read` nor `write` is no grant
+        either, so a damaged document refuses rather than writes.
+        """
+        if not email:
+            return None
+        caller = Caller(email=email, tenant_id=tenant_id)
+        snap = self._store.db.collection(GRANTS).document(
+            grant_id_for(tenant_id, email, repo_id)).get()
+        doc = snap.to_dict() if snap.exists else None
+        if (
+            not doc
+            or doc.get("tenant_id") != tenant_id
+            or doc.get("user") != caller.key
+            or doc.get("repo_id") != repo_id
+        ):
+            return None
+        mode = doc.get("mode")
+        return mode if mode in MODES else None
 
     # -- tenant -----------------------------------------------------------
 
@@ -250,6 +337,7 @@ class SubmissionService:
         repository_url: str | None = None,
         repository_ref: str | None = None,
         submitted_by: str | None = None,
+        git_identity: dict[str, str] | None = None,
     ) -> Task:
         # `submitted_by` is set only by the child route (swarm_api.children),
         # which has no person on the call: a child's submitter is its parent's,
@@ -297,6 +385,17 @@ class SubmissionService:
         # override the workflow's choice.
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # Who the agent's commits name (P37, `gitidentity`): the authenticated
+        # caller unless the caller of this method resolved someone else (a
+        # child's parent, a service account's continued task). Inside the
+        # dispatch block, which the signature covers and no caller can write.
+        if git_identity is None:
+            git_identity = (
+                gitidentity.for_caller(ctx.email, ctx.display_name)
+                if ctx is not None
+                else gitidentity.for_caller(submitted_by)
+            )
+        gitidentity.record_on(metadata[DISPATCH_METADATA_KEY], git_identity, submitted_by)
 
         # Walk the real state machine even though only the end state is stored.
         assert_transition(TaskState.SUBMITTED, TaskState.QUEUED)
@@ -341,7 +440,13 @@ class SubmissionService:
             depends_on=list(depends_on),
         )
 
-    def submit_tasks(self, ctx: AuthContext, specs: Sequence[TaskCreate]) -> SubmissionResult:
+    def submit_tasks(
+        self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False
+    ) -> SubmissionResult:
+        """`service_submission` is set by the platform's own automation that
+        submits as the person who registered a repository (`repoindex`), never
+        by a route from a request: the owner's D4 for automation (2026-10-07)
+        runs repository indexing with the tenant token."""
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
         now = self._now()
@@ -369,6 +474,12 @@ class SubmissionService:
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
+        # #780 OB7: whose GitHub credential each task runs with, before the
+        # signature so it covers them.
+        self._resolve_forge(
+            tenant.tenant_id, tasks,
+            service=service_submission or is_service_submitter(ctx.email),
+        )
         # Contract request 34: signed over the task as it will be stored.
         self._sign(tasks)
         self._store.create_tasks(tasks, tenant_member=ctx.tenant_member)
@@ -380,6 +491,19 @@ class SubmissionService:
         return SubmissionResult(tasks=tasks, woke_scheduler=woke)
 
     # -- workflows --------------------------------------------------------
+
+    def _continued_task(self, tenant_id: str, continuation: Any) -> Task | None:
+        """The task a continuation names, for whose person its commits carry.
+
+        Unfiltered by submitter, as `resolve_continuation` reads it: a
+        continuation-scoped account continues a task someone else submitted.
+        None when it has gone since that check, so the bot is named.
+        """
+        task_id = continuation.task_id or continuation.root_task_id
+        try:
+            return self._store.get_task(tenant_id, task_id, submitted_by=None)
+        except NotFound:
+            return None
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
         # A continuation-scoped caller (a listed service account, contract
@@ -420,6 +544,13 @@ class SubmissionService:
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
+            # A pull request no workflow opened (#352): checked against the
+            # tenant's registry and read from GitHub once, before the
+            # continuation (a `continues_task` beside it is refused for
+            # naming two) and before the dispatch options, because it
+            # supplies the repository they require. A continuation-scoped
+            # caller was refused above: `merge_pr` carries no continues_task.
+            named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
             # A continuation-scoped account continues a `direct-pr` task or an
@@ -433,7 +564,9 @@ class SubmissionService:
             # anything is built from the workflow's metadata (cifix.py).
             spec = stamp_ci_fix(self._store, tenant.tenant_id, spec, continuation)
             repository_url = (
-                continuation.repository_url if continuation else spec.repository_url
+                continuation.repository_url if continuation
+                else named_pull.repository_url if named_pull
+                else spec.repository_url
             )
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
@@ -478,6 +611,7 @@ class SubmissionService:
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
+                named_pull=named_pull is not None,
             )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
@@ -501,9 +635,7 @@ class SubmissionService:
                 reject_reserved_metadata(step.metadata)
                 step_metadata = {**spec.metadata, **step.metadata}
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
-                # step's task will store them, and the drop record only this
-                # service writes.
-                refuse_merge_label_record(step_metadata)
+                # step's task will store them.
                 resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
@@ -541,9 +673,13 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
-        # Beside a merge step, a `ready` label is dropped (`workflow_label`)
-        # so `auto-merge.yml` never races the step; recorded on every task.
-        label_dropped = ready_label_dropped(spec.metadata, merge_step=merge_plan is not None)
+        # Every step's commits name the workflow's submitter (P37). A
+        # continuation a service account submitted names the person behind
+        # the task it continues instead, else the bot (`gitidentity`).
+        git_identity = gitidentity.for_continuation(
+            ctx.email, ctx.display_name,
+            self._continued_task(tenant.tenant_id, continuation) if continuation else None,
+        )
         for step_id in order:
             source = by_id[step_id]
             parent_task_ids = [step_task_id[dep] for dep in source.depends_on]
@@ -557,6 +693,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                named_pull=named_pull,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -566,7 +703,7 @@ class SubmissionService:
                 allow_empty_diff=source.allow_empty_diff,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
-                pr_label=workflow_label(spec.metadata, merge_step=merge_plan is not None),
+                pr_label=workflow_label(spec.metadata),
                 # Kept on a gated step only too: the step that reads the
                 # verdict files its minors on the tenant's epic.
                 findings_epic=findings_epic,
@@ -582,10 +719,7 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={
-                        **spec.metadata, **source.metadata, "workflow_step": step_id,
-                        **({MERGE_LABEL_DROPPED_KEY: READY_LABEL} if label_dropped else {}),
-                    },
+                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
@@ -605,6 +739,7 @@ class SubmissionService:
                 priority=spec.priority,
                 repository_url=repository_url,
                 repository_ref=spec.repository_ref,
+                git_identity=git_identity,
             )
             # The one place `metadata.input_from` is written. After `_build_task`,
             # which refused the key in the caller's metadata, so what lands here
@@ -656,7 +791,11 @@ class SubmissionService:
             record_expected_outputs(task.metadata, expected.get(task.step_id or ""))
         # Contract request 34: AFTER `metadata.input_from` and
         # `record_expected_outputs`, both written after `_build_task`, and
-        # immediately before the write that creates the documents.
+        # immediately before the write that creates the documents. #780 OB7
+        # first: every step's GitHub credential, so the signature covers it,
+        # and the whole workflow refused when any step's repository is not
+        # granted to the person.
+        self._resolve_forge(tenant.tenant_id, tasks, service=is_service_submitter(ctx.email))
         self._sign(tasks)
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
@@ -765,6 +904,21 @@ class SubmissionService:
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
         )
 
+    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
+        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
+        if self._forge_tokens is None or self._forge_writer is None:
+            raise DispatchOptionError(
+                "merge_pr reads the pull request from GitHub at submission, and this "
+                "deployment has no forge reader configured.",
+                detail={"merge_pr": spec.merge_pr.model_dump() if spec.merge_pr else None},
+            )
+        return resolve_merge_pr(
+            spec, tenant,
+            repositories=Repositories(self._store.db, now=self._now),
+            tokens=self._forge_tokens,
+            writer=self._forge_writer,
+        )
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -795,6 +949,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        named_pull: NamedPull | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -839,6 +994,12 @@ class SubmissionService:
             # step it names is one it depends on, so topological order has
             # minted each id already.
             sources = merge_plan.sources
+            if sources.named and named_pull is not None:
+                # No task opened it (#352): the number and the head the
+                # caller named, as `resolve_merge_pr` checked them.
+                return dispatch.with_merge_target(
+                    number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                )
             return dispatch.with_merge_target(
                 pull_request=(
                     sources.pull_request if sources.continued
@@ -1011,23 +1172,119 @@ class SubmissionService:
             "generated_at": self._now(),
         }
 
-    def providers(self, ctx: AuthContext) -> dict[str, Any]:
+    def providers(
+        self,
+        ctx: AuthContext,
+        accounts: Callable[[str], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Which providers this tenant can run on, and on which credential.
+
+        A KEY OR A POOL ACCOUNT, the way admission reads it (#76, from #171's
+        second review). `credential_registered` used to be `name in
+        tenant.credentials` alone, so a keyless tenant that an account LENT to
+        it serves read "no credential" while admission
+        (`scheduler.credentials.credential_for`) admitted its tasks and they
+        ran. It is now true when either serves, and `credential_source` says
+        which, in admission's own words: `tenant_key` (asked first, as there)
+        or `account_pool`. `runnable_profiles` narrows it the same way: an
+        account is a Claude subscription and runs only a profile whose
+        `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, so `browser` is not runnable
+        on one however many a tenant is lent.
+
+        WHICH ACCOUNTS COUNT: one this tenant owns or is lent, for this
+        provider, in any state -- `quota_broker.accounts.accounts_serving`,
+        which admission asks. A paused or spent account is a wait the worker
+        parks on, not a missing credential. A withdrawn loan counts for
+        nothing: the account no longer names this tenant in `lend_to`.
+
+        `accounts` is the broker's `list_accounts`, or None on a deployment
+        with no broker -- where, as in admission, the pool serves nobody. It
+        is asked only when some provider has no key. `account_pool` on the
+        page says what was read, so a `false` beside a broker that could not
+        be reached is not read as "nobody lent you anything".
+        """
         tenant = self.tenant_for(ctx)
         quota_by_provider = {q.provider: q for q in self._store.list_quota(ctx.tenant_id)}
+        # Never a retired #295 App key (`git-review`, which the frozen
+        # catalogue's disabled post-verdict entry still names): nothing reads
+        # one, so listing it would offer a tenant a credential to register
+        # that no route accepts and no Job reads.
+        named = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+        listed = sorted(named - APP_CREDENTIAL_PROVIDERS)
+        keyed = set(tenant.credentials or ())
+        pool_read, served = self._pool_providers(
+            tenant.tenant_id, accounts, any(name not in keyed for name in listed)
+        )
         entries = []
-        for name in sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}):
+        for name in listed:
             quota = quota_by_provider.get(name)
+            profiles = sorted(p.name for p in RUNNER_PROFILES.values() if p.provider == name)
+            on_account = sorted(
+                p.name
+                for p in RUNNER_PROFILES.values()
+                if p.provider == name and ACCOUNT_TOKEN_ENV in (p.secrets or ())
+            )
+            if name in keyed:
+                source, runnable = "tenant_key", profiles
+            elif name in served and on_account:
+                source, runnable = "account_pool", on_account
+            else:
+                source, runnable = None, []
             entries.append(
                 {
                     "provider": name,
-                    "credential_registered": name in tenant.credentials,
-                    "runner_profiles": sorted(
-                        p.name for p in RUNNER_PROFILES.values() if p.provider == name
-                    ),
+                    "credential_registered": source is not None,
+                    "credential_source": source,
+                    "runnable_profiles": runnable,
+                    "runner_profiles": profiles,
                     "quota": quota_to_api(quota) if quota else None,
                 }
             )
-        return {"tenant_id": ctx.tenant_id, "providers": entries, "generated_at": self._now()}
+        return {
+            "tenant_id": ctx.tenant_id,
+            "providers": entries,
+            "account_pool": pool_read,
+            "generated_at": self._now(),
+        }
+
+    def _pool_providers(
+        self,
+        tenant_id: str,
+        accounts: Callable[[str], dict[str, Any]] | None,
+        needed: bool,
+    ) -> tuple[str, set[str]]:
+        """What the account pool was read as, and the providers it serves this tenant.
+
+        `not_asked` when every provider has a key, `not_configured` with no
+        broker, `unreadable` when the broker could not answer, `read`
+        otherwise. A failed read degrades the page, never fails it: the key
+        half of the answer needs no broker.
+        """
+        if not needed:
+            return "not_asked", set()
+        if accounts is None:
+            return "not_configured", set()
+        try:
+            listing = accounts(tenant_id)
+        except Exception as exc:
+            log.warning(
+                "providers: the account pool could not be read",
+                extra={"tenant_id": tenant_id, "error": type(exc).__name__},
+            )
+            return "unreadable", set()
+        served: set[str] = set()
+        for account in listing.get("accounts") or []:
+            if not isinstance(account, dict):
+                continue
+            # `Account.may_serve`, on the served shape: owned, or lent and not
+            # withdrawn. The broker narrows its listing the same way; this
+            # holds it to that rather than trusting a listing's scope.
+            lend_to = account.get("lend_to") or ()
+            if account.get("owner_tenant") == tenant_id or tenant_id in lend_to:
+                provider = account.get("provider")
+                if isinstance(provider, str) and provider:
+                    served.add(provider)
+        return "read", served
 
     # -- plumbing ---------------------------------------------------------
 

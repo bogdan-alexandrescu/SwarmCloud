@@ -17,6 +17,7 @@ from fastapi import Depends, Header, Request
 
 from swarm_common.models import utcnow
 
+from .admins import build_admin_roles
 from .auth import (
     TENANT_HEADER,
     TENANT_QUERY,
@@ -177,11 +178,22 @@ def build_context(
     # IAP-protected resource anywhere, so "not configured" must mean "not used"
     # rather than "used without the check".
     iap = IapAssertionVerifier(settings.iap_audiences)
-    authenticator = Authenticator(settings, verifier, groups, iap=iap)
+    # Admin roles in Firestore (docs/workspaces.md §6.5), beside the
+    # configuration fallback the authenticator still reads.
+    authenticator = Authenticator(
+        settings, verifier, groups, iap=iap,
+        admin_roles=build_admin_roles(db, settings, now=now),
+    )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
+    # Built before the submissions service, which reads a `merge_pr` workflow's
+    # pull request with them (#352), and handed to the context as the same two.
+    forge_tokens = forge_tokens or SecretManagerForgeTokens(settings.project_id)
+    forge_writer = forge_writer or GitHubWriter()
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now,
         signer=spec_signer,  # type: ignore[arg-type]
+        forge_tokens=forge_tokens,
+        forge_writer=forge_writer,
     )
     limiter = TokenBucketLimiter(
         rate_per_second=settings.core.requests_per_second,
@@ -219,9 +231,9 @@ def build_context(
         inspection=inspection,
         rollups=rollups,
         outcomes=outcomes,
-        forge_tokens=forge_tokens or SecretManagerForgeTokens(settings.project_id),
+        forge_tokens=forge_tokens,
         forge=forge or GitHubIssues(),
-        forge_writer=forge_writer or GitHubWriter(),
+        forge_writer=forge_writer,
         executions=executions or _execution_canceller(settings),
         now=now,
     )

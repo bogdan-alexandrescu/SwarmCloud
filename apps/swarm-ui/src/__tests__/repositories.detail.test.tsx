@@ -22,7 +22,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { DAY, HOUR, MIN, ago, repo, serve, sha, token, tokenShapedIn, visible } from './repofixture'
+import { DAY, HOUR, MIN, ago, coverageOf, repo, serve, sha, token, tokenShapedIn, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
 const ID = 'repo_1111111111111111'
@@ -31,7 +31,7 @@ const DETAIL = {
   repository: {
     ...repo(
       { repo_id: ID, repo: 'example-web', created_by: 'operator@swarm.example.com', created_at: '2026-10-04T09:00:00Z' },
-      { current_sha: sha('9f8e7d6'), head_sha: sha('5c4b3a2'), behind_by: 3, coverage: 0.61, interval_hours: 12, in_flight_task_id: 'task_inflight' },
+      { current_sha: sha('9f8e7d6'), head_sha: sha('5c4b3a2'), behind_by: 3, coverage: coverageOf(40, 26, 310, 2), interval_hours: 12, in_flight_task_id: 'task_inflight' },
     ),
     graph: { depth: 3, min_confidence: 0.2 },
     selection_policy: { policy: 'P3', mode: 'X2', inherited_from_tenant: false },
@@ -81,8 +81,8 @@ const RESOLVED = {
 }
 
 // The resolved-token row is derived from GET /v1/git-tokens (R2: the repository's
-// own token, else the tenant's): the API has no per-repository token route, and
-// no per-language route either, so neither is ever fetched.
+// own token, else the tenant's): the API has no per-repository token route, so
+// none is fetched. The languages route is read; unstubbed here, it answers 404.
 const TOKENS = {
   resolution_order: 'R2',
   git_tokens: [
@@ -167,7 +167,7 @@ describe('the repository page leads with what the index says about the head (Det
       `/repositories/${ID}/settings`,
       `/repositories/${ID}/used-by`,
     ])
-    expect(visible(tabs[3]!.querySelector('em'))).toBe('61%')
+    expect(visible(tabs[3]!.querySelector('em'))).toBe('310')
     expect(visible(tabs[5]!.querySelector('em'))).toBe('3')
     expect(visible(tabs[7]!.querySelector('em'))).toBe('2')
     expect(tabs[0]!.getAttribute('aria-current')).toBe('page')
@@ -181,7 +181,7 @@ describe('the repository page leads with what the index says about the head (Det
     const kv = visible(document.querySelector('.ur-kv'))
     expect(kv).toContain('Modules 2')
     expect(kv).toContain('Entry points 2')
-    expect(kv).toContain('Tests mapped 61%')
+    expect(kv).toContain('Tests mapped 26 of 40 modules')
     expect(kv).toContain('Index 212 KiB')
     expect(kv).toContain('truncated: hot_spots')
     const titles = Array.from(document.querySelectorAll('.ur-detail .c-card h2')).map((h) => visible(h))
@@ -293,13 +293,13 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(titles).toEqual(['Schedule and change trigger', 'Languages detected', 'Graph', 'Selection policy', 'Resolved token'])
   })
 
-  it('languages: the API serves no per-language route, so the region says "not served yet" and nothing is fetched', async () => {
+  it('languages: a route not served and an index carrying no languages say "not served yet", with no rows', async () => {
     const calls = routes()
     await mount('settings')
     await loaded()
     await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/repositories/{repo_id}/languages"]')).not.toBeNull(), WAIT)
     expect(document.querySelectorAll('.ur-lang')).toHaveLength(0)
-    expect(calls.some((c) => c.url.includes('/languages'))).toBe(false)
+    expect(calls.some((c) => c.url === `/v1/repositories/${ID}/languages`)).toBe(true)
   })
 
   it('the policy is P3 with X2, the graph depth 3 of 1-6; changing them is disabled with the reason', async () => {
@@ -357,7 +357,7 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
       'GET /v1/repositories/{repo_id}/languages',
       'GET /v1/git-tokens',
     ])
-    expect(calls.some((c) => c.url.includes('/languages') || c.url.includes('/token?'))).toBe(false)
+    expect(calls.some((c) => c.url.includes('/token?'))).toBe(false)
     expect(document.querySelector('.ur-policy')).not.toBeNull()
   })
 })

@@ -179,6 +179,11 @@ load_env() {
   # teardown depend on their retention policy.
   TF_STATE_BUCKET="${TF_STATE_BUCKET:-swarm-tfstate-${PROJECT_ID}}"
   TF_STATE_PREFIX="${TF_STATE_PREFIX:-infra/${ENVIRONMENT}}"
+  # terraform/bootstrap's state, in the same bucket (#827). Not overridable and
+  # not per-environment: there is one bootstrap layer per project, and its
+  # prefix is written in terraform/bootstrap/backend.tf, which this must equal
+  # (tests/unit/scripts/test_bootstrap_remote_state.py holds them together).
+  TF_BOOTSTRAP_STATE_PREFIX="bootstrap"
 
   # The swarm's own Autopilot cluster. agents-staging belongs to another team and
   # is deny-listed below; nothing here may ever target it.
@@ -210,7 +215,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
@@ -427,7 +432,19 @@ _semver_minor() {
 KUBECTL=""
 # Resolve a kubectl new enough for a 1.35 control plane. The old binaries on this
 # machine win $PATH, so PATH order is deliberately consulted LAST.
+#
+# UNDER THE WORKSPACE CALL GUARD (SWARM_CALL_GUARD set; docs/workspaces.md
+# §2.5) this returns the guard's shim and nothing else, ahead of the cache and
+# the candidates below: they name kubectl by absolute path, which is exactly how
+# a call would step around a guard installed on PATH. The shim judges the call
+# and then runs the real kubectl ($SWARM_KUBECTL, else PATH outside guard-bin/).
 kubectl_bin() {
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    local shim="${SWARM_LIB_DIR}/guard-bin/kubectl"
+    [[ -x "${shim}" ]] || die "SWARM_CALL_GUARD is set but ${shim} is missing; refusing to run kubectl unguarded"
+    printf '%s' "${shim}"
+    return 0
+  fi
   if [[ -n "${KUBECTL}" ]]; then printf '%s' "${KUBECTL}"; return 0; fi
 
   local candidates=() c parsed major minor
@@ -463,8 +480,18 @@ kc() {
 # $PATH. This is not cosmetic: on this workstation Homebrew's checkov 3.3.10 is
 # broken (it raises on import) and shadows the working 3.3.17 in ~/.local/bin,
 # exactly as three old kubectl binaries shadow 1.36.3.
+#
+# Under the workspace call guard only the three guarded tools resolve, each to
+# its shim; anything else has no guard, so it does not run at all.
 prefer_local_bin() {
   local name="$1" override="${2:-}"
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    case "${name}" in
+      gcloud|kubectl|curl) printf '%s' "${SWARM_LIB_DIR}/guard-bin/${name}"; return 0 ;;
+      *) err "under the workspace call guard only gcloud, kubectl and curl run (through scripts/lib/guard-bin/); ${name} has no guard"
+         return 1 ;;
+    esac
+  fi
   if [[ -n "${override}" ]]; then printf '%s' "${override}"; return 0; fi
   if [[ -x "${HOME}/.local/bin/${name}" ]]; then printf '%s' "${HOME}/.local/bin/${name}"; return 0; fi
   command -v "${name}" 2>/dev/null || return 1
@@ -1829,7 +1856,15 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Continuation lines are joined and comment lines dropped, as Docker does, and
 # a RUN heredoc's body is skipped so a line inside it cannot read as an
 # instruction.
-DOCKERFILE_COPY_AWK="$(cat <<'AWK'
+#
+# THE HEREDOC IS IN A FUNCTION, NOT IN $( ) (#825). bash 3.2 -- macOS's
+# /bin/bash -- scans a heredoc body written inside $( ) for quotes, and the
+# lone apostrophe in the `["']` classes below opened a quote that swallowed
+# the rest of this file: every script sourcing it failed to parse, reported
+# hundreds of lines later inside redact(). The program text is unchanged; the
+# function prints it and $( ) strips its trailing newline exactly as before.
+_dockerfile_copy_awk_program() {
+  cat <<'AWK'
 function refuse(msg) {
   printf "%s:%d: %s\n", FILENAME, start, msg > "/dev/stderr"
   bad = 1
@@ -1891,7 +1926,9 @@ function refuse(msg) {
 }
 END { exit bad }
 AWK
-)"
+}
+DOCKERFILE_COPY_AWK="$(_dockerfile_copy_awk_program)"
+unset -f _dockerfile_copy_awk_program
 
 dockerfile_copy_sources() {
   awk "${DOCKERFILE_COPY_AWK}" "$1"

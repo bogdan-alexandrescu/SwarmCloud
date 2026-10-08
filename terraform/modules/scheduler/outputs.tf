@@ -20,6 +20,7 @@ output "scheduler_job_names" {
       google_cloud_scheduler_job.safety_tick.name,
       google_cloud_scheduler_job.reconciler.name,
       try(google_cloud_scheduler_job.quota_refresh[0].name, ""),
+      try(google_cloud_scheduler_job.forge_refresh[0].name, ""),
     ]),
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.workflow_rollup[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.issue_run_advance[t].name],

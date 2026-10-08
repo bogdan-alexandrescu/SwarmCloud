@@ -146,6 +146,37 @@ variable "rollup_tenant_ids" {
   default     = []
 }
 
+variable "enable_forge_refresh" {
+  description = <<-EOT
+    Create swarm-forge-refresh, the 15-minute sweep that refreshes GitHub user
+    access tokens (docs/onboarding.md §3.4 item 6, decision D2). Off until
+    swarm-api serves the route (lane OB3): see jobs.tf.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "forge_refresh_path" {
+  description = "swarm-api's refresh-sweep route, which the forge_refresh job POSTs."
+  type        = string
+  default     = "/v1/admin/forge/refresh"
+
+  validation {
+    condition     = startswith(var.forge_refresh_path, "/v1/admin/")
+    error_message = "the refresh sweep is an admin route under /v1/admin/, which swarm-api admits the rollup-sweeper account to by name."
+  }
+}
+
+variable "forge_refresh_schedule" {
+  description = <<-EOT
+    How often the GitHub user-token refresh sweep runs. Every 15 minutes: a
+    user access token lives 8 hours and is refreshed with at least two left,
+    so eight ticks fall inside that margin and a missed one costs nothing.
+  EOT
+  type        = string
+  default     = "*/15 * * * *"
+}
+
 variable "workflow_rollup_schedule" {
   description = <<-EOT
     How often each tenant's stored workflow states are converged.

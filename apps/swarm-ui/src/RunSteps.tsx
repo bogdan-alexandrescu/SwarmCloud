@@ -10,6 +10,8 @@ import { timeAgo } from './Shell'
 import { mergeCardOf, type MergeCard } from './stepviews'
 import { TERMINAL_STATES } from './types'
 import { MergeStepCard } from './WorkflowViews'
+import { agentPath } from './OverviewRegions'
+import { addressToPath } from './paths'
 import type { IssueRun, IssueRunState, Task, TaskState } from './types'
 
 /**
@@ -167,13 +169,21 @@ function stateWord(state: TaskState): string {
   return state.toLowerCase().replace('_', '-')
 }
 
-/** "Open agent →": the agent's live page, for every state a step's task can be in. */
-export function OpenAgent({ taskId, go }: { taskId: string; go: (to: string) => void }) {
+/**
+ * "Open agent →", for every state a step's task can be in, under the agent
+ * list that holds it (QA G2-17, 2026-10-07): a finished task opens over
+ * Recent and a waiting one over Waiting -- `/agents/live/` for every state
+ * opened a finished step's inspector over a Live list without it. A task
+ * whose state the workflow read did not carry keeps the Live address: there
+ * is no state to route by.
+ */
+export function OpenAgent({ taskId, state, go }: { taskId: string; state: TaskState | null; go: (to: string) => void }) {
+  const href = state === null ? addressToPath(`work/task/${encodeURIComponent(taskId)}`) : agentPath({ id: taskId, state })
   return (
-    <a className="rn-open" href={`/agents/live/${encodeURIComponent(taskId)}`} title={taskId} onClick={(e) => {
+    <a className="rn-open" href={href} title={taskId} onClick={(e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       e.preventDefault()
-      go(`work/task/${encodeURIComponent(taskId)}`)
+      go(href)
     }}>Open agent →</a>
   )
 }
@@ -230,7 +240,7 @@ function StepLine({ row, go, now }: { row: StepRow; go: (to: string) => void; no
           </>
         )}
       </span>
-      {row.taskId !== null && <OpenAgent taskId={row.taskId} go={go} />}
+      {row.taskId !== null && <OpenAgent taskId={row.taskId} state={row.task?.state ?? null} go={go} />}
       {/* The merge step's card, across the row's whole width under it. */}
       {row.merge !== null && (
         <div className="rn-srow-merge" style={{ gridColumn: '1 / -1' }}>
@@ -290,7 +300,7 @@ export function PlanStepLive({ row, read, go }: { row: StepRow | null; read: Run
     return (
       <span className="rn-step-live">
         <StepMark row={row} />
-        {row.taskId !== null && <OpenAgent taskId={row.taskId} go={go} />}
+        {row.taskId !== null && <OpenAgent taskId={row.taskId} state={row.task?.state ?? null} go={go} />}
       </span>
     )
   }
@@ -343,13 +353,51 @@ export function progressEntries(run: IssueRun, rows: StepRow[]): ProgressEntry[]
   return out.sort((a, b) => a.t - b.t).map((x) => x.e)
 }
 
+/**
+ * WHEN A PROGRESS LINE HAPPENED (QA G2-31, 2026-10-07): every line read "3d
+ * ago", so neither the order nor how long anything took could be read. The
+ * clock time, local, to the second -- `HH:MM:SS` today, `MM-DD HH:MM:SS`
+ * before -- and `+Δ` since the line above that carries a time; the full ISO
+ * timestamp and its age are the title. A line with no time is a dash that
+ * says so.
+ */
+export function ProgressTime({ at, prev, now }: { at: string | null; prev: string | null; now: number }) {
+  const t = ms(at)
+  if (t === null || at === null) {
+    return <span className="sb-note" title="The run recorded no time for this change.">—</span>
+  }
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const today = new Date(now)
+  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate()
+  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const text = sameDay ? clock : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`
+  const before = ms(prev)
+  const gap = before === null ? null : spanText(t - before)
+  const title = `${d.toISOString()} (${timeAgo(at, now)})${gap === null ? '' : ` · ${gap} after the line above`}`
+  return (
+    <time className="sb-note rn-htime" dateTime={at} title={title}>
+      {text}{gap === null ? null : <> <span className="rn-hgap">+{gap}</span></>}
+    </time>
+  )
+}
+
+/** The time of the nearest entry before `i` that carries one: what `+Δ` is counted from. */
+export function previousAt(entries: readonly ProgressEntry[], i: number): string | null {
+  for (let j = i - 1; j >= 0; j--) {
+    const at = entries[j]!.at
+    if (ms(at) !== null) return at
+  }
+  return null
+}
+
 /** One step change in Progress: its mark, what changed and when. */
-export function StepProgress({ e, now }: { e: Extract<ProgressEntry, { kind: 'step' }>; now: number }) {
+export function StepProgress({ e, prev, now }: { e: Extract<ProgressEntry, { kind: 'step' }>; prev: string | null; now: number }) {
   return (
     <li className="rn-hstep">
       <StateMark state={e.state} bare />
       <span><span className="mono">{e.label}</span> {e.word} · step</span>
-      <span className="sb-note" title={e.at}>{timeAgo(e.at, now)}</span>
+      <ProgressTime at={e.at} prev={prev} now={now} />
     </li>
   )
 }

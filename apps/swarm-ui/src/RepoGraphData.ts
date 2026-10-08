@@ -345,6 +345,62 @@ export interface Placed {
   r: number
 }
 
+/** A node's label to place: where its node is, its words, and how connected it is. */
+export interface LabelSpot {
+  id: string
+  x: number
+  y: number
+  r: number
+  text: string
+  /** Its degree: the busier node keeps the default place. */
+  weight: number
+}
+
+/** Where a label went: below its node (the default), above it, or hidden until hover. */
+export interface LabelPlace {
+  side: 'below' | 'above' | 'hidden'
+  /** The text's baseline. */
+  y: number
+}
+
+/** A label's box, in the canvas's units: the 12px micro type at its average glyph width. */
+const LABEL_CHAR_W = 6.2
+const LABEL_ASCENT = 11
+const LABEL_DESCENT = 3
+
+/**
+ * THE LABEL COLLISION PASS (QA G4-11). At 1440 the package labels of a tight
+ * cluster (`apps/agent-worker (2)`, `apps/quota-broker (1)`) printed over
+ * each other. Labels are placed busiest first, each below its node; one whose
+ * box would cross a placed box goes above its node instead, and one that
+ * fits in neither place is hidden until its node is hovered, focused or
+ * picked -- the node itself and its accessible name are always drawn.
+ */
+export function placeLabels(spots: readonly LabelSpot[]): Map<string, LabelPlace> {
+  const order = [...spots].sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id))
+  const boxes: { x0: number; x1: number; y0: number; y1: number }[] = []
+  const out = new Map<string, LabelPlace>()
+  for (const s of order) {
+    const half = (s.text.length * LABEL_CHAR_W) / 2
+    const below = s.y + s.r + 13
+    const above = s.y - s.r - 5
+    const boxAt = (y: number) => ({ x0: s.x - half, x1: s.x + half, y0: y - LABEL_ASCENT, y1: y + LABEL_DESCENT })
+    const free = (b: { x0: number; x1: number; y0: number; y1: number }) =>
+      boxes.every((o) => b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0)
+    let placed: LabelPlace = { side: 'hidden', y: below }
+    for (const [side, y] of [['below', below], ['above', above]] as const) {
+      const b = boxAt(y)
+      if (free(b)) {
+        boxes.push(b)
+        placed = { side, y }
+        break
+      }
+    }
+    out.set(s.id, placed)
+  }
+  return out
+}
+
 export interface Layout {
   pos: Map<string, Placed>
   /** One soft rectangle per cluster with more than one node. */

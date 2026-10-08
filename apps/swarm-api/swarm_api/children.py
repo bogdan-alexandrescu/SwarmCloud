@@ -55,6 +55,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from . import gitidentity
 from .auth import bearer_tokens
 from .childkey import (
     CHILD_KEYS,
@@ -609,6 +610,12 @@ class ChildService:
             tenant=tenant,
             ctx=None,
             submitted_by=parent.submitted_by,
+            # The person the parent's commits name, so a child's commits do
+            # too (P37); its bare submitter, or the bot, when it records none.
+            git_identity=(
+                gitidentity.from_task(parent.metadata, parent.submitted_by)
+                or dict(gitidentity.BOT_IDENTITY)
+            ),
             now=self._now(),
             dispatch=resolve_dispatch_options(
                 strategy=create.strategy,
@@ -627,6 +634,13 @@ class ChildService:
             timeout_seconds=min(task.timeout_seconds, parent.timeout_seconds),
             parent_task_id=parent.id,
             parent_attempt_id=body.attempt_id,
+            # The parent's GitHub credential and access mode (#780 OB7): the
+            # same submitter on the same repository, resolved and signed when
+            # the parent was submitted. Inherited, never widened: a child of a
+            # read grant cannot push, and the worker re-reads the grant itself
+            # before cloning (OB5).
+            forge_credential=parent.forge_credential,
+            forge_access=parent.forge_access,
         )
         task.metadata[CHILD_REQUEST_ID_METADATA_KEY] = body.request_id
         # Signed over the task as it will be stored, parent fields included

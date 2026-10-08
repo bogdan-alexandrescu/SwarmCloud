@@ -79,7 +79,10 @@ export function NotFound({ path, go }: { path: string; go: (to: string) => void 
   }
   return (
     <div className="nf-page">
-      <EmptyState kind="partial" heading={`No page at ${path}`}>
+      {/* THE NOTICE IS THE PAGE'S HEADING (QA G1-11): the 404 had no `<h1>`
+          at all, so a screen reader's heading list and the tab's title both
+          fell back to the page it is not. */}
+      <EmptyState kind="partial" heading={`No page at ${path}`} page>
         This console has no page at that address, so nothing here is a reading of the platform. The nearest page that
         exists is{' '}
         <a className="mono" href={near} onClick={follow(near)}>

@@ -12,8 +12,9 @@
 #
 #     api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly([...])
 #
-# (terraform/bootstrap/deployer_conditions.tf), whose list is the fifteen
-# project roles terraform/infra grants. Nothing in the pipeline ever asks for a
+# (terraform/bootstrap/deployer_conditions.tf), whose lists together are the
+# fifteen project roles terraform/infra grants -- one conditioned binding per
+# chunk of at most 10 roles since #275, because hasOnly() refuses a longer list. Nothing in the pipeline ever asks for a
 # role off that list, so nothing has shown the refusal side works. This script
 # asks for one: `gcloud projects add-iam-policy-binding` of PROBE_ROLE to the
 # deployer itself.
@@ -34,9 +35,10 @@
 # THE VERDICT, per subcommand:
 #
 #   preflight  READ-ONLY. Refuses to go on unless the verdict can only be the
-#              condition's: the conditioned projectIamAdmin binding is live and
-#              the unconditioned one is gone, the condition does not list
-#              PROBE_ROLE, the deployer holds no PROBE_ROLE binding already (so
+#              condition's: the conditioned projectIamAdmin bindings (one per
+#              <=10-role chunk since #275) are live and the unconditioned one
+#              is gone, every one's condition is the modifiedGrantsByRole
+#              hasOnly() test and none lists PROBE_ROLE, the deployer holds no PROBE_ROLE binding already (so
 #              the revert can never remove one this run did not make), and no
 #              OTHER role the deployer holds carries
 #              resourcemanager.projects.setIamPolicy (a custom role it cannot
@@ -224,7 +226,7 @@ classify() {
 # ---------------------------------------------------------------------------
 cmd_preflight() {
   require_cmd gcloud jq
-  local member policy wide scoped expr title existing roles_file role describe carries n_roles=0 n_unread=0
+  local member policy wide scoped title existing roles_file role describe carries n_roles=0 n_unread=0
   member="$(deployer_member)"
   workdir
   policy="${WORK}/policy.json"
@@ -244,30 +246,55 @@ cmd_preflight() {
     annotate error "probe not run" "the deployer still holds ${SCOPED_ROLE} unconditioned"
     die "the deployer still holds ${SCOPED_ROLE} with NO condition: PR #73's targeted bootstrap apply (step 3 of #80) has not landed, or has been reverted. The condition is not in force, so there is nothing to probe. Nothing was attempted."
   fi
-  if [[ "${scoped}" != "1" ]]; then
-    annotate error "probe not run" "expected one conditioned ${SCOPED_ROLE} binding, found ${scoped}"
-    die "expected exactly one conditioned ${SCOPED_ROLE} binding on the deployer and found ${scoped}. Nothing was attempted."
+  if [[ "${scoped}" == "0" ]]; then
+    annotate error "probe not run" "found no conditioned ${SCOPED_ROLE} binding"
+    die "found no conditioned ${SCOPED_ROLE} binding on the deployer, so there is no condition to probe. Nothing was attempted."
   fi
-  expr="$(jq -r --arg m "${member}" --arg r "${SCOPED_ROLE}" \
-    '.bindings[] | select(.role == $r and .condition != null and any((.members // [])[]; . == $m)) | .condition.expression' \
-    "${policy}")"
-  title="$(jq -r --arg m "${member}" --arg r "${SCOPED_ROLE}" \
-    '.bindings[] | select(.role == $r and .condition != null and any((.members // [])[]; . == $m)) | .condition.title // ""' \
-    "${policy}")"
-  case "${expr}" in
-    *'iam.googleapis.com/modifiedGrantsByRole'*hasOnly*) ;;
-    *)
-      annotate error "probe not run" "the live condition is not the modifiedGrantsByRole one"
-      die "the conditioned ${SCOPED_ROLE} binding (title \"${title}\") does not test modifiedGrantsByRole with hasOnly, so it is not the condition #68 asks about. Nothing was attempted."
-      ;;
-  esac
-  case "${expr}" in
-    *"\"${PROBE_ROLE}\""*)
-      annotate error "probe not run" "the live condition lists ${PROBE_ROLE}"
-      die "the live condition lists ${PROBE_ROLE}, so a grant of it would be admitted by design and prove nothing. Nothing was attempted."
-      ;;
-  esac
-  ok "the deployer's ${SCOPED_ROLE} is conditioned (\"${title}\"), with no unconditioned twin, and the condition does not list ${PROBE_ROLE}"
+
+  #    Since #275 that grant is one conditioned binding per chunk of at most 10
+  #    roles (hasOnly() refuses a longer list; deployer_conditions.tf), so there
+  #    are as many bindings as chunks -- two for fifteen roles. A grant is
+  #    admitted if ANY binding's condition admits it, so EVERY one must be the
+  #    bare modifiedGrantsByRole hasOnly() test (the whole expression: one
+  #    `|| true` appended to a chunk would admit everything) and none may list
+  #    PROBE_ROLE. The list is parsed, not grepped, so either quote style counts.
+  local chunks_file chunk_verdict n_chunks=0
+  chunks_file="${WORK}/scoped-conditions.txt"
+  # shellcheck disable=SC2016  # $m, $r, $p and $e are jq variables, not shell ones.
+  local chunk_program='
+    .bindings[]
+    | select(.role == $r and .condition != null and any((.members // [])[]; . == $m))
+    | (.condition.expression // "") as $e
+    | (($e | capture("^\\s*api\\.getAttribute\\([\"\u0027]iam\\.googleapis\\.com/modifiedGrantsByRole[\"\u0027],\\s*\\[\\]\\)\\.hasOnly\\(\\[(?<list>[^\\]]*)\\]\\)\\s*$")) // null) as $c
+    | (if $c == null then "not-hasonly"
+       elif any(($c.list | split(","))[];
+                (gsub("^\\s+|\\s+$"; "") | gsub("^[\"\u0027]|[\"\u0027]$"; "")) == $p)
+       then "lists-probe"
+       else "ok" end)
+      + "\t" + ((.condition.title // "") | gsub("[\\t\\n]"; " "))'
+  jq -r --arg m "${member}" --arg r "${SCOPED_ROLE}" --arg p "${PROBE_ROLE}" "${chunk_program}" \
+    "${policy}" >"${chunks_file}"
+  while IFS="$(printf '\t')" read -r chunk_verdict title; do
+    n_chunks=$((n_chunks + 1))
+    case "${chunk_verdict}" in
+      ok) ;;
+      lists-probe)
+        annotate error "probe not run" "the live condition \"${title}\" lists ${PROBE_ROLE}"
+        die "the conditioned ${SCOPED_ROLE} binding \"${title}\" lists ${PROBE_ROLE}, so a grant of it would be admitted by design and prove nothing. Nothing was attempted."
+        ;;
+      *)
+        annotate error "probe not run" "the live condition \"${title}\" is not the modifiedGrantsByRole one"
+        die "the conditioned ${SCOPED_ROLE} binding (title \"${title}\") is not exactly api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...]), so it is not the condition #68 asks about. Nothing was attempted."
+        ;;
+    esac
+  done <"${chunks_file}"
+  # Every binding counted must have been read and judged; an empty or short
+  # read is never "all of them passed".
+  if [[ "${n_chunks}" != "${scoped}" ]]; then
+    annotate error "probe not run" "checked ${n_chunks} of ${scoped} conditioned ${SCOPED_ROLE} bindings"
+    die "counted ${scoped} conditioned ${SCOPED_ROLE} binding(s) on the deployer but checked ${n_chunks}. Nothing was attempted."
+  fi
+  ok "the deployer's ${SCOPED_ROLE} is conditioned in ${scoped} binding(s), with no unconditioned twin; each is a modifiedGrantsByRole hasOnly() list, and none lists ${PROBE_ROLE}"
 
   # 2. The revert removes PROBE_ROLE from the deployer. It must never remove a
   #    binding this run did not make, so none may exist before it.
@@ -347,10 +374,10 @@ cmd_preflight() {
   set_output unread "${n_unread}"
   set_output ready true
   if [[ "${n_unread}" -eq 0 ]]; then
-    step_summary "* preflight: the condition is live and alone, ${PROBE_ROLE} is not on the deployer, and none of its ${n_roles} other roles carries \`${SET_PERMISSION}\`."
+    step_summary "* preflight: the conditions are live and alone, ${PROBE_ROLE} is not on the deployer, and none of its ${n_roles} other roles carries \`${SET_PERMISSION}\`."
   else
     annotate warning "custom roles unread" "${n_unread} custom role(s) on the deployer could not be read; a refusal is still proof, a grant's cause would be uncertain"
-    step_summary "* preflight: the condition is live and alone and ${PROBE_ROLE} is not on the deployer. $((n_roles - n_unread)) of ${n_roles} other roles were read and none carries \`${SET_PERMISSION}\`; **${n_unread} custom role(s) could not be read**, so a grant, if one happened, might be through one of them."
+    step_summary "* preflight: the conditions are live and alone and ${PROBE_ROLE} is not on the deployer. $((n_roles - n_unread)) of ${n_roles} other roles were read and none carries \`${SET_PERMISSION}\`; **${n_unread} custom role(s) could not be read**, so a grant, if one happened, might be through one of them."
   fi
 }
 

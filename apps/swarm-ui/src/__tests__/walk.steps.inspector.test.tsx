@@ -165,7 +165,11 @@ describe('item 1: the Steps table with the step card open', () => {
     const container = besideCard(split)
     const { width } = fixedColumns(t, container, WIDE)
     expect(container, 'the card left the table its minimum width, so this case asks nothing').toBeLessThan(width)
-    expect(painted(wrap, ['overflow-x', 'overflow'], WIDE), 'the table is wider than its column and does not scroll').toBe('auto')
+    // BELOW ITS MINIMUM THE ROWS STACK (D12) rather than scroll: the wrapper
+    // clips (QA G3-12, so the head can stick at full width), and the box's
+    // container query draws the table as stacked rows in this column.
+    expect(painted(wrap, ['overflow-x', 'overflow'], WIDE)).toBe('clip')
+    expect(painted(t, 'display', { ...WIDE, container }), 'the table is wider than its column and neither scrolls nor stacks').toBe('block')
     expect(painted(split.querySelector(':scope > .wf-split-main')!, 'min-width', WIDE)).toBe('0')
   })
 

@@ -154,9 +154,23 @@ pool_limits = {
     browser     = 20
   }
 
+  # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
+  # (claude-code moves to GKE Autopilot). At 40 the backend pool would bind
+  # before claude-code's own ceiling (runner:claude-code 80), shared with
+  # browser at 2 units a task, and halve claude-code's concurrency on the
+  # move. 100 is claude-code's 80 plus browser headroom. It fits the quota:
+  # us-central1 regional CPUS read 2,990 of 3,000 free on 2026-10-07, and
+  # 100 x 4 vCPU = 400.
+  #
+  # NO COMPUTE CLASS MAY PIN T2D. T2D_CPUS quota in us-central1 is 128 vCPUs,
+  # 32 standard pods; the pods carry no nodeSelector, so Autopilot's default
+  # class picks from every family, and a T2D pin (or a ComputeClass listing
+  # T2D alone) would cap this pool at 32 whatever it says here -- and every
+  # probe pinned to one family hit "never scheduled" or "GCE out of
+  # resources" (request 53, "What the probe saw go wrong").
   backends = {
     CLOUD_RUN_JOB = 100
-    GKE_AUTOPILOT = 40
+    GKE_AUTOPILOT = 100
   }
 
   providers = {
@@ -170,7 +184,7 @@ pool_limits = {
     # anthropic was 100 until smoke declared it for release acceptance
     # (#628): 100 is below the new floor and the plan would refuse it. The
     # floor is what forces 120, not a measurement; smoke's own pool is
-    # min(max_active, capacity_units) = 8, so acceptance can add at most 8.
+    # min(max_active, capacity_units) = 20, so acceptance can add at most 20.
     anthropic = 120
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
@@ -248,8 +262,12 @@ tenants = {
     directory_group = true
     display_name    = "Engineering"
     providers       = ["anthropic", "openai"]
-    max_active      = 40
-    capacity_units  = 40
+    # Live values, set via the admin API on 2026-10-07 (owner): max_active was
+    # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
+    # the tenant document once and ignores later changes, so these record the
+    # live state rather than enforce it.
+    max_active     = 45
+    capacity_units = 45
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared
@@ -299,10 +317,19 @@ tenants = {
     directory_group = true
     display_name    = "Smoke tests"
     providers       = ["anthropic"]
-    # Live values since the 2026-10-02 doubling. The tenant pool is
-    # min(max_active, capacity_units), so smoke's ceiling is 8, not 20.
+    # The live values, set by the owner through the admin API on 2026-10-07
+    # (~23:4xZ): smoke's ceiling is 20. It was 8 -- capacity_units 8 held the
+    # pool, min(max_active, capacity_units), below max_active 20 -- and a
+    # console raise to 20 left it there until the tenant ceiling route began
+    # setting both fields (the ceiling is one number, owner decision same day).
+    #
+    # These RECORD the live state; they do not enforce it. Terraform creates a
+    # tenant document once and ignores later changes to it
+    # (terraform/modules/firestore/bootstrap.tf, `ignore_changes = [fields]`),
+    # so an apply neither sets 20 nor reverts it. What they decide is the
+    # ceiling a rebuilt environment is born with.
     max_active     = 20
-    capacity_units = 8
+    capacity_units = 20
   }
 
   # The in-VPC verification job's own tenant.
@@ -436,6 +463,25 @@ alert_emails  = []
 enable_frontend   = true
 frontend_hostname = "swarm.saga.xyz"
 
+# --- the SwarmCloud GitHub App (#780, docs/runbooks/github-app.md) -----------
+# enable_github_app declares the App's two empty secret slots, which swarm-api
+# alone reads (github_app.tf). The three settings below are the App's PUBLIC
+# ones, copied from its settings page after the owner registers it (runbook
+# step 3): registered 2026-10-07 on bogdan-alexandrescu as "SwarmCloud Saga"
+# ("SwarmCloud" is reserved for the @swarmcloud account), installable on any
+# account. The client SECRET and the private key are
+# never written here -- the repository is public -- they go to Secret Manager
+# by `scripts/create-secrets.sh --github-app <slot> --stdin` (runbook step 4).
+enable_github_app    = true
+github_app_id        = "5229127"
+github_app_client_id = "Iv23lipzgYrbQvuJdmZg"
+github_app_slug      = "swarmcloud-saga"
+
+# The 15-minute user-token refresh sweep, swarm-forge-refresh. ON since
+# 2026-10-07: swarm-api serves POST /v1/admin/forge/refresh from OB3's release
+# (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
+enable_forge_refresh = true
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
@@ -496,6 +542,10 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # reversed that the same day for exactly that reach -- it is on
 # admin_pool_users below instead. Do not put it back.
 admin_users = ["bogdan@saga.xyz"]
+
+# The protected owner (docs/workspaces.md §6.5, owner 2026-10-08): no other
+# admin can remove this person's admin rights.
+platform_owner = "bogdan@saga.xyz"
 
 # The verification gate's ONE admin route, by owner decision on 2026-09-24.
 #

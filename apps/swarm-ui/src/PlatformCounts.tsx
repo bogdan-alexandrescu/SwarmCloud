@@ -1,7 +1,8 @@
 import { useContext, useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
-import { HelpCard } from './HelpCard'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
 import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
@@ -27,9 +28,9 @@ import { Button } from './components'
  * run returns is at #help/platform-counts.
  *
  * AND IT IS ON THE CONTROL IT PRICES (AH-25, #138). The cost once sat in a
- * toolbar row a row away from the press it priced. The head is `.head > h1`,
- * the shape `PageHead` draws, with the button beside the title (#503); the
- * line under it reads like every Screen route's: what was read, how long ago.
+ * toolbar row a row away from the press it priced. The head is `PageHead`'s
+ * one shape, title left and actions right (#138, owner ruling 2026-10-07):
+ * what the last count found and how old it is, then the run, on the right.
  *
  * SCOPE IS NOT DECORATION. `tasks_by_state` is the caller's own tenant;
  * `platform_tasks_by_state` is everyone. They are separate cards with the
@@ -118,8 +119,7 @@ export function PlatformCountsScreen() {
   const queries =
     admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
 
-  // WHAT WAS READ, AND HOW LONG AGO -- the first half of the head line, as on
-  // every Screen route. A run that came back with no counts is a failed query
+  // WHAT WAS READ, AND HOW LONG AGO -- in the head's actions, before the run. A run that came back with no counts is a failed query
   // (the panel below says so), so it reads as a failed run here too, and
   // neither kind of failure is counted as a run.
   const failed = run !== null && (run.status === 'error' || run.status === 'empty')
@@ -136,36 +136,27 @@ export function PlatformCountsScreen() {
 
   return (
     <>
-      {/* THE RUN IS A BUTTON BESIDE THE TITLE (#503, admin-help.html frames
-          4-5). It was a `.sub button` inside the provenance sentence, which
-          the shell draws as an underlined text control: the one billed action
-          on the page read as a link in prose. So the head is drawn here --
-          `.head > h1`, the shape `PageHead` draws, with the button in it --
-          and the line under it is what was read and how long ago, as on every
-          Screen route (AH-25).
+      {/* ONE HEAD SHAPE ACROSS ADMIN (AH-25, #138, owner ruling 2026-10-07).
+          This page drew a second one: the run beside the title, and what
+          was read on a line under it. The head is title left, actions right
+          now, as on every Screen route: what the last count found and how
+          old it is, then the run, both on the right. This page reads on a
+          button rather than on a cadence, so the run is its read control.
 
           THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
           24 reads` is one control whose name says what pressing it spends,
           so the price cannot wrap away from the press or be read as a fact
           about the last run. While a run is in flight the button says so
-          instead; the cost of that press is already being paid.
-
-          THE HEAD IS `PageHead` (#503, Q2): the title, the Admin section's
-          `?` by it, the run beside them, and what was read right-aligned on
-          the same row -- not a stacked `.sub` line under the title. */}
-      <PageHead
-        title="Platform counts"
-        action={
-          // The canonical button (components.html A): primary before the
-          // first run, plain for a re-run, busy while counting.
-          <Button className="counts-run" kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
-            {run === null ? 'Run the count' : 'Run it again'}
-            {' · '}
-            <span className="counts-cost">{queries} reads</span>
-          </Button>
-        }
-      >
-        {provenance}
+          instead; the cost of that press is already being paid. */}
+      <PageHead title="Platform counts">
+        <span className="counts-prov">{provenance}</span>
+        {/* The canonical button (components.html A): primary before the
+            first run, plain for a re-run, busy while counting. */}
+        <Button className="counts-run" kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
+          {run === null ? 'Run the count' : 'Run it again'}
+          {' · '}
+          <span className="counts-cost">{queries} reads</span>
+        </Button>
       </PageHead>
 
       {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
@@ -209,9 +200,14 @@ export function PlatformCountsScreen() {
           )}
         </div>
       )}
+      {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
+          and why a state with no row is not a zero. */}
+      <HelpLinks topics={COUNTS_TOPICS} />
     </>
   )
 }
+
+const COUNTS_TOPICS: readonly TopicId[] = ['platform-counts', 'absent-vs-zero']
 
 /**
  * How many `count()` queries one run costs, for one scope.

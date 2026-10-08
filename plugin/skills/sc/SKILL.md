@@ -1,6 +1,6 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 10); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
 argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run>]"
 arguments:
   - verb
@@ -56,7 +56,7 @@ one action — never a second one the developer did not ask for:
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
 | `workflows` | lists your tenant's workflows still running in SwarmCloud | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
-| `attach --all` | live rows for every running workflow of your tenant (at most 10) | no |
+| `attach --all` | live rows for every running workflow of your tenant (at most 10), and one per running single task of yours (at most 10) | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
 | `runs` | lists your tenant's issue runs | no |
@@ -112,7 +112,10 @@ works outside a checkout); in a checkout `uv run sc workflows` prints the
 same list. Report each workflow's id, label, state, its current steps with
 their states, its age and its console link, and each current step's console
 link (a parked or queued one too), all as served — never build a link.
-`complete: false` means the list stopped paging: say so. None running is an
+`complete: false` means the list stopped paging: say so. Its `single_tasks`
+are YOUR running tasks in no workflow (sent with `swarm_dispatch`): report
+each one's id, label, state, age and console link the same way, and
+`single_tasks_error` verbatim when they could not be read. None running is an
 answer, not an error. Never poll; offer `/sc attach --all` when any run.
 
 ### `attach --all`
@@ -129,14 +132,24 @@ console link as served, from the moment the row starts, whatever the step's
 state. More than 10 come back in `not_followed`, each with the `/sc attach
 <wf_id>` that follows it, and are not launched — every row is an agent of its
 own in this session, and past 10 workflows /workflows is no longer readable.
-`count: 0` is an answer: nothing is running. Report each run's `state`
+SINGLE TASKS (#830): your running tasks in no workflow get ONE more entry in
+`launches`, whose args are `{attach_tasks: [...]}` — launch it like the
+others; it starts one `[SwarmCloud]` row per task, titled from the task's
+label, each following its task until it finishes (at most 10; the rest come
+back in `not_followed`). `single_tasks` says how many there were;
+`single_tasks_error` means they could not be read — say so verbatim.
+`count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
 (`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
 If `swarm_workflow_launch` answers an error, run the `/sc:swarmcloud`
 workflow by name with args `{attach: "all"}`: it lists the running workflows
 and returns `attach_calls`, the exact `{attach: "<wf_id>", title}` args of
-each — run `/sc:swarmcloud` once per entry with those args. This is what the
-plugin's SessionStart hook asks a new session to run first when workflows are
-running; it submits nothing either way.
+each — run `/sc:swarmcloud` once per entry with those args — and `task_call`,
+the `{attach_tasks: [...]}` args for your running single tasks (null when none
+run): run `/sc:swarmcloud` once more with it. This is what the
+plugin's SessionStart hook asks a new session to run first when workflows or
+single tasks of yours are running. No hook fires on `/reload-plugins`, so
+after a reload — or whenever a task started outside this session — run it
+by hand; it submits nothing either way.
 
 ### `run <spec path|JSON>`
 

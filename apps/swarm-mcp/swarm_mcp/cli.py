@@ -38,11 +38,13 @@ from .client import (
     TERMINAL,
     SwarmClient,
     SwarmError,
+    chosen_tenant,
     outputs_of,
     project_id,
     region,
     service_name,
     task_id_of,
+    tenant_listing,
 )
 from .follow import (
     DEFAULT_LOG_BUDGET,
@@ -1057,6 +1059,45 @@ def cmd_workflow(client: SwarmClient, args) -> int:
     return EXIT_OK
 
 
+def cmd_merge(client: SwarmClient, args) -> int:
+    """Merge a pull request no workflow opened, at the head sha named (#352).
+
+    `swarm merge 41 --sha <head>`, or `owner/repo#41`, or the pull request's
+    URL. A workflow of the one `merge` step: swarm-api checks the pull request
+    is in the tenant's registered repository, open, not a fork, and at that
+    head now, and the step merges only once every required check is green
+    there. `--sha` is required because it is the caller's statement of WHICH
+    head they mean -- a sha read here would merge whatever was pushed last.
+    """
+    named, number = workflows.parse_pull_request(args.pull_request)
+    repo = getattr(args, "repo", None) or None
+    if named and repo and repo.rstrip("/").removesuffix(".git").lower() != named.lower():
+        raise SwarmError(
+            f"{args.pull_request} is in {named} and --repo names {repo}: two repositories. "
+            "Name one. Nothing was sent"
+        )
+    # $SWARM_REPO only when nothing named one, so it never contradicts a URL.
+    envelope = workflows.submit_merge_pr(
+        client, number=number, head_sha=args.sha,
+        repository_url=named or repo or os.environ.get("SWARM_REPO") or None,
+        title=workflows.check_title(getattr(args, "title", None), where="--title"),
+    )
+    workflow = envelope["workflow"]
+    workflow_id = workflow.get("workflow_id")
+    if not workflow_id:
+        raise SwarmError(f"the API accepted the merge but named no id: {sorted(workflow)}")
+    if args.json:
+        print(json.dumps(envelope, indent=2))
+        return EXIT_OK
+    print(workflow_id)
+    task_ids = [step.get("task_id") for step in workflow.get("steps") or [] if step.get("task_id")]
+    for step in workflow.get("steps") or []:
+        print(f"  {step.get('step_id')}  {step.get('task_id') or '—'}")
+    if task_ids:
+        print(f"  follow: {follow_command(task_ids)}")
+    return EXIT_OK
+
+
 def cmd_workflow_status(client: SwarmClient, args) -> int:
     """Per-step state, and the DERIVED workflow state -- never the stored one.
 
@@ -1316,6 +1357,39 @@ def cmd_profiles(_client, args) -> int:
     return EXIT_OK
 
 
+def cmd_tenants(client: SwarmClient, args) -> int:
+    """The tenants you may act as, from `GET /v1/tenants/mine`, current marked.
+
+    `*` marks the tenant this invocation acts as, as `GET /v1/tenants/me`
+    reports it with the same `--tenant`/`SWARM_TENANT` every other command
+    sends -- so it is the API's answer, not a guess. A tenant you are not a
+    member of is the API's 403, printed as it came (`main`), never decided
+    here: the header selects among your verified memberships; it grants none.
+    """
+    listing = tenant_listing(client)
+    if args.json:
+        print(json.dumps(listing, indent=2))
+        return EXIT_OK
+    entries = listing["tenants"]
+    if not entries:
+        # A personal tenant is not a membership, so there is nothing to choose.
+        print(
+            f"tenant  {listing['current'] or '(not reported)'} -- personal: you are in "
+            "no registered tenant group, so there is no other tenant to choose"
+        )
+        return EXIT_OK
+    width = max(len(str(e["tenant_id"])) for e in entries)
+    for entry in entries:
+        mark = "*" if entry["current"] else " "
+        note = ""
+        if entry["current"]:
+            note = "  (chosen)" if listing["chosen"] else "  (default: first matching group)"
+        print(f"{mark} {str(entry['tenant_id']):<{width}}  {entry['display_name']}{note}")
+    print()
+    print(f"act as another with `{terminal_command('swarm --tenant <id> ...')}` or SWARM_TENANT=<id>")
+    return EXIT_OK
+
+
 def _doctor_deployment(args) -> Any:
     """Which deployment doctor is about, printed first: it decides the tier.
 
@@ -1499,7 +1573,10 @@ def cmd_doctor(_client, args) -> int:
     # is still worth printing when the API is down, and is exactly what someone
     # needs in order to say WHY it is down.
     try:
-        with SwarmClient(context=getattr(args, "context", None)) as client:
+        with SwarmClient(
+            context=getattr(args, "context", None),
+            tenant=chosen_tenant(getattr(args, "tenant", None)),
+        ) as client:
             endpoint = client.base_url
             me = client.request("GET", "/v1/tenants/me")
     except SwarmError as exc:
@@ -1670,6 +1747,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"which configured deployment to use (`{help_command('sc context list')}`); "
         "default: SWARM_URL, SWARM_CONTEXT, the plugin's, or the current context",
     )
+    parser.add_argument(
+        "--tenant",
+        default=None,
+        help=f"act as this one of your tenants (`{help_command('swarm tenants')}` lists them); sent as "
+        "X-Swarm-Tenant and refused by the API unless you are a member. "
+        "Default: SWARM_TENANT, else the API's first matching tenant",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("dispatch", help="submit one task")
@@ -1819,6 +1903,28 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_workflow)
 
+    mg = sub.add_parser(
+        "merge",
+        help="merge a pull request no workflow opened, at the head sha you name",
+        description=(
+            "Submit a workflow of one merge step for an existing pull request. The API "
+            "takes the repository from your tenant's registered ones (the one named, or "
+            "your only one), refuses a pull request that is closed, merged, from a fork, "
+            "or whose head is not --sha now, and the step merges only once every "
+            "required check is green at that head."
+        ),
+    )
+    mg.add_argument("pull_request", help="41, owner/repo#41, or the pull request's URL")
+    mg.add_argument("--sha", required=True,
+                    help="the full head sha you mean to merge (40 lowercase hex characters)")
+    mg.add_argument("--repo", default=None,
+                    help="a registered repository's URL, when the pull request names none "
+                    "and your tenant registered several (default: $SWARM_REPO, else the "
+                    "tenant's only registered repository)")
+    mg.add_argument("--title", default=None, help="the workflow's short name")
+    mg.add_argument("--json", action="store_true")
+    mg.set_defaults(func=cmd_merge)
+
     ws = sub.add_parser(
         "workflow-status", help="per-step state, and the DERIVED workflow state"
     )
@@ -1855,6 +1961,10 @@ def build_parser() -> argparse.ArgumentParser:
     prof.add_argument("--json", action="store_true")
     prof.set_defaults(func=cmd_profiles, no_client=True)
 
+    ten = sub.add_parser("tenants", help="the tenants you may act as, the current one marked")
+    ten.add_argument("--json", action="store_true")
+    ten.set_defaults(func=cmd_tenants)
+
     doc = sub.add_parser("doctor", help="which auth tier this machine is on, and what it reaches")
     doc.set_defaults(func=cmd_doctor, no_client=True)
 
@@ -1880,7 +1990,7 @@ def main(argv: list[str] | None = None) -> int:
         # running when they are needed.
         if getattr(args, "no_client", False):
             return args.func(None, args)
-        with SwarmClient(context=args.context) as client:
+        with SwarmClient(context=args.context, tenant=chosen_tenant(args.tenant)) as client:
             return args.func(client, args)
     except SwarmError as exc:
         print(f"swarm: {exc}", file=sys.stderr)

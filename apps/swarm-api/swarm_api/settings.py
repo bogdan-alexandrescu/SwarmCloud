@@ -172,6 +172,17 @@ class ApiSettings:
     #: started from. Delete it in the same change that grants swarm-api a
     #: Workspace Group Reader role.
     admin_users: tuple[str, ...] = ()
+    #: The platform owner (docs/workspaces.md §6.5), one email. Always an
+    #: admin, from configuration, so the owner keeps admin if every
+    #: `admin_roles/` document is lost, and no admin can make themselves the
+    #: owner through the UI. Seeded as the one `role: owner` document, which
+    #: nobody else may change. Empty means no owner: admins still work, and
+    #: nothing is protected from demotion but the last admin.
+    #:
+    #: ADMIN_USERS above is migrated ONCE into `admin_roles/` documents
+    #: (`swarm_api.admins`) and keeps granting admin as the fallback until the
+    #: operator trims it to this one address.
+    platform_owner: str = ""
     #: A NARROWER capability than admin, by email: these callers may call the
     #: admin routes in `auth.POOL_ADMIN_ROUTES` -- today only
     #: `PUT /v1/admin/limits/runner/{runner_profile}` -- and no other.
@@ -411,6 +422,17 @@ class ApiSettings:
     #: reconciler left executions running 7-13 h after a cancel; off in this
     #: dataclass's own default so a test or a local run never reaches Google.
     execution_cancel_enabled: bool = False
+
+    # --- refusing a person's task on an ungranted repository (#780 D4) -----
+    #: Whether a PERSON's task on a GitHub repository they hold no grant for is
+    #: refused (403 REPOSITORY_NOT_GRANTED). OFF by default (owner decision
+    #: 2026-10-08): the check shipped (#845) before anyone could connect GitHub
+    #: and choose repositories, so it refused every person's task. While off, a
+    #: person with no grant runs with the tenant token, `git`, with write, as
+    #: before #780; a person WITH a grant still runs with their own slot. It is
+    #: switched on in the migration step (OB10), after the owner's connection
+    #: test (REPOSITORY_GRANTS_ENFORCED=true).
+    repository_grants_enforced: bool = False
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
     #: service, holds the stop permissions. Empty means a cancel is left to the
@@ -443,8 +465,23 @@ class ApiSettings:
         secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")
         allowed_users = _csv("ALLOWED_USERS")
         rollup_sweeper_users = _csv("ROLLUP_SWEEPER_USERS")
+        platform_owner = os.environ.get("PLATFORM_OWNER", "").strip().lower()
+        if platform_owner and (
+            "@" not in platform_owner
+            or "," in platform_owner
+            or platform_owner.endswith("gserviceaccount.com")
+        ):
+            # One person's address. A list would make "the owner" ambiguous,
+            # and a service account cannot sign in to the console to use it.
+            raise ValueError("PLATFORM_OWNER must be one person's email address")
+        if platform_owner and platform_owner in {u.lower() for u in admin_pool_users}:
+            raise ValueError(
+                "PLATFORM_OWNER and ADMIN_POOL_USERS both name the same address; "
+                "a pool admin is a narrower role than the owner, not a second one"
+            )
         sweepers = {u.lower() for u in rollup_sweeper_users}
         for name, values in (
+            ("PLATFORM_OWNER", (platform_owner,) if platform_owner else ()),
             ("ADMIN_USERS", admin_users),
             ("ADMIN_POOL_USERS", admin_pool_users),
             ("ALLOWED_USERS", allowed_users),
@@ -461,6 +498,7 @@ class ApiSettings:
                 core.project_id,
                 admin_lists={
                     "ADMIN_USERS": admin_users,
+                    "PLATFORM_OWNER": (platform_owner,) if platform_owner else (),
                     "ADMIN_POOL_USERS": admin_pool_users,
                     "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
                     "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
@@ -474,6 +512,7 @@ class ApiSettings:
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
+            platform_owner=platform_owner,
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,
             allowed_users=allowed_users,
@@ -482,6 +521,7 @@ class ApiSettings:
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
+            repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),

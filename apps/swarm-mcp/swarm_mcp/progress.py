@@ -755,6 +755,16 @@ def watch(
     abandoned: dict[str, str] = {}
     for task_id in task_ids:
         task = latest.get(task_id) or {}
+        if task_id in wrong_step and wrong_step[task_id] is None:
+            # A SINGLE TASK handed to a step row (#830): not another step's
+            # task, so the message says what follows it instead of naming
+            # "workflow step None".
+            abandoned[task_id] = (
+                f"task {task_id} is a single task, not workflow step {step_id!r}: it "
+                "belongs to no workflow. Follow it WITHOUT `step_id` -- the sc:task "
+                "row does. Nothing was cancelled; SwarmCloud runs it as before"
+            )
+            continue
         if task_id in wrong_step:
             abandoned[task_id] = (
                 f"task {task_id} is workflow step {wrong_step[task_id]!r}, not "

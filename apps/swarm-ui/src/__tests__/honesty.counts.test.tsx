@@ -363,37 +363,48 @@ describe('the states that can never be written', () => {
 })
 
 /**
- * AH-25 (#86), #503. THE HEAD IS A TITLE, THE RUN BUTTON BESIDE IT, AND ONE
- * LINE UNDER IT. Platform counts once drew its own `.ctl-page-head` with the
+ * AH-25 (#86), #503, #138. THE HEAD IS A TITLE ON THE LEFT AND ITS ACTIONS ON
+ * THE RIGHT: THE PROVENANCE, THEN THE RUN. Platform counts once drew its own `.ctl-page-head` with the
  * cost in a toolbar a row away from the press it priced; then AH-25 put the
  * control and its cost inside the provenance line, where the shell's `.sub
  * button` drew it as an underlined text control -- the billed action read as
  * a link in prose (#503, measured against admin-help.html frames 4-5).
  *
- * Now the button is in the head beside the title, `Run the count · N reads`
- * before the first run and `Run it again · N reads` after one, and the line
- * under it says what was read and how long ago, as every Screen route's does.
+ * Then the button sat in the head beside the title over a provenance line.
+ * #138 (owner ruling 2026-10-07, design-system §6.12) made every head one
+ * shape: TITLE LEFT, ACTIONS RIGHT, NO SUB-LINE. So nothing sits beside the
+ * h1 any more; the head's right-hand `.c-acts` holds the provenance
+ * (`span.counts-prov`: what the last count found and how old it is) and then
+ * the run, `Run the count · N reads` before the first run and `Run it again ·
+ * N reads` after one.
  */
 describe('the page head (AH-25, #503)', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
 
   function line(): HTMLElement {
-    const sub = document.querySelector<HTMLElement>('.head + p.sub')
-    if (!sub) throw new Error('no provenance line under the title')
-    return sub
+    const prov = document.querySelector<HTMLElement>('.c-phead > .c-acts > span.counts-prov')
+    if (!prov) throw new Error('no provenance in the head\'s actions')
+    return prov
   }
 
-  it('is a title with the run button beside it, over one provenance line, no second head and no toolbar', async () => {
+  it('is a title left, the provenance then the run on the right, no sub-line, no second head and no toolbar', async () => {
     render(<PlatformCountsScreen />)
     await waitFor(() => expect(loadMe).toHaveBeenCalled())
-    expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts')
+    expect(document.querySelector('.c-phead > .head > h1')?.textContent).toBe('Platform counts')
     expect(document.querySelector('.ctl-page-head'), 'a head of its own shape').toBeNull()
     expect(document.querySelector('.ctl-toolbar'), 'the cost is still a row away from the control').toBeNull()
-    // MUTATION: put the button back in the provenance line.
+    // #138: no sub-line under the title, and nothing beside the h1.
+    expect(document.querySelector('p.sub'), 'a sub-line came back under the title').toBeNull()
+    expect(document.querySelector('.head')!.children, 'something sits beside the title').toHaveLength(1)
+    // MUTATION: put the button back beside the title (or in a provenance line).
     const button = screen.getByRole('button', { name: /^Run the count · / })
-    expect(button.parentElement, 'the run is not beside the title').toBe(document.querySelector('.head'))
-    expect(button.closest('p.sub'), 'the run is inside the provenance sentence').toBeNull()
+    const acts = document.querySelector('.c-phead > .c-acts')
+    expect(button.parentElement, 'the run is not in the head\'s actions').toBe(acts)
+    expect(button.closest('.head'), 'the run is beside the title').toBeNull()
+    expect(button.closest('.counts-prov'), 'the run is inside the provenance').toBeNull()
     expect(button.tagName).toBe('BUTTON')
+    // Provenance first, then the run: what the last count found is read before the press that replaces it.
+    expect(line().compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING, 'the run is drawn before its provenance').toBeTruthy()
     await waitFor(() => expect(button.textContent).toBe(`Run the count · ${PER_SCOPE} reads`))
     expect(line().textContent).toBe('not counted yet')
   })
@@ -401,7 +412,7 @@ describe('the page head (AH-25, #503)', () => {
   it('prints the cost on the control that spends it (#138), so the two cannot split', async () => {
     render(<PlatformCountsScreen />)
     const button = screen.getByRole('button', { name: /^Run the count · / })
-    const cost = document.querySelector('.head .counts-cost')
+    const cost = document.querySelector('.c-phead .c-acts .counts-cost')
     expect(cost, 'the cost is not in the head').not.toBeNull()
     expect(cost!.closest('button'), 'the cost is beside the control, not on it').toBe(button)
     // Primary before the first run: it is the page's one action.
@@ -409,11 +420,11 @@ describe('the page head (AH-25, #503)', () => {
     expect(button.className).not.toContain('retry')
   })
 
-  it('after a run: how many and how old under the title, and Run it again beside it', async () => {
+  it('after a run: how many and how old, then Run it again, in the head\'s actions', async () => {
     await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
     const again = await screen.findByRole('button', { name: /^Run it again · / })
     expect(again.textContent).toBe(`Run it again · ${PER_SCOPE} reads`)
-    expect(again.closest('.head')).not.toBeNull()
+    expect(again.closest('.c-phead > .c-acts')).not.toBeNull()
     // A re-run is not the page's primary action any more.
     expect(again.classList.contains('is-primary')).toBe(false)
     expect(line().textContent).toMatch(/^1 run · read .+$/)
@@ -432,7 +443,7 @@ describe('the page head (AH-25, #503)', () => {
     screen.getByRole('button', { name: /^Run the count · / }).click()
     const busy = await screen.findByRole('button', { name: 'Counting…' })
     expect((busy as HTMLButtonElement).disabled).toBe(true)
-    expect(busy.closest('.head')).not.toBeNull()
+    expect(busy.closest('.c-phead > .c-acts')).not.toBeNull()
   })
 })
 
@@ -450,12 +461,12 @@ describe('the cost shown before the first run', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
 
   /**
-   * The cost, where #138 put it: on the control in the head line that spends
-   * it. AH-25 had moved it there from a `per run` fact in a toolbar a row
-   * below the control, to immediately before the control.
+   * The cost, where #138 put it: on the control in the head's actions that
+   * spends it. AH-25 had moved it there from a `per run` fact in a toolbar a
+   * row below the control, to immediately before the control.
    */
   function perRun(): string {
-    const cost = document.querySelector('.head .counts-cost')
+    const cost = document.querySelector('.c-phead .c-acts .counts-cost')
     if (!cost) throw new Error('no cost on the head\'s run button')
     return cost.textContent ?? ''
   }

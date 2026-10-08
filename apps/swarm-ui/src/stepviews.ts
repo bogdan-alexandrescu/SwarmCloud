@@ -28,7 +28,9 @@
 //     that is waiting AFTER an earlier attempt ran still carries a start time.
 //     It is drawn as waiting, never as running.
 
-import { NEVER_STARTED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { NEVER_STARTED_WORD, SKIPPED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { eventKind } from './events'
+import { skippedByVerdict } from './wfreview'
 import {
   absentCell,
   costCell,
@@ -50,6 +52,7 @@ import {
   type AttemptRow,
   type StepState,
   type Task,
+  type TaskEvent,
   type TaskState,
   type Workflow,
   type WorkflowStep,
@@ -310,7 +313,12 @@ export function stepTimes(state: StepState, now: number, parents: ParentsDone = 
         ranMs: completed - started,
         sentence:
           (w === null ? 'No submission time was recorded, so the wait before it started is unknown. ' : waitPhrase(w, attempts !== null)) +
-          `ran ${durationText(completed - started)} and ended ${task.state.toLowerCase()}.${retried}`,
+          // A VERDICT-SKIPPED STEP SAYS SO (QA G3-02): its attempt ran only to
+          // publish the reviewed work, and the Graph's node says `agent not
+          // run`. `ran 1m 15s and ended succeeded` read as a run like any other.
+          (task.state === 'SUCCEEDED' && skippedByVerdict(task)
+            ? `ran ${durationText(completed - started)}, ${SKIPPED_WORD}: its agent was not run, and the attempt only published the reviewed work.${retried}`
+            : `ran ${durationText(completed - started)} and ended ${task.state.toLowerCase()}.${retried}`),
       }
     }
     // NO START RECORDED, BUT AN END. A step cancelled before it ever ran is the
@@ -743,7 +751,7 @@ export function stateRankOf(state: StepState): number | null {
   }
 }
 
-export type SortKey = 'step' | 'state' | 'waited' | 'ran' | 'attempts' | 'cost'
+export type SortKey = 'step' | 'state' | 'waited' | 'ran' | 'attempts' | 'cost' | 'tokens'
 export type SortDir = 'ascending' | 'descending'
 
 export interface SortSpec {
@@ -762,6 +770,12 @@ export interface SortFacts {
   readonly ranMs: number | null
   readonly attempts: number | null
   readonly costUsd: number | null
+  /**
+   * The total the Tokens cell prints (`tokenKindsTotal`), from the same record
+   * the cell read. Null where the cell is an absence (QA G3-33: Cost sorted
+   * and Tokens, the column beside it, did not).
+   */
+  readonly tokens: number | null
 }
 
 /**
@@ -791,6 +805,8 @@ export function sortRows<T extends { readonly sort: SortFacts }>(rows: readonly 
         return r.sort.attempts
       case 'cost':
         return r.sort.costUsd
+      case 'tokens':
+        return r.sort.tokens
     }
   }
   const sign = spec.dir === 'ascending' ? 1 : -1
@@ -1012,10 +1028,31 @@ function waitingEnd(state: TaskState): Absence {
 const TOOK_NOTE =
   'Start to finish of this attempt alone: the attempt’s own started_at to its own completed_at. The table’s “ran” times the task instead, from its latest start to its completion -- separate writes, so for a single attempt the two can differ by about a second.'
 
-/** How long one attempt took, or which kind of nothing that is. */
-function tookCell(started: number, completed: number, phase: AttemptPhase, now: number): Cell {
+/**
+ * How close the attempt's own span and the task's must be to be ONE RUN
+ * printed once (QA G3-26): the drawer said `took 3m 7s` beside the Graph's and
+ * the Table's `ran 3m 6s` for the same single attempt -- two `utcnow()` reads
+ * a second apart. Under this the inspector prints the task's figure, so a
+ * page states one duration once; past it the two are different runs and each
+ * keeps its own.
+ */
+export const SAME_RUN_MS = 2_000
+
+/**
+ * How long one attempt took, or which kind of nothing that is. `taskRanMs` is
+ * the figure the Graph and the Table print for the step (`StepTimes.ranMs`),
+ * handed in only for the newest attempt of a finished task.
+ */
+function tookCell(started: number, completed: number, phase: AttemptPhase, now: number, taskRanMs: number | null = null): Cell {
   if (finite(started) && finite(completed)) {
-    return measuredCell(durationText(completed - started), TOOK_NOTE)
+    const own = completed - started
+    if (taskRanMs !== null && Math.abs(own - taskRanMs) < SAME_RUN_MS) {
+      return measuredCell(
+        durationText(taskRanMs),
+        `The same run the Graph and the Table time, from the task’s latest start to its completion. This attempt’s own document records ${durationText(own)}: separate writes of the same moments, so the page prints the run once.`,
+      )
+    }
+    return measuredCell(durationText(own), TOOK_NOTE)
   }
   if (!finite(started)) {
     // An END WITH NO START is over whatever the task is doing: something wrote
@@ -1157,6 +1194,19 @@ export function tokenKindsCaption(k: TokenKindCounts): string {
 }
 
 /**
+ * The total of every kind that was reported, or null when none was: the
+ * figure `tokenKindsCell` prints, by the same sum, for the Table's Tokens
+ * sort (QA G3-33). `tokenKindsCell` keeps its sum written out, which
+ * test_workflow_step_measurements.py reads; qa.g3.workflow.test.tsx holds the
+ * sort to the printed order, so the two cannot drift unnoticed.
+ */
+export function tokenKindsTotal(k: TokenKindCounts): number | null {
+  return [k.input, k.output, k.cacheRead, k.cacheWrite]
+    .map(reportedCount)
+    .reduce<number | null>((t, v) => (v === null ? t : t === null ? v : t + v), null)
+}
+
+/**
  * A step's or an attempt's tokens as one cell (#322): THE TOTAL OF EVERY KIND
  * THAT WAS REPORTED, and each kind's count in the note.
  *
@@ -1214,10 +1264,12 @@ export function attemptFacts(
   phase: AttemptPhase,
   now: number,
   result: ResultUsage | null = null,
+  /** The step's `ran` figure, for the newest attempt of a finished task only (`tookCell`). */
+  taskRanMs: number | null = null,
 ): Fact[] {
   const started = at(a.started_at)
   const completed = at(a.completed_at)
-  const took = tookCell(started, completed, phase, now)
+  const took = tookCell(started, completed, phase, now, taskRanMs)
   const exit: Cell =
     typeof a.exit_code === 'number' && Number.isFinite(a.exit_code)
       ? measuredCell(`${a.exit_code}`, 'The agent process’s exit code.')
@@ -1283,6 +1335,34 @@ export function firstLine(text: string): string {
 }
 
 /**
+ * The head of an error line: the text before its first `: ` OUTSIDE ANY
+ * PARENTHESIS, less a trailing parenthetical (QA G3-11). `expected outputs
+ * missing (not written: the agent's diff was empty)` split at the colon
+ * inside the parenthesis and printed `expected outputs missing (not written`,
+ * whose bracket never closes. The parenthesis is the detail, not the kind of
+ * failure, so it goes with the rest; a bracket left open by a cut line goes
+ * too.
+ */
+function causeHead(line: string): string {
+  let depth = 0
+  let end = line.length
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === '(') depth += 1
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (c === ':' && depth === 0 && /\s/.test(line[i + 1] ?? '')) {
+      end = i
+      break
+    }
+  }
+  let head = line.slice(0, end).trim()
+  const open = head.lastIndexOf('(')
+  if (open > head.lastIndexOf(')')) head = head.slice(0, open).trim()
+  const bare = head.replace(/\s*\([^()]*\)$/, '').trim()
+  return bare === '' ? head : bare
+}
+
+/**
  * A failure's CAUSE, normalised so the same failure groups on the row header:
  * the first line's head before its first `: ` (the part that names the kind of
  * failure rather than the file or the trace), quoted values and platform ids
@@ -1294,7 +1374,7 @@ export function failureCause(lastError: string | null | undefined): string | nul
   if (!lastError) return null
   const line = firstLine(lastError).trim()
   if (line === '') return null
-  const head = line.split(/:\s/, 1)[0]!.trim()
+  const head = causeHead(line)
   const cause = (head === '' ? line : head)
     .replace(/`[^`]*`|'[^']*'|"[^"]*"/g, '…')
     .replace(/\b(?:tsk|task|wf|att|lease)_[A-Za-z0-9_-]+/g, '…')
@@ -1740,4 +1820,55 @@ export function mergeCardOf(task: Task, tasks: Iterable<Task>): MergeCard | null
   }
   const first = strOf(wait?.['first_parked_at'])
   return { state, pullRequest: mergePullRequest(merge, wait, opener), firstParkedAt: first }
+}
+
+// ---------------------------------------------------------------------------
+// When the state a waiting step is in began (#503)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE EVENT EACH CLOCKED WAIT IS ENTERED BY. The task record keeps no time of
+ * its own for these three states: `updated_at` is its LAST write, which a
+ * `next_eligible_at` re-check or a cancel request moves on, so a park timed
+ * from it read minutes short. The event log records the transition itself.
+ * LEASED and DISPATCHED hold a slot (invariant 1), PARKED holds none; all
+ * three are waits, and none of them is "queued".
+ */
+export const ENTRY_EVENT: Readonly<Partial<Record<TaskState, string>>> = {
+  PARKED: 'parked',
+  LEASED: 'lease_acquired',
+  DISPATCHED: 'dispatched',
+}
+
+/** The events that move a task from one state to another; heartbeats and checkpoints do not. */
+const TRANSITIONS: ReadonlySet<string> = new Set([
+  'submitted', 'queued', 'parked', 'ready', 'lease_acquired', 'lease_released', 'dispatched',
+  'starting', 'running', 'retrying', 'succeeded', 'failed', 'cancelled', 'dead_lettered',
+])
+
+/**
+ * When the task entered the state it is in now, from its events, or null when
+ * the events read do not show it.
+ *
+ * THE NEWEST TRANSITION MUST BE THE STATE'S OWN ENTRY. Newest first, it skips
+ * what is not a transition, takes the run of entry events at the head (a
+ * re-park while parked keeps the first park's time: the step has been parked
+ * since then) and stops at the first other transition. A page whose newest
+ * transition is something else is a page that does not describe the current
+ * state -- a read older than the task record -- and gives no time at all
+ * rather than the time of an earlier park.
+ */
+export function stateEnteredAt(state: TaskState, events: readonly TaskEvent[]): number | null {
+  const entry = ENTRY_EVENT[state]
+  if (entry === undefined) return null
+  const newestFirst = events
+    .map((e) => ({ kind: eventKind(e), at: Date.parse(e.at) }))
+    .filter((e) => Number.isFinite(e.at) && TRANSITIONS.has(e.kind))
+    .sort((a, b) => b.at - a.at)
+  let at: number | null = null
+  for (const e of newestFirst) {
+    if (e.kind !== entry) break
+    at = e.at
+  }
+  return at
 }

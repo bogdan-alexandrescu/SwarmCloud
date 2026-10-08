@@ -30,7 +30,11 @@
 #
 # `requests == limits` on every resource, including ephemeral-storage. No
 # bursting: bursting is what gets a two-hour agent container OOM-killed at
-# minute ninety.
+# minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
+# /tmp and HOME together, which kubelet sums -- not the workspace volume's
+# sizeLimit. It is the sum of the three volumes' sizeLimits, and all four numbers
+# are the dispatcher's, per resource class: see GkeDisk in
+# apps/scheduler/scheduler/dispatch.py.
 #
 # No `tolerations` and no `nodeSelector`. Adding either is how a pod ends up on
 # Spot capacity; the admission policy in `policies/pod-security.yaml` refuses
@@ -116,11 +120,11 @@ spec:
             requests:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
             limits:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
           env:
             # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
@@ -216,13 +220,39 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/swarm
+            # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
+            # mounts both on EVERY GKE pod, not only browser's, and this
+            # template is the reference for what it sends. Unread while browser
+            # was the only GKE profile; claude-code joined it (contract request
+            # 55's canary, then request 53 itself, 2026-10-08), and
+            # test_kubernetes_manifests.py compares the two. Shared memory
+            # counts against the memory limit only when something writes to it.
+            - name: dshm
+              mountPath: /dev/shm
+            # The step-spec public keys (contract request 34): terraform's
+            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY and
+            # never in `env:`, as in worker-job-browser.yaml.
+            - name: spec-verify-keys
+              mountPath: /etc/swarm/spec-verify-keys
+              readOnly: true
       volumes:
         - name: workspace
           emptyDir:
             sizeLimit: __DISK__
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__
         - name: home
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        # `optional`: a namespace whose ConfigMap has not been applied yet
+        # still starts its pod, and the worker exits CANNOT_START for every
+        # task, signed or not -- loud, and never an unverified run.
+        - name: spec-verify-keys
+          configMap:
+            name: swarm-spec-verify-keys
+            optional: true

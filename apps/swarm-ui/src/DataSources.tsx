@@ -1,6 +1,7 @@
 import type { ProbeRecord } from './fetch'
 import { ToneMark } from './components'
 import { timeAgo } from './Shell'
+import { fmtLatency } from './panes'
 
 /**
  * The data-source cells: the screen's own self-report.
@@ -79,7 +80,7 @@ function Cell({ probe }: { probe: ProbeRecord }) {
 
 function describe(p: ProbeRecord): { tone: 'ok' | 'warn' | 'bad' | 'info'; label: string } {
   if (p.lastKind === null) {
-    return { tone: 'ok', label: `${p.lastStatus ?? 200} · ${p.lastLatencyMs}ms` }
+    return { tone: 'ok', label: `${p.lastStatus ?? 200} · ${fmtLatency(p.lastLatencyMs)}` }
   }
   switch (p.lastKind) {
     case 'admin_required':
@@ -114,5 +115,5 @@ function detailFor(p: ProbeRecord): string {
     p.lastSuccessAt === null
       ? 'This route has never returned a payload in this session.'
       : `Newest successful payload: ${new Date(p.lastSuccessAt).toLocaleTimeString()}.`
-  return `${p.path}\nLast call ${p.lastUrl}\nLast attempt ${new Date(p.lastAttemptAt).toLocaleTimeString()}, ${p.lastLatencyMs}ms.\n${last}`
+  return `${p.path}\nLast call ${p.lastUrl}\nLast attempt ${new Date(p.lastAttemptAt).toLocaleTimeString()}, ${fmtLatency(p.lastLatencyMs)}.\n${last}`
 }

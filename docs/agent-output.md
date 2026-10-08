@@ -424,7 +424,11 @@ default ran: the QA task of 2026-09-26 ran `claude-sonnet-5`, not the
   (`claude-code = "claude-opus-5-5"`, with the reason beside it). It becomes
   `MODEL` on every claude-code Cloud Run Job Terraform creates, and the
   scheduler's `WORKER_MODELS`, which `CloudRunJobDispatcher._build_job` sets as
-  `MODEL` on the Jobs it creates for tenants Terraform does not list. A Job the
+  `MODEL` on the Jobs it creates for tenants Terraform does not list, and
+  `GkeJobDispatcher._manifest` sets on every GKE pod of a pinned profile --
+  which, since contract request 53 moved claude-code to GKE Autopilot
+  (2026-10-08), is where claude-code runs; its Cloud Run Jobs are kept, idle,
+  until 2026-10-15 as the rollback. A Job the
   scheduler created before that is rebuilt once, before its next execution,
   by the same check that moves it to a new image digest.
 * The worker reads `MODEL` into `WorkerConfig.model` and hands it to the runner,

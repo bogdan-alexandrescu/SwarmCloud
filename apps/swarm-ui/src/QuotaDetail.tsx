@@ -1,5 +1,5 @@
 import { loadAdminQuota } from './api'
-import { poolHref } from './capacityPoll'
+import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { WarnMark } from './marks'
@@ -12,6 +12,7 @@ import {
   providerTenantPool,
   providerTone,
   quotaReadingAge,
+  setBy,
   type QuotaState,
 } from './types'
 
@@ -26,7 +27,9 @@ import {
  * max, the AIMD target and the cap derived from the provider, forced to 0 by
  * EXHAUSTED, DISABLED and COOLDOWN -- and that figure is ONE input to the
  * pool named beside it, whose own ceiling may be lower. The column name
- * carries the basis; no `?` goes inside the table.
+ * carries the basis; no `?` goes inside the table. `(units)` (QA G5-23): it
+ * is counted in the weighted units the fed pool's ceiling is, and Pools'
+ * `Ceiling (units)` says so; a bare `Quota cap 50` named no unit at all.
  *
  * `429s (this run)` (CP-10). The count is reset when the run ends -- a clean
  * run reports the provider available, or the broker's refresh retires the
@@ -35,7 +38,7 @@ import {
  * name carries the window (B7.4 route 2); `#help/quota-row-fields`, in the
  * footer index, defines the run (route 3).
  */
-const QUOTA_CAP = 'Quota cap'
+const QUOTA_CAP = 'Quota cap (units)'
 const FEEDS_POOL = 'Feeds pool'
 const RATE_LIMITS = '429s (this run)'
 
@@ -58,6 +61,7 @@ export function QuotaDetailScreen() {
     <Screen
       title="Provider quota"
       load={loadAdminQuota}
+      pollMs={capacityPoll(QUOTA_POLL_MS)}
       summary={(d) => {
         const providers = new Set(d.quota.map((q) => q.provider)).size
         const tenants = new Set(d.quota.map((q) => q.tenant_id)).size
@@ -83,6 +87,8 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
   // head moves on, so a reading crosses the threshold on screen while the page
   // is open rather than only when it is reloaded.
   const now = useNow(AGE_TICK_MS)
+  // A RECORD PER TENANT ON A PHONE (QA G5-08): the table was 822px in 356.
+  const phone = usePhoneTables()
   const byProvider = new Map<string, QuotaState[]>()
   for (const q of rows) {
     const list = byProvider.get(q.provider)
@@ -117,7 +123,7 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                 card's right edge at 1440, because every column sized itself
                 to its content and the pool name is long. Fixed widths, and
                 the pool name ellipsizes with its whole name in its title. */}
-            <div className="ctl-table is-scroll quota-table">
+            <div className={`ctl-table ${tableMode(phone)} quota-table`}>
               <table role="table">
                 <colgroup>
                   <col className="quota-c-tenant" />
@@ -136,11 +142,13 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
                     {/* The unit rides on the column name: these are the two
                         columns where a 0 and a blank mean different things and
                         the heading is where that is cheapest to say. */}
-                    <th role="columnheader" scope="col" className="is-num">{QUOTA_CAP}</th>
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{QUOTA_CAP}</th>
                     {/* WHAT THE CAP FEEDS, right after it (CP-8). */}
                     <th role="columnheader" scope="col">{FEEDS_POOL}</th>
                     <th role="columnheader" scope="col" className="is-num">Requests left</th>
-                    <th role="columnheader" scope="col" className="is-num">{RATE_LIMITS}</th>
+                    {/* ONE LINE (QA G5-23): the head wrapped `429s (this` /
+                        `run)`, splitting the window from the count it names. */}
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{RATE_LIMITS}</th>
                     <th role="columnheader" scope="col">Last 429</th>
                     <th role="columnheader" scope="col">Reported</th>
                   </tr>
@@ -231,20 +239,24 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           renders as 0 with the state chip beside it doing the explaining --
           not as an em dash, which would read as "not measured". */}
       <td role="cell" data-label={QUOTA_CAP} className="is-num">{q.effective_limit}</td>
-      {/* THE POOL THAT FIGURE FEEDS (CP-8). Only admins read this screen, and
-          `service.capacity()` lists every tenant's provider pool to them, so
-          the row this links to exists on Pools, where `Set by` says which
-          value binds it. No pool ceiling is drawn here: that would be a
-          second read with its own freshness, and a figure beside this one
-          that could be older or newer than it without saying so. The link
-          lands on THAT pool's row, outlined (#128), not at the top of Pools.
-          Mono,
+      {/* THE POOL THAT FIGURE FEEDS (CP-8), AND ITS CEILING (G5-02). Only
+          admins read this screen, and `service.capacity()` lists every
+          tenant's provider pool to them, so the row this links to exists on
+          Pools. The link lands on THAT pool's row, outlined (#128). Mono,
           because it is an identifier; the full name is in `title` for the
-          width at which it ellipsizes. */}
+          width at which it ellipsizes.
+
+          The ceiling was left off because it would have been a second read
+          with its own freshness -- and QA (2026-10-07) found the cost of
+          leaving it off: `Quota cap 50` beside a pool Pools showed at 40,
+          read as "this tenant can run 50". `/v1/admin/quota` now serves the
+          pool in the same response (`feeds_pool`), so the ceiling is the one
+          admission enforces, of the same age as the cap. */}
       <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
         <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool}>
           {pool}
         </a>
+        <PoolCeiling q={q} />
       </td>
       {/* These genuinely can be absent, and absent is not zero. The em dash
           carries `.ctl-em`, which is this sheet's one mark for "nothing was
@@ -253,14 +265,69 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
       <td role="cell" data-label="Requests left" className="is-num">
         {q.requests_remaining === null ? <Em what="requests remaining" /> : q.requests_remaining}
       </td>
-      <td role="cell" data-label={RATE_LIMITS} className="is-num">{q.rate_limit_count}</td>
+      {/* "THIS RUN" ONLY OF A CURRENT READING (G5-03). A count on a document
+          older than twice the sweep is what the last report said, which on a
+          document 17 days old is not this run of anything. */}
+      <td role="cell" data-label={RATE_LIMITS} className="is-num">
+        {q.rate_limit_count}
+        {age.stale && <span className="quota-basis"> (at last report)</span>}
+      </td>
+      {/* A COUNTED 429 WITH NO TIME IS A TIME NOBODY RECORDED (G5-03), not an
+          absence: the dash says "never recorded" beside a count that says one
+          was. The mark says which of the two facts is missing. */}
       <td role="cell" data-label="Last 429">
-        {q.last_429_at ? timeAgo(q.last_429_at, now) : <Em what="last 429" />}
+        {q.last_429_at ? (
+          timeAgo(q.last_429_at, now)
+        ) : q.rate_limit_count > 0 ? (
+          <span
+            className="ctl-mark is-unread"
+            title={`The document counts ${pluralise(q.rate_limit_count, '429')} and records no time for any of them.`}
+          >
+            time not recorded
+          </span>
+        ) : (
+          <Em what="last 429" />
+        )}
       </td>
       <td role="cell" data-label="Reported">
         {q.updated_at ? timeAgo(q.updated_at, now) : <Em what="reported" />}
       </td>
     </tr>
+  )
+}
+
+/**
+ * The ceiling of the pool the row's cap feeds, what sets it, and where it
+ * sits against the cap -- `ceiling 40 (configured, below cap)`. The pool's
+ * `effective_limit` is what admission enforces; the cap is one input to it.
+ * Nothing at all beside an API that does not serve `feeds_pool`: absent is
+ * not "no pool".
+ */
+function PoolCeiling({ q }: { q: QuotaState }) {
+  if (q.feeds_pool === undefined) return null
+  const p = q.feeds_pool
+  if (p === null) {
+    return (
+      <span className="quota-ceiling" title="No pool document by this name exists.">
+        <span className="quota-sep"> · </span>no pool document
+      </span>
+    )
+  }
+  const by = setBy(p)
+  if (p.effective_limit === null) {
+    return (
+      <span className="quota-ceiling" title={by.detail}>
+        <span className="quota-sep"> · </span>
+        {by.term}
+      </span>
+    )
+  }
+  const against =
+    p.effective_limit < q.effective_limit ? 'below cap' : p.effective_limit > q.effective_limit ? 'above cap' : 'at cap'
+  return (
+    <span className="quota-ceiling" title={by.detail}>
+      <span className="quota-sep"> · </span>ceiling {p.effective_limit} ({by.term}, {against})
+    </span>
   )
 }
 

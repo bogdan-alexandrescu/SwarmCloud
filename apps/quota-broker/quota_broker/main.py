@@ -463,8 +463,19 @@ def _flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+#: The retired #295 GitHub App keys (owner decision MS0-Q4, 2026-10-06).
+#: The frozen catalogue still names `git-review` on its disabled post-verdict
+#: entry, but nothing reads either key and neither has a quota to keep: a
+#: quota route naming one is refused like any unknown provider. swarm-api
+#: keeps the same pair in `validation.APP_CREDENTIAL_PROVIDERS`; the broker
+#: does not import swarm-api.
+RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
+
+
 def _known_provider(provider: str) -> str:
-    providers = {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+    providers = {
+        p.provider for p in RUNNER_PROFILES.values() if p.provider
+    } - RETIRED_APP_PROVIDERS
     name = provider.strip().lower()
     if name not in providers:
         raise BrokerValidationError(
@@ -1689,8 +1700,10 @@ def _sweep_account_pool(
         #: listing will not show.
         "marked_reauth_required": marked,
         #: The same write-cadence counters `_sweep_block` reports, and for the
-        #: same reason: the account secrets carried 1,741 and 1,698 identical
-        #: versions while every tick of this sweep reported success.
+        #: same reason: secrets this broker writes piled up identical versions
+        #: while every tick reported success. The figures are in
+        #: `quota_broker.credentials` (`_BaseState`), and only there: a second
+        #: copy of a count is how this one drifted.
         "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
         "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
         "unverified_skipped": [

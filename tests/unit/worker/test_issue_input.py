@@ -602,7 +602,9 @@ def _worker(worker_factory, monkeypatch, url: str, fetch):
     worker.log.register_secret(TOKEN)
     monkeypatch.setattr(
         worker, "_git_token",
-        lambda: TOKEN if worker.phases.current == "fetch_issue" else None,
+        # Read where the fetch starts, beside the clone (P29), and never by
+        # the clone itself.
+        lambda: TOKEN if worker.phases.current in ("issue_prefetch", "fetch_issue") else None,
     )
     monkeypatch.setattr(issue_mod, "fetch_issue", fetch)
     return worker
@@ -660,6 +662,40 @@ def test_the_agent_reads_the_issue_and_never_the_token(
     names = [entry["name"] for entry in (task.get("result_summary") or {}).get("artifacts", [])]
     assert "issue.md" not in names, names
     assert not [key for key in store.list_keys(f"tenants/{TENANT}/") if key.endswith("/issue.md")]
+
+
+@needs_git
+@pytest.mark.parametrize(
+    ("title", "expected_attr", "expected_pr_title"),
+    [
+        ("Point a step at an issue", "Point a step at an issue",
+         "Point a step at an issue (part of #265)"),
+        # No title: the number names the work, as it always did.
+        ("", None, "Work on issue #265 (part of #265)"),
+    ],
+    ids=["titled", "untitled"],
+)
+def test_the_fetched_issue_title_names_the_pull_request(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace,
+    title, expected_attr, expected_pr_title,
+):
+    """`_issue_title` was declared and never assigned, so an issue run's pull
+    request read "Work on issue #72 (part of #72)" (#453). It is the fetched
+    issue's title, read when the fetch lands -- before the agent starts, so
+    nothing the agent writes to `issue.md` reaches it."""
+
+    def fetch(*, repository_url, number, token, on_request=None):
+        return issue_mod.Issue(
+            repository="octo/widgets", number=number, title=title,
+            state="open", author="bogdan", created_at="", url="", body="The body.",
+        )
+
+    _seed(db)
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+
+    assert worker.run() == ExitCode.OK, db.doc("tasks/task_1")
+    assert worker._issue_title == expected_attr
+    assert worker._title_from_issue_input(db.doc("tasks/task_1")) == expected_pr_title
 
 
 @needs_git

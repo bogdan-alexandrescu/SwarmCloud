@@ -168,11 +168,12 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     const order = [...main.children]
     expect(order.indexOf(card)).toBe(order.indexOf(main.querySelector('.rn-state')!) + 1)
 
-    for (const [step, id, mark] of [['impl', 'task_impl', 'running'], ['docs', 'task_docs', 'parked'], ['wire', 'task_wire', 'queued']] as const) {
+    // Each under the list that holds it (QA G2-17): a parked or queued task waits.
+    for (const [step, id, mark, tab] of [['impl', 'task_impl', 'running', 'live'], ['docs', 'task_docs', 'parked', 'waiting'], ['wire', 'task_wire', 'queued', 'waiting']] as const) {
       const row = rowOf(card, step)
       expect(row, step).toBeDefined()
       const open = within(row).getByRole('link', { name: /Open agent/ })
-      expect(open.getAttribute('href')).toBe(`/agents/live/${id}`)
+      expect(open.getAttribute('href')).toBe(`/agents/${tab}/${id}`)
       expect(row.querySelector('[data-mark]')?.getAttribute('data-mark'), step).toBe(mark)
       expect(visible(row), step).toMatch(/attempt|no attempt yet/)
     }
@@ -252,9 +253,9 @@ describe('3: Progress interleaves the steps\' changes with the run\'s', () => {
     await waitFor(() => expect(visible(history)).toContain('impl started'), WAIT)
     const rows = [...history.querySelectorAll('li')].map(visible)
     const at = (needle: string) => rows.findIndex((r) => r.includes(needle))
-    expect(at('from APPROVED')).toBeGreaterThan(-1)
+    expect(at('from approved')).toBeGreaterThan(-1)
     // RUNNING at 20:10, impl started 20:11, docs parked 20:12.
-    expect(at('impl started')).toBeGreaterThan(at('from APPROVED'))
+    expect(at('impl started')).toBeGreaterThan(at('from approved'))
     expect(at('docs parked')).toBeGreaterThan(at('impl started'))
     expect(at('docs parked')).toBe(rows.length - 1)
     // Not the Steps card again: no agent links in Progress.
@@ -321,8 +322,9 @@ describe('5: at CHECKING the pull request card leads, and the plan folds', () =>
     expect(order.indexOf(ci)).toBe(order.indexOf(main.querySelector('.rn-state')!) + 1)
     const head = ci.querySelector('.c-card-h')!
     expect(within(head as HTMLElement).getByRole('link', { name: /#564/ }).getAttribute('href')).toBe(PR_URL)
-    // The title is not served: said, with the field it would need.
-    expect(head.querySelector('.c-dash')?.getAttribute('title')).toMatch(/pull_request\.title/)
+    // No bare dash for the title the run does not serve (QA G2-06): the number alone.
+    expect(head.querySelector('.c-dash')).toBeNull()
+    expect(visible(head)).toBe('Pull request #564')
     // The head sha, short, with the whole one in its title.
     const sha = ci.querySelector(`code[title="${HEAD}"]`)
     expect(visible(sha)).toBe(HEAD.slice(0, 7))
@@ -353,7 +355,7 @@ describe('5: at CHECKING the pull request card leads, and the plan folds', () =>
     const folds = plan.querySelector(':scope > details.rn-fold') as HTMLDetailsElement
     expect(folds).not.toBeNull()
     expect(folds.open).toBe(false)
-    expect(visible(folds.querySelector('summary'))).toMatch(/The plan .*3 steps/)
+    expect(visible(folds.querySelector('summary'))).toMatch(/The plan .*3 planned steps \+ review \+ fix/)
     const overlaps = container.querySelector('.rn-overlaps > details.rn-fold') as HTMLDetailsElement
     expect(overlaps).not.toBeNull()
     expect(overlaps.open).toBe(false)
@@ -389,14 +391,16 @@ describe('6: at DONE the card says what is known about the merge and the issue',
     expect(visible(container.querySelector('.rn-state'))).toMatch(/merge is not reported/)
   })
 
-  it('says the pull request ended a run that closed without a green sha, not that the workflow succeeded', async () => {
+  it('says the pull request merged and ended a run that closed without a green sha, not that the workflow succeeded', async () => {
     const { container } = await mount(run({
       state: 'DONE', terminal: true, green_sha: null,
       pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'pending' },
     }), { [WF]: workflow() })
     const line = visible(container.querySelector('.rn-state'))
-    expect(line).toMatch(/pull request ended the run/)
-    expect(line).toMatch(/not reported/)
+    // #503: a closed PR fails the run and a green one records its sha, so a
+    // DONE run with no green sha was ended by the PR merging.
+    expect(line).toMatch(/pull request merged, which ended the run/)
+    expect(line).not.toMatch(/not reported/)
     expect(line).not.toMatch(/workflow succeeded/)
   })
 })

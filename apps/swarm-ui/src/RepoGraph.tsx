@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { loadRepositoryGraph, loadSymbolGraph, loadSymbolTests, searchRepositorySymbols } from './api'
 import { Button, Card, Chip, Dash, EmptyState } from './components'
 import type { Result } from './fetch'
 import {
   DEPTH_DEFAULT, DEPTH_MAX, DEPTH_MIN, EVIDENCE_LEGEND, LEGEND, callColumns, clampDepth, degree, edgeLook, edgeWords, fmt,
-  forceLayout, graphView, heatOf, linesWord, short,
+  forceLayout, graphView, heatOf, linesWord, placeLabels, short,
   type CallGraph, type ColourBy, type GraphView, type ModuleGraph, type SymbolRow, type ViewNode,
 } from './RepoGraphData'
 import { repoName, type RepoRecord } from './RepositoriesData'
@@ -17,7 +17,11 @@ import './styles/repograph.css'
  * switched by the toolbar: the MODULE dependency graph (clustered by package,
  * coloured by hot-spots or test reach, zoom and pan), a symbol's CALL GRAPH
  * (callers left, callees right, a depth control, each edge's evidence and
- * confidence), and its TEST MAP (the tests that reach it).
+ * confidence), and the TESTS REACHING A SYMBOL. That view was once called
+ * "Test map", the name of the repository's own tab, which answers a
+ * different question -- path -> tests, where this one is symbol -> tests --
+ * so it is named for its question (QA G4-09), and each Test map row links
+ * here (`?view=tests&q=<directory>`).
  *
  * EVERY FIGURE IS THE ROUTE'S. The canvas draws what `GET .../graph` serves
  * and nothing else: a module whose hot-spot count or reach was not served is
@@ -40,12 +44,18 @@ type Direction = 'both' | 'callers' | 'callees'
 const GRAPH_ROUTE = 'GET /v1/repositories/{repo_id}/graph'
 const SYMBOLS_ROUTE = 'GET /v1/repositories/{repo_id}/symbols'
 
-export function GraphTab({ r }: { r: RepoRecord }) {
+/** What the address opens the Graph tab on: `view=tests` and a symbol search `q` (a Test map row's link). */
+export interface GraphOpen {
+  view: string | null
+  q: string | null
+}
+
+export function GraphTab({ r, open = null }: { r: RepoRecord; open?: GraphOpen | null }) {
   const graph = useUrRead(() => loadRepositoryGraph(r.repo_id), `graph:${r.repo_id}`)
   return (
     <div className="rg-graph">
       <GraphRegion state={graph.state} onRetry={graph.reload}>
-        {(g) => <GraphSurface r={r} g={g} />}
+        {(g) => <GraphSurface r={r} g={g} open={open} />}
       </GraphRegion>
     </div>
   )
@@ -86,8 +96,10 @@ function GraphRegion({ state, onRetry, children }: { state: Result<ModuleGraph |
   )
 }
 
-function GraphSurface({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
-  const [view, setView] = useState<View>('modules')
+function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; open: GraphOpen | null }) {
+  const [view, setView] = useState<View>(opened?.view === 'tests' ? 'tests' : opened?.view === 'calls' ? 'calls' : 'modules')
+  // The search a Test map row asked for; dropped once a module is picked on the canvas.
+  const [seed, setSeed] = useState<string | null>(opened?.q !== undefined && opened.q !== null && opened.q !== '' ? opened.q : null)
   const [colour, setColour] = useState<ColourBy>('hot-spots')
   const [cluster, setCluster] = useState(true)
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
@@ -107,6 +119,7 @@ function GraphSurface({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
     } else {
       setPicked(n.id)
     }
+    setSeed(null)
     setSymbol(null)
   }
 
@@ -119,7 +132,7 @@ function GraphSurface({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
         options={[
           { key: 'modules', label: 'Modules' },
           { key: 'calls', label: 'Call graph' },
-          { key: 'tests', label: 'Test map' },
+          { key: 'tests', label: 'Tests reaching a symbol' },
         ]}
       />
       {view === 'modules' && (
@@ -182,8 +195,8 @@ function GraphSurface({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
           onDirection={setDirection}
         />
       )}
-      {view === 'tests' && <TestView r={r} node={selected} symbol={symbol} onSymbol={setSymbol} />}
-      <GraphFoot g={g} />
+      {view === 'tests' && <TestView r={r} node={selected} seed={seed} symbol={symbol} onSymbol={setSymbol} />}
+      <GraphFoot r={r} g={g} />
     </>
   )
 }
@@ -222,6 +235,18 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
   onPick: (n: ViewNode) => void
 }) {
   const layout = useMemo(() => forceLayout(gv, W, H), [gv])
+  const labels = useMemo(
+    () =>
+      placeLabels(
+        gv.nodes.flatMap((n) => {
+          const p = layout.pos.get(n.id)
+          if (p === undefined) return []
+          const d = degree(gv, n.id)
+          return [{ id: n.id, x: p.x, y: p.y, r: p.r, text: nodeLabel(n), weight: d.callers + d.callees }]
+        }),
+      ),
+    [gv, layout],
+  )
   const [zoom, setZoom] = useState<Zoom>(FIT)
   const drag = useRef<{ x: number; y: number; z: Zoom } | null>(null)
   const maxWeight = Math.max(1, ...gv.edges.map((e) => e.weight))
@@ -301,6 +326,7 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
             if (p === undefined) return null
             const heat = heatOf(n, colour)
             const on = n.id === selected
+            const label = labels.get(n.id)
             return (
               <g
                 key={n.id}
@@ -320,8 +346,14 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
                 }}
               >
                 <circle cx={p.x} cy={p.y} r={p.r} />
-                <text x={p.x} y={p.y + p.r + 13} textAnchor="middle">
-                  {n.isPackage ? `${n.label} (${n.members})` : n.label}
+                <text
+                  x={p.x}
+                  y={label?.y ?? p.y + p.r + 13}
+                  textAnchor="middle"
+                  data-label={label?.side ?? 'below'}
+                  className={label?.side === 'hidden' ? 'is-hidden' : undefined}
+                >
+                  {nodeLabel(n)}
                 </text>
               </g>
             )
@@ -340,6 +372,10 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
       </div>
     </div>
   )
+}
+
+function nodeLabel(n: ViewNode): string {
+  return n.isPackage ? `${n.label} (${n.members})` : n.label
 }
 
 function round(n: number): number {
@@ -362,12 +398,27 @@ function PhoneList({ gv, colour, selected, onPick }: { gv: GraphView; colour: Co
   )
 }
 
-function GraphFoot({ g }: { g: ModuleGraph }) {
+/**
+ * The index's module count beside the graph's, when they differ (QA G4-12):
+ * the index lists every module its indexer named, docs and config included,
+ * while a graph node is a directory holding at least one parsed code symbol
+ * (impact.py `module_graph`). Without the sentence, 83 and 64 on one page
+ * read as one of them being wrong.
+ */
+function moduleGap(r: RepoRecord, g: ModuleGraph): string | null {
+  const listed = r.index.coverage?.modules ?? null
+  const drawn = g.modules.reduce((n, m) => n + (m.modules ?? 1), 0)
+  if (listed === null || listed === drawn) return null
+  return `the index lists ${fmt(listed)} module${listed === 1 ? '' : 's'}; the graph draws the ${fmt(drawn)} director${drawn === 1 ? 'y that holds' : 'ies that hold'} parsed code symbols`
+}
+
+function GraphFoot({ r, g }: { r: RepoRecord; g: ModuleGraph }) {
   const parts: string[] = []
   for (const key of ['files', 'symbols', 'edges'] as const) {
     const n = g.counts[key]
     if (n !== undefined) parts.push(`${fmt(n)} ${key}`)
   }
+  const gap = moduleGap(r, g)
   return (
     <p className="ur-sub rg-foot">
       Index <code className="ur-sha">{g.index_sha === null ? '—' : g.index_sha.slice(0, 7)}</code>
@@ -379,6 +430,7 @@ function GraphFoot({ g }: { g: ModuleGraph }) {
         </>
       )}
       {g.truncated.length > 0 && ` · over the size ceiling, so these were cut: ${g.truncated.join(', ')}`}
+      {gap !== null && ` · ${gap}`}
     </p>
   )
 }
@@ -521,32 +573,65 @@ function DepthControl({ depth, onDepth }: { depth: number; onDepth: (d: number) 
   )
 }
 
-/** A module's symbols, from `?q=<module>`, or a typed search; picking one draws its call graph. */
+/** Search as you type once this many characters are typed; Find searches any length (QA G4-09). */
+export const SEARCH_MIN_CHARS = 3
+/** How long typing pauses before the search runs: one read per pause, not per keystroke. */
+export const SEARCH_DEBOUNCE_MS = 300
+
+/**
+ * A module's symbols, from `?q=<module>`, or a typed search; picking one
+ * draws its call graph. The search runs as you type -- SEARCH_DEBOUNCE_MS
+ * after the last keystroke, from SEARCH_MIN_CHARS characters -- and Find (or
+ * Enter) runs it at once. It used to need Enter on a form with no button,
+ * under a hint that promised results while typing (QA G4-09).
+ */
 function SymbolPicker({ r, module, onSymbol }: { r: RepoRecord; module: string | null; onSymbol: (s: SymbolRow) => void }) {
   const [typed, setTyped] = useState('')
   const [q, setQ] = useState<string | null>(null)
+  useEffect(() => {
+    const t = typed.trim()
+    if (t === '') {
+      setQ(null)
+      return
+    }
+    if (t.length < SEARCH_MIN_CHARS) return
+    const timer = setTimeout(() => setQ(t), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [typed])
   const query = q ?? module
+  const tooShort = typed.trim().length > 0 && typed.trim().length < SEARCH_MIN_CHARS && q !== typed.trim()
   return (
     <div className="rg-picker">
       <div className="rg-ch">
         <b>Symbols</b>
         <form
           className="rg-find"
+          role="search"
           onSubmit={(e) => {
             e.preventDefault()
             setQ(typed.trim() === '' ? null : typed.trim())
           }}
         >
-          <input className="ur-search" aria-label="Find a symbol" placeholder="Find a symbol" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <input type="search" className="ur-search" aria-label="Find a symbol" placeholder="Find a symbol" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          <Button size="sm" type="submit">
+            Find
+          </Button>
         </form>
       </div>
+      {tooShort && <p className="ur-hint">{`Type ${SEARCH_MIN_CHARS} or more characters to search as you type, or press Find.`}</p>}
       {query === null ? (
-        <p className="ur-none">Type part of a symbol's name to find it.</p>
+        <p className="ur-none">{`Type ${SEARCH_MIN_CHARS} or more characters of a symbol's name: matches appear as you type.`}</p>
       ) : (
         <SymbolList key={query} r={r} q={query} onSymbol={onSymbol} />
       )}
     </div>
   )
+}
+
+/** Where a symbol is, as `path:line`; the path alone when no line was served. */
+function whereWord(s: SymbolRow): string | null {
+  if (s.path === null) return null
+  return s.start_line === null ? s.path : `${s.path}:${s.start_line}`
 }
 
 function SymbolList({ r, q, onSymbol }: { r: RepoRecord; q: string; onSymbol: (s: SymbolRow) => void }) {
@@ -561,9 +646,12 @@ function SymbolList({ r, q, onSymbol }: { r: RepoRecord; q: string; onSymbol: (s
             {s.symbols.map((sym) => {
               const lines = linesWord(sym)
               return (
-                <button key={sym.id} type="button" className="rg-sym" onClick={() => onSymbol(sym)}>
+                <button key={sym.id} type="button" className="rg-sym" onClick={() => onSymbol(sym)} title={lines === null ? undefined : `lines ${lines}`}>
                   <code>{short(sym.id)}</code>
-                  <small>{[lines === null ? null : `lines ${lines}`, sym.kind].filter(Boolean).join(' · ')}</small>
+                  <small>
+                    {whereWord(sym) ?? <Dash why="The symbol's file was not served" />}
+                    {sym.kind !== null ? ` · ${sym.kind}` : ''}
+                  </small>
                 </button>
               )
             })}
@@ -589,14 +677,14 @@ function TestsRead({ r, symbol, full = false }: { r: RepoRecord; symbol: SymbolR
   const LIMIT = 5
   return (
     <>
-      <UrRegion state={read.state} route={SYMBOLS_ROUTE} what="The test map" onRetry={read.reload} lines={2}>
+      <UrRegion state={read.state} route={SYMBOLS_ROUTE} what="The tests reaching this symbol" plural onRetry={read.reload} lines={2}>
         {(t) => {
           const tests = t?.tests ?? []
           const shown = full ? tests : tests.slice(0, LIMIT)
           return (
             <>
               <div className="rg-ch rg-tests-h">
-                <b>Test map</b>
+                <b>Tests reaching it</b>
                 <span className="ur-mu">{tests.length === 1 ? '1 test reaches it' : `${fmt(tests.length)} tests reach it`}</span>
               </div>
               {tests.length === 0 ? (
@@ -613,7 +701,7 @@ function TestsRead({ r, symbol, full = false }: { r: RepoRecord; symbol: SymbolR
                       </small>
                     </div>
                   ))}
-                  {!full && tests.length > LIMIT && <p className="ur-hint">{`${tests.length - LIMIT} more in the Test map view`}</p>}
+                  {!full && tests.length > LIMIT && <p className="ur-hint">{`${tests.length - LIMIT} more in the Tests reaching a symbol view`}</p>}
                 </div>
               )}
             </>
@@ -793,10 +881,17 @@ function CallView({ r, node, symbol, onSymbol, depth, depthControl, direction, o
   )
 }
 
-function TestView({ r, node, symbol, onSymbol }: { r: RepoRecord; node: ViewNode | null; symbol: SymbolRow | null; onSymbol: (s: SymbolRow | null) => void }) {
-  const module = node !== null && !node.isPackage ? node.id : null
+function TestView({ r, node, seed, symbol, onSymbol }: {
+  r: RepoRecord
+  node: ViewNode | null
+  /** The search a Test map row's link asked for, before any module is picked. */
+  seed: string | null
+  symbol: SymbolRow | null
+  onSymbol: (s: SymbolRow | null) => void
+}) {
+  const module = seed ?? (node !== null && !node.isPackage ? node.id : null)
   return (
-    <Card className="rg-testview" title={symbol === null ? 'Test map' : `Test map · ${short(symbol.id)}`}>
+    <Card className="rg-testview" title={symbol === null ? 'Tests reaching a symbol' : `Tests reaching ${short(symbol.id)}`}>
       {symbol === null ? (
         <>
           <p className="ur-sub">Pick a symbol to list the tests that reach it.</p>

@@ -1,6 +1,6 @@
 import { Fragment, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, asSentence, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
@@ -359,6 +359,19 @@ export function SubmitWorkflowScreen() {
   )
 }
 
+/**
+ * WHAT IS WRONG WITH A TYPED PRIORITY, BY CAUSE (QA G4-24), or null when the
+ * API would take it. The rail said "not a whole number" for 500, a whole
+ * number out of range; the field's own sentence was right, and the rail now
+ * names the same cause it does. `schemas.WorkflowCreate.priority` is -100..100.
+ */
+export function priorityProblem(typed: string): string | null {
+  const n = Number(typed)
+  if (typed.trim() === '' || !Number.isInteger(n)) return 'not a whole number'
+  if (n < -100 || n > 100) return 'out of range (−100 to 100)'
+  return null
+}
+
 /** `on_step_failure`'s two values (schemas.WorkflowCreate), as step 2 offers
  *  them and the summary lists them. The default is the API's. */
 const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: string; say: string; fact: string }> = [
@@ -367,6 +380,38 @@ const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: st
   { value: 'continue', label: 'Continue', fact: 'continue',
     say: "Only the failed step's dependents are cancelled; other branches keep starting." },
 ]
+
+/**
+ * "If a step fails", DRAWN AS THE DISPATCH CONTROL'S CARD (QA G4-35,
+ * 2026-10-07). One form drew two radio groups two ways: the strategy as a
+ * `.dsp-option` (box, bold title, the selected card's ink rule down its
+ * leading edge) and this group as a small `.sb-option` with the accent's soft
+ * fill. It takes the strategy's card -- the box, the title, the selected
+ * card's edge -- and keeps its explanation in the muted token, since unlike a
+ * strategy's pull-request count it is not the decision itself.
+ */
+export function OnFailureChoice({ value, onChange }: {
+  value: 'fail_workflow' | 'continue'
+  onChange: (next: 'fail_workflow' | 'continue') => void
+}) {
+  return (
+    <>
+      <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
+      <div className="dsp-options" role="radiogroup" aria-labelledby="wf-on-failure">
+        {ON_FAILURE.map((o) => (
+          <label key={o.value} className={`dsp-option${value === o.value ? ' is-on' : ''}`}>
+            <input type="radio" name="on-step-failure" value={o.value} checked={value === o.value}
+              onChange={() => onChange(o.value)} />
+            <span className="dsp-option-body">
+              <span className="dsp-option-head"><b>{o.label}</b></span>
+              <span className="dsp-option-say">{o.say}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </>
+  )
+}
 
 function Form({ sources }: { sources: FormSources }) {
   // A tenant switch made with this form open keeps it, and its button then
@@ -380,7 +425,8 @@ function Form({ sources }: { sources: FormSources }) {
   const [onFailure, setOnFailure] = useState<'fail_workflow' | 'continue'>('fail_workflow')
   const [priority, setPriority] = useState('0')
   const priorityN = Number(priority)
-  const priorityOk = priority.trim() !== '' && Number.isInteger(priorityN) && priorityN >= -100 && priorityN <= 100
+  const priorityWrong = priorityProblem(priority)
+  const priorityOk = priorityWrong === null
   // EVERY STEP STARTS WITH NO RUNNER (#118). `planOf` refuses a step whose
   // profile is '', so an untouched form cannot be sent.
   const [steps, setSteps] = useState<StepDraft[]>(() => [{
@@ -499,7 +545,7 @@ function Form({ sources }: { sources: FormSources }) {
             (#120). It opened runner naming, a rule about what the form may not
             ask for; what a reader laying out a plan needs is how the plan
             runs -- stages, a step waiting for every step it depends on to
-            succeed, and a failure cancelling its dependants. Runner naming is
+            succeed, and a failure cancelling its dependents. Runner naming is
             the task form's `?`, and is in the Help section's catalogue group. */}
         <Move n={1} title="Lay out the plan" aside={<HelpCard topic="workflow-stages" />}>
           {/* STAGES, NOT A LIST. Everything in one band runs at the same time;
@@ -591,16 +637,7 @@ function Form({ sources }: { sources: FormSources }) {
               2026-10-01) rather than beside the button. Both are
               schemas.WorkflowCreate fields, sent only when they differ from
               the API's own defaults. */}
-          <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
-          <div className="sb-options" role="radiogroup" aria-labelledby="wf-on-failure">
-            {ON_FAILURE.map((o) => (
-              <label key={o.value} className={`sb-option${onFailure === o.value ? ' is-on' : ''}`}>
-                <input type="radio" name="on-step-failure" value={o.value} checked={onFailure === o.value}
-                  onChange={() => setOnFailure(o.value)} />
-                <span><b>{o.label}</b><small>{o.say}</small></span>
-              </label>
-            ))}
-          </div>
+          <OnFailureChoice value={onFailure} onChange={setOnFailure} />
           <label className="sb-sub" htmlFor="wf-priority">Priority</label>
           <div className="sb-prio">
             <input id="wf-priority" type="number" min={-100} max={100} step={1} value={priority}
@@ -644,7 +681,7 @@ function Form({ sources }: { sources: FormSources }) {
             </li>
             <li className="ctl-fact">
               <b>priority</b>
-              {!priorityOk ? <i className="sbf-bad">not a whole number</i>
+              {priorityWrong !== null ? <i className="sbf-bad">{priorityWrong}</i>
                 : priorityN === 0 ? '0 (default)' : String(priorityN)}
             </li>
           </ul>
@@ -749,8 +786,10 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
       )}
 
-      {nameProblem !== null && <p className="warn-text" role="alert">{nameProblem}</p>}
-      {!built.ok && <p className="warn-text" role="alert">{built.message}</p>}
+      {/* SENTENCES (QA G4-31): the fragments are written to follow a step's
+          name in the send panel; drawn alone here, each is a line of its own. */}
+      {nameProblem !== null && <p className="warn-text" role="alert">{asSentence(nameProblem)}</p>}
+      {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
 
       {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
           Both used to be open rows saying "— no other named step yet" and "—

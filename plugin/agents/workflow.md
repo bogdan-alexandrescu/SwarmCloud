@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given (by reference when it can) and returns its workflow id and the task id of every step, reads a submitted workflow to attach to it, lists the tenant's running workflows to attach them all, or reads a submitted workflow's derived state; after a submission or an attach it probes the follow the step rows make, once. Used by the /sc:swarmcloud workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
+description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given (by reference when it can) and returns its workflow id and the task id of every step, reads a submitted workflow to attach to it, lists the tenant's running workflows and the caller's running single tasks to attach them all, or reads a submitted workflow's derived state; after a submission or an attach it probes the follow the step rows make, once. Used by the /sc:swarmcloud workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
 model: haiku
 effort: low
 maxTurns: 10
@@ -160,10 +160,17 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
   absent), `state` and `console` (null when the entry has none), copied
   character for character. Every entry, none dropped, none added, none
   reordered: each one becomes a run of its own
+* `single_tasks` — for each entry of the reply's `single_tasks` (your running
+  tasks in no workflow), in the reply's order: its `task_id`, `label` (null
+  when it is null or absent), `state` and `console` (null when the entry has
+  none), copied character for character. Every entry, none dropped, none
+  added: each one becomes a row. `[]` when the reply has none
+* `single_tasks_error` — the reply's `single_tasks_error`, verbatim, else null
 * `error` — null
 
 If `swarm_workflows` returns an error, do not call it again: answer with
-`count` null, `workflows` empty and `error` set to the error text, verbatim.
+`count` null, `workflows` empty, `single_tasks` empty, `single_tasks_error`
+null and `error` set to the error text, verbatim.
 
 ## STATUS
 

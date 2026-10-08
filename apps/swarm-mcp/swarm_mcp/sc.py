@@ -20,6 +20,13 @@ digest of the plan `sc` PRINTED, after `approve` is typed back. Held out of
 every grant exactly as the account verbs are; `sc runs`, `sc run show` and
 `sc plan show` are views.
 
+THE THIRD IS ONBOARDING (#780, lane OB9): `sc setup` walks the person through
+connecting GitHub as themselves, enabling owners and choosing repositories,
+and `sc access` grants, revokes and verifies them later. They change what
+SwarmCloud may do as that person, so they are held out of every grant as the
+account verbs are; `sc setup status`, `sc access list`, `orgs` and `repos`
+read. No token, code or state is printed (see the section's own note).
+
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
 half: which deployment this machine talks to (config.py) and the developer's
@@ -847,6 +854,131 @@ def running_workflows(
     return out
 
 
+# Running SINGLE tasks (#830, owner 2026-10-07: "we need to be able to auto
+# attach on single tasks too"). A task sent with `swarm_dispatch` belongs to no
+# workflow, so `GET /v1/workflows` never lists it, and five lanes dispatched
+# that day ran without a row. These are the caller's own unfinished tasks
+# outside any workflow, read through the existing `GET /v1/tasks` filters only:
+# `state` (one value per request) and `submitted_by=me`.
+
+#: Pages of ONE state read before the list says it stopped short. `state` and
+#: `submitted_by` together are filtered after the route takes its cursor
+#: (`Store.list_tasks`), so a page holds only the caller's share of the
+#: tenant's tasks in that state and may come back short with a token: a tenant
+#: whose other members queue hundreds of tasks needs more than one page to
+#: reach the caller's. Unfinished tasks are few; past this many pages the list
+#: says so rather than keep the hook's ten seconds waiting.
+SINGLE_TASK_PAGES = 3
+SINGLE_TASK_PAGE_SIZE = 50
+
+#: How many single tasks the session-start context names one by one.
+SESSION_START_TASKS_NAMED = 10
+
+
+def _task_label(task: dict[str, Any]) -> str | None:
+    """The label the dispatch gave (`swarm_dispatch`'s `label`, stored as
+    `metadata.unit`), or None."""
+    unit = (task.get("metadata") or {}).get("unit") if isinstance(task.get("metadata"), dict) else None
+    if isinstance(unit, str) and " ".join(unit.split()):
+        return " ".join(unit.split())
+    return None
+
+
+def _single_task_entry(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+    from .client import task_id_of
+
+    created = render.parse_time(task.get("created_at"))
+    entry: dict[str, Any] = {
+        "task_id": task_id_of(task),
+        "label": _task_label(task),
+        "state": task.get("state"),
+        "runner_profile": task.get("runner_profile"),
+        "created_at": task.get("created_at"),
+        "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+    }
+    if task.get("park_reason"):
+        entry["park_reason"] = task["park_reason"]
+    return with_console(entry, task)
+
+
+def _callers_tasks_in(client: SwarmClient, state: str, pages: int) -> tuple[list[dict[str, Any]], str | None, bool]:
+    """The caller's own tasks in one state: `(tasks, tenant_id, complete)`."""
+    found: list[dict[str, Any]] = []
+    tenant: str | None = None
+    token: str | None = None
+    for _ in range(max(1, pages)):
+        params = [("state", state), ("submitted_by", "me"), ("limit", str(SINGLE_TASK_PAGE_SIZE))]
+        if token:
+            params.append(("page_token", token))
+        data = _tasks_page(client, params)
+        found += [t for t in data["tasks"] if isinstance(t, dict)]
+        tenant = tenant or data.get("tenant_id")
+        token = data.get("next_page_token") or None
+        if token is None:
+            break
+    return found, tenant, token is None
+
+
+def running_tasks(
+    client: SwarmClient,
+    *,
+    now: datetime | None = None,
+    pages: int = SINGLE_TASK_PAGES,
+) -> dict[str, Any]:
+    """The caller's running SINGLE tasks, newest first: not finished, in no
+    workflow, and submitted by the caller.
+
+    One `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state
+    (`_live_states`, read from the frozen contract), in parallel. The route
+    answers for the caller's own tenant and resolves `me` to the caller's
+    verified email; nothing here names either. Every row is checked AGAIN --
+    unfinished, no `workflow_id` -- because a task can move state between two
+    of the reads, and an older route that ignored a filter would otherwise
+    hand a workflow's step or a finished task a row. A task a PARENT TASK
+    submitted (`parent_task_id`) is left out: it was not dispatched from a
+    session, and its parent's row is where it shows. Raises `SwarmError` when
+    any read fails: "could not ask" is never an empty list.
+    """
+    now = now or datetime.now(timezone.utc)
+    states = _live_states()
+    with ThreadPoolExecutor(max_workers=len(states)) as pool:
+        walks = list(pool.map(lambda state: _callers_tasks_in(client, state, pages), states))
+    tenant: str | None = None
+    seen: set[str] = set()
+    found: list[dict[str, Any]] = []
+    short: list[str] = []
+    for state, (tasks, page_tenant, complete) in zip(states, walks):
+        tenant = tenant or page_tenant
+        if not complete:
+            short.append(state)
+        for task in tasks:
+            entry = _single_task_entry(task, now)
+            task_id = entry["task_id"]
+            if (
+                not task_id
+                or task_id in seen
+                or task.get("workflow_id")
+                or task.get("parent_task_id")
+                or task.get("state") in _TERMINAL_VALUES
+            ):
+                continue
+            seen.add(task_id)
+            found.append(entry)
+    found.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+    out: dict[str, Any] = {
+        "tenant_id": tenant,
+        "count": len(found),
+        "complete": not short,
+        "tasks": found,
+    }
+    if short:
+        out["incomplete_because"] = (
+            f"stopped after {pages} pages of {SINGLE_TASK_PAGE_SIZE} {', '.join(short)} tasks; "
+            "older running tasks of yours, if any, are not listed"
+        )
+    return out
+
+
 def _age_text(seconds: Any) -> str:
     if not isinstance(seconds, int):
         return "age unknown"
@@ -868,35 +1000,72 @@ def _steps_text(entry: dict[str, Any]) -> str:
     return ", ".join(f"{s.get('step_id')} {s.get('state') or 'state not read'}" for s in steps)
 
 
-def session_start_context(listing: dict[str, Any]) -> str | None:
+def session_start_context(
+    listing: dict[str, Any] | None,
+    tasks: dict[str, Any] | None = None,
+) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
-    A hook cannot start a Workflow; the context makes the session's first
-    action the attach, and says how to turn this off.
+    `listing` is `running_workflows`, `tasks` is `running_tasks` (#830); either
+    may be None when it could not be read, and the other is still named. A
+    hook cannot start a Workflow; the context makes the session's first action
+    the attach, and says how to turn this off.
     """
-    running = listing.get("workflows") or []
-    if not running:
+    running = (listing or {}).get("workflows") or []
+    singles = (tasks or {}).get("tasks") or []
+    if not running and not singles:
         return None
-    count = len(running)
-    noun = "workflow is" if count == 1 else "workflows are"
-    named = []
-    for entry in running[:SESSION_START_NAMED]:
-        label = f' "{entry["label"]}"' if entry.get("label") else ""
-        named.append(
-            f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
-            f"{_age_text(entry.get('age_seconds'))})"
+    tenant_id = (listing or {}).get("tenant_id") or (tasks or {}).get("tenant_id")
+    tenant = f" for tenant {tenant_id}" if tenant_id else ""
+    parts = []
+    if running:
+        count = len(running)
+        noun = "workflow is" if count == 1 else "workflows are"
+        named = []
+        for entry in running[:SESSION_START_NAMED]:
+            label = f' "{entry["label"]}"' if entry.get("label") else ""
+            named.append(
+                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_age_text(entry.get('age_seconds'))})"
+            )
+        if count > SESSION_START_NAMED:
+            named.append(f"and {count - SESSION_START_NAMED} more")
+        parts.append(
+            f"{count} SwarmCloud {noun} running{tenant} and not shown in this session: "
+            + "; ".join(named)
+            + "."
         )
-    if count > SESSION_START_NAMED:
-        named.append(f"and {count - SESSION_START_NAMED} more")
-    tenant = f" for tenant {listing['tenant_id']}" if listing.get("tenant_id") else ""
+    if singles:
+        count = len(singles)
+        noun = "single task you dispatched is" if count == 1 else "single tasks you dispatched are"
+        named = []
+        for entry in singles[:SESSION_START_TASKS_NAMED]:
+            label = f' "{entry["label"]}"' if entry.get("label") else ""
+            named.append(
+                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_age_text(entry.get('age_seconds'))})"
+            )
+        if count > SESSION_START_TASKS_NAMED:
+            named.append(f"and {count - SESSION_START_TASKS_NAMED} more")
+        parts.append(
+            f"{count} SwarmCloud {noun} running{tenant}, in no workflow, and not shown "
+            "in this session: " + "; ".join(named) + "."
+        )
     return (
-        f"{count} SwarmCloud {noun} running{tenant} and not shown in this session: "
-        + "; ".join(named)
-        + ". Before anything else, run `/sc attach --all` to show them as live "
+        " ".join(parts)
+        + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
-        "step and follows at most 10 workflows. (This notice comes from the sc "
-        "plugin's SessionStart hook; turn off its `auto_attach` option to stop it.)"
+        "workflow step and one per single task, and follows at most 10 workflows "
+        "and 10 single tasks. (This notice comes from the sc plugin's SessionStart "
+        "hook; turn off its `auto_attach` option to stop it.)"
     )
+
+
+def _quietly(read: Callable[[], dict[str, Any]]) -> dict[str, Any] | None:
+    try:
+        return read()
+    except Exception:  # noqa: BLE001 - the hook's mode is silent on any failure
+        return None
 
 
 def cmd_workflows(client: SwarmClient, args, out) -> int:
@@ -905,8 +1074,13 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         # session must start the same whether or not SwarmCloud answered, so a
         # failure prints nothing and exits 0 -- the hook script discards
         # stderr anyway, and this keeps the CLI from relying on that.
+        # The two reads at once, inside the hook's ten seconds; each fails
+        # alone, so a deployment that answers one still gets that one named.
         try:
-            context = session_start_context(running_workflows(client))
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
+                tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
+                context = session_start_context(workflows_read.result(), tasks_read.result())
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
         if context:
@@ -924,12 +1098,17 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         return EXIT_OK
 
     listing, failure = _attempt(lambda: running_workflows(client))
+    # The caller's running single tasks beside them (#830): `/sc attach --all`
+    # gives each a row too, so the list names what it would follow.
+    singles, singles_failure = _attempt(lambda: running_tasks(client))
     if args.json:
-        out.write(
-            json.dumps(listing if listing is not None else {"error": str(failure)}, indent=2, default=str)
-            + "\n"
-        )
-        return EXIT_OK if listing is not None else EXIT_FAIL
+        payload = dict(listing) if listing is not None else {"error": str(failure)}
+        if singles is not None:
+            payload["single_tasks"] = singles
+        else:
+            payload["single_tasks_error"] = str(singles_failure)
+        out.write(json.dumps(payload, indent=2, default=str) + "\n")
+        return EXIT_OK if listing is not None and singles is not None else EXIT_FAIL
     style = style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
     if listing is None:
         _emit([render.section("workflows", "", style), f"  could not be read: {failure}"], out)
@@ -958,10 +1137,27 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
     if not listing.get("complete"):
         lines.append(f"  {listing.get('incomplete_because')}")
-    if running:
+    if singles is None:
+        lines.append(render.section("single tasks", "", style))
+        lines.append(f"  could not be read: {singles_failure}")
+    else:
+        mine = singles["tasks"]
+        lines.append(render.section("single tasks", f"{len(mine)} of yours running, in no workflow", style))
+        if not mine:
+            lines.append("  none running")
+        for entry in mine:
+            label = f"  {entry['label']}" if entry.get("label") else ""
+            link = f"  console: {entry['console']}" if entry.get("console") else ""
+            lines.append(
+                f"  {entry.get('task_id')}{label}  {entry.get('state')}  "
+                f"{_age_text(entry.get('age_seconds'))}{link}"
+            )
+        if not singles.get("complete"):
+            lines.append(f"  {singles.get('incomplete_because')}")
+    if running or (singles and singles["tasks"]):
         lines.append("  show them as live rows in Claude Code: /sc attach --all")
     _emit(lines, out)
-    return EXIT_OK
+    return EXIT_OK if singles is not None else EXIT_FAIL
 
 
 def _dump(snap: Snapshot, out) -> None:
@@ -1271,6 +1467,834 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     out.write(f"state       {account.get('state') or '(not reported)'}\n")
     if isinstance(created, dict) and created.get("note"):
         out.write(f"note        {created['note']}\n")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
+# Onboarding: `sc setup` and `sc access` (#780, lane OB9)
+# --------------------------------------------------------------------------
+#
+# THE SAME STATE MACHINE AS THE CONSOLE (docs/onboarding.md §2.1, §4). Every
+# step's state is read from `GET /v1/onboarding`, and every action goes
+# through the routes the console's checklist uses, so a person who connects
+# GitHub in the console and chooses repositories here sees one checklist.
+# Nothing here decides that a step is done: it acts, then reads the checklist
+# again, and prints what the API derived.
+#
+# THESE WRITE, so they are held out of every grant like `sc account`:
+# connecting starts an authorisation, and enabling an owner, granting,
+# revoking and verifying change what SwarmCloud may do as the person, or
+# what it recorded about it. `/sc:setup` drives the same functions through
+# the bridge tools, granted by name; `remove-org` and `disconnect` are typed
+# by the person and have no tool.
+#
+# NO TOKEN, CODE OR STATE IS EVER PRINTED. No route used here returns a
+# token. The authorize URL carries GitHub's `state` because GitHub requires
+# it there; it is printed once, as the URL, for a machine whose browser
+# cannot be opened, and nowhere else -- the state is never read out of it,
+# kept, or sent back. The exchange happens in the browser, on the console's
+# callback page, under the person's own sign-in; this side only waits for
+# the checklist to say the connection exists.
+
+#: The `surface` the authorize call names. swarm-api's `AuthorizeBody` takes
+#: `console` or `plugin`, and `sc` is the plugin's own package (the bridge
+#: and this command are one install), so the terminal is the plugin surface.
+SETUP_SURFACE = "plugin"
+
+#: How long `sc setup` waits for the browser half. The link itself lives ten
+#: minutes (swarm-api's `STATE_TTL`), and the wait is cut to the expiry the
+#: API states when that is shorter: waiting on a dead link helps nobody.
+CONNECT_TIMEOUT_SECONDS = 600
+
+#: How often the wait reads the checklist. One cheap read; a person takes
+#: tens of seconds to approve in the browser.
+CONNECT_POLL_SECONDS = 3.0
+
+#: A step's state, as a checklist mark (the console draws the same five).
+_SETUP_MARKS = {"done": "[x]", "stale": "[?]", "in_progress": "[~]", "failed": "[!]", "todo": "[ ]"}
+
+#: A step whose evidence counts. `stale` is done once, its evidence old.
+_SETUP_DONE = ("done", "stale")
+
+#: swarm-api's `repositories.repo_id_for` recipe, restated as the scheduler
+#: restates it (`scheduler/credentials.py`): the access routes take the id,
+#: and the API refuses one that is not this tenant's id for the repository,
+#: so a drift here is a loud 422 and never a grant on the wrong repository.
+_FORGE_HOST = "github.com"
+
+
+def setup_status(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/onboarding`: the caller's six steps, next step, recovery copy."""
+    view = client.request("GET", "/v1/onboarding")
+    if not isinstance(view, dict) or not isinstance(view.get("steps"), list):
+        raise SwarmError("GET /v1/onboarding answered no checklist; nothing was read")
+    return view
+
+
+def _setup_step(view: dict[str, Any], name: str) -> dict[str, Any]:
+    for step in view.get("steps") or []:
+        if isinstance(step, dict) and step.get("step") == name:
+            return step
+    return {}
+
+
+def connected_as_you(view: dict[str, Any]) -> str | None:
+    """The GitHub login SwarmCloud acts as YOU through, or None.
+
+    `github_connected` is also `done` when the caller acts through the
+    TENANT's token (`evidence.via == "tenant"`): that is not connecting as
+    yourself (D1), and the access routes refuse it, so only `via == "user"`
+    counts here."""
+    step = _setup_step(view, "github_connected")
+    evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+    if step.get("state") in _SETUP_DONE and evidence.get("via") == "user":
+        return str(evidence.get("forge_login") or "your GitHub account")
+    return None
+
+
+def _setup_issues(step: dict[str, Any]) -> list[dict[str, Any]]:
+    issues = [i for i in step.get("issues") or [] if isinstance(i, dict) and i.get("code")]
+    if not issues and step.get("code"):
+        issues = [{"code": step.get("code"), "copy": step.get("copy")}]
+    return issues
+
+
+def _setup_note(step: dict[str, Any]) -> str:
+    state = str(step.get("state") or "unknown")
+    evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+    if step.get("step") == "github_connected" and state in _SETUP_DONE:
+        login = evidence.get("forge_login") or "an account GitHub did not name"
+        note = f"connected as {login}"
+        if evidence.get("via") == "tenant":
+            note += " (the tenant's token, not yours: connect GitHub as yourself)"
+    elif state == "todo" and evidence.get("waiting_for"):
+        note = f"waiting for {evidence['waiting_for']}"
+    else:
+        note = state.replace("_", " ")
+    if state == "stale":
+        note += " (its evidence is old; it is re-checked on the next pass)"
+    return note
+
+
+def _wrapped(text: str, indent: str) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(str(text), width=78, initial_indent=indent, subsequent_indent=indent)
+
+
+def setup_checklist(view: dict[str, Any]) -> list[str]:
+    """The checklist the console draws, as lines: one per step, each failure's
+    code and its recovery copy word for word, then what is next."""
+    lines = [
+        f"SwarmCloud setup for {view.get('user') or '(not reported)'} "
+        f"in tenant {view.get('tenant_id') or '(not reported)'}"
+    ]
+    nxt = view.get("next_step")
+    for step in view.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        name = str(step.get("step") or "?")
+        mark = _SETUP_MARKS.get(str(step.get("state")), "[?]")
+        flag = "   <- next" if name == nxt else ""
+        lines.append(f"  {mark} {name:<17} {_setup_note(step)}{flag}")
+        for issue in _setup_issues(step):
+            lines.append(f"        {issue['code']}")
+            if issue.get("copy"):
+                lines += _wrapped(issue["copy"], "          ")
+    lines.append("Ready: every step is done." if nxt is None else f"Next: {nxt}")
+    return lines
+
+
+def start_github_connect(client: SwarmClient) -> dict[str, Any]:
+    """`POST /v1/onboarding/github/authorize`: the URL to open and its expiry.
+
+    ONLY THOSE TWO are kept. Anything else the answer carried is dropped here,
+    so a field added to the route later cannot reach a terminal or a tool
+    reply without someone reading it first."""
+    started = client.request(
+        "POST", "/v1/onboarding/github/authorize", payload={"surface": SETUP_SURFACE}
+    )
+    url = started.get("authorize_url") if isinstance(started, dict) else None
+    if not isinstance(url, str) or not url.startswith("https://"):
+        raise SwarmError(
+            "the API began no GitHub authorisation: its answer named no https URL to open. "
+            "Nothing was stored"
+        )
+    expires = started.get("expires_in_seconds")
+    return {
+        "authorize_url": url,
+        "expires_in_seconds": expires if isinstance(expires, int) and expires > 0 else None,
+    }
+
+
+def wait_for_github(
+    client: SwarmClient,
+    *,
+    timeout: float,
+    interval: float = CONNECT_POLL_SECONDS,
+    sleep: Callable[[float], Any] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Read the checklist until GitHub is connected as you, or `timeout`
+    seconds pass. `(login, view)`; the login is None on a timeout, and the
+    view is always the last one read."""
+    import time
+
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + max(0.0, float(timeout))
+    while True:
+        view = setup_status(client)
+        login = connected_as_you(view)
+        left = deadline - clock()
+        if login is not None or left <= 0:
+            return login, view
+        sleep(min(max(interval, 0.1), left))
+
+
+def not_connected_text(seconds: float) -> str:
+    minutes = max(1, int(round(seconds / 60)))
+    return (
+        f"GitHub was not connected within {minutes} minute{'s' if minutes != 1 else ''}. "
+        "If you approved SwarmCloud in the browser, its callback page finishes the "
+        "connection only in a browser signed in to the SwarmCloud console: sign in there, "
+        f"then run `{terminal_command('sc setup')}` again for a fresh link (a link lasts "
+        "10 minutes and works once). Nothing was stored."
+    )
+
+
+def refusal_text(exc: SwarmError) -> str:
+    """An access refusal as the person should read it: §2.3's code and its
+    recovery copy, word for word, when the API served them; else the error."""
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    code, recovery = detail.get("failure_code"), detail.get("recovery")
+    if code and recovery:
+        return f"{code}: {recovery}"
+    return str(exc)
+
+
+def repository_name(text: str) -> str:
+    """`owner/repo` from what a person types: `owner/repo`, or its GitHub URL."""
+    value = (text or "").strip()
+    for prefix in ("https://github.com/", "http://github.com/", "github.com/"):
+        if value.lower().startswith(prefix):
+            value = value[len(prefix):]
+    value = value.rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    parts = value.split("/")
+    if len(parts) != 2 or not all(parts) or any(c.isspace() for c in value):
+        raise SwarmError(f"{text!r} is not owner/repo, as GitHub spells it. Nothing was sent")
+    return value
+
+
+def repo_id_for(tenant_id: str, repository: str) -> str:
+    """swarm-api's `repositories.repo_id_for`: tenant + `github.com/` + the
+    lower-cased owner/repo, sha256, 16 hex, `repo_` in front."""
+    import hashlib
+
+    key = f"{tenant_id}{_FORGE_HOST}/{repository.lower()}"
+    return "repo_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def access_overview(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/access`: your connection, enabled owners and grants."""
+    view = client.request("GET", "/v1/access")
+    if not isinstance(view, dict):
+        raise SwarmError("GET /v1/access answered nothing readable; nothing was read")
+    return view
+
+
+def access_owners(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/access/orgs`: every owner you reach, its install state, sso."""
+    listing = client.request("GET", "/v1/access/orgs")
+    if not isinstance(listing, dict) or not isinstance(listing.get("owners"), list):
+        raise SwarmError("GET /v1/access/orgs answered no owners; nothing was read")
+    return listing
+
+
+def enable_owner(client: SwarmClient, owner: str) -> dict[str, Any]:
+    return client.request("POST", "/v1/access/orgs", payload={"owner": owner.strip()})
+
+
+def disable_owner(client: SwarmClient, owner: str) -> dict[str, Any]:
+    owner = urllib.parse.quote(owner.strip(), safe="")
+    return client.request("DELETE", f"/v1/access/orgs/{owner}")
+
+
+def repositories_page(
+    client: SwarmClient, owner: str, *, page: int = 1, query: str | None = None
+) -> dict[str, Any]:
+    """`GET /v1/access/orgs/{owner}/repositories`: one page, searched by `query`."""
+    params = [("page", str(max(1, int(page))))]
+    if query:
+        params.append(("q", query))
+    named = owner.strip()
+    owner, query_string = urllib.parse.quote(named, safe=""), urllib.parse.urlencode(params)
+    listing = client.request("GET", f"/v1/access/orgs/{owner}/repositories?{query_string}")
+    if not isinstance(listing, dict) or not isinstance(listing.get("repositories"), list):
+        raise SwarmError(f"{named}'s repositories were not listed: the API answered no "
+                         "repositories; nothing was read")
+    return listing
+
+
+def grant_repository(
+    client: SwarmClient,
+    repository: str,
+    mode: str,
+    *,
+    tenant_id: str | None = None,
+    repo_id: str | None = None,
+) -> dict[str, Any]:
+    """`PUT /v1/access/grants/{repo_id}`: grant `repository` read or write.
+
+    The API reads the repository once as you and refuses what the mode cannot
+    do (archived, no push) with §2.3's copy; nothing is granted then."""
+    if mode not in ("read", "write"):
+        raise SwarmError(f"a grant is read or write, not {mode!r}. Nothing was sent")
+    name = repository_name(repository)
+    if repo_id is None:
+        tenant = tenant_id or str(access_overview(client).get("tenant_id") or "")
+        if not tenant:
+            raise SwarmError("the API named no tenant, so the repository's id is unknown. "
+                             "Nothing was sent")
+        repo_id = repo_id_for(tenant, name)
+    return client.request(
+        "PUT", f"/v1/access/grants/{repo_id}", payload={"repository": name, "mode": mode}
+    )
+
+
+def held_grant(overview: dict[str, Any], repository: str) -> dict[str, Any] | None:
+    """Your grant on `repository` in an overview, matched as GitHub does: by
+    owner/repo, case-insensitively."""
+    wanted = repository_name(repository).lower()
+    for grant in overview.get("grants") or []:
+        if isinstance(grant, dict) and str(grant.get("repository") or "").lower() == wanted:
+            return grant
+    return None
+
+
+def revoke_repository(client: SwarmClient, repository: str) -> dict[str, Any]:
+    """`DELETE /v1/access/grants/{repo_id}` for a grant you hold."""
+    grant = held_grant(access_overview(client), repository)
+    if grant is None or not grant.get("repo_id"):
+        raise SwarmError(
+            f"you hold no grant on {repository_name(repository)}; nothing was revoked. "
+            f"`{terminal_command('sc access list')}` shows the ones you hold"
+        )
+    repo_id = grant["repo_id"]
+    return client.request("DELETE", f"/v1/access/grants/{repo_id}")
+
+
+def verify_repositories(
+    client: SwarmClient, repositories: Sequence[str] = ()
+) -> list[dict[str, Any]]:
+    """`POST /v1/access/grants/{repo_id}/verify` for each grant named, or for
+    every grant you hold. Reads only (D6): clone, and for a write grant push
+    and pull request. A refused call is that repository's answer, not the end
+    of the sweep."""
+    grants = [g for g in access_overview(client).get("grants") or [] if isinstance(g, dict)]
+    if repositories:
+        by_name = {str(g.get("repository") or "").lower(): g for g in grants}
+        picked: list[dict[str, Any]] = []
+        for repository in repositories:
+            grant = by_name.get(repository_name(repository).lower())
+            if grant is None:
+                raise SwarmError(
+                    f"you hold no grant on {repository_name(repository)}; nothing was verified. "
+                    "Grant it first"
+                )
+            picked.append(grant)
+        grants = picked
+    results: list[dict[str, Any]] = []
+    for grant in grants:
+        row: dict[str, Any] = {"repository": grant.get("repository"), "mode": grant.get("mode")}
+        repo_id = grant.get("repo_id")
+        try:
+            answer = client.request("POST", f"/v1/access/grants/{repo_id}/verify", payload={})
+        except SwarmError as exc:
+            row.update(passed=False, checks={}, failures=[{"check": "verify",
+                                                            "code": (exc.detail or {}).get("failure_code"),
+                                                            "copy": refusal_text(exc)}])
+            results.append(row)
+            continue
+        answer = answer if isinstance(answer, dict) else {}
+        checked = (answer.get("grant") or {}).get("checks") if isinstance(answer.get("grant"), dict) else {}
+        row.update(
+            passed=bool(answer.get("passed")),
+            checks={name: (check or {}).get("state") for name, check in (checked or {}).items()},
+            failures=[f for f in answer.get("failures") or [] if isinstance(f, dict)],
+        )
+        results.append(row)
+    return results
+
+
+def verify_lines(results: Sequence[dict[str, Any]]) -> list[str]:
+    if not results:
+        return ["no grant to verify: choose a repository first"]
+    lines: list[str] = []
+    for row in results:
+        lines.append(f"{row.get('repository')}  ({row.get('mode') or '?'})  "
+                     + ("passed" if row.get("passed") else "NOT passed"))
+        for name in ("clone", "push", "pull_request"):
+            state = (row.get("checks") or {}).get(name)
+            if state is not None:
+                lines.append(f"    {name.replace('_', ' '):<14} {state}")
+        for failure in row.get("failures") or []:
+            lines.append(f"    {failure.get('check')}: {failure.get('code') or 'refused'}")
+            if failure.get("copy"):
+                lines += _wrapped(failure["copy"], "      ")
+    return lines
+
+
+def owners_lines(listing: dict[str, Any]) -> list[str]:
+    rows = [o for o in listing.get("owners") or [] if isinstance(o, dict)]
+    if not rows:
+        return ["no owner reachable: GitHub listed no account or organisation for you"]
+    lines = []
+    for owner in rows:
+        kind = "your account" if owner.get("owner_type") == "User" else "organisation"
+        state = str(owner.get("install_state") or "unknown").replace("_", " ")
+        enabled = ", enabled" if owner.get("enabled") else ""
+        sso = ", SSO required" if owner.get("sso") == "required" else ""
+        lines.append(f"  {owner.get('owner')!s:<24} {kind:<13} {state}{enabled}{sso}")
+    return lines
+
+
+def repositories_lines(listing: dict[str, Any]) -> list[str]:
+    rows = [r for r in listing.get("repositories") or [] if isinstance(r, dict)]
+    lines = [f"{listing.get('owner')}, page {listing.get('page') or 1}"
+             + (f", search {listing['q']!r}" if listing.get("q") else "")]
+    if not rows:
+        lines.append("  no repository on this page")
+    for index, row in enumerate(rows, 1):
+        push = "push" if row.get("can_push") else "read only"
+        held = f"  granted {row.get('mode')}" if row.get("granted") else ""
+        archived = "  archived" if row.get("archived") else ""
+        lines.append(f"  {index:>3}  {row.get('repository')!s:<40} "
+                     f"{row.get('visibility') or '?':<8} {push}{archived}{held}")
+    if listing.get("next_page"):
+        lines.append(f"  more on page {listing['next_page']}")
+    if listing.get("capped"):
+        lines.append("  the listing stops here (capped): search, or type owner/repo")
+    return lines
+
+
+def access_lines(overview: dict[str, Any]) -> list[str]:
+    conn = overview.get("connection") if isinstance(overview.get("connection"), dict) else None
+    if conn is None:
+        lines = ["GitHub: not connected as you. "
+                 f"`{terminal_command('sc setup')}` connects it."]
+    else:
+        lines = [f"GitHub: {conn.get('state') or 'unknown'} as {conn.get('forge_login') or '?'}"]
+        if conn.get("failure"):
+            lines.append(f"  {conn['failure']}")
+    orgs = [o for o in overview.get("orgs") or [] if isinstance(o, dict)]
+    lines.append("Enabled owners: " + (", ".join(str(o.get("owner")) for o in orgs) or "none"))
+    grants = [g for g in overview.get("grants") or [] if isinstance(g, dict)]
+    lines.append("Repositories:" if grants else "Repositories: none chosen")
+    for grant in grants:
+        checks = grant.get("checks") or {}
+        states = " ".join(f"{name}={(checks.get(name) or {}).get('state')}"
+                          for name in ("clone", "push", "pull_request") if name in checks)
+        lines.append(f"  {grant.get('repository')!s:<40} {grant.get('mode')!s:<6} "
+                     + (states or "not verified"))
+    return lines
+
+
+def _yes(answer: str, *, default: bool) -> bool:
+    text = answer.strip().lower()
+    if not text:
+        return default
+    return text in ("y", "yes")
+
+
+def _choose_in(client: SwarmClient, out, ask: Callable[[str], str], owner: str,
+               tenant_id: str) -> int:
+    """The chooser for one owner: a page at a time, searched, each pick read
+    or write. Returns how many grants were made. Blank ends it."""
+    page, query, made = 1, None, 0
+    while True:
+        try:
+            listing = repositories_page(client, owner, page=page, query=query)
+        except SwarmError as exc:
+            out.write(refusal_text(exc) + "\n")
+            return made
+        _emit(repositories_lines(listing), out)
+        rows = [r for r in listing.get("repositories") or [] if isinstance(r, dict)]
+        answer = ask(
+            "Grant which? numbers or owner/repo, each with read or write (`1 write, 3 read`); "
+            "n next page, p previous, /text to search, blank when done: "
+        ).strip()
+        if not answer:
+            return made
+        if answer.lower() == "n":
+            if listing.get("next_page"):
+                page = int(listing["next_page"])
+            else:
+                out.write("that is the last page\n")
+            continue
+        if answer.lower() == "p":
+            page = max(1, page - 1)
+            continue
+        if answer.startswith("/"):
+            query, page = answer[1:].strip() or None, 1
+            continue
+        for pick in (p.strip() for p in answer.split(",")):
+            words = pick.split()
+            if len(words) != 2 or words[1].lower() not in ("read", "write"):
+                out.write(f"{pick!r}: say which, then read or write (`2 write`)\n")
+                continue
+            which, mode = words[0], words[1].lower()
+            repo_id = None
+            if which.isdigit():
+                if not 1 <= int(which) <= len(rows):
+                    out.write(f"{which}: not a number on this page\n")
+                    continue
+                row = rows[int(which) - 1]
+                which, repo_id = str(row.get("repository")), row.get("repo_id")
+            try:
+                done = grant_repository(client, which, mode, tenant_id=tenant_id, repo_id=repo_id)
+            except SwarmError as exc:
+                out.write(f"{which}: {refusal_text(exc)}\n")
+                continue
+            grant = done.get("grant") if isinstance(done, dict) else None
+            grant = grant if isinstance(grant, dict) else {}
+            made += 1
+            out.write(f"granted {grant.get('repository') or which} {grant.get('mode') or mode}"
+                      + (" (registered for the tenant)" if isinstance(done, dict)
+                         and done.get("registered") else "") + "\n")
+
+
+def _setup_owners(client: SwarmClient, out, ask: Callable[[str], str],
+                  open_browser: Callable[[str], bool], browser: bool) -> list[str]:
+    """Enable the owners SwarmCloud's App is installed on; say where to
+    install it on the rest. Returns the owners enabled afterwards."""
+    while True:
+        listing = access_owners(client)
+        owners = [o for o in listing["owners"] if isinstance(o, dict) and o.get("owner")]
+        out.write("\nOwners you can reach:\n")
+        _emit(owners_lines(listing), out)
+        enabled = [str(o["owner"]) for o in owners if o.get("enabled")]
+        choosable = [str(o["owner"]) for o in owners
+                     if o.get("install_state") == "installed" and not o.get("enabled")]
+        if choosable:
+            answer = ask(f"Enable which? [{', '.join(choosable)}] "
+                         "(blank for all of them, `none` to skip): ").strip()
+            if not answer or answer.lower() == "all":
+                picked = choosable
+            elif answer.lower() == "none":
+                picked = []
+            else:
+                typed = [w for w in answer.replace(",", " ").split() if w]
+                known = {c.lower(): c for c in choosable}
+                picked = [known[w.lower()] for w in typed if w.lower() in known]
+                for word in typed:
+                    if word.lower() not in known:
+                        out.write(f"{word}: not one of {', '.join(choosable)}\n")
+            for owner in picked:
+                try:
+                    enable_owner(client, owner)
+                except SwarmError as exc:
+                    out.write(f"{owner}: {refusal_text(exc)}\n")
+                    continue
+                enabled.append(owner)
+                out.write(f"enabled {owner}\n")
+        missing = [str(o["owner"]) for o in owners if o.get("install_state") != "installed"]
+        url = listing.get("install_url")
+        if not missing:
+            return enabled
+        out.write(f"SwarmCloud's GitHub App is not installed on: {', '.join(missing)}.\n")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            out.write("This deployment named no install page; ask its operator for it.\n")
+            return enabled
+        out.write(
+            f"Install it there, choosing \"Only select repositories\":\n  {url}\n"
+            "On an organisation you do not own, GitHub sends its owners a request; it can "
+            "be enabled once one of them approves.\n"
+        )
+        if not _yes(ask("Open the install page now? [y/N]: "), default=False):
+            return enabled
+        if browser and not open_browser(url):
+            out.write("could not open a browser; use the address above\n")
+        if not _yes(ask("Re-check the owners once it is installed? [y/N]: "), default=False):
+            return enabled
+
+
+def run_setup(
+    client: SwarmClient,
+    out,
+    *,
+    ask: Callable[[str], str] | None = None,
+    open_browser: Callable[[str], bool] | None = None,
+    browser: bool = True,
+    timeout: float = CONNECT_TIMEOUT_SECONDS,
+    interval: float = CONNECT_POLL_SECONDS,
+    sleep: Callable[[float], Any] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> int:
+    """The wizard, from wherever the checklist stands (§4.3): connect GitHub,
+    enable owners, choose repositories, verify, then the checklist again.
+
+    Exit 0 when the checklist says ready, 3 when it stopped short of that (a
+    step failed, the browser half timed out, or nothing is installed yet);
+    a read that failed raises, which `main` turns into 1."""
+    ask = ask or _ask
+    open_browser = open_browser or _open_browser
+    view = setup_status(client)
+    _emit(setup_checklist(view), out)
+
+    login = connected_as_you(view)
+    if login is None:
+        out.write(
+            "\nNext: connect GitHub. SwarmCloud acts as you, through its GitHub App; the "
+            "token goes from GitHub to Secret Manager and you never see it.\n"
+        )
+        started = start_github_connect(client)
+        url, expires = started["authorize_url"], started["expires_in_seconds"]
+        opened = browser and open_browser(url)
+        out.write(
+            ("Opened your browser to authorise SwarmCloud on GitHub.\n" if opened
+             else "Open this in a browser to authorise SwarmCloud on GitHub.\n")
+            + f"If it did not open, visit:\n  {url}\n"
+        )
+        limit = min(float(timeout), float(expires)) if expires else float(timeout)
+        if expires:
+            out.write(f"The link expires in {max(1, expires // 60)} minutes and works once.\n")
+        out.write("Waiting for GitHub to say you approved it...\n")
+        if hasattr(out, "flush"):
+            out.flush()
+        login, view = wait_for_github(client, timeout=limit, interval=interval,
+                                      sleep=sleep, clock=clock)
+        if login is None:
+            out.write(not_connected_text(limit) + "\n")
+            return EXIT_TROUBLE
+        out.write(f"Connected as {login}.\n")
+
+    enabled = _setup_owners(client, out, ask, open_browser, browser)
+    if not enabled:
+        out.write(
+            "\nNo owner is enabled yet, so there is nothing to choose from. Run "
+            f"`{terminal_command('sc setup')}` again once SwarmCloud is installed on one.\n"
+        )
+        return EXIT_TROUBLE
+
+    overview = access_overview(client)
+    tenant_id = str(overview.get("tenant_id") or view.get("tenant_id") or "")
+    held = [g for g in overview.get("grants") or [] if isinstance(g, dict)]
+    out.write("\n")
+    for owner in enabled:
+        question = (f"Choose repositories in {owner}? [Y/n]: " if not held
+                    else f"Change the repositories chosen in {owner}? [y/N]: ")
+        if _yes(ask(question), default=not held):
+            _choose_in(client, out, ask, owner, tenant_id)
+
+    out.write("\nVerifying (reads only: nothing is pushed):\n")
+    results = verify_repositories(client)
+    _emit(verify_lines(results), out)
+    while any(not r.get("passed") for r in results) and \
+            _yes(ask("Re-check the ones that did not pass? [y/N]: "), default=False):
+        again = [str(r["repository"]) for r in results if not r.get("passed")]
+        results = verify_repositories(client, again)
+        _emit(verify_lines(results), out)
+
+    view = setup_status(client)
+    out.write("\n")
+    _emit(setup_checklist(view), out)
+    if view.get("next_step") is None:
+        out.write(
+            f"Change this any time with `{terminal_command('sc access')}` or Work › Access.\n"
+        )
+        return EXIT_OK
+    out.write(f"Setup paused at {view.get('next_step')}. Run "
+              f"`{terminal_command('sc setup')}` again to resume.\n")
+    return EXIT_TROUBLE
+
+
+def cmd_setup(client: SwarmClient, args, out) -> int:
+    return run_setup(client, out, browser=not args.no_browser,
+                     timeout=max(1, int(args.timeout)))
+
+
+def cmd_setup_status(client: SwarmClient, args, out) -> int:
+    """The checklist. Exit 0 when ready, 3 when a step failed or is still to
+    do; a checklist that could not be read is 1, through `main`."""
+    view = setup_status(client)
+    if args.json:
+        out.write(json.dumps(view, indent=2, default=str) + "\n")
+    else:
+        _emit(setup_checklist(view), out)
+    return EXIT_OK if view.get("next_step") is None else EXIT_TROUBLE
+
+
+def cmd_access(client: SwarmClient, args, out) -> int:
+    """The Access page, then grant, revoke or verify until a blank answer."""
+    while True:
+        overview = access_overview(client)
+        _emit(access_lines(overview), out)
+        answer = _ask("[g]rant, [r]evoke owner/repo, [v]erify, blank to finish: ").strip()
+        if not answer:
+            return EXIT_OK
+        verb, _, rest = answer.partition(" ")
+        verb = verb.lower()
+        try:
+            if verb in ("g", "grant"):
+                owners = [str(o.get("owner")) for o in overview.get("orgs") or []
+                          if isinstance(o, dict) and o.get("owner")]
+                if not owners:
+                    out.write("no owner is enabled: `"
+                              f"{terminal_command('sc access add-org <owner>')}` first\n")
+                    continue
+                owner = owners[0]
+                if len(owners) > 1:
+                    typed = _ask(f"which owner? [{', '.join(owners)}]: ").strip()
+                    owner = next((o for o in owners if o.lower() == typed.lower()), "")
+                    if not owner:
+                        out.write(f"{typed!r} is not one of {', '.join(owners)}\n")
+                        continue
+                _choose_in(client, out, _ask, owner, str(overview.get("tenant_id") or ""))
+            elif verb in ("r", "revoke"):
+                target = rest.strip() or _ask("revoke which owner/repo? ").strip()
+                revoke_repository(client, target)
+                out.write(f"revoked {repository_name(target)}\n")
+            elif verb in ("v", "verify"):
+                _emit(verify_lines(verify_repositories(client)), out)
+            else:
+                out.write(f"{verb!r}: g, r or v\n")
+        except SwarmError as exc:
+            out.write(refusal_text(exc) + "\n")
+
+
+def cmd_access_list(client: SwarmClient, args, out) -> int:
+    overview = access_overview(client)
+    if args.json:
+        out.write(json.dumps(overview, indent=2, default=str) + "\n")
+    else:
+        _emit(access_lines(overview), out)
+    return EXIT_OK
+
+
+def cmd_access_orgs(client: SwarmClient, args, out) -> int:
+    listing = access_owners(client)
+    if args.json:
+        out.write(json.dumps(listing, indent=2, default=str) + "\n")
+    else:
+        _emit(owners_lines(listing), out)
+        if listing.get("install_url"):
+            out.write(f"install SwarmCloud's GitHub App: {listing['install_url']}\n")
+    return EXIT_OK
+
+
+def _refused(exc: SwarmError) -> SwarmError:
+    """The refusal with §2.3's copy in front, as `main` prints it."""
+    return SwarmError(refusal_text(exc), status=exc.status, edge=exc.edge, code=exc.code,
+                      detail=exc.detail)
+
+
+def cmd_access_add_org(client: SwarmClient, args, out) -> int:
+    try:
+        done = enable_owner(client, args.owner)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    org = done.get("org") if isinstance(done, dict) else None
+    out.write(f"enabled {(org or {}).get('owner') or args.owner}\n")
+    return EXIT_OK
+
+
+def cmd_access_remove_org(client: SwarmClient, args, out) -> int:
+    """Disable an owner and delete every grant under it (§2.4), after the
+    owner is TYPED back. SWARM_ASSUME_YES is ignored, as `sc account remove`
+    ignores it: tasks naming its repositories are refused from that moment."""
+    owner = args.owner.strip()
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; removing an owner is typed\n")
+    typed = _ask(f"disable {owner} and delete every grant you hold under it? "
+                 "Type the owner to confirm: ")
+    if typed.strip().lower() != owner.lower():
+        raise SwarmError(f"the owner typed was not {owner!r}; nothing was removed")
+    try:
+        done = disable_owner(client, owner)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    done = done if isinstance(done, dict) else {}
+    out.write(f"disabled {owner}; grants deleted: {done.get('grants_deleted', 0)}\n")
+    if done.get("installation_settings_url"):
+        out.write("The App stays installed until an owner of it removes it there: "
+                  f"{done['installation_settings_url']}\n")
+    return EXIT_OK
+
+
+def cmd_access_repos(client: SwarmClient, args, out) -> int:
+    try:
+        listing = repositories_page(client, args.owner, page=args.page, query=args.search)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    if args.json:
+        out.write(json.dumps(listing, indent=2, default=str) + "\n")
+    else:
+        _emit(repositories_lines(listing), out)
+    return EXIT_OK
+
+
+def cmd_access_grant(client: SwarmClient, args, out) -> int:
+    if bool(args.read) == bool(args.write):
+        raise SwarmError("say --read or --write (one of them). Nothing was sent")
+    mode = "write" if args.write else "read"
+    try:
+        done = grant_repository(client, args.repository, mode)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    done = done if isinstance(done, dict) else {}
+    grant = done.get("grant") if isinstance(done.get("grant"), dict) else {}
+    if args.json:
+        out.write(json.dumps(done, indent=2, default=str) + "\n")
+        return EXIT_OK
+    out.write(f"granted {grant.get('repository') or repository_name(args.repository)} "
+              f"{grant.get('mode') or mode}"
+              + (" (registered for the tenant)" if done.get("registered") else "") + "\n")
+    out.write(f"verify it: `{terminal_command('sc access verify ' + repository_name(args.repository))}`\n")
+    return EXIT_OK
+
+
+def cmd_access_revoke(client: SwarmClient, args, out) -> int:
+    try:
+        done = revoke_repository(client, args.repository)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    done = done if isinstance(done, dict) else {}
+    out.write(f"revoked {repository_name(args.repository)}"
+              + ("; the tenant's registration went with your last grant"
+                 if done.get("unregistered") else "") + "\n")
+    return EXIT_OK
+
+
+def cmd_access_verify(client: SwarmClient, args, out) -> int:
+    """Exit 0 when every grant verified passed, 3 when one did not."""
+    results = verify_repositories(client, args.repositories or ())
+    if args.json:
+        out.write(json.dumps(results, indent=2, default=str) + "\n")
+    else:
+        _emit(verify_lines(results), out)
+    return EXIT_OK if results and all(r.get("passed") for r in results) else EXIT_TROUBLE
+
+
+def cmd_access_disconnect(client: SwarmClient, args, out) -> int:
+    """Revoke SwarmCloud's access as you at GitHub and delete your grants,
+    after `disconnect` is TYPED (SWARM_ASSUME_YES ignored)."""
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; disconnecting is typed\n")
+    typed = _ask("revoke SwarmCloud's access as you at GitHub and delete every grant you "
+                 "hold? Type `disconnect` to confirm: ")
+    if typed.strip() != "disconnect":
+        raise SwarmError("`disconnect` was not typed; nothing was changed")
+    done = client.request("DELETE", "/v1/onboarding/github")
+    done = done if isinstance(done, dict) else {}
+    out.write("disconnected from GitHub"
+              + ("" if done.get("github_revoked") is not False
+                 else " (GitHub did not confirm the revocation: remove SwarmCloud under your GitHub "
+                    "Settings › Applications to be sure)")
+              + (f"; grants deleted: {done['grants_deleted']}" if "grants_deleted" in done else "")
+              + "\n")
     return EXIT_OK
 
 
@@ -2199,7 +3223,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_trouble)
 
     wf = sub.add_parser(
-        "workflows", help="your tenant's running workflows: label, current steps, age, console"
+        "workflows",
+        help="your tenant's running workflows and your running single tasks: label, state, age, console",
     )
     _common(wf, root=False)
     wf.add_argument(
@@ -2269,6 +3294,77 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(aa, root=False)
     aa.set_defaults(func=cmd_account_add)
+
+    # -- onboarding (#780, OB9): `setup` and `access` WRITE, bar the reads --
+    st = sub.add_parser(
+        "setup",
+        help="connect GitHub as yourself, enable owners, choose repositories, verify",
+        description=(
+            "Walks the onboarding checklist from wherever it stands. Exit 0 when it "
+            "ends ready, 3 when it stopped short (a step failed, the browser half "
+            "timed out, nothing installed yet), 1 when something could not be read."
+        ),
+    )
+    st.add_argument("--no-browser", action="store_true",
+                    help="print the GitHub link instead of opening a browser")
+    st.add_argument("--timeout", type=int, default=CONNECT_TIMEOUT_SECONDS,
+                    help="seconds to wait for the browser half (default: the link's life)")
+    _common(st, root=False)
+    st.set_defaults(func=cmd_setup)
+    st_sub = st.add_subparsers(dest="setup_command")
+    ss = st_sub.add_parser("status", help="the checklist (exit 0 ready, 3 not ready, 1 unread)")
+    _common(ss, root=False)
+    ss.set_defaults(func=cmd_setup_status)
+
+    acc = sub.add_parser(
+        "access",
+        help="the repositories SwarmCloud may use as you: list, grant, revoke, verify",
+        description="With no verb, the Access page and an interactive grant/revoke/verify.",
+    )
+    _common(acc, root=False)
+    acc.set_defaults(func=cmd_access)
+    acc_sub = acc.add_subparsers(dest="access_command")
+    al = acc_sub.add_parser("list", help="your connection, enabled owners and grants")
+    _common(al, root=False)
+    al.set_defaults(func=cmd_access_list)
+    ao = acc_sub.add_parser("orgs", help="every owner you reach and whether the App is installed")
+    _common(ao, root=False)
+    ao.set_defaults(func=cmd_access_orgs)
+    aao = acc_sub.add_parser("add-org", help="enable an owner the App is installed on")
+    aao.add_argument("owner")
+    _common(aao, root=False)
+    aao.set_defaults(func=cmd_access_add_org)
+    aro = acc_sub.add_parser("remove-org", help="disable an owner and its grants (type it to confirm)")
+    aro.add_argument("owner")
+    _common(aro, root=False)
+    aro.set_defaults(func=cmd_access_remove_org)
+    arp = acc_sub.add_parser("repos", help="one page of an enabled owner's repositories")
+    arp.add_argument("owner")
+    arp.add_argument("--page", type=int, default=1)
+    arp.add_argument("--search", default=None, help="only names containing this")
+    _common(arp, root=False)
+    arp.set_defaults(func=cmd_access_repos)
+    # --read/--write are checked by the handler, not as a required group:
+    # argparse would refuse a bare `access grant x` before any handler ran,
+    # and test_plugin_commands probes each verb by the handler it reaches.
+    ag = acc_sub.add_parser("grant", help="grant owner/repo --read or --write")
+    ag.add_argument("repository", help="owner/repo")
+    ag.add_argument("--read", action="store_true")
+    ag.add_argument("--write", action="store_true")
+    _common(ag, root=False)
+    ag.set_defaults(func=cmd_access_grant)
+    arv = acc_sub.add_parser("revoke", help="revoke your grant on owner/repo")
+    arv.add_argument("repository", help="owner/repo")
+    _common(arv, root=False)
+    arv.set_defaults(func=cmd_access_revoke)
+    av_ = acc_sub.add_parser("verify", help="clone, push, pull request checks (exit 3 if one fails)")
+    av_.add_argument("repositories", nargs="*", metavar="owner/repo",
+                     help="the grants to verify (default: every one)")
+    _common(av_, root=False)
+    av_.set_defaults(func=cmd_access_verify)
+    ad = acc_sub.add_parser("disconnect", help="revoke SwarmCloud's access as you (type to confirm)")
+    _common(ad, root=False)
+    ad.set_defaults(func=cmd_access_disconnect)
 
     # -- issue runs (#454): `run` and `plan` WRITE, `runs` and the shows read
     rn = sub.add_parser(

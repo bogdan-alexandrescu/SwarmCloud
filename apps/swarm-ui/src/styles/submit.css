@@ -35,8 +35,17 @@
   margin-bottom: 12px;
 }
 /* NOT REACHED YET: steps 2 and 3 before a runner is chosen (F1 frame 3).
-   Dimmed, never disabled -- what it holds stays readable and focusable. */
-.sb-step.is-dim { opacity: .55; }
+   Dimmed, never disabled -- what it holds stays readable and focusable.
+   THE CONTROLS ARE DIMMED, NOT THE STEP (QA G4-26, 2026-10-07). `.55` on the
+   whole card multiplied every label's already-muted ink down with it, and
+   "how this work gets merged" read at about 2.3:1 on the dark card. The
+   labels, the title and the options' words keep their own tokens at full
+   strength; only the fields and the radios themselves fade. No
+   `pointer-events: none`: a step not reached is still one a caller may fill
+   in first, by pointer as by keyboard. */
+.sb-step.is-dim input,
+.sb-step.is-dim textarea,
+.sb-step.is-dim select { opacity: .55; }
 .sb-step .sbf-move-n {
   width: 20px; height: 20px;
   background: var(--sk-acs); color: var(--sk-ac);
@@ -47,8 +56,7 @@
   list-style: none; margin: 0 0 12px; padding: 0;
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
 }
-.sbf-runners.is-cards .sbf-runner,
-.sb-option {
+.sbf-runners.is-cards .sbf-runner {
   display: flex; align-items: flex-start; gap: 8px;
   min-height: 32px;
   padding: 8px 10px;
@@ -57,11 +65,9 @@
   background: var(--surface);
   cursor: pointer;
 }
-.sbf-runners.is-cards .sbf-runner:hover,
-.sb-option:hover { border-color: var(--text-faint); }
+.sbf-runners.is-cards .sbf-runner:hover { border-color: var(--text-faint); }
 /* SELECTED IS THE ACCENT EDGE ON ITS SOFT FILL, the frame's `.runner.on`. */
-.sbf-runners.is-cards .sbf-runner.is-on,
-.sb-option.is-on { border-color: var(--sk-ac); background: var(--sk-acs); }
+.sbf-runners.is-cards .sbf-runner.is-on { border-color: var(--sk-ac); background: var(--sk-acs); }
 .sbf-runners.is-cards .sbf-runner.is-off { cursor: not-allowed; }
 .sbf-runners.is-cards .sbf-runner.is-off:hover { border-color: var(--line); }
 /* The reason a runner is refused is the most useful line on its card, so the
@@ -71,8 +77,7 @@
 
 /* THE RADIO, DRAWN AS THE FRAME'S RING. A native radio still carries the
    role, the arrow keys and the pick-one behaviour; only its paint changes. */
-.sbf-runners.is-cards .sbf-runner > input[type='radio'],
-.sb-option > input[type='radio'] {
+.sbf-runners.is-cards .sbf-runner > input[type='radio'] {
   appearance: none;
   flex: none;
   width: 14px; height: 14px;
@@ -81,12 +86,18 @@
   border-radius: 999px;
   background: var(--surface);
 }
-.sbf-runners.is-cards .sbf-runner > input[type='radio']:checked,
-.sb-option > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
-.sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible,
-.sb-option > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 
 .sb-runner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* THE PLATFORM'S OWN RUNNER (QA G4-33): a quiet pill under its name, in the
+   muted token at full strength -- a fact about who submits it, not a state,
+   so no hue. Its cards are listed after the runners people submit. */
+.sb-runner-platform {
+  align-self: flex-start;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+}
 .sbf-runners.is-cards .sbf-runner-name { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .sbf-runners.is-cards .sbf-runner-facts,
 .sbf-runners.is-cards .sbf-runner-room {
@@ -155,10 +166,13 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
   color: var(--text);
 }
-.sb-options { display: flex; flex-direction: column; gap: 6px; }
-.sb-option > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.sb-option b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text); }
-.sb-option small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* "If a step fails" IS THE DISPATCH CONTROL'S CARD (QA G4-35): `.dsp-option`
+   in styles.css draws both of the workflow form's radio groups, so the two
+   cannot drift into two styles again. `.sb-option` is deleted with its last
+   caller. What this group adds is the explanation under each title: the
+   muted token at the body size, regular weight -- the strategy's bold line is
+   its pull-request count, which is the decision; this is a description. */
+.dsp-option-say { font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 .sb-prio { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sb-prio > input { width: 92px; min-height: 32px; border-radius: var(--ctl-radius-sm); font-family: var(--mono); }
 .sb-prio > small { flex: 1 1 260px; }

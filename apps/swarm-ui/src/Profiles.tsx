@@ -2,7 +2,7 @@ import { loadCapacity } from './api'
 import { CapSeg } from './Capacity'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll } from './capacityPoll'
 import { ProfileMatrix } from './ProfileMatrix'
 import { Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -55,7 +55,7 @@ export function ProfilesScreen() {
       load={loadCapacity}
       // Part of Pools, so Pools' cadence (#117): every 30s, paused while the
       // tab is hidden (`Screen`).
-      pollMs={POOLS_POLL_MS}
+      pollMs={capacityPoll(POOLS_POLL_MS)}
       summary={(d) => {
         const profiles = Object.values(d.runner_profiles)
         const backends = new Set(profiles.map((p) => p.backend)).size

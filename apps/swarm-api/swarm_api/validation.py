@@ -36,7 +36,7 @@ from swarm_common.profiles import (
     check_inputs,
 )
 
-from .errors import ValidationFailed
+from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
 #: models already forbid extras; this list is the explicit, greppable statement
@@ -75,14 +75,19 @@ def known_providers() -> tuple[str, ...]:
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
 
-    EXCEPT A WORKER ACTION'S PROVIDER (`APP_CREDENTIAL_PROVIDERS`). Both
+    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). Both
     credential routes accept exactly this set (`routes/tenants.py`,
-    `routes/admin.py`), and a credential registered through them is granted to
-    the tenant's ORDINARY worker account (`credentials._grant_accessor`), whose
-    token any agent of the tenant can mint. `git-merge` and `git-review` are
-    GitHub App keys that only the merge and post-verdict Jobs' own service
-    accounts may read (contract request 33's #364 amendment, accepted
-    2026-10-01), so neither may ever enter through that path.
+    `routes/admin.py` `_check_provider`), and a credential registered through
+    them is granted to the tenant's ORDINARY worker account
+    (`credentials._grant_accessor`), whose token any agent of the tenant can
+    mint. `git-merge` and `git-review` were GitHub App keys meant for the
+    merge and post-verdict Jobs' own accounts (contract request 33's #364
+    amendment). Those accounts are retired (owner decision MS0-Q4,
+    2026-10-06): nothing reads either key any more, so neither is registrable,
+    listed (`service.providers`) or accepted by the quota broker
+    (`quota_broker.main._known_provider`) anywhere. The frozen catalogue still
+    names `git-review` on its disabled post-verdict entry until contract
+    request 50 is decided, which is why the exclusion is still needed.
 
     AND THE FORGE TOKEN, `git`, which the `merge` profile names since contract
     request 47 (2026-10-04). It is the tenant's own forge token, registered
@@ -110,18 +115,16 @@ FORGE_PROVIDER = "git"
 #: 47 moved the merge onto the tenant's `-git` token. Derived from the
 #: catalogue rather than named, so a third worker action is left out of
 #: `known_providers()` the day it is added rather than the day someone
-#: remembers this line. An App key is read by its own Job's service account at
-#: action time and is never registered against the worker account.
-#: `scripts/register-tenant.sh` reads this set to refuse binding one to the
-#: worker; the forge token is the one worker-action provider the worker DOES
-#: read, so it is not in it.
+#: remembers this line. The forge token is the one worker-action provider the
+#: worker DOES read, so it is not in it.
 #:
-#: `git-merge` STAYS IN THE SET after contract request 47 retired it from the
-#: catalogue (`RETIRED_APP_CREDENTIAL_PROVIDERS`). A `-git-merge` secret that
-#: exists holds a GitHub App key; dropping the name here would let
-#: `register-tenant.sh` grant the tenant's worker account read on it, which is
-#: the one thing that secret's design forbids. It goes when the merge account
-#: leaves `terraform/modules/service_account_ids`.
+#: BOTH ARE RETIRED (owner decision MS0-Q4, 2026-10-06): the merge,
+#: post-verdict and review accounts that alone were to read them are gone from
+#: terraform, so no account reads either key. The set stays, as the refusal:
+#: `scripts/register-tenant.sh` reads it to refuse either provider on every
+#: path, and a `-git-merge` or `-git-review` secret that exists still holds an
+#: App key no worker may be granted. `git-merge` is named
+#: (`RETIRED_APP_CREDENTIAL_PROVIDERS`) because the catalogue no longer is.
 RETIRED_APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({"git-merge"})
 APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
     p.provider for p in RUNNER_PROFILES.values()
@@ -611,16 +614,6 @@ MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
 MERGE_FIX_ROUNDS_DEFAULT = 0
 MERGE_FIX_ROUNDS_MAX = 5
 
-#: The label `.github/workflows/auto-merge.yml` merges on. Beside a merge step
-#: it is dropped from the dispatch block, so the two mergers never race for
-#: one pull request and the step's merges are the ones its retirement gate
-#: counts (docs/merge-step.md "Revised 2026-10-06" §5).
-READY_LABEL = "ready"
-#: Where the drop is recorded, on every task of the workflow, as the label
-#: that was dropped. Written by swarm-api only: a caller's is refused, so the
-#: record never says a label was dropped when none was.
-MERGE_LABEL_DROPPED_KEY = "merge_label_dropped"
-
 
 def resolve_merge_fix_rounds(
     metadata: Mapping[str, Any], *, merge_step: bool
@@ -654,17 +647,6 @@ def resolve_merge_fix_rounds(
             detail={"field": field, "accepted": bounds, "merge_step": False},
         )
     return value
-
-
-def refuse_merge_label_record(metadata: Mapping[str, Any]) -> None:
-    """A caller's `metadata.merge_label_dropped` is refused: only swarm-api writes it."""
-    if MERGE_LABEL_DROPPED_KEY in metadata:
-        field = f"metadata.{MERGE_LABEL_DROPPED_KEY}"
-        raise DispatchOptionError(
-            f"{field} is written by this service when it drops a "
-            f"{READY_LABEL!r} label beside a merge step. Drop the key from metadata.",
-            detail={"field": field},
-        )
 
 
 def merge_repository(repository_url: str | None) -> tuple[str, str] | None:
@@ -1235,7 +1217,9 @@ class DispatchOptions:
     #: whose pull request it merges, and -- when the workflow has a review --
     #: `review`, that review's task id, and `verdict_file`, the file it stages
     #: from it. Inside the dispatch block, so the spec signature covers it.
-    merge_target: tuple[tuple[str, str], ...] = ()
+    #: For a `merge_pr` workflow (#352) it names no task: `number` and
+    #: `head_sha`, the pull request and the head the caller named, instead.
+    merge_target: tuple[tuple[str, Any], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -1299,10 +1283,12 @@ class DispatchOptions:
     def with_merge_target(
         self,
         *,
-        pull_request: str,
+        pull_request: str | None = None,
         review: str | None = None,
         verdict_file: str | None = None,
         base: str | None = None,
+        number: int | None = None,
+        head_sha: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1310,7 +1296,19 @@ class DispatchOptions:
         `base` is the default branch the tenant registered the repository
         with, absent when it registered none (lane MS1): the worker refuses a
         pull request on any other base `base_not_default` from this, inside
-        the signed block, without reading the registry itself."""
+        the signed block, without reading the registry itself.
+
+        A `merge_pr` workflow (#352) names the pull request by `number` and
+        the `head_sha` the caller named instead of by the task that opened
+        it, because no task did; it has no review."""
+        target: list[tuple[str, Any]]
+        if pull_request is None:
+            if number is None or head_sha is None:
+                raise ValueError("a merge target names a task, or a number and a head sha")
+            target = [("number", number), ("head_sha", head_sha)]
+            if base:
+                target.append(("base", base))
+            return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
@@ -1378,9 +1376,7 @@ WORKFLOW_LABEL_KEYS = ("unit", "title")
 WORKFLOW_LABEL_MAX_CHARS = 256
 
 
-def workflow_label(
-    metadata: Mapping[str, Any] | None, *, merge_step: bool = False
-) -> str | None:
+def workflow_label(metadata: Mapping[str, Any] | None) -> str | None:
     """The workflow's label as one line of text, or None when it has none.
 
     The first of `WORKFLOW_LABEL_KEYS` that holds a non-blank string, with its
@@ -1389,26 +1385,17 @@ def workflow_label(
     it if it carries a task id or attribution, and neutralises every mention
     before it titles anything, as it does for an agent's `pr-title.txt`.
 
-    With `merge_step`, a label that is `READY_LABEL` (in any case) is None:
-    beside a merge step `auto-merge.yml`'s label is dropped
-    (`ready_label_dropped` says when, for the record).
+    A label of `ready` is a title like any other, merge step or not (owner
+    decision 2026-10-06, #352): it never becomes a GitHub label, so it
+    cannot reach `auto-merge.yml`.
     """
     for key in WORKFLOW_LABEL_KEYS:
         value = (metadata or {}).get(key)
         if isinstance(value, str):
             text = " ".join(value.split())
             if text:
-                if merge_step and text.lower() == READY_LABEL:
-                    return None
                 return text[:WORKFLOW_LABEL_MAX_CHARS]
     return None
-
-
-def ready_label_dropped(metadata: Mapping[str, Any] | None, *, merge_step: bool) -> bool:
-    """Whether `workflow_label` drops the workflow's label as `READY_LABEL`."""
-    return merge_step and workflow_label(metadata) is not None and (
-        workflow_label(metadata, merge_step=True) is None
-    )
 
 
 def _accepted_value(name: str, value: Any, accepted: tuple[str, ...], detail_key: str) -> str:
@@ -2115,9 +2102,12 @@ class MergeSources:
     #: step): `pull_request` is then the continued TASK, which pushed the
     #: head to pin in an earlier workflow, and the step depends on nothing.
     continued: bool = False
+    #: True for a `merge_pr` workflow (#352): no task opened the pull
+    #: request, `pull_request` is "", and the step depends on nothing.
+    named: bool = False
 
     def depends_on(self) -> list[str]:
-        if self.continued:
+        if self.continued or self.named:
             return []
         return [self.pull_request] + ([self.review] if self.review else [])
 
@@ -2132,7 +2122,8 @@ class MergePlan:
 
 
 def merge_sources(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -2150,8 +2141,14 @@ def merge_sources(
     with NO agent step merges that task's pull request at the head that task
     pushed: how an issue run merges once its CI is green and its keyword
     block is written (`issueci`), after the workflow that opened it ended.
+
+    `named_pull` is True for a workflow with `merge_pr` (#352), as
+    `continuation.resolve_merge_pr` checked it: with NO agent step it merges
+    the pull request the caller named, which no task opened.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if named_pull:
+        return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
         return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
@@ -2170,7 +2167,8 @@ def merge_sources(
 
 
 def merge_step_for(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
@@ -2179,7 +2177,7 @@ def merge_step_for(
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         return None
     taken = {step.step_id for step in steps}
@@ -2196,7 +2194,8 @@ def merge_step_for(
 
 
 def plan_merge(
-    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None
+    steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
+    named_pull: bool = False,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -2243,7 +2242,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task)
+    sources = merge_sources(steps, strategy, continued_task, named_pull)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "
@@ -2331,6 +2330,113 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+
+# --------------------------------------------------------------------------
+# Whose GitHub credential a task runs with (#780 lane OB7, decision D4)
+# --------------------------------------------------------------------------
+#
+# Contract request 54: `Task.forge_credential` names the slot the worker reads
+# its forge token from and `Task.forge_access` whether it may push. Only
+# swarm-api writes them, at submission, from the grants the person chose
+# under Access (`access.py`, `forge_grants`) -- never from the request body,
+# which `extra="forbid"` refuses them in (invariant 10) -- and BEFORE the spec
+# is signed, so a rewritten value fails the worker's check.
+#
+# D4 as the owner decided it on 2026-10-07: a PERSON's task on a GitHub
+# repository they hold no grant for is refused, 403 REPOSITORY_NOT_GRANTED,
+# until they choose it under Access; a SERVICE ACCOUNT's submission (tenant
+# automation, the release's acceptance suite) and a repository index run
+# use the tenant token, `git`, with write, as before #780. A task with no
+# repository, or one on a host that is not GitHub (grants exist only for
+# GitHub), carries neither field and reads the tenant token as it always has.
+
+#: The code a client branches on. Upper case, like the access API's own
+#: refusals (`access.AccessRefused`), because the console's Access page reads
+#: them side by side.
+REPOSITORY_NOT_GRANTED = "REPOSITORY_NOT_GRANTED"
+
+#: `Task.forge_access` for a service submission: the tenant token's reach, as
+#: before #780. A person's task carries their grant's mode instead.
+SERVICE_FORGE_ACCESS = "write"
+
+#: The domain every Google service account's email ends in, user-managed
+#: (`SERVICE_ACCOUNT_EMAIL`) and Google-managed alike. No person's address
+#: can: no Workspace domain ends in it.
+_SERVICE_ACCOUNT_DOMAIN = ".gserviceaccount.com"
+
+
+class RepositoryNotGranted(Forbidden):
+    """A person submitted work on a GitHub repository they hold no grant for."""
+
+    code = REPOSITORY_NOT_GRANTED
+
+
+def is_service_submitter(email: str | None) -> bool:
+    """Whether the submitter is a service account rather than a person (D4)."""
+    return (email or "").strip().lower().endswith(_SERVICE_ACCOUNT_DOMAIN)
+
+
+def github_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a repository on GitHub, else None.
+
+    Wider than `merge_repository` on purpose: that one answers "can a merge
+    step act here" and says None for a URL with a port or a trailing path.
+    This one answers "would the worker clone from GitHub", so a GitHub host
+    is GitHub whatever port or trailing dot it is written with, and a GitHub
+    URL that names no `owner/repo` is REFUSED rather than read as "not
+    GitHub", which would hand it the tenant token D4 withholds.
+    """
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if not text:
+        return None
+    if text.startswith("git@"):
+        head, _, tail = text.partition(":")
+        text = f"ssh://{head}/{tail}"
+    try:
+        parts = urlsplit(text)
+        # `.hostname` only: `.port` raises on a malformed port, and a host
+        # read as "" there would be "not GitHub".
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        host = ""
+        parts = None
+    if host not in MERGE_FORGE_HOSTS:
+        return None
+    segments = [seg for seg in parts.path.strip("/").split("/") if seg] if parts else []
+    if len(segments) == 2 and segments[1].lower().endswith(".git"):
+        segments[1] = segments[1][:-4]
+    if len(segments) != 2 or not all(segments):
+        raise ValidationFailed(
+            "repository_url on GitHub must name one repository as "
+            "https://github.com/<owner>/<repo>",
+            detail={"field": "repository_url"},
+        )
+    return segments[0], segments[1]
+
+
+def repository_not_granted(refused: Sequence[tuple[str | None, str]]) -> RepositoryNotGranted:
+    """The refusal for every `(step_id, "owner/repo")` the person holds no grant on.
+
+    One refusal for the whole submission, naming each repository and, in a
+    workflow, each step: nothing is stored, so a person fixes all of it at
+    once under Access rather than one resubmission per step.
+    """
+    repositories = sorted({name for _, name in refused}, key=str.lower)
+    if len(repositories) == 1:
+        message = (f"repository {repositories[0]} is not granted to you: "
+                   "choose it under Access")
+    else:
+        message = (f"repositories {', '.join(repositories)} are not granted to you: "
+                   "choose them under Access")
+    detail: dict[str, Any] = {"repository": repositories[0], "repositories": repositories}
+    steps = [{"step_id": step, "repository": name} for step, name in refused if step]
+    if steps:
+        detail["steps"] = steps
+    return RepositoryNotGranted(message, detail=detail)
 
 
 # --------------------------------------------------------------------------

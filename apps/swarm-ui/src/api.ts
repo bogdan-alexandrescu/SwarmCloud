@@ -11,9 +11,9 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
+  appendReadable, normIndexDoc, normLanguages, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTestSelection, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
-  type ResolvedToken, type TokenScope,
+  type ResolvedToken, type TestSelection, type TokenScope,
 } from './RepositoriesData'
 import {
   normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
@@ -30,6 +30,9 @@ import type {
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
+  GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
+  AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -1658,6 +1661,12 @@ export interface RuntimeTopology {
    * that read failed -- never rebuilt here from a naming rule.
    */
   profilePools?: Record<string, string[]> | null
+  /**
+   * Of those, the pools with no document, by runner-profile name: the same
+   * read's `admission.uncapped`, which admission skips as unlimited (QA
+   * G5-04). Absent or null when that read failed or served no admission block.
+   */
+  profileUncapped?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1688,6 +1697,13 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
       profilePools: poolsOk
         ? Object.fromEntries(
             Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
+      profileUncapped: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).flatMap(([name, p]) =>
+              p.admission === undefined ? [] : [[name, p.admission.uncapped]],
+            ),
           )
         : null,
       poolsDetail: poolsOk
@@ -2751,7 +2767,9 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 200))
-    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+    // The route's shape -- `{ pool }` with the pool's new hard limit -- because
+    // the editor compares that pool with what was asked (AdminSettings `saveOutcome`).
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: { name: poolName, hard_limit: limit } } }
   }
 
   return write(path, 'PUT', { limit })
@@ -5220,14 +5238,28 @@ export async function queryRepositoryImpact(repoId: string, change: { pull_reque
   return r
 }
 
-/** Languages per repository (not served): per language, grammar, server and status. */
-export async function loadRepositoryLanguages(_repoId: string): Promise<Result<LanguageRow[]>> {
-  // NOT SERVED: the API has no per-language route, so nothing is fetched and
-  // the Languages region draws its "not served yet" state.
-  return {
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The API serves no per-language route for a repository.' },
-  }
+/**
+ * `POST /v1/repositories/{repo_id}/tests:select`: changed paths -> the tests
+ * that cover them, the always-run tests, the paths no edge covers and the
+ * suite to run for those (repo-index.md §4.3). A query, not a change: the
+ * route reads the promoted index and stores nothing. The body is the paths,
+ * as data, and nothing else (the route's `extra="forbid"`: invariant 10).
+ */
+export async function selectRepositoryTests(repoId: string, paths: readonly string[]): Promise<Result<TestSelection | null>> {
+  const r = await writeTo(route('/v1/repositories/{repo_id}/tests:select', { repo_id: repoId }), 'POST', { paths })
+  if (r.status === 'ok') return { ...r, data: normTestSelection(r.data) }
+  if (r.status === 'stale') return { ...r, data: normTestSelection(r.data) }
+  return r
+}
+
+/**
+ * `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server
+ * and status (routes/repositories.py `repository_languages`). An API that
+ * does not serve it answers 404/501, and Settings then draws the index
+ * document's own `languages` rows instead (QA G4-13).
+ */
+export async function loadRepositoryLanguages(repoId: string): Promise<Result<LanguageRow[]>> {
+  return readAs(route('/v1/repositories/{repo_id}/languages', { repo_id: repoId }), normLanguages, (rows) => rows.length === 0)
 }
 
 /** The token that resolves here and its capability row, derived from `GET /v1/git-tokens` (R2); no per-repository token route exists. */
@@ -5235,9 +5267,43 @@ export async function loadResolvedToken(repoId: string): Promise<Result<Resolved
   return readAs(route('/v1/git-tokens'), (raw) => normResolvedFromTokens(raw, repoId))
 }
 
-/** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
+/**
+ * Pages read at most, whatever `next_page` says: the API caps the list at
+ * `MAX_READABLE_PAGES` (10, repositories.py) and says `capped`, so this is
+ * only a backstop against an answer that never stops offering a next page.
+ */
+const READABLE_PAGE_BACKSTOP = 50
+
+/**
+ * `GET /v1/repositories/readable`, EVERY page: what the tenant's git token can
+ * read, for Register C (OB0, docs/onboarding.md §5). Page 1 is asked for with
+ * no `page`, then `?page=N` for each `next_page` the API offers, until it
+ * offers none. `capped` arrives on the last page and is kept, so the picker
+ * can say the token reads more than is listed.
+ *
+ * A failure on page 1 is the read's failure. A failure on a later page is
+ * not: the pages already read are served, with `gap` naming the page that did
+ * not come back, so the picker says the list is short instead of passing it
+ * off as everything.
+ */
 export async function loadReadableRepositories(): Promise<Result<ReadableList>> {
-  return readAs(route('/v1/repositories/readable'), normReadable, (d) => d.repositories.length === 0)
+  const first = await readAs(route('/v1/repositories/readable'), normReadable)
+  if (first.status !== 'ok') return first
+  let list = first.data
+  let asked = 1
+  while (list.next_page !== null && list.next_page > asked && asked < READABLE_PAGE_BACKSTOP) {
+    asked = list.next_page
+    const more = await readAs(route('/v1/repositories/readable', {}, new URLSearchParams({ page: String(asked) })), normReadable)
+    if (more.status === 'ok') {
+      list = appendReadable(list, more.data)
+      continue
+    }
+    const message = more.status === 'error' || more.status === 'stale' ? more.error.message : 'the page was not read'
+    list = { ...list, next_page: null, gap: { page: asked, message } }
+    break
+  }
+  if (list.repositories.length === 0 && list.gap === null) return { status: 'empty', fetchedAt: first.fetchedAt, serverAt: first.serverAt }
+  return { ...first, data: list }
 }
 
 export interface RegisterRepositoryBody {
@@ -5276,4 +5342,117 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
 /** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
   return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
+}
+
+// ---------------------------------------------------------------------------
+// Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
+//
+// The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE
+// ANSWERS A VALUE -- no token, no code, no state after `authorize` minted it
+// -- and nothing here logs or keeps what it posts. The fixture build answers
+// each as not served, like the git-token routes above.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/onboarding`: the caller's six steps, derived on this read. */
+export async function loadOnboarding(): Promise<Result<OnboardingDoc>> {
+  return readAs(route('/v1/onboarding'), (raw) => raw as OnboardingDoc)
+}
+
+/** `POST /v1/onboarding/github/authorize`: a single-use, ten-minute authorise URL for this person. */
+export async function authorizeGitHub(surface: GitHubAuthorizeSurface = 'console'): Promise<Result<GitHubAuthorization>> {
+  return writeTo(route('/v1/onboarding/github/authorize'), 'POST', { surface }) as Promise<Result<GitHubAuthorization>>
+}
+
+/**
+ * `POST /v1/onboarding/github/exchange`: the callback's `state` and `code`
+ * (or GitHub's `error`). The server spends the state first, so a second post
+ * of the same pair is refused `AUTHORISATION_EXPIRED` -- the callback page
+ * posts once.
+ */
+export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<GitHubExchangeResponse>> {
+  return writeTo(route('/v1/onboarding/github/exchange'), 'POST', body) as Promise<Result<GitHubExchangeResponse>>
+}
+
+/** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
+export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
+  return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
+}
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4), read and written by the Access page (OB8).
+//
+// The routes are swarm_api/routes/access.py. Each acts as the caller with
+// THEIR OWN GitHub connection, inside the caller's tenant (`tenant_scope`);
+// none answers a value. The fixture build answers each as not served.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants (no GitHub read). */
+export async function loadAccess(): Promise<Result<AccessOverview>> {
+  return readAs(route('/v1/access'), (raw) => raw as AccessOverview)
+}
+
+/** `GET /v1/access/orgs`: every owner the caller's connection reaches, each with its install state. */
+export async function loadAccessOwners(): Promise<Result<AccessOwners>> {
+  return readAs(route('/v1/access/orgs'), (raw) => raw as AccessOwners)
+}
+
+/** `POST /v1/access/orgs`: enable an owner the App is installed on. */
+export async function enableAccessOwner(owner: string): Promise<Result<AccessEnableResponse>> {
+  return writeTo(route('/v1/access/orgs'), 'POST', { owner }) as Promise<Result<AccessEnableResponse>>
+}
+
+/** `DELETE /v1/access/orgs/{owner}`: disable it, and delete every grant under it in one write. */
+export async function disableAccessOwner(owner: string): Promise<Result<AccessDisableResponse>> {
+  return writeTo(route('/v1/access/orgs/{owner}', { owner }), 'DELETE') as Promise<Result<AccessDisableResponse>>
+}
+
+/**
+ * `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: ONE page of the
+ * owner's installation, searched server-side (a substring of the name).
+ */
+export async function loadAccessRepositories(owner: string, page = 1, q = ''): Promise<Result<AccessRepositoryPage>> {
+  const query = new URLSearchParams({ page: String(page) })
+  if (q.trim() !== '') query.set('q', q.trim())
+  return readAs(route('/v1/access/orgs/{owner}/repositories', { owner }, query), (raw) => raw as AccessRepositoryPage)
+}
+
+/** `PUT /v1/access/grants/{repo_id}`: grant read or write. The server reads the repository once, as the caller. */
+export async function putAccessGrant(repoId: string, repository: string, mode: AccessMode): Promise<Result<AccessGrantResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'PUT', { repository, mode }) as Promise<Result<AccessGrantResponse>>
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`: revoke the grant. */
+export async function revokeAccessGrant(repoId: string): Promise<Result<AccessRevokeResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'DELETE') as Promise<Result<AccessRevokeResponse>>
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`: run clone, push and pull request now. Reads only (D6). */
+export async function verifyAccessGrant(repoId: string, checks?: AccessCheckName[]): Promise<Result<AccessVerifyResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}/verify', { repo_id: repoId }), 'POST', checks === undefined ? {} : { checks }) as Promise<
+    Result<AccessVerifyResponse>
+  >
+}
+
+/** `GET /v1/access/members` (admin): every member's connection state and grants in the caller's tenant. */
+export async function loadAccessMembers(): Promise<Result<AccessMembers>> {
+  return readAs(route('/v1/access/members'), (raw) => raw as AccessMembers)
+}
+
+/**
+ * THE REGISTRATION ID OF A TYPED `owner/repo`, for `PUT /v1/access/grants/{repo_id}`.
+ *
+ * A repository picked from a listing carries its `repo_id`, minted by the
+ * server; a TYPED one has none, and the route is keyed on it. This is
+ * `swarm_api/repositories.py::repo_id_for`, restated: `repo_` + the first 16
+ * hex of sha256(tenant + `github.com/` + lower-cased owner/repo). A drift
+ * cannot grant the wrong repository: the server recomputes it from the body's
+ * `repository` and refuses a mismatch ("repo_id is not this tenant's id for
+ * that repository"). `__tests__/access.test.tsx` pins it to a value the
+ * Python recipe produced.
+ */
+export async function typedRepoId(tenantId: string, repository: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${tenantId}github.com/${repository.toLowerCase()}`)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `repo_${hex.slice(0, 16)}`
 }

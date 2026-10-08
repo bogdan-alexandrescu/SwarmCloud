@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends
+from typing import Any, Callable
+
+from fastapi import APIRouter, Depends, Request
 
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
+from .accounts import account_pool
 
 router = APIRouter(prefix="/v1", tags=["platform"])
 
@@ -73,10 +76,32 @@ def capacity(
 
 @router.get("/providers")
 def providers(
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return ctx.submissions.providers(auth)
+    return ctx.submissions.providers(auth, _pool_listing(request, ctx))
+
+
+def _pool_listing(
+    request: Request, ctx: AppContext
+) -> Callable[[str], dict[str, Any]] | None:
+    """The broker's account listing, or None on a deployment with no broker.
+
+    None is admission's "no broker configured" (`AccountPool.configured`,
+    which reads the same URL): the pool serves nobody there. The client is
+    built inside the call, not here, so a broker that is misconfigured or down
+    degrades this read to `account_pool: unreadable` instead of failing it --
+    the key half of /v1/providers needs no broker.
+    """
+    injected = getattr(request.app.state, "account_pool", None)
+    if injected is None and not (ctx.settings.quota_broker_url or "").strip():
+        return None
+
+    def listing(tenant_id: str) -> dict[str, Any]:
+        return account_pool(request, ctx).list_accounts(tenant_id)
+
+    return listing
 
 
 @router.get("/resource-classes")
@@ -141,7 +166,7 @@ def runtimes(
     else -- no image, no command, no resource spec, no backend. That is what
     stops an authenticated caller turning the swarm into arbitrary compute, and
     it is not negotiable. Its cost is that the name is the caller's entire
-    vocabulary: `claude-code` carries no hint that it runs on Cloud Run Jobs,
+    vocabulary: `claude-code` carries no hint that it runs on GKE Autopilot,
     sizes to `standard`, times out at two hours, or accepts a subscription token
     INSTEAD of an API key. Before this route the only way to learn any of that
     was to read the frozen catalogue in the repository, which someone calling

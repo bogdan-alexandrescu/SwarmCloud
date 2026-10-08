@@ -13,7 +13,7 @@ import { App } from '../App'
 import { wholeAppFault } from '../AppStates'
 import { forgetProbes, type ProbeRecord, type Result } from '../fetch'
 import { Screen } from '../Shell'
-import { panelCounts } from '../Spine'
+import { panelCounts, RECENT_WORKFLOWS_KEY } from '../Spine'
 import type { Capacity, Me, Stats } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 
@@ -75,7 +75,7 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
     // MUTATION: drop `<Icon name={p.icon} />` from PanelPages.
     const c = await at('/agents/live')
     const rows = [...c.querySelectorAll('.sk-panel .sk-pk')]
-    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories'])
+    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories', 'Setup', 'Access'])
     for (const r of rows) expect(r.querySelector('svg.sk-ic'), `${r.textContent} has no icon`).not.toBeNull()
   })
 
@@ -131,6 +131,18 @@ describe('#503: the panel lights the current page, not its parent', () => {
     expect(c.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe('Agents')
   })
 
+  it.each([
+    ['/capacity/pools', 'Pools', 'Ceilings'],
+    ['/capacity/pools/profiles', 'Pools', 'By runner profile'],
+  ])('on %s it lights only the deepest match, %s › %s', async (path, group, page) => {
+    // MUTATION: light the group row as well (`on = group`).
+    const c = await at(path)
+    const current = [...c.querySelectorAll('.sk-panel [aria-current="page"]')]
+    expect(current.map((e) => e.textContent?.trim())).toEqual([page])
+    expect(c.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe(group)
+    expect(c.querySelector('.sk-panel .sk-pk.is-group')?.hasAttribute('aria-current')).toBe(false)
+  })
+
   it('lights a page with no children itself', async () => {
     const c = await at('/workflows')
     expect(c.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('Workflows')
@@ -168,6 +180,50 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     expect(window.location.pathname).toBe('/overview')
     fireEvent.click(work)
     await waitFor(() => expect(window.location.pathname).toBe('/agents'))
+  })
+
+  it.each([
+    ['meta', { metaKey: true }],
+    ['shift', { shiftKey: true }],
+    ['middle', { button: 1 }],
+  ])('leaves a %s-click on every section to the browser', async (_, init) => {
+    // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
+    const c = await at('/overview')
+    const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
+    expect(sections).toHaveLength(4)
+    for (const a of sections) {
+      const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
+      a.dispatchEvent(e)
+      expect(e.defaultPrevented, `${a.dataset.sec} took the click from the browser`).toBe(false)
+    }
+    expect(window.location.pathname).toBe('/overview')
+  })
+
+  it('takes a plain click from the browser, so the app routes without a reload', async () => {
+    // MUTATION: drop `e.preventDefault()` in `routed`.
+    const c = await at('/overview')
+    const cap = c.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="capacity"]')!
+    const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    cap.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(window.location.pathname).toBe('/capacity/pools'))
+  })
+
+  it('draws a recent workflow and "All workflows" as links', async () => {
+    // MUTATION: put the Recent rows back as `<button>`s.
+    window.localStorage.setItem(RECENT_WORKFLOWS_KEY, JSON.stringify([{ id: 'wf_a', state: 'RUNNING', name: 'lane-a' }]))
+    const c = await at('/workflows')
+    const group = await waitFor(() => screen.getByRole('group', { name: 'Recent workflows' }))
+    expect(group.querySelectorAll('button')).toHaveLength(0)
+    const hrefs = [...group.querySelectorAll<HTMLAnchorElement>('a')].map((a) => a.getAttribute('href'))
+    expect(hrefs).toEqual(['/workflows/wf_a', '/workflows'])
+    const row = group.querySelector<HTMLAnchorElement>('a[href="/workflows/wf_a"]')!
+    const ctrl = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })
+    row.dispatchEvent(ctrl)
+    expect(ctrl.defaultPrevented).toBe(false)
+    fireEvent.click(row)
+    await waitFor(() => expect(window.location.pathname).toBe('/workflows/wf_a'))
+    expect(c.querySelector('.sk-recent a[aria-current="page"]')?.getAttribute('href')).toBe('/workflows/wf_a')
   })
 
   it('draws the panel’s pages as links too', async () => {
@@ -234,33 +290,53 @@ describe('#503: in-card links are sky and sans, not underlined mono ink', () => 
 // #503 Page head: one row
 // ---------------------------------------------------------------------------
 
-describe('#503: the page head is one row -- title, meta chip, read · poll · refresh', () => {
-  it('puts the title, the meta chip and the provenance with its refresh in one row', async () => {
-    // MUTATION: render the sub-line as its own paragraph under the head again.
+// THE ROW'S CONTENTS CHANGED UNDER #138 (owner ruling 2026-10-07, design-system
+// §6.12): title left, actions right, nothing else. The meta chip left the row
+// for a note over the first card (`.c-count-note`), and `read · poll ·
+// refresh` became one quiet control in the actions (`.c-refresh`) carrying
+// the screen's ticking age, so the frame draws no second age on the row.
+describe('#503/#138: the page head is one row -- title left, refresh with its age right', () => {
+  it('puts the title and the refresh carrying its age in one row, and the count over the first card', async () => {
+    // MUTATION: render a sub-line or meta chip under or beside the title
+    // again, move the refresh out of the head's actions, or let the frame
+    // draw its age on the row of a screen that carries its own.
     const c = await at('/capacity/pools')
     const row = await waitFor(() => {
       const r = c.querySelector('main.work .c-phead')
       expect(r).not.toBeNull()
       return r!
     })
-    expect(row.querySelector('h1')).not.toBeNull()
-    await waitFor(() => expect(row.querySelector('.c-meta')).not.toBeNull())
-    const age = row.querySelector('.c-age')!
-    expect(age.querySelector('button')?.textContent).toBe('refresh')
-    // The head's age of this screen's reads is on the title row, not beside
-    // the breadcrumb (one age, one place).
-    await waitFor(() => expect(age.querySelector('.ctl-head-age')?.textContent).toMatch(/newest read|reading…/))
-    expect(c.querySelector('.ctl-head > .ctl-head-age')).toBeNull()
+    expect(row.querySelector(':scope > .head > h1')).not.toBeNull()
+    const acts = row.querySelector(':scope > .c-acts')
+    expect(acts, 'the head has no actions on its right').not.toBeNull()
+    expect(row.lastElementChild, 'the actions are not on the right of the row').toBe(acts)
+    const control = () => acts!.querySelector('.c-refresh')?.textContent ?? ''
+    // Pools polls (#117), so the control says its cadence and its read age.
+    await waitFor(() => expect(control()).toMatch(/^⟳ every \d+ (s|min) · read \d+ s ago$/), { timeout: 5000 })
+    expect(row.querySelector('.sub, .c-meta, .c-age'), 'a second line or chip in the head').toBeNull()
+    expect(c.querySelector('main.work p.sub'), 'a sub-line under the title').toBeNull()
+    // One age, one place: the frame draws none on this row nor by the breadcrumb.
+    expect(c.querySelector('.ctl-head-age')).toBeNull()
+    // The count is a note below the head, not part of it.
+    const note = await waitFor(() => {
+      const n = c.querySelector('main.work .c-count-note')
+      expect(n, 'the count note is missing').not.toBeNull()
+      return n!
+    })
+    expect(row.contains(note)).toBe(false)
   })
 
-  it('keeps the provenance group whole, so refresh never wraps onto its own line', () => {
+  it('keeps the head one row, its refresh whole, and its actions pushed right', () => {
+    // MUTATION: let `.c-phead` wrap, drop `nowrap` from `.c-refresh` (its
+    // `⟳` would wrap away from its age), or drop the actions' `margin-left: auto`.
     const host = document.createElement('div')
-    host.innerHTML = '<div class="c-phead"><div class="head"><h1>x</h1></div><p class="sub"><span class="c-age">read 4s ago · refresh</span></p></div>'
+    host.innerHTML = '<div class="c-phead"><div class="head"><h1>x</h1></div><div class="c-acts"><button type="button" class="c-refresh">⟳ every 30 s · read 4 s ago</button></div></div>'
     document.body.appendChild(host)
-    const age = host.querySelector('.c-age')!
-    expect(cascade(STYLES, age, 'white-space', WIDE).winner?.value).toBe('nowrap')
-    expect(cascade(STYLES, age, 'margin-left', WIDE).winner?.value).toBe('auto')
-    expect(cascade(STYLES, host.querySelector('.c-phead')!, 'display', WIDE).winner?.value).toBe('flex')
+    const head = host.querySelector('.c-phead')!
+    expect(cascade(STYLES, head, 'display', WIDE).winner?.value).toBe('flex')
+    expect(cascade(STYLES, head, 'flex-wrap', WIDE).winner?.value).toBe('nowrap')
+    expect(cascade(STYLES, host.querySelector('.c-acts')!, 'margin-left', WIDE).winner?.value).toBe('auto')
+    expect(cascade(STYLES, host.querySelector('.c-refresh')!, 'white-space', WIDE).winner?.value).toBe('nowrap')
     host.remove()
   })
 })

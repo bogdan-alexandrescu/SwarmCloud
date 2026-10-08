@@ -1,6 +1,5 @@
 import {
   createContext,
-  Fragment,
   isValidElement,
   useCallback,
   useContext,
@@ -17,7 +16,7 @@ import { chosenTenant, errorHeading, errorReassurance, pageReads, subscribeTenan
 import { type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
-import { formatDuration, timeAgo } from './types'
+import { timeAgo } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -49,8 +48,8 @@ export interface ScreenReading {
 
 /**
  * HOW OLD A READ MAY GET BEFORE THE SCREEN STOPS PRESENTING IT AS CURRENT:
- * five minutes, after which the rows are dimmed and the sub-line says
- * `not refreshed` (CH-1).
+ * five minutes, after which the rows are dimmed and the head's refresh control
+ * says `not refreshed` (CH-1), and a panel's foot says `from 6 min ago` (#98).
  *
  * WHY FIVE. It is `MAX_BACKOFF_MS` below, on purpose: a polling screen that has
  * not produced a good read within its longest back-off is not being kept
@@ -120,19 +119,12 @@ function tabHidden(): boolean {
 export const RoutedPage = createContext(false)
 
 /**
- * ONE READ AGE PER SCREEN (#98). True inside the app frame, whose head
- * (`Head` in App.tsx) prints the age of the CURRENT screen's own reads (CH-2)
- * and whose dock prints the tab-wide one. A `Screen` in the frame therefore
- * does not print a third copy of it on its sub-line while the read is fresh:
- * "newest read 4s ago" in the head and "read 4s ago" under the title were one
- * fact said twice, and with two reads behind a screen the two could disagree.
- *
- * WHAT THE SUB-LINE STILL SAYS ABOUT FRESHNESS: everything that is not "this
- * is current". A failed refresh (`not refreshed · showing 4m ago`) and a read
- * older than `AGED_AFTER_MS` (`not refreshed · read 6m ago`) keep their age
- * beside the rows they dim -- a panel states its freshness when it is stale,
- * and only then. Outside the frame (a screen rendered on its own, as the unit
- * tests do) there is no head to carry the age, and the sub-line prints it.
+ * True inside the app frame, whose head (`Head` in App.tsx) can time the
+ * CURRENT screen's own reads (CH-2). A `PageHead` that has no read age of its
+ * own to show -- Help, API reads -- draws that age in
+ * its actions; a `Screen` never needs it, because its refresh control carries
+ * its own (#98, owner ruling 2026-10-07: one age per screen, and it lives in
+ * that control). The dock keeps the tab-wide age.
  */
 export const FrameAge = createContext(false)
 
@@ -233,12 +225,268 @@ export function useSubmitAs(): string | null {
   return s !== null && s.kept ? s.to.name : null
 }
 
-/** What the sub-line says about the cadence. */
+/** What the head's refresh control says about the cadence. */
 interface Cadence {
   /** The screen's own cadence. */
   base: number
   /** The wait actually in force: the cadence, or longer while backing off. */
   wait: number
+}
+
+/**
+ * HOW LONG A POLLING SCREEN KEEPS READING WITH NOBODY AT IT: fifteen minutes
+ * without a key, a pointer or a wheel, and then it stops and its head says
+ * `Paused · resume` (#117, owner ruling 2026-10-07). A console left open on a
+ * second monitor overnight otherwise spends the 20 rps per-principal budget
+ * re-reading pools nobody is looking at; a hidden tab already reads nothing,
+ * and this is the same rule for a visible one nobody is using.
+ */
+export const IDLE_STOP_MS = 15 * 60_000
+
+/** The last user input this tab saw, on this browser's clock. */
+let lastInput = Date.now()
+let watchingInput = false
+const INPUT_EVENTS = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'click'] as const
+
+function noteInput(): void {
+  lastInput = Date.now()
+}
+
+/** One set of listeners for the whole tab, installed by the first poller. */
+function watchInput(): void {
+  if (watchingInput || typeof window === 'undefined') return
+  watchingInput = true
+  for (const e of INPUT_EVENTS) window.addEventListener(e, noteInput, { capture: true, passive: true })
+}
+
+/**
+ * Whether a poller has gone `IDLE_STOP_MS` without user input, and the resume
+ * that restarts it. Mounting counts as input -- a screen is opened by someone
+ * -- and once stopped it stays stopped until the resume is pressed, so the
+ * pause is on screen when the person comes back rather than undone by the
+ * first mouse move nobody meant as "read again".
+ */
+export function useIdleStop(active: boolean): { idle: boolean; resume: () => void } {
+  const [idle, setIdle] = useState(false)
+  useEffect(() => {
+    if (!active) return
+    watchInput()
+    noteInput()
+  }, [active])
+  useEffect(() => {
+    if (!active || idle) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const check = () => {
+      const left = lastInput + IDLE_STOP_MS - Date.now()
+      if (left <= 0) setIdle(true)
+      else timer = setTimeout(check, left)
+    }
+    check()
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [active, idle])
+  const resume = useCallback(() => {
+    noteInput()
+    setIdle(false)
+  }, [])
+  return { idle, resume }
+}
+
+/**
+ * Call `tick` every `ms` while the tab can be seen and `stopped` is false.
+ *
+ * FOR A PAGE THAT IS NOT ONE `Screen` -- Overview's eight reads, the
+ * Timeline's attempts and outcomes -- and so cannot take `Screen`'s
+ * `pollMs`. It was Overview's own hook, moved here unchanged (#117) so the
+ * Timeline polls through it rather than through a third timer.
+ *
+ * §2.5: polling "stop[s] entirely when `document.hidden`". A hidden tab reads
+ * nothing; a tab coming back reads at once if a tick fell due while it was
+ * away, and otherwise finishes the wait it was part-way through -- so flipping
+ * away and back inside twenty seconds costs nothing, and coming back after an
+ * hour shows the platform now rather than twenty seconds from now. The same
+ * rule `Screen` applies to every other polled screen. `stopped` is the idle
+ * stop (`useIdleStop`): while it holds nothing is armed, and when it lifts the
+ * caller's resume has already read, so the wait starts again from there.
+ *
+ * A timeout re-armed per tick rather than an interval, because the due time
+ * has to survive a pause: an interval restarted on return would either fire
+ * late or need the same bookkeeping. Every REGULAR tick schedules with `ms`
+ * itself (not a delta against `Date.now()`), so the timer this hook creates
+ * on mount and on every tick after that is `setTimeout(fire, ms)` exactly --
+ * OV-16 (layout.overview.test.tsx) spies on `setTimeout` and keys its
+ * assertion on that literal `ms`, for the 20 s poll and the 60 s stats read
+ * each having their own hook instance. Only the resume-from-hidden path
+ * schedules a shorter, computed delay, to finish the wait a tick was
+ * part-way through rather than restart it.
+ */
+export function usePoll(ms: number, tick: () => void, stopped = false): void {
+  const latest = useRef(tick)
+  latest.current = tick
+  useEffect(() => {
+    if (stopped) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let dueAt = Date.now() + ms
+    const disarm = () => {
+      if (timer !== null) clearTimeout(timer)
+      timer = null
+    }
+    const schedule = (delay: number) => {
+      disarm()
+      dueAt = Date.now() + delay
+      timer = setTimeout(fire, delay)
+    }
+    const fire = () => {
+      timer = null
+      latest.current()
+      schedule(ms)
+    }
+    const onVisibility = () => {
+      if (tabHidden()) disarm()
+      else if (dueAt <= Date.now()) fire()
+      else schedule(dueAt - Date.now())
+    }
+    if (!tabHidden()) schedule(ms)
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      disarm()
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [ms, stopped])
+}
+
+/**
+ * A span as the head words it: `0 s`, `12 s`, `6 min`, `2 h`, `3 d` (#138:
+ * `⟳ 12 s`). Floored, so an age never reads older than it is.
+ */
+export function spacedAge(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s} s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h} h`
+  return `${Math.floor(h / 24)} d`
+}
+
+/**
+ * A PANEL'S FRESHNESS, SAID ONLY WHEN IT IS STALE (#98, owner ruling
+ * 2026-10-07): `from 6 min ago` once a read is older than `AGED_AFTER_MS`, or
+ * at any age when its refresh `failed`, and nothing at all while it is fresh.
+ * A fresh panel's age is the head's refresh control's to say; a foot that
+ * repeated it under every card was the same fact said eight times.
+ */
+export function staleFoot(at: number | null, now: number, failed = false): string | null {
+  if (at === null || !Number.isFinite(at)) return null
+  if (!failed && now - at <= AGED_AFTER_MS) return null
+  return `from ${spacedAge(now - at)} ago`
+}
+
+/**
+ * THE HEAD'S REFRESH, A QUIET CONTROL CARRYING ITS OWN TICKING AGE (#138,
+ * #98, #117; owner rulings 2026-10-07). The screen's one age is on the button
+ * that renews it: `⟳ 12 s` on a screen read once per visit, and
+ * `⟳ every 30 s · read 4 s ago` on one that polls, so a reader sees both that
+ * the age will move and how soon. A stale or aged read says `not refreshed`
+ * first. A poll the idle stop halted is `Paused · resume`, and pressing it
+ * reads at once and starts the cadence again.
+ *
+ * It sits in the head's actions, right of the title (`PageHead`); there is no
+ * line under the title for it to sit on any more.
+ */
+export function RefreshControl({
+  readAt,
+  now,
+  cadence = null,
+  stale = false,
+  reading = false,
+  pausedUntil = null,
+  idle = false,
+  onRefresh,
+  onResume,
+}: {
+  /** When the data on screen was read (or, for a cached payload, written); null before any. */
+  readAt: number | null
+  /** The shared clock's instant (`useNow(AGE_TICK_MS)`), so every age agrees. */
+  now: number
+  /** The cadence, when the screen polls. */
+  cadence?: Cadence | null
+  /** The data is a failed refresh's, or older than `AGED_AFTER_MS`. */
+  stale?: boolean
+  /** A read is in flight with nothing yet to show. */
+  reading?: boolean
+  /** A 429's Retry-After, as an instant. */
+  pausedUntil?: number | null
+  /** The idle stop has halted the poll. */
+  idle?: boolean
+  onRefresh: () => void
+  onResume?: () => void
+}) {
+  if (idle) {
+    return (
+      <button
+        type="button"
+        className="c-refresh is-paused"
+        onClick={onResume ?? onRefresh}
+        aria-label={`Paused after ${IDLE_STOP_MS / 60_000} minutes without input · resume`}
+      >
+        Paused · resume
+      </button>
+    )
+  }
+  const wait = pausedUntil === null ? 0 : pausedUntil - Date.now()
+  if (wait > 0) {
+    return (
+      <button type="button" className="c-refresh" disabled>
+        paused {spacedAge(wait + 999)}
+      </button>
+    )
+  }
+  if (readAt === null) {
+    return (
+      <button type="button" className="c-refresh" onClick={onRefresh} disabled={reading} aria-label={reading ? 'Reading' : 'Refresh · not read'}>
+        ⟳ {reading ? 'reading…' : 'refresh'}
+      </button>
+    )
+  }
+  const age = spacedAge(now - readAt)
+  const every =
+    cadence === null
+      ? null
+      : cadence.wait > cadence.base
+        ? `every ${spacedAge(cadence.wait)}, backing off`
+        : `every ${spacedAge(cadence.base)}`
+  const lead = [stale ? 'not refreshed' : null, every].filter((p): p is string => p !== null)
+  const said = lead.length === 0 ? age : `${lead.join(' · ')} · read ${age} ago`
+  return (
+    <button
+      type="button"
+      className={stale ? 'c-refresh is-stale' : 'c-refresh'}
+      onClick={onRefresh}
+      aria-label={`Refresh · read ${age} ago${every === null ? '' : ` · re-reads ${every}`}${stale ? ' · not refreshed' : ''}`}
+      // Whole in its title: beside an open agent its words are cut (agents.css).
+      title={said}
+    >
+      ⟳ {said}
+    </button>
+  )
+}
+
+/**
+ * THE SCREEN'S COUNT, AS A NOTE ON ITS FIRST CARD (#138, owner ruling
+ * 2026-10-07). It was the meta chip on the head's row, and before that the
+ * 16px summary line under the title; §6.12 is title left, actions right and
+ * nothing else, so what was read is said where it was read, at the micro step
+ * over the card it counts. The whole text is in its title, as the chip's was.
+ */
+export function CountNote({ children }: { children: ReactNode }) {
+  if (!hasContent(children)) return null
+  return (
+    <p className="c-count-note" title={textOf(children) || undefined}>
+      {children}
+    </p>
+  )
 }
 
 /**
@@ -265,7 +513,13 @@ interface Cadence {
  * poll for free. It pauses while the tab is hidden and reads at once when the
  * tab comes back, doubles its wait after each failure in a row up to
  * `MAX_BACKOFF_MS`, honours a 429's Retry-After, and stops altogether on an
- * answer only a person can change. The cadence is printed beside the age.
+ * answer only a person can change -- or after `IDLE_STOP_MS` with nobody at
+ * the screen (#117), until `Paused · resume` is pressed. The cadence is
+ * printed beside the age, on the head's refresh control (`RefreshControl`).
+ *
+ * THE HEAD IS TITLE LEFT, ACTIONS RIGHT, AND NOTHING UNDER IT (#138, owner
+ * ruling 2026-10-07, design-system §6.12). `summary` -- the screen's count --
+ * is a note over its first card (`CountNote`), not a line under the title.
  */
 export function Screen<T>({
   title,
@@ -281,7 +535,7 @@ export function Screen<T>({
   /** The screen's one `?`, after its title, when it explains the whole screen. See `PageHead`. */
   help?: TopicId
   load: () => Promise<Result<T>>
-  /** One line under the title once data is in. */
+  /** The screen's count once data is in: a note over its first card (`CountNote`, #138). */
   summary?: (data: T) => ReactNode
   /**
    * Shown when the read SUCCEEDED and returned nothing. Different from failure.
@@ -311,8 +565,10 @@ export function Screen<T>({
   const now = useNow(AGE_TICK_MS)
   /** Whether this screen is the page, rather than the inspector over it. */
   const page = useContext(RoutedPage)
-  /** Whether the frame's head carries this screen's age (#98). */
-  const frameAge = useContext(FrameAge)
+  // ONE AGE PER SCREEN, AND IT IS THIS ONE (#98): the refresh control in this
+  // screen's head carries it, so the frame's head prints none while a
+  // `Screen` is mounted. The dock keeps the tab-wide age.
+  useClaimPageAge(true)
 
   // ---- polling ----------------------------------------------------------
   //
@@ -351,10 +607,17 @@ export function Screen<T>({
     }
   }, [])
 
-  /** Start the timer for the planned read -- unless the tab is hidden. */
+  // THE IDLE STOP (#117): a polling screen nobody has touched for
+  // `IDLE_STOP_MS` arms nothing until its `Paused · resume` is pressed.
+  const polls = pollMs !== undefined
+  const { idle, resume } = useIdleStop(polls)
+  const idleRef = useRef(idle)
+  idleRef.current = idle
+
+  /** Start the timer for the planned read -- unless the tab is hidden or the poll is idle-stopped. */
   const arm = useCallback(() => {
     disarm()
-    if (dueAt.current === null || tabHidden()) return
+    if (dueAt.current === null || tabHidden() || idleRef.current) return
     timer.current = setTimeout(() => {
       timer.current = null
       dueAt.current = null
@@ -455,7 +718,6 @@ export function Screen<T>({
   // A hidden tab reads nothing; a tab coming back reads at once if a read fell
   // due while it was away, and otherwise resumes the wait it was part-way
   // through. Registered only on a screen that polls.
-  const polls = pollMs !== undefined
   useEffect(() => {
     if (!polls || typeof document === 'undefined') return
     const onVisibility = () => {
@@ -466,6 +728,7 @@ export function Screen<T>({
       }
       const away = hiddenAt.current === null ? 0 : Date.now() - hiddenAt.current
       hiddenAt.current = null
+      if (idleRef.current) return
       if (dueAt.current !== null && dueAt.current <= Date.now()) {
         // THE TAB WAS AWAY AND STOPPED READING: say so until the read lands
         // (states.html §13), rather than letting the ages grow in silence.
@@ -501,6 +764,11 @@ export function Screen<T>({
   // Nothing fires after the screen is gone.
   useEffect(() => disarm, [disarm])
 
+  // Idle-stopped: whatever was planned is dropped, so nothing fires.
+  useEffect(() => {
+    if (idle) disarm()
+  }, [idle, disarm])
+
   // The refresh button is a read NOW: whatever was planned is replaced by it,
   // and the read it causes plans the next one.
   const retry = useCallback(() => {
@@ -509,6 +777,11 @@ export function Screen<T>({
     byPoll.current = false
     setNonce((n) => n + 1)
   }, [disarm])
+  // `Paused · resume`: a read now, and the read it causes plans the next one.
+  const resumePoll = useCallback(() => {
+    resume()
+    retry()
+  }, [resume, retry])
 
   const data =
     state.status === 'ok' ? state.data : state.status === 'stale' ? state.data : null
@@ -531,17 +804,27 @@ export function Screen<T>({
           established. A per-screen copy would be a second opinion about the
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
-      <PageHead title={title} help={help} meta={metaOf(state, summary)}>
-        <SubLine
-          state={state}
-          summary={summary}
-          pausedUntil={pausedUntil}
-          onRetry={retry}
-          now={now}
-          aged={aged}
-          cadence={cadence}
-          frameAge={frameAge}
-        />
+      <PageHead title={title} help={help}>
+        {/* An admin gate is not a read to renew: the panel says `admin only`. */}
+        {!(state.status === 'error' && state.error.kind === 'admin_required') && (
+          <RefreshControl
+            readAt={
+              state.status === 'ok' || state.status === 'empty'
+                ? (state.serverAt !== undefined ? Date.parse(state.serverAt) : state.fetchedAt)
+                : state.status === 'stale'
+                  ? state.fetchedAt
+                  : null
+            }
+            now={now}
+            cadence={cadence}
+            stale={state.status === 'stale' || aged}
+            reading={state.status === 'loading'}
+            pausedUntil={pausedUntil}
+            idle={idle}
+            onRefresh={retry}
+            onResume={resumePoll}
+          />
+        )}
       </PageHead>
 
       <HiddenTabLine wasHiddenMs={awayMs} reading={awayMs !== null} />
@@ -559,29 +842,32 @@ export function Screen<T>({
           `.state p` outranked `.checked-at`. The panel is §6.9's fixed shape
           now: mark, heading, one sentence, a link out.
 
-          AND THE `Checked …` LINE TICKS (CH-1/CH-10, settled on #87,
-          2026-09-25). #145 deleted it as a repeat of the sub-line's age; the
-          box had asked for it to TICK, because it never moved -- a panel that
-          said `Checked just now.` at nine in the morning said it at noon. It
-          is back as the primitive's foot, at the micro step, and it reads the
-          sub-line's instant from the sub-line's clock (`now`, `useNow` at
-          `AGE_TICK_MS`), so the two can never disagree. */}
+          ITS FOOT STATES FRESHNESS ONLY WHEN IT IS STALE (#98, owner ruling
+          2026-10-07): `from 6 min ago` past `AGED_AFTER_MS`, and nothing
+          while the read is fresh -- the head's refresh control carries that
+          age, on the same clock (`now`), so the two can never disagree. */}
       {state.status === 'empty' && empty && (
         <Absent
           kind="zero"
           heading={empty.heading}
           say={empty.say ?? EMPTY_SAY}
           link={empty.link}
-          foot={`Checked ${timeAgo(state.serverAt ?? state.fetchedAt, now)}.`}
+          foot={staleFoot(state.serverAt !== undefined ? Date.parse(state.serverAt) : state.fetchedAt, now) ?? undefined}
         >
           {empty.body}
         </Absent>
       )}
 
+      {/* A REAL ZERO ON A SCREEN WITH NO EMPTY PANEL still says so: it was
+          the head's `Nothing to show`, and with no line under the title it
+          is the note where the first card would be (#138). */}
+      {state.status === 'empty' && !empty && <CountNote>Nothing to show</CountNote>}
+
       {/* Dimmed when stale or aged, and the dimming is the signal that the
           numbers below are from an earlier read. */}
       {data !== null && reading !== null && (
         <div className={state.status === 'stale' || aged || rereading ? 'stale-body' : undefined}>
+          {summary !== undefined && <CountNote>{summary(data)}</CountNote>}
           {children(data, reading)}
         </div>
       )}
@@ -590,21 +876,22 @@ export function Screen<T>({
 }
 
 /**
- * THE PAGE HEAD, WRITTEN ONCE (AH-25, design-system §6.12).
+ * THE PAGE HEAD, WRITTEN ONCE (AH-25, design-system §6.12): TITLE LEFT,
+ * ACTIONS RIGHT, NOTHING ELSE (#138, owner ruling 2026-10-07).
  *
- * A title over one line of provenance: what was read, how old it is, and the
- * screen's read control -- with the cost of that control, when it has one,
- * printed on it (#138). Inside the frame the age of a fresh read is the
- * head's, not this line's (`FrameAge`, #98). No description sentence; the
- * sentence a screen is allowed lives behind its `?`.
+ * The `<h1>` and its one `?` on the left; everything a caller passes as
+ * `children` on the right, in `.c-acts` -- a `Screen`'s refresh control with
+ * its ticking age (`RefreshControl`), Platform counts' billed run with its
+ * cost on the button, the Git tokens page's scope and its buttons. There is no
+ * line under the title: the 16px summary line every Screen used to print
+ * there, and the meta chip that replaced it on the title's row, are gone. A
+ * screen's count is a note over its first card (`CountNote`).
  *
- * `Screen` renders this on fourteen routes. Platform counts renders it too,
- * because it reads on a button rather than on mount and so cannot be a
- * `Screen`, and it used to draw a second shape of head for that reason: the
- * control pinned right in a `.ctl-page-head` and its cost a whole toolbar row
- * below. Help renders it as §6.12's one exception: it reads nothing, so its
- * line says what the page is and which topic is showing. Every caller has a
- * line, so `children` is required -- there is no bare head to style.
+ * ONE SHAPE FOR EVERY CALLER, ADMIN INCLUDED (AH-25). Platform counts drew a
+ * second head -- its run beside the title, its provenance on a line under it
+ * -- because it reads on a button rather than on mount. Its run is an action
+ * now, on the right, like every other screen's refresh. There is no
+ * `action` slot beside the title for a second shape to grow back from.
  *
  * `help`, WHEN A SCREEN'S ONE `?` EXPLAINS THE WHOLE SCREEN (AH-24). The
  * owner's slot rule is after the label or heading, never after a value, and
@@ -614,32 +901,26 @@ export function Screen<T>({
  * topic's short form. Passed as `help="<id>"` so `tests/help.test.ts` counts
  * it against the ration on the screen that asked for it.
  *
- * `.ctl-page-head` is left to the heads this does not describe: Overview's
- * facts row and the API reads page.
+ * A HEAD WITH NO AGE OF ITS OWN -- Help and API reads, which read nothing --
+ * draws the frame's age of the current screen's reads
+ * (`HeadAge`) at the start of its actions. A `Screen`, Overview, the Timeline
+ * the Submit chooser and the Repositories and Git tokens pages (`UrRefresh`) carry their own on
+ * their refresh control and claim the age (`useClaimPageAge`), so the frame's
+ * is null under them: one age per screen (#98).
  */
 export function PageHead({
   title,
   help,
-  meta,
   headingId,
-  action,
   children,
 }: {
   title: string
   help?: TopicId
-  /** The page's one action, drawn by the title (Platform counts' billed run). */
-  action?: ReactNode
   /** The `<h1>`'s id, for a region that is labelled by it. */
   headingId?: string
-  /** What was read, as a fact: a mono chip beside the title ("37 · none hold capacity"). */
-  meta?: ReactNode
-  /** The provenance: its age, its cadence and its read control, right-aligned. */
-  children: ReactNode
+  /** The head's actions, right-aligned: the read control first, then anything the page offers. */
+  children?: ReactNode
 }) {
-  // ONE ROW (#503, "Page head"): the title, the meta chip, and right-aligned
-  // "read · poll · refresh", as the picked frames draw it. The head's age of
-  // this screen's reads (`HeadAge`) joins the row when the frame times this
-  // screen (`FrameAge`), and the head beside the breadcrumb then prints none.
   const frame = useContext(FrameAge)
   const headAge = useContext(HeadAge)
   const takes = frame && headAge !== null
@@ -653,26 +934,11 @@ export function PageHead({
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). */}
         {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}
-        {action}
       </div>
-      <p className="sub">
-        {meta !== undefined && meta !== null && meta !== '' && (
-          <>
-            {/* THE WHOLE CHIP IN ITS TITLE (U11a N10): beside an open agent
-                the chip ellipses (`200 loaded · 0 live…`), and the words it
-                cut are the scope of every figure under it. */}
-            <span className="c-meta" title={textOf(meta) || undefined}>{meta}</span>
-            {/* The chip and the age are two facts: said as two to a reader
-                of the text, drawn apart by the row's gap. */}
-            <span className="sk-vh"> · </span>
-          </>
-        )}
-        <span className="c-age">
-          {takes && <span className="ctl-head-age">{headAge}</span>}
-          {takes && hasContent(children) && <span aria-hidden> · </span>}
-          {children}
-        </span>
-      </p>
+      <div className="c-acts">
+        {takes && <span className="ctl-head-age">{headAge}</span>}
+        {children}
+      </div>
     </div>
   )
 }
@@ -686,118 +952,9 @@ export function textOf(n: ReactNode): string {
   return ''
 }
 
-/** Whether a node draws anything (a SubLine that has nothing to add returns null). */
+/** Whether a node draws anything. */
 function hasContent(n: ReactNode): boolean {
   return n !== null && n !== undefined && n !== false && n !== ''
-}
-
-/** The meta chip: what the read found, before the provenance. */
-function metaOf<T>(state: Result<T>, summary: ((data: T) => ReactNode) | undefined): ReactNode {
-  if (state.status === 'empty') return 'Nothing to show'
-  if ((state.status === 'ok' || state.status === 'stale') && summary !== undefined) return summary(state.data)
-  return null
-}
-
-/** `parts`, with ` · ` between those that draw something. */
-function dots(parts: readonly ReactNode[]): ReactNode {
-  const drawn = parts.filter(hasContent)
-  if (drawn.length === 0) return null
-  return drawn.map((p, i) => (
-    <Fragment key={i}>
-      {i > 0 && ' · '}
-      {p}
-    </Fragment>
-  ))
-}
-
-function SubLine<T>({
-  state,
-  pausedUntil,
-  onRetry,
-  now,
-  aged,
-  cadence,
-  frameAge,
-}: {
-  state: Result<T>
-  summary?: (data: T) => ReactNode
-  pausedUntil: number | null
-  onRetry: () => void
-  /** The shared clock's instant, so this age agrees with the head's. */
-  now: number
-  /** A successful read older than `AGED_AFTER_MS`. */
-  aged: boolean
-  cadence: Cadence | null
-  /** The frame's head prints the age of a fresh read (`FrameAge`, #98). */
-  frameAge: boolean
-}) {
-  const paused = pausedUntil !== null && pausedUntil > Date.now()
-  const retryBtn = (
-    <button onClick={onRetry} disabled={paused}>
-      {paused ? `paused ${Math.ceil((pausedUntil - Date.now()) / 1000)}s` : 'refresh'}
-    </button>
-  )
-  // THE CADENCE BESIDE THE AGE, so a reader knows the age is going to move and
-  // how soon. While backing off it is the wait actually in force, and says so.
-  const cadenceText =
-    cadence === null
-      ? null
-      : cadence.wait > cadence.base
-        ? `every ${formatDuration(cadence.wait)}, backing off`
-        : `every ${formatDuration(cadence.base)}`
-  // `not refreshed` is the stale wording, and an aged read earns it too: it is
-  // true, and it is what a reader scanning for a frozen screen looks for.
-  const unrefreshed = aged ? <strong>not refreshed</strong> : null
-  // THE AGE OF A FRESH READ IS THE HEAD'S (#98), on this row (`PageHead`).
-  // Printed here only where no head carries it, or once it is no longer
-  // fresh -- the stale case below always prints its own. And whenever the
-  // DATA is older than the fetch: a cached payload's `generated_at`
-  // (`serverAt`) can be 40m old on a read that landed just now, and the head,
-  // which times the fetch, would say `just now` beside it. The data's own age
-  // is then the one that matters.
-  const served =
-    (state.status === 'ok' || state.status === 'empty') &&
-    state.serverAt !== undefined &&
-    state.fetchedAt - Date.parse(state.serverAt) > AGE_TICK_MS
-  const ownAge = aged || !frameAge || served
-
-  switch (state.status) {
-    case 'loading':
-      return <>Reading…</>
-    case 'ok':
-    case 'empty':
-      return <AgeLine parts={[unrefreshed, ownAge ? `read ${timeAgo(state.serverAt ?? state.fetchedAt, now)}` : null, cadenceText]} action={retryBtn} />
-    case 'stale':
-      return <AgeLine parts={[<strong key="n">not refreshed</strong>, `showing ${timeAgo(state.fetchedAt, now)}`, cadenceText]} action={retryBtn} />
-    case 'error':
-      return state.error.kind === 'admin_required' ? (
-        <>Admin only.</>
-      ) : (
-        <>Could not read. {retryBtn}</>
-      )
-  }
-}
-
-/**
- * THE PROVENANCE'S WORDS, THEN ITS CONTROL (U11a N10, owner QA 2026-10-04).
- * Beside an open agent the list's head has ~150px for `read just now · every
- * 5s · refresh`, and the ellipsis on the whole line clipped `refresh` (its
- * button at x722-758 in a 584-732 box). The words are their own span, which
- * gives way with an ellipsis and keeps them in its title; the control after
- * them keeps its width. The text a reader hears is unchanged.
- */
-function AgeLine({ parts, action }: { parts: readonly ReactNode[]; action: ReactNode }) {
-  const said = dots(parts)
-  if (said === null) return <>{action}</>
-  return (
-    <>
-      <span className="c-age-say" title={textOf(said) || undefined}>
-        {said}
-      </span>
-      {' · '}
-      {action}
-    </>
-  )
 }
 
 /**

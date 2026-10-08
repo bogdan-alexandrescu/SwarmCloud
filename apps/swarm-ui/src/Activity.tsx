@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
+  loadCapacity,
   loadMe,
   loadOutcomes,
   loadRunnerProfiles,
@@ -33,11 +34,13 @@ import {
   SPANS,
   VERIFY_TENANT,
   cacheable,
+  alignedWords,
   dayDocWords,
   filtersSet,
   hourAllowed,
   instantLabel,
   interval,
+  ledgerRange,
   monthAllowed,
   nothingReadWords,
   outcomesQuery,
@@ -46,6 +49,7 @@ import {
   rangeRefusal,
   serializeView,
   spanCoverage,
+  spanLengthMs,
   unitWord,
   viewDays,
   viewerZone,
@@ -62,11 +66,13 @@ import {
 } from './outcomes'
 import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
-import { Id, PageHead, Screen, timeAgo } from './Shell'
-import { TimelinePages } from './TimelineLanes'
+import { CountNote, Id, PageHead, RefreshControl, Screen, useClaimPageAge, useIdleStop, usePoll } from './Shell'
+import { TIMELINE_POLL_MS, TimelinePages } from './TimelineLanes'
 import { EndedRowsCard } from './TimelineRows'
 import { useInView } from './useInView'
+import { tableMode, usePhoneTables } from './capacityPoll'
 import { AGE_TICK_MS, useNow } from './useNow'
+import type { Pool, Tenant } from './types'
 import './styles/admin.css'
 
 /**
@@ -231,7 +237,9 @@ export function ActivityScreen({
   const [pending, setPending] = useState(true)
   const [latest, setLatest] = useState<{ key: string; result: Result<Outcomes> } | null>(null)
   /** The last payload that drew, kept (dimmed) while a filter change is being read. */
-  const [good, setGood] = useState<{ key: string; data: Outcomes } | null>(null)
+  const [good, setGood] = useState<{ key: string; data: Outcomes; continues: boolean } | null>(null)
+  /** How many buckets the last read of this query had built, so a continuation that builds nothing stops. */
+  const built = useRef<{ key: string; read: number } | null>(null)
   useEffect(() => {
     let live = true
     setPending(true)
@@ -242,7 +250,11 @@ export function ActivityScreen({
     ledger.then((r) => {
       if (!live) return
       setLatest({ key, result: r })
-      if (r.status === 'ok' || r.status === 'stale') setGood({ key, data: r.data })
+      if (r.status === 'ok' || r.status === 'stale') {
+        const before = built.current?.key === key ? built.current.read : null
+        built.current = { key, read: r.data.totals.buckets_read }
+        setGood({ key, data: r.data, continues: buildContinues(r.data, before) })
+      }
       setPending(false)
     })
     return () => {
@@ -398,6 +410,37 @@ export function ActivityScreen({
 
   const [picked, setPicked] = useState<string | null>(null)
   const refresh = () => setNonce((n) => n + 1)
+  // THE CADENCE (#117: both Timeline pages every `TIMELINE_POLL_MS`) and THE
+  // ONE AGE (#98), on the head's refresh control.
+  const { idle, resume } = useIdleStop(true)
+  usePoll(TIMELINE_POLL_MS, refresh, idle)
+  useClaimPageAge(true)
+
+  // A PARTIAL BUILD CONTINUES BY ITSELF (QA G3-01, 2026-10-07). The route
+  // builds a span's days a budget at a time and caches only a whole one, so
+  // the next read carries on -- but the page waited for its 60 s poll or a
+  // click for that read, and a 30d span sat at "6 of 30 days" with the cards
+  // below it already reading the whole span. While a read is still building,
+  // the next one is asked `CONTINUE_BUILD_MS` after it lands; it stops when a
+  // read builds nothing more, and while the page is idle.
+  const continuing = !pending && !idle && good !== null && good.key === key && good.continues
+  useEffect(() => {
+    if (!continuing) return
+    const t = setTimeout(() => setNonce((n) => n + 1), CONTINUE_BUILD_MS)
+    return () => clearTimeout(t)
+  }, [continuing, good])
+
+  // WHAT THE CARDS COVERED, so a partial headline can say the cards below it
+  // read further (QA G3-01): each card reads its own part, often after the
+  // headline's read has built more of the span.
+  const [cardCover, setCardCover] = useState<{ key: string; whole: Readonly<Record<string, boolean>> }>({ key: '', whole: {} })
+  const onCardCover = useCallback((query: string, id: string, whole: boolean) => {
+    setCardCover((c) => {
+      const base = c.key === query ? c.whole : {}
+      return base[id] === whole && c.key === query ? c : { key: query, whole: { ...base, [id]: whole } }
+    })
+  }, [])
+  const cardsRead = cardCover.key === key ? Object.values(cardCover.whole) : []
 
   const settled = latest !== null && latest.key === key ? latest.result : null
   const failure: ApiError | null = !pending && settled?.status === 'error' ? settled.error : null
@@ -421,22 +464,37 @@ export function ActivityScreen({
 
   return (
     <>
+      {/* TITLE LEFT, ACTIONS RIGHT (#138): the refresh, with its ticking
+          age and the cadence; the range and the cache are the note over the
+          first card. The age is the payload's (`generated_at`), which a
+          cached answer carries from when it was counted. */}
       <PageHead title="Timeline">
-        {data === null ? (
-          'reading…'
-        ) : (
-          <>
-            {rangeWords(data)} · read {timeAgo(data.generated_at, now)}
-            {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
-          </>
-        )}{' '}
-        <button type="button" onClick={refresh} disabled={pending}>
-          {pending ? 'reading…' : 'refresh'}
-        </button>
+        <RefreshControl
+          readAt={data === null ? null : Date.parse(data.generated_at)}
+          now={now}
+          cadence={{ base: TIMELINE_POLL_MS, wait: TIMELINE_POLL_MS }}
+          reading={pending}
+          idle={idle}
+          onRefresh={refresh}
+          onResume={() => {
+            resume()
+            refresh()
+          }}
+        />
       </PageHead>
 
       {/* Outcomes is the Timeline's second page now (timeline.html pick A); Lanes is /timeline. */}
-      <TimelinePages at="outcomes" />
+      <TimelinePages at="outcomes" otherTitle={data === null ? undefined : (bothRangesWords(data) ?? undefined)} />
+
+      <CountNote>
+        {data === null ? null : (
+          <>
+            {rangeWords(data)}
+            {alignedWords(data) !== null && <span className="ol-aligned">{` · ${alignedWords(data)}`}</span>}
+            {data.cached && ` · from the ${OUTCOMES_CACHE_S} s cache`}
+          </>
+        )}
+      </CountNote>
 
       <LedgerToolbar
         view={view}
@@ -465,6 +523,8 @@ export function ActivityScreen({
               <LedgerFacts data={data} pending={pending} view={view} />
               <LedgerSection
                 data={data}
+                continuing={continuing}
+                cardsWhole={cardsRead.length === 0 ? null : { whole: cardsRead.filter(Boolean).length, of: cardsRead.length }}
                 view={view}
                 picked={picked}
                 onPick={setPicked}
@@ -477,16 +537,16 @@ export function ActivityScreen({
           {/* EVERY CARD READS ITS OWN PART, WHEN IT SCROLLS INTO VIEW (#377),
               whether or not the headline has landed: they are separate reads. */}
           <div className="ctl-cards ol-cards">
-            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
+            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
               {(d) => <FailureClassesCard data={d} picked={picked} />}
             </LedgerPart>
-            <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} lines={[60, 72, 66, 58, 50, 56, 64]}>
+            <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 72, 66, 58, 50, 56, 64]}>
               {(d) => <RetriesCard data={d} />}
             </LedgerPart>
-            <LedgerPart id="latency" title="Time to result, by profile" className="ol-latency" query={key} nonce={nonce} load={loadPart} lines={[90, 40, 76, 76, 40, 76, 76]}>
+            <LedgerPart id="latency" title="Time to result, by profile" className="ol-latency" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[90, 40, 76, 76, 40, 76, 76]}>
               {(d) => <LatencyCard data={d} />}
             </LedgerPart>
-            <LedgerPart id="reliability" title="Reliability" className="is-wide ol-reliability" wide query={key} nonce={nonce} load={loadPart} lines={[36, 92, 92, 92, 92]}>
+            <LedgerPart id="reliability" title="Reliability" className="is-wide ol-reliability" wide query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[36, 92, 92, 92, 92]}>
               {(d) => (
                 <ReliabilityCard
                   data={d}
@@ -498,10 +558,10 @@ export function ActivityScreen({
                 />
               )}
             </LedgerPart>
-            <LedgerPart id="workflows" title="Workflows that failed, and where" className="is-wide ol-workflows" wide query={key} nonce={nonce} load={loadPart} lines={[92, 92, 92, 92, 48]}>
+            <LedgerPart id="workflows" title="Workflows that failed, and where" className="is-wide ol-workflows" wide query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[92, 92, 92, 92, 48]}>
               {(d) => <WorkflowsFailedCard data={d} spanLabel={view.span ?? 'this range'} />}
             </LedgerPart>
-            <LedgerPart id="cost" title="Reported cost" className="ol-cost-card" query={key} nonce={nonce} load={loadPart} lines={[44, 70, 62, 62, 62, 54, 48]}>
+            <LedgerPart id="cost" title="Reported cost" className="ol-cost-card" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[44, 70, 62, 62, 62, 54, 48]}>
               {(d) => <CostCard data={d} picked={picked} />}
             </LedgerPart>
             {/* The observed box. A grid of one, so the card inside stretches
@@ -527,7 +587,7 @@ export function ActivityScreen({
                 <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
               )}
             </div>
-            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} lines={[60, 52, 44, 36, 30]}>
+            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} onCover={onCardCover} lines={[60, 52, 44, 36, 30]}>
               {(d) => <CancelCausesCard data={d} picked={picked} />}
             </LedgerPart>
           </div>
@@ -622,6 +682,7 @@ function LedgerPart({
   query,
   nonce,
   load,
+  onCover,
   lines,
   children,
 }: {
@@ -635,6 +696,8 @@ function LedgerPart({
   query: string
   nonce: number
   load: PartLoader
+  /** Told, per answer, whether the card's read covered the whole span. */
+  onCover?: (query: string, id: string, whole: boolean) => void
   /** The skeleton's line widths, in the loaded card's shape. */
   lines: readonly number[]
   children: (data: Outcomes) => ReactNode
@@ -657,6 +720,7 @@ function LedgerPart({
       if (r.status === 'ok' || r.status === 'stale') {
         setGood({ ask, data: r.data })
         setFailed(null)
+        onCover?.(query, id, spanCoverage(r.data).complete)
       } else {
         setFailed({ ask, message: r.status === 'error' ? r.error.message : 'the read did not complete' })
       }
@@ -702,8 +766,46 @@ function LedgerPart({
 
 /** `Sep 12, 00:00 → now`, in the zone the server bucketed in. */
 function rangeWords(d: Outcomes): string {
-  const toNow = Math.abs(Date.parse(d.until) - Date.parse(d.generated_at)) < 2_000
-  return `${instantLabel(d.since, d.tz)} → ${toNow ? 'now' : instantLabel(d.until, d.tz)}`
+  return ledgerRange(d)
+}
+
+/**
+ * What Lanes reads for the same named span: the last `span` to the minute,
+ * ending at this read (QA G3-08). Null for a from–to range, which both pages
+ * read exactly.
+ */
+export function lanesRangeWords(d: Outcomes): string | null {
+  const ms = d.requested.span === null ? null : spanLengthMs(d.requested.span)
+  if (ms === null) return null
+  const until = Date.parse(d.generated_at)
+  return `${instantLabel(new Date(until - ms).toISOString(), d.tz)} → now`
+}
+
+/** Both pages' ranges for one named span, for the link between them (QA G3-08). */
+export function bothRangesWords(d: Outcomes): string | null {
+  const aligned = alignedWords(d)
+  const lanes = lanesRangeWords(d)
+  if (aligned === null || lanes === null) return null
+  return `Lanes reads the last ${d.requested.span} to the minute, ${lanes}; this page reads ${rangeWords(d)} (${aligned})`
+}
+
+/** How long after a partial read lands the next one is asked, to continue the build (QA G3-01). */
+export const CONTINUE_BUILD_MS = 5_000
+
+/**
+ * Whether the next read continues building this payload: it is partial
+ * because days were past the read's budget (or the span before it is), and
+ * the last read built something -- `derived_now`, or more buckets than the
+ * read before it of the same query (`readBefore`, null on the first). A read
+ * that built nothing will not build more on the next, so it is left to the poll.
+ */
+export function buildContinues(d: Outcomes, readBefore: number | null): boolean {
+  if (cacheable(d) || d.cached) return false
+  const unbuilt =
+    d.buckets.some((b) => b.state === 'unread' && b.unread_reason === 'derive_budget') ||
+    (d.previous !== null && !d.previous.complete)
+  if (!unbuilt) return false
+  return d.coverage.derived_now > 0 || readBefore === null || d.totals.buckets_read > readBefore
 }
 
 /** The span a delta compares with, in words. */
@@ -737,6 +839,8 @@ export function deltaWords(d: Outcomes): string | null {
  */
 function LedgerSection({
   data,
+  continuing,
+  cardsWhole,
   view,
   picked,
   onPick,
@@ -744,6 +848,10 @@ function LedgerSection({
   figureLink,
 }: {
   data: Outcomes
+  /** The next read is already scheduled to continue this partial build. */
+  continuing: boolean
+  /** How many of the cards read so far covered the whole span, or null before any did. */
+  cardsWhole: { whole: number; of: number } | null
   view: LedgerView
   picked: string | null
   onPick: (start: string | null) => void
@@ -812,6 +920,16 @@ function LedgerSection({
               say={`${t.buckets - t.buckets_read} of ${t.buckets} ${unitWord(data.bucket)} could not be read, so every total here covers ${t.buckets_read} of them and is a floor.`}
             />{' '}
             {t.buckets_read} of {t.buckets} {unitWord(data.bucket)}
+            {continuing && <span className="ol-q ol-building"> · still building, read again in {CONTINUE_BUILD_MS / 1000} s</span>}
+          </span>
+        )}
+        {/* THE CARDS AND THE HEADLINE CAN COVER DIFFERENT DAYS (QA G3-01): each
+            card reads its own part, often after the headline's read built
+            more, so a card can be whole while this figure is partial. */}
+        {!t.complete && !cov.none && cardsWhole !== null && cardsWhole.whole > 0 && (
+          <span className="ol-q ol-cover-split">
+            {cardsWhole.whole === cardsWhole.of ? 'cards' : `${cardsWhole.whole} of ${cardsWhole.of} cards`}: whole span · headline:{' '}
+            {t.buckets_read} of {t.buckets} {unitWord(data.bucket)} built
           </span>
         )}
         {delta !== null && <span className="ol-delta">{delta}</span>}
@@ -1150,8 +1268,15 @@ function LedgerToolbar({
   // and `from–to` on a wide screen; on a phone 24h and `from–to` move to the
   // sheet (`is-wide-only` here, `ol-span-more` there).
   const pickSpan = (k: Span | 'range') => (k === 'range' ? setRange(!range) : choose(k))
+  const aligned = data === null ? null : alignedWords(data)
   const spanOptions = (sheet: boolean) => [
-    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({ key: s as Span | 'range', label: s, ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}) })),
+    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({
+      key: s as Span | 'range',
+      label: s,
+      ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}),
+      // THE CHOSEN SPAN SAYS HOW IT WAS ALIGNED (QA G3-08): `24h` here is whole hours, not Lanes' last 24 hours.
+      ...(aligned !== null && data?.requested.span === s ? { title: aligned } : {}),
+    })),
     { key: 'range' as const, label: 'from–to', ...(sheet ? {} : { className: 'is-wide-only' }) },
   ]
   return (
@@ -1279,7 +1404,47 @@ function LedgerToolbar({
  * failure: a non-admin genuinely cannot read these, and styling that as an
  * error makes a working page look broken.
  */
+/**
+ * THE CEILING EACH TENANT'S POOL ENFORCES, READ FROM ITS POOL (G5-13, QA
+ * 2026-10-07). `Enforced` was `Math.min(max_active, capacity_units)` worked
+ * out here: a second statement of a rule the tenant pool already carries, and
+ * one that mixes agents with units. It is now the pool's own
+ * `effective_limit`, as `/v1/capacity` serves it to an admin -- the same
+ * figure Pools and Pool limits print for `tenant:<id>`, and the one admission
+ * actually compares against (it also folds in an adaptive or quota cap, which
+ * the registry values never could).
+ *
+ * A READ BESIDE THE ROSTER, NOT IN FRONT OF IT. The roster is the page and
+ * its read is the page's age; a capacity read that is slow or fails must not
+ * hold the roster back, so it is read here, again each time the roster is,
+ * and until it lands each Enforced cell is a dash that says why. A refresh
+ * keeps the previous figures on screen while the next read is in flight.
+ */
+type TenantPools = Record<string, Pool> | 'reading' | 'unread'
+
+function WithTenantPools({ roster, children }: { roster: unknown; children: (pools: TenantPools) => ReactNode }) {
+  const [pools, setPools] = useState<TenantPools>('reading')
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadCapacity()).then(
+      (r) => {
+        if (!live) return
+        setPools(r.status === 'ok' || r.status === 'stale' ? Object.fromEntries(r.data.pools.map((p) => [p.name, p])) : 'unread')
+      },
+      () => {
+        if (live) setPools('unread')
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [roster])
+  return <>{children(pools)}</>
+}
+
 export function TenantsScreen() {
+  // A record per tenant on a phone (QA G5-08): the roster below.
+  const phone = usePhoneTables()
   return (
     <Screen
       title="Tenants"
@@ -1301,176 +1466,192 @@ export function TenantsScreen() {
       }}
     >
       {(d) => (
-        <section className="section">
-          {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
-              as the People table above: eight columns compared down the
-              roster is a data table, so below 900px it scrolls sideways with
-              the tenant column held in view; only records of four columns or
-              fewer stack. It was `is-stacked`, because at 390pt everything
-              from `Enforced` rightwards sat behind a scrollbar this
-              platform does not paint, and a tenant row whose visible part
-              ends at `Principal` says nothing about whether that tenant can
-              run anything at all. The held column is what answers that now:
-              every value stays beside the tenant it belongs to.
+        <WithTenantPools roster={d}>
+          {(pools) => (
+            <section className="section">
+              {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
+                  as the People table above: eight columns compared down the
+                  roster is a data table, so below 900px it scrolls sideways with
+                  the tenant column held in view; only records of four columns or
+                  fewer stack. It was `is-stacked`, because at 390pt everything
+                  from `Enforced` rightwards sat behind a scrollbar this
+                  platform does not paint, and a tenant row whose visible part
+                  ends at `Principal` says nothing about whether that tenant can
+                  run anything at all. The held column is what answers that now:
+                  every value stays beside the tenant it belongs to.
 
-              STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
-              last, and at 1440 it sat past the panel edge behind the same
-              unpainted scrollbar -- pushed there by two identity columns of
-              55-65 characters in `nowrap` cells. Whether a tenant can run
-              anything is the first thing this roster is read for, so it
-              cannot be the column that falls off, and at 390 it is the first
-              column past the held name. The identities are shortened on the
-              wide table instead (`.ten-ident`, styles/admin.css). */}
-          <div className="table-wrap is-scroll">
-            {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
-                roster out fixed above 900px with these widths, so it is the
-                panel's width and never wider: with the 84+236px nav it ran
-                past the panel edge and clipped Identity's copy buttons. One
-                head row, as admin-help.html's Tenants frame draws it: the two
-                registry values are one Configured column, `max · units`. */}
-            <table className="pools ten-table" role="table">
-              <colgroup>
-                {TENANT_COLUMNS.map((c) => (
-                  <col key={c} className={`ten-col-${c}`} />
-                ))}
-              </colgroup>
-              <thead role="rowgroup">
-                <tr role="row">
-                  <th role="columnheader" scope="col" title="Tenant">Tenant</th>
-                  <th role="columnheader" scope="col" title="Status">Status</th>
-                  <th role="columnheader" scope="col" title="Kind">Kind</th>
-                  <th role="columnheader" scope="col" title="Principal">Principal</th>
-                  {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
-                      registry values were printed bare, and the figure that
-                      binds -- the smaller, which every writer of the tenant
-                      pool writes as its hard limit -- was nowhere. It is the
-                      column; the two values it comes from sit under
-                      `Configured`.
+                  STATUS IS THE SECOND COLUMN, beside the name (AH-11). It was the
+                  last, and at 1440 it sat past the panel edge behind the same
+                  unpainted scrollbar -- pushed there by two identity columns of
+                  55-65 characters in `nowrap` cells. Whether a tenant can run
+                  anything is the first thing this roster is read for, so it
+                  cannot be the column that falls off, and at 390 it is the first
+                  column past the held name. The identities are shortened on the
+                  wide table instead (`.ten-ident`, styles/admin.css).
 
-                      THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
-                      link is under the table, not a `?` in here: a glyph in a
-                      `<th>` publishes its HelpNote as part of the column's
-                      name, which a screen reader then reads on every cell. */}
-                  <th role="columnheader" scope="col" className="n" title="Enforced">
-                    Enforced
-                  </th>
-                  <th role="columnheader" scope="col" className="n" title="Configured">
-                    Configured
-                  </th>
-                  <th role="columnheader" scope="col" title="Credentials">Credentials</th>
-                  <th role="columnheader" scope="col" title="Identity">Identity</th>
-                </tr>
-              </thead>
-              <tbody role="rowgroup">
-                {d.tenants.map((t) => (
-                  <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
-                    <th role="rowheader" scope="row">{t.tenant_id}</th>
-                    <td role="cell" data-label="Status">
-                      {/* THE BRAND MARKS (admin-help.html, Tenants): a disabled
-                          tenant is the parked mark -- held on purpose, not
-                          failed -- and an enabled one is the plain word, since
-                          enabled is the normal case and needs no glyph. */}
-                      {t.enabled === false ? (
-                        <span className="ten-status">
-                          <StateMark state="PARKED" label="disabled" />
-                        </span>
-                      ) : (
-                        <span className="ten-status">
-                          <NamedMark mark={null} hue="neu" word="enabled" />
-                        </span>
-                      )}
-                    </td>
-                    <td role="cell" data-label="Kind">{t.kind}</td>
-                    <td role="cell" data-label="Principal" className="mono">
-                      <Ident value={t.principal} noun="principal" />
-                    </td>
-                    <td role="cell" data-label="Enforced" className="n">
-                      {/* To the tenant pool's own row on Pool limits, which
-                          is where this ceiling is changed (#134). */}
-                      <a className="ctl-link" href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}>
-                        <Enforced tenant={t} />
-                      </a>
-                    </td>
-                    <td role="cell" data-label="Configured" className="n">
-                      {/* Max active, then capacity units: the two values
-                          Enforced is the smaller of. Each word is on the
-                          cell's name, so the short form is never the only
-                          way to read it. */}
-                      <span
-                        title={`max active ${t.max_active} · capacity units ${t.capacity_units}`}
-                        aria-label={`max active ${t.max_active}, capacity units ${t.capacity_units}`}
-                      >
-                        {t.max_active} · {t.capacity_units}u
-                      </span>
-                    </td>
-                    <td role="cell" data-label="Credentials">
-                      {t.credentials.length > 0 ? (
-                        // `.tags`, the wrapper every other run of tags in this
-                        // console sits in: it spaces them. Bare, `anthropic`
-                        // and `openai` rendered touching, as one word. They
-                        // stay `.tag` and not `.ctl-chip` -- a chip is a state,
-                        // and a credential name is metadata.
-                        <span className="tags">
-                          {t.credentials.map((c) => (
-                            // These are Secret Manager NAMES and `.tag`
-                            // uppercases. An uppercased secret name is one
-                            // nobody can look up, so the value is wrapped:
-                            // `.id` beats the ancestor by inheritance.
-                            <span className="tag" key={c}>
-                              <Id>{c}</Id>
+                  AND BELOW 560px A RECORD PER TENANT (QA G5-08, 2026-10-07).
+                  At 390 the scrolled roster was 1,785px in a 356px box, and
+                  its rows were uneven because credential tags wrapped off
+                  screen. On a phone it is the `data-label` record every other
+                  capacity and admin table now draws (capacityPoll
+                  `tableMode`); the held-column scroll stays from 561 to
+                  899px. */}
+              <div className={`table-wrap ${tableMode(phone)}`}>
+                {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
+                    roster out fixed above 900px with these widths, so it is the
+                    panel's width and never wider: with the 84+236px nav it ran
+                    past the panel edge and clipped Identity's copy buttons. One
+                    head row, as admin-help.html's Tenants frame draws it: the two
+                    registry values are one Configured column, `max · units`. */}
+                <table className="pools ten-table" role="table">
+                  <colgroup>
+                    {TENANT_COLUMNS.map((c) => (
+                      <col key={c} className={`ten-col-${c}`} />
+                    ))}
+                  </colgroup>
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col" title="Tenant">Tenant</th>
+                      <th role="columnheader" scope="col" title="Status">Status</th>
+                      <th role="columnheader" scope="col" title="Kind">Kind</th>
+                      <th role="columnheader" scope="col" title="Principal">Principal</th>
+                      {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
+                          registry values were printed bare, and the figure that
+                          binds -- the smaller, which every writer of the tenant
+                          pool writes as its hard limit -- was nowhere. It is the
+                          column; the two values it comes from sit under
+                          `Configured`.
+
+                          THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
+                          link is under the table, not a `?` in here: a glyph in a
+                          `<th>` publishes its HelpNote as part of the column's
+                          name, which a screen reader then reads on every cell. */}
+                      <th role="columnheader" scope="col" className="n" title="Enforced">
+                        Enforced
+                      </th>
+                      <th role="columnheader" scope="col" className="n" title="Configured">
+                        Configured
+                      </th>
+                      <th role="columnheader" scope="col" title="Credentials">Credentials</th>
+                      <th role="columnheader" scope="col" title="Identity">Identity</th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {d.tenants.map((t) => (
+                      <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
+                        <th role="rowheader" scope="row">{t.tenant_id}</th>
+                        <td role="cell" data-label="Status">
+                          {/* THE BRAND MARKS (admin-help.html, Tenants): a disabled
+                              tenant is the parked mark -- held on purpose, not
+                              failed -- and an enabled one is the plain word, since
+                              enabled is the normal case and needs no glyph. */}
+                          {t.enabled === false ? (
+                            <span className="ten-status">
+                              <StateMark state="PARKED" label="disabled" />
                             </span>
-                          ))}
-                        </span>
-                      ) : (
-                        // AMBER, NOT RED: a tenant with no key of its own can
-                        // still run on an account lent to it (Capacity ›
-                        // Accounts), so this is a warning and not a failure.
-                        <WarnMark label="none registered" />
-                      )}
-                    </td>
-                    <td role="cell" data-label="Identity" className="mono">
-                      {/* null means NO IDENTITY, not an empty string. A blank
-                          cell here reads as fine and it is the opposite. */}
-                      {typeof t.service_account === 'string' ? (
-                        <Ident value={t.service_account} noun="service account" />
-                      ) : (
-                        <span className="tag full">no service account</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
-              READER'S WORDS (AH-21). A table with a column quietly missing is
-              a table a reader completes from memory, so this cannot simply be
-              deleted. It printed the API's field name and a rationale under a
-              `not measured` mark -- but a budget is a setting, not a
-              measurement, and this line sits in no figure slot, so it carries
-              no mark (as AG-5's plain facts do not). The account of the 422
-              and of the missing cost-attribution source is one paragraph of
-              the Tenants fields topic, behind `Why →`.
+                          ) : (
+                            <span className="ten-status">
+                              <NamedMark mark={null} hue="neu" word="enabled" />
+                            </span>
+                          )}
+                        </td>
+                        <td role="cell" data-label="Kind">{t.kind}</td>
+                        <td role="cell" data-label="Principal" className="mono">
+                          <Ident value={t.principal} noun="principal" tenant={t.tenant_id} />
+                        </td>
+                        <td role="cell" data-label="Enforced" className="n">
+                          {/* To the tenant pool's own row on Pool limits, which
+                              is where this ceiling is changed (#134). */}
+                          <a
+                            className="ctl-link"
+                            href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
+                            title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
+                          >
+                            <Enforced tenant={t} pools={pools} />
+                          </a>
+                        </td>
+                        <td role="cell" data-label="Configured" className="n">
+                          {/* Max active, then capacity units: the two values
+                              the pool's hard limit is written from. Each word is on the
+                              cell's name, so the short form is never the only
+                              way to read it. */}
+                          <span
+                            title={`max active ${t.max_active} · capacity units ${t.capacity_units}`}
+                            aria-label={`max active ${t.max_active}, capacity units ${t.capacity_units}`}
+                          >
+                            {t.max_active} · {t.capacity_units}u
+                          </span>
+                        </td>
+                        <td role="cell" data-label="Credentials">
+                          {t.credentials.length > 0 ? (
+                            // `.tags`, the wrapper every other run of tags in this
+                            // console sits in: it spaces them. Bare, `anthropic`
+                            // and `openai` rendered touching, as one word. They
+                            // stay `.tag` and not `.ctl-chip` -- a chip is a state,
+                            // and a credential name is metadata.
+                            <span className="tags">
+                              {t.credentials.map((c) => (
+                                // These are Secret Manager NAMES and `.tag`
+                                // uppercases. An uppercased secret name is one
+                                // nobody can look up, so the value is wrapped:
+                                // `.id` beats the ancestor by inheritance.
+                                <span className="tag" key={c}>
+                                  <Id>{c}</Id>
+                                </span>
+                              ))}
+                            </span>
+                          ) : (
+                            // AMBER, NOT RED: a tenant with no key of its own can
+                            // still run on an account lent to it (Capacity ›
+                            // Accounts), so this is a warning and not a failure.
+                            <WarnMark label="none registered" />
+                          )}
+                        </td>
+                        <td role="cell" data-label="Identity" className="mono">
+                          {/* null means NO IDENTITY, not an empty string. A blank
+                              cell here reads as fine and it is the opposite. */}
+                          {typeof t.service_account === 'string' ? (
+                            <Ident value={t.service_account} noun="service account" tenant={t.tenant_id} />
+                          ) : (
+                            <span className="tag full">no service account</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* WHY A COLUMN IS ABSENT IS STILL STATED, IN ONE LINE, IN THE
+                  READER'S WORDS (AH-21). A table with a column quietly missing is
+                  a table a reader completes from memory, so this cannot simply be
+                  deleted. It printed the API's field name and a rationale under a
+                  `not measured` mark -- but a budget is a setting, not a
+                  measurement, and this line sits in no figure slot, so it carries
+                  no mark (as AG-5's plain facts do not). The account of the 422
+                  and of the missing cost-attribution source is one paragraph of
+                  the Tenants fields topic, behind `Why →`.
 
-              AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
-              fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
-              tone of a qualifier under a figure, and this line qualifies no
-              figure -- it is the fact that a column is absent. */}
-          <p
-            className="ctl-panel-note ten-budget"
-            aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
-          >
-            no budget column · no budget can be set
-            <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
-          </p>
-          {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
-              index every migrated panel carries (HelpCard.tsx, route 3 of 4),
-              drawn at every width and costing no glyph from the ration. It is
-              a separate line from the note's `Why →` because the two answer
-              different questions -- what the columns mean, and why one is
-              missing -- that happen to live in one topic. */}
-          <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
-        </section>
+                  AND IT IS IN PLAIN INK (`.ten-budget`). AG-5 defines a plain
+                  fact as no mark AND NO DIMMING; `.ctl-panel-note` is the faint
+                  tone of a qualifier under a figure, and this line qualifies no
+                  figure -- it is the fact that a column is absent. */}
+              <p
+                className="ctl-panel-note ten-budget"
+                aria-label="No budget column, and no budget can be set: the only route that could set a budget refuses it, so none is set for any tenant, and the column is left out rather than drawn empty."
+              >
+                no budget column · no budget can be set
+                <a href={helpHref(TENANT_HELP)}>Why &rarr;</a>
+              </p>
+              {/* THE HELP LINK AH-12 DECIDED FOR THE ENFORCED COLUMN: the footer
+                  index every migrated panel carries (HelpCard.tsx, route 3 of 4),
+                  drawn at every width and costing no glyph from the ration. It is
+                  a separate line from the note's `Why →` because the two answer
+                  different questions -- what the columns mean, and why one is
+                  missing -- that happen to live in one topic. */}
+              <HelpLinks topics={TENANT_TOPICS} label="Reading this table:" />
+            </section>
+          )}
+        </WithTenantPools>
       )}
     </Screen>
   )
@@ -1495,7 +1676,39 @@ export function TenantsScreen() {
 /** How long a copy's outcome stays beside the button that asked for it. */
 const COPY_SAID_MS = 4000
 
-function Ident({ value, noun }: { value: string; noun: string }) {
+/**
+ * AN IDENTITY IN THREE PIECES, SO THE CUT FALLS IN THE MIDDLE (G5-12, QA
+ * 2026-10-07). Cut at its end, every Identity read "swarm-agent-work…" and
+ * every Principal "…@saga.x…": the part that tells one tenant's identity from
+ * the next is the part an end-ellipsis removes. The KEY is the tenant's own
+ * part of the local part -- the tenant id where the local part ends in it,
+ * the whole local part when it is short, otherwise its last 12 characters --
+ * with its `@`; it never shrinks. The shared prefix before it and the domain
+ * after it are each cut with their own ellipsis (`.ten-ident-head`,
+ * `.ten-ident-tail`, styles/admin.css). The three pieces are one text, so a
+ * selection and the title are still the whole value, and the copy control is
+ * unchanged.
+ */
+export function identParts(value: string, tenant: string): { head: string; key: string; tail: string } {
+  const at = value.lastIndexOf('@')
+  const local = at === -1 ? value : value.slice(0, at)
+  const tail = at === -1 ? '' : value.slice(at + 1)
+  const own =
+    tenant !== '' && (local === tenant || local.endsWith(`-${tenant}`))
+      ? tenant
+      : local.length <= SHORT_LOCAL
+        ? local
+        : local.slice(-OWN_TAIL)
+  return { head: local.slice(0, local.length - own.length), key: at === -1 ? own : `${own}@`, tail }
+}
+
+/** A local part this short is shown whole: it is all key. */
+const SHORT_LOCAL = 20
+/** How much of a long local part that does not end in the tenant id is kept. */
+const OWN_TAIL = 12
+
+function Ident({ value, noun, tenant }: { value: string; noun: string; tenant: string }) {
+  const parts = identParts(value, tenant)
   const [said, setSaid] = useState('')
   const refused = `copy refused; select the ${noun} instead`
   // SAID, THEN GONE. The outcome answers the click that asked; left in the
@@ -1520,7 +1733,9 @@ function Ident({ value, noun }: { value: string; noun: string }) {
   return (
     <span className="ten-ident-row">
       <span className="ten-ident" title={value}>
-        {value}
+        {parts.head !== '' && <span className="ten-ident-head">{parts.head}</span>}
+        <span className="ten-ident-key">{parts.key}</span>
+        {parts.tail !== '' && <span className="ten-ident-tail">{parts.tail}</span>}
       </span>
       <button type="button" className="ten-copy" aria-label={`Copy ${noun} ${value}`} title={`Copy the whole ${noun}`} onClick={copy}>
         copy
@@ -1542,19 +1757,24 @@ const TENANT_HELP: TopicId = 'tenant-fields'
 const TENANT_TOPICS: readonly TopicId[] = [TENANT_HELP]
 
 /**
- * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12): the smaller of its two
- * configured values. Both cap the same count -- the units its running work
- * holds, where every task costs at least one -- so the smaller binds, and it
- * is what every writer of the tenant pool writes as its hard limit:
- * `set_tenant_limits` and `ensure_tenant` (swarm_api/store.py),
- * scripts/register-tenant.sh, and terraform/infra/locals.tf `pool_tenants`.
+ * THE CEILING ADMISSION APPLIES TO A TENANT (AH-12, G5-13): the tenant pool's
+ * `effective_limit`, read, never derived here. Every writer of that pool sets
+ * its hard limit from the two configured values (`set_tenant_limits` and
+ * `ensure_tenant` in swarm_api/store.py, scripts/register-tenant.sh,
+ * terraform/infra/locals.tf `pool_tenants`), and the pool's effective limit
+ * is that hard limit with any adaptive or quota cap applied -- so the pool,
+ * not this file, is where the rule lives.
  *
- * A value that is not a finite number is not a limit anyone can read, so the
- * cell is the em dash rather than `NaN` or a guess from the other value.
+ * Four ways to have no figure, each a dash with its reason: the capacity read
+ * has not landed, it failed, the tenant has no pool, or the pool has no limit
+ * set (#374).
  */
-function Enforced({ tenant: t }: { tenant: { max_active: number; capacity_units: number } }) {
-  if (!Number.isFinite(t.max_active) || !Number.isFinite(t.capacity_units)) {
-    return <i className="ctl-em">—</i>
-  }
-  return <>{Math.min(t.max_active, t.capacity_units)}</>
+function Enforced({ tenant: t, pools }: { tenant: Tenant; pools: TenantPools }) {
+  const name = `tenant:${t.tenant_id}`
+  if (pools === 'reading') return <i className="ctl-em" title="reading /v1/capacity">—</i>
+  if (pools === 'unread') return <i className="ctl-em" title="/v1/capacity was not read">—</i>
+  const pool = pools[name]
+  if (pool === undefined) return <i className="ctl-em" title={`no ${name} pool in /v1/capacity`}>—</i>
+  if (pool.effective_limit === null) return <i className="ctl-em" title={`${name} has no limit set`}>—</i>
+  return <>{pool.effective_limit}</>
 }

@@ -71,7 +71,7 @@ const api = vi.hoisted(() => ({
 // for (#168), and a factory mock throws on any export it does not declare.
 vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
-const { OverviewScreen } = await import('../Overview')
+const { OverviewScreen, OVERVIEW_POLL_MS } = await import('../Overview')
 const { AccountsScreen } = await import('../Accounts')
 const { RuntimesScreen } = await import('../Runtimes')
 
@@ -517,29 +517,42 @@ describe('Overview, with every help card closed', () => {
     expect(failed.getAttribute('aria-label')).toContain('unexplained')
   })
 
-  // RE-POINTED. `.sub` -- the subtitle line under the page title -- is gone
-  // from this screen entirely; the owner's directive was that a data view
-  // carries no subtitle. The cadence moved into the page head's facts strip,
-  // where it is a two-character mono value beside a three-letter key.
+  // RE-POINTED AGAIN (#138, #117, owner rulings 2026-10-07). `.sub` -- the
+  // subtitle line under the page title -- is gone from every screen, and so is
+  // the facts strip that replaced it on this one. The head is title left,
+  // actions right; the cadence is on the head's quiet refresh control, beside
+  // the age it promises to move: `⟳ every 20 s · read 4 s ago`.
   //
   // WHAT IS PINNED IS THE SAME PROPERTY: the figure is INTERPOLATED FROM THE
-  // TIMER CONSTANT and not typed out. That is what stopped the words "every 20
-  // seconds" sitting three hundred lines from `POLL_MS` and drifting from it.
-  // Both spellings are checked -- the visible `20s` and the accessible name
-  // that says it in full -- because a constant rendered in one place and a
-  // sentence hard-coded in the other is exactly the shape being prevented.
+  // TIMER CONSTANT (`OVERVIEW_POLL_MS`) and not typed out. That is what
+  // stopped the words "every 20 seconds" sitting three hundred lines from the
+  // constant and drifting from it. Both spellings are checked -- the visible
+  // `every 20 s` and the accessible name that says it in full -- because a
+  // constant rendered in one place and a sentence hard-coded in the other is
+  // exactly the shape being prevented.
+  //
+  // MUTATION: type `every 20 s` into Overview's head, or pass the control a
+  // cadence that is not `OVERVIEW_POLL_MS`. Change the constant and this
+  // fails. MUTATION: put a line under the title back (a `.sub`, or anything
+  // in `.c-phead` other than its `.head` and `.c-acts`).
   it('states the cadence from the timer constant rather than in words', async () => {
     renderOverview()
     await accountLine()
-    // The canonical page head (#503 Q2) draws its meta and freshness in a
-    // `.sub` ON THE TITLE'S ROW (`.c-phead`, one flex row): that is the facts
-    // strip, not a subtitle line under the title. Any other `.sub` is one.
-    expect(document.querySelector('.sub:not(.c-phead > .sub)'), 'the screen grew a subtitle again').toBeNull()
-    expect(document.querySelector('.c-phead > .sub'), 'the facts strip left the page head').not.toBeNull()
+    expect(document.querySelector('.sub'), 'the screen grew a subtitle again').toBeNull()
+    const head = document.querySelector('.ov-page > .c-phead')
+    expect(head, 'Overview drew no page head').not.toBeNull()
+    expect([...head!.children].map((c) => c.className), 'something besides the title and its actions is in the head').toEqual([
+      'head',
+      'c-acts',
+    ])
 
-    const poll = screen.getByLabelText(/re-read every 20 seconds/i)
-    expect(textOf(poll)).toContain('20s')
-    // ...and the sentence is not on the surface. `textOf` would read the
+    const every = `every ${OVERVIEW_POLL_MS / 1000} s`
+    const poll = head!.querySelector('.c-acts > .c-refresh')
+    expect(poll, 'the cadence left the head’s refresh control').not.toBeNull()
+    expect(textOf(poll)).toContain(every)
+    expect(poll!.getAttribute('aria-label')).toContain(`re-reads ${every}`)
+    // ...and no sentence about re-reading is on the surface: the control says
+    // it in its few words, its name says it in full. `textOf` would read the
     // HelpCard's visually-hidden copy straight back out, which is exactly the
     // trap `visibleText` exists for, so the claim is made against that.
     expect(visibleText()).not.toContain('re-read every')
@@ -555,8 +568,9 @@ describe('Overview, with every help card closed', () => {
     await accountLine()
     expectAllCardsClosed()
 
-    const tally = document.querySelector('.ov-tally')
-    expect(tally, 'the page head carries no read tally').not.toBeNull()
+    // The tally is in the count note over the first card since #138, not the head.
+    const tally = document.querySelector('.c-count-note .ov-tally')
+    expect(tally, 'the count note carries no read tally').not.toBeNull()
     // WAITS FOR THE EIGHTH READ. The spend rollup is a fan-out keyed off the
     // task page, so it lands AFTER the accounts row this test woke on -- and
     // a tally read at that instant says 7/8 with the "still asking" ring,
@@ -661,7 +675,7 @@ describe('Accounts, with every help card closed', () => {
     const item = chooseAccount('eng:never')
     const onItem = item.querySelector('.acct-window')!
     expect(onItem.classList.contains('acct-unmeasured')).toBe(true)
-    expect(textOf(onItem)).toBe('—')
+    expect(textOf(onItem.querySelector('.acct-pct'))).toBe('—')
 
     // The 5h and 7d tiles of the account nobody has polled.
     const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]
@@ -847,7 +861,7 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
     expect(accountCell('eng:old', '7d used').querySelector('.ctl-util-fill.ov-projected')).not.toBeNull()
   })
 
-  it('keeps the track a fixed 40px inline beside the figure, and hides it at 560px and below', async () => {
+  it('draws the tile’s track across the tile, and hides it at 560px and below', async () => {
     renderAccounts(board2())
     await screen.findByText('eng:live', undefined, WAIT)
     const track = accountCell('eng:live', '5h used').querySelector('.acct-window > .ctl-util-track')
@@ -857,7 +871,9 @@ describe('Accounts draws a window with the shared track, not the five-cell bar (
       expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
       return r.winner?.value ?? null
     }
-    expect(won('width', 1440)).toBe('40px')
+    // The tile's width (G5-07, QA 2026-10-07): 40px of a 122px tile was a
+    // lone fill nobody could read as a share (qa.g5.accounts.test.tsx).
+    expect(won('width', 1440)).toBe('100%')
     expect(won('display', 1440)).toBe('inline-flex')
     // The phone block's own rule governs, as it does every other track.
     expect(won('display', 390)).toBe('none')
