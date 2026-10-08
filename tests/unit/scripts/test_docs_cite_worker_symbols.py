@@ -34,6 +34,9 @@ DOCS = sorted(
         *(REPO / "docs" / "web-ui").rglob("*.html"),
         REPO / "docs" / "design" / "child-tasks.md",
         REPO / "docs" / "contract-change-requests.md",
+        # #453 (lane A-api-docs): its limits example cited control.py and
+        # routes/admin.py by line, and both had moved by hundreds.
+        REPO / "docs" / "multi-tenancy.md",
     ]
 )
 
@@ -72,3 +75,20 @@ def test_the_docs_are_found_and_cite_by_symbol():
     assert len(cites) > 50, cites
     assert _LINE.search("see `lifecycle.py:474`") and _LINE.search("(`control.py:~410-414`)")
     assert not _LINE.search("`lifecycle.py::Worker._collect_spend`")
+
+
+#: Every `path::Qualname` cite in docs/multi-tenancy.md, whatever the file: its
+#: limits example cites the admin route as well as the worker.
+_ANY_SYMBOL = re.compile(r"\b(apps/[\w./-]+\.py)::([\w.]+)")
+
+
+def test_multi_tenancy_cites_the_budget_refusal_and_record_spend_by_symbol():
+    """Both cites #453 converted resolve, and the refusal is in the one it names."""
+    text = (REPO / "docs" / "multi-tenancy.md").read_text(encoding="utf-8")
+    cites = _ANY_SYMBOL.findall(text)
+    assert ("apps/swarm-api/swarm_api/routes/admin.py", "set_tenant_limits") in cites, cites
+    assert ("apps/agent-worker/agent_worker/control.py", "ControlPlane.record_spend") in cites, cites
+    for path, qualname in cites:
+        _cited_symbol(path, qualname)
+    assert "monthly_budget_usd" in _cited_symbol("apps/swarm-api/swarm_api/routes/admin.py", "set_tenant_limits")
+    assert not re.search(r"routes/admin\.py:~?\d", text), "multi-tenancy.md cites routes/admin.py by line"
