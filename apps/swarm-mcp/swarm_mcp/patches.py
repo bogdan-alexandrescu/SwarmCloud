@@ -196,7 +196,94 @@ def _measured(git: dict[str, Any], key: str) -> int | None:
     return value
 
 
-def describe_task(task: dict[str, Any]) -> dict[str, Any]:
+#: Where `describe_task`'s `backend` came from. Two values, and the difference
+#: matters: the attempt record is what the platform PLACED; the catalogue is
+#: what this bridge's own copy of `swarm_common` says the profile resolves to,
+#: and that copy is as old as the installed plugin tag. On 2026-10-08 PR 866
+#: moved claude-code to GKE Autopilot and release 37757901721 deployed it, and
+#: every result the plugin bridge (tag sc-v0.5.24, before 866) printed still
+#: said CLOUD_RUN_JOB, because the backend was computed here from the copy.
+BACKEND_FROM_ATTEMPT = "attempt"
+BACKEND_FROM_CATALOGUE = "catalogue (bridge copy)"
+
+
+def _served_backend(record: Any) -> str | None:
+    """The `backend` an attempt record carries, or None when it carries none.
+
+    The API's attempt codec serves `""` for an attempt whose backend was never
+    recorded (`store.attempt_from_dict` reads a missing one as empty), and an
+    empty string is not a backend.
+    """
+    if not isinstance(record, dict):
+        return None
+    value = record.get("backend")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def reported_backend(task: dict[str, Any], client: Any = None) -> dict[str, Any]:
+    """The backend this task ran on, and where that answer came from.
+
+    THE ATTEMPT RECORD FIRST. The task document carries no backend; the
+    per-attempt record does (`codec.attempt_to_api` serves `backend`), and it
+    is what the scheduler actually leased and dispatched. A `last_attempt`
+    block on the task is read when the API serves one; otherwise, given a
+    client and a task that has been attempted, ONE read of the newest attempt
+    (`limit=1`; the route serves newest first).
+
+    THE CATALOGUE ONLY WHEN THE PLATFORM GAVE NONE, and labelled as such: no
+    attempt yet, no client, or the attempts route could not be read. The
+    label is the point -- a reader who sees `backend_source: "catalogue
+    (bridge copy)"` knows the value is what this bridge's copy of the
+    catalogue predicts, not what ran, and `backend_note` says why the
+    platform's answer was not used.
+
+    NEVER RAISES, for the reason `backend_of` gives: a result read that threw
+    over a backend would take away the one thing that read is for.
+    """
+    served = _served_backend(task.get("last_attempt"))
+    if served is not None:
+        return {"backend": served, "backend_source": BACKEND_FROM_ATTEMPT}
+    task_id = task_id_of(task)
+    attempted = task.get("attempt_count")
+    if client is None:
+        why = "this read did not ask the platform for the task's attempts"
+    elif not task_id:
+        why = "the task document carries no id, so its attempts cannot be read"
+    elif not isinstance(attempted, int) or isinstance(attempted, bool) or attempted < 1:
+        # No round trip for a task the API says was never attempted: there
+        # is no attempt record to read, and asking costs a request per row.
+        why = "the task has no attempt yet, so the platform has placed it nowhere"
+    else:
+        try:
+            attempts = client.attempts(task_id, limit=1)
+        except SwarmError as exc:
+            attempts, why = None, f"the attempts route could not be read: {exc}"
+        else:
+            why = (
+                "the newest attempt record names no backend"
+                if attempts
+                else "the attempts route returned no attempt record"
+            )
+        if attempts:
+            served = _served_backend(attempts[0])
+            if served is not None:
+                return {"backend": served, "backend_source": BACKEND_FROM_ATTEMPT}
+    predicted = backend_of(task.get("runner_profile"))
+    if predicted is None:
+        # Not a default: the copy does not hold the profile either, so the
+        # backend is UNKNOWN and says so.
+        return {"backend": None, "backend_source": None, "backend_note": why}
+    return {
+        "backend": predicted,
+        "backend_source": BACKEND_FROM_CATALOGUE,
+        "backend_note": (
+            f"{why}. This is what this bridge's own copy of the catalogue says "
+            f"{task.get('runner_profile')} resolves to; the platform may place it elsewhere"
+        ),
+    }
+
+
+def describe_task(task: dict[str, Any], client: Any = None) -> dict[str, Any]:
     """What one task produced, in the shape every read tool hands back.
 
     IT LIVES HERE, not in `server.py`, because it is the composition of the two
@@ -215,14 +302,19 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
     it landed on are the two facts that separate "this agent's prompt was wrong"
     from "GKE Autopilot could not place a browser pod" -- and they are the two
     the reader cannot derive, because the profile-to-backend mapping lives in
-    the frozen catalogue rather than on the task. Both are cheap: the task
-    document already carries the profile name, and the backend follows from it.
+    the attempt record rather than on the task. The backend is the one the
+    platform's attempt record names (`reported_backend`), with
+    `backend_source` saying so; pass `client` to let it read the newest
+    attempt. Without one, or before any attempt, it falls back to this
+    bridge's copy of the catalogue, labelled `catalogue (bridge copy)` --
+    which on 2026-10-08 said CLOUD_RUN_JOB for claude-code tasks GKE
+    Autopilot had run.
 
-    `backend` is None when the catalogue does not hold the task's profile -- an
-    old task naming a profile since renamed. NOT a default and not a guess: the
-    three-marks rule this plugin is held to says an unknown is reported as
-    unknown, and a reader who saw CLOUD_RUN_JOB there would go and read the
-    wrong service's logs.
+    `backend` is None when neither the platform nor the catalogue holds an
+    answer -- an old, unattempted task naming a profile since renamed. NOT a
+    default and not a guess: the three-marks rule this plugin is held to says
+    an unknown is reported as unknown, and a reader who saw CLOUD_RUN_JOB
+    there would go and read the wrong service's logs.
     """
     summary = task.get("result_summary") or {}
     git = summary.get("git") or {}
@@ -233,7 +325,7 @@ def describe_task(task: dict[str, Any]) -> dict[str, Any]:
         "task_id": task_id_of(task),
         "state": task.get("state"),
         "runner_profile": task.get("runner_profile"),
-        "backend": backend_of(task.get("runner_profile")),
+        **reported_backend(task, client),
         # NULL WHEN NOTHING WAS MEASURED, never 0 (#191). These defaulted to 0
         # for a task with no `git` summary -- one that cloned no repository,
         # or never started -- and for a summary holding only the harvest's
@@ -371,9 +463,10 @@ def explain_failure(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]
         "attempt_id": last.get("attempt_id"),
         "generation": last.get("generation"),
         # The backend that ACTUALLY ran, which is the ground truth. The
-        # catalogue-derived `backend` on the result beside this is what the
-        # profile says it should have been; the two differing is itself a
-        # finding.
+        # result's own `backend` is read from this same record when the
+        # reader passed a client (`reported_backend`); when it says
+        # `backend_source: "catalogue (bridge copy)"` it is only what the
+        # bridge's copy predicts, and the two differing is itself a finding.
         "backend": last.get("backend"),
         "execution_name": last.get("execution_name"),
         "exit_code": last.get("exit_code"),
