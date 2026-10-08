@@ -141,7 +141,21 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const parts = [`${n('passed')} passed`]
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
-      return parts.join(' · ')
+      // Name the repositories still to verify, so a person knows which
+      // grant's Verify to press on Access (#896).
+      const open = repos
+        .filter((r) => r.result === 'failed' || r.result === 'pending')
+        .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
+      if (open.length === 0) return parts.join(' · ')
+      const shown = open.slice(0, 3).join(', ') + (open.length > 3 ? `, +${open.length - 3} more` : '')
+      return (
+        <>
+          {parts.join(' · ')} · {shown}: press Verify on{' '}
+          <a className="c-link" href={addressToPath(ACCESS)}>
+            Access
+          </a>
+        </>
+      )
     }
     case 'ready': {
       const first = str(ev.first_repository)
