@@ -12,8 +12,18 @@
 #       read. So no slot is in any Terraform state, and no grant can name one.
 #   D7  U1: the tenant's worker account reads every member's slot in its own
 #       tenant; swarm-api's resolver hands each task only its submitter's.
-#   D2  swarm-api refreshes: it reads the -refresh twins and writes both, and
-#       never reads a base slot -- the split the quota broker has today.
+#   D2  swarm-api refreshes: it reads the -refresh twins and writes both.
+#       It originally never read a base slot -- the split the quota broker
+#       has today. Revised by the owner on 2026-10-08, below.
+#
+# Owner decision 2026-10-08: swarm-api also READS the base slots, so a request
+# acting as the person reuses their current access token instead of
+# refreshing on every call. Measured that morning: the owner's slot reached 35
+# versions within minutes, and since each refresh makes GitHub end the access
+# token it replaces, a task holding the previous version failed 401. Reading
+# the access token adds no power: swarm-api already reads the refresh token,
+# which mints access tokens. The worker's grant is unchanged -- base slots
+# only, never a twin.
 #
 # Owner decision 2026-10-07 (OB3, PR #821): "Disconnect GitHub" disables the
 # user's secret versions, so a disconnected user leaves no usable token behind,
@@ -42,16 +52,20 @@
 #                                                       swarmForgeSlotVersionManager:
 #       secretmanager.versions.disable and secretmanager.versions.enable and
 #       nothing else. No versions.destroy (a disconnect is reversible, and a
-#       destroyed version is not), no versions.access (swarm-api never reads a
-#       base slot, D2). There is no predefined role that disables without
-#       also destroying or reading: secretVersionManager carries destroy.
+#       destroyed version is not), no versions.access (reading is
+#       forge_refresh_reader's, a separate and separately conditioned
+#       grant). There is no predefined role that disables without also
+#       destroying or reading: secretVersionManager carries destroy.
 #   google_project_iam_member.forge_slot_version_manager
 #                                                       swarm-api, that role,
 #       on `<prefix>` -- the version adder's own condition, so it reaches
 #       exactly the slots swarm-api already writes, base and twin alike.
 #   google_project_iam_member.forge_refresh_reader      swarm-api,
-#       secretAccessor, on `<prefix>` AND a -refresh twin: the refresh token,
-#       which the sweep spends.
+#       secretAccessor, on `<prefix>` -- base slots and -refresh twins alike,
+#       the version adder's own condition (owner decision 2026-10-08): the
+#       refresh token, which the sweep spends, and the current access token,
+#       which a request reuses. The address keeps its old name so the change
+#       reads as an in-place condition change in the plan.
 #   google_project_iam_member.forge_slot_reader         the tenant's worker,
 #       secretAccessor, on `<prefix>` AND NOT a -refresh twin: the access
 #       token, read at runtime. A worker that could read a refresh token could
@@ -132,14 +146,13 @@ locals {
     t => "projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-u-"
   }
 
-  # The secret id's "-refresh" test, in both resource-name forms (above).
-  forge_is_refresh = "(resource.name.endsWith(\"-refresh\") || resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\"))"
-
+  # `any`: the tenant's user slots, base and -refresh twin. `base`: the base
+  # slots only, the secret id's "-refresh" test made in both resource-name
+  # forms (above).
   forge_slot_conditions = {
     for t, p in local.forge_user_slot_prefixes : t => {
-      any     = "resource.name.startsWith(\"${p}\")"
-      base    = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
-      refresh = "resource.name.startsWith(\"${p}\") && ${local.forge_is_refresh}"
+      any  = "resource.name.startsWith(\"${p}\")"
+      base = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
     }
   }
 
@@ -234,9 +247,16 @@ resource "google_project_iam_member" "forge_refresh_reader" {
   member  = local.forge_api_member
 
   condition {
-    title       = "swarm forge refresh twins ${each.key}"
-    description = "managed-by=swarm-terraform; swarm-api reads tenant ${each.key}'s GitHub refresh tokens to refresh them, never a base slot (#780 D2)."
-    expression  = local.forge_slot_conditions[each.key].refresh
+    title       = "swarm forge user slots api ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api reads tenant ${each.key}'s GitHub user slots: the refresh token to refresh, the current access token to reuse instead of refreshing per call (#780 D2, owner decision 2026-10-08)."
+    expression  = local.forge_slot_conditions[each.key].any
+  }
+
+  # A condition is part of a binding's identity, so changing it replaces the
+  # binding. The new one is made first, so the refresh sweep never loses the
+  # twins between the two.
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
