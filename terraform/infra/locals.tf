@@ -622,6 +622,12 @@ locals {
       # because it is exactly one account this root creates.
       ROLLUP_SWEEPER_USERS = module.scheduler.rollup_sweeper_email
 
+      # The issue sweeper's platform switch (swarm_api.issuesweep, owner
+      # decisions 2026-10-08): POST /v1/admin/issues/sweep starts nothing
+      # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
+      # Off unless the environment's tfvars sets var.enable_issue_sweep.
+      SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in
