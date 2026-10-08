@@ -325,10 +325,15 @@ def task_to_api(
     the submitter"). Both come from `task_input.TaskMasking` -- one masker over
     the input and the caller's metadata, the one `/input` uses -- with
     `input_redaction_count` and `metadata_redaction_count` beside them. The
-    platform's own metadata keys (`dispatch`, `input_from`, `expected_outputs`,
-    which submission refuses from every caller) are served as stored. Every
-    route that serves a task goes through this function, so no route serves
-    the raw input.
+    platform's own metadata keys are `task_input.PLATFORM_METADATA_KEYS`,
+    which IS `validation.RESERVED_METADATA_KEYS` (submission refuses every one
+    of them from every caller; read the tuple for the list, `startup_refunds`
+    and the child and merge-wait keys included). They are not walked by the
+    masker and are served as stored -- EXCEPT the two in
+    `task_input.NAME_METADATA_KEYS`, `input_from` and `expected_outputs`, whose
+    values are filenames copied from the caller's workflow spec and are masked
+    name by name by `TaskMasking.name` (#227). Every route that serves a task
+    goes through this function, so no route serves the raw input.
 
     AND WHAT THE TASK COLLECTED ABOUT ITSELF (the PR #229 review). The same
     masker masks `last_error` (the agent's stderr tail), every string in
