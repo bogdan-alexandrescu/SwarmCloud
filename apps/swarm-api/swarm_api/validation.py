@@ -75,10 +75,11 @@ def known_providers() -> tuple[str, ...]:
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
 
-    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). Both
-    credential routes accept exactly this set (`routes/tenants.py`,
-    `routes/admin.py` `_check_provider`), and a credential registered through
-    them is granted to the tenant's ORDINARY worker account
+    EXCEPT THE RETIRED #295 APP KEYS (`APP_CREDENTIAL_PROVIDERS`). The
+    credential route (`routes/tenants.py`) and the admin limit, drain and
+    enable routes (`routes/admin.py` `_check_provider`) both accept exactly
+    this set, and a credential registered through the credential route is
+    granted to the tenant's ORDINARY worker account
     (`credentials._grant_accessor`), whose token any agent of the tenant can
     mint. `git-merge` and `git-review` were GitHub App keys meant for the
     merge and post-verdict Jobs' own accounts (contract request 33's #364
