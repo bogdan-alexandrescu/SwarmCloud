@@ -43,8 +43,12 @@ worker's way, unchanged:
     finds anything in it. Both are read through the same tenant-checked,
     redacted artifact read the API serves (`InspectionService.read_artifact`),
     at most 256 KiB each, and every mention in them is neutralised;
-  * the tenant's `-git` token is readable, appears in neither text, and
-    GitHub creates the branch and opens (or already has) the pull request.
+  * the step may write (`forge_access` absent or `write`), and the token
+    its own worker would read -- the secret its `forge_credential` names,
+    `git` (the tenant's `-git`) when it names none, contract request 54 --
+    is readable, appears in neither text, and GitHub creates the branch and
+    opens (or already has) the pull request. A read-only step, a malformed
+    suffix or an unreadable slot is declined with code `credential`.
 
 A step declined here is ordinary: no write but the decline marker, and the
 scheduler admits it on the wake this module rings.
@@ -104,11 +108,14 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
+from swarm_common.models import FORGE_ACCESS, FORGE_CREDENTIAL
 from swarm_common.states import EventType, ParkReason, TaskState, can_transition
 
 from .cifix import BRANCH_PREFIX
 from .errors import ApiError
+from .forge import GIT_PROVIDER
 from .forgewrite import ForgeWriteError, GitHubWriter
+from .gittokens import secret_name_for
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import neutralise_mentions
 from .repositories import parse_repository
@@ -594,6 +601,50 @@ def _implementer_head(implementer: Mapping[str, Any], builds_on: str) -> str:
     return head
 
 
+#: `Task.forge_access`'s write value, from the frozen tuple (`write`, `read`).
+_WRITE = FORGE_ACCESS[0]
+
+
+def _forge_slot(doc: Mapping[str, Any]) -> str:
+    """The provider suffix of the secret the step's own worker would read.
+
+    `agent_worker.secrets.forge_suffix` and `forge_read_only`, restated
+    (contract request 54): `forge_credential` is `git` when absent and is
+    refused, not defaulted, when it has another shape; `forge_access` None is
+    write. A step that may not write is the worker's, which runs it without a
+    push credential and so publishes nothing; this module never fetches a
+    push token for it.
+    """
+    access = doc.get("forge_access")
+    if access is not None and access != _WRITE:
+        raise Decline("credential", f"the step's forge_access is {access!r}, not write")
+    suffix = doc.get("forge_credential")
+    if suffix is None:
+        return GIT_PROVIDER
+    if not isinstance(suffix, str) or not FORGE_CREDENTIAL.fullmatch(suffix):
+        raise Decline("credential", "the step's forge_credential is not a forge credential suffix")
+    return suffix
+
+
+def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> str:
+    """The step's forge token, read now from Secret Manager; else `Decline`.
+
+    `swarm-tenant-<tenant>-<suffix>` (`gittokens.secret_name_for`), under the
+    step's OWN tenant, latest version, through the same read the git token
+    probe uses (`forge.SecretManagerForgeTokens.read_slot`). A slot swarm-api
+    is not bound to answers PermissionDenied and is declined like a missing
+    one: the worker, which is bound to it, publishes instead. The decline
+    names the secret and the error's type, never the value.
+    """
+    suffix = _forge_slot(doc)
+    secret = secret_name_for(tenant.tenant_id, suffix)
+    try:
+        return ctx.forge_tokens.read_slot(tenant, suffix).value
+    except Exception as exc:
+        code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+        raise Decline("credential", f"{secret} could not be read ({code})") from None
+
+
 def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
              parents: Mapping[str, Mapping[str, Any]], started: float) -> dict[str, Any]:
     """Open the step's pull request; its `result_summary`, or `Decline`."""
@@ -631,14 +682,10 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
         stripped = strip_attribution(raw_body.strip())
         agent_body = neutralise_mentions(stripped) if stripped else None
 
-    try:
-        token = ctx.forge_tokens.token_for(tenant)
-    except Exception as exc:
-        code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
-        raise Decline("no_forge_token", f"the tenant's git token could not be read ({code})") from None
+    token = _step_token(ctx, tenant, doc)
     try:
         if not token or token in (raw_title or "") or token in (raw_body or ""):
-            raise Decline("credential", "the implementer's pull request text holds the tenant's token")
+            raise Decline("credential", "the implementer's pull request text holds the step's token")
         writer: GitHubWriter = ctx.forge_writer
         branch = f"{BRANCH_PREFIX}{task_id}"
         upstream = f"{BRANCH_PREFIX}{builds_on}"

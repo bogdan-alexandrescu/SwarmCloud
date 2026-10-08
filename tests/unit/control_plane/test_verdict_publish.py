@@ -46,7 +46,7 @@ from urllib.parse import urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forgewrite, verdictpublish
+from swarm_api import forge, forgewrite, gittokens, verdictpublish
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -89,6 +89,39 @@ class RecordingWaker:
         return True
 
 
+class SecretStore:
+    """Secret Manager's git-token slots, read through `read_slot` as swarm-api reads them.
+
+    Every tenant's `-git` slot holds a token made on first read; a narrower
+    `git-r-`/`git-u-` slot holds only what a test `put` there. `asked` is
+    every secret name read, so a test can say which credential was used.
+    """
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.asked: list[str] = []
+
+    def put(self, secret_id: str, value: str) -> None:
+        self.values[secret_id] = value
+
+    def token_for(self, tenant) -> str:
+        return self.read_slot(tenant, forge.GIT_PROVIDER).value
+
+    def read_slot(self, tenant, provider: str) -> forge.SlotValue:
+        secret_id = tenant.secret_name(provider)
+        self.asked.append(secret_id)
+        if provider == forge.GIT_PROVIDER:
+            self.values.setdefault(secret_id, forge_fakes.make_token())
+        if secret_id not in self.values:
+            raise forge.NoForgeCredential(f"no value stored in {secret_id}")
+        return forge.SlotValue(self.values[secret_id], "1")
+
+
+@pytest.fixture
+def store() -> SecretStore:
+    return SecretStore()
+
+
 @pytest.fixture
 def contract(monkeypatch):
     """Contract request 52 applied, for this test only."""
@@ -108,7 +141,7 @@ def waker() -> RecordingWaker:
 
 
 @pytest.fixture
-def client(db, tokens, group_map, objects, github, waker) -> TestClient:
+def client(db, tokens, group_map, objects, github, waker, store) -> TestClient:
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
     tokens = dict(tokens)
@@ -122,7 +155,7 @@ def client(db, tokens, group_map, objects, github, waker) -> TestClient:
         waker=waker,
         metrics=ApiMetrics(),
         objects=objects,
-        forge_tokens=forge_fakes.AnyTenantTokens(),
+        forge_tokens=store,
         forge_writer=forgewrite.GitHubWriter(send=github, locate=github.locate, fetch=github.fetch),
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
@@ -494,6 +527,97 @@ def test_every_other_case_declines_and_rings_the_parent(
     # The parent's wake: the scheduler resolves the step again, now unheld.
     assert waker.rung == [("task_finished",
                            {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
+
+
+# --------------------------------------------------------------------------
+# 4b. the step's own forge credential (contract request 54)
+# --------------------------------------------------------------------------
+
+#: A `git-r-<hex>` slot: the repository's narrower credential, the one the
+#: gated step's own worker would read (`agent_worker.secrets.forge_suffix`).
+REPO_SLOT = "git-r-" + "0123456789abcdef"
+
+
+def _authorisations(github) -> set[str]:
+    return {headers.get("Authorization", "") for _, _, headers, _ in github.calls}
+
+
+def test_the_steps_own_forge_credential_opens_the_pull_request(
+    db, objects, client, github, waker, store, contract
+):
+    fix = _workflow(db, objects)
+    fix["forge_credential"] = REPO_SLOT
+    fix["forge_access"] = "write"
+    narrow = "ghp_" + secrets.token_hex(18)
+    store.put(gittokens.secret_name_for("eng", REPO_SLOT), narrow)
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [FIX], body
+    # Read through the step's own slot, never the tenant's `-git`.
+    assert store.asked == [gittokens.secret_name_for("eng", REPO_SLOT)]
+    auth = _authorisations(github)
+    assert auth and all(narrow in value for value in auth), "every GitHub call used the slot's token"
+    tenant_token = store.values.get(gittokens.secret_name_for("eng", forge.GIT_PROVIDER))
+    assert tenant_token is None
+    # The token is in no stored field, no summary and no marker.
+    assert narrow not in json.dumps(_fix(db), default=str)
+    assert narrow not in json.dumps(body)
+    assert _fix(db)["state"] == TaskState.SUCCEEDED.value
+
+
+@pytest.mark.parametrize("access,credential,stored", [
+    ("read", None, False),
+    ("read", REPO_SLOT, True),
+    ("write", "git-x-" + "0" * 16, False),
+    ("write", REPO_SLOT, False),
+])
+def test_a_read_only_forge_credential_declines_to_the_worker(
+    db, objects, client, github, waker, store, contract, access, credential, stored
+):
+    """Read-only, a malformed suffix or an unreadable slot: the worker's path, as today."""
+    fix = _workflow(db, objects)
+    fix["forge_access"] = access
+    if credential is not None:
+        fix["forge_credential"] = credential
+    if stored:
+        store.put(gittokens.secret_name_for("eng", REPO_SLOT), "ghp_" + secrets.token_hex(18))
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [], body
+    assert body["report"]["declined"] == [{"task_id": FIX, "code": "credential"}], body
+    fix = _fix(db)
+    assert fix["state"] == TaskState.PARKED.value
+    assert fix["metadata"][verdictpublish.CONTROL_PUBLISH_METADATA_KEY]["code"] == "credential"
+    assert github.calls == [] and github.pulls == {}
+    if access == "read" or credential != REPO_SLOT:
+        # Declined before any secret was read: a read-only step never has a
+        # push credential fetched for it, and a malformed suffix names none.
+        assert store.asked == []
+    assert waker.rung == [("task_finished",
+                           {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
+
+
+def test_the_token_in_the_body_declines(db, objects, client, github, waker, store, contract):
+    """The step's own token in pr-body.md, in a shape the redaction does not mask.
+
+    So it is the token-value scan, not `_read_text`'s redaction, that declines.
+    """
+    token = "widgetkey" + "Q" * 6 + "zebra"
+    _workflow(db, objects, body=f"Expire on read.\n\nUse {token} to test.")
+    fix = _fix(db)
+    fix["forge_credential"] = REPO_SLOT
+    store.put(gittokens.secret_name_for("eng", REPO_SLOT), token)
+
+    body = _push(client).json()
+
+    assert body["report"]["declined"] == [{"task_id": FIX, "code": "credential"}], body
+    marker = _fix(db)["metadata"][verdictpublish.CONTROL_PUBLISH_METADATA_KEY]
+    assert "redaction" not in marker["reason"] and "token" in marker["reason"]
+    assert token not in json.dumps(_fix(db), default=str)
+    assert token not in json.dumps(body)
+    assert github.calls == [] and github.pulls == {}
 
 
 def test_a_parent_that_has_not_succeeded_leaves_the_step_alone(
