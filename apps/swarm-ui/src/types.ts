@@ -4868,6 +4868,35 @@ export interface RunPullRequest {
   head_sha?: string | null
   /** The last CI reading at `head_sha`; null before the first. */
   checks?: 'pending' | 'green' | 'red' | 'none' | null
+  /**
+   * #503: whether the CI loop's last read found it merged, and when (ISO,
+   * UTC). Null on a run it never read, or one stored before it was served --
+   * never false for "not known".
+   */
+  merged?: boolean | null
+  merged_at?: string | null
+  /** The last reading's count per bucket (`forgechecks.CiReading.counts`); null before one was recorded. */
+  check_counts?: RunCheckCounts | null
+  /** Each check that reading evaluated, capped by the server (~50); `check_list_truncated` says so. */
+  check_list?: RunCheck[] | null
+  check_list_truncated?: boolean | null
+  /** The first failing check's link, else the first pending one's, else the first; null when GitHub gave none. */
+  ci_url?: string | null
+}
+
+/** `pull_request.check_counts`: neutral, skipped and cancelled runs count as skipped. */
+export interface RunCheckCounts {
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+}
+
+/** One entry of `pull_request.check_list`: a check run's html/details url or a status's target url. */
+export interface RunCheck {
+  name: string
+  state: keyof RunCheckCounts | null
+  url: string | null
 }
 
 /** `GET /v1/runs`: newest first, as the server orders them. */

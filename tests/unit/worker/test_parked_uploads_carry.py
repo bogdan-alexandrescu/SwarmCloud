@@ -156,6 +156,63 @@ def test_the_dependant_stages_the_carried_file(db, store, worker_factory):
     assert "/attempts/att_1/" in staged[0]["uri"]
 
 
+def test_artifact_before_park_is_carried_to_the_finishing_attempt(db, store, worker_factory):
+    """THE LIVE-PROOF SHAPE, offline (contract request 56). No upload is
+    patched here: the mock's own `artifact_before_park` writes notes.md before
+    it parks, and BOTH attempts carry the same input, as a live task does. The
+    finishing attempt writes nothing under that name, so the entry it ends
+    with is the parked attempt's object, and a dependant stages it."""
+    task_input = {
+        "prompt": "write the notes, then meet a rate limit",
+        "steps": 1,
+        "sleep_seconds": 0.01,
+        "quota_exhausted": True,
+        "retry_after_seconds": 1800,
+        "artifact_before_park": True,
+        "artifact_name": "notes.md",
+        "artifact_text": PARKED_TEXT,
+    }
+    seed_attempt(
+        db, attempt_id="att_1", lease_id="lease_1", task_input=task_input,
+        simulated={"provider": "anthropic"},
+    )
+    db.doc("tasks/task_1")["metadata"] = {"expected_outputs": ["notes.md"]}
+    first, _, _ = worker_factory(attempt_id="att_1", lease_id="lease_1")
+    assert first.run() == ExitCode.PARKED
+    parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
+    assert [a["name"] for a in parked[-1]["detail"]["artifacts"]] == ["notes.md"]
+
+    seed_attempt(
+        db, attempt_id="att_2", lease_id="lease_2", attempt_count=2, task_input=task_input
+    )
+    db.doc("tasks/task_1")["metadata"] = {"expected_outputs": ["notes.md"]}
+    before = set(store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_2/"))
+    second, _, _ = worker_factory(attempt_id="att_2", lease_id="lease_2")
+    assert second.run() == ExitCode.OK
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value, task.get("last_error")
+    entry = _entry(db, "notes.md")
+    assert entry["carried_from"] == "att_1"
+    assert "/attempts/att_1/artifacts/notes.md" in entry["uri"]
+    assert entry["bytes"] == len(PARKED_TEXT)
+    after = set(store.list_keys(f"tenants/{TENANT}/tasks/task_1/attempts/att_2/"))
+    assert not any(key.endswith("/artifacts/notes.md") for key in after - before), (
+        "the finishing attempt uploaded notes.md itself: the mock rewrote it"
+    )
+
+    seed_attempt(
+        db, task_id="task_2", attempt_id="att_d", lease_id="lease_d",
+        task_input={"prompt": "use it", "steps": 1, "sleep_seconds": 0.01},
+    )
+    db.doc("tasks/task_2")["metadata"] = {"input_from": {"task_1": "notes.md"}}
+    downstream, _, _ = worker_factory(task_id="task_2", attempt_id="att_d", lease_id="lease_d")
+    assert downstream.run() == ExitCode.OK, db.doc("tasks/task_2").get("last_error")
+    staged = db.doc("tasks/task_2")["result_summary"]["staged_inputs"]
+    assert [item["filename"] for item in staged] == ["notes.md"]
+    assert "/attempts/att_1/" in staged[0]["uri"]
+
+
 def test_a_name_the_finishing_attempt_wrote_points_at_its_own_object(db, worker_factory):
     _park_after_writing(db, worker_factory)
 
