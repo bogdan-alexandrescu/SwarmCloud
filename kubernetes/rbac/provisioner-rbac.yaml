@@ -1,0 +1,171 @@
+# The workspace deployer's access to the swarm cluster (docs/workspaces.md
+# §2.3, lane W5).
+#
+# WHO. `swarm-workspace-deployer@<project>.iam.gserviceaccount.com`, the
+# keyless identity the `swarm-workspace-apply` Cloud Build job runs as. That
+# job runs `scripts/register-tenant.sh --workspace`, which renders one person's
+# tenant namespace with kubernetes/render.py (the same TENANT_FILES a group
+# tenant gets) and applies it. Nothing else runs as this identity.
+#
+# WHERE. These objects live in swarm-autopilot and are applied there by
+# `kubernetes/apply.sh --policies --confirm`, which refuses any other cluster.
+# A ClusterRole in our cluster cannot reach `agents-staging`, the other team's
+# cluster in the shared project: RBAC is scoped by where the object lives.
+#
+# WHY THIS IS NOT ENOUGH ON ITS OWN. RBAC cannot restrict `create` by name, so a
+# ClusterRole that may create namespaces may create ANY namespace, and one that
+# may create a Role may create it in ANY namespace -- `swarm-system`,
+# `kube-system`, another tenant's. The companion admission policy,
+# kubernetes/policies/workspace-provisioner-scope.yaml, turns that into
+# "`swarm-tenant-u-*` only, and only the objects the tenant render produces".
+# The two are rendered and applied together (render.py POLICY_FILES), and the
+# subjects bound here are the identities that policy matches -- a parity test
+# holds the two lists equal, because a subject bound here and missing there is
+# RBAC with the scope check switched off for that spelling of the caller.
+#
+# WHAT IT CANNOT DO. No `delete` on anything, and nothing at all on Secret, Pod,
+# Job, Deployment or any workload: it builds the room, it never runs anything
+# in it. No `list`/`watch`: every read the job makes names its object --
+# including the egress-policy parity check kubernetes/apply.sh runs after the
+# apply, which reads the one policy by name for exactly this reason.
+#
+# EXACTLY WHAT THE JOB ASKS FOR, NO MORE. Every verb below is one a
+# `register-tenant.sh --workspace` run needs, and nothing it does not:
+#   * `kubectl apply -f -` of the tenant render (A7, and its `--dry-run=server`
+#     re-run): kubectl GETs each object, then CREATEs it or PATCHes it --
+#     `get`, `create`, `patch` on each kind the render holds;
+#   * the Roles and RoleBindings among them: `escalate` and `bind` (below);
+#   * the reads A7 and A9 make, each by name: `get`;
+#   * `kubectl get --raw=/readyz`: a non-resource URL every authenticated
+#     caller may read (GKE's system:public-info-viewer), so nothing here.
+# No ConfigMap: the job renders without --spec-verify-keys, so the render holds
+# none and the job never writes or reads one. If personal namespaces are to
+# carry `swarm-spec-verify-keys`, the grant, the scope policy's name map and
+# the call guard's kinds (scripts/lib/workspace-calls.json) gain it together.
+# tests/unit/scripts/test_register_tenant_workspace.py holds this list to the
+# calls a run makes.
+#
+# `escalate` IS UNRESTRICTED BY NAME, AND THAT IS NOT A CHOICE. Creating the
+# `swarm-dispatcher` and `swarm-reaper` Roles means writing rules (create Jobs,
+# delete pods) this identity does not hold, which RBAC allows only to a caller
+# that holds `escalate`. The API server checks `escalate` against the request's
+# name, and a create is a POST to the collection, which has none -- so
+# `resourceNames` on `escalate` would authorise no create at all. What bounds it
+# is the admission policy, which refuses any Role whose rules are not exactly
+# the render's. `bind` IS checked against the referenced Role's name, so it is
+# restricted to the three Roles a tenant namespace holds.
+#
+# THE RESIDUAL, so it is not mistaken for zero: `get` is cluster-wide, so this
+# identity can read, by name, a Namespace, ServiceAccount, quota, LimitRange,
+# NetworkPolicy, Role or RoleBinding in any namespace of this cluster. Reads do
+# not pass through admission, so no policy narrows them. None of those kinds
+# holds a secret, and without ConfigMap none holds configuration either.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: swarm-workspace-deployer
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+  annotations:
+    swarm.saga.xyz/rationale: >-
+      Creates and patches one person's tenant namespace and the objects the
+      tenant render puts in it. The scope admission policy
+      swarm-workspace-deployer-scope confines every write to swarm-tenant-u-*.
+    # checkov reads `bind` and `escalate` on Roles as a path to privilege, which
+    # is exactly what they are; the header above says why each is needed and
+    # what bounds it. Skipped here, on this object, rather than for the scan.
+    checkov.io/skip1: >-
+      CKV_K8S_157=bind is limited by resourceNames to the three tenant Roles,
+      and the scope admission policy refuses any RoleBinding outside them
+    checkov.io/skip2: >-
+      CKV_K8S_158=escalate cannot take resourceNames on create; the scope
+      admission policy refuses any Role whose rules differ from the render
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts", "resourcequotas", "limitranges"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["bind"]
+    resourceNames: ["swarm-worker", "swarm-dispatcher", "swarm-reaper"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: swarm-workspace-deployer
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: swarm-workspace-deployer
+subjects:
+  # By email AND by numeric uniqueId, for the reason
+  # kubernetes/rbac/dispatcher-rbac.yaml gives at length: GKE resolves a Google
+  # service account that presents an OAuth access token to its uniqueId, and a
+  # binding naming only the email applies cleanly and authorises nobody.
+  # apply.sh --policies looks the uniqueId up; before the bootstrap apply has
+  # created the account it falls back to the email, a duplicate that grants
+  # nothing new.
+  - kind: User
+    name: __WORKSPACE_DEPLOYER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__WORKSPACE_DEPLOYER_UID__"
+    apiGroup: rbac.authorization.k8s.io
+---
+# The two reads kubernetes/cluster-network.sh makes to render a tenant's egress
+# policy: the kube-dns Service's ClusterIP and whether node-local-dns runs. By
+# name, in kube-system, read only. The scope policy has nothing to add here:
+# a read never reaches admission.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swarm-workspace-deployer-dns
+  namespace: kube-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["kube-dns"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: ["node-local-dns"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swarm-workspace-deployer-dns
+  namespace: kube-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: swarm-workspace-deployer-dns
+subjects:
+  - kind: User
+    name: __WORKSPACE_DEPLOYER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__WORKSPACE_DEPLOYER_UID__"
+    apiGroup: rbac.authorization.k8s.io

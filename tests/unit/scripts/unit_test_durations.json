@@ -361,6 +361,7 @@
  "tests/unit/scripts/test_register_tenant_forge_reader.py": 42.1,
  "tests/unit/scripts/test_register_tenant_merge_step.py": 56.5,
  "tests/unit/scripts/test_register_tenant_role_ids.py": 0.1,
+ "tests/unit/scripts/test_register_tenant_workspace.py": 420.0,
  "tests/unit/scripts/test_release_acceptance_job.py": 12.3,
  "tests/unit/scripts/test_release_dev_iam_gate.py": 1.9,
  "tests/unit/scripts/test_release_id_token_scope.py": 0.3,

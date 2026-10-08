@@ -66,6 +66,13 @@
 #   scripts/register-tenant.sh --group eng@saga.xyz --dry-run
 #   scripts/register-tenant.sh --group eng@saga.xyz --skip-k8s   # Cloud Run only
 #
+# A person's workspace, from its approved record, under the call guard only --
+# the Cloud Build job scripts/cloudbuild/workspace-apply.yaml runs this (section
+# W below, docs/workspaces.md §4):
+#   scripts/register-tenant.sh --workspace w-3f9a2c                 # --mode create
+#   scripts/register-tenant.sh --workspace w-3f9a2c --mode limits   # a ceiling change
+#   scripts/register-tenant.sh --workspace w-3f9a2c --mode verify   # A9 only
+#
 # Add one provider to a tenant that is already registered, keeping the others:
 #   scripts/register-tenant.sh --tenant eng --add-provider git
 #   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
@@ -101,6 +108,11 @@ ADD_PROVIDER_GIVEN=0
 # them rather than ignoring them: an operator who typed `--max-active 5` meant
 # it, and a run that quietly did not apply it is worse than one that stops.
 FULL_ONLY_FLAGS=""
+# --workspace (section W): the opaque id of an approved personal workspace, and
+# which of its three runs to make. Everything else comes from its record.
+WORKSPACE_ID=""
+WORKSPACE_GIVEN=0
+WORKSPACE_MODE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -115,10 +127,1235 @@ while [[ $# -gt 0 ]]; do
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,80p' "$0"; exit 0 ;;
+    --workspace)       WORKSPACE_ID="$2"; WORKSPACE_GIVEN=1; shift 2 ;;
+    --mode)            WORKSPACE_MODE="$2"; shift 2 ;;
+    # The header above `set -euo pipefail`, however long it grows.
+    -h|--help)         awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# --- W. --workspace: one person's workspace, from its approved record --------
+#
+# docs/workspaces.md §4 (lane W6 of #847). A person's workspace -- their worker
+# account, its own IAM, their artifact prefix, their forge slot, their
+# namespace and their tenant and pool documents -- is made by THIS script, run
+# by one Cloud Build job (scripts/cloudbuild/workspace-apply.yaml) as
+# swarm-workspace-deployer after an admin approves the request in People. That
+# identity holds project-wide account-IAM power Google cannot narrow (§2.4), so
+# this path differs from --group and --user in what it reads and what it may do:
+#
+#   * IT TAKES THE OPAQUE WORKSPACE ID AND NOTHING ELSE. Every name comes from
+#     the approved record `workspaces/<tenant>` in Firestore, and the tenant id
+#     is RE-DERIVED from the record's principal by the frozen
+#     swarm_common.identity, so an edited record cannot point the job at
+#     somebody else's resources. --group, --user, --tenant, --providers and
+#     every other operator flag are refused beside it.
+#   * IT RUNS ONLY UNDER THE CALL GUARD (§2.5). Every gcloud, kubectl and curl
+#     it makes -- and every one kubernetes/apply.sh makes for it -- passes
+#     through scripts/lib/guard-bin/ and scripts/lib/workspace-guard.sh, which
+#     allows only the calls that create or bind THIS workspace's resources. It
+#     refuses to start unless SWARM_CALL_GUARD names the job's expectation file
+#     and the three tools resolve to the shims.
+#   * A GUARD STOP IS needs_owner, NOT A FAILURE. The guard refuses the call
+#     before it reaches Google or the cluster and writes a stop file; this
+#     notices it after every step (including a refusal some read swallowed),
+#     records needs_owner with the step and the rule, and ends. The owner reads
+#     the refused call in the build's private log (§2.5, "What the owner does
+#     then").
+#   * IT NEVER REMOVES ANYTHING. The operator path's repair of a stale
+#     unconditioned bucket binding is a removal, which the guard refuses always
+#     (C9); here a stale binding stops the run for the owner instead.
+#   * IT MAKES THE ACT-AS GRANT. The scheduler and the reconciler get
+#     roles/iam.serviceAccountUser on the new worker (A4), because the
+#     dispatcher creates a tenant's Cloud Run jobs on demand
+#     (scheduler/dispatch.py CloudRunJobDispatcher.ensure_job) and needs actAs
+#     on the job's account. The --group and --user paths still do not make it
+#     (docs/workspaces.md §0); that gap is reported on the pull request.
+#   * ITS SQUAT INSPECTION IS NARROWED. An existing account may carry only the
+#     four bindings this mode makes -- Workload Identity for the namespace's two
+#     KSAs, act-as for the scheduler and the reconciler -- unconditioned, and
+#     no user-managed key. The release deployer's grants are allowed only on a
+#     record marked `migrated` (u-bogdan, §3.3), whose account Terraform made.
+#
+# THE STEPS (§2.2, §4.2), each recorded on the record as `steps.<id>` when it
+# starts and ends, which is what the console's progress view reads:
+#
+#   A1 claim      read the record, check it, write the guard's expectation,
+#                 and take the record in one Firestore transaction
+#   A2 name free  inspect an existing worker account (read only)
+#   A3 identity   create the worker account if absent
+#   A4 its IAM    Workload Identity x2 and act-as x2, each read first
+#   A5 access     the two tenants/<tenant>/ bucket grants and the .tenant marker
+#   A6 forge slot the empty slot and its -refresh twin, the worker on the slot
+#   A7 namespace  kubernetes/apply.sh with the record's quota (§8)
+#   A8 limits     the tenant and pool documents with the record's limits
+#   A9 verify     re-read every object; only then `ready`
+#
+# --mode create runs A1-A9; --mode limits runs A1, A7 and A8 (a ceiling change:
+# the namespace quota and the documents, no IAM call); --mode verify runs A1
+# and A9 (the u-bogdan migration, and an admin's check from People).
+#
+# WHAT A1 ADMITS. create: a record in `approved`; or `failed` / `needs_owner`
+# with an admin's retry recorded AFTER the last run's claim; or `applying` whose
+# run is dead (claimed over an hour ago and never finished). limits: `ready`.
+# verify: `ready` or `failed`. Every mode needs `decision.verdict == approved`
+# by an email that is an admin in admin_roles/ NOW (a revoked admin's approval
+# no longer starts anything), except verify on a `migrated` record, which no
+# admin approved because it predates approval. A retry is the record's
+# `retry: {by, at}` map, written by swarm-api's admin retry route (lane W7) and
+# checked here the same way. A live run of the same workspace (claimed within
+# the hour and not finished) means this build exits 0 having written nothing;
+# so does a create for a workspace already `ready`, which is what the dispatch
+# sweep's late re-publish finds. Anything else refused at A1 writes nothing and
+# exits 1: before A1 reads the record the guard allows no write at all, and a
+# forged message for an unapproved record must not move it to `failed`.
+#
+# ON FAILURE a step's code (§4.3) goes on the record as
+# `failure: {step, code, retryable, at}` -- never command output; the console
+# serves the copy from the code -- and the state becomes `failed`, except in
+# --mode limits: a ceiling change makes no IAM call and touches none of what
+# A9 verified, so a failed one leaves the workspace `ready` with the failure
+# recorded rather than refusing the person's work over a quota number.
+#
+# Exit codes: 0 done (or nothing to do), 1 refused or failed, 3 stopped for the
+# owner (needs_owner). The build file reads 3 as "ended, not failed" (§2.2).
+
+WS_ID_RE='^w-[0-9a-f]{6}$'
+WS_TENANT_RE='^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+# Lower-cased, as swarm-api stores a principal; narrow enough that an address
+# is safe in a Firestore document path and a jq string.
+WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
+WS_BUILD_RE='^[A-Za-z0-9._:-]{1,80}$'
+# §8, decided by the owner 2026-10-08 (WD5): 8 agents and 8 capacity units (a
+# pool of 8), and a namespace of 16 pods and 64 vCPU. 8 people at the ceiling
+# hold 64 of claude-code's 80; with requests == limits, 16 pods / 64 vCPU is 8
+# claude-code pods at 4 vCPU plus headroom for jobs finishing inside their TTL.
+WS_DEFAULT_MAX_ACTIVE=8
+WS_DEFAULT_CAPACITY_UNITS=8
+# The quota scales with the ceiling, 2 pods and 8 vCPU per agent (§6.4); the
+# other three quota lines keep §8's ratio to those two: 128Gi for 64 vCPU, 64
+# jobs and 160Gi of ephemeral storage for 16 pods.
+WS_PODS_PER_AGENT=2
+WS_CPU_PER_AGENT=8
+WS_MEMORY_GI_PER_CPU=2
+WS_JOBS_PER_POD=4
+WS_EPHEMERAL_GI_PER_POD=10
+# A run claimed longer ago than this and never finished is dead, and its record
+# may be claimed again. Twice the build file's timeout, so no live build is
+# ever mistaken for a dead one.
+WS_LIVE_RUN_SECONDS=3600
+# §2.2: a transient failure is retried 3 times, after 4, 16 and 64 seconds.
+# The unit tests set this to "0 0 0"; nothing else should.
+WS_RETRY_DELAYS="${SWARM_WORKSPACE_RETRY_DELAYS:-4 16 64}"
+WS_STOPPED_RC=3
+WS_KSAS=(swarm-agent-worker swarm-worker)
+
+WS_WORK=""
+WS_KUBECTL=""
+WS_CONTEXT=""
+WS_LAST_ERR=""
+
+# The record, as A1 read it.
+WS_RECORD_ID=""
+WS_REC_TENANT=""
+WS_PRINCIPAL=""
+WS_STATE=""
+WS_VERDICT=""
+WS_DECIDED_BY=""
+WS_RETRY_BY=""
+WS_RETRY_AT=""
+WS_RUN_CLAIMED_AT=""
+WS_RUN_FINISHED_AT=""
+WS_RUN_ATTEMPT=0
+WS_MIGRATED="false"
+WS_REQUEST_ID=""
+WS_MAX_ACTIVE=""
+WS_CAPACITY_UNITS=""
+WS_QUOTA_PODS=""
+WS_QUOTA_CPU=""
+
+# The names, from the guard's expectation once A1 has written it.
+WS_TENANT=""
+WS_DOC=""
+WS_DOCS_PREFIX=""
+WS_WORKER_ID=""
+WS_WORKER_EMAIL=""
+WS_NAMESPACE=""
+WS_SCHEDULER=""
+WS_RECONCILER=""
+WS_BUCKET_URL=""
+WS_MARKER_URL=""
+WS_GCS_PREFIX=""
+WS_READ_EXPR=""
+WS_WRITE_EXPR=""
+WS_FORGE_SLOT=""
+WS_FORGE_TWIN=""
+WS_FIRESTORE_ROLE=""
+WS_META_ROLE=""
+WS_FALLBACK="false"
+
+# The object kinds and names a tenant render holds, one `Kind<TAB>name` line
+# each, read from render.py's YAML without a YAML library (the job's image has
+# none): a document's top-level `kind:` and its metadata's own `name:`.
+WS_OBJECTS_PY='
+import sys
+kind = name = None
+in_meta = False
+def emit():
+    if kind and name:
+        print(kind + "\t" + name)
+for raw in sys.stdin.read().splitlines() + ["---"]:
+    line = raw.rstrip()
+    if line == "---":
+        emit()
+        kind = name = None
+        in_meta = False
+        continue
+    if not line or line.lstrip().startswith("#"):
+        continue
+    if not line.startswith(" "):
+        in_meta = line == "metadata:"
+        if line.startswith("kind:"):
+            kind = line.split(":", 1)[1].strip().strip("\"\x27")
+        continue
+    if in_meta and line.startswith("  name:") and not line.startswith("   "):
+        name = line.split(":", 1)[1].strip().strip("\"\x27")
+'
+
+ws_stopped() { [[ -n "${SWARM_CALL_GUARD:-}" && -e "${SWARM_CALL_GUARD}.stop" ]]; }
+
+ws_expect() {
+  jq -r --arg k "$1" '.[$k] // "" | if type == "string" then . else tojson end' "${SWARM_CALL_GUARD}"
+}
+
+# The job never runs unguarded: the expectation file must be there, private,
+# outside the checkout and naming this workspace, and gcloud, kubectl and curl
+# must all resolve to scripts/lib/guard-bin/.
+ws_require_guard() {
+  [[ -n "${SWARM_CALL_GUARD:-}" ]] \
+    || die "--workspace runs only under the call guard (docs/workspaces.md §2.5): SWARM_CALL_GUARD is not set.
+  The build's guard step sets it and writes the file with scripts/lib/workspace-guard.sh init."
+  [[ -f "${SWARM_CALL_GUARD}" && -r "${SWARM_CALL_GUARD}" ]] \
+    || die "SWARM_CALL_GUARD names ${SWARM_CALL_GUARD}, which is not a readable file; write it first with
+  scripts/lib/workspace-guard.sh init --workspace-id ${WORKSPACE_ID}"
+  case "${SWARM_CALL_GUARD}" in
+    "${REPO_ROOT}"/*) die "the guard's expectation file must live outside the checkout, not at ${SWARM_CALL_GUARD}" ;;
+  esac
+  ! ws_stopped || die "${SWARM_CALL_GUARD}.stop already exists: a refused call has stopped this job already. Nothing was changed."
+  local named
+  named="$(jq -r '.workspace_id // ""' "${SWARM_CALL_GUARD}" 2>/dev/null || true)"
+  [[ "${named}" == "${WORKSPACE_ID}" ]] \
+    || die "the guard's expectation names workspace '${named}', not ${WORKSPACE_ID}; one job guards one workspace"
+  local guard_dir tool resolved
+  guard_dir="$(cd -- "${SWARM_LIB_DIR}/guard-bin" && pwd -P)"
+  for tool in gcloud kubectl curl; do
+    if [[ "${tool}" == "kubectl" ]]; then
+      resolved="$(kubectl_bin)"
+    else
+      resolved="$(command -v "${tool}" 2>/dev/null || true)"
+    fi
+    [[ -n "${resolved}" && "${resolved}" == */* ]] \
+      || die "${tool} does not resolve to a file; put scripts/lib/guard-bin first on PATH"
+    [[ "$(cd -- "$(dirname -- "${resolved}")" && pwd -P)" == "${guard_dir}" ]] \
+      || die "${tool} resolves to ${resolved}, not the guard's shim in scripts/lib/guard-bin/.
+  Put that directory first on PATH; --workspace never runs a tool the guard does not see."
+  done
+}
+
+ws_code() { printf '%s' "$1" >"${WS_WORK}/code"; }
+ws_hold() { printf '%s' "$1" >"${WS_WORK}/hold"; err "stopping for the platform owner: $2"; }
+ws_object() { printf '%s' "$1" >"${WS_WORK}/object"; err "verify: a ${1} is missing or not as specified"; }
+
+ws_show_err() {
+  [[ -s "${WS_WORK}/call.err" ]] || return 0
+  redact <"${WS_WORK}/call.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+}
+
+# A failure worth asking again (§2.2): a quota or rate refusal, a 5xx, an
+# unavailable or timed-out backend, or IAM's concurrent policy change.
+ws_transient() {
+  local five='(HTTP|code=|[Ee]rror|status|returned)[ :=]*5[0-9][0-9]'
+  case "$1" in
+    *"HTTP 429"*|*"code=429"*|*RESOURCE_EXHAUSTED*|*"Too Many Requests"*) return 0 ;;
+    *UNAVAILABLE*|*DEADLINE_EXCEEDED*|*"concurrent policy change"*) return 0 ;;
+  esac
+  [[ "$1" =~ ${five} ]]
+}
+
+# ws_call OUT COMMAND...: stdout to OUT, stderr kept in $WS_WORK/call.err, and
+# a transient failure asked again after each of WS_RETRY_DELAYS. Never retried
+# after a guard stop: the latch refuses every later call anyway.
+ws_call() {
+  local out="$1" attempt=0 rc delay
+  shift
+  local -a delays=()
+  read -r -a delays <<<"${WS_RETRY_DELAYS}"
+  while :; do
+    rc=0
+    "$@" >"${out}" 2>"${WS_WORK}/call.err" || rc=$?
+    [[ "${rc}" -ne 0 ]] || return 0
+    ws_stopped && break
+    ws_transient "$(cat "${WS_WORK}/call.err")" || break
+    [[ "${attempt}" -lt "${#delays[@]}" ]] || break
+    delay="${delays[${attempt}]}"
+    attempt=$((attempt + 1))
+    warn "a transient failure; asking again (${attempt} of ${#delays[@]}) in ${delay}s"
+    sleep "${delay}"
+  done
+  WS_LAST_ERR="$(cat "${WS_WORK}/call.err")"
+  return "${rc}"
+}
+
+# ws_probe OUT COMMAND...: 0 present, 1 absent (the API said NOT_FOUND), 2 could
+# not tell -- the reason printed. The tri-state of common.sh's _shared_probe,
+# with the retry above.
+ws_probe() {
+  if ws_call "$@"; then return 0; fi
+  ws_stopped && return 2
+  if gcloud_not_found "${WS_LAST_ERR}"; then return 1; fi
+  ws_show_err
+  return 2
+}
+
+# --- the record ----------------------------------------------------------------
+
+ws_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ws_field FILE PATH -> one decoded field of a Firestore document, "" if absent.
+ws_field() {
+  jq -r "${FS_JQ} doc | (${2}) // \"\" | if type == \"string\" then . else tojson end" "$1"
+}
+
+ws_load_record() {
+  local file="$1"
+  WS_RECORD_ID="$(jq -r '(.name // "") | split("/") | last' "${file}")"
+  WS_REC_TENANT="$(ws_field "${file}" '.tenant_id')"
+  WS_PRINCIPAL="$(ws_lower "$(ws_field "${file}" '.principal')")"
+  WS_STATE="$(ws_field "${file}" '.state')"
+  WS_VERDICT="$(ws_field "${file}" '.decision.verdict')"
+  WS_DECIDED_BY="$(ws_lower "$(ws_field "${file}" '.decision.by')")"
+  WS_RETRY_BY="$(ws_lower "$(ws_field "${file}" '.retry.by')")"
+  WS_RETRY_AT="$(ws_field "${file}" '.retry.at')"
+  WS_RUN_CLAIMED_AT="$(ws_field "${file}" '.run.claimed_at')"
+  WS_RUN_FINISHED_AT="$(ws_field "${file}" '.run.finished_at')"
+  WS_RUN_ATTEMPT="$(ws_field "${file}" '.run.attempt')"
+  [[ "${WS_RUN_ATTEMPT}" =~ ^[0-9]+$ ]] || WS_RUN_ATTEMPT=0
+  WS_MIGRATED="$(ws_field "${file}" '.migrated')"
+  [[ "${WS_MIGRATED}" == "true" ]] || WS_MIGRATED="false"
+  WS_REQUEST_ID="$(ws_field "${file}" '.request_id')"
+  WS_MAX_ACTIVE="$(ws_field "${file}" '.limits.max_active')"
+  WS_CAPACITY_UNITS="$(ws_field "${file}" '.limits.capacity_units')"
+  WS_QUOTA_PODS="$(ws_field "${file}" '.limits.quota_pods')"
+  WS_QUOTA_CPU="$(ws_field "${file}" '.limits.quota_cpu')"
+}
+
+# Seconds since an RFC 3339 timestamp, or nothing when it does not parse.
+ws_age() {
+  jq -nr --arg t "$1" '($t | sub("\\.[0-9]+"; "") | fromdateiso8601) as $s | (now - $s) | floor' 2>/dev/null || true
+}
+
+# True when A is strictly later than B (B empty counts as "never").
+ws_later() {
+  [[ -n "$1" ]] || return 1
+  [[ -n "$2" ]] || return 0
+  jq -ne --arg a "$1" --arg b "$2" \
+    '($a | sub("\\.[0-9]+"; "") | fromdateiso8601) > ($b | sub("\\.[0-9]+"; "") | fromdateiso8601)' >/dev/null 2>&1
+}
+
+# A run that was claimed and has not finished is live for WS_LIVE_RUN_SECONDS.
+# An unreadable claim time counts as live: never take a record from under a
+# build that may still be running.
+ws_run_live() {
+  [[ -n "${WS_RUN_CLAIMED_AT}" && -z "${WS_RUN_FINISHED_AT}" ]] || return 1
+  local age
+  age="$(ws_age "${WS_RUN_CLAIMED_AT}")"
+  [[ "${age}" =~ ^-?[0-9]+$ ]] || return 0
+  [[ "${age}" -lt "${WS_LIVE_RUN_SECONDS}" ]]
+}
+
+# Prints "" when this mode may claim the record as read, else "CODE why".
+ws_admit() {
+  if ws_run_live; then
+    printf 'RUN_IN_PROGRESS another run claimed this workspace at %s and has not finished' "${WS_RUN_CLAIMED_AT}"
+    return 0
+  fi
+  case "${WORKSPACE_MODE}" in
+    create)
+      case "${WS_STATE}" in
+        approved|applying) ;;
+        failed|needs_owner)
+          if ! ws_later "${WS_RETRY_AT}" "${WS_RUN_CLAIMED_AT}"; then
+            printf 'NOT_RETRIED the record is %s and no admin has asked for a retry since the last run' "${WS_STATE}"
+            return 0
+          fi ;;
+        ready) printf 'ALREADY_READY the workspace is ready; there is nothing to create'; return 0 ;;
+        *) printf 'WORKSPACE_NOT_APPROVED the record is %s, not approved' "${WS_STATE:-without a state}"; return 0 ;;
+      esac ;;
+    limits)
+      [[ "${WS_STATE}" == "ready" ]] \
+        || { printf 'NOT_READY a ceiling change needs a ready workspace; this one is %s' "${WS_STATE:-without a state}"; return 0; } ;;
+    verify)
+      case "${WS_STATE}" in
+        ready|failed) ;;
+        *) printf 'NOT_VERIFIABLE only a ready or failed workspace is verified; this one is %s' "${WS_STATE:-without a state}"; return 0 ;;
+      esac ;;
+  esac
+  if [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" ]]; then
+    return 0
+  fi
+  [[ "${WS_VERDICT}" == "approved" ]] \
+    || { printf 'WORKSPACE_NOT_APPROVED no admin approved this workspace'; return 0; }
+  return 0
+}
+
+# True when EMAIL is an owner or admin in admin_roles/ now.
+ws_is_admin() {
+  local email="$1" role
+  [[ "${email}" =~ ${WS_EMAIL_RE} ]] || return 1
+  FS_ALLOW_404=1 fs_request GET "$(fs_base)/admin_roles/${email}" >"${WS_WORK}/admin.json" || return 1
+  jq -e '.fields' "${WS_WORK}/admin.json" >/dev/null 2>&1 || return 1
+  role="$(ws_field "${WS_WORK}/admin.json" '.role')"
+  [[ "${role}" == "owner" || "${role}" == "admin" ]]
+}
+
+ws_derive() {
+  python3 - "${REPO_ROOT}" "$1" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.identity import tenant_id_for_user
+print(tenant_id_for_user(sys.argv[2]))
+PY
+}
+
+# Whole numbers within bounds, or the default the record leaves out.
+ws_whole() {
+  local value="$1" default="$2" max="$3"
+  [[ -n "${value}" ]] || value="${default}"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  value=$((10#${value}))
+  [[ "${value}" -ge 1 && "${value}" -le "${max}" ]] || return 1
+  printf '%s' "${value}"
+}
+
+ws_resolve_limits() {
+  local max units pods cpu
+  max="$(ws_whole "${WS_MAX_ACTIVE}" "${WS_DEFAULT_MAX_ACTIVE}" 1000)" \
+    || die "the record's limits.max_active '${WS_MAX_ACTIVE}' is not a whole number from 1 to 1000. Nothing was changed."
+  units="$(ws_whole "${WS_CAPACITY_UNITS}" "${WS_DEFAULT_CAPACITY_UNITS}" 4000)" \
+    || die "the record's limits.capacity_units '${WS_CAPACITY_UNITS}' is not a whole number from 1 to 4000. Nothing was changed."
+  pods="$(ws_whole "${WS_QUOTA_PODS}" "$((max * WS_PODS_PER_AGENT))" 2000)" \
+    || die "the record's limits.quota_pods '${WS_QUOTA_PODS}' is not a whole number from 1 to 2000. Nothing was changed."
+  cpu="$(ws_whole "${WS_QUOTA_CPU}" "$((max * WS_CPU_PER_AGENT))" 8000)" \
+    || die "the record's limits.quota_cpu '${WS_QUOTA_CPU}' is not a whole number from 1 to 8000. Nothing was changed."
+  WS_MAX_ACTIVE="${max}"
+  WS_CAPACITY_UNITS="${units}"
+  WS_QUOTA_PODS="${pods}"
+  WS_QUOTA_CPU="${cpu}"
+}
+
+ws_load_names() {
+  WS_TENANT="$(ws_expect tenant_id)"
+  WS_DOC="$(ws_expect workspace_doc)"
+  WS_DOCS_PREFIX="$(ws_expect firestore_docs_prefix)"
+  WS_WORKER_ID="$(ws_expect worker_id)"
+  WS_WORKER_EMAIL="$(ws_expect worker_email)"
+  WS_NAMESPACE="$(ws_expect namespace)"
+  WS_SCHEDULER="$(ws_expect scheduler_email)"
+  WS_RECONCILER="$(ws_expect reconciler_email)"
+  WS_BUCKET_URL="$(ws_expect bucket_url)"
+  WS_MARKER_URL="$(ws_expect marker_url)"
+  WS_GCS_PREFIX="$(ws_expect gcs_prefix)"
+  WS_READ_EXPR="$(ws_expect read_expr)"
+  WS_WRITE_EXPR="$(ws_expect write_expr)"
+  WS_FORGE_SLOT="$(ws_expect forge_slot)"
+  WS_FORGE_TWIN="$(ws_expect forge_slot_twin)"
+  WS_FIRESTORE_ROLE="$(ws_expect firestore_role)"
+  WS_META_ROLE="$(ws_expect bucket_metadata_role)"
+  WS_CONTEXT="gke_${PROJECT_ID}_$(ws_expect gke_location)_$(ws_expect gke_cluster)"
+  # One switch, read from the guard's own rules, so the script makes the WD9
+  # fallback's grants exactly when the guard allows them (§2.3).
+  WS_FALLBACK="$(jq -r '.wd9_fallback == true' "${SWARM_LIB_DIR}/workspace-calls.json")"
+  local name
+  for name in WS_TENANT WS_DOC WS_DOCS_PREFIX WS_WORKER_EMAIL WS_NAMESPACE WS_SCHEDULER \
+              WS_RECONCILER WS_BUCKET_URL WS_READ_EXPR WS_WRITE_EXPR WS_FORGE_SLOT WS_FORGE_TWIN; do
+    [[ -n "${!name}" ]] || die "the guard's expectation holds no ${name#WS_}; nothing past A1 can run"
+  done
+}
+
+# --- progress on the record -------------------------------------------------------
+
+# One step's progress. A progress write that fails is reported and the run goes
+# on: the record's final state is written separately, and that one is fatal.
+ws_mark() {
+  local id="$1" state="$2" code="${3:-}" fields
+  fields="$(jq -nc --arg id "${id}" --arg s "${state}" --arg c "${code}" --arg at "$(iso_now)" '
+    {steps: {mapValue: {fields: {($id): {mapValue: {fields: (
+      {state: {stringValue: $s}, at: {timestampValue: $at}}
+      + (if $c == "" then {} else {code: {stringValue: $c}} end))}}}}}}')"
+  fs_patch "${WS_DOC}" "steps.${id}" "${fields}" \
+    || warn "could not record ${id} as ${state} on the record; the run goes on"
+}
+
+ws_retryable() {
+  case "$1" in
+    APPLY_FAILED|GRANT_FAILED|CONTROL_PLANE_WRITE_FAILED|CLUSTER_UNREACHABLE|NAMESPACE_APPLY_FAILED|VERIFY_FAILED) return 0 ;;
+  esac
+  return 1
+}
+
+ws_default_code() {
+  case "$1" in
+    A2|A3) printf 'APPLY_FAILED' ;;
+    A4|A5|A6) printf 'GRANT_FAILED' ;;
+    A7) printf 'NAMESPACE_APPLY_FAILED' ;;
+    A8) printf 'CONTROL_PLANE_WRITE_FAILED' ;;
+    *) printf 'VERIFY_FAILED' ;;
+  esac
+}
+
+ws_label() {
+  case "$1" in
+    A1) printf 'claim' ;;
+    A2) printf 'checking the name is free' ;;
+    A3) printf 'identity' ;;
+    A4) printf 'identity bindings' ;;
+    A5) printf 'access' ;;
+    A6) printf 'forge slot' ;;
+    A7) printf 'namespace' ;;
+    A8) printf 'limits' ;;
+    A9) printf 'final check' ;;
+  esac
+}
+
+# needs_owner: the step held, with the guard's rule (or the hold's reason) as its
+# code. Not a failure code (§4.2). After a stop the guard still allows exactly
+# this write to the workspace record.
+ws_needs_owner() {
+  local id="$1" code="$2" at fields
+  at="$(iso_now)"
+  fields="$(jq -nc --arg id "${id}" --arg c "${code}" --arg at "${at}" '
+    {state: {stringValue: "needs_owner"},
+     steps: {mapValue: {fields: {($id): {mapValue: {fields: {
+       state: {stringValue: "held"}, at: {timestampValue: $at}, code: {stringValue: $c}}}}}}},
+     run: {mapValue: {fields: {finished_at: {timestampValue: $at}}}}}')"
+  fs_patch "${WS_DOC}" "state,steps.${id},run.finished_at" "${fields}" \
+    || err "could not record needs_owner on the record; the build log above is the only account of this stop"
+  err "${WORKSPACE_ID}: stopped at ${id} for the platform owner (${code}); nothing the refused call would have done has happened"
+}
+
+ws_failed() {
+  local id="$1" code="$2" at retryable=false object="" fields mask
+  at="$(iso_now)"
+  ws_retryable "${code}" && retryable=true
+  [[ -s "${WS_WORK}/object" ]] && object="$(cat "${WS_WORK}/object")"
+  fields="$(jq -nc --arg id "${id}" --arg c "${code}" --arg at "${at}" --arg o "${object}" \
+      --argjson r "${retryable}" --arg mode "${WORKSPACE_MODE}" '
+    {steps: {mapValue: {fields: {($id): {mapValue: {fields: {
+       state: {stringValue: "failed"}, at: {timestampValue: $at}, code: {stringValue: $c}}}}}}},
+     failure: {mapValue: {fields: (
+       {step: {stringValue: $id}, code: {stringValue: $c}, retryable: {booleanValue: $r}, at: {timestampValue: $at}}
+       + (if $o == "" then {} else {object: {stringValue: $o}} end))}},
+     run: {mapValue: {fields: {finished_at: {timestampValue: $at}}}}}
+    + (if $mode == "limits" then {} else {state: {stringValue: "failed"}} end)')"
+  mask="steps.${id},failure,run.finished_at"
+  [[ "${WORKSPACE_MODE}" == "limits" ]] || mask="state,${mask}"
+  fs_patch "${WS_DOC}" "${mask}" "${fields}" \
+    || err "could not record the failure on the record; the build log above is the only account of it"
+  err "${WORKSPACE_ID}: ${id} failed (${code}, retryable: ${retryable})"
+}
+
+# Runs one step in a subshell with errexit, so a `die` deep in common.sh ends
+# the step and not the recording of it; then checks for a guard stop whatever
+# the step returned, because a refusal some read swallowed is still a stop.
+ws_run_step() {
+  local id="$1" fn="$2" rc code
+  step "${id} $(ws_label "${id}") (${WORKSPACE_ID})"
+  rm -f "${WS_WORK}/code" "${WS_WORK}/hold" "${WS_WORK}/object"
+  ws_mark "${id}" running
+  set +e
+  ( set -e; "${fn}" )
+  rc=$?
+  set -e
+  if ws_stopped; then
+    ws_needs_owner "${id}" "$(jq -r '.rule // "C0"' "${SWARM_CALL_GUARD}.stop" 2>/dev/null || printf 'C0')"
+    exit "${WS_STOPPED_RC}"
+  fi
+  if [[ -s "${WS_WORK}/hold" ]]; then
+    ws_needs_owner "${id}" "$(cat "${WS_WORK}/hold")"
+    exit "${WS_STOPPED_RC}"
+  fi
+  if [[ "${rc}" -eq 0 ]]; then
+    ws_mark "${id}" "done"
+    return 0
+  fi
+  code="$(cat "${WS_WORK}/code" 2>/dev/null || true)"
+  [[ -n "${code}" ]] || code="$(ws_default_code "${id}")"
+  ws_failed "${id}" "${code}"
+  exit 1
+}
+
+# --- A1 claim ---------------------------------------------------------------------
+
+ws_rollback() {
+  fs_request POST "$(fs_base):rollback" "$(jq -nc --arg t "$1" '{transaction: $t}')" >/dev/null 2>&1 || true
+}
+
+# The claim's write: the run, the mode's steps reset, the failure cleared, and
+# for a create the state `applying`. One commit inside the transaction whose
+# read admitted it, so two builds cannot both claim one workspace.
+ws_claim_write() {
+  local tx="$1" at attempt steps_json mask_json state_json
+  at="$(iso_now)"
+  attempt=$((WS_RUN_ATTEMPT + 1))
+  local -a ids=()
+  case "${WORKSPACE_MODE}" in
+    create) ids=(A1 A2 A3 A4 A5 A6 A7 A8 A9) ;;
+    limits) ids=(A1 A7 A8) ;;
+    verify) ids=(A1 A9) ;;
+  esac
+  steps_json="$(printf '%s\n' "${ids[@]}" | jq -Rsc --arg at "${at}" '
+    split("\n") | map(select(length > 0))
+    | map({key: ., value: {mapValue: {fields: {
+        state: {stringValue: (if . == "A1" then "done" else "todo" end)}, at: {timestampValue: $at}}}}})
+    | from_entries')"
+  if [[ "${WORKSPACE_MODE}" == "create" ]]; then
+    state_json='{"state": {"stringValue": "applying"}}'
+    mask_json='["state", "steps"]'
+  else
+    state_json='{}'
+    mask_json="$(printf '%s\n' "${ids[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | "steps." + .)')"
+  fi
+  jq -nc --arg name "${WS_DOCS_PREFIX}/${WS_DOC}" --arg tx "${tx}" --arg at "${at}" \
+      --arg build "${WS_BUILD_ID}" --arg mode "${WORKSPACE_MODE}" --argjson attempt "${attempt}" \
+      --argjson steps "${steps_json}" --argjson state "${state_json}" --argjson mask "${mask_json}" '
+    {writes: [{
+       update: {name: $name, fields: ($state + {
+         steps: {mapValue: {fields: $steps}},
+         run: {mapValue: {fields: {
+           build_id: {stringValue: $build}, attempt: {integerValue: ($attempt | tostring)},
+           mode: {stringValue: $mode}, claimed_at: {timestampValue: $at}}}}})},
+       updateMask: {fieldPaths: ($mask + ["failure", "run.build_id", "run.attempt", "run.mode",
+                                         "run.claimed_at", "run.finished_at"])},
+       currentDocument: {exists: true}}],
+     transaction: $tx}'
+}
+
+ws_claim() {
+  step "A1 claim (${WORKSPACE_ID})"
+  local query count reason
+
+  # 1. The record, by the opaque id: the only read the guard allows yet.
+  query="$(jq -nc --arg w "${WORKSPACE_ID}" '{structuredQuery: {
+      from: [{collectionId: "workspaces"}],
+      where: {fieldFilter: {field: {fieldPath: "workspace_id"}, op: "EQUAL", value: {stringValue: $w}}},
+      limit: 2}}')"
+  fs_request POST "$(fs_base):runQuery" "${query}" >"${WS_WORK}/query.json" \
+    || die "could not read the workspace record for ${WORKSPACE_ID} (above). Nothing was changed."
+  count="$(jq '[.[]? | select(.document != null)] | length' "${WS_WORK}/query.json")"
+  [[ "${count}" -ne 0 ]] || die "WORKSPACE_NOT_FOUND: no workspace record names ${WORKSPACE_ID}. Nothing was changed."
+  [[ "${count}" -eq 1 ]] \
+    || die "two workspace records name ${WORKSPACE_ID}; workspace ids are unique (workspace_ids/), so this needs a person. Nothing was changed."
+  jq '[.[] | select(.document != null)][0].document' "${WS_WORK}/query.json" >"${WS_WORK}/record.json"
+  ws_load_record "${WS_WORK}/record.json"
+
+  # 2. The tenant id, re-derived from the principal by the frozen contract.
+  [[ "${WS_PRINCIPAL}" =~ ${WS_EMAIL_RE} ]] \
+    || die "${WORKSPACE_ID}'s record names no usable principal. Nothing was changed."
+  local derived
+  derived="$(ws_derive "${WS_PRINCIPAL}")" \
+    || die "swarm_common.identity could not derive a tenant id from ${WORKSPACE_ID}'s principal. Nothing was changed."
+  [[ "${derived}" =~ ${WS_TENANT_RE} ]] || die "the derived tenant id '${derived}' is not a personal tenant id. Nothing was changed."
+  if [[ "${WS_REC_TENANT}" != "${derived}" || "${WS_RECORD_ID}" != "${derived}" ]]; then
+    die "WORKSPACE_ID_TAKEN: ${WORKSPACE_ID}'s record is filed as '${WS_RECORD_ID}' and names tenant
+  '${WS_REC_TENANT}', but its principal derives '${derived}' (swarm_common.identity). An edited
+  record must not point this job at another tenant's resources. Nothing was changed."
+  fi
+
+  # 3. Is this mode admitted, on the record as read?
+  reason="$(ws_admit)"
+  case "${reason}" in
+    "") ;;
+    RUN_IN_PROGRESS*|ALREADY_READY*)
+      ok "${WORKSPACE_ID}: ${reason#* }; nothing to do"
+      exit 0 ;;
+    *)
+      err "${reason%% *}: ${WORKSPACE_ID}: ${reason#* }"
+      die "refusing to run --mode ${WORKSPACE_MODE}. Nothing was changed." ;;
+  esac
+
+  # 4. Approved, and retried, by people who are admins now.
+  if ! [[ "${WORKSPACE_MODE}" == "verify" && "${WS_MIGRATED}" == "true" ]]; then
+    ws_is_admin "${WS_DECIDED_BY}" \
+      || die "WORKSPACE_NOT_APPROVED: ${WORKSPACE_ID} was approved by someone who is not an admin in admin_roles/ now. Nothing was changed."
+    if [[ "${WORKSPACE_MODE}" == "create" && ( "${WS_STATE}" == "failed" || "${WS_STATE}" == "needs_owner" ) ]]; then
+      ws_is_admin "${WS_RETRY_BY}" \
+        || die "WORKSPACE_NOT_APPROVED: ${WORKSPACE_ID}'s retry was asked for by someone who is not an admin now. Nothing was changed."
+    fi
+  fi
+  ws_resolve_limits
+
+  # 5. The guard's expectation, from the record. workspace-guard.sh re-derives
+  # the tenant itself and refuses a record that disagrees.
+  "${SWARM_LIB_DIR}/workspace-guard.sh" expect --record "${WS_WORK}/record.json" \
+    || die "the call guard refused the record (above). Nothing was changed."
+  ws_load_names
+  [[ "${WS_TENANT}" == "${derived}" ]] \
+    || die "the guard's expectation names tenant ${WS_TENANT}, not ${derived}. Nothing was changed."
+
+  # 6. The claim: re-read inside a transaction, re-admit, commit.
+  local tx enc
+  fs_request POST "$(fs_base):beginTransaction" '{"options":{"readWrite":{}}}' >"${WS_WORK}/tx.json" \
+    || die "could not begin the claim's transaction (above). Nothing was changed."
+  tx="$(jq -r '.transaction // ""' "${WS_WORK}/tx.json")"
+  [[ -n "${tx}" ]] || die "Firestore began no transaction. Nothing was changed."
+  enc="$(jq -rn --arg t "${tx}" '$t | @uri')"
+  if ! fs_request GET "$(fs_base)/${WS_DOC}?transaction=${enc}" >"${WS_WORK}/claim.json"; then
+    ws_rollback "${tx}"
+    die "could not re-read the record inside the claim (above). Nothing was changed."
+  fi
+  ws_load_record "${WS_WORK}/claim.json"
+  if [[ "${WS_REC_TENANT}" != "${derived}" || ! "${WS_PRINCIPAL}" =~ ${WS_EMAIL_RE} ]] \
+     || [[ "$(ws_derive "${WS_PRINCIPAL}")" != "${derived}" ]]; then
+    ws_rollback "${tx}"
+    die "the record changed its tenant or principal while it was being claimed. Nothing was changed."
+  fi
+  reason="$(ws_admit)"
+  if [[ -n "${reason}" ]]; then
+    ws_rollback "${tx}"
+    case "${reason}" in
+      RUN_IN_PROGRESS*|ALREADY_READY*) ok "${WORKSPACE_ID}: ${reason#* }; nothing to do"; exit 0 ;;
+    esac
+    die "${reason%% *}: ${WORKSPACE_ID}: ${reason#* }. Nothing was changed."
+  fi
+  ws_resolve_limits
+  ws_claim_write "${tx}" >"${WS_WORK}/commit.json"
+  fs_request POST "$(fs_base):commit" "$(cat "${WS_WORK}/commit.json")" >/dev/null \
+    || die "the claim did not commit (above): another run may have claimed ${WORKSPACE_ID} first. Nothing else was changed."
+  ok "claimed ${WORKSPACE_ID}"
+  dim "  request ${WS_REQUEST_ID:-<none>}, attempt $((WS_RUN_ATTEMPT + 1)), build ${WS_BUILD_ID}"
+  dim "  limits: ${WS_MAX_ACTIVE} agents, ${WS_CAPACITY_UNITS} units; quota ${WS_QUOTA_PODS} pods, ${WS_QUOTA_CPU} vCPU"
+}
+
+# --- A2-A9 ------------------------------------------------------------------------
+
+# The bindings this mode makes on the worker's own policy, one "role member" a
+# line: Workload Identity for the namespace's two KSAs and act-as for the
+# scheduler and the reconciler.
+ws_account_pairs() {
+  local ksa
+  for ksa in "${WS_KSAS[@]}"; do
+    printf 'roles/iam.workloadIdentityUser serviceAccount:%s.svc.id.goog[%s/%s]\n' "${PROJECT_ID}" "${WS_NAMESPACE}" "${ksa}"
+  done
+  printf 'roles/iam.serviceAccountUser serviceAccount:%s\n' "${WS_SCHEDULER}" "${WS_RECONCILER}"
+}
+
+# The narrowed squat inspection: prints every binding on the worker's policy
+# that this mode does not make (a conditioned one included), one per line.
+# The release deployer's two grants are allowed on a migrated record only.
+ws_foreign_bindings() {
+  local policy="$1" allowed deployer
+  deployer="${DEPLOYER_SERVICE_ACCOUNT:-swarm-tf-deployer@${PROJECT_ID}.iam.gserviceaccount.com}"
+  allowed="$(ws_account_pairs | jq -Rsc 'split("\n") | map(select(length > 0))')"
+  if [[ "${WS_MIGRATED}" == "true" ]]; then
+    allowed="$(jq -c --arg d "serviceAccount:${deployer}" \
+      '. + ["roles/iam.serviceAccountAdmin \($d)", "roles/iam.serviceAccountUser \($d)"]' <<<"${allowed}")"
+  fi
+  jq -r --argjson allowed "${allowed}" '
+    .bindings[]? as $b | $b.members[]? as $m
+    | select(($b.condition != null) or (($allowed | any(. == ($b.role + " " + $m))) | not))
+    | "\($b.role) \($m)" + (if $b.condition != null then " (conditioned)" else "" end)' "${policy}"
+}
+
+# 0 when the account carries nothing foreign and no user-managed key; 1 when it
+# does (IDENTITY_NOT_OURS); 2 when it could not be inspected.
+ws_inspect_account() {
+  local unexpected keys
+  ws_call "${WS_WORK}/account-policy.json" gcloud iam service-accounts get-iam-policy "${WS_WORKER_EMAIL}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 2; }
+  unexpected="$(ws_foreign_bindings "${WS_WORK}/account-policy.json")" || return 2
+  ws_call "${WS_WORK}/account-keys.txt" gcloud iam service-accounts keys list --iam-account "${WS_WORKER_EMAIL}" \
+    --project "${PROJECT_ID}" --managed-by=user --format='value(name)' || { ws_show_err; return 2; }
+  keys="$(grep -c . "${WS_WORK}/account-keys.txt" || true)"
+  if [[ -n "${unexpected}" || "${keys}" -gt 0 ]]; then
+    err "the worker account already exists and carries what this platform never grants it:"
+    if [[ -n "${unexpected}" ]]; then
+      while IFS= read -r line; do err "  binding  ${line}"; done <<<"${unexpected}"
+    fi
+    [[ "${keys}" -eq 0 ]] || err "  ${keys} user-managed key(s)"
+    return 1
+  fi
+  return 0
+}
+
+ws_a2() {
+  local rc=0
+  ws_probe "${WS_WORK}/a2.out" gcloud iam service-accounts describe "${WS_WORKER_EMAIL}" \
+    --project "${PROJECT_ID}" --format='value(email)' || rc=$?
+  case "${rc}" in
+    1) printf 'absent' >"${WS_WORK}/account"; ok "identity: absent"; return 0 ;;
+    2) return 1 ;;
+  esac
+  printf 'present' >"${WS_WORK}/account"
+  rc=0
+  ws_inspect_account || rc=$?
+  case "${rc}" in
+    0) ok "identity: ours" ;;
+    1) ws_code IDENTITY_NOT_OURS
+       err "refusing to adopt an account somebody else may control (#334); nothing was changed"
+       return 1 ;;
+    *) err "the existing worker account could not be inspected, so it cannot be shown to be ours"
+       return 1 ;;
+  esac
+}
+
+ws_a3() {
+  if [[ "$(cat "${WS_WORK}/account" 2>/dev/null || true)" == "present" ]]; then
+    ok "identity: ours, already present"
+    return 0
+  fi
+  # The display name and description name the workspace id, never the person:
+  # this project's account list is readable by the other team.
+  ws_call /dev/null gcloud iam service-accounts create "${WS_WORKER_ID}" --project "${PROJECT_ID}" \
+    --display-name "swarm workspace ${WORKSPACE_ID}" \
+    --description "SwarmCloud personal workspace ${WORKSPACE_ID}; made by register-tenant.sh --workspace" \
+    || { ws_show_err; return 1; }
+  # "Done" is the account readable, not the create returning: IAM is eventually
+  # consistent, and A4 writes the new account's policy next.
+  local rc attempt=0
+  local -a delays=()
+  read -r -a delays <<<"${WS_RETRY_DELAYS}"
+  while :; do
+    rc=0
+    ws_probe "${WS_WORK}/a3.out" gcloud iam service-accounts describe "${WS_WORKER_EMAIL}" \
+      --project "${PROJECT_ID}" --format='value(email)' || rc=$?
+    [[ "${rc}" -ne 0 ]] || break
+    [[ "${rc}" -eq 1 && "${attempt}" -lt "${#delays[@]}" ]] || return 1
+    sleep "${delays[${attempt}]}"
+    attempt=$((attempt + 1))
+  done
+  ok "identity: created"
+}
+
+ws_a4() {
+  local made=0 role member
+  ws_call "${WS_WORK}/a4-policy.json" gcloud iam service-accounts get-iam-policy "${WS_WORKER_EMAIL}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
+  while read -r role member; do
+    [[ -n "${role}" ]] || continue
+    if iam_policy_binds_member "${WS_WORK}/a4-policy.json" "${role}" "${member}"; then
+      continue
+    fi
+    ws_call /dev/null gcloud iam service-accounts add-iam-policy-binding "${WS_WORKER_EMAIL}" \
+      --project "${PROJECT_ID}" --role "${role}" --member "${member}" --quiet || { ws_show_err; return 1; }
+    made=$((made + 1))
+  done < <(ws_account_pairs)
+  ok "account bindings: 4 (${made} added)"
+}
+
+ws_condition_file() {
+  local file="$1" title="$2" description="$3" expression="$4"
+  jq -n --arg t "${title}" --arg d "${description}" --arg e "${expression}" \
+    '{title: $t, description: $d, expression: $e}' >"${file}"
+}
+
+ws_bucket_has() {
+  jq -e --arg r "$2" --arg m "serviceAccount:${WS_WORKER_EMAIL}" --arg e "$3" \
+    'any((.bindings? // [])[]; .role == $r and any(.members[]?; . == $m)
+         and (if $e == "" then .condition == null else (.condition.expression? // "") == $e end))' \
+    "$1" >/dev/null 2>&1
+}
+
+ws_put_marker() {
+  printf 'workspace %s registered %s\n' "${WORKSPACE_ID}" "$(iso_now)" \
+    | gcloud storage cp - "${WS_MARKER_URL}" --project "${PROJECT_ID}"
+}
+
+ws_a5() {
+  local policy="${WS_WORK}/bucket-policy.json" stale role
+  ws_call "${policy}" gcloud storage buckets get-iam-policy "${WS_BUCKET_URL}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
+  # Anything else this worker holds on the shared bucket goes to the owner: the
+  # operator path would remove it, and a removal is never this job's (C9).
+  stale="$(jq -r --arg m "serviceAccount:${WS_WORKER_EMAIL}" --arg re "${WS_READ_EXPR}" \
+      --arg we "${WS_WRITE_EXPR}" --arg meta "${WS_META_ROLE}" --argjson fb "${WS_FALLBACK}" '
+    (.bindings? // [])[] | select(any(.members[]?; . == $m))
+    | select((.role == "roles/storage.objectViewer" and (.condition.expression? // "") == $re) | not)
+    | select((.role == "roles/storage.objectUser" and (.condition.expression? // "") == $we) | not)
+    | select(($fb and .role == $meta and .condition == null) | not)
+    | .role + (if .condition != null then " (conditioned)" else "" end)' "${policy}")"
+  if [[ -n "${stale}" ]]; then
+    while IFS= read -r role; do err "  stale bucket binding  ${role}"; done <<<"${stale}"
+    ws_hold STALE_BUCKET_BINDING "the worker already holds a bucket binding this job does not make, and removing it is the owner's call"
+    return 1
+  fi
+  ws_condition_file "${WS_WORK}/read-condition.json" "swarm-tenant-prefix-read-${WS_TENANT}" \
+    "Read and list objects under ${WS_GCS_PREFIX}/ only." "${WS_READ_EXPR}"
+  ws_condition_file "${WS_WORK}/write-condition.json" "swarm-tenant-prefix-write-${WS_TENANT}" \
+    "Write objects under ${WS_GCS_PREFIX}/, except ${WS_GCS_PREFIX}/verdicts/." "${WS_WRITE_EXPR}"
+  if ! ws_bucket_has "${policy}" roles/storage.objectViewer "${WS_READ_EXPR}"; then
+    ws_call /dev/null gcloud storage buckets add-iam-policy-binding "${WS_BUCKET_URL}" --project "${PROJECT_ID}" \
+      --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/storage.objectViewer \
+      --condition-from-file "${WS_WORK}/read-condition.json" || { ws_show_err; return 1; }
+  fi
+  if ! ws_bucket_has "${policy}" roles/storage.objectUser "${WS_WRITE_EXPR}"; then
+    ws_call /dev/null gcloud storage buckets add-iam-policy-binding "${WS_BUCKET_URL}" --project "${PROJECT_ID}" \
+      --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/storage.objectUser \
+      --condition-from-file "${WS_WORK}/write-condition.json" || { ws_show_err; return 1; }
+  fi
+  if [[ "${WS_FALLBACK}" == "true" ]]; then
+    # WD9's fallback (§2.3): no principal-set grant, so the person's worker gets
+    # the bucket-metadata, database and telemetry roles one by one.
+    if ! ws_bucket_has "${policy}" "${WS_META_ROLE}" ""; then
+      ws_call /dev/null gcloud storage buckets add-iam-policy-binding "${WS_BUCKET_URL}" --project "${PROJECT_ID}" \
+        --member "serviceAccount:${WS_WORKER_EMAIL}" --role "${WS_META_ROLE}" --condition None \
+        || { ws_show_err; return 1; }
+    fi
+    ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
+      || { ws_show_err; return 1; }
+    for role in "${WS_FIRESTORE_ROLE}" roles/logging.logWriter roles/monitoring.metricWriter; do
+      ws_bucket_has "${WS_WORK}/project-policy.json" "${role}" "" && continue
+      ws_call /dev/null gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member "serviceAccount:${WS_WORKER_EMAIL}" --role "${role}" --condition None --quiet \
+        || { ws_show_err; return 1; }
+    done
+  fi
+  ws_call /dev/null ws_put_marker || { ws_show_err; return 1; }
+  ok "access: granted"
+}
+
+# The person's empty forge slot and its twin, labelled as swarm-api labels the
+# slots it makes (swarm_api.forgeapp.slot_labels), so its later create of the
+# same name finds them and treats ALREADY_EXISTS as success.
+ws_slot_present() {
+  local name="$1" provider="$2" rc=0 labelled
+  ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json || rc=$?
+  case "${rc}" in
+    0)
+      labelled="$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")"
+      if [[ "${labelled}" != "${WS_TENANT}" ]]; then
+        ws_hold SLOT_NOT_OURS "the forge slot already exists labelled for '${labelled:-nobody}', not this tenant"
+        return 1
+      fi
+      return 0 ;;
+    1)
+      ws_call /dev/null gcloud secrets create "${name}" --project "${PROJECT_ID}" --replication-policy automatic \
+        --labels "managed-by=swarm-api,swarm-tenant=${WS_TENANT},tenant=${WS_TENANT},provider=${provider}" \
+        || { ws_show_err; return 1; }
+      return 0 ;;
+  esac
+  return 1
+}
+
+ws_a6() {
+  local suffix="${WS_FORGE_SLOT#swarm-tenant-"${WS_TENANT}"-}"
+  ws_slot_present "${WS_FORGE_SLOT}" "${suffix}" || return 1
+  ws_slot_present "${WS_FORGE_TWIN}" "${suffix}-refresh" || return 1
+  # The refresh twin is the one secret no worker reads
+  # (terraform/bootstrap/forge_user_slots.tf); finding the worker on it is not
+  # something this job repairs.
+  ws_call "${WS_WORK}/twin-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_TWIN}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
+  if jq -e --arg m "serviceAccount:${WS_WORKER_EMAIL}" 'any((.bindings? // [])[]; any(.members[]?; . == $m))' \
+       "${WS_WORK}/twin-policy.json" >/dev/null 2>&1; then
+    ws_hold TWIN_BOUND "the worker is bound to the forge slot's refresh twin, which no worker may read"
+    return 1
+  fi
+  ws_call "${WS_WORK}/slot-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_SLOT}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
+  if ! iam_policy_binds_member "${WS_WORK}/slot-policy.json" roles/secretmanager.secretAccessor \
+       "serviceAccount:${WS_WORKER_EMAIL}"; then
+    ws_call /dev/null gcloud secrets add-iam-policy-binding "${WS_FORGE_SLOT}" --project "${PROJECT_ID}" \
+      --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/secretmanager.secretAccessor \
+      || { ws_show_err; return 1; }
+  fi
+  ok "forge slot: bound"
+}
+
+# Credentials for the swarm cluster in the job's own kubeconfig, and the API
+# server answering. CLUSTER_UNREACHABLE otherwise.
+ws_cluster_connect() {
+  ws_call /dev/null gcloud container clusters get-credentials "$(ws_expect gke_cluster)" \
+    --location "$(ws_expect gke_location)" --project "${PROJECT_ID}" \
+    || { ws_show_err; ws_code CLUSTER_UNREACHABLE; return 1; }
+  ws_call /dev/null "${WS_KUBECTL}" --context "${WS_CONTEXT}" get --raw=/readyz \
+    || { ws_show_err; ws_code CLUSTER_UNREACHABLE; return 1; }
+}
+
+ws_quota_args() {
+  printf '%s\n' --quota-pods "${WS_QUOTA_PODS}" --quota-cpu "${WS_QUOTA_CPU}" \
+    --quota-memory "$((WS_QUOTA_CPU * WS_MEMORY_GI_PER_CPU))Gi" \
+    --quota-jobs "$((WS_QUOTA_PODS * WS_JOBS_PER_POD))" \
+    --quota-ephemeral "$((WS_QUOTA_PODS * WS_EPHEMERAL_GI_PER_POD))Gi"
+}
+
+ws_a7() {
+  ws_cluster_connect || return 1
+  local -a args=(--tenant "${WS_TENANT}" --gsa "${WS_WORKER_EMAIL}" --context "${WS_CONTEXT}"
+    --cluster "$(ws_expect gke_cluster)" --confirm)
+  local quota
+  while IFS= read -r quota; do args+=("${quota}"); done < <(ws_quota_args)
+  # A server dry run first, where there is a namespace for it to run in: on a
+  # first apply nothing inside the namespace can be dry-run yet (apply.sh).
+  if "${WS_KUBECTL}" --context "${WS_CONTEXT}" get namespace "${WS_NAMESPACE}" -o name >/dev/null 2>&1; then
+    args+=(--server-dry-run)
+  fi
+  ws_stopped && return 1
+  "${REPO_ROOT}/kubernetes/apply.sh" "${args[@]}" || return 1
+  ok "namespace: applied"
+}
+
+# ws_doc_check FILE EXPRESSION [jq --arg ...]: true when the decoded document
+# satisfies EXPRESSION. Values go in as jq arguments, never into the program.
+ws_doc_check() {
+  local file="$1" expression="$2"
+  shift 2
+  jq -e "$@" "${FS_JQ} doc | ${expression}" "${file}" >/dev/null 2>&1
+}
+
+ws_a8() {
+  local pool_limit fields mask exists
+  pool_limit=$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))
+  ws_call "${WS_WORK}/tenant.json" fs_get "tenants/${WS_TENANT}" || { ws_show_err; return 1; }
+  exists="$(jq -r 'if .fields then "yes" else "no" end' "${WS_WORK}/tenant.json")"
+  fields="$(jq -nc --arg id "${WS_TENANT}" --arg p "${WS_PRINCIPAL}" --arg sa "${WS_WORKER_EMAIL}" \
+      --arg prefix "${WS_GCS_PREFIX}" --arg ns "${WS_NAMESPACE}" --arg at "$(iso_now)" \
+      --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}" '
+    {tenant_id: {stringValue: $id}, kind: {stringValue: "user"}, principal: {stringValue: $p},
+     display_name: {stringValue: $p}, created_at: {timestampValue: $at},
+     max_active: {integerValue: ($max | tostring)}, capacity_units: {integerValue: ($units | tostring)},
+     enabled: {booleanValue: true}, credentials: {arrayValue: {values: []}},
+     service_account: {stringValue: $sa}, gcs_prefix: {stringValue: $prefix}, namespace: {stringValue: $ns}}')"
+  if [[ "${exists}" == "yes" ]]; then
+    # Adopted, never re-pointed (§3.3): a document `ensure_tenant` wrote on
+    # first sight is this person's only when its principal is theirs. Its
+    # credentials, created_at, enabled and display_name are left as they are:
+    # a migrated workspace keeps its provider, a disabled tenant stays disabled.
+    # shellcheck disable=SC2016  # a jq program; $p is jq's
+    if ! ws_doc_check "${WS_WORK}/tenant.json" \
+         '((.principal // "") | ascii_downcase) == $p and ((.kind // "user") == "user")' --arg p "${WS_PRINCIPAL}"; then
+      ws_code WORKSPACE_ID_TAKEN
+      err "tenants/<tenant> already belongs to a different principal or kind; it is not adopted"
+      return 1
+    fi
+    mask="tenant_id,kind,principal,max_active,capacity_units,service_account,gcs_prefix,namespace"
+    fields="$(jq -c 'del(.created_at, .enabled, .credentials, .display_name)' <<<"${fields}")"
+    ws_call /dev/null fs_patch "tenants/${WS_TENANT}" "${mask}" "${fields}" \
+      "$(jq -r '.updateTime // ""' "${WS_WORK}/tenant.json")" || { ws_show_err; return 1; }
+  else
+    mask="tenant_id,kind,principal,display_name,created_at,max_active,capacity_units,enabled,credentials,service_account,gcs_prefix,namespace"
+    ws_call /dev/null fs_patch "tenants/${WS_TENANT}" "${mask}" "${fields}" || { ws_show_err; return 1; }
+  fi
+  # The pool's limit, never its `active` (invariant 2): an existing pool keeps
+  # the count of what it holds.
+  ws_call "${WS_WORK}/pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; return 1; }
+  if jq -e '.fields' "${WS_WORK}/pool.json" >/dev/null 2>&1; then
+    ws_call /dev/null fs_patch "pools/tenant:${WS_TENANT}" "hard_limit,updated_at" \
+      "$(jq -nc --argjson l "${pool_limit}" --arg t "$(iso_now)" \
+        '{hard_limit: {integerValue: ($l | tostring)}, updated_at: {timestampValue: $t}}')" \
+      || { ws_show_err; return 1; }
+  else
+    ws_call /dev/null fs_patch "pools/tenant:${WS_TENANT}" "name,hard_limit,active,enabled,updated_at" \
+      "$(jq -nc --arg n "tenant:${WS_TENANT}" --argjson l "${pool_limit}" --arg t "$(iso_now)" \
+        '{name: {stringValue: $n}, hard_limit: {integerValue: ($l | tostring)},
+          active: {integerValue: "0"}, enabled: {booleanValue: true}, updated_at: {timestampValue: $t}}')" \
+      || { ws_show_err; return 1; }
+  fi
+  ok "limits: written (${WS_MAX_ACTIVE} agents, pool ${pool_limit})"
+}
+
+ws_kind_word() {
+  case "$1" in
+    ServiceAccount) printf 'serviceaccount' ;;
+    ResourceQuota) printf 'resourcequota' ;;
+    LimitRange) printf 'limitrange' ;;
+    NetworkPolicy) printf 'networkpolicy' ;;
+    Role) printf 'role' ;;
+    RoleBinding) printf 'rolebinding' ;;
+    *) return 1 ;;
+  esac
+}
+
+# A9: every object read back, as specified. A failure names the object's type,
+# never its name (§4.2), on the record as failure.object.
+ws_a9() {
+  local n=0 role member kind name word
+  # The account and its own policy.
+  ws_probe "${WS_WORK}/a9.out" gcloud iam service-accounts describe "${WS_WORKER_EMAIL}" \
+    --project "${PROJECT_ID}" --format='value(email)' || { ws_object "service account"; return 1; }
+  n=$((n + 1))
+  local rc=0
+  ws_inspect_account || rc=$?
+  [[ "${rc}" -eq 0 ]] || { ws_object "service account binding"; return 1; }
+  while read -r role member; do
+    [[ -n "${role}" ]] || continue
+    iam_policy_binds_member "${WS_WORK}/account-policy.json" "${role}" "${member}" \
+      || { ws_object "service account binding"; return 1; }
+    n=$((n + 1))
+  done < <(ws_account_pairs)
+  # The bucket grants.
+  ws_call "${WS_WORK}/bucket-policy.json" gcloud storage buckets get-iam-policy "${WS_BUCKET_URL}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "bucket grant"; return 1; }
+  ws_bucket_has "${WS_WORK}/bucket-policy.json" roles/storage.objectViewer "${WS_READ_EXPR}" \
+    || { ws_object "bucket grant"; return 1; }
+  ws_bucket_has "${WS_WORK}/bucket-policy.json" roles/storage.objectUser "${WS_WRITE_EXPR}" \
+    || { ws_object "bucket grant"; return 1; }
+  n=$((n + 2))
+  if [[ "${WS_FALLBACK}" == "true" ]]; then
+    ws_bucket_has "${WS_WORK}/bucket-policy.json" "${WS_META_ROLE}" "" || { ws_object "bucket grant"; return 1; }
+    ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
+      || { ws_show_err; ws_object "project grant"; return 1; }
+    for role in "${WS_FIRESTORE_ROLE}" roles/logging.logWriter roles/monitoring.metricWriter; do
+      ws_bucket_has "${WS_WORK}/project-policy.json" "${role}" "" || { ws_object "project grant"; return 1; }
+    done
+    n=$((n + 4))
+  fi
+  # The forge slot, its twin, and who reads them.
+  for name in "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}"; do
+    if ! ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json \
+      || [[ "$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")" != "${WS_TENANT}" ]]; then
+      ws_object "forge slot"
+      return 1
+    fi
+    n=$((n + 1))
+  done
+  ws_call "${WS_WORK}/slot-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_SLOT}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "forge slot binding"; return 1; }
+  iam_policy_binds_member "${WS_WORK}/slot-policy.json" roles/secretmanager.secretAccessor \
+    "serviceAccount:${WS_WORKER_EMAIL}" || { ws_object "forge slot binding"; return 1; }
+  ws_call "${WS_WORK}/twin-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_TWIN}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "forge slot binding"; return 1; }
+  if jq -e --arg m "serviceAccount:${WS_WORKER_EMAIL}" 'any((.bindings? // [])[]; any(.members[]?; . == $m))' \
+       "${WS_WORK}/twin-policy.json" >/dev/null 2>&1; then
+    ws_object "forge slot binding"
+    return 1
+  fi
+  n=$((n + 1))
+  # Every object the tenant render holds (kubernetes/render.py TENANT_FILES and,
+  # since A4 binds swarm-worker, the older identity too).
+  ws_cluster_connect || return 1
+  python3 "${REPO_ROOT}/kubernetes/render.py" tenant --tenant "${WS_TENANT}" --gsa "${WS_WORKER_EMAIL}" \
+    --bound-ksa swarm-agent-worker --bound-ksa swarm-worker 2>/dev/null \
+    | python3 -c "${WS_OBJECTS_PY}" >"${WS_WORK}/objects.tsv" \
+    || { ws_object "namespace object"; return 1; }
+  [[ -s "${WS_WORK}/objects.tsv" ]] || { ws_object "namespace object"; return 1; }
+  while IFS="$(printf '\t')" read -r kind name; do
+    [[ -n "${kind}" ]] || continue
+    if [[ "${kind}" == "Namespace" ]]; then
+      [[ "${name}" == "${WS_NAMESPACE}" ]] || { ws_object "Namespace"; return 1; }
+      ws_call "${WS_WORK}/object.json" "${WS_KUBECTL}" --context "${WS_CONTEXT}" get namespace "${name}" -o json \
+        || { ws_object "Namespace"; return 1; }
+    else
+      word="$(ws_kind_word "${kind}")" || { ws_object "${kind}"; return 1; }
+      ws_call "${WS_WORK}/object.json" "${WS_KUBECTL}" --context "${WS_CONTEXT}" get "${word}" "${name}" \
+        -n "${WS_NAMESPACE}" -o json || { ws_object "${kind}"; return 1; }
+      if [[ "${kind}" == "ResourceQuota" ]]; then
+        jq -e --arg p "${WS_QUOTA_PODS}" --arg c "${WS_QUOTA_CPU}" \
+          '(.spec.hard.pods // "") == $p and (.spec.hard["requests.cpu"] // "") == $c' \
+          "${WS_WORK}/object.json" >/dev/null 2>&1 || { ws_object "ResourceQuota"; return 1; }
+      fi
+    fi
+    n=$((n + 1))
+  done <"${WS_WORK}/objects.tsv"
+  # Both documents, with the record's limits.
+  ws_call "${WS_WORK}/tenant.json" fs_get "tenants/${WS_TENANT}" || { ws_show_err; ws_object "tenant document"; return 1; }
+  # shellcheck disable=SC2016  # jq programs; their $names are jq's
+  ws_doc_check "${WS_WORK}/tenant.json" \
+      '((.principal // "") | ascii_downcase) == $p and .service_account == $sa and .namespace == $ns
+       and .max_active == $max and .capacity_units == $units' \
+      --arg p "${WS_PRINCIPAL}" --arg sa "${WS_WORKER_EMAIL}" --arg ns "${WS_NAMESPACE}" \
+      --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}" \
+    || { ws_object "tenant document"; return 1; }
+  ws_call "${WS_WORK}/pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; ws_object "pool document"; return 1; }
+  # shellcheck disable=SC2016
+  ws_doc_check "${WS_WORK}/pool.json" '.hard_limit == $l' \
+      --argjson l "$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))" \
+    || { ws_object "pool document"; return 1; }
+  n=$((n + 2))
+  printf '%s' "${n}" >"${WS_WORK}/verified"
+  ok "verified: ${n} of ${n} objects"
+}
+
+# `ready` only after A9 (create, verify); a ceiling change only closes its run.
+ws_finish() {
+  local at fields mask
+  at="$(iso_now)"
+  if [[ "${WORKSPACE_MODE}" == "limits" ]]; then
+    fields="$(jq -nc --arg at "${at}" '{run: {mapValue: {fields: {finished_at: {timestampValue: $at}}}}}')"
+    mask="run.finished_at,failure"
+  else
+    fields="$(jq -nc --arg at "${at}" '{state: {stringValue: "ready"}, ready_at: {timestampValue: $at},
+      run: {mapValue: {fields: {finished_at: {timestampValue: $at}}}}}')"
+    mask="state,ready_at,run.finished_at,failure"
+  fi
+  fs_patch "${WS_DOC}" "${mask}" "${fields}" \
+    || die "every step is done, but the record could not be closed (above); an admin's retry finds everything present"
+  if [[ "${WORKSPACE_MODE}" == "limits" ]]; then
+    ok "${WORKSPACE_ID}: limits applied"
+  else
+    ok "${WORKSPACE_ID}: ready"
+  fi
+}
+
+workspace_main() {
+  [[ "${WORKSPACE_ID}" =~ ${WS_ID_RE} ]] || die "--workspace needs an id of the form w-<6 hex digits>, got '${WORKSPACE_ID}'"
+  case "${WORKSPACE_MODE}" in
+    create|limits|verify) ;;
+    *) die "--mode must be create, limits or verify, got '${WORKSPACE_MODE}'" ;;
+  esac
+  WS_BUILD_ID="${BUILD_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)}"
+  [[ "${WS_BUILD_ID}" =~ ${WS_BUILD_RE} ]] || die "BUILD_ID '${WS_BUILD_ID}' is not a Cloud Build id"
+  local delays_re='^[0-9]+( [0-9]+)*$'
+  [[ "${WS_RETRY_DELAYS}" =~ ${delays_re} ]] \
+    || die "SWARM_WORKSPACE_RETRY_DELAYS must be whole seconds separated by spaces, got '${WS_RETRY_DELAYS}'"
+  require_cmd jq curl python3 gcloud
+  ws_require_guard
+  WS_WORK="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/swarm-workspace.XXXXXX")"
+  # shellcheck disable=SC2064  # the path is fixed now, on purpose
+  trap "rm -rf '${WS_WORK}'" EXIT
+  # The job's own kubeconfig, private, so get-credentials writes the swarm
+  # cluster's context there and nowhere an operator's contexts live.
+  KUBECONFIG="${WS_WORK}/kubeconfig"
+  export KUBECONFIG
+  WS_KUBECTL="$(kubectl_bin)"
+  info "workspace ${WORKSPACE_ID}, --mode ${WORKSPACE_MODE}"
+
+  ws_claim
+  case "${WORKSPACE_MODE}" in
+    create)
+      ws_run_step A2 ws_a2
+      ws_run_step A3 ws_a3
+      ws_run_step A4 ws_a4
+      ws_run_step A5 ws_a5
+      ws_run_step A6 ws_a6
+      ws_run_step A7 ws_a7
+      ws_run_step A8 ws_a8
+      ws_run_step A9 ws_a9 ;;
+    limits)
+      ws_run_step A7 ws_a7
+      ws_run_step A8 ws_a8 ;;
+    verify)
+      ws_run_step A9 ws_a9 ;;
+  esac
+  ws_finish
+}
+
+if [[ "${WORKSPACE_GIVEN}" -eq 1 ]]; then
+  WS_REFUSED=""
+  [[ -z "${GROUP}" ]] || WS_REFUSED+=" --group"
+  [[ -z "${USER_EMAIL}" ]] || WS_REFUSED+=" --user"
+  [[ -z "${TENANT_ID}" ]] || WS_REFUSED+=" --tenant"
+  [[ "${ADD_PROVIDER_GIVEN}" -eq 0 ]] || WS_REFUSED+=" --add-provider"
+  [[ "${DRY_RUN}" -eq 0 ]] || WS_REFUSED+=" --dry-run"
+  WS_REFUSED+="${FULL_ONLY_FLAGS}"
+  [[ -z "${WS_REFUSED}" ]] || die "--workspace takes its every value from the approved record, so it does not take${WS_REFUSED}.
+  (A rehearsal is the call guard's report-only mode, docs/workspaces.md §2.5.)"
+  [[ -n "${WORKSPACE_MODE}" ]] || WORKSPACE_MODE="create"
+  workspace_main
+  exit 0
+fi
+[[ -z "${WORKSPACE_MODE}" ]] || die "--mode belongs to --workspace"
 
 require_cmd gcloud jq curl python3
 

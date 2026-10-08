@@ -324,41 +324,71 @@ info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"
+
+# THE CONTROL PLANE'S NUMERIC IDENTITIES, RESOLVED HERE BECAUSE THEY CANNOT BE
+# DERIVED.
+#
+# GKE resolves a Google service account reaching the Kubernetes API with an
+# OAuth access token to its numeric uniqueId, not its email -- and that is how
+# the scheduler reaches it. A RoleBinding naming only the email applies
+# cleanly and authorises nobody, which is the failure that made every GKE
+# dispatch this platform ever attempted return
+#
+#     jobs.batch is forbidden: User "117405034245659033603" cannot create ...
+#
+# for eight months of browser tasks. render.py takes the uniqueIds as flags
+# and falls back to the email when they are absent, so a resolution failure
+# here would silently re-create that exact bug. It is therefore FATAL rather
+# than skipped: an apply that cannot name the identities it is authorising has
+# nothing useful to do.
+#
+# Resolved by uniqueId lookup rather than read from terraform state, because
+# this script must work against a cluster whose state file it cannot read.
+#
+# Both modes need them. A tenant's RoleBindings name them; the cluster-scoped
+# render's workspace-deployer RoleBinding policy allows the dispatcher and
+# reaper Roles to be bound to them and nobody else, so a policy rendered
+# without them would refuse the tenant render's own uniqueId subjects.
+uid_of() {
+  local account="$1" uid
+  uid="$(gcloud iam service-accounts describe "${account}" \
+    --project="${PROJECT_ID}" --format='value(uniqueId)' 2>/dev/null || true)"
+  [[ "${uid}" =~ ^[0-9]{15,25}$ ]] \
+    || die "could not resolve the uniqueId of ${account} (got '${uid}').
+       Without it the RoleBinding authorises nobody -- see kubernetes/rbac/dispatcher-rbac.yaml."
+  printf '%s' "${uid}"
+}
+
 if [[ "${MODE}" == "policies" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to the cluster-scoped policies"
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" policies)"
-  info "rendering cluster-scoped admission policies"
+  SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
+  RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
+
+  # THE WORKSPACE DEPLOYER'S uniqueId (docs/workspaces.md §2.3) is the one
+  # lookup allowed to come back empty, because the account is created by the
+  # owner's bootstrap apply and these policies may be applied before it. Then
+  # render.py binds and matches the email alone -- in the ClusterRoleBinding
+  # AND in the scope policy, the same value in both, so the deployer is either
+  # bound and scoped or not bound at all; never bound and unscoped. Re-run this
+  # once the account exists, or a deployer that presents its uniqueId is
+  # refused by RBAC.
+  DEPLOYER="swarm-workspace-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
+  DEPLOYER_UID="$(gcloud iam service-accounts describe "${DEPLOYER}" \
+    --project="${PROJECT_ID}" --format='value(uniqueId)' 2>/dev/null || true)"
+  if [[ ! "${DEPLOYER_UID}" =~ ^[0-9]{15,25}$ ]]; then
+    warn "could not resolve the uniqueId of ${DEPLOYER}; binding and scoping it by email only."
+    warn "Re-run kubernetes/apply.sh --policies --confirm after the bootstrap apply creates it."
+    DEPLOYER_UID=""
+  fi
+  info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID} workspace-deployer=${DEPLOYER_UID:-${DEPLOYER}}"
+
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" policies --project "${PROJECT_ID}" \
+    --scheduler-uid "${SCHEDULER_UID}" --reconciler-uid "${RECONCILER_UID}" \
+    --workspace-deployer-uid "${DEPLOYER_UID}")"
+  info "rendering cluster-scoped admission policies and the workspace deployer's RBAC"
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies)"
 
-  # THE CONTROL PLANE'S NUMERIC IDENTITIES, RESOLVED HERE BECAUSE THEY CANNOT BE
-  # DERIVED.
-  #
-  # GKE resolves a Google service account reaching the Kubernetes API with an
-  # OAuth access token to its numeric uniqueId, not its email -- and that is how
-  # the scheduler reaches it. A RoleBinding naming only the email applies
-  # cleanly and authorises nobody, which is the failure that made every GKE
-  # dispatch this platform ever attempted return
-  #
-  #     jobs.batch is forbidden: User "117405034245659033603" cannot create ...
-  #
-  # for eight months of browser tasks. render.py takes the uniqueIds as flags
-  # and falls back to the email when they are absent, so a resolution failure
-  # here would silently re-create that exact bug. It is therefore FATAL rather
-  # than skipped: an apply that cannot name the identities it is authorising has
-  # nothing useful to do.
-  #
-  # Resolved by uniqueId lookup rather than read from terraform state, because
-  # this script must work against a cluster whose state file it cannot read.
-  uid_of() {
-    local account="$1" uid
-    uid="$(gcloud iam service-accounts describe "${account}" \
-      --project="${PROJECT_ID}" --format='value(uniqueId)' 2>/dev/null || true)"
-    [[ "${uid}" =~ ^[0-9]{15,25}$ ]] \
-      || die "could not resolve the uniqueId of ${account} (got '${uid}').
-       Without it the RoleBinding authorises nobody -- see kubernetes/rbac/dispatcher-rbac.yaml."
-    printf '%s' "${uid}"
-  }
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
   info "rbac subjects  scheduler=${SCHEDULER_UID} reconciler=${RECONCILER_UID}"
