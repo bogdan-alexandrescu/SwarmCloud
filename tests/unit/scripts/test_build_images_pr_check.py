@@ -61,7 +61,10 @@ pytestmark = pytest.mark.skipif(
 
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify"}
+# workspace-apply (#847, lane W4) copies nothing from the repository: the job's
+# code is the checkout Cloud Build hands each step, so only its own directory
+# and the two ignore files reach it.
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -122,6 +125,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-browser/Dockerfile"], {"agent-runtime-browser"}),
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
+        (["images/workspace-apply/Dockerfile"], {"workspace-apply"}),
+        # The guard and the build file are the workspace job's checkout, not
+        # its image's: they rebuild swarm-verify (which copies all of
+        # scripts/) and never workspace-apply.
+        (["scripts/lib/workspace-guard.sh", "scripts/cloudbuild/workspace-apply.yaml"], {"swarm-verify"}),
         # COPY'd files outside images/.
         (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER),
         (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
