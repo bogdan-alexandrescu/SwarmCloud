@@ -391,14 +391,16 @@ describe('6: at DONE the card says what is known about the merge and the issue',
     expect(visible(container.querySelector('.rn-state'))).toMatch(/merge is not reported/)
   })
 
-  it('says the pull request ended a run that closed without a green sha, not that the workflow succeeded', async () => {
+  it('says the pull request merged and ended a run that closed without a green sha, not that the workflow succeeded', async () => {
     const { container } = await mount(run({
       state: 'DONE', terminal: true, green_sha: null,
       pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'pending' },
     }), { [WF]: workflow() })
     const line = visible(container.querySelector('.rn-state'))
-    expect(line).toMatch(/pull request ended the run/)
-    expect(line).toMatch(/not reported/)
+    // #503: a closed PR fails the run and a green one records its sha, so a
+    // DONE run with no green sha was ended by the PR merging.
+    expect(line).toMatch(/pull request merged, which ended the run/)
+    expect(line).not.toMatch(/not reported/)
     expect(line).not.toMatch(/workflow succeeded/)
   })
 })

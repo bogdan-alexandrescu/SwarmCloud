@@ -4852,6 +4852,13 @@ export interface IssueRun {
   requirements_met?: boolean | null
   requirements_unmet?: string[]
   requirements_note?: string | null
+  /**
+   * True once the write-back closed the issue (`issuesync`): only an
+   * `already_on_main` run with every requirement met is closed by the run
+   * itself. Null or absent: this run did not close it, which says nothing of
+   * a merge's `Closes #N`.
+   */
+  issue_closed?: boolean | null
 }
 
 /** `IssueRun.to_api().pull_request`. */
