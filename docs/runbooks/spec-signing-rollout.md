@@ -27,14 +27,14 @@ after **2026-10-20T00:00:00Z** whatever the configuration says
 |---|---|---|
 | `cloudkms.googleapis.com`, the key ring `swarm-<env>-specs`, the key `step-spec` (EC P-256, software), swarm-api's `signer` grant, the deployer's `publicKeyViewer` + `viewer` | [`terraform/bootstrap/spec_signing.tf`](../../terraform/bootstrap/spec_signing.tf) | **the owner**, never CI: CI must not hold `setIamPolicy` on the key, or the release could grant itself a signature |
 | the names of both, spelled once | [`terraform/modules/spec_signing_key`](../../terraform/modules/spec_signing_key/main.tf) | both roots |
-| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler; the signing version (`output.spec_signing_key_version`), which #353 puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
-| the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, for GKE pods | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
+| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler (which copies them onto every Job it creates, Cloud Run and GKE); the signing version (`output.spec_signing_key_version`), which #353 puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
+| the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, the GKE pods' **fallback** | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
 | the alert on a refusal | [`terraform/modules/monitoring`](../../terraform/modules/monitoring/alerts.tf), `spec-signature-invalid` | the release |
 
 Nobody holds `roles/cloudkms.signerVerifier`, and no tenant or worker account
 holds any role on the key. Workers get the public keys in their Job's
-environment (Cloud Run) or a read-only mount (GKE): no KMS call, no quota and no
-IAM at attempt start.
+environment, on both backends, with a read-only mount as the fallback on GKE:
+no KMS call, no quota and no IAM at attempt start.
 
 **What this does not protect against**, accepted by the owner on 2026-09-29:
 the key lives in the shared `saga-agents-staging` project, so a project Owner
@@ -164,10 +164,27 @@ Prod enforces from its first release and never had a legacy window (owner decisi
 
 ## GKE
 
-The browser profile's pods read the keys from the `swarm-spec-verify-keys`
-ConfigMap mounted read-only at `/etc/swarm/spec-verify-keys` -- never from
-their `env:`, which the scheduler renders per task. The release refreshes it
-with every tenant namespace once the repository variable
+**A GKE pod gets the keys in its environment, from the scheduler, at Job
+creation** (owner decision 2026-10-08). `GkeJobDispatcher._manifest` puts the
+scheduler's own `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`
+and `SPEC_LEGACY_CUTOVER` (`spec_job_env`, the values Terraform sets on the
+scheduler) on the worker container's `env:`, exactly as on a Cloud Run Job the
+scheduler creates. Never through `worker_env`, which a task shapes:
+`tests/unit/control_plane/test_spec_signing_dispatch_env.py` holds both. They
+are public keys, a KMS key name, a mode and a timestamp; no private material
+exists to put there.
+
+This reverses the original GKE design, which delivered them only through the
+ConfigMap. That was enough while GKE ran browser alone in namespaces the
+release applied. Once claude-code moved to GKE (PR 866) and onboarding (#847)
+began creating a namespace per person, a namespace with no ConfigMap ended
+every task `CANNOT_START`.
+
+**The `swarm-spec-verify-keys` ConfigMap is the fallback**, mounted read-only
+at `/etc/swarm/spec-verify-keys`. The worker reads it only when its
+environment carries no `SPEC_VERIFY_KEYS` (a scheduler deployed without them);
+otherwise the environment wins, all four settings. The release refreshes it
+with every tenant namespace only when the repository variable
 `APPLY_TENANT_NAMESPACES` is `true`; until then it says so and applies nothing.
 By hand:
 
@@ -177,17 +194,20 @@ kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json          # preview
 kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 ```
 
-The mount is `optional`: a namespace without the ConfigMap still starts its
-pods, and the worker refuses a signed task as `CANNOT_START` (no keys) rather
-than run it unverified. Nothing in the tenant namespace may write a ConfigMap
--- the worker Role is empty and the pods carry no token -- and
-`tests/unit/worker/test_spec_verify_keys_configmap.py` holds that.
+`apply.sh` passes its `${ENVIRONMENT}` to `render.py`, which accepts only that
+environment's key, `projects/<project>/locations/<region>/keyRings/swarm-<env>-specs/cryptoKeys/step-spec`
+(#346). A `keys.json` from another environment, or naming any other key in
+the shared project, is refused before anything is applied. Set `ENVIRONMENT`
+(or `.env`) to match the Terraform state you read the output from.
 
-**Not delivered to GKE pods yet:** the worker (#353) reads only
-`SPEC_VERIFY_KEYS` and `SPEC_SIGNING_KEY` from the mount, and a GKE Job's
-environment carries no `SPEC_SIGNATURE_MODE`, so a browser pod enforces from
-the day #353 ships, legacy window or not. The ConfigMap already carries the
-mode and cutover, for the worker to read them there.
+The mount is `optional`: a namespace without the ConfigMap still starts its
+pods and verifies with the keys in `env:`. Only a pod with keys in neither
+place exits `CANNOT_START` for every task, signed or not, rather than run one
+unverified. With keys, verification is unchanged: an unsigned spec outside the
+legacy window, a bad signature or an unknown key version is still refused.
+Nothing in the tenant namespace may write a ConfigMap. The worker Role is
+empty and the pods carry no token, and
+`tests/unit/worker/test_spec_verify_keys_configmap.py` holds that.
 
 ## Rotation
 
@@ -195,8 +215,12 @@ Cloud KMS does not rotate asymmetric keys; rotate by hand, in this order:
 
 1. create version N+1: `gcloud kms keys versions create --key step-spec
    --keyring swarm-dev-specs --location us-central1`;
-2. release, so every worker's `SPEC_VERIFY_KEYS` holds N and N+1 (the GKE
-   ConfigMap too);
+2. release, so every worker's `SPEC_VERIFY_KEYS` holds N and N+1: the
+   Cloud Run Jobs and the scheduler, which puts its copy on every GKE Job it
+   creates from then on. A GKE pod already running keeps the keys it was
+   created with. The GKE ConfigMap (the fallback) follows only if that
+   release's `deploy` job ran with `vars.APPLY_TENANT_NAMESPACES=true`;
+   otherwise re-apply it by hand (see [GKE](#gke)) before step 4;
 3. set `spec_signing_key_version = N+1` in `dev.tfvars` and release;
 4. once no non-terminal task names version N, disable it
    (`gcloud kms keys versions disable N ...`) and release.
@@ -207,8 +231,13 @@ The plan warns (`check "spec_signing_version_is_trusted"`) when
 ## Revocation
 
 Disable the version. From the next release on it is absent from every
-worker's `SPEC_VERIFY_KEYS`, and every task signed by it is refused as
-`foreign_key_version`. A compromised signing identity could sign anything by
+worker's `SPEC_VERIFY_KEYS` (the Cloud Run Jobs, and the scheduler, which puts
+its copy on every GKE Job it creates from then on), and every task signed by
+it is refused as `foreign_key_version`. The GKE ConfigMap is the fallback and
+drops the version only when that release's `deploy` job runs with
+`vars.APPLY_TENANT_NAMESPACES=true`. Otherwise re-apply it by hand (see
+[GKE](#gke)): a pod that falls back to a stale ConfigMap still trusts the
+revoked version. A compromised signing identity could sign anything by
 submitting it through the API anyway, so revocation closes the leak; a release
 is fast enough for that.
 
