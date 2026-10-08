@@ -1662,6 +1662,11 @@ and §8.1 says how it migrates. Changed: the summary, §0, §8.1, S6.
 **Owner decision 2026-10-08: (a), plus a per-schedule switch to fully
 automatic.**
 
+**Follow-up, owner 2026-10-08:** in a repository registered `platform: true`, only
+platform admins (the PR 860 admin roles, `PLATFORM_OWNER` included) may make the
+switch; elsewhere the §4.6 rule applies (any member but the last editor).
+Switching back to approval is always allowed.
+
 * **(a) As in the §3 table:** the sweep plans automatically and **asks before
   merge**; plan-only, epic-triage and custom-prompt ask before plan or run;
   index, observer, flake, release-health and cost-report are auto; the
