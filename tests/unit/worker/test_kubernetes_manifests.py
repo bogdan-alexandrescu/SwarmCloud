@@ -26,7 +26,7 @@ import pytest
 import yaml
 
 from quota_broker.accounts import AccountError, validate_label
-from scheduler.dispatch import gke_ephemeral_storage_gib
+from scheduler.dispatch import gke_disk, gke_ephemeral_storage_gib
 from scheduler.dispatch import sanitize_name as dispatcher_sanitize_name
 from swarm_common.identity import _TENANT_SAFE
 from swarm_common.models import Tenant, utcnow
@@ -224,6 +224,23 @@ def test_the_quota_forbids_everything_a_worker_never_creates(tenant_docs):
     ):
         assert hard[forbidden] == "0", forbidden
     assert int(hard["pods"]) > 0
+
+
+def test_every_tenant_namespace_gets_the_owners_flat_quota(tenant_docs):
+    """Owner decision 2026-10-07 (contract request 53): flat for every tenant,
+    100 pods to match the GKE_AUTOPILOT backend ceiling of 100. It was 8 pods
+    and 64 vCPU, which held a tenant to 8 GKE pods whatever the pools admitted.
+
+    MUTATION: put any default in render.py's `add_tenant_arguments` back to its
+    old value (8, 64, 128Gi, 320Gi) and this fails naming the resource.
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    expected = {"pods": "100", "cpu": "400", "memory": "800Gi", "ephemeral-storage": "1000Gi"}
+
+    assert hard["pods"] == expected["pods"]
+    for resource in ("cpu", "memory", "ephemeral-storage"):
+        assert hard[f"requests.{resource}"] == expected[resource], resource
+        assert hard[f"limits.{resource}"] == expected[resource], resource
 
 
 def test_quota_requests_and_limits_are_the_same_numbers(tenant_docs):
@@ -858,7 +875,7 @@ def test_a_rendered_job_sets_requests_equal_to_limits(profile):
     workspace = next(
         v for v in job["spec"]["template"]["spec"]["volumes"] if v["name"] == "workspace"
     )
-    assert workspace["emptyDir"]["sizeLimit"] == f"{rc.disk_gib}Gi"
+    assert workspace["emptyDir"]["sizeLimit"] == f"{gke_disk(rc).workspace_gib}Gi"
 
 
 @pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])

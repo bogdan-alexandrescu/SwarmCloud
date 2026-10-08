@@ -95,7 +95,11 @@ sys.path.insert(0, str(REPO / "apps" / "common"))
 sys.path.insert(0, str(REPO / "apps" / "quota-broker"))
 sys.path.insert(0, str(REPO / "apps" / "scheduler"))
 from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
-from scheduler.dispatch import backend_deadline_seconds, gke_ephemeral_storage_gib  # noqa: E402
+from scheduler.dispatch import (  # noqa: E402
+    backend_deadline_seconds,
+    gke_disk,
+    gke_ephemeral_storage_gib,
+)
 from swarm_common.config import Settings  # noqa: E402
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES  # noqa: E402
@@ -286,6 +290,8 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "CPU": re.compile(r"^[0-9]{1,4}m?$"),
     "MEMORY": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "TMP_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
+    "HOME_DISK": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "EPHEMERAL": re.compile(r"^[0-9]{1,6}(Ki|Mi|Gi|Ti)?$"),
     "TIMEOUT_SECONDS": re.compile(r"^[0-9]{1,8}$"),
     "ACTIVE_DEADLINE_SECONDS": re.compile(r"^[0-9]{1,8}$"),
@@ -793,11 +799,14 @@ def render_job(args: argparse.Namespace) -> str:
             f"{args.registry}/{profile.image}:{args.tag}",
             "CPU": str(int(rc.cpu)),
             "MEMORY": f"{rc.memory_gib}Gi",
-            # The workspace volume's sizeLimit...
-            "DISK": f"{rc.disk_gib}Gi",
-            # ...and the whole pod's ephemeral-storage, which also holds /tmp
-            # and HOME. Two tokens since contract request 53: the dispatcher's
-            # own number, imported, so the YAML cannot drift from what runs.
+            # The scratch volumes' sizeLimits -- workspace, /tmp, HOME -- and
+            # the whole pod's ephemeral-storage, their sum. The dispatcher's
+            # own numbers (GkeDisk), imported, so the YAML cannot drift from
+            # what runs: until 2026-10-07 the browser template's 8 + 2 + 4 GiB
+            # of volumes sat under an 8 GiB pod limit (contract request 53).
+            "DISK": f"{gke_disk(rc).workspace_gib}Gi",
+            "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
+            "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The LIFECYCLE's deadline (TASK_TIMEOUT_SECONDS) and the JOB's are
             # two tokens, because they were one and the Job always won: see
@@ -1001,11 +1010,26 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "any existing one is left as it is."
         ),
     )
-    parser.add_argument("--quota-pods", type=int, default=8)
-    parser.add_argument("--quota-jobs", type=int, default=32)
-    parser.add_argument("--quota-cpu", type=int, default=64)
-    parser.add_argument("--quota-memory", default="128Gi")
-    parser.add_argument("--quota-ephemeral", default="320Gi")
+    # THE TENANT NAMESPACE'S ResourceQuota, FLAT FOR EVERY TENANT. Owner
+    # decision 2026-10-07 (contract request 53, moving claude-code to GKE),
+    # flat over per-tenant: 100 pods matches the GKE_AUTOPILOT backend ceiling
+    # of 100, and 400 vCPU / 800Gi / 1000Gi let that many pods fit. The
+    # platform's admission ceilings (the Firestore slot pools, invariants 1-3)
+    # remain the real limit; this quota is the second line of defence for when
+    # that accounting is wrong. It was pods=8, cpu=64, memory=128Gi,
+    # ephemeral-storage=320Gi, which capped a tenant at 8 GKE pods however much
+    # the pools admitted. Applied per tenant by scripts/register-tenant.sh ->
+    # kubernetes/apply.sh; an existing namespace keeps its old quota until it
+    # is re-applied. --quota-jobs (count/jobs.batch) was not part of that
+    # decision; it was 32 and is now 200 (see below).
+    parser.add_argument("--quota-pods", type=int, default=100)
+    # owner 2026-10-07 -- 100 running pods plus an hour of finished Jobs awaiting
+    # ttlSecondsAfterFinished=3600. At 32 the quota refused new Jobs while pods
+    # were still free.
+    parser.add_argument("--quota-jobs", type=int, default=200)
+    parser.add_argument("--quota-cpu", type=int, default=400)
+    parser.add_argument("--quota-memory", default="800Gi")
+    parser.add_argument("--quota-ephemeral", default="1000Gi")
 
 
 def main(argv: list[str] | None = None) -> int:
