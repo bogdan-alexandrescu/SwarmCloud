@@ -96,7 +96,7 @@
 # as a backstop for a required check no workflow run reports.
 #
 # A BASE THAT REQUIRES A MERGE QUEUE IS ENQUEUED, NEVER MERGED DIRECTLY
-# (owner decision 2026-10-06, docs/ci.md "Main merges through a merge queue").
+# (owner decision 2026-10-06, docs/ci.md "Merging through the merge queue").
 # The gate reads whether `main`'s effective rules carry a `merge_queue` rule
 # from the same read as its item 3, and says `queue`. Then `gh pr merge
 # --auto` arms auto-merge, which on a queued base enqueues the pull request
@@ -113,6 +113,15 @@
 # an open pull request named that way is refused on the label and on a
 # re-evaluation alike: `ready` removed, a comment saying what to reword, and
 # nothing armed. A check that cannot tell fails the job: fail closed.
+#
+# A PULL REQUEST WAITS FOR WHAT IT SAYS IT DEPENDS ON (owner decision
+# 2026-10-08, observer proposal I part 2). A body line `depends on PR <N>` or
+# `depends on #<N>`, any case, names something that must land first. The
+# enable job runs main's scripts/check-pr-dependencies.sh beside the closing-
+# references check; while a pull request named that way is not merged, or an
+# issue not closed, the gate refuses like its other refusals (a comment; on a
+# re-evaluation `ready` comes off too). docs/ci.md, "Saying what a pull
+# request depends on". A check that cannot tell fails the job: fail closed.
 #
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue and disable jobs' shells against a fake `gh`;
@@ -302,6 +311,37 @@ jobs:
             echo "${delimiter}"
           } >>"${GITHUB_OUTPUT}"
 
+      # WHAT THIS ONE DEPENDS ON MUST HAVE LANDED (owner decision 2026-10-08,
+      # observer proposal I part 2). The body's `depends on PR <N>` and
+      # `depends on #<N>` lines; a pull request named so must be merged, an
+      # issue closed. Main's script, like the step above: exit 2 hands the
+      # gate its refusal, any other failure fails this step, so the gate never
+      # runs and nothing is armed: fail closed.
+      - name: find what this pull request depends on that has not landed
+        id: dependencies
+        if: steps.pr.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          rc=0
+          scripts/check-pr-dependencies.sh --pr "${PR_NUMBER}" >"${out}" || rc=$?
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "refusal=" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${rc}" -ne 2 || ! -s "${out}" ]]; then
+            echo "::error::could not tell whether what #${PR_NUMBER} depends on has landed (exit ${rc}): not merged"
+            exit 1
+          fi
+          delimiter="REFUSAL_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "refusal<<${delimiter}"
+            cat "${out}"
+            echo "${delimiter}"
+          } >>"${GITHUB_OUTPUT}"
+
       - name: refuse what must not be queued, and say why on the pull request
         id: gate
         if: steps.pr.outputs.evaluate == 'true'
@@ -313,6 +353,7 @@ jobs:
           MERGE_APP_ID: ${{ vars.MERGE_APP_ID }}
           HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
           CLOSING_REFUSAL: ${{ steps.closing-references.outputs.refusal }}
+          DEPENDENCY_REFUSAL: ${{ steps.dependencies.outputs.refusal }}
         # Says `decision` = merge, wait or refused; only `merge` runs the
         # steps after it. A refusal on the label fails the run, as it always
         # has. A refusal on a re-evaluation runs on main's head commit, so it
@@ -398,6 +439,16 @@ jobs:
             exit 1
           fi
 
+          # 0b. What the body says this depends on has not landed (the step
+          #    before found it; owner decision 2026-10-08). Refused like the
+          #    items below: on the label a comment and a failed run, `ready`
+          #    kept; on a re-evaluation `ready` removed and auto-merge
+          #    disarmed. Nothing re-evaluates when the dependency merges, so
+          #    the author adds `ready` again then.
+          if [[ -n "${DEPENDENCY_REFUSAL:-}" ]]; then
+            refuse "${DEPENDENCY_REFUSAL}"
+          fi
+
           # 1. A worker's placeholder title. The squash subject below IS the
           #    title (and through a merge queue, the merge commit's message
           #    carries it), so queuing this would put "[swarm] task_..." on
@@ -451,8 +502,8 @@ jobs:
             refuse "\`${BASE_REF}\` has no required status checks in its rulesets or its branch protection, so auto-merge would merge this now whether CI is green or not. The owner sets them on the \`main-protection\` ruleset with the command in docs/ci.md." owner
           fi
           # Whether the base merges only through a merge queue: the merge
-          #    step enqueues there instead of squashing (docs/ci.md "Main
-          #    merges through a merge queue"). Same rules read as above.
+          #    step enqueues there instead of squashing (docs/ci.md "Merging
+          #    through the merge queue"). Same rules read as above.
           queue="$(jq -rs 'add // [] | any(.[]; .type == "merge_queue")' "${rules}")"
 
           # 4. No App, no merge. Merging with the GITHUB_TOKEN instead would
