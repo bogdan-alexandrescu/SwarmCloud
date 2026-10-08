@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from swarm_api.admins import AUDIT_COLLECTION as ADMIN_AUDIT_COLLECTION
+from swarm_api.admins import ROLES_COLLECTION as ADMIN_ROLES_COLLECTION
 from swarm_api.auth import (
     TENANT_HEADER,
     TENANT_QUERY,
@@ -47,6 +49,14 @@ from .test_checkpoint_content import WORKSPACE, put_checkpoint, tar_gz
 from .test_checkpoint_content import seed as seed_checkpoint_task
 
 
+#: The one read authentication itself makes: whether the CALLER is an admin
+#: (`admin_roles/{email}`, docs/workspaces.md §6.5), asked on every request
+#: whatever tenant it names, and on first use the owner's seed beside it in
+#: `admin_audit/`. Neither is tenant data, so neither is what "nothing was
+#: read" here is about; every other collection still counts.
+CALLER_ROLE_COLLECTIONS = (ADMIN_ROLES_COLLECTION, ADMIN_AUDIT_COLLECTION)
+
+
 class CountingFirestore(FakeFirestore):
     """Counts every reference handed out, so "nothing was read" is measurable."""
 
@@ -55,11 +65,13 @@ class CountingFirestore(FakeFirestore):
         self.touched = 0
 
     def collection(self, path: str):  # type: ignore[override]
-        self.touched += 1
+        if path.split("/", 1)[0] not in CALLER_ROLE_COLLECTIONS:
+            self.touched += 1
         return super().collection(path)
 
     def document(self, path: str):  # type: ignore[override]
-        self.touched += 1
+        if path.split("/", 1)[0] not in CALLER_ROLE_COLLECTIONS:
+            self.touched += 1
         return super().document(path)
 
     def get_all(self, references, field_paths=None, transaction=None):  # type: ignore[override]

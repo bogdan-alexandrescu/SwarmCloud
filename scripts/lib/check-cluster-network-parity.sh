@@ -4,6 +4,13 @@
 #   scripts/lib/check-cluster-network-parity.sh                  # skips without credentials
 #   scripts/lib/check-cluster-network-parity.sh --require-live   # a skip is a failure
 #   scripts/lib/check-cluster-network-parity.sh --context swarm-dev
+#   scripts/lib/check-cluster-network-parity.sh --require-live --context swarm-dev \
+#       --cluster swarm-autopilot --namespace swarm-tenant-eng   # one namespace
+#
+# kubernetes/apply.sh runs the last form after every `--tenant ... --confirm`
+# (#76): with the context and cluster it applied through, scoped to the
+# namespace it just applied, so a stale NEIGHBOUR cannot fail this tenant's
+# apply. Without --namespace every tenant namespace is compared -- the sweep.
 #
 # THE MIRRORED COPY. `swarm-allow-worker-egress` carries four values that
 # belong to the cluster: its pod range, its service range, the kube-dns Service
@@ -46,14 +53,34 @@ source "${REPO_ROOT}/kubernetes/cluster-network.sh"
 
 REQUIRE_LIVE=0
 CONTEXT=""
+NAMESPACE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --require-live) REQUIRE_LIVE=1; shift ;;
     --context)      CONTEXT="$2"; shift 2 ;;
-    -h|--help)      sed -n '2,36p' "$0"; exit 0 ;;
+    --context=*)    CONTEXT="${1#*=}"; shift ;;
+    # The cluster whose network is read, as apply.sh's --cluster: it replaces
+    # GKE_CLUSTER for this run, under the same two rules apply.sh applies.
+    --cluster)      GKE_CLUSTER="$2"; shift 2 ;;
+    --cluster=*)    GKE_CLUSTER="${1#*=}"; shift ;;
+    --namespace)    NAMESPACE="$2"; shift 2 ;;
+    --namespace=*)  NAMESPACE="${1#*=}"; shift ;;
+    -h|--help)      sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+case "${GKE_CLUSTER}" in
+  swarm-*) ;;
+  *) die "cluster '${GKE_CLUSTER}' does not start with 'swarm-'; refusing to read through it." ;;
+esac
+is_shared_resource "${GKE_CLUSTER}" \
+  && die "cluster '${GKE_CLUSTER}' is on the shared deny-list: it belongs to another team. Refusing."
+if [[ -n "${NAMESPACE}" ]]; then
+  case "${NAMESPACE}" in
+    "${TENANT_NAMESPACE_PREFIX}"?*) ;;
+    *) die "--namespace '${NAMESPACE}' is not a tenant namespace (${TENANT_NAMESPACE_PREFIX}*)" ;;
+  esac
+fi
 
 skip() {
   local reason="$1"
@@ -83,9 +110,20 @@ info "account  ${ACCOUNT}"
 KUBECTL="$(kubectl_bin)"
 KARGS=()
 if [[ -n "${CONTEXT}" ]]; then
-  if is_shared_resource "${CONTEXT##*_}" || ! kube_context_allowed "${CONTEXT}"; then
+  # A label common.sh accepts, or -- kubernetes/apply.sh's rule -- any label
+  # whose kubeconfig cluster entry is gcloud's name for exactly this cluster.
+  # Without the second form a context apply.sh had just written through would
+  # be refused here, and its apply reported as failed.
+  EXPECTED_ENTRY="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
+  ENTRY=""
+  if ! is_shared_resource "${CONTEXT##*_}" && ! kube_context_allowed "${CONTEXT}"; then
+    ENTRY="$("${KUBECTL}" config view -o \
+      "jsonpath={.contexts[?(@.name==\"${CONTEXT}\")].context.cluster}" 2>/dev/null || true)"
+  fi
+  if is_shared_resource "${CONTEXT##*_}" \
+      || { ! kube_context_allowed "${CONTEXT}" && [[ "${ENTRY}" != "${EXPECTED_ENTRY}" ]]; }; then
     die "context '${CONTEXT}' is not the swarm cluster's; refusing to read through it.
-       Expected 'swarm-${ENVIRONMENT}' or 'gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}'."
+       Expected 'swarm-${ENVIRONMENT}', '${EXPECTED_ENTRY}', or a context whose cluster entry is the latter."
   fi
   KARGS+=(--context "${CONTEXT}")
 else
@@ -111,8 +149,14 @@ jq -n \
   >"${WORK}/live.json"
 
 # Every copy, in every namespace: a stale policy in a tenant nobody is looking
-# at is still a tenant whose workers cannot resolve a name.
-if ! "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies --all-namespaces \
+# at is still a tenant whose workers cannot resolve a name. --namespace narrows
+# it to one, for the check after an apply.
+SCOPE=(--all-namespaces)
+if [[ -n "${NAMESPACE}" ]]; then
+  SCOPE=(--namespace "${NAMESPACE}")
+  info "scope    ${NAMESPACE} only"
+fi
+if ! "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies "${SCOPE[@]}" \
       --field-selector metadata.name=swarm-allow-worker-egress -o json \
       >"${WORK}/policies.json" 2>"${WORK}/policies.err"; then
   err "could not list the egress policies:"

@@ -769,3 +769,91 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
   # marker `make destroy` keys on even if a caller passes labels without it.
   user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
 }
+
+# ---------------------------------------------------------------------------
+# A merge or post-verdict worker action ended unmerged or unposted (the four
+# end causes; metrics.tf, worker_action_ended).
+#
+# TWO CONDITIONS, ONE POLICY, split the way the end causes are: _refused means
+# a condition for merging or posting was not met and nothing changed on the
+# forge; _failed means the action was allowed and the forge did not do it.
+# They are read differently (a stale head or a red check against a forge
+# outage), so each condition says which it is. Either way the workflow's last
+# step did not land and is never retried on its own, so ONE is enough, as for
+# a dead-lettered task -- and WARNING, as for a dead-lettered task: somebody
+# has to look. The one refusal that may be an attack, `spec_unverified` (an
+# upstream step's spec did not verify), is named in the documentation below.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "worker_action_ended" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-worker-action-ended"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "A merge or post-verdict was refused (merge_refused, verdict_refused)"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition (run 36655830725); both worker types, matching the
+      # metric's own filter.
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.worker_action_ended.name}\"",
+        "metric.label.end_cause = one_of(\"merge_refused\", \"verdict_refused\")",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "A merge or post-verdict failed at the forge (merge_failed, verdict_failed)"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.worker_action_ended.name}\"",
+        "metric.label.end_cause = one_of(\"merge_failed\", \"verdict_failed\")",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A merge or post-verdict step ended without merging its pull request or posting its review. Read the worker's ERROR line `worker action ended`: `end_cause` says which action and whether it was refused (`merge_refused`, `verdict_refused`: a condition was not met and nothing changed on the forge) or failed (`merge_failed`, `verdict_failed`: the action was allowed and the forge did not do it), and `code` says why. The task's `result_summary.merge.refusal` or `result_summary.verdict.refusal` carries the same code and message. These are never retried on their own. A `code` of `spec_unverified` means an upstream step's spec did not verify: read it as the spec-signature alert says (an agent rewrote a step the chain depends on, or a platform bug) and look at the named upstream task. See docs/merge-step.md section 6.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the spec-signature policy: this one must
+  # carry the marker `make destroy` keys on even if a caller passes labels
+  # without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}

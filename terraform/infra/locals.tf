@@ -152,6 +152,23 @@ locals {
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
     }
+    # TEMPORARY. Contract request 55, accepted by the owner 2026-10-07: the
+    # canary for contract request 53, claude-code on GKE Autopilot. Built from
+    # claude-code's own entry with only the backend changed, as the Python is,
+    # so the two cannot drift. GKE_AUTOPILOT means the Job loop below creates no
+    # Cloud Run Job for it; the scheduler creates a batch/v1 Job per attempt.
+    # Removed in the same change that switches claude-code itself to GKE.
+    "claude-code-gke" = {
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "GKE_AUTOPILOT"
+      provider       = "anthropic"
+      # claude-code's two env-var names, each mapped to the provider id (not a
+      # credential), written as a comprehension as indexer's are. A GKE pod
+      # projects none of them: its worker reads the secret itself.
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+    }
   }
 
   # --- the retired #295 profiles: no Job for any tenant ----------------------
@@ -196,10 +213,14 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
+  # claude-code-gke is claude-code on GKE (contract request 55, temporary): the
+  # canary must run the same model, or it measures a different agent. It has no
+  # Cloud Run Job, so it reaches its pod only through WORKER_MODELS.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
     "indexer"            = "claude-opus-5-5"
+    "claude-code-gke"    = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -578,6 +599,7 @@ locals {
       # docs/audits/2026-09-22/race-test-needs-a-write.md.
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
+      PLATFORM_OWNER          = var.platform_owner
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 

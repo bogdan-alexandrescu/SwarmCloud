@@ -483,6 +483,22 @@ variable "groups_impersonate_user" {
   default     = ""
 }
 
+variable "platform_owner" {
+  description = <<-EOT
+    The ONE person whose admin rights no other admin can remove (PLATFORM_OWNER,
+    docs/workspaces.md §6.5). swarm-api refuses to start if it is not one
+    person's address or if it also appears in admin_pool_users. Empty means no
+    owner is protected; admins and the last-admin rule still work.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.platform_owner == "" || (can(regex("^[^@,\\s]+@[^@,\\s]+$", var.platform_owner)) && !endswith(var.platform_owner, "gserviceaccount.com"))
+    error_message = "platform_owner is one person's email address, not a list and not a service account."
+  }
+}
+
 variable "admin_users" {
   description = <<-EOT
     Individual email addresses granted admin, as an ESCAPE HATCH.

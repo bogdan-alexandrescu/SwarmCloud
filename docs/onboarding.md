@@ -16,7 +16,10 @@ registry of token slots, the permission probe, resolution order R2) and
 [repo-index.md](repo-index.md) (the registered repository). The merge step's
 credential is in [merge-step.md](merge-step.md); frozen-contract requests are
 filed in [contract-change-requests.md](contract-change-requests.md), and this
-document only drafts one (§3.3).
+document only drafts one (§3.3). The checklist's other half, the person's own
+workspace (tenant, identity, namespace) that a locked-down provisioner creates
+during onboarding, before which no task or workflow starts, is designed in
+[workspaces.md](workspaces.md) (#847).
 
 What it settles, one line each:
 
