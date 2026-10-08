@@ -16,6 +16,10 @@
 //   * the grants are failures first, Verify POSTs and prints each failure's
 //     copy inline, the write test is said to be not offered;
 //   * not connected: Connect GitHub, and no GitHub-reading route is called;
+//   * connected but installed nowhere (#780, 2026-10-08): the notice says so
+//     with Install on <login> and Install on an organisation…; mixed owners
+//     get an Install button per uninstalled row; Refresh and returning to the
+//     tab read the owners again;
 //   * Members (admin) lists states and names; a non-admin is told so;
 //   * nothing token-shaped reaches the DOM.
 //
@@ -182,7 +186,7 @@ describe('owners (chooser A, left)', () => {
     expect(visible(owner('octo-dev'))).toContain('your account')
     expect(visible(owner('example-org'))).toContain('2 chosen')
     expect(within(owner('example-lab')).getByRole('button', { name: 'Enable' })).toBeTruthy()
-    expect(within(owner('example-new')).getByRole('link', { name: 'Install on GitHub' }).getAttribute('href')).toBe(
+    expect(within(owner('example-new')).getByRole('link', { name: 'Install on example-new' }).getAttribute('href')).toBe(
       'https://github.com/apps/swarmcloud/installations/new',
     )
     expect(visible(owner('example-new'))).toContain('not installed')
@@ -384,6 +388,111 @@ describe('not connected', () => {
     expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeTruthy()
     expect(screen.queryByText('Choose repositories')).toBeNull()
     expect(calls.map((c) => c.url)).toEqual(['/v1/access'])
+  })
+})
+
+const APP_INSTALL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+
+/** What GET /v1/access/orgs answered live on 2026-10-08: the account, installed nowhere. */
+const NOWHERE = {
+  tenant_id: 'eng',
+  orgs_listed: true,
+  install_url: APP_INSTALL,
+  owners: [
+    {
+      owner: 'octo-dev',
+      owner_type: 'User',
+      installation_id: null,
+      repository_selection: null,
+      install_state: 'not_installed',
+      sso: 'unknown',
+      enabled: false,
+      install_url: APP_INSTALL,
+    },
+  ],
+}
+
+const notice = () => document.querySelector('section.ac-install') as HTMLElement | null
+
+describe('connected but not installed (#780)', () => {
+  it('says plainly the App is installed nowhere, and offers Install on the account and on an organisation', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: NOWHERE }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const box = notice()
+    expect(box).not.toBeNull()
+    expect(visible(box)).toContain(
+      "You're connected as @octo-dev, but SwarmCloud Saga isn't installed anywhere yet. Install it on the accounts and repositories you want SwarmCloud to use.",
+    )
+    const mine = within(box as HTMLElement).getByRole('link', { name: 'Install on octo-dev' })
+    expect(mine.getAttribute('href')).toBe(APP_INSTALL)
+    expect(mine.className).toContain('is-primary')
+    expect(within(box as HTMLElement).getByRole('link', { name: 'Install on an organisation…' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(visible(box)).toContain(
+      "Organisations you don't see (for example your company's) appear here after the App is installed there; if you're not an owner, GitHub sends the owners a request.",
+    )
+    // The row itself offers Install, and the right column says why it is empty.
+    expect(within(owner('octo-dev')).getByRole('link', { name: 'Install on octo-dev' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(screen.getByText('Nothing to list until the App is installed')).toBeTruthy()
+    // Authorized and installed are told apart in one line.
+    expect(visible(document.querySelector('.ac-authz'))).toContain('Authorized is not installed')
+  })
+
+  it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
+    const mixed = {
+      ...NOWHERE,
+      owners: [
+        { ...NOWHERE.owners[0], installation_id: 9, repository_selection: 'all', install_state: 'installed', install_url: null },
+        { ...NOWHERE.owners[0], owner: 'example-co', owner_type: 'Organization' },
+      ],
+    }
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: mixed }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    expect(notice()).toBeNull()
+    expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
+    expect(within(owner('octo-dev')).queryByRole('link', { name: /Install/ })).toBeNull()
+    expect(visible(owner('example-co'))).toContain('not installed')
+    expect(within(owner('example-co')).getByRole('link', { name: 'Install on example-co' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(screen.getByText('No owner enabled yet')).toBeTruthy()
+  })
+
+  it('reads the owners again on Refresh and when the window regains focus', async () => {
+    let installed = false
+    const calls = serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') {
+        return {
+          status: 200,
+          body: installed ? { ...NOWHERE, owners: [{ ...NOWHERE.owners[0], installation_id: 9, install_state: 'installed', install_url: null }] } : NOWHERE,
+        }
+      }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const reads = () => calls.filter((c) => c.method === 'GET' && c.url === '/v1/access/orgs').length
+    expect(reads()).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(reads()).toBe(2))
+    // Back from GitHub's install page: the tab regains focus.
+    installed = true
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(reads()).toBe(3))
+    await waitFor(() => expect(notice()).toBeNull())
+    expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
+    // Focus and visibility fire together on one return: one read, not two.
+    document.dispatchEvent(new Event('visibilitychange'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(reads()).toBe(3)
   })
 })
 

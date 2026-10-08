@@ -27,7 +27,7 @@ What it settles, one line each:
   fine-grained PAT per org (A) as the fallback for an org whose admin will not
   install the App, and today's tenant token kept, unchanged, for what it does
   today (§1).
-* **One resumable state machine, six steps, served by one route and read by
+* **One resumable state machine, seven steps, served by one route and read by
   both the console and the plugin**; each step is "done" only when its probe
   says so, and each failure has a code and word-for-word recovery copy (§2).
 * **The worker gets the submitting user's credential by name**, never a value
@@ -190,8 +190,12 @@ read (a connection record, an enabled org, a grant, a probe result), never a
 flag a client sets, so a step that was done and stopped being true (a revoked
 authorisation, an uninstalled org) shows as such without anyone editing it.
 
-The steps, in order: `signed_in`, `github_connected`, `orgs_enabled`,
-`repos_chosen`, `access_verified`, `ready`. Each is in one of `todo`,
+The steps, in order: `signed_in`, `github_connected`, `app_installed`,
+`orgs_enabled`, `repos_chosen`, `access_verified`, `ready`. `app_installed`
+was added on 2026-10-08 (#780) after the owner connected GitHub, authorised
+the App, never installed it, and found an Access page with no orgs and no
+explanation: authorising the App (Connect) and installing it are two acts at
+GitHub, and only an installation lets SwarmCloud list an org. Each is in one of `todo`,
 `in_progress`, `done`, `failed` (with a code from §2.3) or `stale` (done once,
 its evidence older than its re-verification interval). The "next" step is the
 first that is not `done`; the plugin resumes there and the console opens there.
@@ -202,6 +206,7 @@ first that is not `done`; the plugin resumes there and the console opens there.
 |---|---|---|---|
 | `signed_in` | the caller has a verified Google identity and a resolved tenant | the platform's own tenant resolution (per registered group, with `x-goog-user-project`); no forge call | none here: an unresolved tenant is the sign-in's error |
 | `github_connected` | a connection record for this user is `active`, with `forge_login` read from GitHub | `GET /user` with the new token: the login, the account id, and for a PAT the `X-OAuth-Scopes` and `github-authentication-token-expiration` headers; one call | `AUTHORISATION_DENIED`, `AUTHORISATION_EXPIRED`, `REFRESH_FAILED`, `CLASSIC_PAT_BLOCKED` |
+| `app_installed` | the SwarmCloud GitHub App is installed on at least one owner the person reaches; done without a check for a connection that is a token rather than the App | an owner the person enabled was installed when enabled, so it answers with no forge call; otherwise `GET /user/installations` (one refresh of the person's token, the read Work › Access makes) | `FORGE_UNREACHABLE`; with no installation the step is `todo`, offering the App's install page |
 | `orgs_enabled` | at least one owner (the user's account or an org) is enabled and its installation is reachable | `GET /user/installations` paged at 100 per page until a short page, plus `GET /user/orgs` to show orgs with no installation; each owner gets `installed`, `requested` or `not_installed` | `ORG_APPROVAL_PENDING`, `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED`, `FINE_GRAINED_PAT_PENDING` |
 | `repos_chosen` | at least one repository is granted, each `read` or `write`, each registered | `GET /user/installations/{installation_id}/repositories` paged (100 per page, `page` until a short page, served to the chooser one page at a time with a server-side search); a typed `owner/repo` is read once with `GET /repos/{owner}/{repo}` | `REPO_NOT_INSTALLED`, `REPO_ARCHIVED`, `SSO_NOT_AUTHORISED` |
 | `access_verified` | every granted repository passed the checks its mode needs | clone: the smart-HTTP `upload-pack` advertisement (a GET of `info/refs?service=git-upload-pack`); push (write grants): the `receive-pack` advertisement plus `permissions.push` on `GET /repos/{owner}/{repo}`; pull request (write grants): the installation's `pull_requests: write` permission and the same push bit; all are reads, as the probe's are today (`apps/swarm-api/swarm_api/forge.py::git_basic_headers`). An optional write test creates and deletes one branch (decision D6) | `PERMISSION_MISSING`, `SSO_NOT_AUTHORISED`, `REPO_NOT_INSTALLED`, `FORGE_UNREACHABLE` |
@@ -737,8 +742,9 @@ is printed nowhere else (as `cmd_account_add` does).
   refused. Change this any time with `uv run sc access` or Work › Access.
 ```
 
-The transcript is the console's flow step for step: the same six step ids,
-the same codes, the same copy. A task submitted afterwards for
+The transcript is the console's flow step for step: the same step ids
+(`app_installed`, added later, is `[x]` once an installation exists), the same
+codes, the same copy. A task submitted afterwards for
 `example-org/example-other`, which was not granted, is refused at submission
 with `REPOSITORY_NOT_GRANTED` and "choose it under Access".
 

@@ -787,3 +787,50 @@ def test_register_reads_as_the_caller_and_names_their_slot(api, github, db):
     assert refused.status_code == 403
     assert refused.json()["detail"]["cause"] == "REPO_NOT_INSTALLED"
     assert refused.json()["detail"]["token_scope"] == "user"
+
+
+# -- the checklist's app_installed (#780, 2026-10-08) --------------------------------
+
+
+def _install_step(api: TestClient, user: str = "alice") -> dict[str, Any]:
+    answer = api.get("/v1/onboarding", headers=auth_header(user))
+    assert answer.status_code == 200, answer.text
+    view = answer.json()
+    return next(s for s in view["steps"] if s["step"] == "app_installed") | {
+        "next_step": view["next_step"]}
+
+
+def test_connected_but_installed_nowhere_is_the_checklists_next_step(api, github):
+    github.installs = []
+    _connect(api, github)
+    installed = _install_step(api)
+    assert installed["state"] == "todo" and installed["next_step"] == "app_installed"
+    assert installed["evidence"]["installed"] == []
+    assert installed["evidence"]["not_installed"] == [LOGIN, ORG, "other-org"]
+    assert installed["evidence"]["install_url"] == \
+        "https://github.com/apps/swarmcloud/installations/new"
+
+
+def test_an_installation_found_at_github_completes_app_installed(api, github):
+    _connect(api, github)
+    installed = _install_step(api)
+    assert installed["state"] == "done" and installed["evidence"]["source"] == "github"
+    assert set(installed["evidence"]["installed"]) == {LOGIN, ORG}
+
+
+def test_an_enabled_owner_answers_app_installed_with_no_github_read(api, github):
+    _connect(api, github)
+    _enable(api)
+    calls = len(github.calls)
+    installed = _install_step(api)
+    assert installed["state"] == "done" and installed["evidence"]["source"] == "enabled"
+    assert installed["evidence"]["installed"] == [ORG]
+    assert len(github.calls) == calls, "the enabled owner answered; GitHub was not asked"
+
+
+def test_an_installation_list_github_did_not_answer_is_not_installed_nowhere(api, github):
+    _connect(api, github)
+    github.down.add("/user/installations")
+    installed = _install_step(api)
+    assert installed["state"] == "in_progress"
+    assert installed["code"] == "FORGE_UNREACHABLE"

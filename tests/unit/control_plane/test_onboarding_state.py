@@ -3,13 +3,17 @@
 
 What is held here:
 
-  * each of the six steps' state -- todo, in_progress, done, failed, stale --
+  * each of the seven steps' state -- todo, in_progress, done, failed, stale --
     from fixture records: the token record the caller acts through (their
     own user slot, else the tenant token) and its probe, OB0b's SSO and org
     evidence, the tenant's registrations, and the token x repository checks;
   * every failure code serves §2.3's recovery copy WORD FOR WORD, read from
     docs/onboarding.md itself, with {owner}, {repo}, {url} and {login} filled;
   * a read that did not come back is FORGE_UNREACHABLE, never a failure;
+  * `app_installed` (#780, 2026-10-08): an App connection installed nowhere
+    is `todo` with the install page and the rest waits for it, an unread
+    installation list is in progress, never "installed nowhere", and a
+    token connection needs no installation;
   * tenant isolation: a caller sees only their own tenant's records, and
     never another member's user slot;
   * the route is read-only: a GET writes nothing.
@@ -120,9 +124,11 @@ def checks(record: GitTokenRecord, reg: dict, *, at: datetime = T0 - timedelta(h
     }
 
 
-def run(records=(), pairs=(), regs=(), *, caller: Caller = ALICE, tenant_lists_git=True) -> dict:
+def run(records=(), pairs=(), regs=(), *, caller: Caller = ALICE, tenant_lists_git=True,
+        installations=None) -> dict:
     return derive(caller, records=list(records), pair_docs=list(pairs),
-                  registrations=list(regs), tenant_lists_git=tenant_lists_git, now=T0)
+                  registrations=list(regs), tenant_lists_git=tenant_lists_git, now=T0,
+                  installations=installations)
 
 
 def step(view: dict, name: str) -> dict:
@@ -167,10 +173,10 @@ def test_the_copy_is_filled_and_never_leaves_a_placeholder() -> None:
 # -- the steps and the next step ----------------------------------------------------
 
 
-def test_the_steps_are_the_six_of_section_2_1_in_order() -> None:
+def test_the_steps_are_the_seven_of_section_2_1_in_order() -> None:
     view = run()
     assert [s["step"] for s in view["steps"]] == [
-        "signed_in", "github_connected", "orgs_enabled", "repos_chosen", "access_verified",
+        "signed_in", "github_connected", "app_installed", "orgs_enabled", "repos_chosen", "access_verified",
         "ready"]
     assert set(onboarding.STATES) == {"todo", "in_progress", "done", "failed", "stale"}
 
@@ -178,8 +184,9 @@ def test_the_steps_are_the_six_of_section_2_1_in_order() -> None:
 def test_a_tenant_with_no_git_token_is_signed_in_and_nothing_else() -> None:
     view = run(tenant_lists_git=False)
     assert states(view) == {
-        "signed_in": "done", "github_connected": "todo", "orgs_enabled": "todo",
-        "repos_chosen": "todo", "access_verified": "todo", "ready": "todo"}
+        "signed_in": "done", "github_connected": "todo", "app_installed": "todo",
+        "orgs_enabled": "todo", "repos_chosen": "todo", "access_verified": "todo",
+        "ready": "todo"}
     assert view["next_step"] == "github_connected"
     assert view["complete"] is False
     signed = step(view, "signed_in")
@@ -462,6 +469,81 @@ def test_checks_of_another_token_or_tenant_are_not_this_callers() -> None:
     verified = step(run([record], [other, foreign], [api]), "access_verified")
     assert verified["state"] == "in_progress"
     assert verified["evidence"]["repositories"][0]["result"] == "pending"
+
+
+# -- app_installed ------------------------------------------------------------------
+
+INSTALL_URL = "https://github.com/apps/swarmcloud-saga/installations/new"
+
+
+def app_token(**fields) -> GitTokenRecord:
+    return user_token(kind="app_user", forge_login="example-user", **fields)
+
+
+def test_a_token_connection_needs_no_installation() -> None:
+    installed = step(run([tenant_token()]), "app_installed")
+    assert installed["state"] == "done"
+    assert installed["evidence"]["needed"] is False
+    assert step(run([user_token()]), "app_installed")["evidence"]["needed"] is False
+
+
+def test_an_app_connection_installed_nowhere_is_todo_with_the_install_page() -> None:
+    found = {"read": True, "source": "github", "installed": [],
+             "not_installed": ["example-user"], "install_url": INSTALL_URL}
+    view = run([app_token()], installations=found)
+    installed = step(view, "app_installed")
+    assert installed["state"] == "todo" and installed["code"] is None
+    assert installed["evidence"]["install_url"] == INSTALL_URL
+    assert installed["evidence"]["login"] == "example-user"
+    assert installed["evidence"]["not_installed"] == ["example-user"]
+    assert view["next_step"] == "app_installed"
+    # Nothing can be enabled or chosen before an installation exists.
+    for name in ("orgs_enabled", "repos_chosen", "access_verified"):
+        assert step(view, name)["evidence"] == {"waiting_for": "app_installed"}, name
+    assert step(view, "ready")["evidence"] == {"waiting_for": "app_installed"}
+
+
+def test_an_app_connection_installed_somewhere_is_done() -> None:
+    found = {"read": True, "source": "github", "installed": ["example-user"],
+             "not_installed": ["example-org"], "install_url": INSTALL_URL}
+    view = run([app_token()], installations=found)
+    assert states(view)["app_installed"] == "done"
+    assert step(view, "orgs_enabled")["evidence"].get("waiting_for") is None
+    assert view["next_step"] != "app_installed"
+
+
+def test_an_unread_installation_list_is_in_progress_never_installed_nowhere() -> None:
+    view = run([app_token()], installations=None)
+    assert states(view)["app_installed"] == "in_progress"
+    assert step(view, "orgs_enabled")["evidence"].get("waiting_for") is None
+    unreachable = {"read": False, "unreachable": True, "install_url": INSTALL_URL}
+    installed = step(run([app_token()], installations=unreachable), "app_installed")
+    assert installed["state"] == "in_progress"
+    assert installed["code"] == "FORGE_UNREACHABLE"
+    assert installed["copy"] == onboarding.COPY["FORGE_UNREACHABLE"]
+    busy = {"read": False, "unreachable": False, "error": "conflict"}
+    assert step(run([app_token()], installations=busy), "app_installed")["code"] is None
+
+
+def test_the_read_asks_for_installations_only_for_an_active_app_connection(db) -> None:
+    seed_tenant(db, "eng", credentials=("git",))
+    asked: list[int] = []
+
+    def ask() -> dict:
+        asked.append(1)
+        return {"read": True, "installed": [], "install_url": INSTALL_URL}
+
+    plain = tenant_token()
+    db.docs[f"{COLLECTION}/{plain.token_id}"] = plain.to_firestore()
+    tenant = onboarding.Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
+                               credentials=["git"], created_at=T0)
+    view = onboarding.read(db, ALICE, tenant=tenant, now=T0, installations=ask)
+    assert asked == [] and states(view)["app_installed"] == "done"
+
+    mine = app_token()
+    db.docs[f"{COLLECTION}/{mine.token_id}"] = mine.to_firestore()
+    view = onboarding.read(db, ALICE, tenant=tenant, now=T0, installations=ask)
+    assert asked == [1] and states(view)["app_installed"] == "todo"
 
 
 # -- the route ----------------------------------------------------------------------

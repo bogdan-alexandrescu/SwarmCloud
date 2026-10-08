@@ -5,7 +5,7 @@ import { ConnectButton, connectionOf } from './GitHubConnect'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import type { OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState } from './types'
+import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
@@ -16,8 +16,13 @@ import './styles/onboarding.css'
  *
  *   * `SetupCard`, on Overview, where a person already lands -- shown while
  *     the checklist is not complete, gone by itself once it is (Entry A);
- *   * `OnboardingScreen`, Work › Setup, the same six steps as a page the nav
+ *   * `OnboardingScreen`, Work › Setup, the same steps as a page the nav
  *     reaches whether or not the card was hidden.
+ *
+ * INSTALL THE APP (#780, 2026-10-08) is its own step, between Connect GitHub
+ * and the orgs: connecting authorises the App, installing it is a second act
+ * at GitHub, and a person who did only the first saw an Access page with
+ * nothing on it. Its action is the App's install page itself.
  *
  * DERIVED, NEVER SET (§2.1). Every state here is what the server derived on
  * this read; nothing on this page marks a step done. A step's sub-line is its
@@ -40,6 +45,7 @@ const SUBMIT_TASK = 'work/new'
 export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
   signed_in: 'Sign in',
   github_connected: 'Connect GitHub',
+  app_installed: 'Install the App',
   orgs_enabled: 'Enable orgs',
   repos_chosen: 'Choose repositories',
   access_verified: 'Verify access',
@@ -102,6 +108,15 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       if (view.kind === 'own-token') return `your own stored token${view.login !== null ? ` (@${view.login})` : ''}`
       if (view.kind === 'tenant') return `tasks act through the tenant token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
       return 'no GitHub account connected'
+    }
+    case 'app_installed': {
+      const inst = ev as Partial<AppInstalledEvidence>
+      if (inst.needed === false) return 'not needed: this connection is a token, not the App'
+      if (inst.read !== true) return 'installations not read yet'
+      const on = Array.isArray(inst.installed) ? inst.installed : []
+      if (on.length > 0) return `installed on ${on.join(', ')}`
+      const login = str(inst.login)
+      return `${login !== null ? `connected as @${login}, but ` : ''}SwarmCloud Saga isn't installed anywhere yet`
     }
     case 'orgs_enabled': {
       const owners = rows(ev.owners)
@@ -174,6 +189,23 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
     const view = connectionOf(doc)
     return <ConnectButton label={view.kind === 'app' ? 'Reconnect' : 'Connect GitHub'} />
   }
+  if (step.step === 'app_installed') {
+    const url = str(step.evidence?.install_url)
+    const waiting = step.state === 'todo' && step.evidence?.waiting_for !== undefined
+    if (waiting) return null
+    return (
+      <span className="ob-acts">
+        {step.state === 'todo' && url !== null && url.startsWith('https://github.com/') && (
+          <ButtonLink kind={doc.next_step === step.step ? 'primary' : 'secondary'} size="sm" href={url} target="_blank" rel="noreferrer">
+            Install the App
+          </ButtonLink>
+        )}
+        <Button size="sm" kind="ghost" onClick={reload}>
+          Re-check
+        </Button>
+      </span>
+    )
+  }
   const label = ACCESS_ACTION[step.step]
   if (label === undefined || (step.state === 'todo' && step.evidence?.waiting_for !== undefined)) return null
   return (
@@ -225,6 +257,12 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
+                <p className="ur-hint ob-help">
+                  Connecting authorised the App to act as you; installing it on your account or an org is what lets it
+                  reach that owner's repositories.
+                </p>
+              )}
             </div>
             <div className="ob-step-act">
               <StepAction step={s} doc={doc} reload={reload} />
@@ -320,8 +358,8 @@ export function OnboardingScreen() {
         </span>
       </PageHead>
       <p className="ur-sub">
-        Connect GitHub as yourself, enable the orgs SwarmCloud may reach, choose the repositories it may read or write,
-        and verify that it can. Each step is checked again on every read; nothing here is marked done by hand.
+        Connect GitHub as yourself, install the App where your repositories are, enable the orgs SwarmCloud may reach,
+        choose the repositories it may read or write, and verify that it can. Each step is checked again on every read; nothing here is marked done by hand.
       </p>
       <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your setup checklist" onRetry={doc.reload} lines={6}>
         {(d) =>
