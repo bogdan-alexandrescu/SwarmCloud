@@ -62,16 +62,22 @@ allow-list, so a field the broker adds tomorrow is not served by default.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Literal
+
+from .errors import Unpageable
+
+log = logging.getLogger(__name__)
 
 Viewer = Literal["owner", "borrower", "platform"]
 
 #: The ways a recorded hold ends, as the broker writes them. Anything else is
 #: served as no end at all rather than passed through. `swapped`: the attempt
-#: moved to another account in one transaction (S13/S14).
-_ENDS = ("released", "unusable", "expired", "swapped")
+#: moved to another account in one transaction (S13/S14). `account_removed`:
+#: the account was removed while the hold was open.
+_ENDS = ("released", "unusable", "expired", "swapped", "account_removed")
 
 #: Why an attempt moved, as the broker writes it (`quota_broker.accounts`).
 _SWAP_REASONS = ("exhausted", "drain", "unusable")
@@ -379,6 +385,13 @@ def own_page(
     page. A page with no row of the borrower's at all is followed (at most
     `OWN_PAGE_SCAN_MAX` pages) until one has, because there is no cursor to hand
     back otherwise; past that bound the scan stops, says so, and offers none.
+
+    A LAST OWN ROW WITH NO READABLE `assigned_at` is refused (`Unpageable`, a
+    500, logged at ERROR) rather than served with `next_cursor: None`. There is
+    no instant to rebuild the cursor from, and a page with no cursor reads as
+    the end of the history: every span past it would silently go missing. The
+    broker serves `assigned_at` as an ISO instant on every row it writes, so
+    reaching this means a record was written without one.
     """
     rows = [r for r in payload.get("spans") or [] if isinstance(r, dict)]
     broker_cursor = payload.get("next_cursor")
@@ -409,12 +422,23 @@ def own_page(
     kept = rows[: last + 1]
     stamp = kept[-1].get("assigned_at")
     at = _instant(stamp)
+    if at is None or not isinstance(stamp, str):
+        # The row's TYPE only: its value is a record field, not this log's.
+        log.error(
+            "a borrower's history page ends at a span with no readable "
+            "assigned_at; refusing the page rather than ending the history there",
+            extra={"assigned_at_type": type(stamp).__name__},
+        )
+        raise Unpageable(
+            "a span on this page carries no readable start instant, so the next "
+            "page cannot be placed; the history is refused rather than cut short"
+        )
     n = sum(1 for r in kept if _instant(r.get("assigned_at")) == at)
     from_at, from_skip = _cursor_skip(cursor)
     if from_at is not None and from_at == at:
         n += from_skip
     served["spans"] = kept
-    served["next_cursor"] = f"{stamp}|{n}" if isinstance(stamp, str) and stamp else None
+    served["next_cursor"] = f"{stamp}|{n}"
     return served
 
 

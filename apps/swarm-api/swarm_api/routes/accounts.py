@@ -570,10 +570,14 @@ def _utc(raw: Any) -> datetime | None:
 
 
 def _check_range(raw: str | None, name: str, now: datetime) -> datetime | None:
-    """422 when `raw` parses to an instant outside the retained range.
+    """422 when `raw` is not an ISO 8601 instant, or is one outside the retained range.
 
-    An unparsable value is left to the broker, which names it. An instant whose
-    UTC conversion overflows (`0001-01-01T00:00:00+01:00`) is out of range.
+    An unparsable value is refused HERE, for every caller, before any broker
+    call: leaving it to the broker made the refusal depend on a second
+    service's parser and spent a broker round trip on a value this service can
+    already see is wrong. An instant whose UTC conversion overflows
+    (`0001-01-01T00:00:00+01:00`) is out of range. None only when `raw` is
+    absent.
     """
     if not raw:
         return None
@@ -585,7 +589,7 @@ def _check_range(raw: str | None, name: str, now: datetime) -> datetime | None:
     except OverflowError:
         raise ValidationFailed(f"`{name}` is outside the range the hold log retains") from None
     except ValueError:
-        return None
+        raise ValidationFailed(f"`{name}` is not an ISO 8601 instant") from None
     if not now - _HOLD_LOG_RETENTION - timedelta(days=1) <= value <= now + timedelta(days=1):
         raise ValidationFailed(f"`{name}` is outside the range the hold log retains")
     return value
