@@ -347,3 +347,63 @@ def api_store(db) -> Store:
 
 def minutes_ago(minutes: float) -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+
+# --------------------------------------------------------------------------
+# GitHub grants (#780 OB7, decision D4)
+# --------------------------------------------------------------------------
+
+#: The people the default `group_map` signs in, and the tenants a test puts
+#: them in: their groups' tenants and each one's personal fallback.
+GRANTED_MEMBERS = ("alice@saga.xyz", "bob@saga.xyz", "carol@saga.xyz", "root@saga.xyz")
+
+#: The GitHub repositories the suite's submissions name.
+TEST_REPOSITORIES = (
+    "saga-xyz/example", "saga-xyz/widgets", "saga-xyz/payments", "octo-org/widget-shop",
+    "acme/widgets", "bogdan-alexandrescu/SwarmCloud", "o/r",
+)
+
+
+def seed_grant(db: FakeFirestore, tenant_id: str, email: str, repository: str, *,
+               mode: str = "write") -> dict[str, Any]:
+    """The grant `AccessService.grant` stores for `email` on `owner/repo`.
+
+    Since OB7 a person's task on a GitHub repository is refused unless they
+    chose it under Access; a test about something else that submits on a
+    GitHub repository seeds the grant the person would hold."""
+    from swarm_api.access import grant_id_for
+    from swarm_api.forgeapp import GRANTS, user_hash
+    from swarm_api.repositories import repo_id_for
+
+    owner, repo = repository.split("/")
+    repo_id = repo_id_for(tenant_id, owner, repo)
+    doc = {
+        "tenant_id": tenant_id,
+        "user": email.strip().lower(),
+        "user_hash": user_hash(email),
+        "repo_id": repo_id,
+        "repository": repository,
+        "owner": owner.lower(),
+        "mode": mode,
+        "can_push": mode == "write",
+        "archived": False,
+        "granted_at": datetime.now(timezone.utc),
+        "granted_by": email.strip().lower(),
+        "checks": {},
+        "verified_at": None,
+    }
+    db.docs[f"{GRANTS}/{grant_id_for(tenant_id, email, repo_id)}"] = doc
+    return doc
+
+
+def grant_members(db: FakeFirestore, *repositories: str,
+                  tenants: tuple[str, ...] = ("eng", "research")) -> None:
+    """Every default member holds a write grant on each repository, in every
+    group tenant named and in their own personal tenant: the precondition of
+    a test that submits on GitHub and is about something other than grants."""
+    from swarm_common.identity import tenant_id_for_user
+
+    for email in GRANTED_MEMBERS:
+        for tenant_id in (*tenants, tenant_id_for_user(email)):
+            for repository in repositories:
+                seed_grant(db, tenant_id, email, repository)

@@ -139,3 +139,13 @@ def test_the_mock_still_refuses_issue(client, db):
     assert response.status_code == 422, response.text
     assert response.json()["detail"]["key"] == "issue"
     assert not _tasks(db)
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)
