@@ -366,21 +366,25 @@ def test_a_valid_workflow_still_builds():
     assert steps[1]["resource_class"] == "standard"
 
 
-def test_the_profiles_tool_answers_without_a_client_at_all():
+def test_the_profiles_tool_answers_when_the_cluster_cannot_be_reached():
     """The one tool that still works when the cluster cannot be reached.
 
     That is not a curiosity: it is exactly when someone is guessing at a profile
-    name, because every other tool is busy failing. `_RefusingClient` proves no
-    round trip happens.
+    name, because every other tool is busy failing. It asks the platform's
+    `/v1/runtimes` first (the bridge's copy is as old as the plugin, 2026-10-08)
+    and, when that fails, answers from the copy, labelled.
     """
     import json
 
     from swarm_mcp import server
 
-    client = _RefusingClient()
-    payload = json.loads(server._call(client, "swarm_profiles", {}))
-    assert client.calls == []
+    class _Unreachable:
+        def request(self, method, path, **kwargs):
+            raise SwarmError(f"{method} {path}: the API could not be reached")
+
+    payload = json.loads(server._call(_Unreachable(), "swarm_profiles", {}))
     assert {e["name"] for e in payload["profiles"]} == set(RUNNER_PROFILES)
+    assert payload["catalogue_source"].startswith("bridge copy")
 
 
 def test_the_profiles_tool_is_registered_and_takes_no_arguments():

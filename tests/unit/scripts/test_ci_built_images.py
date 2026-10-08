@@ -68,6 +68,7 @@ IMAGES = [
     "swarm-reconciler",
     "swarm-ui",
     "swarm-verify",
+    "workspace-apply",
 ]
 
 pytestmark = pytest.mark.skipif(
