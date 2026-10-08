@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
 
+from .refusals import validate_environment as validate_refusal_switches
+
 
 def _csv(name: str, default: str = "") -> tuple[str, ...]:
     raw = os.environ.get(name, default)
@@ -470,6 +472,9 @@ class ApiSettings:
                 "tenant from a verified Google ID token, and without one there is no "
                 "tenant to attribute work to. Remove the variable."
             )
+        # REFUSAL_<CODE> switches are read where each refusal is made
+        # (swarm_api.refusals); a misspelt one is refused here, at start.
+        validate_refusal_switches()
         admin_users = _csv("ADMIN_USERS")
         admin_pool_users = _csv("ADMIN_POOL_USERS")
         secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")

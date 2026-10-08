@@ -511,8 +511,18 @@ locals {
   # serves nothing yet, so it is not a link either.
   console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
 
+  # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
+  # A refusal added to swarm-api ships off; var.api_refusals turns one on.
+  # Rendered as a map merged in, not as KEY = lines, because the names come
+  # from the variable: swarm-api itself refuses to start on one that names no
+  # switch, which is the check scripts/lib/check-env-parity.sh cannot make here.
+  api_refusal_env = {
+    for code, on in var.api_refusals :
+    "REFUSAL_${trim(replace(upper(code), "/[^A-Z0-9]+/", "_"), "_")}" => on ? "on" : "off"
+  }
+
   service_env = {
-    "swarm-api" = merge(local.common_env, {
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
