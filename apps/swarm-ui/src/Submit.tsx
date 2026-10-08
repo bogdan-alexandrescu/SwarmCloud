@@ -302,10 +302,6 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   indexer: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
-  // claude-code on GKE Autopilot (contract request 55, temporary canary).
-  'claude-code-gke': [
-    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
-  ],
   // The two worker actions (contract requests 33 and 35, #295) start no
   // runner and take `input: {}`, so they are offered nothing. Listed, empty,
   // so check-contract-parity.sh sees every catalogue profile here.

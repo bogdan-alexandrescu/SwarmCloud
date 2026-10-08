@@ -60,10 +60,14 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
+<<<<<<< HEAD
 | 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | proposed (owner 2026-10-07: not accepted for now) |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 55 |
+=======
+| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
+>>>>>>> origin/main
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
-| 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | ACCEPTED 2026-10-07, applied; temporary, removed when `claude-code` moves to GKE |
+| 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 
 ---
 
@@ -9136,7 +9140,22 @@ writer beside the scheduler, which invariant 2 exists to prevent.
 
 ## 53. `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s
 
-**Status:** ACCEPTED by the owner 2026-10-07, with conditions:
+**Status:** APPLIED 2026-10-08. The owner switched `claude-code` to
+`Backend.GKE_AUTOPILOT` after request 55's canary passed: 5/5 `claude-code-gke`
+steps ran on GKE Autopilot with DISPATCHED -> RUNNING p50 ~23 s, max 44 s
+(against Cloud Run's p50 128 s / p90 212 s), on `claude-opus-5-5`, and opened
+their pull requests. The same change removed the canary (request 55). How the
+conditions below were met: (1) MODEL reaches the GKE pod
+(`GkeJobDispatcher._manifest`, via `profile_model`) and the workspace is sized
+for the disk `emptyDir`; (2) `pool_limits.backends.GKE_AUTOPILOT` is 100 in
+`terraform/environments/dev/dev.tfvars`; (3) the tenants' claude-code Cloud Run
+Jobs are kept, idle, until 2026-10-15 by `cloud_run_fallback_profiles` in
+`terraform/infra/locals.tf` -- without it the Job loop, which makes a Job only
+for a `CLOUD_RUN_JOB` profile, would have destroyed them with the switch.
+Rolling back while they exist is one line: the backend back to
+`CLOUD_RUN_JOB`.
+
+Accepted by the owner 2026-10-07, with conditions:
 1. Land the follow-ups first: MODEL is passed to GKE pods, and the workspace
    is sized for the 4Gi disk emptyDir.
 2. Raise the `GKE_AUTOPILOT` backend ceiling to **100**. us-central1 has 2,990
@@ -9505,7 +9524,13 @@ tenant token as a fallback for a user without a grant (decision D4).
 
 ## 55. `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53
 
-**Status:** ACCEPTED by the owner 2026-10-07, and applied in the same change
+**Status:** REMOVED 2026-10-08 (the switch replaced it): request 53 moved
+`claude-code` itself to `Backend.GKE_AUTOPILOT` after this canary passed 5/5,
+and the same change deleted the `claude-code-gke` entry and every mirror of it
+(Terraform, the console, the worker's and the API's stream tables, the docs).
+`tests/unit/control_plane/test_claude_code_on_gke.py` holds that it is gone.
+
+Accepted by the owner 2026-10-07, and applied in the same change
 that files it. TEMPORARY: the entry is removed in the same change that
 switches `claude-code` itself to `Backend.GKE_AUTOPILOT` (request 53's last
 step), or, if request 53 is withdrawn after the canary, in the change that

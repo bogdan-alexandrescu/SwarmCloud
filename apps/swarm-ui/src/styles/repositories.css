@@ -28,7 +28,9 @@
 .ur-sub { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); margin: 0; }
 .ur-subh { font-size: var(--t-meta); font-weight: 600; margin: 6px 0 0; }
 .ur-rows { display: flex; flex-direction: column; min-width: 0; }
-.ur-dim { opacity: .55; }
+.ur-held { display: contents; }
+.ur-held.ur-dim { display: block; opacity: .55; }
+.ur-reading-why { margin: 0 0 var(--ctl-s2); font-size: var(--t-micro); color: var(--text-dim); }
 .ur-stale-why { margin: 0 0 var(--ctl-s2); font-size: var(--t-micro); color: var(--s-warn); }
 
 /* ---- screen 2, list B: one card per repository ----------------------------- */

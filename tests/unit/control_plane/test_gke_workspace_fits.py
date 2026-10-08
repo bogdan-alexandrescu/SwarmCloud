@@ -154,9 +154,9 @@ def test_tmp_holds_the_largest_checkpoint_archive_the_worker_builds():
     assert standard.tmp_gib * GIB >= defaults["max_checkpoint_bytes"]
 
 
-@pytest.mark.parametrize("profile_name", ["claude-code"] + sorted(
+@pytest.mark.parametrize("profile_name", sorted({"claude-code"} | {
     name for name, p in RUNNER_PROFILES.items() if resolve_backend(p) is Backend.GKE_AUTOPILOT
-))
+}))
 def test_no_gke_pod_asks_autopilot_for_more_disk_than_it_admits(tenant, profile_name):
     """Autopilot refuses a general-purpose pod requesting over 10 GiB of
     ephemeral storage, so a larger number would be a pod that never starts."""

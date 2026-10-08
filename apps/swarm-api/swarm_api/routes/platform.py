@@ -166,7 +166,7 @@ def runtimes(
     else -- no image, no command, no resource spec, no backend. That is what
     stops an authenticated caller turning the swarm into arbitrary compute, and
     it is not negotiable. Its cost is that the name is the caller's entire
-    vocabulary: `claude-code` carries no hint that it runs on Cloud Run Jobs,
+    vocabulary: `claude-code` carries no hint that it runs on GKE Autopilot,
     sizes to `standard`, times out at two hours, or accepts a subscription token
     INSTEAD of an API key. Before this route the only way to learn any of that
     was to read the frozen catalogue in the repository, which someone calling

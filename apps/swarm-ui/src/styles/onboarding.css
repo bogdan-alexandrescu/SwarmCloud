@@ -79,6 +79,14 @@
 .ac-member { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
 .ac-member:first-child { border-top: 0; }
 
+/* ---- connected, installed nowhere (#780, 2026-10-08) ------------------------ */
+.ac-install { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--s-warn); border-left-width: 3px; border-radius: var(--r-ctl); background: var(--s-warnb); color: var(--text); }
+.ac-install-h { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ac-install-h b { font-weight: 600; }
+.ac-install .ur-hint { margin: 0; }
+.ac-authz { margin: 0 0 10px; }
+.ob-help { margin: 2px 0 0; }
+
 /* ---- narrower screens, and the 390px phone frame ---------------------------- */
 @media (max-width: 1079px) {
   .ac-chooser { grid-template-columns: minmax(0, 1fr); }
@@ -98,4 +106,5 @@
   .ac-member .ac-cell-l { display: inline; min-width: 84px; }
   .ac-search { flex-basis: 100%; }
   .ac-typed-row > * { flex-basis: 100%; }
+  .ac-install .c-btn, .ac-owner-acts .c-btn { min-height: 44px; }
 }

@@ -250,9 +250,10 @@ t_pass "baseline captured"
 # EVERY BACKEND, NOT EVERY PROFILE.
 #
 # This suite ran one `mock` task and called the platform proven. `mock`
-# resolves to CLOUD_RUN_JOB, and so do claude-code, codex and generic --
-# `browser` is the ONLY profile whose resolved backend is GKE_AUTOPILOT, a
-# different API, a different permission and a different authorisation model.
+# resolves to CLOUD_RUN_JOB, and so do codex and generic -- `browser` was the
+# ONLY profile whose resolved backend was GKE_AUTOPILOT (claude-code joined it
+# with contract request 53, 2026-10-08), a different API, a different
+# permission and a different authorisation model.
 # So a green smoke test said nothing whatsoever about half the dispatch paths.
 #
 # It said nothing for two days while GKE was totally broken: seven browser

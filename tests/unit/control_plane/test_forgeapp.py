@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastapi.testclient import TestClient
 
 from swarm_api import forgeapp
+from swarm_api.access import AccessService
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -302,7 +303,11 @@ def _app(db, tokens, group_map, objects, clock, github, slots, app_secret, *,
         send=github,
         now=clock,
     )
-    return TestClient(create_app(ctx, forge_app=service), raise_server_exceptions=False)
+    # The checklist's `app_installed` asks the access service as the person
+    # (#780): over the same fake, so no read here ever reaches GitHub.
+    reads = AccessService(db, service, send=github, now=clock)
+    return TestClient(create_app(ctx, forge_app=service, access_service=reads),
+                      raise_server_exceptions=False)
 
 
 @pytest.fixture

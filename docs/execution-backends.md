@@ -11,7 +11,9 @@
 > the Cloud Run choice is better served here than by the feature we set out to use.
 
 Two backends. Cloud Run Jobs runs almost everything; GKE Autopilot exists for
-the three things Cloud Run cannot do.
+the three things Cloud Run cannot do, and, since contract request 53
+(2026-10-08), for `claude-code`, the one thing Cloud Run did too slowly: start
+it (§4).
 
 ---
 
@@ -62,7 +64,7 @@ backend.
 |---|---|---|---|---|
 | `mock` | `agent-runtime-base` | standard | Cloud Run Job | none |
 | `generic` | `agent-runtime-base` | standard | Cloud Run Job | none |
-| `claude-code` | `agent-runtime-base` | standard | Cloud Run Job | anthropic |
+| `claude-code` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 53; its Cloud Run Jobs kept, idle, until 2026-10-15 as the rollback) | anthropic |
 | `codex` | `agent-runtime-base` | standard | Cloud Run Job | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
 
@@ -151,7 +153,21 @@ Reserved for:
    `emptyDir` at `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._manifest`; this said 1 GiB
    until 2026-10-02);
 2. **GPU work**;
-3. **anything above 32 GiB**.
+3. **anything above 32 GiB**;
+4. **`claude-code`, for its start latency** (contract request 53, applied
+   2026-10-08). On Cloud Run its DISPATCHED -> STARTING wait was p50 128 s /
+   p90 212 s over 874 attempts, 90-95 % of it in Cloud Run's own provisioning
+   and all of it lease-held; contract request 55's canary ran it on Autopilot
+   for five real steps at DISPATCHED -> RUNNING p50 ~23 s, max 44 s. That is
+   the exception to §1, not a reversal of it: claude-code now carries the
+   node-side ways to lose an attempt in the table above that extended run time
+   does not suppress (auto-repair, pressure eviction), and mandatory periodic
+   checkpointing is what makes them cost minutes rather than the run, not what
+   makes them free. Its workspace is a disk `emptyDir` here, not tmpfs, so a
+   run is bounded by the pod's ephemeral-storage limit instead of its memory.
+   Rolling back while the fallback Jobs exist (until 2026-10-15,
+   `cloud_run_fallback_profiles` in `terraform/infra/locals.tf`) is one line in
+   `profiles.py`, the backend back to `CLOUD_RUN_JOB`, and a release.
 
 Every pod carries:
 

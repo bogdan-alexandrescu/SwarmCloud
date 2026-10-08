@@ -16,6 +16,10 @@
 //   * the grants are failures first, Verify POSTs and prints each failure's
 //     copy inline, the write test is said to be not offered;
 //   * not connected: Connect GitHub, and no GitHub-reading route is called;
+//   * connected but installed nowhere (#780, 2026-10-08): the notice says so
+//     with Install on <login> and Install on an organisation…; mixed owners
+//     get an Install button per uninstalled row; Refresh and returning to the
+//     tab read the owners again;
 //   * Members (admin) lists states and names; a non-admin is told so;
 //   * nothing token-shaped reaches the DOM.
 //
@@ -182,7 +186,7 @@ describe('owners (chooser A, left)', () => {
     expect(visible(owner('octo-dev'))).toContain('your account')
     expect(visible(owner('example-org'))).toContain('2 chosen')
     expect(within(owner('example-lab')).getByRole('button', { name: 'Enable' })).toBeTruthy()
-    expect(within(owner('example-new')).getByRole('link', { name: 'Install on GitHub' }).getAttribute('href')).toBe(
+    expect(within(owner('example-new')).getByRole('link', { name: 'Install on example-new' }).getAttribute('href')).toBe(
       'https://github.com/apps/swarmcloud/installations/new',
     )
     expect(visible(owner('example-new'))).toContain('not installed')
@@ -387,6 +391,111 @@ describe('not connected', () => {
   })
 })
 
+const APP_INSTALL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+
+/** What GET /v1/access/orgs answered live on 2026-10-08: the account, installed nowhere. */
+const NOWHERE = {
+  tenant_id: 'eng',
+  orgs_listed: true,
+  install_url: APP_INSTALL,
+  owners: [
+    {
+      owner: 'octo-dev',
+      owner_type: 'User',
+      installation_id: null,
+      repository_selection: null,
+      install_state: 'not_installed',
+      sso: 'unknown',
+      enabled: false,
+      install_url: APP_INSTALL,
+    },
+  ],
+}
+
+const notice = () => document.querySelector('section.ac-install') as HTMLElement | null
+
+describe('connected but not installed (#780)', () => {
+  it('says plainly the App is installed nowhere, and offers Install on the account and on an organisation', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: NOWHERE }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const box = notice()
+    expect(box).not.toBeNull()
+    expect(visible(box)).toContain(
+      "You're connected as @octo-dev, but SwarmCloud Saga isn't installed anywhere yet. Install it on the accounts and repositories you want SwarmCloud to use.",
+    )
+    const mine = within(box as HTMLElement).getByRole('link', { name: 'Install on octo-dev' })
+    expect(mine.getAttribute('href')).toBe(APP_INSTALL)
+    expect(mine.className).toContain('is-primary')
+    expect(within(box as HTMLElement).getByRole('link', { name: 'Install on an organisation…' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(visible(box)).toContain(
+      "Organisations you don't see (for example your company's) appear here after the App is installed there; if you're not an owner, GitHub sends the owners a request.",
+    )
+    // The row itself offers Install, and the right column says why it is empty.
+    expect(within(owner('octo-dev')).getByRole('link', { name: 'Install on octo-dev' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(screen.getByText('Nothing to list until the App is installed')).toBeTruthy()
+    // Authorized and installed are told apart in one line.
+    expect(visible(document.querySelector('.ac-authz'))).toContain('Authorized is not installed')
+  })
+
+  it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
+    const mixed = {
+      ...NOWHERE,
+      owners: [
+        { ...NOWHERE.owners[0], installation_id: 9, repository_selection: 'all', install_state: 'installed', install_url: null },
+        { ...NOWHERE.owners[0], owner: 'example-co', owner_type: 'Organization' },
+      ],
+    }
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') return { status: 200, body: mixed }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    expect(notice()).toBeNull()
+    expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
+    expect(within(owner('octo-dev')).queryByRole('link', { name: /Install/ })).toBeNull()
+    expect(visible(owner('example-co'))).toContain('not installed')
+    expect(within(owner('example-co')).getByRole('link', { name: 'Install on example-co' }).getAttribute('href')).toBe(APP_INSTALL)
+    expect(screen.getByText('No owner enabled yet')).toBeTruthy()
+  })
+
+  it('reads the owners again on Refresh and when the window regains focus', async () => {
+    let installed = false
+    const calls = serve((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ orgs: [], grants: [] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') {
+        return {
+          status: 200,
+          body: installed ? { ...NOWHERE, owners: [{ ...NOWHERE.owners[0], installation_id: 9, install_state: 'installed', install_url: null }] } : NOWHERE,
+        }
+      }
+      return null
+    })
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const reads = () => calls.filter((c) => c.method === 'GET' && c.url === '/v1/access/orgs').length
+    expect(reads()).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(reads()).toBe(2))
+    // Back from GitHub's install page: the tab regains focus.
+    installed = true
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(reads()).toBe(3))
+    await waitFor(() => expect(notice()).toBeNull())
+    expect(within(owner('octo-dev')).getByRole('button', { name: 'Enable' })).toBeTruthy()
+    // Focus and visibility fire together on one return: one read, not two.
+    document.dispatchEvent(new Event('visibilitychange'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(reads()).toBe(3)
+  })
+})
+
 describe('members (Access B)', () => {
   it('lists every member by state and name for an admin', async () => {
     api((m, url) =>
@@ -429,5 +538,185 @@ describe('no value reaches the page', () => {
     await mount()
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// QA of https://swarm.saga.xyz/access, 2026-10-08: four defects.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hold every request `match` names until the returned `open()` is called. The
+ * held request reaches `serve` (and its `calls`) only when it is let through,
+ * so a call recorded before `open()` was made while the held one was pending.
+ */
+function hold(match: (method: string, url: string) => boolean): () => void {
+  const inner = globalThis.fetch
+  let open: () => void = () => undefined
+  const gate = new Promise<void>((r) => {
+    open = r
+  })
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (match(init?.method ?? 'GET', String(input))) await gate
+    return inner(input, init)
+  }) as typeof fetch
+  return open
+}
+
+const CONFLICT = { status: 409, body: { code: 'conflict', message: 'a refresh of your GitHub token is running; try again in a minute' } }
+
+describe('(1) the token expiry counts forward', () => {
+  it('says how long until an instant ahead, and expired for one behind', async () => {
+    const { tokenExpiry } = await import('../Access')
+    const now = Date.parse('2026-10-08T10:00:00Z')
+    expect(tokenExpiry(new Date(now + (7 * 60 + 58) * 60_000 + 20_000).toISOString(), now)).toBe('expires in 7h 58m')
+    expect(tokenExpiry(new Date(now + 45_000).toISOString(), now)).toBe('expires in 45s')
+    expect(tokenExpiry(new Date(now - 3 * 60_000).toISOString(), now)).toBe('expired 3m ago')
+    expect(tokenExpiry('not a date', now)).toBe('expiry unreadable')
+  })
+
+  it('draws a token eight hours ahead as expires in 7h 5xm, renewed automatically, never just now', async () => {
+    api((m, url) =>
+      m === 'GET' && url === '/v1/access'
+        ? { status: 200, body: overview({ connection: { ...CONNECTION, access_expires_at: new Date(Date.now() + 8 * 3600_000 - 90_000).toISOString() } }) }
+        : null,
+    )
+    await mount()
+    await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+    // The spans are joined by a CSS "·": expires in 7h 58m · renewed automatically.
+    const spans = [...document.querySelectorAll('.ac-conn .ur-cmeta')[1]!.children].map((el) => visible(el))
+    expect(spans[0]).toMatch(/^Token expires in 7h 5\dm$/)
+    expect(spans[1]).toBe('renewed automatically')
+    expect(visible(document.querySelector('.ac-conn'))).not.toContain('just now')
+  })
+})
+
+describe('(2) the chooser says GitHub is being asked', () => {
+  it('shows Asking GitHub for your repositories… while the owners are read, and not after', async () => {
+    api()
+    const open = hold((m, url) => m === 'GET' && url === '/v1/access/orgs')
+    await mount()
+    const card = (await screen.findByText('Choose repositories')).closest('.ac-choose') as HTMLElement
+    expect(within(card).getByRole('status').textContent).toBe('Asking GitHub for your repositories…')
+    expect(within(card).queryByRole('list', { name: 'Owners your connection reaches' })).toBeNull()
+    open()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    await screen.findByRole('list', { name: "example-org's repositories, page 1" })
+    expect(within(card).queryByText('Asking GitHub for your repositories…')).toBeNull()
+  })
+})
+
+describe('(3) Enable, then the repositories', () => {
+  it('reads the new owner only after the POST answered, and retries one 409 with Still setting up…', async () => {
+    let lab = 0
+    let enabled = false
+    const calls = api((m, url) => {
+      if (m === 'GET' && url === '/v1/access' && enabled) return { status: 200, body: overview({ orgs: [ORG('example-org'), ORG('octo-dev'), ORG('example-lab')] }) }
+      if (m === 'POST' && url === '/v1/access/orgs') {
+        enabled = true
+        return { status: 200, body: { tenant_id: 'eng', org: ORG('example-lab') } }
+      }
+      if (m === 'GET' && url === '/v1/access/orgs/example-lab/repositories?page=1') {
+        lab += 1
+        return lab === 1 ? CONFLICT : { status: 200, body: page(1, [REPO(9, 'example-lab-api', { repository: 'example-lab/example-lab-api', owner: 'example-lab' })]) }
+      }
+      return null
+    })
+    const open = hold((m, url) => m === 'POST' && url === '/v1/access/orgs')
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const enable = within(owner('example-lab')).getByRole('button', { name: 'Enable' }) as HTMLButtonElement
+    fireEvent.click(enable)
+    // Pending at once, and nothing of example-lab's is read while the POST is out.
+    await waitFor(() => expect(within(owner('example-lab')).getByRole('button', { name: 'Enabling…' }).getAttribute('aria-busy')).toBe('true'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(calls.some((c) => c.url.startsWith('/v1/access/orgs/example-lab/'))).toBe(false)
+    open()
+    await waitFor(() => expect(lab).toBe(1))
+    expect(await screen.findByText('Still setting up…')).toBeTruthy()
+    await screen.findByRole('list', { name: "example-lab's repositories, page 1" }, { timeout: 4000 })
+    expect(lab).toBe(2)
+    const urls = calls.map((c) => `${c.method} ${c.url}`)
+    expect(urls.indexOf('POST /v1/access/orgs')).toBeLessThan(urls.indexOf('GET /v1/access/orgs/example-lab/repositories?page=1'))
+    expect(screen.queryByText('Still setting up…')).toBeNull()
+  })
+
+  it('does not retry a 409 that is a refusal', async () => {
+    const { passingConflict } = await import('../Access')
+    const e = (code: string | null) => ({ kind: 'conflict' as const, httpStatus: 409, code, message: 'm' })
+    expect(passingConflict(e('conflict'))).toBe(true)
+    expect(passingConflict(e(null))).toBe(true)
+    expect(passingConflict(e('access_refused'))).toBe(false)
+    expect(passingConflict(e('github_not_connected'))).toBe(false)
+    expect(passingConflict({ ...e('conflict'), httpStatus: 404 })).toBe(false)
+  })
+})
+
+describe('(4) the controls survive a background re-read', () => {
+  it('keeps the typed owner/repo, and the first Grant saves, when a re-read on focus fails', async () => {
+    let reads = 0
+    const calls = api((m, url, body) => {
+      if (m === 'GET' && url === '/v1/access') {
+        reads += 1
+        return reads === 1 ? null : CONFLICT
+      }
+      if (m === 'GET' && url === '/v1/access/orgs' && reads > 1) return CONFLICT
+      if (m === 'PUT' && url.startsWith('/v1/access/grants/')) {
+        const b = body as { repository: string; mode: 'read' | 'write' }
+        return { status: 200, body: { tenant_id: 'eng', grant: GRANT(8, b.repository, b.mode), registered: false, registration_repo_id: ID(8) } }
+      }
+      return null
+    })
+    await mount()
+    const input = (await screen.findByRole('textbox', { name: 'Not listed? Type owner/repo' })) as HTMLInputElement
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    fireEvent.change(input, { target: { value: 'example-org/example-legacy' } })
+    fireEvent.click(radio(document.querySelector('.ac-typed') as HTMLElement, 'Write'))
+    // Back from GitHub: the tab regains focus and both re-reads meet a 409.
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(reads).toBe(2))
+    await waitFor(() => expect(document.querySelectorAll('.ur-stale-why').length).toBeGreaterThan(0))
+    // The same input, still holding what was typed: nothing remounted.
+    expect(screen.getByRole('textbox', { name: 'Not listed? Type owner/repo' })).toBe(input)
+    expect(input.value).toBe('example-org/example-legacy')
+    expect(radio(document.querySelector('.ac-typed') as HTMLElement, 'Write').getAttribute('aria-checked')).toBe('true')
+    const open = hold((m) => m === 'PUT')
+    fireEvent.click(screen.getByRole('button', { name: 'Grant' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Granting…' }).getAttribute('aria-busy')).toBe('true'))
+    open()
+    expect(await screen.findByText(/example-org\/example-legacy granted write/)).toBeTruthy()
+    expect(calls.filter((c) => c.method === 'PUT')).toEqual([expect.objectContaining({ body: { repository: 'example-org/example-legacy', mode: 'write' } })])
+  })
+
+  it('keeps an Enable that is out when the owners re-read fails, and the first click lands', async () => {
+    let ownerReads = 0
+    let enabled = false
+    const calls = api((m, url) => {
+      if (m === 'GET' && url === '/v1/access' && enabled) return { status: 200, body: overview({ orgs: [ORG('example-org'), ORG('octo-dev'), ORG('example-lab')] }) }
+      if (m === 'GET' && url === '/v1/access/orgs') {
+        ownerReads += 1
+        return ownerReads === 2 ? CONFLICT : null
+      }
+      if (m === 'POST' && url === '/v1/access/orgs') {
+        enabled = true
+        return { status: 200, body: { tenant_id: 'eng', org: ORG('example-lab') } }
+      }
+      return null
+    })
+    const open = hold((m) => m === 'POST')
+    await mount()
+    await screen.findByRole('list', { name: 'Owners your connection reaches' })
+    const row = owner('example-lab')
+    fireEvent.click(within(row).getByRole('button', { name: 'Enable' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Enabling…' }))
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(ownerReads).toBe(2))
+    await waitFor(() => expect(document.querySelectorAll('.ur-stale-why').length).toBeGreaterThan(0))
+    // The same row, still pending.
+    expect(owner('example-lab')).toBe(row)
+    expect(within(row).getByRole('button', { name: 'Enabling…' })).toBeTruthy()
+    open()
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1))
+    await waitFor(() => expect(owner('example-lab').className).toContain('is-selected'))
   })
 })

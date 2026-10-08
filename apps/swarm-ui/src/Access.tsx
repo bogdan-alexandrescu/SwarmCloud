@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, loadAccess, loadAccessMembers, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, revokeAccessGrant, typedRepoId, verifyAccessGrant,
@@ -15,7 +15,8 @@ import type {
   AccessCheck, AccessCheckName, AccessDisableResponse, AccessGrant, AccessMember, AccessMode, AccessOverview, AccessOwner,
   AccessRepository, AccessVerifyFailure, GitHubConnection,
 } from './types'
-import { timeAgo } from './types'
+import { humaniseUntil, timeAgo } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/repositories.css'
 import './styles/onboarding.css'
 
@@ -49,9 +50,62 @@ import './styles/onboarding.css'
  *
  * VERIFY A: a grid, failures first, the fix inline. `unknown` is a measured
  * answer (the check could not be read), never a pass, and is drawn grey.
+ *
+ * CONNECTED IS NOT INSTALLED (#780, found live 2026-10-08). The owner
+ * connected GitHub -- the App showed under Authorized GitHub Apps -- but never
+ * installed it, and this page showed no orgs and no repositories with no word
+ * why: GitHub lists an org to the App only where the App is installed. So
+ * when no owner has an installation the page says so first, with Install
+ * buttons; each owner row with none offers Install; and because installing
+ * happens on GitHub's page, the owners are read again on Refresh and when the
+ * window regains focus.
  */
 
 type View = 'mine' | 'members'
+
+/**
+ * WHEN THE TOKEN EXPIRES, FORWARD. This read `timeAgo(access_expires_at)`,
+ * and `timeAgo` measures the past: an instant eight hours AHEAD is a negative
+ * age, clamped to zero, so a fresh token read "expires just now" (QA of
+ * /access, 2026-10-08). An instant ahead is counted with `humaniseUntil`; one
+ * behind says expired, and how long ago.
+ */
+export function tokenExpiry(iso: string, now: number): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return 'expiry unreadable'
+  return t > now ? `expires in ${humaniseUntil(t - now)}` : `expired ${timeAgo(t, now)}`
+}
+
+/**
+ * HOW LONG A PASSING 409 IS GIVEN BEFORE ITS ONE RETRY. swarm-api answers 409
+ * `conflict` while a refresh of the caller's GitHub token holds its lease
+ * (access.py, "a refresh of your GitHub token is running"), and the first
+ * reads after an Enable are the likeliest to meet it. A refusal also travels
+ * as 409 (`access_refused`, `github_not_connected`) and is an answer, so it is
+ * never retried. ONE retry, not a loop: a second 409 is shown as it is.
+ */
+export const SETTLE_RETRY_MS = 1200
+
+export function passingConflict(e: ApiError): boolean {
+  return e.httpStatus === 409 && e.code !== 'access_refused' && e.code !== 'github_not_connected'
+}
+
+/** Run `call`; on a passing 409, say so through `onWait`, wait, and run it once more. */
+export async function onceMoreOnConflict<T>(call: () => Promise<Result<T>>, onWait: (waiting: boolean) => void): Promise<Result<T>> {
+  const first = await call()
+  if (first.status !== 'error' || !passingConflict(first.error)) return first
+  onWait(true)
+  await new Promise((r) => setTimeout(r, SETTLE_RETRY_MS))
+  try {
+    return await call()
+  } finally {
+    onWait(false)
+  }
+}
+
+/** Said while the owners or one owner's repositories are read: GitHub can take several seconds to answer. */
+export const ASKING_GITHUB = 'Asking GitHub for your repositories…'
+export const STILL_SETTING_UP = 'Still setting up…'
 
 const CHECKS: readonly { key: AccessCheckName; label: string }[] = [
   { key: 'clone', label: 'Clone' },
@@ -67,6 +121,10 @@ function dataOf<T>(r: Result<T>): T | null {
 function refusalUrl(e: ApiError): string | null {
   const d = e.detail as { url?: unknown } | null | undefined
   return d && typeof d.url === 'string' && d.url.startsWith('https://github.com/') ? d.url : null
+}
+
+function isGitHubUrl(url: string | null | undefined): url is string {
+  return typeof url === 'string' && url.startsWith('https://github.com/')
 }
 
 function GitHubLink({ url, children }: { url: string; children: ReactNode }) {
@@ -137,6 +195,7 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
   const [said, setSaid] = useState<string | null>(null)
+  const now = useNow(AGE_TICK_MS)
 
   async function disconnect() {
     setBusy(true)
@@ -183,7 +242,7 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
           </p>
           <p className="ur-cmeta">
             <span>
-              Token {connection.access_expires_at !== null ? <b>expires {timeAgo(connection.access_expires_at)}</b> : <Dash why="No expiry recorded" />}
+              Token {connection.access_expires_at !== null ? <b>{tokenExpiry(connection.access_expires_at, now)}</b> : <Dash why="No expiry recorded" />}
             </span>
             <span>renewed automatically</span>
             {connection.refreshed_at !== null && <span>last renewed {timeAgo(connection.refreshed_at)}</span>}
@@ -246,6 +305,7 @@ function Owners({
   grants,
   selected,
   onSelect,
+  onEnabled,
   onChange,
 }: {
   owners: AccessOwner[]
@@ -253,23 +313,30 @@ function Owners({
   grants: AccessGrant[]
   selected: string | null
   onSelect: (owner: string) => void
+  /** The POST answered: the owner is enabled, so its repositories may be read now and not before. */
+  onEnabled: (owner: string) => void
   onChange: () => void
 }) {
   const [busy, setBusy] = useState<string | null>(null)
+  const [settling, setSettling] = useState(false)
   const [refused, setRefused] = useState<{ owner: string; error: ApiError } | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const [removed, setRemoved] = useState<AccessDisableResponse | null>(null)
 
+  // The repositories are read only once the POST has answered (`onEnabled`):
+  // reading them alongside it asked for an owner not enabled yet (QA,
+  // 2026-10-08). A second click while one is pending is dropped.
   async function enable(owner: string) {
+    if (busy !== null) return
     setBusy(owner)
     setRefused(null)
-    const res = await enableAccessOwner(owner)
+    const res = await onceMoreOnConflict(() => enableAccessOwner(owner), setSettling)
     setBusy(null)
     if (res.status === 'error') {
       setRefused({ owner, error: res.error })
       return
     }
-    onSelect(owner.toLowerCase())
+    onEnabled(owner.toLowerCase())
     onChange()
   }
 
@@ -338,11 +405,19 @@ function Owners({
                     </Button>
                   )
                 ) : o.install_state === 'installed' ? (
-                  <Button size="sm" kind="primary" busy={busy === o.owner} onClick={() => void enable(o.owner)}>
+                  <Button
+                    size="sm"
+                    kind="primary"
+                    busy={busy === o.owner ? (settling ? STILL_SETTING_UP : 'Enabling…') : false}
+                    disabled={busy !== null && busy !== o.owner}
+                    onClick={() => void enable(o.owner)}
+                  >
                     Enable
                   </Button>
-                ) : o.install_url !== null && o.install_url.startsWith('https://github.com/') ? (
-                  <GitHubLink url={o.install_url}>Install on GitHub</GitHubLink>
+                ) : isGitHubUrl(o.install_url) ? (
+                  <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
+                    Install on {o.owner}
+                  </ButtonLink>
                 ) : (
                   <Dash why="The App's install page is not configured on this API" />
                 )}
@@ -399,7 +474,8 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
   const [nonce, setNonce] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [refused, setRefused] = useState<{ repo: string; error: ApiError } | null>(null)
-  const read = useUrRead(() => loadAccessRepositories(owner, page, query), `${owner}|${page}|${query}|${nonce}`)
+  const [settling, setSettling] = useState(false)
+  const read = useUrRead(() => onceMoreOnConflict(() => loadAccessRepositories(owner, page, query), setSettling), `${owner}|${page}|${query}|${nonce}`)
 
   async function choose(r: AccessRepository, c: Choice) {
     setBusy(r.repo_id)
@@ -447,6 +523,11 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
           ]}
         />
       </div>
+      {settling && read.state.status !== 'loading' && (
+        <p className="ur-reading-why" role="status">
+          {STILL_SETTING_UP}
+        </p>
+      )}
       <UrRegion
         state={read.state}
         route="GET /v1/access/orgs/{owner}/repositories"
@@ -454,6 +535,7 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
         onRetry={read.reload}
         plural
         lines={4}
+        reading={settling ? STILL_SETTING_UP : ASKING_GITHUB}
       >
         {(p) => {
           const shown = p.repositories.filter((r) => only === 'all' || r.granted)
@@ -545,16 +627,19 @@ export function TypedRepository({ tenantId, onChange }: { tenantId: string; onCh
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const [settling, setSettling] = useState(false)
   const repo = value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
   const valid = OWNER_REPO.test(repo)
 
+  // The typed value is cleared only by a grant that landed: a refusal keeps it
+  // to correct. A second press while one is pending is dropped.
   async function grant() {
-    if (!valid) return
+    if (!valid || busy) return
     setBusy(true)
     setRefused(null)
     setDone(null)
     const repoId = await typedRepoId(tenantId, repo)
-    const res = await putAccessGrant(repoId, repo, mode)
+    const res = await onceMoreOnConflict(() => putAccessGrant(repoId, repo, mode), setSettling)
     setBusy(false)
     if (res.status === 'error') {
       setRefused(res.error)
@@ -596,7 +681,7 @@ export function TypedRepository({ tenantId, onChange }: { tenantId: string; onCh
               { key: 'write', label: 'Write' },
             ]}
           />
-          <Button size="sm" kind="primary" type="submit" busy={busy} disabled={!valid}>
+          <Button size="sm" kind="primary" type="submit" busy={busy ? (settling ? STILL_SETTING_UP : 'Granting…') : false} disabled={!valid}>
             Grant
           </Button>
         </div>
@@ -813,36 +898,143 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
  * one refresh per request (access.py) -- so it is mounted only for an active
  * connection, never fired to be refused.
  */
+/** The least time between two focus re-reads: each owners read is one refresh of your token. */
+const FOCUS_REREAD_MS = 15_000
+
+/**
+ * Re-run `reload` when the person comes back to this tab -- from GitHub's
+ * install page, most often. Focus and visibility both fire on one return, so
+ * a second within FOCUS_REREAD_MS is dropped.
+ */
+function useRereadOnFocus(reload: () => void) {
+  const last = useRef(0)
+  const latest = useRef(reload)
+  latest.current = reload
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (now - last.current < FOCUS_REREAD_MS) return
+      last.current = now
+      latest.current()
+    }
+    window.addEventListener('focus', back)
+    document.addEventListener('visibilitychange', back)
+    return () => {
+      window.removeEventListener('focus', back)
+      document.removeEventListener('visibilitychange', back)
+    }
+  }, [])
+}
+
+/**
+ * NOTHING INSTALLED YET. Connecting authorised the App to act as the person;
+ * it lists nothing until it is installed on an account or an organisation.
+ * Both buttons open the same install page: GitHub asks there which account,
+ * and offers only the person's own account and the orgs they may install on
+ * or ask for. Back from GitHub, the card's Refresh (or returning to the tab)
+ * reads the owners again.
+ */
+export function NotInstalledNotice({ login, installUrl }: { login: string | null; installUrl: string | null }) {
+  return (
+    <section className="ac-install" aria-label="SwarmCloud Saga is not installed">
+      <p className="ac-install-h">
+        <b>
+          {login !== null ? `You're connected as @${login}` : "You're connected"}, but SwarmCloud Saga isn't installed anywhere yet.
+        </b>{' '}
+        Install it on the accounts and repositories you want SwarmCloud to use.
+      </p>
+      {isGitHubUrl(installUrl) ? (
+        <div className="ur-gh-acts">
+          <ButtonLink kind="primary" size="sm" href={installUrl} target="_blank" rel="noreferrer">
+            {login !== null ? `Install on ${login}` : 'Install on your account'}
+          </ButtonLink>
+          <ButtonLink size="sm" href={installUrl} target="_blank" rel="noreferrer">
+            Install on an organisation…
+          </ButtonLink>
+        </div>
+      ) : (
+        <p className="ur-small">
+          <Dash why="The App's install page is not configured on this API" /> This API names no install page for the App; an
+          operator sets its slug.
+        </p>
+      )}
+      <p className="ur-hint">
+        Organisations you don't see (for example your company's) appear here after the App is installed there; if you're
+        not an owner, GitHub sends the owners a request.
+      </p>
+    </section>
+  )
+}
+
 function Choose({ overview, reloadOverview }: { overview: AccessOverview; reloadOverview: () => void }) {
   const owners = useUrRead(loadAccessOwners, 'access-owners')
   const [picked, setPicked] = useState<string | null>(null)
-  const enabled = overview.orgs.map((o) => o.owner.toLowerCase())
+  // Owners whose POST /v1/access/orgs answered while GET /v1/access has not
+  // been read again yet: enabled, so selectable at once.
+  const [landed, setLanded] = useState<string[]>([])
+  const listed = overview.orgs.map((o) => o.owner.toLowerCase())
+  const enabled = [...listed, ...landed.filter((o) => !listed.includes(o))]
+  // A fresh overview answers for itself, including an owner removed since.
+  useEffect(() => setLanded([]), [overview])
   const selected = picked !== null && enabled.includes(picked) ? picked : (enabled[0] ?? null)
   const reloadAll = () => {
     reloadOverview()
     owners.reload()
   }
+  useRereadOnFocus(reloadAll)
+  const login = overview.connection?.forge_login ?? null
   return (
-    <Card className="ac-choose" title="Choose repositories" id="ac-choose">
-      <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3}>
+    <Card
+      className="ac-choose"
+      title="Choose repositories"
+      id="ac-choose"
+      action={
+        <Button size="sm" kind="ghost" busy={owners.state.status === 'loading'} onClick={reloadAll}>
+          Refresh
+        </Button>
+      }
+    >
+      <p className="ur-hint ac-authz">
+        Authorized is not installed: Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps); installing it on
+        an account or org lets it reach that owner's repositories (Installed GitHub Apps).
+      </p>
+      <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3} reading={ASKING_GITHUB}>
         {(o) => (
-          <div className="ac-chooser">
-            <Owners
-              owners={o.owners}
-              orgsListed={o.orgs_listed}
-              grants={overview.grants}
-              selected={selected}
-              onSelect={setPicked}
-              onChange={reloadAll}
-            />
-            {selected !== null ? (
-              <RepoChooser key={selected} owner={selected} onChange={reloadOverview} />
-            ) : (
-              <EmptyState kind="empty" heading="No owner enabled yet">
-                Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
-              </EmptyState>
+          <>
+            {!o.owners.some((x) => x.install_state === 'installed') && (
+              <NotInstalledNotice
+                login={login ?? o.owners.find((x) => x.owner_type === 'User')?.owner ?? null}
+                installUrl={o.install_url}
+              />
             )}
-          </div>
+            <div className="ac-chooser">
+              <Owners
+                owners={o.owners}
+                orgsListed={o.orgs_listed}
+                grants={overview.grants}
+                selected={selected}
+                onSelect={setPicked}
+                onEnabled={(key) => {
+                  setLanded((was) => (was.includes(key) ? was : [...was, key]))
+                  setPicked(key)
+                }}
+                onChange={reloadAll}
+              />
+              {selected !== null ? (
+                <RepoChooser key={selected} owner={selected} onChange={reloadOverview} />
+              ) : o.owners.some((x) => x.install_state === 'installed') ? (
+                <EmptyState kind="empty" heading="No owner enabled yet">
+                  Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
+                </EmptyState>
+              ) : (
+                <EmptyState kind="empty" heading="Nothing to list until the App is installed">
+                  Install SwarmCloud Saga on an owner on the left; its repositories are listed here once it is, and you have
+                  enabled it.
+                </EmptyState>
+              )}
+            </div>
+          </>
         )}
       </UrRegion>
       <TypedRepository tenantId={overview.tenant_id} onChange={reloadAll} />
