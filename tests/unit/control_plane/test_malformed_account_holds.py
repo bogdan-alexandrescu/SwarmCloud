@@ -274,3 +274,151 @@ def test_assignment_never_strands_a_hold_when_the_document_goes_bad_after_it(
         )
         assert released.status_code == 200, released.text
         assert _hold_ids(db) == []
+
+
+# --------------------------------------------------------------------------
+# 4. Epic #227: a pool that is ALL malformed is loud, the sweep reads once,
+#    and a release that matched nothing writes nothing
+# --------------------------------------------------------------------------
+
+
+def _decoder_bug(_raw: Any) -> tuple[Any, ...]:
+    """What a decoder bug looks like: the same TypeError for every document."""
+    raise TypeError("decoder bug")
+
+
+def test_the_malformed_set_is_public_and_is_the_one_the_broker_catches():
+    """The four classes are the owner's decision on #180 and stay four; the
+    broker's hold paths import the PUBLIC name, so the two cannot drift."""
+    from quota_broker import accountstore
+    from quota_broker import main as broker_main
+
+    assert accountstore.MALFORMED_ERRORS == (KeyError, ValueError, TypeError, AttributeError)
+    assert broker_main.MALFORMED_ERRORS is accountstore.MALFORMED_ERRORS
+
+
+def test_a_listing_where_every_document_is_unreadable_logs_an_error(accounts, db, caplog):
+    accounts.register(ENG, "second")
+    _corrupt(db, "assigned-null")
+    db.document(f"accounts/{ENG}:second").update(CORRUPTIONS["windows-string"])
+
+    with caplog.at_level(logging.WARNING):
+        listing = accounts.list_reporting()
+
+    assert listing.accounts == []
+    assert listing.unreadable == sorted([HELD, f"{ENG}:second"])
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "a whole pool went unreadable and nothing said so above WARNING"
+    assert getattr(errors[0], "unreadable", None) == sorted([HELD, f"{ENG}:second"])
+    for record in caplog.records:
+        assert SENTINEL not in _rendered(record)
+
+
+def test_one_unreadable_document_among_readable_ones_is_only_a_warning(
+    accounts, db, caplog
+):
+    """The control: the ERROR is for the whole pool, not for one bad document."""
+    accounts.register(ENG, "second")
+    _corrupt(db, "assigned-null")
+
+    with caplog.at_level(logging.WARNING):
+        listing = accounts.list_reporting()
+
+    assert [a.account_id for a in listing.accounts] == [f"{ENG}:second"]
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_a_sweep_that_can_read_no_document_s_holds_reports_an_error(
+    client, accounts, db, caplog, monkeypatch
+):
+    import quota_broker.main as broker_main
+
+    accounts.register(ENG, "second")
+    _assign(client)
+    monkeypatch.setattr(broker_main, "holds_from_firestore", _decoder_bug)
+
+    client.identity.as_platform()
+    with caplog.at_level(logging.WARNING):
+        r = client.post("/v1/quota/sweep")
+
+    assert r.status_code == 200, r.text
+    holds = r.json()["holds"]
+    assert "error" in holds, holds
+    assert holds["unreadable"] == sorted([HELD, f"{ENG}:second"])
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR], (
+        "every prune raised and the sweep said nothing above WARNING"
+    )
+
+
+def test_a_sweep_where_some_documents_prune_reports_no_error(
+    client, accounts, db, monkeypatch
+):
+    """The control: one document failing is that document, not the sweep."""
+    import quota_broker.main as broker_main
+
+    accounts.register(ENG, "second")
+    real = broker_main.holds_from_firestore
+    calls = {"n": 0}
+
+    def _first_fails(raw: Any) -> tuple[Any, ...]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TypeError("one bad document")
+        return real(raw)
+
+    monkeypatch.setattr(broker_main, "holds_from_firestore", _first_fails)
+    client.identity.as_platform()
+    r = client.post("/v1/quota/sweep")
+
+    assert r.status_code == 200, r.text
+    assert calls["n"] >= 2, "the sweep did not visit both documents"
+    assert "error" not in r.json()["holds"], r.json()["holds"]
+
+
+def test_the_hold_sweep_streams_the_accounts_collection_once(accounts, db, monkeypatch):
+    from quota_broker.main import _prune_all_holds
+
+    from .fakes import FakeCollectionRef
+
+    accounts.register(ENG, "second")
+    _corrupt(db, "windows-string")
+    real_stream = FakeCollectionRef.stream
+    streamed: list[str] = []
+
+    def _counting(self, *args: Any, **kwargs: Any):
+        streamed.append(self._path)
+        return real_stream(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeCollectionRef, "stream", _counting)
+    summary = _prune_all_holds(db, accounts, datetime.now(timezone.utc))
+
+    assert summary["registered"] == 1
+    assert streamed.count("accounts") == 1, streamed
+
+
+def test_a_release_that_matched_nothing_does_not_write_the_account(client, accounts, db):
+    """A document malformed only in `assigned`: an unmatched release must not
+    re-project `assigned` from `holds` and so repair it on a caller's behalf."""
+    _corrupt(db, "assigned-null")
+    _assert_malformed(accounts)
+    client.identity.as_tenant(ENG)
+
+    r = client.post(f"/v1/accounts/{HELD}/release", json={"assignment_id": "not-a-hold"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["reason"] == "not_held"
+    assert _doc(db)["assigned"] is None, "the unmatched release rewrote the document"
+
+
+def test_a_release_that_matched_nothing_still_drops_an_expired_hold(client, accounts, db):
+    """The control: the write is skipped only when there is nothing to write."""
+    _assign(client)
+    holds = [dict(h) for h in _doc(db)["holds"]]
+    holds[0]["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.document(f"accounts/{HELD}").update({"holds": holds})
+
+    r = client.post(f"/v1/accounts/{HELD}/release", json={"assignment_id": "not-a-hold"})
+
+    assert r.status_code == 200, r.text
+    assert _hold_ids(db) == []
+    assert _doc(db)["assigned"] == 0

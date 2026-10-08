@@ -58,18 +58,28 @@ COLLECTION = "accounts"
 #:   AttributeError  a map is not a map (`windows: "x"` has no `.items()`)
 #:
 #: NOT a bare `except Exception`, deliberately. Those four are what a bad
-#: DOCUMENT produces; anything else -- a Firestore outage, a permission error,
-#: a bug in the decoder that raises for every document -- is not one account
-#: being unreadable, and skipping it would turn "the store is down" into an
-#: empty pool that reports every document as malformed. That failure must
-#: stay loud and reach the caller.
-_MALFORMED = (KeyError, ValueError, TypeError, AttributeError)
+#: DOCUMENT produces; anything else -- a Firestore outage, a permission error
+#: -- is not one account being unreadable, and skipping it would turn "the
+#: store is down" into an empty pool that reports every document as malformed.
+#: That failure propagates to the caller.
+#:
+#: A BUG IN THE DECODER is the case this set cannot tell apart: one that
+#: raises for every document raises a TypeError or an AttributeError, exactly
+#: what a bad document does. The set is kept at four regardless (the owner's
+#: decision on #180), and the loudness comes from the other side: when EVERY
+#: document of a non-empty collection lands here, `list_reporting` and the
+#: hold sweep (`quota_broker.main._prune_all_holds`) log at ERROR, because a
+#: whole pool going malformed at once is a decoder or a writer, not an account.
+#:
+#: Public because the broker's hold paths catch the same set and must not
+#: drift from it.
+MALFORMED_ERRORS = (KeyError, ValueError, TypeError, AttributeError)
 
 
 class MalformedAccountError(AccountError):
     """An account document exists and cannot be decoded into an `Account`.
 
-    One typed error for the four exceptions in `_MALFORMED`, so that a caller
+    One typed error for the four exceptions in `MALFORMED_ERRORS`, so that a caller
     handling one account can say "that document is broken" without knowing
     how the decoder happens to fail on it -- and so that the listing and the
     single-account reads cannot drift into catching different sets, which is
@@ -99,8 +109,8 @@ def _decode(account_id: str, data: dict[str, Any]) -> Account:
     """
     try:
         return Account.from_firestore(data)
-    except _MALFORMED as exc:
-        # See `_MALFORMED` for why these four and not `Exception`.
+    except MALFORMED_ERRORS as exc:
+        # See `MALFORMED_ERRORS` for why these four and not `Exception`.
         error = type(exc).__name__
         log.warning(
             "an account document is malformed and cannot be read",
@@ -154,6 +164,12 @@ class AccountStore:
         shorter list and no way to know it is short, and every figure derived
         from it (the row count, "N accounts registered", the pool's headroom)
         is then confidently wrong. So the ids come back with the rows.
+
+        EVERY DOCUMENT UNREADABLE is logged at ERROR, once, with the ids. One
+        bad document is a warning about that document; all of them at once is
+        what a decoder bug or a bad writer looks like (see `MALFORMED_ERRORS`),
+        and `list()` would otherwise hand its callers an empty pool with
+        nothing above WARNING to say why.
         """
         out: list[Account] = []
         unreadable: list[str] = []
@@ -164,8 +180,15 @@ class AccountStore:
                 # One malformed document must not hide the rest of the fleet --
                 # and must not hide itself either. See `AccountListing`.
                 # `_decode` has logged it; only the four exceptions a bad
-                # document produces arrive here (see `_MALFORMED`).
+                # document produces arrive here (see `MALFORMED_ERRORS`).
                 unreadable.append(str(doc.id))
+        if unreadable and not out:
+            log.error(
+                "every account document is unreadable; the pool reads as empty. "
+                "One malformed document is that document; all of them is a "
+                "decoder or writer bug",
+                extra={"unreadable": sorted(unreadable), "documents": len(unreadable)},
+            )
         return AccountListing(accounts=out, unreadable=sorted(unreadable))
 
     def list(self) -> list[Account]:
