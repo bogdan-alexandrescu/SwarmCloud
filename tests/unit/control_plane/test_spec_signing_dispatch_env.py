@@ -3,11 +3,14 @@
 Contract request 34, section 3. The public keys a worker verifies with, the
 key they belong to and the rollout mode are PLATFORM configuration: on Cloud
 Run they are on the Job (terraform's, or one this scheduler creates, from its
-own settings), and on GKE they are a ConfigMap Terraform applies, mounted
-read-only. `worker_env()` -- the per-execution override on Cloud Run and the
-template substitution on GKE, both shaped by a task -- must never set any of
-them, or a document the tenant can write would choose the keys it is checked
-against. One allow-list, both dispatchers.
+own settings), and on GKE they are on the Job this scheduler creates, from the
+same settings, with a ConfigMap Terraform applies, mounted read-only, as the
+fallback (owner decision 2026-10-08: a namespace onboarding created has no
+ConfigMap, and its every task ended CANNOT_START). `worker_env()` -- the
+per-execution override on Cloud Run and the template substitution on GKE,
+both shaped by a task -- must never set any of them, or a document the tenant
+can write would choose the keys it is checked against. One allow-list, both
+dispatchers.
 """
 
 from __future__ import annotations
@@ -83,23 +86,55 @@ def test_a_job_this_scheduler_creates_carries_them_from_its_own_settings(setting
     assert env["SPEC_LEGACY_CUTOVER"] == "2026-09-29T12:00:00Z"
 
 
-def test_the_gke_job_mounts_the_config_map_read_only_and_sets_no_env(settings, tenant):  # noqa: F811
+def _gke_job(settings, tenant, profile: str = "browser") -> dict:  # noqa: F811
     api = FakeBatchApi()
-    task = make_task("browser")
+    task = make_task(profile)
     GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=api).dispatch(
-        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile], tenant=tenant
     )
     _, body = api.created[0]
-    pod = body["spec"]["template"]["spec"]
-    container = pod["containers"][0]
+    return body
+
+
+@pytest.mark.parametrize("profile", ["browser", "claude-code"])
+def test_the_gke_job_carries_every_set_verification_setting(settings, tenant, profile):  # noqa: F811
+    """A namespace with no `swarm-spec-verify-keys` ConfigMap -- one onboarding
+    (#847) created, now that claude-code runs on GKE (PR 866) -- still gets a
+    worker that can verify: the keys are on the Job, from the scheduler's own
+    settings, exactly as on a Cloud Run Job this scheduler creates.
+
+    MUTATION: delete the `spec_job_env` loop from `GkeJobDispatcher._manifest`."""
+    container = _gke_job(settings, tenant, profile)["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env["SPEC_VERIFY_KEYS"] == KEYS
+    assert env["SPEC_SIGNING_KEY"] == settings.spec_signing_key
+    assert env["SPEC_SIGNATURE_MODE"] == "legacy"
+    assert env["SPEC_LEGACY_CUTOVER"] == "2026-09-29T12:00:00Z"
+    # Each once: a duplicate name would leave which value wins to the kubelet.
+    names = [e["name"] for e in container["env"]]
+    assert all(names.count(name) == 1 for name in SPEC_SETTINGS), names
+
+
+def test_the_gke_job_sets_none_the_scheduler_does_not_have(tenant):  # noqa: F811
+    """A scheduler deployed without the settings adds none of them, as on a
+    Cloud Run Job (`spec_job_env` drops unset values): the worker then reads
+    all four from the ConfigMap mount, the fallback."""
+    container = _gke_job(scheduler_settings(), tenant)["spec"]["template"]["spec"]["containers"][0]
     names = {e["name"] for e in container["env"]}
     assert not SPEC_SETTINGS & names, sorted(SPEC_SETTINGS & names)
+
+
+def test_the_gke_job_still_mounts_the_config_map_read_only_as_the_fallback(settings, tenant):  # noqa: F811
+    pod = _gke_job(settings, tenant)["spec"]["template"]["spec"]
+    container = pod["containers"][0]
     mounts = {m["name"]: m for m in container["volumeMounts"]}
     volumes = {v["name"]: v for v in pod["volumes"]}
     mount = mounts["spec-verify-keys"]
     assert mount["mountPath"] == SPEC_VERIFY_KEYS_MOUNT == "/etc/swarm/spec-verify-keys"
     assert mount["readOnly"] is True
     assert volumes["spec-verify-keys"]["configMap"]["name"] == SPEC_VERIFY_KEYS_CONFIG_MAP
+    # Optional: a namespace without it must still start the pod.
+    assert volumes["spec-verify-keys"]["configMap"]["optional"] is True
     assert SPEC_VERIFY_KEYS_CONFIG_MAP == "swarm-spec-verify-keys"
 
 

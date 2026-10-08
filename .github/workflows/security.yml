@@ -15,7 +15,7 @@ on:
   push:
     branches: [main]
   # MAIN MERGES THROUGH A MERGE QUEUE (owner decision 2026-10-06, docs/ci.md
-  # "Main merges through a merge queue"). Four of the ruleset's required
+  # "Merging through the merge queue"). Four of the ruleset's required
   # checks are this workflow's, and a queue entry waits for them on its own
   # `gh-readonly-queue/main/...` ref: without this trigger they never report
   # there and the queue drops every entry at its timeout. No filter, ever
@@ -342,7 +342,9 @@ jobs:
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
           status=0
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler; do
+          # workspace-apply too: it is the toolchain of swarm-workspace-deployer, the
+          # one identity here with project-wide account-IAM power (docs/workspaces.md §2.4).
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1

@@ -15,6 +15,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { Mark } from './primitives'
 import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
@@ -608,7 +609,7 @@ function Pool({
                 succeeded and returned nothing" in two words, in the fixed
                 vocabulary every other screen uses for the same kind of nothing. */}
             <p className="acct-flags">
-              <span className="ctl-mark is-zero">real zero</span>
+              <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
               <span>add the first one below</span>
             </p>
           </div>
@@ -1191,12 +1192,10 @@ function PoolFindings({
             ever assigned
           </b>
           <span className="acct-flags">
-            <span
-              className="ctl-mark is-zero"
-              aria-label="No account in this pool has ever been assigned to an agent. An idle pool and a pool nothing can reach look identical on this screen, and this is the shape of the second."
-            >
-              real zero
-            </span>
+            <Mark
+              kind="zero"
+              say="No account in this pool has ever been assigned to an agent. An idle pool and a pool nothing can reach look identical on this screen, and this is the shape of the second."
+            />
           </span>
         </li>
       )}
@@ -1274,12 +1273,10 @@ function Detail({
           <small>Last given out</small>
           {neverAssigned(account) ? (
             <b>
-              <span
-                className="ctl-mark is-zero"
-                aria-label="No agent has ever been handed this account. On its own that is simply a new account; across the whole pool it is the shape of workers that cannot reach the broker."
-              >
-                real zero
-              </span>
+              <Mark
+                kind="zero"
+                say="No agent has ever been handed this account. On its own that is simply a new account; across the whole pool it is the shape of workers that cannot reach the broker."
+              />
             </b>
           ) : (
             // THE CLOCK, THEN THE AGE (G5-16, QA 2026-10-07; capacity.html §D
@@ -1366,12 +1363,10 @@ function Detail({
                   not read
                 </span>
               ) : (
-                <span
-                  className="ctl-mark is-zero"
-                  aria-label="Every one of those reports has aged out, so the pool is skipping this account for nobody. The record is kept because a report that keeps coming back is a missing secretAccessor grant rather than an onboarding delay."
-                >
-                  real zero
-                </span>
+                <Mark
+                  kind="zero"
+                  say="Every one of those reports has aged out, so the pool is skipping this account for nobody. The record is kept because a report that keeps coming back is a missing secretAccessor grant rather than an onboarding delay."
+                />
               )}
             </span>
           </li>
@@ -3837,12 +3832,10 @@ function Reauth({
             </li>
             <li className="ctl-fact">
               <b>changed</b>
-              <span
-                className="ctl-mark is-zero"
-                aria-label="Nothing here failed and nothing was changed. This control simply does not apply to an account of this provider."
-              >
-                real zero
-              </span>
+              <Mark
+                kind="zero"
+                say="Nothing here failed and nothing was changed. This control simply does not apply to an account of this provider."
+              />
             </li>
           </ul>
         </div>

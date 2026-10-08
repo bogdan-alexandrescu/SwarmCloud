@@ -499,8 +499,12 @@ else
   SPEC_ARGS=()
   if [[ -n "${SPEC_VERIFY_KEYS_FILE}" ]]; then
     [[ -r "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys ${SPEC_VERIFY_KEYS_FILE}: no such readable file"
-    SPEC_ARGS+=(--spec-verify-keys-file "${SPEC_VERIFY_KEYS_FILE}")
-    info "step-spec keys   rendering swarm-spec-verify-keys from ${SPEC_VERIFY_KEYS_FILE}"
+    # The environment the keys must belong to: render.py accepts only
+    # swarm-${ENVIRONMENT}-specs/step-spec (#346), so another environment's key,
+    # or any other key in the shared project, is refused before anything is
+    # applied. ${ENVIRONMENT} is common.sh's (load_env), which the release sets.
+    SPEC_ARGS+=(--spec-verify-keys-file "${SPEC_VERIFY_KEYS_FILE}" --environment "${ENVIRONMENT}")
+    info "step-spec keys   rendering swarm-spec-verify-keys from ${SPEC_VERIFY_KEYS_FILE} (environment ${ENVIRONMENT})"
   else
     dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
   fi

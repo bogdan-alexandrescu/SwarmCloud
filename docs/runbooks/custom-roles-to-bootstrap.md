@@ -318,6 +318,27 @@ apply that includes `deployer_project_iam_admin` in the target set creates
 both chunk bindings directly: `Plan: 9 to import, 2 to add, 0 to change, 1 to
 destroy` (the two chunks created, `roleAdmin` destroyed, no replace).
 
+**On a fresh project, an infra apply before the bootstrap apply fails, and
+that failure is expected.** The custom roles (`swarmJobDispatcher`,
+`swarmSecretLister`, `swarmTenantWorkerFirestore` and the rest, named in
+`terraform/modules/custom_role_ids`) are created only by `terraform/bootstrap`
+now; `terraform/infra` grants them by id and creates none. Run infra first
+and every one of those grants reaches IAM naming a role that is not there, so
+the apply stops with IAM's refusal, of the form:
+
+```text
+Error 400: Role (projects/<project>/roles/swarmSecretLister) does not exist in the resource's hierarchy., badRequest
+```
+
+(the role id varies with whichever grant Terraform reached first). Nothing is
+wrong with the infra code and nothing needs importing: the role it names
+simply has no owner yet in that project. **The fix is the order, not the
+grant:** apply `terraform/bootstrap` first (it creates the roles), then re-run
+the infra apply, which then binds roles that exist. Do not work around it by
+creating the role by hand with `gcloud iam roles create`: bootstrap's own
+create of that role then collides with it, and a hand-made role carries
+permissions no reviewed file defines.
+
 * The condition change (for a role transitioning from unconditioned to scoped
   after this point, not `projectIamAdmin` on a fresh project) is a
   **replacement**, not an update: every argument of a

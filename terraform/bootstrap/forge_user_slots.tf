@@ -285,3 +285,73 @@ output "forge_user_slot_grants" {
   description = "What the user-slot grants are made on, per tenant, for the owner to read a plan against: the prefix each condition narrows to. Empty while enable_forge_user_slots is false."
   value       = local.forge_user_slot_prefixes
 }
+
+# ---------------------------------------------------------------------------
+# PERSONAL WORKSPACES' SLOTS (docs/workspaces.md §2.3 and §10, lane W4 of #847)
+# ---------------------------------------------------------------------------
+#
+# A personal workspace is made by the workspace job, not by Terraform (WD3), so
+# its tenant is never in local.forge_user_slot_tenants and the per-tenant grants
+# above never reach it. swarm-api still has to publish, disable, re-enable and
+# refresh that person's GitHub tokens, exactly as it does for a tenant above. So
+# swarm-api gets the same three grants ONCE over every personal tenant's user
+# slots: `projects/<n>/secrets/swarm-tenant-u-<tenant>-git-u-...`, recognised by
+# the `swarm-tenant-u-` prefix (identity.tenant_id_for_user's `u-`) AND a
+# `-git-u-` after it, in either resource-name form -- so a person's provider
+# key, `swarm-tenant-u-<tenant>-anthropic`, is not one of them. They name no
+# person, and Terraform keeps nothing per person (§3.2).
+#
+# The worker's read of its own slots is not here: the job binds each person's
+# worker on its own slots (A6), which a project grant per person would
+# otherwise have to be.
+#
+# Only while the workspace job exists: before it, no personal tenant has slots
+# that are not already some tenant's above.
+
+locals {
+  forge_personal_slots_on = var.enable_forge_user_slots && var.enable_workspace_deployer
+
+  forge_personal_prefix = "projects/${local.forge_project_number}/secrets/swarm-tenant-u-"
+
+  # Non-empty only when a `-git-u-` follows the personal prefix, for the
+  # secret's own name and for a version's (`.../versions/<v>`) alike.
+  forge_personal_any = "resource.name.startsWith(\"${local.forge_personal_prefix}\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-u-\") != \"\""
+
+  forge_personal_grants = local.forge_personal_slots_on ? {
+    version_adder = {
+      role        = "roles/secretmanager.secretVersionAdder"
+      title       = "swarm forge user slots personal"
+      description = "managed-by=swarm-terraform; swarm-api publishes personal tenants' GitHub user tokens and refresh tokens (#780 D2, D3; #847)."
+      expression  = local.forge_personal_any
+    }
+    version_manager = {
+      role        = "projects/${var.project_id}/roles/${module.custom_role_ids.ids["forge_slot_version_manager"]}"
+      title       = "swarm forge user slot versions personal"
+      description = "managed-by=swarm-terraform; swarm-api disables personal tenants' GitHub user tokens on disconnect and enables them on reconnect (#780 OB3; #847)."
+      expression  = local.forge_personal_any
+    }
+    slot_reader = {
+      role        = "roles/secretmanager.secretAccessor"
+      title       = "swarm forge user slots personal"
+      description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub user slots: the refresh token to refresh, the current access token to reuse instead of refreshing per call (#780 D2, owner decision 2026-10-08; #847)."
+      expression  = local.forge_personal_any
+    }
+  } : {}
+}
+
+resource "google_project_iam_member" "forge_personal_slots" {
+  for_each = local.forge_personal_grants
+
+  project = var.project_id
+  role    = each.value.role
+  member  = local.forge_api_member
+
+  condition {
+    title       = each.value.title
+    description = each.value.description
+    expression  = each.value.expression
+  }
+
+  # The version manager is this file's custom role.
+  depends_on = [google_project_iam_custom_role.forge_slot_version_manager]
+}

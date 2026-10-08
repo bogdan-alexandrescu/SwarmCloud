@@ -19,12 +19,16 @@ Refusing leaves that one the newest.
 MUTATIONS: open the root without `O_NOFOLLOW` (the refusal tests go red); make
 the refusal a path-level `is_symlink()` check (the lying-check test goes red,
 because that check is exactly what a swap after it defeats); descend into a
-linked subdirectory (the below-the-root test goes red).
+linked subdirectory (the below-the-root test goes red); re-raise a
+`PermissionError` from the walk (the unreadable-folder test fails the
+checkpoint); say "a link" for every root-open error (the EMFILE test).
 """
 
 from __future__ import annotations
 
+import errno
 import io
+import json
 import os
 import shutil
 import tarfile
@@ -152,3 +156,71 @@ def test_below_the_root_a_link_is_archived_as_a_link_and_never_followed(
     # Every member that is not a directory, the way the API's listing counts.
     assert record.file_count == sum(1 for m in members.values() if not m.isdir())
     assert record.file_count == 4
+
+
+# ---------------------------------------------------------------------------
+# #227: an entry the worker cannot read, and a root it cannot open
+# ---------------------------------------------------------------------------
+
+
+def _records(log_stream) -> list[dict]:
+    return [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 folder; CI is not root")
+def test_an_unreadable_folder_is_left_out_and_named_and_the_rest_is_archived(
+    store, tmp_path, log_stream
+):
+    """A folder (and a file) under `work/` with mode 000 made `os.open` raise
+    `PermissionError`, which `_walk` re-raised, failing the whole checkpoint
+    and every later one; `rglob` used to pass it by. It is skipped and named,
+    path only, in one warning with a count."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    (ws.work / "state.json").write_text('{"completed_steps": 3}')
+    locked = ws.work / "locked"
+    locked.mkdir()
+    (locked / "inside.txt").write_text("unreachable")
+    sealed = ws.work / "sealed.txt"
+    sealed.write_text("unreadable")
+    locked.chmod(0o000)
+    sealed.chmod(0o000)
+    try:
+        record = _manager(store, _logger(log_stream)).create(ws)
+    finally:
+        locked.chmod(0o755)
+        sealed.chmod(0o644)
+
+    data = store.download_bytes(record.archive_key)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert "state.json" in names
+    assert not any(name.startswith(("locked", "sealed")) for name in names), names
+    warnings = [r for r in _records(log_stream) if "unreadable" in r]
+    assert len(warnings) == 1, warnings
+    assert warnings[0]["unreadable"] == 2
+    assert sorted(warnings[0]["named"]) == ["locked", "sealed.txt"]
+    assert "Permission denied" not in json.dumps(warnings[0]), "the OS error is not the path"
+
+
+def test_a_root_that_cannot_be_opened_for_another_reason_is_not_called_a_link(
+    store, tmp_path, log_stream, monkeypatch
+):
+    """The root-open refusal said "it is a link or not a directory" whatever
+    the error was. That is said only for ELOOP and ENOTDIR; anything else --
+    here EMFILE, out of descriptors -- is named for what it is."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    (ws.work / "state.json").write_text("{}")
+    real_open = os.open
+
+    def open_without_descriptors(path, flags, *args, **kwargs):
+        if kwargs.get("dir_fd") is None and os.fspath(path) == os.fspath(ws.work):
+            raise OSError(errno.EMFILE, os.strerror(errno.EMFILE))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_without_descriptors)
+    with pytest.raises(CheckpointError) as refused:
+        _manager(store, _logger(log_stream)).create(ws)
+    message = str(refused.value)
+    assert "EMFILE" in message, message
+    assert "is a link or not a directory" not in message, message
+    assert _checkpoint_keys(store) == []

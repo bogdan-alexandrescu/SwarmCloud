@@ -64,6 +64,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
+| 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 
 ---
 
@@ -7664,6 +7665,26 @@ it were found wrong while building it (#353, #354), and one decision was added:
    as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
    loudly.
 
+### Addendum 2026-10-08: the GKE Job carries the keys in its environment
+
+Owner decision, 2026-10-08. The "not inlined into the pod's `env:`" design
+above is reversed. `GkeJobDispatcher._manifest` now puts the scheduler's own
+`SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE` and
+`SPEC_LEGACY_CUTOVER` (`scheduler.dispatch.spec_job_env`) on the worker
+container's `env:`, as on a Cloud Run Job the scheduler creates. The
+`swarm-spec-verify-keys` ConfigMap stays mounted read-only, as the fallback
+the worker reads only when its environment carries no keys (amendment 3
+above). Why: claude-code moved to GKE (PR 866), and onboarding (#847) creates
+a namespace per person with no ConfigMap in it, so every task there ended
+`CANNOT_START` under amendment 4.
+
+The tenant still cannot choose its keys. The values come from the
+scheduler's settings and never from `worker_env()`, which a task shapes; a
+test holds both dispatchers to that. A pod's manifest is built by the
+scheduler and is not writable from the tenant namespace. The worker still
+fails closed on a missing or bad signature. Only a missing ConfigMap stopped
+being fatal. Nothing under `apps/common/swarm_common/` changed.
+
 ---
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
@@ -9651,3 +9672,96 @@ production.
 - **Invariant 10.** Unchanged: a caller names `claude-code-gke`, and the
   catalogue says where it runs. `MODEL` comes from the scheduler's
   `WORKER_MODELS`, never from the task (`test_a_tasks_own_model_never_reaches_the_pod`).
+
+---
+
+## 56. `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live
+
+**Status:** ACCEPTED, accepted by the owner 2026-10-08, and APPLIED
+2026-10-08 by the pull request that adds this entry (lane MOCK-CARRY, part of
+#166). This is the sanctioned edit to `apps/common/swarm_common/` for it;
+nothing else in the frozen package changes.
+
+### What is true today
+
+#166's carry is on main (PR 689 and #712): a parking attempt's uploads are
+recorded (`ControlPlane._record_parked_uploads`), and the attempt that
+finishes the task lists them by reference, `{name, bytes, uri,
+carried_from}`, read back through `ControlPlane.parked_uploads`. The only
+runner that parks on demand is `mock` (`quota_exhausted`), and it raises its
+rate limit BEFORE it writes its artifact
+(`apps/agent-worker/agent_worker/runners/mock.py`: the `_parks_this_attempt`
+check comes before `ctx.write_artifact`). So a mock park uploads no artifact,
+and the attempt after the park writes its artifact itself.
+`tests/unit/worker/test_parked_uploads_carry.py` proves the carry offline only
+by patching the worker's upload to put a file in the artifacts folder.
+
+### Why
+
+#166 asks for the carry to be shown on a live run, not only offline. No live
+runner can show it: a CLI agent cannot be made to meet a provider rate limit on
+demand, and the mock, which can, parks with nothing written. The mock needs to
+write its artifact first, park, and then NOT write it again, so the file the
+task ends with can only have arrived by the carry.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, `_MOCK_INPUTS` gains one key, after
+`retry_after_seconds`:
+
+```python
+"artifact_before_park": RunnerInput(
+    "boolean",
+    means="write the output artifact before the simulated rate limit parks the first attempt",
+),
+```
+
+Default false (an omitted key). Nothing else in the catalogue changes.
+
+**The non-frozen half, in the same change:**
+
+1. `agent_worker/runners/mock.py`: with `quota_exhausted` and
+   `artifact_before_park` both set, the attempt that parks writes
+   `artifact_name`/`artifact_text` to the artifacts folder and then raises
+   `QuotaExhaustedSignal`; the attempt after the park writes nothing under
+   that name. Without `quota_exhausted` the flag changes nothing.
+2. The generated `runner-inputs:mock` tables in docs/workflows.md and
+   plugin/README.md, which `tests/unit/mcp/test_runner_input_prose.py` holds
+   to the catalogue, and the
+   live-proof recipe in docs/workflows.md: a two-step workflow,
+   A(mock, `quota_exhausted`, `artifact_before_park`,
+   `artifact_name=notes.md`) -> B(mock, `input_from` A: `notes.md`). A's second
+   attempt lists `notes.md` with `carried_from` its first, and B stages it.
+3. Tests: `tests/unit/worker/test_mock_artifact_before_park.py` on the runner,
+   and `test_artifact_before_park_is_carried_to_the_finishing_attempt` in
+   `test_parked_uploads_carry.py`, the full carry through the lifecycle with
+   no upload patched.
+
+The bridge and swarm-api read `RunnerProfile.inputs` directly
+(`check_inputs`), so neither restates the key; the console's `SUGGESTED` mock
+list is a subset by design and does not offer the park keys.
+
+### What it would break if accepted
+
+Nothing existing. The key is new and optional; a task that does not send it
+runs exactly as before, and `test_mock_bounded_park.py` still holds the
+one-park bound. A task that sends it to a worker built before this change is
+refused by that worker's re-check of the stored input, as any undeclared key
+is, so the rollout order is the worker image with the API.
+
+### If it is declined
+
+#166's carry stays proven offline only, by a test that patches the worker's
+upload, and the live proof needs a CLI agent to meet a real rate limit.
+
+### Invariants
+
+- **Invariants 1, 2 and 3.** Untouched: no state, lease or pool count changes.
+- **Invariant 4.** Unchanged: the mock still checkpoints, parks and exits.
+- **Invariant 5.** Unchanged: a fenced park records nothing to carry
+  (`test_a_fenced_park_records_nothing_to_carry`).
+- **Invariants 6, 7 and 8.** Untouched.
+- **Invariant 9.** Unchanged: the carry is read by id within the task's own
+  tenant and prefix.
+- **Invariant 10.** Preserved: a caller names `mock` and sends a declared
+  boolean, data rather than an image, a command or a resource spec.

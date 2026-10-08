@@ -23,6 +23,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
 import tarfile
 
 from agent_worker import workspace as workspace_mod
@@ -85,3 +86,34 @@ def test_a_resume_from_that_archive_starts_with_no_input_for_the_worker_to_write
     assert manager.restore(found, resumed) == 1
     assert (resumed.work / "state.json").read_text() == '{"completed_steps": 1}'
     assert not resumed.input_path.exists(), "a restored input.json would be the previous attempt's"
+
+
+def test_a_hard_link_to_the_input_or_from_outside_is_archived_as_a_copy_knowingly(
+    store, tmp_path, log_stream
+):
+    """PINNED, not a defect fixed (#227). A hard link from outside `work/`,
+    or to `input.json` under another name, is archived as a regular file of
+    its content under its name here: what the agent copying the file in would
+    produce, which it may do with any file its uid reads. Accepted, and
+    recorded in `_add_entry`'s docstring. A change that refuses or drops such
+    a link should change this test."""
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    ws.input_path.write_text('{"prompt": "linked under a new name"}')
+    outside = tmp_path / "outside.txt"
+    outside.write_text("from outside work\n")
+    os.link(outside, ws.work / "from-outside.txt")
+    os.link(ws.input_path, ws.work / "copy.json")
+
+    record = _manager(store, _logger(log_stream)).create(ws)
+
+    data = store.download_bytes(record.archive_key)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        members = {m.name: m for m in archive.getmembers()}
+        bodies = {
+            name: archive.extractfile(m).read() for name, m in members.items() if m.isreg()
+        }
+    assert "input.json" not in members
+    assert members["from-outside.txt"].isreg(), "archived as the file, not a link"
+    assert bodies["from-outside.txt"] == b"from outside work\n"
+    assert members["copy.json"].isreg()
+    assert bodies["copy.json"] == b'{"prompt": "linked under a new name"}'
