@@ -163,6 +163,17 @@ index runs on it; it declares what `claude-code` does:
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:indexer -->
 
+`claude-code-gke` is `claude-code` on GKE Autopilot instead of Cloud Run Jobs,
+TEMPORARILY: contract request 55's canary for request 53, removed when
+`claude-code` itself moves to GKE. The same image, runner, model and inputs;
+only where it runs differs. It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-gke generated from RUNNER_PROFILES["claude-code-gke"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-gke runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code-gke -->
+
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
 It names an issue in the task's own `repository_url` (a workflow's, for a
 step), and a submission that sends it without a repository is refused with

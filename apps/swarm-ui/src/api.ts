@@ -2767,7 +2767,9 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 200))
-    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+    // The route's shape -- `{ pool }` with the pool's new hard limit -- because
+    // the editor compares that pool with what was asked (AdminSettings `saveOutcome`).
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: { name: poolName, hard_limit: limit } } }
   }
 
   return write(path, 'PUT', { limit })
@@ -3257,7 +3259,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
-  "indexer": {"required_keys": ["prompt"]}
+  "indexer": {"required_keys": ["prompt"]},
+  "claude-code-gke": {"required_keys": ["prompt"]}
 }
 
 /**
@@ -3289,7 +3292,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
-  "indexer": {"available": true, "disabled_reason": ""}
+  "indexer": {"available": true, "disabled_reason": ""},
+  "claude-code-gke": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

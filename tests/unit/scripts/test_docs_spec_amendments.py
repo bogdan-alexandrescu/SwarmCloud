@@ -69,7 +69,9 @@ def test_the_catalogue_is_what_the_amendment_describes():
     the old split: amend them before changing the expectation here.
     """
     backends = _backends()
-    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser"}
+    # claude-code-gke: contract request 55 (accepted 2026-10-07), TEMPORARY --
+    # the request 53 canary, gone when claude-code itself moves to GKE.
+    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code-gke"}
     assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
         "mock",
         "generic",
@@ -242,8 +244,13 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
     assert "`kubernetes/render.py::JOB_FILES_GVISOR`" in isolation
     gvisor = _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR")
-    assert "--runtime gvisor" in gvisor
-    assert "NOT the" in gvisor
+    # One line says both: that `--runtime gvisor` selects it and that it is
+    # NOT the default. Two phrases anywhere in the symbol's comment block
+    # would pass a comment that split or dropped the negation (#453).
+    assert any("--runtime gvisor" in line and "NOT the" in line for line in gvisor.splitlines()), (
+        "kubernetes/render.py JOB_FILES_GVISOR no longer says, on one line, that "
+        "`--runtime gvisor` selects it and it is NOT the default"
+    )
 
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch

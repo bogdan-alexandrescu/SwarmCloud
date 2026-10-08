@@ -184,7 +184,7 @@ pool_limits = {
     # anthropic was 100 until smoke declared it for release acceptance
     # (#628): 100 is below the new floor and the plan would refuse it. The
     # floor is what forces 120, not a measurement; smoke's own pool is
-    # min(max_active, capacity_units) = 8, so acceptance can add at most 8.
+    # min(max_active, capacity_units) = 20, so acceptance can add at most 20.
     anthropic = 120
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
@@ -262,8 +262,12 @@ tenants = {
     directory_group = true
     display_name    = "Engineering"
     providers       = ["anthropic", "openai"]
-    max_active      = 40
-    capacity_units  = 40
+    # Live values, set via the admin API on 2026-10-07 (owner): max_active was
+    # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
+    # the tenant document once and ignores later changes, so these record the
+    # live state rather than enforce it.
+    max_active     = 45
+    capacity_units = 45
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared
@@ -313,10 +317,19 @@ tenants = {
     directory_group = true
     display_name    = "Smoke tests"
     providers       = ["anthropic"]
-    # Live values since the 2026-10-02 doubling. The tenant pool is
-    # min(max_active, capacity_units), so smoke's ceiling is 8, not 20.
+    # The live values, set by the owner through the admin API on 2026-10-07
+    # (~23:4xZ): smoke's ceiling is 20. It was 8 -- capacity_units 8 held the
+    # pool, min(max_active, capacity_units), below max_active 20 -- and a
+    # console raise to 20 left it there until the tenant ceiling route began
+    # setting both fields (the ceiling is one number, owner decision same day).
+    #
+    # These RECORD the live state; they do not enforce it. Terraform creates a
+    # tenant document once and ignores later changes to it
+    # (terraform/modules/firestore/bootstrap.tf, `ignore_changes = [fields]`),
+    # so an apply neither sets 20 nor reverts it. What they decide is the
+    # ceiling a rebuilt environment is born with.
     max_active     = 20
-    capacity_units = 8
+    capacity_units = 20
   }
 
   # The in-VPC verification job's own tenant.

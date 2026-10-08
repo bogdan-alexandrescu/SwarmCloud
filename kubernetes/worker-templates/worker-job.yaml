@@ -220,6 +220,21 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/swarm
+            # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
+            # mounts both on EVERY GKE pod, not only browser's, and this
+            # template is the reference for what it sends. Unread while browser
+            # was the only GKE profile; contract request 55's claude-code-gke
+            # made it a second one, and test_kubernetes_manifests.py compares
+            # the two. Shared memory counts against the memory limit only when
+            # something writes to it.
+            - name: dshm
+              mountPath: /dev/shm
+            # The step-spec public keys (contract request 34): terraform's
+            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY and
+            # never in `env:`, as in worker-job-browser.yaml.
+            - name: spec-verify-keys
+              mountPath: /etc/swarm/spec-verify-keys
+              readOnly: true
       volumes:
         - name: workspace
           emptyDir:
@@ -230,3 +245,14 @@ spec:
         - name: home
           emptyDir:
             sizeLimit: __HOME_DISK__
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        # `optional`: a namespace whose ConfigMap has not been applied yet
+        # still starts its pod, and the worker exits CANNOT_START for every
+        # task, signed or not -- loud, and never an unverified run.
+        - name: spec-verify-keys
+          configMap:
+            name: swarm-spec-verify-keys
+            optional: true
