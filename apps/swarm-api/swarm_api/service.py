@@ -208,6 +208,13 @@ class SubmissionService:
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
             if mode is None:
+                if not getattr(self._settings, "repository_grants_enforced", False):
+                    # The switch is off (REPOSITORY_GRANTS_ENFORCED, owner
+                    # 2026-10-08): no grant runs with the tenant token, as
+                    # before #780, until the migration turns refusal on.
+                    task.forge_credential = GIT_PROVIDER
+                    task.forge_access = SERVICE_FORGE_ACCESS
+                    continue
                 refused.append((task.step_id, f"{owner}/{repo}"))
                 continue
             task.forge_credential = provider_suffix(Scope.USER, user=task.submitted_by)
