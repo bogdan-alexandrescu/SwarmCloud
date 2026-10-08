@@ -1559,10 +1559,14 @@ def _setup_issues(step: dict[str, Any]) -> list[dict[str, Any]]:
     return issues
 
 
-def _setup_note(step: dict[str, Any]) -> str:
+def setup_note(step: dict[str, Any]) -> str:
     state = str(step.get("state") or "unknown")
     evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
-    if step.get("step") == "github_connected" and state in _SETUP_DONE:
+    if step.get("step") == "workspace" and evidence.get("state"):
+        note = workspace_line(evidence)
+    elif step.get("step") == "claude_account":
+        note = _claude_account_note(state, evidence)
+    elif step.get("step") == "github_connected" and state in _SETUP_DONE:
         login = evidence.get("forge_login") or "an account GitHub did not name"
         note = f"connected as {login}"
         if evidence.get("via") == "tenant":
@@ -1596,13 +1600,175 @@ def setup_checklist(view: dict[str, Any]) -> list[str]:
         name = str(step.get("step") or "?")
         mark = _SETUP_MARKS.get(str(step.get("state")), "[?]")
         flag = "   <- next" if name == nxt else ""
-        lines.append(f"  {mark} {name:<17} {_setup_note(step)}{flag}")
+        lines.append(f"  {mark} {name:<17} {setup_note(step)}{flag}")
         for issue in _setup_issues(step):
             lines.append(f"        {issue['code']}")
             if issue.get("copy"):
                 lines += _wrapped(issue["copy"], "          ")
     lines.append("Ready: every step is done." if nxt is None else f"Next: {nxt}")
     return lines
+
+
+# -- the person's workspace (docs/workspaces.md §6.2; #847, W8) ---------------
+
+#: What each `swarm_setup_workspace` action posts. Both are idempotent at the
+#: API, and both act on the CALLER's own personal workspace: neither route
+#: reads a tenant, a principal or anything else from the body but `via`.
+WORKSPACE_ACTIONS = {"request": "/v1/workspace", "loan": "/v1/workspace/loan-request"}
+
+#: The fields of `GET /v1/workspace` a terminal or a tool reply shows. ONLY
+#: THESE travel, as `start_github_connect` keeps only its two: a field the
+#: route gains later reaches nobody until someone has read it here first.
+_WORKSPACE_SHOWN = ("state", "workspace_id", "requested_at", "decision", "steps", "failure",
+                    "ready_at", "request_again_at", "setup_url")
+
+#: What a record in each unfinished state is waiting on, in §6.1's words.
+_WORKSPACE_WAITING = {
+    "requested": "waiting for an admin",
+    "approved": "being created",
+    "applying": "being created",
+    "needs_owner": "waiting for the platform owner's review",
+}
+
+#: The two submission refusals that setup, and nothing else, clears (§5.2).
+SETUP_REFUSALS = frozenset({"WORKSPACE_NOT_READY", "NO_CLAUDE_ACCOUNT"})
+
+
+def workspace_line(record: dict[str, Any]) -> str:
+    """One record as the checklist says it: `requested (w-3f9a2c) — waiting
+    for an admin`, `ready (w-3f9a2c)`, `not requested`."""
+    state = str(record.get("state") or "none")
+    if state == "none":
+        return "not requested"
+    wid = record.get("workspace_id")
+    shown = state.replace("_", " ") + (f" ({wid})" if wid else "")
+    if state == "denied":
+        decision = record.get("decision") if isinstance(record.get("decision"), dict) else {}
+        reason = str(decision.get("reason") or "").strip()
+        return f"{shown} — not approved: {reason}" if reason else f"{shown} — not approved"
+    waiting = _WORKSPACE_WAITING.get(state)
+    return f"{shown} — {waiting}" if waiting else shown
+
+
+def _claude_account_note(state: str, evidence: dict[str, Any]) -> str:
+    if state in _SETUP_DONE:
+        held = [label for key, label in (("own", "your own account"), ("lent", "lent by an admin"),
+                                         ("provider_key", "a provider key"))
+                if evidence.get(key)]
+        return ", ".join(held) or "done"
+    if evidence.get("loan_request") == "requested":
+        return "loan requested"
+    return "none"
+
+
+def workspace_record(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/workspace`: the caller's own record, or `{"state": "none"}`."""
+    record = client.request("GET", "/v1/workspace")
+    if not isinstance(record, dict) or not record.get("state"):
+        raise SwarmError("GET /v1/workspace answered no workspace state; nothing was read")
+    return {key: record[key] for key in _WORKSPACE_SHOWN if key in record}
+
+
+def setup_workspace(client: SwarmClient, action: str) -> dict[str, Any]:
+    """Post the workspace request (`request`) or the Claude-account loan
+    request (`loan`), then read the record ONCE and return it.
+
+    IT NEVER WAITS. An admin approves in minutes or in days, and the job takes
+    minutes after that; a call that held on for either would hold the
+    session's turn for nothing. /sc:setup and `sc setup` re-read the checklist
+    as they do for every other step."""
+    path = WORKSPACE_ACTIONS.get(action)
+    if path is None:
+        raise SwarmError(f"action is `request` or `loan`, not {action!r}. Nothing was sent")
+    posted = client.request("POST", path, payload={"via": SETUP_SURFACE})
+    answer: dict[str, Any] = {"action": action}
+    if action == "loan":
+        posted = posted if isinstance(posted, dict) else {}
+        answer["loan"] = {"state": posted.get("state"), "requested_at": posted.get("requested_at")}
+    record = workspace_record(client)
+    answer.update({
+        "workspace": record,
+        "line": workspace_line(record),
+        "next": "swarm_setup_status shows it as it moves; nothing here waits for an admin",
+    })
+    return answer
+
+
+def api_message(exc: SwarmError) -> str:
+    """The API's own `message` out of a refusal, word for word.
+
+    `SwarmClient` builds `<METHOD> <path> -> <status>: <message> (<detail>)`
+    (`client._explain_json`); this takes back off exactly the two halves it
+    added, so a person reads the sentence the API wrote and nothing else."""
+    text = str(exc)
+    marker = f" -> {exc.status}: "
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    if exc.detail:
+        tail = f" ({json.dumps(exc.detail, default=str)})"
+        if text.endswith(tail):
+            text = text[: -len(tail)]
+    return text
+
+
+def setup_refusal_text(exc: SwarmError, setup_command: str) -> str | None:
+    """A submission refused because setup is unfinished, as §6.2 prints it:
+    `✕ 403 <code>: <the API's message>`, then the command that finishes it.
+    None for any other error, which its caller prints as it always has."""
+    if exc.edge or exc.status != 403 or exc.code not in SETUP_REFUSALS:
+        return None
+    return f"✕ 403 {exc.code}: {api_message(exc)}\n  Finish setup with {setup_command}."
+
+
+def _setup_workspace_steps(client: SwarmClient, out, ask: Callable[[str], str],
+                           view: dict[str, Any]) -> None:
+    """§6.2's two steps, before GitHub: request the workspace when nothing is
+    requested, and ask for a loan when there is no Claude account. A record
+    that is waiting or being created is said, and setup moves on: GitHub
+    needs no workspace, and nothing here waits for one."""
+    step = _setup_step(view, "workspace")
+    evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+    state = evidence.get("state")
+    if state is not None and state != "ready":
+        out.write("\n")
+        if state == "none":
+            wanted = _yes(ask("Request your workspace now? An admin approves it; it is ready a "
+                              "few minutes after that. [Y/n] "), default=True)
+        elif state == "denied":
+            out.write(f"Workspace {workspace_line(evidence)}.\n")
+            wanted = _yes(ask("Request it again? [y/N] "), default=False)
+        else:
+            out.write(f"Workspace {workspace_line(evidence)}. Carrying on with GitHub, which "
+                      "does not wait for it.\n")
+            wanted = False
+        if wanted:
+            try:
+                done = setup_workspace(client, "request")
+            except SwarmError as exc:
+                out.write(f"workspace: {refusal_text(exc)}\n")
+            else:
+                out.write(f"  [~] {'workspace':<17} {done['line']}\n")
+        elif state in ("none", "denied"):
+            out.write("Not requested: no task or workflow can start until your workspace is "
+                      f"ready. `{terminal_command('sc setup')}` asks again.\n")
+
+    step = _setup_step(view, "claude_account")
+    evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+    if not step or step.get("state") in _SETUP_DONE or evidence.get("loan_request") == "requested":
+        return
+    answer = ask("No Claude account yet: add one in the console, or ask an admin to lend you "
+                 "one? [loan/skip] ").strip().lower()
+    if answer == "loan":
+        try:
+            setup_workspace(client, "loan")
+        except SwarmError as exc:
+            out.write(f"claude account: {refusal_text(exc)}\n")
+        else:
+            out.write(f"  [~] {'claude_account':<17} loan requested\n")
+        return
+    url = evidence.get("setup_url")
+    out.write("Skipped. Add your own Claude account in the console"
+              + (f": {url}" if url else "") + "\n")
 
 
 def start_github_connect(client: SwarmClient) -> dict[str, Any]:
@@ -2033,7 +2199,8 @@ def run_setup(
     sleep: Callable[[float], Any] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> int:
-    """The wizard, from wherever the checklist stands (§4.3): connect GitHub,
+    """The wizard, from wherever the checklist stands (§4.3): request the
+    workspace and a Claude account (docs/workspaces.md §6.2), connect GitHub,
     enable owners, choose repositories, verify, then the checklist again.
 
     Exit 0 when the checklist says ready, 3 when it stopped short of that (a
@@ -2043,6 +2210,7 @@ def run_setup(
     open_browser = open_browser or _open_browser
     view = setup_status(client)
     _emit(setup_checklist(view), out)
+    _setup_workspace_steps(client, out, ask, view)
 
     login = connected_as_you(view)
     if login is None:
@@ -3491,6 +3659,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
         with SwarmClient(context=args.context) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
+        # A submission refused because setup is unfinished (§6.2) reached the
+        # API and was answered: doctor, below, explains a request that did
+        # not arrive, so it is the wrong next step. The setup command is.
+        refusal = setup_refusal_text(exc, f"`{terminal_command('sc setup')}`")
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return EXIT_FAIL
         # The connection itself failed, so there is no snapshot to mark up.
         # Say so on stderr and leave stdout empty rather than printing a screen
         # of dashes that looks like a reading.

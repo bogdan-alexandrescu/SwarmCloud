@@ -52,8 +52,10 @@ NO_ACCOUNT = (
 REFUSALS = {"WORKSPACE_NOT_READY": NOT_READY, "NO_CLAUDE_ACCOUNT": NO_ACCOUNT}
 
 
-def _step(name, state, **evidence):
-    return {"step": name, "state": state, "code": None, "copy": None, "checked_at": None,
+def _step(name, mark, **evidence):
+    """One checklist step; `mark` is its checklist state, since the workspace
+    step's evidence carries the record's own `state`."""
+    return {"step": name, "state": mark, "code": None, "copy": None, "checked_at": None,
             "evidence": evidence, "issues": [], "required": True}
 
 

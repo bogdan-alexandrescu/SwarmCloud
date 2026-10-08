@@ -1323,8 +1323,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_setup_status",
         "description": (
             "The caller's SwarmCloud onboarding checklist, the one the console "
-            "draws: six steps in order (signed_in, github_connected, "
-            "orgs_enabled, repos_chosen, access_verified, ready), each todo, "
+            "draws, its steps in the API's order (signed_in, workspace, "
+            "claude_account, github_connected, orgs_enabled, repos_chosen, "
+            "access_verified, ready; an API without workspaces omits those two), "
+            "each with `note` -- `requested (w-3f9a2c) — waiting for an admin`, "
+            "`loan requested` -- and each todo, "
             "in_progress, done, failed or stale, with every failure's code and "
             "its recovery copy word for word, and `next_step` (null when ready). "
             "`checklist` is the text to show. `connected_as_you` is the GitHub "
@@ -1342,6 +1345,28 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "Hold until GitHub is connected as you, up to this long.",
                 },
             },
+        },
+    },
+    {
+        "name": "swarm_setup_workspace",
+        "description": (
+            "Ask for the caller's own SwarmCloud workspace (`request`), or ask "
+            "an admin to lend them a Claude account (`loan`), then return the "
+            "workspace record once: `state` (none, requested, approved, "
+            "applying, needs_owner, ready, denied, failed), `workspace_id`, the "
+            "job's `steps`, and `line`, the checklist's words for it. An admin "
+            "approves the request, and the workspace is ready a few minutes "
+            "after that. THIS DOES NOT WAIT for either: show `line` and carry "
+            "on with setup; swarm_setup_status shows it as it moves. Both are "
+            "idempotent, and both act on the caller's own workspace only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["request", "loan"],
+                           "description": "request: the workspace. loan: a Claude account."},
+            },
+            "required": ["action"],
         },
     },
     {
@@ -2382,8 +2407,9 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
 
 
 _SETUP_TOOLS = frozenset(
-    {"swarm_setup_status", "swarm_setup_connect", "swarm_setup_orgs", "swarm_setup_repos",
-     "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify", "swarm_access"}
+    {"swarm_setup_status", "swarm_setup_workspace", "swarm_setup_connect", "swarm_setup_orgs",
+     "swarm_setup_repos", "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify",
+     "swarm_access"}
 )
 
 #: The longest `swarm_setup_status` holds for GitHub: the authorize link's life.
@@ -2394,10 +2420,13 @@ def _setup_view(view: dict[str, Any]) -> dict[str, Any]:
     """The checklist for a tool reply: the text, and each step without its
     evidence -- which names secrets and records the model has no use for --
     bar who GitHub is connected as."""
-    from .sc import connected_as_you, setup_checklist
+    from .sc import connected_as_you, setup_checklist, setup_note
 
+    # `note` is the checklist's words for a step, so the workspace's id and
+    # state reach the model without the evidence they are read from.
     steps = [
-        {key: step.get(key) for key in ("step", "state", "code", "copy", "issues")}
+        {**{key: step.get(key) for key in ("step", "state", "code", "copy", "issues")},
+         "note": setup_note(step)}
         for step in view.get("steps") or [] if isinstance(step, dict)
     ]
     return {
@@ -2432,6 +2461,8 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     answer["not_connected"] = sc.not_connected_text(wait)
                 return reply(answer)
             return reply(_setup_view(sc.setup_status(client)))
+        if name == "swarm_setup_workspace":
+            return reply(sc.setup_workspace(client, _text_arg(args, "action", name)))
         if name == "swarm_setup_connect":
             already = sc.connected_as_you(sc.setup_status(client))
             if already is not None:
@@ -3200,6 +3231,14 @@ def _tool_error_text(exc: SwarmError) -> str:
     API itself -- a 409, a validation error -- means the request arrived, and
     doctor, which explains how a request fails to arrive, is no answer to it.
     """
+    from .sc import setup_refusal_text
+
+    # A task, workflow or issue run refused because the caller's setup is
+    # unfinished (docs/workspaces.md §6.2): the API's message word for word,
+    # then the plugin command that finishes it.
+    refusal = setup_refusal_text(exc, "/sc:setup")
+    if refusal is not None:
+        return refusal
     text = str(exc)
     if getattr(exc, "edge", False):
         text = text.rstrip().rstrip(".") + (
