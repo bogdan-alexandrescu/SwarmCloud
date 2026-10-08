@@ -1,8 +1,11 @@
 // THE ONBOARDING CHECKLIST (#780, OB8; docs/onboarding.md §2.1-§2.3, Entry A).
 //
 // WHAT EACH CASE HOLDS:
-//   * the six steps render in the server's order, each with the state the
+//   * the seven steps render in the server's order, each with the state the
 //     server derived, and the next step is the one `next_step` names;
+//   * Install the App (#780, 2026-10-08) is its own step between Connect
+//     GitHub and the orgs: installed nowhere, it says so and links the App's
+//     install page; installed, it names where; a token connection needs none;
 //   * a failed step prints the §2.3 copy the server sent, WORD FOR WORD, with
 //     the GitHub page it names; a step waiting on another says which;
 //   * each not-done step's action goes where the work is: Connect GitHub
@@ -40,6 +43,7 @@ function doc(steps: Step[], over: Record<string, unknown> = {}) {
 const FRESH = doc([
   { step: 'signed_in', state: 'done', evidence: { email: 'dev@swarm.example.com', tenant_id: 'eng' } },
   { step: 'github_connected', state: 'todo', evidence: { via: null } },
+  { step: 'app_installed', state: 'todo', evidence: { waiting_for: 'github_connected' } },
   { step: 'orgs_enabled', state: 'todo', evidence: { waiting_for: 'github_connected' } },
   { step: 'repos_chosen', state: 'todo', evidence: { waiting_for: 'github_connected' } },
   { step: 'access_verified', state: 'todo', evidence: { waiting_for: 'github_connected' } },
@@ -51,6 +55,7 @@ const CONNECTED = { via: 'user', kind: 'app_user', forge_login: 'octo-dev', toke
 const SSO_FAILED = doc([
   { step: 'signed_in', state: 'done', evidence: { email: 'dev@swarm.example.com', tenant_id: 'eng' } },
   { step: 'github_connected', state: 'done', evidence: CONNECTED },
+  { step: 'app_installed', state: 'done', evidence: { needed: true, read: true, installed: ['octo-dev', 'example-org'] } },
   {
     step: 'orgs_enabled',
     state: 'failed',
@@ -65,6 +70,7 @@ const SSO_FAILED = doc([
 const COMPLETE = doc([
   { step: 'signed_in', state: 'done' },
   { step: 'github_connected', state: 'done', evidence: CONNECTED },
+  { step: 'app_installed', state: 'done', evidence: { needed: true, read: true, installed: ['octo-dev'] } },
   { step: 'orgs_enabled', state: 'done', evidence: { owners: [{ owner: 'octo-dev', owner_type: 'User', reach: 'reachable' }] } },
   { step: 'repos_chosen', state: 'done', evidence: { repositories: [{ repository: 'octo-dev/example-api', mode: 'write' }] } },
   { step: 'access_verified', state: 'done', evidence: { repositories: [{ repository: 'octo-dev/example-api', result: 'passed' }] } },
@@ -90,19 +96,19 @@ afterEach(() => {
 })
 
 describe('the Setup page draws the server-derived checklist', () => {
-  it('renders the six steps in order with their states, and marks the next one', async () => {
+  it('renders the seven steps in order with their states, and marks the next one', async () => {
     answer(FRESH)
     const { OnboardingScreen } = await load()
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Setup')
-    expect(steps().map((li) => li.dataset.step)).toEqual(['signed_in', 'github_connected', 'orgs_enabled', 'repos_chosen', 'access_verified', 'ready'])
-    expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo'])
+    expect(steps().map((li) => li.dataset.step)).toEqual(['signed_in', 'github_connected', 'app_installed', 'orgs_enabled', 'repos_chosen', 'access_verified', 'ready'])
+    expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo'])
     expect(stepEl('github_connected').getAttribute('aria-current')).toBe('step')
     expect(steps().filter((li) => li.getAttribute('aria-current') === 'step')).toHaveLength(1)
     expect(visible(stepEl('signed_in'))).toContain('dev@swarm.example.com · tenant eng')
-    expect(screen.getByText('1 of 6 done')).toBeTruthy()
-    expect(screen.getByRole('img', { name: '1 of 6 setup steps done' })).toBeTruthy()
+    expect(screen.getByText('1 of 7 done')).toBeTruthy()
+    expect(screen.getByRole('img', { name: '1 of 7 setup steps done' })).toBeTruthy()
   })
 
   it('says what a waiting step waits for, and offers it no action', async () => {
@@ -176,13 +182,73 @@ describe('the Setup page draws the server-derived checklist', () => {
   })
 })
 
+const INSTALL_URL = 'https://github.com/apps/swarmcloud-saga/installations/new'
+
+const NOT_INSTALLED = doc([
+  { step: 'signed_in', state: 'done', evidence: { email: 'dev@swarm.example.com', tenant_id: 'eng' } },
+  { step: 'github_connected', state: 'done', evidence: CONNECTED },
+  {
+    step: 'app_installed',
+    state: 'todo',
+    evidence: { needed: true, read: true, source: 'github', login: 'octo-dev', installed: [], not_installed: ['octo-dev'], install_url: INSTALL_URL },
+  },
+  { step: 'orgs_enabled', state: 'todo', evidence: { waiting_for: 'app_installed' } },
+  { step: 'repos_chosen', state: 'todo', evidence: { waiting_for: 'app_installed' } },
+  { step: 'access_verified', state: 'todo', evidence: { waiting_for: 'app_installed' } },
+  { step: 'ready', state: 'todo', evidence: { waiting_for: 'app_installed' } },
+])
+
+describe('the Install the App step (#780, 2026-10-08)', () => {
+  it('sits between Connect GitHub and the orgs, says the App is installed nowhere, and links its install page', async () => {
+    const calls = answer(NOT_INSTALLED)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    expect(steps().map((li) => li.dataset.step).slice(1, 4)).toEqual(['github_connected', 'app_installed', 'orgs_enabled'])
+    const inst = stepEl('app_installed')
+    expect(inst.getAttribute('aria-current')).toBe('step')
+    expect(visible(inst)).toContain('Install the App')
+    expect(visible(inst)).toContain("connected as @octo-dev, but SwarmCloud Saga isn't installed anywhere yet")
+    expect(visible(inst)).toContain('Connecting authorised the App to act as you')
+    const link = within(inst).getByRole('link', { name: 'Install the App' })
+    expect(link.getAttribute('href')).toBe(INSTALL_URL)
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(visible(stepEl('orgs_enabled'))).toContain('waits for Install the App')
+    const before = calls.filter((c) => c.url === '/v1/onboarding').length
+    fireEvent.click(within(inst).getByRole('button', { name: 'Re-check' }))
+    await waitFor(() => expect(calls.filter((c) => c.url === '/v1/onboarding').length).toBe(before + 1))
+  })
+
+  it('names where the App is installed once it is, and offers no install', async () => {
+    answer(COMPLETE)
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    const inst = stepEl('app_installed')
+    expect(inst.dataset.state).toBe('done')
+    expect(visible(inst)).toContain('installed on octo-dev')
+    expect(within(inst).queryByRole('link')).toBeNull()
+  })
+
+  it('says a token connection needs no installation', async () => {
+    const changed = NOT_INSTALLED.steps.map((s) =>
+      s.step === 'app_installed' ? { ...s, state: 'done', evidence: { needed: false, via: 'tenant', kind: 'classic_pat' } } : s,
+    )
+    answer({ ...NOT_INSTALLED, steps: changed, next_step: 'orgs_enabled' })
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' })
+    expect(visible(stepEl('app_installed'))).toContain('not needed: this connection is a token, not the App')
+  })
+})
+
 describe('the Setup card on Overview (Entry A)', () => {
   it('shows while setup is incomplete, with Open setup', async () => {
     answer(SSO_FAILED)
     const { SetupCard } = await load()
     render(<SetupCard />)
     expect(await screen.findByText('Set up SwarmCloud')).toBeTruthy()
-    expect(screen.getByText('3 of 6 done')).toBeTruthy()
+    expect(screen.getByText('4 of 7 done')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Open setup' }).getAttribute('href')).toBe('/setup')
   })
 
@@ -221,6 +287,6 @@ describe('the Setup card on Overview (Entry A)', () => {
     // Work › Setup still shows the same steps.
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
-    expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo'])
+    expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo'])
   })
 })

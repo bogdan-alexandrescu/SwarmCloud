@@ -4961,7 +4961,7 @@ export interface GitHubRefusalDetail {
 // The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
 // `derive`): six steps, each derived on every read, never set.
 
-export type OnboardingStepName = 'signed_in' | 'github_connected' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+export type OnboardingStepName = 'signed_in' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
 
 export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
 
@@ -4984,6 +4984,22 @@ export interface OnboardingStep {
   /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
   evidence: Record<string, unknown>
   issues: OnboardingIssue[]
+}
+
+/**
+ * `app_installed`'s evidence (`onboarding._installed_step`, #780 2026-10-08):
+ * whether the GitHub App is installed on any owner the person reaches.
+ * `needed` is false for a connection that is a token, not the App.
+ */
+export interface AppInstalledEvidence {
+  needed: boolean
+  /** False when the installations could not be read: never "installed nowhere". */
+  read?: boolean
+  source?: 'enabled' | 'github' | null
+  login?: string | null
+  installed?: string[]
+  not_installed?: string[]
+  install_url?: string | null
 }
 
 /** `github_connected`'s evidence: the record the caller acts through, or none. */
