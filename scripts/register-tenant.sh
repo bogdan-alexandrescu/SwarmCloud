@@ -977,7 +977,7 @@ else
     warn "  1. add '${TENANT_ID}' to the tenants block of terraform/environments/dev/dev.tfvars on the pull request's branch, and push it"
     warn "  2. the owner, from an up-to-date MAIN checkout (never the branch), takes the branch's file as data only:"
     warn "       git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars"
-    warn "       terraform -chdir=terraform/bootstrap init"
+    warn "       terraform -chdir=terraform/bootstrap init -reconfigure -backend-config=bucket=${TF_STATE_BUCKET}"
     warn "       terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars -target='${BOOTSTRAP_TARGET}'"
     warn "     checks the plan (docs/ci.md: the deployer_admin_accounts output, no heredoc, '1 to add, 0 to change, 0 to destroy'),"
     warn "     and applies the same command"

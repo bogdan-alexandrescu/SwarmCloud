@@ -1,6 +1,6 @@
-"""The claude-code-gke canary is claude-code on GKE, and nothing else (contract request 54).
+"""The claude-code-gke canary is claude-code on GKE, and nothing else (contract request 55).
 
-TEMPORARY, like the profile: request 54 adds `claude-code-gke` to the frozen
+TEMPORARY, like the profile: request 55 adds `claude-code-gke` to the frozen
 catalogue so contract request 53 (claude-code on GKE Autopilot) can be measured
 on real steps before claude-code itself moves. This file goes with the profile,
 in the change that switches claude-code to GKE.
@@ -30,7 +30,7 @@ import pytest
 from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
 
-from scheduler.dispatch import GkeJobDispatcher, GkeTarget, worker_model
+from scheduler.dispatch import GkeJobDispatcher, GkeTarget, profile_model
 
 from .conftest import PROJECT, scheduler_settings
 from .test_dispatch_manifests import NOW, FakeBatchApi, make_lease, make_task
@@ -105,8 +105,8 @@ def test_a_tasks_own_model_never_reaches_the_pod(tenant):
 
 def test_one_lookup_serves_both_backends():
     settings = scheduler_settings(worker_models={CANARY: f" {PINNED_MODEL} "})
-    assert worker_model(settings, RUNNER_PROFILES[CANARY]) == PINNED_MODEL
-    assert worker_model(settings, RUNNER_PROFILES["claude-code"]) is None
+    assert profile_model(settings, RUNNER_PROFILES[CANARY]) == PINNED_MODEL
+    assert profile_model(settings, RUNNER_PROFILES["claude-code"]) is None
 
 
 def _runner_models_block() -> str:

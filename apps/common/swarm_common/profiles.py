@@ -1287,7 +1287,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     ),
 }
 
-# TEMPORARY. CONTRACT REQUEST 54, accepted by the owner 2026-10-07: the canary
+# TEMPORARY. CONTRACT REQUEST 55, accepted by the owner 2026-10-07: the canary
 # for contract request 53. claude-code on GKE Autopilot, IDENTICAL to
 # claude-code in every field but its name and its backend -- built from that
 # entry, not restated, so the two cannot drift. A caller picks it by name like

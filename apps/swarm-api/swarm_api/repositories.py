@@ -28,6 +28,14 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     tokens are git-tokens.md's registry (lanes GT1-GT5), which does not exist
     yet, so today R2 resolves to the tenant token every time, and the record
     says which scope it used (`access.token_scope`) so the console can show it.
+  * THE CALLER'S OWN SLOT FIRST (docs/onboarding.md §3.2, #780 lane OB4).
+    `register` and `readable` take a `CredentialSource`: the routes hand
+    them `access.AccessService.credential_for`, which answers the caller's
+    GitHub connection when they have an active one -- so a person registers
+    and lists what THEY can reach -- and the tenant token otherwise, as
+    before. A source yields a `HeldCredential` naming its scope and secret;
+    the value lives inside the `with` and nowhere else. No source given is
+    the tenant token, so every other caller is unchanged.
   * OPT-IN CONTEXT, NOT A GATE. Nothing here changes what a task may run
     against; `allowed_profiles` narrows by NAME (invariant 10) and is not yet
     a submission check (repo-index.md §1, "How it relates to today").
@@ -48,8 +56,10 @@ import binascii
 import hashlib
 import logging
 import re
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Iterator, Literal, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -128,6 +138,46 @@ class RepositoryNoAccess(ForgeReadError):
 
     status_code = 403
     code = "no_access"
+
+
+# --------------------------------------------------------------------------
+# which credential reads the forge (#780, lane OB4)
+# --------------------------------------------------------------------------
+
+#: `access.token_scope` values: the tenant's `-git` slot, or the caller's own
+#: GitHub connection (their `git-u-<hex>` slot).
+SCOPE_TENANT = "tenant"
+SCOPE_USER = "user"
+
+
+@dataclass(frozen=True)
+class HeldCredential:
+    """A forge credential in hand for one read: its scope and secret NAME,
+    and the value, which no repr, log line or response carries."""
+
+    scope: str
+    secret_name: str
+    value: str = field(repr=False)
+    #: The GitHub login a user credential acts as; None for the tenant's.
+    login: str | None = None
+
+
+#: `() -> with ... as HeldCredential`: opened once per read, closed after it.
+CredentialSource = Callable[[], AbstractContextManager[HeldCredential]]
+
+
+def tenant_credential(tenant: Tenant, tokens: ForgeTokens) -> CredentialSource:
+    """The tenant's `swarm-tenant-<t>-git`, read by name: today's credential."""
+
+    @contextmanager
+    def held() -> Iterator[HeldCredential]:
+        value = tokens.token_for(tenant)
+        try:
+            yield HeldCredential(SCOPE_TENANT, tenant.secret_name(GIT_PROVIDER), value)
+        finally:
+            value = ""
+
+    return held
 
 
 # --------------------------------------------------------------------------
@@ -526,6 +576,25 @@ def _no_access(secret_name: str, what: str) -> RepositoryNoAccess:
     )
 
 
+#: §2.3's REPO_NOT_INSTALLED, the cause a user credential's refusal names:
+#: a GitHub App user token reads only what the user can see AND an
+#: installation covers, so a 404 is one or the other.
+_USER_CANNOT_SEE = "REPO_NOT_INSTALLED"
+
+
+def _user_refused(held: HeldCredential, what: str) -> RepositoryNoAccess:
+    """A user credential's refusal: the person's own connection cannot read
+    `what`. Names the login and the slot, never a value."""
+    login = held.login or "your GitHub account"
+    return RepositoryNoAccess(
+        f"your GitHub connection as {login} cannot read {what}: SwarmCloud's GitHub App is "
+        f"not installed for it, or {login} cannot see it. Add it to the installation (an "
+        "org owner may have to), or type a repository you can read",
+        detail={"secret_name": held.secret_name, "token_scope": SCOPE_USER,
+                "cause": _USER_CANNOT_SEE, "org": None, "evidence_at": None},
+    )
+
+
 def _refused(secret_name: str, owner: str, repo: str,
              evidence: Callable[[], GitTokenRecord | None] | None) -> RepositoryNoAccess:
     """A 404/403 on `owner/repo`, naming its likely cause (docs/onboarding.md
@@ -551,27 +620,41 @@ def _refused(secret_name: str, owner: str, repo: str,
 def read_repository(
     owner: str, repo: str, tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues,
     evidence: Callable[[], GitTokenRecord | None] | None = None,
+    credential: CredentialSource | None = None,
 ) -> RepositoryRead:
+    return read_repository_as(owner, repo, tenant, tokens=tokens, forge=forge,
+                              evidence=evidence, credential=credential)[0]
+
+
+def read_repository_as(
+    owner: str, repo: str, tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues,
+    evidence: Callable[[], GitTokenRecord | None] | None = None,
+    credential: CredentialSource | None = None,
+) -> tuple[RepositoryRead, str, str]:
     """The registration's one forge read: `GET /repos/{owner}/{repo}`.
 
     A 404 is `no_access`, not `not_found`: GitHub answers 404 for a private
     repository the token cannot see, so all a 404 proves is that this token
     cannot read it -- which is the refusal registration makes. A 404 or 403
     names its likely cause from `evidence`, the tenant token's record, read
-    only on a refusal.
+    only on a refusal. A user credential's refusal names REPO_NOT_INSTALLED.
+
+    (read, token_scope, secret_name): which credential answered, by name.
     """
-    secret_name = tenant.secret_name(GIT_PROVIDER)
     what = f"{owner}/{repo}"
-    token = tokens.token_for(tenant)
-    try:
-        read = forge.repository(owner, repo, token)
-    except (IssueNotFound, IssueNoAccess):
-        raise _refused(secret_name, owner, repo, evidence) from None
-    finally:
-        token = ""
-    if not read.can_read:
-        raise _no_access(secret_name, what)
-    return read
+    source = credential or tenant_credential(tenant, tokens)
+    with source() as held:
+        try:
+            read = forge.repository(owner, repo, held.value)
+        except (IssueNotFound, IssueNoAccess):
+            if held.scope == SCOPE_USER:
+                raise _user_refused(held, what) from None
+            raise _refused(held.secret_name, owner, repo, evidence) from None
+        if not read.can_read:
+            if held.scope == SCOPE_USER:
+                raise _user_refused(held, what)
+            raise _no_access(held.secret_name, what)
+        return read, held.scope, held.secret_name
 
 
 def register(
@@ -583,19 +666,36 @@ def register(
     tokens: ForgeTokens,
     forge: GitHubIssues,
     now: Callable[[], datetime],
+    credential: CredentialSource | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Register `body.repository` for `tenant`. (record, created).
 
     An existing registration is answered as it is, without reading the forge:
-    idempotent on `repo_id`; a change is a PATCH.
+    idempotent on `repo_id`; a change is a PATCH. The read is `credential`'s
+    -- the caller's own connection when the route resolved one -- and the
+    record names which scope and secret answered.
     """
     owner, repo = parse_repository(body.repository)
     repo_id = repo_id_for(tenant.tenant_id, owner, repo)
     existing = store.find(tenant.tenant_id, repo_id)
     if existing is not None:
         return existing, False
-    read = read_repository(owner, repo, tenant, tokens=tokens, forge=forge,
-                           evidence=lambda: store.token_evidence(tenant.tenant_id))
+    read, scope, secret_name = read_repository_as(
+        owner, repo, tenant, tokens=tokens, forge=forge, credential=credential,
+        evidence=lambda: store.token_evidence(tenant.tenant_id))
+    record = registration_record(body, tenant, read, repo_id=repo_id, created_by=created_by,
+                                 at=now(), token_scope=scope, secret_name=secret_name)
+    return store.create(record)
+
+
+def registration_record(
+    body: RepositoryCreate, tenant: Tenant, read: RepositoryRead, *, repo_id: str,
+    created_by: str, at: datetime, token_scope: str, secret_name: str,
+    registered_via: str | None = None,
+) -> dict[str, Any]:
+    """The registration document for `read`, GitHub's description of the
+    repository. Shared by `register` and a grant's first registration
+    (`access.AccessService.grant`), so both store one shape."""
     # GitHub's own spelling of the name; equal to the request's but for case.
     owner, repo = read.owner, read.repo
     try:
@@ -606,7 +706,6 @@ def register(
             f"GitHub describes {owner!r}/{repo!r} with a name or default branch this "
             "platform does not accept; register it with an explicit default_branch"
         ) from None
-    at = now()
     index = _index_defaults()
     if body.index is not None:
         index.update(body.index.changes())
@@ -624,8 +723,8 @@ def register(
         "allowed_profiles": list(body.allowed_profiles or DEFAULT_ALLOWED_PROFILES),
         # WHICH token answered, by name, and what it could do. Never its value.
         "access": {
-            "token_scope": "tenant",
-            "secret_name": tenant.secret_name(GIT_PROVIDER),
+            "token_scope": token_scope,
+            "secret_name": secret_name,
             "can_read": read.can_read,
             "can_push": read.can_push,
             "read_at": at,
@@ -644,7 +743,12 @@ def register(
         "created_at": at,
         "updated_at": at,
     }
-    return store.create(record)
+    if registered_via is not None:
+        # `grant`: made by a person's first grant, so the last grant's
+        # removal may unregister it (§2.4). A registration made any other
+        # way is never deleted by a grant's removal.
+        record["registered_via"] = registered_via
+    return record
 
 
 def readable(
@@ -654,8 +758,10 @@ def readable(
     store: Repositories,
     tokens: ForgeTokens,
     forge: GitHubIssues,
+    credential: CredentialSource | None = None,
 ) -> dict[str, Any]:
-    """One page of what the tenant's token can read, for Register C.
+    """One page of what the tenant's token can read, for Register C -- or,
+    when the route resolved one, what the caller's own connection can read.
 
     PAGING. `page` is GitHub's page of `GET /user/repos`, PAGE_SIZE entries in
     full-name order, 1 to MAX_READABLE_PAGES; one forge request per call.
@@ -669,14 +775,15 @@ def readable(
     """
     if page < 1 or page > MAX_READABLE_PAGES:
         raise ValidationFailed(f"page must be 1-{MAX_READABLE_PAGES}")
-    secret_name = tenant.secret_name(GIT_PROVIDER)
-    token = tokens.token_for(tenant)
-    try:
-        listed = forge.readable_page(token, page)
-    except (IssueNotFound, IssueNoAccess):
-        raise _no_access(secret_name, "the repositories it was granted") from None
-    finally:
-        token = ""
+    source = credential or tenant_credential(tenant, tokens)
+    with source() as held:
+        scope, secret_name = held.scope, held.secret_name
+        try:
+            listed = forge.readable_page(held.value, page)
+        except (IssueNotFound, IssueNoAccess):
+            if scope == SCOPE_USER:
+                raise _user_refused(held, "the repositories it was granted") from None
+            raise _no_access(secret_name, "the repositories it was granted") from None
     entries: list[dict[str, Any]] = []
     skipped = 0
     for raw in listed.entries:
@@ -715,15 +822,17 @@ def readable(
         "max_pages": MAX_READABLE_PAGES,
         "next_page": page + 1 if listed.full and not at_cap else None,
         "capped": bool(listed.full and at_cap),
-        "token_scope": "tenant",
+        "token_scope": scope,
         "secret_name": secret_name,
     }
 
 
 __all__ = [
     "COLLECTION", "DEFAULT_ALLOWED_PROFILES", "FORGE", "MAX_READABLE_PAGES",
+    "SCOPE_TENANT", "SCOPE_USER", "CredentialSource", "HeldCredential",
     "IndexSettings", "Repositories", "RepositoryCreate", "RepositoryNoAccess",
     "RepositoryPatch", "check_branch", "check_profiles", "parse_repository",
-    "read_repository", "readable", "register", "repo_id_for", "repository_url",
+    "read_repository", "read_repository_as", "readable", "register",
+    "registration_record", "repo_id_for", "repository_url", "tenant_credential",
     "to_api",
 ]

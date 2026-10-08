@@ -47,7 +47,7 @@ AGENT_STREAM_FILES: dict[str, tuple[str, str, str | None] | None] = {
     "post-verdict": None,
     # Contract request 48: claude-code's runner on agent-runtime-indexer.
     "indexer": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
-    # Contract request 54 (temporary): claude-code's runner on GKE Autopilot.
+    # Contract request 55 (temporary): claude-code's runner on GKE Autopilot.
     "claude-code-gke": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
 }
 

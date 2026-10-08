@@ -60,8 +60,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
-| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 54 |
-| 54 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | ACCEPTED 2026-10-07, applied; temporary, removed when `claude-code` moves to GKE |
+| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 55 |
+| 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | ACCEPTED 2026-10-07, applied; temporary, removed when `claude-code` moves to GKE |
 
 ---
 
@@ -9303,7 +9303,7 @@ touches the 138 s median in `ResourcesAvailable -> Started`.
 
 ---
 
-## 54. `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53
+## 55. `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53
 
 **Status:** ACCEPTED by the owner 2026-10-07, and applied in the same change
 that files it. TEMPORARY: the entry is removed in the same change that
@@ -9373,7 +9373,7 @@ interval, inputs, availability -- because it is BUILT from that entry with
    `replace(...)` shape as its base with the backend overridden, and cuts
    each literal entry at the end of the dict so the last one does not absorb
    the assignment.
-3. `apps/scheduler/scheduler/dispatch.py`: `worker_model(settings, profile)`,
+3. `apps/scheduler/scheduler/dispatch.py`: `profile_model(settings, profile)` (already on main from request 53),
    one lookup for both backends, and `GkeJobDispatcher._manifest` sets `MODEL`
    from it -- request 53's follow-up 1, for every GKE profile with a pinned
    model (browser has none and gets none).

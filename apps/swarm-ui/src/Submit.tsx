@@ -302,7 +302,7 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   indexer: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
-  // claude-code on GKE Autopilot (contract request 54, temporary canary).
+  // claude-code on GKE Autopilot (contract request 55, temporary canary).
   'claude-code-gke': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],

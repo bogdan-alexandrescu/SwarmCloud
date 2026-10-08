@@ -30,7 +30,11 @@
 #
 # `requests == limits` on every resource, including ephemeral-storage. No
 # bursting: bursting is what gets a two-hour agent container OOM-killed at
-# minute ninety.
+# minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
+# /tmp and HOME together, which kubelet sums -- not the workspace volume's
+# sizeLimit. It is the sum of the three volumes' sizeLimits, and all four numbers
+# are the dispatcher's, per resource class: see GkeDisk in
+# apps/scheduler/scheduler/dispatch.py.
 #
 # No `tolerations` and no `nodeSelector`. Adding either is how a pod ends up on
 # Spot capacity; the admission policy in `policies/pod-security.yaml` refuses
@@ -116,11 +120,11 @@ spec:
             requests:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
             limits:
               cpu: "__CPU__"
               memory: __MEMORY__
-              ephemeral-storage: __DISK__
+              ephemeral-storage: __EPHEMERAL__
           env:
             # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
             #
@@ -219,7 +223,7 @@ spec:
             # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
             # mounts both on EVERY GKE pod, not only browser's, and this
             # template is the reference for what it sends. Unread while browser
-            # was the only GKE profile; contract request 54's claude-code-gke
+            # was the only GKE profile; contract request 55's claude-code-gke
             # made it a second one, and test_kubernetes_manifests.py compares
             # the two. Shared memory counts against the memory limit only when
             # something writes to it.
@@ -237,10 +241,10 @@ spec:
             sizeLimit: __DISK__
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__
         - name: home
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__
         - name: dshm
           emptyDir:
             medium: Memory

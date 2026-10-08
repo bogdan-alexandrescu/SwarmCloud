@@ -152,7 +152,7 @@ locals {
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
     }
-    # TEMPORARY. Contract request 54, accepted by the owner 2026-10-07: the
+    # TEMPORARY. Contract request 55, accepted by the owner 2026-10-07: the
     # canary for contract request 53, claude-code on GKE Autopilot. Built from
     # claude-code's own entry with only the backend changed, as the Python is,
     # so the two cannot drift. GKE_AUTOPILOT means the Job loop below creates no
@@ -213,7 +213,7 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
-  # claude-code-gke is claude-code on GKE (contract request 54, temporary): the
+  # claude-code-gke is claude-code on GKE (contract request 55, temporary): the
   # canary must run the same model, or it measures a different agent. It has no
   # Cloud Run Job, so it reaches its pod only through WORKER_MODELS.
   runner_models = {

@@ -164,7 +164,7 @@ index runs on it; it declares what `claude-code` does:
 <!-- /runner-inputs:indexer -->
 
 `claude-code-gke` is `claude-code` on GKE Autopilot instead of Cloud Run Jobs,
-TEMPORARILY: contract request 54's canary for request 53, removed when
+TEMPORARILY: contract request 55's canary for request 53, removed when
 `claude-code` itself moves to GKE. The same image, runner, model and inputs;
 only where it runs differs. It declares what `claude-code` does:
 

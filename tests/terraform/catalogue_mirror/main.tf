@@ -83,7 +83,7 @@ locals {
     ) : split("\n}\n", c)[0]
   ]
 
-  # A profile BUILT FROM ANOTHER after the dict (contract request 54's
+  # A profile BUILT FROM ANOTHER after the dict (contract request 55's
   # temporary claude-code-gke):
   #
   #   RUNNER_PROFILES["claude-code-gke"] = replace(

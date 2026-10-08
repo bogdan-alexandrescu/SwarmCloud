@@ -245,7 +245,7 @@ export function heldSummary(count: number, heldAs = 'unavailable'): string {
  * request, `post-verdict` and `claude-code-review` are the review chain's
  * steps, `indexer` is swarm-api's repository-index run
  * (`swarm_api.repoindex.INDEXER_PROFILE`), `claude-code-gke` is contract
- * request 54's temporary canary of claude-code on GKE Autopilot, run by the
+ * request 55's temporary canary of claude-code on GKE Autopilot, run by the
  * operator to measure request 53, and `mock` is the smoke tests' --
  * so the task form marks them "platform" and lists them after the runners
  * people submit, rather than beside `claude-code` as if they were peers.

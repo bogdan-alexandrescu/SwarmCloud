@@ -181,6 +181,17 @@ terraform -chdir=terraform/infra plan -var-file=../environments/dev/dev.tfvars
 
 An empty plan means you recovered the right generation.
 
+The bootstrap layer's state is in the same bucket, at
+`bootstrap/default.tfstate`, since #827. Until then it was a local file in a
+single laptop checkout, with no versions and no copy
+([operations](operations.md#the-bootstrap-layers-state) says why it moved and
+gives the one-time `scripts/bootstrap.sh --migrate-state`). Recover it the same
+way, with `-chdir=terraform/bootstrap` after `scripts/bootstrap.sh` has run its
+init. It has no tfvars file to pass: it reads `terraform/bootstrap/terraform.tfvars`.
+`scripts/bootstrap.sh` refuses to plan this root while its state is empty and
+`swarm-tf-deployer` exists. A lost bootstrap state is therefore found before
+anything plans on top of it, not after.
+
 ### Recovery from total loss
 
 Do **not** re-apply into a shared project with empty state — Terraform will try to
@@ -240,7 +251,7 @@ resume automatically when the key returns.
 
 ```bash
 make prerequisites
-make bootstrap             # state bucket + init
+make bootstrap             # state bucket, bootstrap layer, init
 make tf-plan               # READ IT. Shared project.
 make tf-apply
 make build push deploy

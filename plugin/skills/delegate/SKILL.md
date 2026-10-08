@@ -310,6 +310,19 @@ the other agent started" describes something the agent cannot do.
 
 ## Following a run
 
+**A dispatched task shows as a row without anyone asking (#830).** Every
+`swarm_dispatch` reply carries `rows`: a titled copy of the `/sc:swarmcloud`
+script whose args are `{attach_tasks: [...]}`. Launch it AT ONCE, before
+anything else, with the Workflow tool — `{scriptPath: <rows.script_path>,
+args: <rows.args>}` — exactly as `rows.start_now` says. It submits nothing and
+starts one `[SwarmCloud]` row per task just sent, titled from its `label`, that
+follows the task (`sc:task`, `swarm_follow` without `step_id`) until it
+finishes. So give every dispatched task a short `label`: it is the row's name.
+When `rows.error` is set instead, the copy could not be written (a bridge
+started outside the plugin); say so in one line and run `/sc attach --all`,
+which lists your running single tasks and gives each a row. `sc:remote` is
+already its task's row and ignores `rows`.
+
 Use **`swarm_follow`** rather than going silent between dispatch and result. It
 takes a cursor and hands back the next one, so poll it between turns and narrate
 progress the way this session narrates local work. It is a cursor rather than a

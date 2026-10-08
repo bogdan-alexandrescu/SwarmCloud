@@ -1,19 +1,18 @@
 # Bootstrap root.
 #
-# There is deliberately NO `backend` block in this configuration, and adding one
-# here would be a mistake rather than an improvement. Terraform initialises its
-# backend BEFORE it plans a single resource, so a root that configures a GCS
-# backend pointing at the bucket it is itself about to create cannot run: the
-# first `init` fails looking for a bucket that does not exist yet.
+# Its state is remote, in the bucket it manages, under prefix "bootstrap"
+# (backend.tf, #827). That is possible only because scripts/bootstrap.sh
+# creates the bucket with gcloud BEFORE the first init: terraform initialises
+# its backend before it plans a single resource, so a root cannot create the
+# bucket its own backend lives in. state_bucket.tf then manages that bucket
+# (on the live project it is already in this root's state), and
+# `prevent_destroy` keeps a destroy of this root from deleting it.
 #
-# So bootstrap runs on local state and creates the bucket. Everything else --
-# terraform/infra -- uses that bucket. If you later want bootstrap's own state
-# in GCS, that is a SECOND apply: copy backend.tf.example to backend.tf and run
-# `terraform init -migrate-state`, after the bucket exists.
-#
-# Keep terraform.tfstate for this root in version control or somewhere durable.
-# Losing it means terraform no longer knows it owns the state bucket, and the
-# next apply will try to create a bucket that is already there.
+# Until 2026-10 this root ran on local state, kept in a single laptop
+# checkout, and every other checkout planned the live deployer as a create.
+# The one-time move is scripts/bootstrap.sh --migrate-state; the script refuses
+# to plan against an empty state while the deployer exists
+# (docs/operations.md, "The bootstrap layer's state").
 terraform {
   required_version = ">= 1.9.0"
 

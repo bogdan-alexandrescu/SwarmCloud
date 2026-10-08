@@ -326,7 +326,7 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     ], declaring
     # claude-code-review is claude-code under its own Job (contract request 36);
     # indexer is claude-code on the indexer image (contract request 48);
-    # claude-code-gke is claude-code on GKE Autopilot (request 54, temporary).
+    # claude-code-gke is claude-code on GKE Autopilot (request 55, temporary).
     for name in ("claude-code", "claude-code-gke", "claude-code-review", "codex", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     for name in RUNNER_PROFILES:

@@ -29,6 +29,7 @@ Every token-shaped value is built at runtime, never written as a literal.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import secrets
@@ -37,6 +38,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastapi.testclient import TestClient
 
 from swarm_api import forgeapp
@@ -94,6 +97,12 @@ class FakeGitHub:
         self.user_id = 4242
         self.valid_refresh: set[str] = set()
         self.valid_codes: set[str] = set()
+        #: `GET /app`: the public key GitHub holds for the App (None: every
+        #: JWT is refused), and the App it answers.
+        self.app_public_key: Any = None
+        self.app_id = 12345
+        self.app_slug = "swarmcloud"
+        self.jwts: list[str] = []
 
     def code(self) -> str:
         value = secrets.token_hex(10)
@@ -133,12 +142,33 @@ class FakeGitHub:
             return _json(200, self.mint())
         if url == "https://api.github.com/user":
             return _json(200, {"login": self.login, "id": self.user_id})
+        if url == forgeapp.APP_URL and method == "GET":
+            return self.app(headers)
         if url == f"https://api.github.com/applications/{CLIENT_ID}/grant" and method == "DELETE":
             return forgeapp.HttpAnswer(self.revoke_status, {}, b"")
         return forgeapp.HttpAnswer(404, {}, b"{}")
 
     def to(self, url: str) -> list[dict[str, Any]]:
         return [c for c in self.calls if c["url"] == url]
+
+    def app(self, headers: dict[str, str]) -> forgeapp.HttpAnswer:
+        """GitHub's `GET /app`: 401 unless the JWT verifies against the key
+        it holds; otherwise the App, with a field nobody should echo."""
+        jwt = headers.get("Authorization", "").removeprefix("Bearer ")
+        self.jwts.append(jwt)
+        try:
+            head, claims, signature = jwt.split(".")
+            self.app_public_key.verify(_unb64(signature), f"{head}.{claims}".encode(),
+                                       padding.PKCS1v15(), hashes.SHA256())
+        except Exception:
+            return _json(401, {"message": "A JSON web token could not be decoded",
+                               "documentation_url": "https://docs.github.com/rest"})
+        return _json(200, {"id": self.app_id, "slug": self.app_slug, "name": "SwarmCloud",
+                           "owner": {"login": "saga"}, "description": "<script>"})
+
+
+def _unb64(part: str) -> bytes:
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
 def _json(status: int, data: dict[str, Any]) -> forgeapp.HttpAnswer:
@@ -196,6 +226,16 @@ class FakeAppSecret:
     def __init__(self, value: str | None) -> None:
         self.value = value
         self.reads = 0
+        #: The App's private key, a PEM built at runtime by a test; None is
+        #: a slot with no version.
+        self.pem: str | None = None
+        self.key_reads = 0
+
+    def private_key(self) -> str:
+        self.key_reads += 1
+        if not self.pem:
+            raise forgeapp.AppNotConfigured("the private key has no version")
+        return self.pem
 
     def client_secret(self) -> str:
         self.reads += 1
@@ -749,6 +789,160 @@ def test_the_config_reads_the_apps_public_settings_from_the_environment():
                                         "GITHUB_APP_ID": "12345",
                                         "GITHUB_APP_SLUG": "swarmcloud"})
     assert full.missing() == [] and full.client_id == CLIENT_ID
+
+
+# -- the private key's self-check ---------------------------------------------------
+
+
+APP_CHECK = "/v1/admin/forge/app"
+
+
+def _rsa_pem() -> tuple[str, Any]:
+    """A throwaway App key, built at runtime: no PEM is ever in the repository."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption()).decode()
+    return pem, key.public_key()
+
+
+@pytest.fixture(scope="module")
+def app_key() -> tuple[str, Any]:
+    return _rsa_pem()
+
+
+@pytest.fixture
+def keyed(api, github, app_secret, app_key) -> TestClient:
+    """The App's key stored, and the same key's public half at GitHub."""
+    app_secret.pem, github.app_public_key = app_key
+    return api
+
+
+def _key_values(pem: str) -> list[str]:
+    """The PEM, and each line of its body: a log that printed one line of the
+    key leaked it as surely as one that printed all of it."""
+    return [pem] + [line for line in pem.splitlines() if line and not line.startswith("-----")]
+
+
+def _claims(jwt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    head, claims, _ = jwt.split(".")
+    return json.loads(_unb64(head)), json.loads(_unb64(claims))
+
+
+def test_the_key_check_signs_an_app_jwt_and_github_answers_the_configured_app(keyed, github):
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"ok": True, "app_id": 12345, "slug": "swarmcloud", "reason": None}
+    (call,) = github.to(forgeapp.APP_URL)
+    assert call["method"] == "GET" and call["body"] is None
+    assert call["headers"]["Accept"] == "application/vnd.github+json"
+    header, claims = _claims(github.jwts[0])
+    assert header == {"alg": "RS256", "typ": "JWT"}
+    now = int(T0.timestamp())
+    assert claims == {"iss": "12345", "iat": now - 60, "exp": now + 540}
+
+
+def test_the_key_check_asks_github_with_a_ten_second_timeout(keyed, github):
+    seen: list[float] = []
+    original = github.__call__
+
+    def timed(method, url, headers, body, timeout):
+        seen.append(timeout)
+        return original(method, url, headers, body, timeout)
+
+    keyed.app.state.forge_app._github._send = timed
+    assert keyed.get(APP_CHECK, headers=auth_header("root")).json()["ok"] is True
+    assert seen == [10.0]
+
+
+def test_the_key_check_without_a_stored_key_says_so_and_asks_github_nothing(
+        api, github, app_secret):
+    answer = api.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"ok": False, "app_id": None, "slug": None,
+                             "reason": "private_key_missing"}
+    assert app_secret.key_reads == 1 and github.calls == []
+
+
+def test_a_key_github_does_not_hold_is_key_rejected(keyed, github, caplog):
+    caplog.set_level(logging.DEBUG)
+    github.app_public_key = _rsa_pem()[1]  # GitHub holds another key
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.json() == {"ok": False, "app_id": None, "slug": None,
+                             "reason": "key_rejected"}
+    # GitHub's 401 body is not echoed.
+    assert "JSON web token" not in answer.text and "JSON web token" not in caplog.text
+
+
+def test_a_malformed_key_is_refused_before_github(keyed, github, app_secret):
+    # A PEM armour around noise; the armour is assembled so no line here is one.
+    armour = "-----{} RSA " + "PRIVATE KEY-----"
+    app_secret.pem = "\n".join([armour.format("BEGIN"), secrets.token_hex(40),
+                                 armour.format("END")])
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.json() == {"ok": False, "app_id": None, "slug": None,
+                             "reason": "private_key_malformed"}
+    assert github.calls == []
+
+
+def test_an_app_id_mismatch_is_not_ok(keyed, github):
+    github.app_id = 999
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.json() == {"ok": False, "app_id": 999, "slug": "swarmcloud",
+                             "reason": "app_id_mismatch"}
+
+
+def test_a_slug_mismatch_is_not_ok(keyed, github):
+    github.app_slug = "someone-elses-app"
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.json() == {"ok": False, "app_id": 12345, "slug": "someone-elses-app",
+                             "reason": "app_slug_mismatch"}
+
+
+@pytest.mark.parametrize("failure", ["down", "network"])
+def test_a_github_that_did_not_answer_is_unreachable(keyed, github, failure):
+    def failing(method, url, headers, body, timeout):
+        if failure == "network":
+            raise OSError("connection reset")
+        return forgeapp.HttpAnswer(502, {}, b"bad gateway")
+
+    keyed.app.state.forge_app._github._send = failing
+    assert keyed.get(APP_CHECK, headers=auth_header("root")).json()["reason"] \
+        == "github_unreachable"
+
+
+def test_the_key_check_without_the_apps_id_never_reads_the_key(
+        db, tokens, group_map, objects, clock, github, slots, app_secret, app_key):
+    api = _app(db, tokens, group_map, objects, clock, github, slots, app_secret, client_id="")
+    app_secret.pem = app_key[0]
+    answer = api.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.json()["reason"] == "app_id_not_configured"
+    assert app_secret.key_reads == 0 and github.calls == []
+
+
+@pytest.mark.parametrize("who", ["alice", "sweeper"])
+def test_the_key_check_is_an_admin_route(keyed, github, app_secret, who):
+    headers = SWEEPER_HEADERS if who == "sweeper" else auth_header(who)
+    answer = keyed.get(APP_CHECK, headers=headers)
+    assert answer.status_code == 403
+    assert app_secret.key_reads == 0 and github.calls == []
+
+
+@pytest.mark.parametrize("github_holds", ["the key", "another key"])
+def test_the_key_check_never_answers_or_logs_the_jwt_or_the_key(
+        keyed, github, app_key, caplog, github_holds):
+    caplog.set_level(logging.DEBUG)
+    if github_holds == "another key":
+        github.app_public_key = _rsa_pem()[1]
+    answer = keyed.get(APP_CHECK, headers=auth_header("root"))
+    assert answer.status_code == 200
+    assert set(answer.json()) == {"ok", "app_id", "slug", "reason"}
+    (jwt,) = github.jwts
+    values = [jwt, *jwt.split(".")] + _key_values(app_key[0])
+    for value in values:
+        assert value not in answer.text, "the JWT or the key reached the response"
+        assert value not in caplog.text, "the JWT or the key reached a log line"
+    # The fake transport logged the Authorization header; the literal masked it.
+    assert MASK in caplog.text
 
 
 # -- the app_user kind -------------------------------------------------------------
