@@ -27,8 +27,8 @@ on:
       - "scripts/lib/destroy-guard.jq"
       - "scripts/lib/unlabelable-types.json"
       - ".github/workflows/terraform.yml"
-  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Main merges
-  # through a merge queue"). ci-gate is required and waits for this
+  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Merging
+  # through the merge queue"). ci-gate is required and waits for this
   # workflow's run at the entry's commit, so it runs there with NO path
   # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
   # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
@@ -225,8 +225,8 @@ jobs:
     needs: [validate]
     # Not on a merge queue entry either: its OIDC ref is
     # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects, and a
-    # red plan would fail ci-gate on every entry (docs/ci.md "Main merges
-    # through a merge queue").
+    # red plan would fail ci-gate on every entry (docs/ci.md "Merging
+    # through the merge queue").
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
     # Authenticates to Google through workload identity: the only reason this
