@@ -5,7 +5,7 @@ because #726 and #727 were each green on their own base and merged nine
 seconds apart: ruleset `main-protection` (24160219) has
 `strict_required_status_checks_policy: false`, so neither ran against the
 other. The owner chose a merge queue. The operator adds the `merge_queue` rule
-after this lands (docs/ci.md, "Main merges through a merge queue"); this file
+after this lands (docs/ci.md, "Merging through the merge queue"); this file
 holds everything that must already be true when they do.
 
 A queue builds a temporary `gh-readonly-queue/main/...` branch and waits for
@@ -63,6 +63,9 @@ QUEUE_PARAMETERS = {
     "merge_method": "MERGE",
     "grouping_strategy": "ALLGREEN",
     "max_entries_to_build": 5,
+    # The group size the owner chose on 2026-10-08 (proposal G); the API
+    # refuses a merge_queue rule without it (the 2026-10-07 attempt).
+    "max_entries_to_merge": 5,
     "min_entries_to_merge": 1,
     "min_entries_to_merge_wait_minutes": 0,
     "check_response_timeout_minutes": 60,
@@ -244,7 +247,7 @@ def test_no_workflow_but_the_required_ones_and_ci_gates_runs_on_merge_group(tmp_
 # ---------------------------------------------------------------------------
 def _section() -> str:
     text = CI_DOC.read_text()
-    start = text.index("## Main merges through a merge queue")
+    start = text.index("## Merging through the merge queue")
     end = text.find("\n## ", start + 1)
     return text[start:] if end < 0 else text[start:end]
 
@@ -262,6 +265,34 @@ def test_docs_say_why_with_the_incident():
     section = _section()
     for fact in ("2026-10-06", "#726", "#727", "strict"):
         assert fact in section, fact
+
+
+def test_docs_say_why_with_the_wait_it_removes():
+    """Owner decision 2026-10-08 (observer proposal G): the strict policy's
+    serial update-branch and re-run is what the queue replaces."""
+    section = _section()
+    for fact in ("2026-10-08", "p50 75 min", "p90 8.5 h", "update-branch",
+                 "Only merge non-failing pull requests", "status check"):
+        assert fact in section, fact
+
+
+def test_docs_say_the_queue_is_refused_on_a_user_owned_repository():
+    """The 2026-10-07 attempt was refused with HTTP 422: an operator must not
+    read the command below as one that will work here as things stand."""
+    section = _section()
+    assert "Invalid rule 'merge_queue'" in section
+    assert "owned by an organization" in section
+
+
+def test_the_put_turns_strict_off_and_the_rollback_turns_it_back_on():
+    """With strict on, every pull request still needs an update-branch and its
+    own CI run before it can join the queue -- the wait the queue removes.
+    Rolling back must restore strict, or main has neither protection.
+    MUTATION: leave `strict_required_status_checks_policy: true` in the PUT."""
+    (checks,) = [r for r in _ruleset_body()["rules"] if r["type"] == "required_status_checks"]
+    assert checks["parameters"]["strict_required_status_checks_policy"] is False
+    rollback = _section().split("### Rolling back", 1)[1]
+    assert "`strict_required_status_checks_policy` back to `true`" in rollback
 
 
 def test_docs_carry_the_exact_merge_queue_rule():
