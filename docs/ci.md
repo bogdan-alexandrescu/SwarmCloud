@@ -264,6 +264,82 @@ GitHub's API returns what the fake returns, that `gh run download` fetches the
 artifact across runs, or that a release actually gets faster. The first push
 to `main` after this lands is the first real proof — read its release run.
 
+## Main builds only the images a commit changed
+
+Owner decision 2026-10-08 (observer proposal H). `build images` on main used to
+rebuild all 9 images on every push. Measured that day, the job took **9.0-10.4
+min**: `agent-runtime-base` alone 5m04, then `agent-runtime-browser` 3m21 on
+top of it, and each service image 2m09-2m42. A `uv.lock` change, the most
+common kind of dependency bump, reached 7 of the 9. Most pushes change one
+service, or docs and tests that no image reads, and still paid for all of it.
+That is Cloud Build quota in a project shared with another team, and minutes
+on the critical path of every release.
+
+**What happens now.** The job runs two scripts in one step:
+
+1. `scripts/lib/ci-built-images.sh --previous` finds the newest `build images`
+   job on main that succeeded for an **ancestor** of this commit and kept its
+   `images-dev` record. It reads at most `CI_PREVIOUS_LOOK` (20) runs. It
+   never waits for a build that is still running and never picks a later
+   merge whose run happened to finish first. It never picks this commit
+   either, so re-running a commit's build rebuilds it.
+2. `scripts/build-images.sh --incremental <that record>` rebuilds image X only
+   if `--affected-by` reaches it from `git diff <the commit X's previous
+   digest was built from> HEAD`. That is the same input mapping and the same
+   `build_after` closure a pull request's `build-check` uses, so a base change
+   still rebuilds the browser and the indexer. Every other image keeps its
+   previous digest, and this commit's tag is added to it with `gcloud
+   artifacts docker tags add`. The tags are added **before** any build is
+   submitted, because the browser's and the indexer's recipes pull
+   `agent-runtime-base:<tag>`. If a tag cannot be added, that image is rebuilt
+   instead, together with everything built FROM it.
+
+**Why tag rather than record the old tag.** Every digest in the manifest then
+carries this commit's tag. `push-images.sh`, `image-refs.sh`, `deploy.sh` and
+`release.yml` read a manifest that is indistinguishable from a full build's,
+and none of them changed. The proof is unchanged too: the manifest still names
+all 9 digests, both trivy scans still run on all 9, and `deploy.sh
+--verify-only` and acceptance run against the full set. Each manifest entry
+adds `reused`, `built_from` (the commit whose build made the digest) and
+`built_at`. Through a chain of reuses, the next build diffs from `built_from`
+and ages from `built_at`, never from the record's own commit. Otherwise a
+change made two builds ago could hide behind a build that reused its image.
+The job's summary lists every image as rebuilt or reused.
+
+**`uv.lock` is narrowed to each image.** When `uv.lock` is the only input of a
+Python image that changed, the script runs that image's own `uv export ...
+--prune ...` line, read from its Dockerfile (held by
+`test_service_image_install.py`), at both commits. The image is rebuilt only if
+the two exports differ. Without `uv`, or if an export cannot be read, the
+image is rebuilt.
+
+**When everything is rebuilt anyway**, with the reason in the log, the
+summary and the manifest's `incremental.full_build`:
+
+* **build logic changed** since a reused digest was built: `build-images.sh`,
+  `scripts/lib/common.sh`, `ci-built-images.sh` or `application.yml`. These
+  decide how every image is built, so no diff of inputs can vouch for them;
+* **there is no ancestor record**: the first build, a record past its 30-day
+  retention, a shallow checkout (the job checks out with `fetch-depth: 0` for
+  this), or a GitHub API that could not be read. A full build is the safe
+  answer to "I could not tell", only a slower one;
+* **a reused digest is more than 7 days old** (`BUILD_REUSE_MAX_AGE_DAYS`), so
+  patches to `python:3.11-slim`, node and nginx arrive within a week even in a
+  corner of the tree nobody touches;
+* the **`full_build` input** is set on a `workflow_dispatch` of
+  application.yml;
+* the **environment is prod**. A prod release builds its own images
+  (`--reuse-ci or-build`, which is never incremental). `swarm-ui` bakes its
+  environment in, and prod is always built whole;
+* the **working tree is dirty**, so git cannot say what changed.
+
+**What this does not prove.** The tests (`test_build_images_incremental.py`,
+`test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
+remembers tags and a fake `gh`. They cannot show that Artifact Registry moves
+a tag exactly as the fake does. `push-images.sh` relies on the same command to
+move a channel tag. Read the first incremental `build images` run on main and
+its summary.
+
 ## Images are built on a pull request, without pushing
 
 **Owner decision, 2026-10-05 (#650).** Until then images were built only on
@@ -2731,6 +2807,22 @@ under `!cancelled()`, because it executes jobs in the environment. That puts it
 under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
 `tests/unit/scripts/test_warm_jobs.py` and
 `tests/unit/worker/test_worker_self_test.py` hold all of this.
+
+**Nothing is warmed when the runner digests did not change** (observer
+proposal H, 2026-10-08). Since main reuses the digests of unchanged images
+(above), most releases ship the three runner images unchanged. A warm run on a
+digest every job has already started pays no import. It only occupies a worker
+shape. With `--previous FILE` (or `WARM_PREVIOUS_MANIFEST`), the script
+compares the three runner digests in this release's deployed manifest with
+those of the release before. If all three are equal, it warms nothing and says
+so. `release.yml` does not pass that file yet: its deploy job has no `actions:
+read` to fetch the earlier artifact, and another lane is restructuring that
+workflow. Until it does, the script skips, by name, each listed job that is
+pinned by digest and already has a successful execution on that same image.
+That is the import already paid, by the last warm run or by a tenant task. A
+job new in this release (a new tenant or profile) has no such execution and is
+warmed even when no digest changed, which comparing manifests alone would
+miss.
 
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
