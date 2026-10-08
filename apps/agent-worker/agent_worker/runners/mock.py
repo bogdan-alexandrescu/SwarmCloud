@@ -23,6 +23,10 @@ It is a real workload, not a stub:
   The rate limit parks the task's FIRST attempt only, counted by the task's
   own `attempt_count`, and the attempt after the park runs (see
   `QUOTA_EXHAUSTED_PARKS`).
+* with `artifact_before_park` beside `quota_exhausted`, writes its artifact
+  BEFORE that park and not again after it, so a live run can show a file
+  reaching the finishing attempt by carry (#166, contract request 56; see
+  `_artifact_spec`).
 
 What a caller may send is declared in the frozen catalogue
 (`RUNNER_PROFILES["mock"].inputs`, contract request 25), and swarm-api refuses
@@ -37,6 +41,7 @@ Input (all optional):
     {"prompt": "...", "sleep_seconds": 2.0, "cpu_burn_seconds": 0.0,
      "steps": 4, "fail": false, "fail_message": "...", "exit_code": 1,
      "quota_exhausted": false, "retry_after_seconds": 1800,
+     "artifact_before_park": false,
      "artifact_text": "...", "artifact_name": "output.txt",
      "spend": {"usage": {"input_tokens": 10}, "total_cost_usd": 0.01}}
 
@@ -136,6 +141,18 @@ def _parks_this_attempt(payload: dict[str, Any]) -> bool:
     return number <= QUOTA_EXHAUSTED_PARKS
 
 
+def _artifact_spec(payload: dict[str, Any], completed: int, prompt: str) -> tuple[str, str]:
+    """The output artifact's name and text, as the caller asked for them."""
+    name = str(payload.get("artifact_name", "output.txt"))
+    text = str(
+        payload.get(
+            "artifact_text",
+            f"mock runner completed {completed} step(s)\nprompt: {prompt}\n",
+        )
+    )
+    return name, text
+
+
 def _burn_cpu(seconds: float, stop: Any) -> int:
     """Genuine CPU load: repeated SHA-256 over a growing buffer."""
     if seconds <= 0:
@@ -199,7 +216,20 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 spend=spend,
             )
 
-    if payload.get("quota_exhausted") and _parks_this_attempt(payload):
+    quota_exhausted = bool(payload.get("quota_exhausted"))
+    parks = quota_exhausted and _parks_this_attempt(payload)
+    # CONTRACT REQUEST 56 (#166's live proof). `artifact_before_park` moves the
+    # artifact to before the park: the parking attempt writes it here, the
+    # park's upload takes it and records it in `parked_uploads`, and the
+    # attempt after the park writes NOTHING under that name (below), so the
+    # file the task ends with can only be the carried one -- `carried_from`
+    # names the parked attempt -- never a rewrite. Without `quota_exhausted`
+    # there is no park, and the flag changes nothing.
+    artifact_carried = quota_exhausted and bool(payload.get("artifact_before_park"))
+
+    if parks:
+        if artifact_carried:
+            ctx.write_artifact(*_artifact_spec(payload, completed, prompt))
         # Saved before the signal, as a real runner's work is on disk when its
         # provider says no: the park checkpoints `work/` next, and the attempt
         # that restores it resumes from it. The bound does not depend on this
@@ -257,14 +287,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             raise SystemExit(exit_code)
         raise RunnerFailure(message, spend=spend)
 
-    artifact_name = str(payload.get("artifact_name", "output.txt"))
-    artifact_text = str(
-        payload.get(
-            "artifact_text",
-            f"mock runner completed {completed} step(s)\nprompt: {prompt}\n",
-        )
-    )
-    ctx.write_artifact(artifact_name, artifact_text)
+    if not artifact_carried:
+        ctx.write_artifact(*_artifact_spec(payload, completed, prompt))
 
     output: dict[str, Any] = {
         "summary": f"mock runner completed {completed}/{steps} steps",
