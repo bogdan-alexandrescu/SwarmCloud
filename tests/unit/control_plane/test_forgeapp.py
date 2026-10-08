@@ -15,8 +15,14 @@ What is held here, every case offline against forge fakes:
     refusal marks the connection `refresh_failed` with REFRESH_FAILED's
     copy; a forge that did not answer changes nothing; one refresher at a
     time holds a connection's refresh lease;
-  * disconnect revokes the authorisation at GitHub, disables the slots'
-    versions and marks the connection and its git token record revoked;
+  * disconnect revokes the authorisation at GitHub -- with the person's
+    current access token while it is unexpired, so it mints nothing, and
+    with a refreshed one only when it has expired or GitHub no longer knows
+    it -- disables the slots' versions and marks the connection and its git
+    token record revoked;
+  * swarm-api reads a base slot only through `read_access` and a twin only
+    through `read_refresh`; neither reads the other (owner decision
+    2026-10-08);
   * no token, refresh token, client secret or code appears in any response,
     Firestore document or log line -- and a line that did carry one while it
     was in hand was masked by the redaction literal;
@@ -93,6 +99,8 @@ class FakeGitHub:
         #: "network" (no answer at all).
         self.token_endpoint = "ok"
         self.revoke_status = 204
+        #: Answers for the next revocations, in order, before `revoke_status`.
+        self.revoke_statuses: list[int] = []
         self.login = "alice-gh"
         self.user_id = 4242
         self.valid_refresh: set[str] = set()
@@ -145,7 +153,8 @@ class FakeGitHub:
         if url == forgeapp.APP_URL and method == "GET":
             return self.app(headers)
         if url == f"https://api.github.com/applications/{CLIENT_ID}/grant" and method == "DELETE":
-            return forgeapp.HttpAnswer(self.revoke_status, {}, b"")
+            status = self.revoke_statuses.pop(0) if self.revoke_statuses else self.revoke_status
+            return forgeapp.HttpAnswer(status, {}, b"")
         return forgeapp.HttpAnswer(404, {}, b"{}")
 
     def to(self, url: str) -> list[dict[str, Any]]:
@@ -181,6 +190,7 @@ class FakeSlots:
 
     def __init__(self) -> None:
         self.secrets: dict[str, dict[str, Any]] = {}
+        self.access_reads = 0
 
     def _name(self, tenant_id: str, suffix: str) -> str:
         return f"swarm-tenant-{tenant_id}-{suffix}"
@@ -197,8 +207,21 @@ class FakeSlots:
         versions.append({"value": value, "enabled": True})
         return str(len(versions))
 
+    def read_access(self, tenant_id: str, suffix: str) -> str:
+        assert not suffix.endswith("-refresh"), "read_access reads a base slot, never a twin"
+        self.access_reads += 1
+        enabled = [v for v in self.secrets[self._name(tenant_id, suffix)]["versions"]
+                   if v["enabled"]]
+        if not enabled:
+            raise forgeapp.SlotUnreadable(f"{self._name(tenant_id, suffix)} has no version")
+        return enabled[-1]["value"]
+
+    def versions(self, tenant_id: str, suffix: str) -> int:
+        secret = self.secrets.get(self._name(tenant_id, suffix))
+        return len((secret or {}).get("versions", []))
+
     def read_refresh(self, tenant_id: str, suffix: str) -> str:
-        assert suffix.endswith("-refresh"), "swarm-api reads the -refresh twin and nothing else"
+        assert suffix.endswith("-refresh"), "read_refresh reads the -refresh twin and nothing else"
         enabled = [v for v in self.secrets[self._name(tenant_id, suffix)]["versions"]
                    if v["enabled"]]
         if not enabled:
@@ -337,6 +360,11 @@ def _suffix(email: str = "alice@saga.xyz") -> str:
 
 def _connection_doc(db, email: str = "alice@saga.xyz", tenant: str = "eng") -> dict[str, Any]:
     return db.docs[f"forge_connections/{forgeapp.connection_id_for(tenant, email)}"]
+
+
+def _refreshes(github: FakeGitHub) -> list[dict[str, Any]]:
+    return [c for c in github.to(forgeapp.TOKEN_URL)
+            if (c["body"] or {}).get("grant_type") == "refresh_token"]
 
 
 def _assert_no_value_anywhere(db, texts: list[str], values: list[str]) -> None:
@@ -666,9 +694,12 @@ def test_disconnect_revokes_at_github_and_disables_the_slots(
     body = answer.json()
     revokes = github.to(f"https://api.github.com/applications/{CLIENT_ID}/grant")
     assert len(revokes) == 1 and revokes[0]["method"] == "DELETE"
-    # The grant is revoked with a token the refresh minted, never one read
-    # from the base slot, which swarm-api may not read.
+    # The grant is revoked with the person's CURRENT access token, read from
+    # the base slot: nothing is refreshed, so no version is added just to be
+    # revoked (owner decision 2026-10-08).
     assert revokes[0]["body"]["access_token"] == github.issued[-2]
+    assert _refreshes(github) == []
+    assert slots.access_reads == 1
     assert body["github_revoked"] is True
     assert body["connection"]["state"] == "revoked"
     assert slots.latest("eng", _suffix()) is None
@@ -680,8 +711,11 @@ def test_disconnect_revokes_at_github_and_disables_the_slots(
     _assert_no_value_anywhere(db, [answer.text, caplog.text], github.issued + [app_secret.value])
 
 
-def test_disconnect_after_github_refused_the_refresh_still_disconnects(api, github, slots, db):
+def test_disconnect_after_github_refused_the_refresh_still_disconnects(api, github, slots, db,
+                                                                      clock):
     _connect(api, github)
+    # Past the access token's expiry, so disconnect refreshes to revoke.
+    clock.at = T0 + timedelta(hours=9)
     github.token_endpoint = "refuse"
     body = api.delete(DISCONNECT, headers=auth_header("alice")).json()
     assert body["github_revoked"] is False
@@ -958,3 +992,62 @@ def test_the_app_user_kind():
     })
     status = expiry_status(record, T0)
     assert status["level"] == "by_design"
+
+
+def test_disconnect_with_an_expired_access_token_revokes_with_a_refreshed_one(
+        api, github, slots, db, clock):
+    _connect(api, github)
+    clock.at = T0 + timedelta(hours=9)
+    body = api.delete(DISCONNECT, headers=auth_header("alice")).json()
+    assert len(_refreshes(github)) == 1
+    revokes = github.to(f"https://api.github.com/applications/{CLIENT_ID}/grant")
+    assert len(revokes) == 1 and revokes[0]["body"]["access_token"] == github.issued[-2]
+    assert body["github_revoked"] is True
+    assert slots.access_reads == 0
+
+
+def test_disconnect_whose_current_token_github_no_longer_knows_refreshes_to_revoke(
+        api, github, slots, db):
+    _connect(api, github)
+    current = github.issued[-2]
+    github.revoke_statuses = [404]
+    body = api.delete(DISCONNECT, headers=auth_header("alice")).json()
+    assert len(_refreshes(github)) == 1
+    revokes = github.to(f"https://api.github.com/applications/{CLIENT_ID}/grant")
+    assert [r["body"]["access_token"] for r in revokes] == [current, github.issued[-2]]
+    assert body["github_revoked"] is True
+
+
+class _VersionClient:
+    """Secret Manager's access call, recording the names it was asked for."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+        self.asked: list[str] = []
+
+    def access_secret_version(self, request):
+        self.asked.append(request["name"])
+        value = self.value
+
+        class _Payload:
+            data = value.encode()
+
+        class _Version:
+            payload = _Payload()
+
+        return _Version()
+
+
+def test_the_secret_manager_slots_read_a_base_slot_only_through_read_access():
+    token = "ghu" + "_" + "y" * 36
+    client = _VersionClient(token)
+    slots = forgeapp.SecretManagerUserSlots("p", client=client)
+    base = _suffix()
+    assert slots.read_access("eng", base) == token
+    assert client.asked == [f"projects/p/secrets/swarm-tenant-eng-{base}/versions/latest"]
+    for wrong in (base + "-refresh", "git", "git-r-0123456789abcdef"):
+        with pytest.raises(forgeapp.SlotUnreadable):
+            slots.read_access("eng", wrong)
+    with pytest.raises(forgeapp.SlotUnreadable):
+        slots.read_refresh("eng", base)
+    assert len(client.asked) == 1

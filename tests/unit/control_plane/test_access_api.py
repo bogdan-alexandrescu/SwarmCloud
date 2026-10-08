@@ -4,9 +4,14 @@ and register/readable resolving the caller's own GitHub slot
 
 What is held here, every case offline against forge fakes:
 
-  * every GitHub read is made with the caller's OWN token, minted by a
-    refresh of their connection (swarm-api never reads the base slot), and
-    both new values are stored in the slots, as the sweep stores them;
+  * every GitHub read is made with the caller's OWN token: the CURRENT one,
+    read from their base slot, while it has more than two hours left -- no
+    refresh and no new version, so a task holding that token keeps a token
+    GitHub still accepts (owner decision 2026-10-08; measured: 35 versions
+    in minutes and a task failing 401). It refreshes, under the connection's
+    refresh lease, only when the token is within two hours of expiry or
+    GitHub answers 401, then retries once; a refresh another holder is
+    running, or has just finished, is never repeated;
   * owners list installations, the person's own account and orgs without
     an installation; only an installed owner can be enabled;
   * an owner's repositories are served one page at a time, searched here,
@@ -87,6 +92,16 @@ class AccessGitHub(FakeGitHub):
         self.sso: set[str] = set()
         self.down: set[str] = set()
         self.no_push_git: set[str] = set()
+        #: Access tokens GitHub no longer accepts. A refresh ends the access
+        #: token it replaces, as measured on 2026-10-08; a test may end one
+        #: by hand too.
+        self.dead: set[str] = set()
+        #: Answer every access read 401, whatever the token.
+        self.reject_all = False
+
+    def mint(self) -> dict[str, Any]:
+        self.dead.update(self.access_tokens())
+        return super().mint()
 
     def access_tokens(self) -> list[str]:
         return [v for v in self.issued if v.startswith("ghu" + "_")]
@@ -113,8 +128,9 @@ class AccessGitHub(FakeGitHub):
         self.calls.append({"method": method, "url": url, "headers": dict(headers),
                            "body": None})
         token = self._bearer(headers)
-        assert token is not None and token in self.access_tokens(), \
-            "an access read must carry a token GitHub minted for this person"
+        if self.reject_all or token is None or token not in self.access_tokens() \
+                or token in self.dead:
+            return _json(401, {"message": "Bad credentials"})
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0])
         per = int(query.get("per_page", ["30"])[0])
@@ -230,6 +246,15 @@ def _grant(api: TestClient, repository: str, mode: str = "write", user: str = "a
                    json={"repository": repository, "mode": mode}, headers=auth_header(user))
 
 
+def _refreshes(github: AccessGitHub) -> list[dict[str, Any]]:
+    return [c for c in github.to(forgeapp.TOKEN_URL)
+            if (c["body"] or {}).get("grant_type") == "refresh_token"]
+
+
+def _conn(db) -> dict[str, Any]:
+    return db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"]
+
+
 def _no_value_anywhere(db, github: AccessGitHub, texts: list[str]) -> None:
     dumped = json.dumps(db.dump(), default=str)
     for value in github.issued:
@@ -253,23 +278,24 @@ def test_without_a_connection_the_access_reads_say_connect_first(api, github):
 # -- owners --------------------------------------------------------------------------
 
 
-def test_owners_are_read_with_the_persons_freshly_refreshed_token(api, github, db, slots,
-                                                                 caplog):
+def test_owners_are_read_with_the_persons_current_token_and_add_no_version(
+        api, github, db, slots, caplog):
     caplog.set_level(logging.DEBUG)
     _connect(api, github)
-    minted_before = len(github.access_tokens())
+    current = slots.latest("eng", _suffix())
+    versions = (slots.versions("eng", _suffix()), slots.versions("eng", _suffix() + "-refresh"))
     answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
     assert answer.status_code == 200, answer.text
     body = answer.json()
-    # One refresh: a new access token, stored in the slot the worker reads,
-    # and the refresh token's twin replaced.
-    assert len(github.access_tokens()) == minted_before + 1
-    newest = github.access_tokens()[-1]
-    assert slots.latest("eng", _suffix()) == newest
+    # No refresh: the token the exchange stored, read back from the base
+    # slot, and not one version added to either slot.
+    assert _refreshes(github) == []
+    assert (slots.versions("eng", _suffix()),
+            slots.versions("eng", _suffix() + "-refresh")) == versions
     assert github.to("https://api.github.com/user/installations?per_page=100&page=1")[0][
-        "headers"]["Authorization"] == f"Bearer {newest}"
+        "headers"]["Authorization"] == f"Bearer {current}"
     conn = db.docs[f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"]
-    assert conn["refreshed_at"] == T0 and conn["refresh_lease"] is None
+    assert conn["refresh_lease"] is None
     owners = {row["owner"]: row for row in body["owners"]}
     assert owners[LOGIN]["owner_type"] == "User"
     assert owners[LOGIN]["install_state"] == "installed"
@@ -572,8 +598,9 @@ def test_a_failed_connection_is_refused_with_its_recovery_copy(api, github, db):
     assert readable.status_code == 409
 
 
-def test_a_refresh_github_refuses_marks_the_connection_failed(api, github, db):
+def test_a_refresh_github_refuses_marks_the_connection_failed(api, github, db, clock):
     _connect(api, github)
+    clock.at = T0 + timedelta(hours=6, minutes=1)  # 1h59m left: a refresh is due
     github.token_endpoint = "refuse"
     answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
     assert answer.status_code == 409
@@ -582,14 +609,146 @@ def test_a_refresh_github_refuses_marks_the_connection_failed(api, github, db):
     assert conn["state"] == forgeapp.REFRESH_FAILED and conn["refresh_lease"] is None
 
 
-def test_a_refresh_running_elsewhere_is_a_409_not_a_second_spend(api, github, db):
+def test_a_refresh_running_elsewhere_is_a_409_not_a_second_spend(api, github, db, clock):
     _connect(api, github)
+    # Expired: there is no current token to fall back on.
+    clock.at = T0 + timedelta(hours=8, minutes=1)
     conn_path = f"forge_connections/{forgeapp.connection_id_for('eng', 'alice@saga.xyz')}"
-    db.docs[conn_path]["refresh_lease"] = {"holder": "sweep", "until": T0 + timedelta(minutes=1)}
+    db.docs[conn_path]["refresh_lease"] = {"holder": "sweep",
+                                           "until": clock.at + timedelta(minutes=1)}
     refreshes = len(github.to(forgeapp.TOKEN_URL))
     answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
     assert answer.status_code == 409 and answer.json()["code"] == "conflict"
     assert len(github.to(forgeapp.TOKEN_URL)) == refreshes
+
+
+# -- reusing the current token (owner decision 2026-10-08) ---------------------------
+
+
+def test_many_requests_on_a_valid_token_add_no_version(api, github, slots, clock):
+    _connect(api, github)
+    _enable(api)
+    versions = slots.versions("eng", _suffix())
+    for minutes in range(0, 300, 30):
+        clock.at = T0 + timedelta(minutes=minutes)
+        assert api.get("/v1/access/orgs", headers=auth_header("alice")).status_code == 200
+        assert api.get(f"/v1/access/orgs/{ORG}/repositories",
+                       headers=auth_header("alice")).status_code == 200
+    assert _refreshes(github) == []
+    assert slots.versions("eng", _suffix()) == versions
+    assert len(github.access_tokens()) == 1
+
+
+def test_a_token_within_two_hours_of_expiry_is_refreshed_once(api, github, slots, db, clock):
+    _connect(api, github)
+    first = slots.latest("eng", _suffix())
+    clock.at = T0 + timedelta(hours=6, minutes=1)  # 1h59m left
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert len(_refreshes(github)) == 1
+    newest = github.access_tokens()[-1]
+    assert newest != first and slots.latest("eng", _suffix()) == newest
+    assert github.to("https://api.github.com/user/installations?per_page=100&page=1")[-1][
+        "headers"]["Authorization"] == f"Bearer {newest}"
+    conn = _conn(db)
+    assert conn["refreshed_at"] == clock.at and conn["refresh_lease"] is None
+    assert conn["access_expires_at"] == clock.at + timedelta(hours=8)
+    # The next request finds a fresh token and refreshes nothing.
+    assert api.get("/v1/access/orgs", headers=auth_header("alice")).status_code == 200
+    assert len(_refreshes(github)) == 1
+
+
+def test_a_token_with_more_than_two_hours_left_is_not_refreshed(api, github, clock):
+    _connect(api, github)
+    clock.at = T0 + timedelta(hours=5, minutes=59)  # 2h01m left
+    assert api.get("/v1/access/orgs", headers=auth_header("alice")).status_code == 200
+    assert _refreshes(github) == []
+
+
+def test_a_401_refreshes_once_and_the_read_is_retried(api, github, slots, db, caplog):
+    caplog.set_level(logging.DEBUG)
+    _connect(api, github)
+    revoked = slots.latest("eng", _suffix())
+    github.dead.add(revoked)
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert len(_refreshes(github)) == 1
+    newest = github.access_tokens()[-1]
+    calls = github.to("https://api.github.com/user/installations?per_page=100&page=1")
+    assert [c["headers"]["Authorization"] for c in calls] == [f"Bearer {revoked}",
+                                                              f"Bearer {newest}"]
+    assert slots.latest("eng", _suffix()) == newest
+    assert _conn(db)["refresh_lease"] is None
+    _no_value_anywhere(db, github, [answer.text, caplog.text])
+
+
+def test_a_second_401_is_not_refreshed_again(api, github):
+    _connect(api, github)
+    github.reject_all = True
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert answer.status_code != 200
+    assert len(_refreshes(github)) == 1
+
+
+def test_a_near_expiry_token_with_a_refresh_running_elsewhere_is_used_not_refreshed(
+        api, github, slots, db, clock):
+    _connect(api, github)
+    current = slots.latest("eng", _suffix())
+    clock.at = T0 + timedelta(hours=6, minutes=1)  # 1h59m left, still valid
+    _conn(db)["refresh_lease"] = {"holder": "sweep", "until": clock.at + timedelta(minutes=1)}
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert _refreshes(github) == []
+    assert github.to("https://api.github.com/user/installations?per_page=100&page=1")[-1][
+        "headers"]["Authorization"] == f"Bearer {current}"
+    assert _conn(db)["refresh_lease"]["holder"] == "sweep"
+
+
+def test_a_refresh_finished_by_another_holder_meanwhile_is_not_repeated(
+        api, github, slots, db, clock):
+    """Two refreshers race for a near-expiry token: the sweep wins the lease
+    first and refreshes; the request, taking the lease after it, finds the
+    connection refreshed since it read it and uses the new token."""
+    _connect(api, github)
+    clock.at = T0 + timedelta(hours=6, minutes=1)
+    app = api.app.state.forge_app
+    real = app._take_lease
+    raced: list[bool] = []
+
+    def take_lease(conn_id: str, holder: str):
+        if not raced:
+            raced.append(True)
+            assert app.sweep().refreshed == 1
+        return real(conn_id, holder)
+
+    app._take_lease = take_lease
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert raced and len(_refreshes(github)) == 1
+    newest = github.access_tokens()[-1]
+    assert github.to("https://api.github.com/user/installations?per_page=100&page=1")[-1][
+        "headers"]["Authorization"] == f"Bearer {newest}"
+    assert _conn(db)["refresh_lease"] is None
+
+
+def test_a_401_while_another_holder_refreshes_uses_its_new_token_or_is_a_409(
+        api, github, slots, db, clock):
+    _connect(api, github)
+    revoked = slots.latest("eng", _suffix())
+    github.dead.add(revoked)
+    _conn(db)["refresh_lease"] = {"holder": "sweep", "until": clock.at + timedelta(minutes=1)}
+    answer = api.get("/v1/access/orgs", headers=auth_header("alice"))
+    # The holder has not stored a new token yet: no second spend, a 409.
+    assert answer.status_code == 409 and answer.json()["code"] == "conflict"
+    assert _refreshes(github) == []
+
+
+def test_the_sweep_still_refreshes_a_near_expiry_token(api, github, slots, db, clock):
+    _connect(api, github)
+    clock.at = T0 + timedelta(hours=5, minutes=31)  # 2h29m left: the sweep's margin
+    app = api.app.state.forge_app
+    assert app.sweep().refreshed == 1
+    assert slots.latest("eng", _suffix()) == github.access_tokens()[-1]
 
 
 # -- register and readable resolve the caller's slot ----------------------------------
