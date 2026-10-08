@@ -173,20 +173,21 @@ def test_the_copy_is_filled_and_never_leaves_a_placeholder() -> None:
 # -- the steps and the next step ----------------------------------------------------
 
 
-def test_the_steps_are_the_seven_of_section_2_1_in_order() -> None:
+def test_the_steps_are_section_2_1s_with_the_workspace_steps_after_signed_in() -> None:
+    # docs/workspaces.md §6.1: `workspace` second, `claude_account` right after.
     view = run()
     assert [s["step"] for s in view["steps"]] == [
-        "signed_in", "github_connected", "app_installed", "orgs_enabled", "repos_chosen", "access_verified",
-        "ready"]
+        "signed_in", "workspace", "claude_account", "github_connected", "app_installed",
+        "orgs_enabled", "repos_chosen", "access_verified", "ready"]
     assert set(onboarding.STATES) == {"todo", "in_progress", "done", "failed", "stale"}
 
 
 def test_a_tenant_with_no_git_token_is_signed_in_and_nothing_else() -> None:
     view = run(tenant_lists_git=False)
     assert states(view) == {
-        "signed_in": "done", "github_connected": "todo", "app_installed": "todo",
-        "orgs_enabled": "todo", "repos_chosen": "todo", "access_verified": "todo",
-        "ready": "todo"}
+        "signed_in": "done", "workspace": "todo", "claude_account": "todo",
+        "github_connected": "todo", "app_installed": "todo", "orgs_enabled": "todo",
+        "repos_chosen": "todo", "access_verified": "todo", "ready": "todo"}
     assert view["next_step"] == "github_connected"
     assert view["complete"] is False
     signed = step(view, "signed_in")
@@ -205,7 +206,10 @@ def test_everything_measured_ok_is_ready() -> None:
     api = registration("example-org/api")
     docs = registration("swarm-bot/notes", can_push=False)
     view = run([record], [checks(record, api), checks(record, docs)], [api, docs])
-    assert set(states(view).values()) == {"done"}, states(view)
+    # The workspace steps are not required with WORKSPACE_GATE off (as it
+    # ships), so they hold nothing back: test_onboarding_workspace_steps.py.
+    held = {k: v for k, v in states(view).items() if k not in ("workspace", "claude_account")}
+    assert set(held.values()) == {"done"}, states(view)
     assert view["next_step"] is None and view["complete"] is True
     connect = step(view, "github_connected")
     assert connect["evidence"]["via"] == "tenant"
