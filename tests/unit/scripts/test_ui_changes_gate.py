@@ -240,7 +240,9 @@ def test_a_pattern_shape_the_step_does_not_model_is_refused(tmp_path, pattern):
 
 def test_the_list_carries_every_pattern_the_old_filter_did():
     """The patterns are those of `on.pull_request.paths` as of 2026-10-07,
-    minus ci-gate.yml, which is gone. MUTATION: drop any one."""
+    minus ci-gate.yml, which is gone, plus the hotfix lane and the release
+    stages both lanes run (2026-10-08, observer proposal H), which run only on
+    main and are read by test_hotfix_release.py. MUTATION: drop any one."""
     assert set(app_paths()) == {
         "apps/**", "images/**", "kubernetes/**", "scripts/**", "tests/**", "docs/**",
         "terraform/modules/monitoring/alerts.tf", "plugin/**", ".claude-plugin/**",
@@ -248,7 +250,7 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
         ".github/workflows/application.yml", ".github/workflows/release.yml",
         ".github/ISSUE_TEMPLATE/**", ".github/labels.yml", ".github/workflows/iam-refusal-probe.yml",
         ".github/workflows/ci-fix.yml", ".github/workflows/auto-merge.yml", "scripts/ci-gate.sh",
-        ".dockerignore", ".gcloudignore",
+        ".dockerignore", ".gcloudignore", ".github/workflows/hotfix.yml", ".github/actions/**",
     }
 
 

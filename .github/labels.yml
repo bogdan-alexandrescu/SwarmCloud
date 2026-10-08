@@ -16,6 +16,14 @@
 # `bug` and `enhancement` are GitHub's defaults and already existed. `epic` was
 # created on 2026-09-24 for epic.yml.
 #
+# One label here is read by a WORKFLOW rather than applied by a form:
+# `hotfix`, which .github/workflows/hotfix.yml requires on the merged pull
+# request before it ships the commit to dev on the hotfix lane (owner decision
+# 2026-10-08, observer proposal H; docs/ci.md, "Hotfix releases"). A workflow
+# gating on a label the repository does not have would never proceed, so it is
+# declared for the same reason the forms' labels are. test_issue_forms.py
+# accepts a declared label that a workflow passes as `--label <name>`.
+#
 # Colours are QUOTED: an all-digit colour left unquoted is a YAML integer and
 # loses its leading zeros.
 - name: bug
@@ -27,3 +35,6 @@
 - name: epic
   color: "3e4b9e"
   description: "One wave's out-of-territory findings; closes on its comments, never on its index"
+- name: hotfix
+  color: "b60205"
+  description: "Ship to dev on the hotfix lane, not behind the release queue; never changes IAM (docs/ci.md)"
