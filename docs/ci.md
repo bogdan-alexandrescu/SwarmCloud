@@ -1611,7 +1611,26 @@ It refuses, with a comment on the pull request saying which and why:
   requires only the checks that run on every pull request, plus `ci-gate`; a
   path-filtered workflow (`application.yml`, `terraform.yml`) is not required,
   but when a pull request's changes do trigger it, this still holds the merge
-  on its result.
+  on its result;
+* **a closing keyword that names an open pull request** (since 2026-10-08,
+  owner decision). The text of PR 857 named the open, unmerged PR 840 with a
+  closing keyword, and two seconds after the App merged 857, GitHub itself
+  closed 840. Before the gate, the enable job checks out the **default
+  branch's** `scripts/` (sparse, no credentials, never the pull request's
+  head) and runs
+  [`scripts/check-closing-references.sh`](../scripts/check-closing-references.sh).
+  GraphQL `closingIssuesReferences` is an IssueConnection and never lists a
+  pull request (PR 817 puts "fixes" before PR 777 and lists nothing). So the
+  script also reads the closing keywords in the title, the body and **every
+  commit message**, because this repository's squash message is the commit
+  messages. For each number in this repository it asks REST
+  `repos/<R>/issues/<n>` whether it is a pull request and whether it is open.
+  An open one refuses on the label and on a re-evaluation alike: `ready` is
+  removed and the comment says to reword the reference ("PR 840") or write
+  `part of #840`. An issue passes. So does a closed or merged pull request:
+  the keyword closes, never reopens, and cannot change a merged one. If the
+  check cannot tell (an error, a failed read other than a 404, more than one
+  page of references or commits), the job fails and nothing is armed.
 
 A check **still running** is not a refusal (since 2026-10-06, #697): if it
 is a *required* one the pull request is queued and waits, as the next section
