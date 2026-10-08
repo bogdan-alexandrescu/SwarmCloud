@@ -719,9 +719,12 @@ class CheckpointContent:
 
         With `attempt_id`, one prefix is listed: `.../attempts/<a>/checkpoints/<c>/`.
         Without it the task's whole attempts prefix is scanned for a checkpoint
-        of that id, because ids restart per attempt (`ckpt-00001` exists once
-        for EVERY attempt that checkpointed) and guessing which one was meant
-        would serve another attempt's working tree under the right name. More
+        of that id, because an id is not unique across attempts: ids continue
+        from the restored checkpoint, so an attempt that resumed from an OLDER
+        checkpoint reuses ids a later attempt already wrote (and an attempt
+        that restored nothing starts again at `ckpt-00001`), and guessing which
+        one was meant would serve another attempt's working tree under the
+        right name. More
         than one match is a 422 naming the candidates; a scan cut short by the
         scan limit that found none is a 422 too, because "not found" cannot be
         concluded from a listing that did not finish.

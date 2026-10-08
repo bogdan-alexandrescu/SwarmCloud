@@ -443,9 +443,10 @@ interface Recorded {
  * worker appends to it after the upload, and it is what the run's
  * `Checkpoints N` figure counts), and the task's `latest_checkpoint` pointer,
  * whose verdict the route serves as `missing`. Matched on attempt AND id: ids
- * restart per attempt, so `ckpt-00001` exists once for every attempt that
- * checkpointed, and a match on the id alone would call one attempt's
- * checkpoint present because another attempt's is.
+ * continue from the restored checkpoint, but two attempts can still share one
+ * (a resume from an older checkpoint reuses the ids after it), and a match on
+ * the id alone would call one attempt's checkpoint present because another
+ * attempt's is.
  */
 function lostCheckpoints(page: CheckpointsPage, attempts: readonly AttemptRow[] | null): Recorded[] {
   const listed = new Set(page.checkpoints.map((c) => `${c.attempt_id}/${c.checkpoint_id}`))
@@ -561,7 +562,7 @@ function PointerFact({ page }: { page: CheckpointsPage }) {
   )
 }
 
-/** A checkpoint named with its attempt: ids restart per attempt. */
+/** A checkpoint named with its attempt: two attempts can share an id. */
 function idOf(c: CheckpointRecord): string {
   return `${c.attempt_id}/${c.checkpoint_id}`
 }

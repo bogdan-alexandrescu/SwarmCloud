@@ -528,3 +528,57 @@ def test_an_instant_outside_the_retained_range_is_a_422_never_a_500(client, db, 
     response = _history(client, **params)
 
     assert response.status_code == 422, (params, response.status_code, response.text[:200])
+
+
+# --------------------------------------------------------------------------
+# Epic #361: removing an account closes its open hold records
+# --------------------------------------------------------------------------
+
+
+def test_removing_an_account_closes_its_open_hold_records_in_the_same_transaction(
+    client, db
+):
+    mine = _assign(client, task_id="task-a1")["assignment_id"]
+    client.identity.as_tenant(RESEARCH)
+    lent = _assign(client, task_id="task-r1")["assignment_id"]
+    # An open record whose hold is not on the document (a write that never
+    # landed): it is this account's, and it must not be left open either.
+    orphan = dict(_log(db, mine), task_id="task-orphan")
+    db.document(f"{HOLD_LOG_COLLECTION}/orphan").set(orphan)
+    # Another account's open record, which the removal must not touch.
+    elsewhere = dict(_log(db, mine), account_id=f"{ENG}:other")
+    db.document(f"{HOLD_LOG_COLLECTION}/elsewhere").set(elsewhere)
+    db.commits.clear()
+
+    client.identity.as_tenant(ENG)
+    before = datetime.now(timezone.utc)
+    response = client.delete(f"/v1/accounts/{ACCOUNT}")
+
+    assert response.status_code == 200, response.text
+    assert f"accounts/{ACCOUNT}" not in db.docs
+    for assignment_id in (mine, lent, "orphan"):
+        record = _log(db, assignment_id)
+        assert record["end"] == "account_removed", (assignment_id, record)
+        assert record["released_at"] is not None and record["released_at"] >= before
+        assert record["expires_at"] == record["released_at"] + HOLD_LOG_RETENTION
+    assert _log(db, mine)["task_id"] == "task-a1", "closing keeps what opening recorded"
+    assert _log(db, "elsewhere")["end"] is None, "another account's record was closed"
+    (commit,) = db.commits
+    assert commit == {
+        f"accounts/{ACCOUNT}",
+        f"{HOLD_LOG_COLLECTION}/{mine}",
+        f"{HOLD_LOG_COLLECTION}/{lent}",
+        f"{HOLD_LOG_COLLECTION}/orphan",
+    }
+
+
+def test_removing_an_account_with_an_expired_hold_closes_it_as_expired(client, db):
+    """A hold whose deadline had passed stopped counting then, not at removal."""
+    assignment_id = _assign(client)["assignment_id"]
+    deadline = _expire(db, 0)
+
+    assert client.delete(f"/v1/accounts/{ACCOUNT}").status_code == 200
+
+    record = _log(db, assignment_id)
+    assert record["end"] == "expired"
+    assert record["released_at"] == deadline

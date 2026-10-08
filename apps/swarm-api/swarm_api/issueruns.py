@@ -1629,6 +1629,18 @@ class IssueRun:
                     "url": self.pull_request.get("url"),
                     "head_sha": self.pull_request.get("head_sha"),
                     "checks": self.pull_request.get("checks"),
+                    # #503: what the run page shows of the last CI read and
+                    # whether it merged. A document written before these were
+                    # recorded serves null for each -- never 0 or false, which
+                    # would claim a reading that was never made.
+                    "merged": _opt_bool(self.pull_request.get("merged")),
+                    "merged_at": _iso(self.pull_request.get("merged_at")),
+                    "check_counts": _check_counts(self.pull_request.get("check_counts")),
+                    "check_list": _check_list(self.pull_request.get("check_list")),
+                    "check_list_truncated": _opt_bool(
+                        self.pull_request.get("check_list_truncated")
+                    ),
+                    "ci_url": _opt_str(self.pull_request.get("ci_url")),
                 }
             ),
             # The CI loop: the rounds spent and their workflows, the sha CI
@@ -1667,6 +1679,34 @@ class IssueRun:
 
 def _opt_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _opt_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _opt_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+#: The buckets `forgechecks.CiReading.counts` keeps, served as they were stored.
+CHECK_COUNT_KEYS = ("passed", "failed", "pending", "skipped")
+
+
+def _check_counts(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {key: _opt_int(value.get(key)) or 0 for key in CHECK_COUNT_KEYS}
+
+
+def _check_list(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    return [
+        {"name": str(item.get("name") or "check"), "state": _opt_str(item.get("state")),
+         "url": _opt_str(item.get("url"))}
+        for item in value if isinstance(item, Mapping)
+    ]
 
 
 #: What `IssueRuns.patch` may write: the write-back's and the CI read's

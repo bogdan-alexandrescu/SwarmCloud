@@ -260,28 +260,16 @@ spec:
             # by the runner child and by anything the agent spawns. The worker
             # puts the credential only into the environment of the single child
             # that needs it.
-          # Liveness and readiness, which the four stall signals do not cover.
-          # A crashed process inside a running pod is a DIFFERENT failure from
-          # an agent that is alive and idle: the stall guard watches progress,
-          # these watch existence. Without them a dead worker holds its slot
-          # until a ceiling expires.
-          livenessProbe:
-            exec:
-              command: ["/usr/local/bin/swarm-healthcheck", "--liveness"]
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 10
-            # Three consecutive failures, not one: a busy agent can miss a probe
-            # without being dead, and restarting a healthy agent costs an
-            # attempt.
-            failureThreshold: 3
-          readinessProbe:
-            exec:
-              command: ["/usr/local/bin/swarm-healthcheck", "--readiness"]
-            initialDelaySeconds: 10
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 3
+          # NO LIVENESS OR READINESS PROBE, deliberately. Both used to exec
+          # /usr/local/bin/swarm-healthcheck, which no Dockerfile under images/
+          # installs, so on this template every probe failed and the kubelet
+          # killed a healthy worker. A dead worker is covered without one: the
+          # worker IS the container's main process, so a crash ends the pod and
+          # the Job (restartPolicy Never) fails it; a live-but-wedged agent is
+          # the stall guard's case; and activeDeadlineSeconds bounds the rest.
+          # Readiness gates Service traffic, and no Service selects a worker.
+          # test_every_exec_probe_runs_a_binary_some_image_installs holds any
+          # probe added back to a binary an image actually ships.
           volumeMounts:
             - name: workspace
               mountPath: /workspace

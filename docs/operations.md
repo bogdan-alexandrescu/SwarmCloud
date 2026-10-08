@@ -315,6 +315,12 @@ make build push deploy
 make smoke
 ```
 
+**A new swarm-api refusal deploys switched off.** It logs `refusal report-only`
+with the code it would have refused, and lets the request through until
+`api_refusals` in the environment's tfvars turns it on. On 2026-10-07 a
+refusal deployed ahead of the change that let callers satisfy it locked out
+submissions for two hours. See [api-refusals.md](api-refusals.md).
+
 Images are tagged with the immutable git SHA; `push` promotes a **digest** to the
 channel tag after a trivy scan. Nothing downstream deploys a mutable tag, so
 "what is running" is always a digest that was actually built and scanned.
@@ -470,7 +476,7 @@ Where it is waiting tells you whose task to read:
 | `PLANNING` | the planner task | `GET /tasks/<planner_task_id>`: a planner `QUEUED`/`PARKED` is capacity, not the run ([section 6](#6-investigating-one-task)) |
 | `PLANNED` | a person: approve, edit or reject | nothing is running and nothing is held (invariant 1) |
 | `RUNNING` | the compiled workflow | `GET /workflows/<workflow_id>` |
-| `CHECKING` | CI on the pull request's head | `pull_request.checks`, and `pull_request.read_error` if CI could not be read |
+| `CHECKING` | CI on the pull request's head | `pull_request.checks`; `check_counts` (passed/failed/pending/skipped), `check_list` (each check's name, state and link, capped at 50 with `check_list_truncated`) and `ci_url` say which checks; `merged`/`merged_at` once GitHub reports it merged; `pull_request.read_error` if CI could not be read. On a run stored before these were recorded each serves `null`, never `0` |
 | `FIXING` | the newest CI fix round | `GET /workflows/<last of ci_fix_workflows>` |
 
 Stuck in `PLANNING` or `CHECKING`, and `writeback_error`, are in

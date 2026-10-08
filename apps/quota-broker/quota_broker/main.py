@@ -50,6 +50,7 @@ from .usagepoll import UsagePoller
 from .accounts import (
     DEFAULT_HOLD_TTL,
     DEFAULT_STALE_AFTER,
+    HOLD_END_ACCOUNT_REMOVED,
     HOLD_END_EXPIRED,
     HOLD_END_RELEASED,
     HOLD_END_SWAPPED,
@@ -75,7 +76,7 @@ from .accounts import (
     validate_label,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
-from .accountstore import _MALFORMED, AccountStore, MalformedAccountError
+from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
@@ -817,7 +818,9 @@ def release_hold(
     The released hold's record is closed IN THIS TRANSACTION -- `released`, or
     `unusable` when the secret could not be read -- and so is the record of
     every expired hold the rewrite drops. A release that matched nothing writes
-    no record at all, so a duplicate cannot re-close a span with a later end.
+    no record at all, so a duplicate cannot re-close a span with a later end --
+    and, when no expired hold needs dropping either, does not write the account
+    document at all.
     """
     from google.cloud import firestore
 
@@ -841,6 +844,13 @@ def release_hold(
             and (tenant_id is None or h.tenant_id == tenant_id)
         ]
         remaining = [h for h in holds if h not in held]
+        if not held and not expired:
+            # NOTHING CHANGED, so nothing is written. Rewriting `holds` and
+            # `assigned` here anyway re-projected `assigned` from `holds` on
+            # every unmatched release -- on a document malformed only in
+            # `assigned`, that repaired it on behalf of any tenant `may_serve`
+            # admits, a write no caller was entitled to make.
+            return len(remaining), False
         payload = _hold_payload(remaining)
         if unusable and held:
             reports = _unreadable_reports(data)
@@ -855,6 +865,85 @@ def release_hold(
             )
         _close_expired(txn, db, account_id, expired)
         return len(remaining), bool(held)
+
+    return _apply(transaction)
+
+
+def remove_account_and_close_holds(db: Any, account_id: str, *, now: datetime) -> int:
+    """Delete the account document and close every open hold record it had.
+
+    Returns how many records were closed as `account_removed`.
+
+    A removal used to delete the document alone. Its holds went with it, but
+    their `account_holds` records stayed OPEN until their hold deadline plus
+    the retention, and then read as `expired` -- a worker killed outright,
+    which is not what happened -- for the whole of that span.
+
+    ONE TRANSACTION: the account read, the open-record query, every close and
+    the delete commit together or not at all, as every other change to `holds`
+    does (#379). Two sources, joined by assignment id:
+
+    * the document's `holds`: a live one closes as `account_removed`, an
+      expired one as `expired` at its own deadline (`_close_expired`), and a
+      hold taken before the log existed gets a whole record either way;
+    * the open records (`account_id` = this one, `end` = null): a record
+      whose hold is not on the document -- unreadable `holds`, or a write
+      that never landed -- is closed too, so none is left open.
+
+    A `holds` field that cannot be decoded does not stop the removal: the
+    records still close from the query, and the document still goes.
+    """
+    from google.cloud import firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    open_records = (
+        db.collection(HOLD_LOG_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .where(filter=FieldFilter("end", "==", None))
+    )
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        records = list(txn.get(open_records))
+        live: list[Hold] = []
+        expired: list[Hold] = []
+        if getattr(snap, "exists", False):
+            try:
+                live, expired = _split_holds(snap.to_dict() or {}, now)
+            except MALFORMED_ERRORS as exc:
+                log.warning(
+                    "could not read the holds on an account being removed; "
+                    "closing its hold records from the log alone",
+                    extra={"account_id": account_id, "error": type(exc).__name__},
+                )
+        closed = 0
+        for hold in live:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(
+                    hold, account_id, end=HOLD_END_ACCOUNT_REMOVED, released_at=now
+                ),
+            )
+            closed += 1
+        _close_expired(txn, db, account_id, expired)
+        covered = {h.assignment_id for h in [*live, *expired]}
+        for record in records:
+            if str(record.id) in covered:
+                continue
+            txn.update(
+                _log_ref(db, str(record.id)),
+                {
+                    "end": HOLD_END_ACCOUNT_REMOVED,
+                    "released_at": now,
+                    "expires_at": now + HOLD_LOG_RETENTION,
+                },
+            )
+            closed += 1
+        txn.delete(ref)
+        return closed
 
     return _apply(transaction)
 
@@ -1191,7 +1280,7 @@ def _release_attempt_holds_everywhere(
             count = release_attempt_holds(
                 db, account_id, task_id=task_id, attempt_id=attempt_id, now=now
             )
-        except _MALFORMED as exc:
+        except MALFORMED_ERRORS as exc:
             log.warning(
                 "could not release a fenced attempt's holds on an account document",
                 extra={"account_id": account_id, "error": type(exc).__name__},
@@ -1278,7 +1367,7 @@ def _release_ended_attempt_holds(db: Any, now: datetime) -> dict[str, Any]:
         account_id = str(doc.id)
         try:
             live = _live_holds(doc.to_dict() or {}, now)
-        except _MALFORMED as exc:
+        except MALFORMED_ERRORS as exc:
             log.warning(
                 "could not read the holds on an account document for ended attempts",
                 extra={"account_id": account_id, "error": type(exc).__name__},
@@ -1296,7 +1385,7 @@ def _release_ended_attempt_holds(db: Any, now: datetime) -> dict[str, Any]:
                 count = release_attempt_holds(
                     db, account_id, task_id=key[0], attempt_id=key[1], now=now
                 )
-            except _MALFORMED as exc:
+            except MALFORMED_ERRORS as exc:
                 log.warning(
                     "could not release an ended attempt's holds on an account document",
                     extra={"account_id": account_id, "error": type(exc).__name__},
@@ -1456,17 +1545,29 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
     collection and prunes the readable and the unreadable alike. The readable
     list is still read, for the alarm below, and it is also what names each
     unreadable document by id and exception class (`accountstore._decode`).
+
+    ONE STREAM. `list_reporting` reads the collection once and returns the
+    readable accounts and the unreadable document ids together; between them
+    they are every document id the collection held.
+
+    EVERY DOCUMENT FAILING IS AN ERROR, not N warnings and a clean summary.
+    One document whose holds cannot be read is that document; all of them at
+    once is a decoder bug (`accountstore.MALFORMED_ERRORS`). It is logged at
+    ERROR and the summary carries `error`, the key the sweep route already
+    uses for a hold sweep that failed.
     """
     reclaimed = 0
     touched = 0
-    accounts = store.list()
+    listing = store.list_reporting()
+    accounts = listing.accounts
     readable = [account.account_id for account in accounts]
-    streamed = [str(doc.id) for doc in db.collection(ACCOUNTS_COLLECTION).stream()]
-    unreadable = sorted(set(streamed) - set(readable))
-    for account_id in [*readable, *unreadable]:
+    unreadable = list(listing.unreadable)
+    every = [*readable, *unreadable]
+    failed: list[str] = []
+    for account_id in every:
         try:
             dropped = prune_holds(db, account_id, now=now)
-        except _MALFORMED as exc:
+        except MALFORMED_ERRORS as exc:
             # One document whose hold fields themselves cannot be read must not
             # stop the rest of the pool being swept. The id and the CLASS only:
             # `str(exc)` can quote a field value (see `MalformedAccountError`).
@@ -1474,6 +1575,7 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
                 "could not prune the holds on an account document",
                 extra={"account_id": account_id, "error": type(exc).__name__},
             )
+            failed.append(account_id)
             continue
         if dropped:
             reclaimed += dropped
@@ -1514,7 +1616,7 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
             extra={"accounts": len(accounts)},
         )
 
-    return {
+    summary: dict[str, Any] = {
         # `pruned`, not `accounts`: this block sits beside the refresher's own
         # `accounts` summary in the sweep response and the two count different
         # things.
@@ -1523,6 +1625,16 @@ def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
         "registered": len(accounts),
         "never_assigned": len(never_used),
     }
+    if every and len(failed) == len(every):
+        log.error(
+            "the hold sweep could read the holds of no account document; no "
+            "abandoned hold was reclaimed this tick. One unreadable document is "
+            "that document; all of them is a decoder or writer bug",
+            extra={"unreadable": sorted(failed), "documents": len(failed)},
+        )
+        summary["error"] = "every account document's holds are unreadable"
+        summary["unreadable"] = sorted(failed)
+    return summary
 
 
 #: Refresh outcomes that mean the credential is dead and only a person can fix
@@ -2948,7 +3060,18 @@ def create_app(
         # later: `apps/reconciler/` has no account code, so a comment here that
         # named it as the cleanup would have been describing a job nobody runs.
         # The response says "retained" so the caller knows there is one left.
-        store.remove(account_id)
+        #
+        # The account's open hold records close in the same transaction as
+        # the delete, as `account_removed` (see the function).
+        closed = remove_account_and_close_holds(
+            request.app.state.broker.db, account_id, now=datetime.now(timezone.utc)
+        )
+        if closed:
+            log.warning(
+                "removed an account that still had open holds; their records "
+                "are closed as account_removed",
+                extra={"account_id": account_id, "closed": closed},
+            )
         return {"removed": account_id, "secret": "retained"}
 
     # ----------------------------------------------------------------------
