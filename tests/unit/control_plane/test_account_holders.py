@@ -719,3 +719,66 @@ def test_an_opaque_cursor_that_does_not_hold_a_broker_cursor_is_a_422(client, br
 
     assert response.status_code == 422
     assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+# --------------------------------------------------------------------------
+# Epic #361: swarm-api refuses an unparsable instant itself, and a malformed
+# row never silently ends a borrower's pagination
+# --------------------------------------------------------------------------
+
+_NOT_AN_INSTANT = [
+    pytest.param({"from": "yesterday"}, id="from"),
+    pytest.param({"to": "2026-13-45"}, id="to"),
+    pytest.param({"cursor": "not-an-instant|0"}, id="cursor"),
+]
+
+
+@pytest.mark.parametrize("user", ["alice", "bob"])
+@pytest.mark.parametrize("params", _NOT_AN_INSTANT)
+def test_a_value_that_is_not_an_iso_instant_is_a_422_without_a_broker_call(
+    client, broker, user, params
+):
+    """The owner's path used to forward an unparsable value for the broker to
+    name; swarm-api refuses it itself now, for every caller."""
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header(user), params=params)
+
+    assert response.status_code == 422, (params, response.status_code, response.text[:200])
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+@pytest.mark.parametrize("stamp", [None, 12345, "", "not-an-instant"])
+def test_own_page_refuses_a_last_own_row_with_no_readable_start(stamp, caplog):
+    from swarm_api.accountholds import own_page
+    from swarm_api.errors import Unpageable
+
+    rows = [_row("eng", "eng-task-1", hours_ago=1), _row("research", "research-task-1", hours_ago=2)]
+    rows[1]["assigned_at"] = stamp
+    payload = {"spans": rows, "next_cursor": "more"}
+
+    with caplog.at_level(logging.ERROR), pytest.raises(Unpageable):
+        own_page(payload, tenant_id="research", cursor=None, fetch=lambda _c: {"spans": []})
+
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_own_page_with_a_readable_last_own_row_still_mints_a_cursor():
+    """The control: the refusal is for the malformed row, not every page."""
+    from swarm_api.accountholds import own_page
+
+    rows = [_row("eng", "eng-task-1", hours_ago=1), _row("research", "research-task-1", hours_ago=2)]
+    payload = {"spans": rows, "next_cursor": "more"}
+
+    served = own_page(payload, tenant_id="research", cursor=None, fetch=lambda _c: {"spans": []})
+
+    assert served["next_cursor"] == f"{rows[1]['assigned_at']}|1"
+
+
+def test_a_borrower_page_ending_at_a_malformed_row_is_a_500_not_a_truncated_200(client, broker):
+    rows = [_row("research", "research-task-1", hours_ago=1)]
+    rows[0]["assigned_at"] = 12345
+    broker.history_script = {None: {"spans": rows, "next_cursor": "page-1"}}
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"))
+
+    assert response.status_code == 500, response.text[:200]
+    assert "unpageable" in response.text
