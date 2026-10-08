@@ -495,6 +495,9 @@ module "scheduler" {
   # as the same rollup-sweeper account. Off until swarm-api serves the route.
   enable_forge_refresh = var.enable_forge_refresh
 
+  # #748: known at plan time, unlike api_endpoint, so it can gate a count.
+  enable_task_finished_push = true
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {
