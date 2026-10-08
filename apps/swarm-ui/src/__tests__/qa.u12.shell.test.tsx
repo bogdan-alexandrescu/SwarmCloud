@@ -50,7 +50,7 @@ describe('R5: the phone drawer is the drawer\'s width', () => {
     expect(painted(panel, 'min-width', PHONE), 'the panel is as wide as its longest name').toBe('0')
     expect(painted(panel, 'flex', PHONE)).toMatch(/^1 1 0%?$/)
     const row = await waitFor(() => {
-      const b = panel.querySelector<HTMLElement>('.sk-recent > button.sk-kid[title]')
+      const b = panel.querySelector<HTMLElement>('.sk-recent > a.sk-kid[title]')
       expect(b).not.toBeNull()
       return b!
     })
