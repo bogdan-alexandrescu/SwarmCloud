@@ -655,6 +655,17 @@ locals {
       # audience this service accepts, and the value the scheduler hands each
       # worker below. Harmless while child tasks are off: no worker calls.
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The SwarmCloud GitHub App's PUBLIC settings (github_app.tf; #780).
+      # swarm_api.forgeapp reads exactly these three names; without them every
+      # /v1/onboarding/github call answers 503 "the App is not configured".
+      # Until 2026-10-07 they reached only the `github_app` output, so the
+      # App registered that day was invisible to swarm-api (found by the
+      # owner's test 1). Empty strings when no App is registered, which
+      # forgeapp reads as "not configured".
+      GITHUB_APP_ID        = var.github_app_id
+      GITHUB_APP_CLIENT_ID = var.github_app_client_id
+      GITHUB_APP_SLUG      = var.github_app_slug
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings
