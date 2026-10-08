@@ -673,6 +673,9 @@ function Listing({
           onClose={() => setSelected(null)}
           // Opened from the checkpoint's file list, not the Artifacts list.
           backLabel="‹ Files"
+          // The per-member read has no raw route of its own: the bytes it
+          // shows as U+FFFD are held exactly by the whole-checkpoint download.
+          exactBytes="checkpoint"
         />
       )}
     </>

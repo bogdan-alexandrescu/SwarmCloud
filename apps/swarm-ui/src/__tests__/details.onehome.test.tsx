@@ -445,4 +445,22 @@ describe('#278: a step that changed nothing but handed on a diff says so', () =>
     expect(section.textContent).toContain('changed nothing in the repository')
     expect(section.textContent).not.toContain('handed to')
   })
+
+  // The handed-on diff is read through the artifact content route, passed to
+  // the viewer as its own loader. Its not-utf-8 mark must name the artifact
+  // raw download, which holds its bytes; no checkpoint is involved (#207).
+  it('names the raw download, not the checkpoint, for a handed-on diff with bytes that are not UTF-8', async () => {
+    api.loadWorkflow.mockResolvedValue(ok(workflow(true)))
+    api.loadArtifactContent.mockResolvedValue(ok({ ...diffContent(), invalid_utf8_bytes: 2 }))
+    const el = await mount(run({ task: IMPLEMENT }))
+    const section = el.querySelector<HTMLElement>('.run-output')!
+    const notUtf8 = () =>
+      [...section.querySelectorAll('.art-viewer li.ctl-fact')].find(
+        (li) => li.querySelector('b')?.textContent === 'not utf-8',
+      )
+    await waitFor(() => expect(notUtf8(), 'the handed-on diff draws no not-utf-8 fact').toBeTruthy())
+    const say = notUtf8()!.querySelector('.ctl-mark.is-partial')?.getAttribute('aria-label') ?? ''
+    expect(say).toMatch(/raw download/)
+    expect(say, 'a handed-on diff is a task artifact, not a checkpoint member').not.toMatch(/checkpoint/)
+  })
 })

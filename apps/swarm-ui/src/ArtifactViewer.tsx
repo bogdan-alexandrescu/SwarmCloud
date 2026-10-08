@@ -55,6 +55,7 @@ export function ArtifactViewer({
   kind,
   absent,
   backLabel,
+  exactBytes = 'raw',
 }: {
   taskId: string
   artifact: ArtifactRef
@@ -84,6 +85,14 @@ export function ArtifactViewer({
    * a different sentence from "the manifest names a file that is not there".
    */
   absent?: { heading: string; say: string }
+  /**
+   * Which download holds this file's stored bytes exactly, for the not-utf-8
+   * mark; see `ExactBytes`. Said by the caller, never inferred from `load`: a
+   * caller's own loader is not always the checkpoint read -- the Code tab's
+   * handed-on diff passes the artifact content route's answer, and its bytes
+   * are in the artifact raw route (#207).
+   */
+  exactBytes?: ExactBytes
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -219,10 +228,8 @@ export function ArtifactViewer({
           // reads one window and says so through `truncated`.
           onPage={loadContent === undefined ? setOffset : null}
           // WHERE THE EXACT BYTES ARE, for a window that showed some as
-          // U+FFFD: the artifact raw route, or -- for a caller's own loader,
-          // the checkpoint per-member read, which has no per-member raw
-          // route -- the whole-checkpoint download (#207).
-          exactBytes={loadContent === undefined ? 'raw' : 'checkpoint'}
+          // U+FFFD: the caller says so (#207).
+          exactBytes={exactBytes}
           // THE WHOLE OBJECT, for a patch this read holds only a window of:
           // the artifact raw route, which the server redacts as it does this
           // one. A caller's own loader has no such route.
@@ -457,8 +464,9 @@ function Provenance({
             a Latin-1 file reads as the agent's own text with odd glyphs in
             it. The download on this strip saves what is shown, U+FFFD and all.
             The mark names where the exact bytes are, and that differs by
-            route: on the Artifacts pane it is the raw route, which serves the
-            stored object as stored; on the Checkpoint browser there is no
+            route: on the Artifacts pane and the Code tab's handed-on diff it is
+            the raw route, which serves the stored object as stored; on the
+            Checkpoint browser there is no
             per-member raw route, so it is the whole-checkpoint download --
             the server's own `detail` says the same (#207). Absent on an older
             API; zero draws nothing. */}
