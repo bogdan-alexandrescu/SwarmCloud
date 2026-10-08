@@ -108,6 +108,13 @@ else
       warn "skipped ${name}: it ${reason}"
       continue
     fi
+    # The claude-code jobs are idle Cloud Run FALLBACKS since claude-code moved
+    # to GKE (contract request 53, applied 2026-10-08); terraform keeps them
+    # until 2026-10-15 (cloud_run_fallback_profiles in terraform/infra/locals.tf).
+    # Owner 2026-10-08: do not warm them. Remove this with that list.
+    case "${name}" in
+      *-claude-code) info "skipped ${name}: an idle Cloud Run fallback (claude-code runs on GKE)"; continue ;;
+    esac
     JOBS+=("${name}")
   done <"${WORK}/jobs.txt"
 fi
