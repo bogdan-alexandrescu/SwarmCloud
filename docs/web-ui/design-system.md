@@ -1622,52 +1622,48 @@ route; what separates the two regions now is `--ctl-gutter`, undivided. §13.1.
 
 ### 6.15 Mobile nav
 
-**The rail becomes a horizontally-scrolling strip at ≤899px. It does not become
-a floating bottom bar**, because the dock already owns the bottom edge of the
-viewport and two fixed bars stacked on a 390px screen is 25% of the glass spent
-on chrome. The strip keeps every section visible and scrolls; nothing is hidden
-behind a menu.
+*(Rewritten 2026-10-08, #139, to describe the Sky shell as built. The two-row
+strip this section used to specify — `.ctl-rail-main` / `.ctl-rail-sub`, drawn
+by `RailTabs`, CH-21 — was retired when the Sky shell (`SkyShell` in
+`Spine.tsx`) replaced the rail; none of those classes is in `styles.css` any
+more. What it decided and still holds is kept below, with the reason; the rest
+is history in git.)*
 
-**The strip is two rows (CH-21, 2026-09-25), so each section keeps a fixed
-position.** It was one row with the open section's tabs inserted inline after
-their section, which moved every later section whenever one opened — §6.14's "a
-position means one thing" held on the desktop column and nowhere else.
+**Three constraints carried over from the strip, because the reasons behind
+them did not change:**
 
-| Row | Class | Holds |
+* **No floating bottom bar.** The dock already owns the bottom edge of the
+  viewport, and two fixed bars stacked on a 390px screen is 25% of the glass
+  spent on chrome. The phone header is at the top, and `Top` (below) is sticky
+  inside the page, so the dock stays the only thing on the bottom edge.
+* **The 25% chrome budget.** Header plus dock stays under a quarter of an
+  844px screen on load, and under a tenth once scrolled.
+* **A position means one thing (§6.14).** The strip went to two rows because
+  inserting the open section's tabs inline after their section moved every
+  later section whenever one opened. The Sky shell keeps the same rule by a
+  different route: the open section's pages are their own column.
+
+**Below 760px the navigation is a 44px phone header and a drawer.**
+
+| Part | Class | What it is, and why |
 |---|---|---|
-| 1 | `.ctl-rail-main` | the sections and the utility corner (API reads, `?`) — the same items in the same places on every route |
-| 2 | `.ctl-rail-sub` (`role="tablist"`) | the open section's tabs, drawn only when it has more than one (Overview draws no second row) |
+| Header | `.sk-pbar` | One row: the menu button, the mark, the page title, the tenant, the env pill, and the admin tag. It is `position: sticky; top: 0` and first in the frame's column, so the way to the sections cannot scroll out of reach on any page, however long (Help included). |
+| Compaction | `.sk-app.is-scrolled` | Past the header's own height of scroll (`COMPACT_AFTER_PX`, 44) the header drops to 36px. By then the page's title row is under it, and what the reader needs from the header is the menu, not 8px of padding. Everything in the row stays; only the padding goes. The change eases over 120ms (`transition: height`), the phone chrome's only motion, and under `prefers-reduced-motion` the header simply takes its new height. |
+| Drawer | `.sk-side` (`.sk-app.has-drawer`) | The same spine and panel as the desktop, fixed at the left edge, `min(320px, 88vw)` wide, behind a scrim. The menu is one tap from any scroll position, and the sections are the same items in the same places on every route. |
+| Pages | the panel's `pscroll` column (the class name is written in full in `Spine.tsx` and `styles.css`; written after a dot here it reads as an API key to the worker's publish scan) | The open section's pages, in the panel, in their own column that scrolls on its own (`overflow-y: auto`). They are never drawn among the sections, so opening a section moves no other section. |
+| Admin | `.sk-adm` | A grey hairline tag (1px border, `--text-dim` ink; on the phone header the spine's ink `#bcd6ee` on a translucent hairline), the same box as the env badge and never the accent: being an admin is a fact about you, and the env pill is the one thing in the row allowed to be loud. `flex: none` and `nowrap`, last in the row, so the title gives way first and the tag never wraps onto a line of its own (CH-20). |
+| Top | `.sk-top` | Past one scrollport of scroll (`scrollBand` in `Spine.tsx`: `scrollTop` above the viewport's height, floored at `TOP_AFTER_MIN_PX`, 600, so a short phone in landscape is not offered it after one swipe), a `Top` control appears at the foot of the scrollport. It is sticky inside the page rather than fixed to the viewport, so it sits above the dock instead of under it — the reason there is still no bottom bar. 44px tall, a touch target. It jumps; it does not smooth-scroll, so reduced motion has nothing to stop. |
 
-Each row scrolls on its own, with the `--rail-fade` mask from **one** rule
-naming both rows, and each ends on the fade's width of empty space (row 1
-through the utility corner, row 2 on its own). `.ctl-rail` is the column that
-holds them. The open section's tabs are drawn twice by one component
-(`RailTabs`): inline for the desktop column and as row 2; the sheet displays
-exactly one copy at any width (`.ctl-rail-main` is `display: contents` at 900px
-and up, so the desktop rail is unchanged), and the scroll-into-view of CH-14
-targets the displayed copy.
+Between 760 and 899px there is no phone header: the spine is a column beside
+the scroller and never scrolls away, so neither the header nor `Top` is drawn
+there.
 
-**A section's selection is a rule and a tab's is a fill.** Below 900px the
-selected section keeps its 2px `--text` bottom rule and loses its fill; the
-selected tab takes the `--surface-2` fill in `--text` ink and no rule;
-unselected tabs are `--text-faint`. The two levels had drawn a rule each and
-read alike; now they differ in greyscale and need no hue — the phone case of
-§1.3's "surface step plus a 2px rule", split between the two levels. At 390,
-the 52px header, the two strip rows at the 44px phone target (about 97px) and
-the ~32px collapsed dock are about 180px on load, around 21% of an 844px
-screen; only the dock is fixed (the strip is `position: static` below 900px),
-so the two-fixed-bars concern above does not arise. The sticky strip and a
-"top" affordance are not part of this and stay tracked on #139.
-
-*(Amended 2026-10-02, #139, for the Sky shell that replaced the strip.)* Below
-760px the navigation is the spine's 44px phone header (`.sk-pbar`, sticky at
-the top of the frame's scroller) and a drawer holding the same spine and panel
-(`.sk-side`), so every section is one tap from any scroll position and no
-section ever moves. Past the header's own height of scroll the header compacts
-to 36px (`.sk-app.is-scrolled`, `scrollBand` in `Spine.tsx`); past one
-scrollport (floored at 600px) a `Top` control appears, sticky at the foot of the
-page so it sits above the dock rather than under it. On an 844px screen that is
-36px of header plus the ~32px collapsed dock: about 8% of the glass.
+**The budget, measured from the sheet.** At 390x844 the header is 44px on load
+and 36px scrolled, and the collapsed dock line is `min-height` 28px, about 32px
+where its facts wrap to two lines. That is about 76px on load and 68px
+scrolled, around 9% and 8% of the glass; even at a 48px dock ceiling it is 92px
+and 84px, about 11% and 10%. `phone.chrome.test.tsx` pins each row of the table
+above and the budget.
 
 The header is a row of the frame **above** the page scroller (`.ctl-scroll`),
 not inside it, so anything a page sticks under it — Agents' Live/Waiting/Recent
@@ -1676,9 +1672,9 @@ is the header's foot, at 44px and at 36px alike. A `top` equal to the header's
 height (Agents' strip had 44px, and 36px when compacted) pins the strip a whole
 header below the header with rows scrolling through the gap, and a second value
 for the compacted header moves it mid-scroll. The header's row never widens the
-page: the title gives way first, then a plain tenant label, capped at 40vw and
-cut with an ellipsis like the switchable chip; the menu, the mark and the env
-pill do not shrink.
+page: the title gives way first, then a plain tenant label (`.sk-tn`), capped at
+40vw and cut with an ellipsis like the switchable chip (`.sk-tchip`), whole in
+its `title`; the menu, the mark and the env pill do not shrink.
 
 ---
 
@@ -1715,7 +1711,7 @@ media query.
 
 | | At 390px |
 |---|---|
-| Frame | rail → the two-row strip (§6.15); `--app-pad` 16px; header keeps its height and its environment bar. **The header is one row that does not wrap at ≤560px (CH-20):** in order, the mark (the home link, named "SwarmCloud" by the mark's title; the wordmark is not drawn), the environment badge, the tenant key, the tenant id and the admin tag. Only the tenant id gives way — it ellipsizes, whole in its `title` and in a copy: **the id is its own copy control** (`.brand-id`, a button that draws nothing of its own, 44px tall at ≤560px), which copies the whole id and says in a status whether the copy landed or the browser refused it. It is the id rather than a button beside it because at 390 the id keeps only 60–70px, which a separate 44px control would take. Not drawn but still announced (visually hidden, never removed): the tenant's display name, the "signed in" key and principal, the unknown badge's host, and the word ENVIRONMENT — the unknown badge reads "env UNKNOWN", about 122px, keeping its capitals, hatch and left rule. The admin tag is a grey hairline tag (1px `--line`, `--surface-2`, `--text-dim`, the non-production badge's box), and above 560px it shares one nowrap unit with the principal, so it can never wrap onto a line of its own. Pending is the tenant key and "reading…"; failed is the tenant key and the `not read` mark, with the error heading as its accessible name. |
+| Frame | below 760px the spine and panel become the phone header and the drawer (§6.15, rewritten 2026-10-08 for #139); `--app-pad` 16px. **The header is one 44px row that does not wrap (`.sk-pbar`, CH-20 as rebuilt in the Sky shell):** in order, the menu button, the mark (`SwarmMark`; the wordmark is not drawn), the page title, the tenant, the env pill (`EnvPill`, `mini`) and, for an admin, the admin tag. **Past its own height of scroll it compacts to 36px** (`.sk-app.is-scrolled`, `scrollBand` and `COMPACT_AFTER_PX` in `Spine.tsx`), easing over 120ms unless `prefers-reduced-motion` asks otherwise; the mark, the env pill and the tenant all stay, because only the padding was spent on nothing. Only the title and then the tenant give way: the title has `flex: 1` and yields first, then a plain tenant label (`.sk-tn`) ellipsizes at 40vw, whole in its `title`; someone who can switch tenants gets the switchable chip (`.sk-tchip`, the same 40vw cap), which opens the bottom sheet. The menu, the mark and the env pill never shrink, so the row never widens the page. The admin tag is a grey hairline tag (`.sk-adm`: a 1px hairline, dim ink, unfilled, the env badge's box, never the accent), `flex: none` and `nowrap`, last in the row, so it can never wrap onto a line of its own. The sections are in the drawer (`.sk-side`), the open section's pages in their own scrolling column (the panel's `pscroll` column, §6.15), so no section moves when one opens; past one scrollport a sticky `Top` control (`.sk-top`) appears above the dock. **The tenant id's copy control is no longer in the header.** CH-20 made the header's tenant id its own copy button (`.brand-id`) because at 390 the id kept only 60–70px, which a separate 44px control would take; the Sky header shows the tenant's name instead, and the copy is the tenant block's `copy id` button (`.sk-cp`) in the drawer's panel, which copies the whole id and says in a status whether the copy landed or the browser refused it. Pending is the panel's tenant block reading "reading…"; failed reads "not read"; until the caller is read, the header draws no tenant at all rather than a guess. |
 | Overview | one column: the lead, the fact strip as a wrapping run of facts (`styles.css` §B6.1, no grid), then the three panels stacked. *Amended by OV-6, 2026-09-25: this row said "five cards stacked; the metric strip becomes a 2-up grid", which §B6.1 had removed on purpose. Since OV-12 the strip holds two facts and they fit on one line at 390.* An account row's status note (sign in again, pool skipping, paused, draining, the binding pool) wraps to its own line under the row, only when there is one (OV-7). A paused or draining note leads the reading word rather than giving way to it (`paused · stale 3h ago`), so a stale, cleared or never-polled reading cannot hide it |
 | Workflows | collapsed rows keep `[state] [id] [progress] [actions]`; the DAG scrolls horizontally inside its wrap and is **not** scaled to fit — scaling turns step names into texture |
 | Agents / Holders / Timeline | `.ctl-line` on its irreducible template |
@@ -3309,8 +3305,8 @@ plus the sub-sections that have no other home.
 | CH-22 | `stateTone`'s `ended` tone for CANCELLED, drawn as the grey flat bar (`is-info`) | §6.6 |
 | CH-23 | a link's resting underline is `--line` at 1px | §1.3 |
 | CH-19 | the live pulse's `.8` floor; reduced motion rests the pulse | §5.4 |
-| CH-21 | the two-row phone strip; a section selection is a rule, a tab's a fill | §6.15 |
-| CH-20 | the one-row phone header | §7.2 |
+| CH-21 | the two-row phone strip, so a section keeps its position; retired with the Sky shell, its constraints (no bottom bar, the 25% budget, a position means one thing) kept and the sections moved to a drawer with the pages in their own column; #139 delivered the sticky navigation (`.sk-pbar`) and the `Top` control (`.sk-top`) | §6.15 (rewritten 2026-10-08) |
+| CH-20 | the one-row phone header, rebuilt as the Sky shell's `.sk-pbar`: 44px compacting to 36px on scroll, the admin as a grey hairline `.sk-adm` tag; the id's copy control moved to the panel (`.sk-cp`) | §7.2, §6.15 |
 | CH-13 | one rule for tables below 900px: `is-scroll` for data, `is-stacked` for records | §7.3 |
 | TS-4 | the outcome stack's four forms | 15.3 |
 | CH-2 | the head's read age is the screen's own | 15.1 |
