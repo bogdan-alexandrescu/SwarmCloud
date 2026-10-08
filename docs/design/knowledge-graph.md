@@ -509,6 +509,8 @@ us:**
 
 ### Recommendation
 
+**Owner decision 2026-10-08: option D** (§9 Q1).
+
 **D**, for four reasons.
 
 1. Our graph is already the better graph for *this* code:
@@ -664,7 +666,10 @@ The rule: two steps that are **not** on one dependency line and whose
 This is pure, offline and graph-free. It is the cheapest change in this
 document and goes straight at the #1 conflict cause. The graph later widens
 `files` with forced call sites and seams. Whether to refuse such a plan or
-auto-chain the steps is owner question Q4.
+auto-chain the steps was owner question Q4. **Owner decision 2026-10-08: refuse
+the plan, with the reason (§9 Q4).** A plan whose parallel steps list the same
+file, or one lists a directory prefix of a file the other lists, is invalid and
+the reason goes back to the planner so it re-plans. Nothing is auto-chained.
 
 ---
 
@@ -809,6 +814,9 @@ Without them, none of the success measures above can come out either way.
 
 ### 7.4 Contract change request (not filed)
 
+**Owner decision 2026-10-08 (Q7): file request A, amended, only after phase 1's
+numbers are in.** Until then it stays unfiled.
+
 This amends repo-index.md §6.3's unfiled request (A). It does not add a
 second input.
 
@@ -828,8 +836,9 @@ second input.
 
 No new profile is needed. Request B's agent-free indexer
 (repo-index.md §6.3) would remove the LLM from the index run entirely,
-which is the cleanest form of "drop the LLM-judged parts". It stays the
-owner's call (Q5).
+which is the cleanest form of "drop the LLM-judged parts". **Owner decision
+2026-10-08 (Q5): the index agent stays, and request B is not pursued here.**
+Gates never read the agent's judged edges (§9 Q5).
 
 ### 7.5 Index cost
 
@@ -854,8 +863,8 @@ Mitigations:
 ### 7.7 Prompt budgets
 
 * Planner: the graph section shares repo-index.md's 24 KiB `REPO INDEX`
-  allowance inside the 64 KiB prompt (`MAX_PLANNER_PROMPT_BYTES`). Owner
-  question Q6.
+  allowance inside the 64 KiB prompt (`MAX_PLANNER_PROMPT_BYTES`). **Owner
+  decision 2026-10-08 (Q6): shared, no separate allowance.**
 * Review block: 8 KiB.
 * `swarm-graph`: ≤ 2k tokens of schema (GitNexus's is ≈ 17.9k), and answers
   capped at 4 KiB with paging.
@@ -886,16 +895,34 @@ the plan validator or the territory check.
 
 ## 9. Owner decisions
 
-These are filed as `questions.json` with this lane:
+**Owner decision 2026-10-08.** The chosen option is in bold; the alternatives
+stay listed.
 
-* **Q1:** which option (A-E). Recommended: D.
+* **Q1:** which option (A-E).
+  * A. Adopt GitNexus as the indexer engine.
+  * B. Run GitNexus's MCP server in every step.
+  * C. Borrow the techniques into our own indexer.
+  * **D. Hybrid: our engine, clean-room communities, search and signature
+    fingerprints; the graph in the planner, review and fix prompts first, then
+    our own read-only `swarm-graph` MCP server.**
+  * E. Adopt nothing.
 * **Q2:** whether to seek a commercial GitNexus licence anyway.
-  Recommended: no.
-* **Q3:** which phase first. Recommended: KG1 plus KG2.
+  * **No commercial GitNexus licence.**
+  * Yes, seek one.
+* **Q3:** which phase first.
+  * **KG1 and KG2 in parallel first.**
+  * KG1 alone, then KG2.
+  * Later phases first.
 * **Q4:** refuse or auto-chain a plan whose parallel steps share a file.
-  Recommended: refuse with the reason, so the planner re-plans.
-* **Q5:** whether index runs drop the agent (request B's worker-only
-  shape).
+  * **Refuse a plan whose parallel steps list the same file or a directory
+    prefix of it, with the reason, so the planner re-plans.**
+  * Auto-chain the steps.
+* **Q5:** whether index runs drop the agent (request B's worker-only shape).
+  * **Keep the index agent; gates never read its judged edges.**
+  * Drop the agent (request B).
 * **Q6:** the planner's graph budget.
-* **Q7:** whether to file request A, amended, now or after phase 1's
-  numbers.
+  * **The graph section shares repo-index.md's 24 KiB `REPO INDEX` allowance.**
+  * A separate allowance on top of it.
+* **Q7:** whether to file request A, amended, now or after phase 1's numbers.
+  * **File it, amended, only after phase 1's numbers.**
+  * File it now.
