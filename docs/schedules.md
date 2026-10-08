@@ -41,7 +41,8 @@ What it settles, one line each:
   tenant can make stricter but never looser. Some **hard stops** apply whatever
   the mode: IAM and Terraform bootstrap changes, frozen-contract edits,
   `.github/workflows/`, security-class issues, budget exhaustion and repeated
-  failure (§4).
+  failure (§4). A hold lives on the issue run itself, so no approve path, the
+  tick's auto-approval included, can pass it (§4.5).
 * **One approvals inbox** for plan, run, merge and proposal approvals, across
   schedules and issue runs. Each approval is an approval of a **digest**, as
   issue runs approve plans (D3). A pending approval is a document and holds no
@@ -479,7 +480,11 @@ even when nobody reads it, because the schedule tick reaches every tenant.
   stay due for the next minute. So one tenant's 25 schedules due at 09:00
   cannot delay another tenant's one schedule by more than a tick.
 * It stops starting new work at 240 seconds, `repoindex.POLL_BUDGET_SECONDS`'s
-  value and reason. It reports `{fired, skipped, advanced, truncated}`.
+  value and reason. It reports `{fired, skipped, advanced, truncated}`, and
+  writes the same report, with the tick's start time and each firing's
+  lateness (`fired_at − slot`), to `schedule_ticks/{unix_minute}`. Those
+  documents expire after 7 days by a TTL policy on `expire_at`, and the admin
+  view's tick health (§5.3) reads them.
 * A schedule whose firing raised an error is counted and the rest of the page
   goes on, as the issue-run tick does.
 
@@ -515,20 +520,24 @@ No type accepts an image, a command, a profile, a resource class or a backend
 parameter. A type that runs an agent names its profile in code. Invariant 10
 holds for schedules exactly as for tasks.
 
-| # | type | executor | risk | pushes | default gate | creates | min interval | phase |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `issue-sweep` | issue runs | R3 with `merge: auto`, else R2 | yes | plan auto · **approve merge** | members | 15 min | 1 |
-| 2 | `issue-plan-only` | issue runs | R1 | no, until approved | **approve plan** | members | 15 min | 1 |
-| 3 | `repo-index-refresh` | `indexer` tasks | R0 | no | auto | members | 1 h | 1 |
-| 4 | `observer` | one `claude-code` task | R0 | no | auto | members (tenant), owner (platform) | 1 h | 1 |
-| 5 | `epic-triage` | `claude-code` task, then API | R1 | no (comments) | **approve plan** (the ticks) | members | 6 h | 2 |
-| 6 | `pr-shepherd` | API, then continuations | R1 for API actions, R2 for conflict fixes | yes (fixes) | API auto · **approve run** for fixes | members | 30 min | 2 |
-| 7 | `ci-flake-hunter` | API, then `claude-code` tasks | R1 | no (issues) | auto | members | 6 h | 2 |
-| 8 | `dependency-cve-refresh` | workflow | R2 | yes | **approve merge** | members | 24 h | 2 |
-| 9 | `release-health` | API | R1 | no (an issue) | auto | members; owner for the platform's own repository | 15 min | 2 |
-| 10 | `docs-drift` | `claude-code` task | R1 report, R2 with `fix: true` | with `fix: true` | auto report · **approve merge** | members | 24 h | 2 |
-| 11 | `cost-report` | API | R0 | no | auto | members (tenant), admin (platform) | 24 h | 2 |
-| 12 | `custom-prompt` | workflow from a saved spec | R3 | yes | **approve run + approve merge**; never auto | members, with a one-time admin approval of the spec | 6 h | 3 |
+| # | type | executor | risk | pushes | default gate | floor | creates | min interval | phase |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | `issue-sweep` | issue runs | R3 with `merge: auto`, else R2 | yes | plan auto · **approve merge** | plan auto · merge auto (an admin only; owner-only in a `platform: true` repository) | members | 15 min | 1 |
+| 2 | `issue-plan-only` | issue runs | R1 | no, until approved | **approve plan** | **approve plan** | members | 15 min | 1 |
+| 3 | `repo-index-refresh` | `indexer` tasks | R0 | no | auto | auto | members | 1 h | 1 |
+| 4 | `observer` | one `claude-code` task | R0 | no | auto | auto | members (tenant), owner (platform) | 1 h | 1 |
+| 5 | `epic-triage` | `claude-code` task, then API | R1 | no (comments) | **approve plan** (the ticks) | **approve plan** | members | 6 h | 2 |
+| 6 | `pr-shepherd` | API, then continuations | R1 for API actions, R2 for conflict fixes | yes (fixes) | API auto · **approve run** for fixes | auto, fixes included (an admin only) | members | 30 min | 2 |
+| 7 | `ci-flake-hunter` | API, then `claude-code` tasks | R1 | no (issues) | auto | auto | members | 6 h | 2 |
+| 8 | `dependency-cve-refresh` | workflow | R2 | yes | **approve merge** | **approve merge** | members | 24 h | 2 |
+| 9 | `release-health` | API | R1 | no (an issue) | auto | auto | members; owner for the platform's own repository | 15 min | 2 |
+| 10 | `docs-drift` | `claude-code` task | R1 report, R2 with `fix: true` | with `fix: true` | auto report · **approve merge** | auto report · **approve merge** with `fix` | members | 24 h | 2 |
+| 11 | `cost-report` | API | R0 | no | auto | auto | members (tenant), admin (platform) | 24 h | 2 |
+| 12 | `custom-prompt` | workflow from a saved spec | R3 | yes | **approve run + approve merge**; never auto | **approve run + approve merge** | members, with a one-time admin approval of the spec | 6 h | 3 |
+
+The **floor** column is the lowest gate the type allows. Between the floor and
+the default, only a platform admin may set the gate (§4.2). A floor of "auto"
+still leaves every hard stop of §4.4 in force.
 
 **Platform-wide (admin) types** run with `scope: {mode: "platform"}`: the
 platform variants of `observer` and `cost-report`, and `release-health` on the
@@ -823,7 +832,7 @@ The owner's five modes map onto it like this:
 | owner-only | any | any | any, with `approvers: owner_only` |
 
 **Floors.**
-- Each type declares a floor (§3). A member may set any gate **at or above**
+- Each type declares a floor (§3, the `floor` column). A member may set any gate **at or above**
   the floor.
 - Lowering a gate below the type's **default** needs a platform admin, and is
   audited.
@@ -867,16 +876,23 @@ start. The owner confirms or overrides this in SD4.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | Held with `NEEDS_OWNER`. An approval inbox item with `approvers: owner_only`, whatever the schedule's approvers. The plan's files are advisory, which is why the merge check exists |
-| **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER`, as above, and the inbox item links [contract-change-requests.md](contract-change-requests.md) |
-| **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. The plan is returned to the planner once with that constraint. A second plan touching them ends the run `NEEDS_HUMAN`, and its issue gets a comment |
-| **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue, its plan is **always** `approve` with `approvers: owner_only`, and its merge is never `auto` (owner decision 2026-10-08) |
-| **Protected paths** a tenant declares on a registration (`hard_stop_paths`, default `[".github/workflows/**", "terraform/bootstrap/**", "**/iam*.tf", "CODEOWNERS"]`) | both points | `NEEDS_OWNER` for the platform's own repository. For another repository, a held approval for the tenant's members with the matched path named |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), whatever the schedule's approvers. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
+| **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
+| **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
+| **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere, until the owner answers SD11 |
+| **Protected paths** a tenant declares on a registration (`hard_stop_paths`, a field lane S11 adds, default `[".github/workflows/**", "terraform/bootstrap/**", "**/iam*.tf", "CODEOWNERS"]`) | both points | `NEEDS_OWNER` in a `platform: true` repository. In another repository, `NEEDS_SECOND_MEMBER`, with the matched path named |
 | **Budget exhausted** | at firing | `skipped / BUDGET_EXHAUSTED`. The schedule stays `enabled` and fires again the next day |
 | **Run over budget** | at the work's end | the firing is `failed / RUN_OVER_BUDGET`. The schedule becomes `auto_paused` |
 | **N consecutive failures** (`failed` or `refused`; default N = 3, range 1-10) | at outcome | `auto_paused / CONSECUTIVE_FAILURES`, naming the last N firings |
 | **Owner left the tenant** | at firing | `auto_paused / OWNER_NOT_MEMBER` |
 | **Repository no longer registered or granted** | at firing | that repository is skipped, `REPOSITORY_NOT_GRANTED`. If the scope resolves to none, the firing is `refused` and counts as a failure |
+
+**Two registration fields carry these stops, and neither exists today.**
+`platform: true` marks a repository as the platform's own. Only a platform
+admin may set or clear it, because clearing it would loosen the owner's holds.
+`hard_stop_paths` is the list above. A member may add patterns but cannot
+remove the four defaults, which are its floor. Lane S11 (§9) adds both to the
+registration model and its routes; nothing reads them before S5.
 
 Every hard stop is **its own code**. Each new refusal among them ships
 report-only behind a `refusals.SWITCHES` entry (PR 873), except the
@@ -892,7 +908,7 @@ owner confirms the exception in SD3.
 | field | meaning |
 |---|---|
 | `tenant_id` | as everywhere: a mismatch is a 404 |
-| `kind` | `run` (a firing waiting to create work), `plan` (an issue-run plan or an epic-tick list), `merge` (a green PR waiting), `proposal` (an observer or flake proposal to file as an issue), `spec` (a `custom-prompt` digest, admins only), `owner` (any `NEEDS_OWNER` hold) |
+| `kind` | `run` (a firing waiting to create work), `plan` (an issue-run plan or an epic-tick list), `merge` (a green PR waiting), `proposal` (an observer or flake proposal to file as an issue), `spec` (a `custom-prompt` digest, admins only), `hold` (any §4.4 hold: `NEEDS_OWNER` or `NEEDS_SECOND_MEMBER`, with its `approvers`) |
 | `subject` | `{schedule_id?, firing_id?, run_id?, pr?}` |
 | `digest` | what is approved. For `run`, the firing's `params_digest`. For `plan`, the plan digest (D3). For `merge`, `{head_sha, verdict}`, so a push after the request makes the approval stale (409 `merge_changed`). For `spec`, the spec digest |
 | `summary` | what the inbox shows, built by swarm-api from the subject, masked |
@@ -909,6 +925,36 @@ existing approve with the digest shown. So a plan approved in Work › Runs, fro
 `sc plan approve` or from the inbox is one approval, and there is one source of
 truth for it.
 
+**The hold lives on the issue run, so no approve path can step round it.** A
+projection alone would leave three ways past an owner's hold:
+`routes/runs.py::approve_plan`, which any member may call (and which
+`swarm_plan_approve` and `sc plan approve` reach), and the tick's auto-approval
+of `plan_approval: auto` runs in `routes/runs.py::_advance_state`. So S5:
+
+* adds one field to the `IssueRun` document in `issueruns.py`, `hold: {code,
+  approvers, matched, set_at}` or null. `code` is a §4.4 code such as
+  `NEEDS_OWNER`; `approvers` is `owner_only` or `second_member`; `matched` names
+  the paths or the label that set it;
+* sets it where the plan is stored (`_from_planner`, `PLANNING` → `PLANNED`)
+  and re-checks it on every plan edit. **An edit can add a hold but never
+  clears one**: only the hold's approver approving, or anyone rejecting, ends
+  it. Otherwise a member could edit the IAM file out of the plan and approve
+  it, and the plan's files are advisory;
+* checks it **inside `_approve`**, the one function every approval goes
+  through. An approval by someone the hold does not admit answers 403
+  `hold_approver_required`, naming the code. An auto-approval (`by:
+  AUTO_APPROVER`) never satisfies a hold, so `_advance_state` leaves a held
+  `auto` run `PLANNED`, holding nothing (invariant 1), and it appears in the
+  inbox as a `kind: hold` item;
+* checks it at the merge point, `issueci._merge`. A held run's `auto_merge`
+  does not merge; its merge waits for a `merge` approval from the hold's
+  approvers.
+
+This applies to every issue run, scheduled or not, because a run created by
+hand would otherwise be the way round a schedule's hold. The security-class
+hold is enforced from its first day; the IAM and protected-path holds follow
+the report-only rule below §4.4.
+
 Approving is one transaction:
 
 1. Check the state and the digest.
@@ -924,7 +970,18 @@ Two approvers racing produce one transition, and the loser gets 409
 * **Default: any member of the schedule's tenant.** This is the issue runs'
   rule, and the only role a tenant has (§0: there is no tenant-admin role).
 * **`approvers: owner_only`**: `PLATFORM_OWNER` only. It is forced for the
-  `NEEDS_OWNER` holds of §4.4 and for security-class plans.
+  `NEEDS_OWNER` holds of §4.4, which arise only in `platform: true`
+  repositories. Those live in the tenant the owner names for platform
+  automation (SD7), of which the owner is a member, so the owner approves them
+  as a member of that tenant and never across tenants.
+* **`approvers: second_member`**: any member of the run's tenant **other than**
+  the person who created the run, last edited its plan, or last changed the
+  schedule's gate, scope or spec. It is forced for the §4.4 holds in every
+  repository that is not `platform: true`: IAM and bootstrap paths, protected
+  paths and security-class plans. In a one-person tenant (a `u-*` workspace)
+  there is no second member, so that person approves after a typed
+  confirmation that names the matched paths, and the audit records it. This is
+  the recommended answer to SD11; the other answers are drawn there.
 * **A named list.** Each name must be a member at creation **and** at approval,
   because membership is asked of the directory.
 * **R3 needs a second person.** The member who last changed the schedule's
@@ -932,7 +989,10 @@ Two approvers racing produce one transition, and the loser gets 409
   has more than one member. In a personal `u-*` tenant there is one person, so
   the rule cannot apply, and the console says so on the gate card. (SD5.)
 * **Platform admins cannot approve another tenant's work** by being admins
-  (§5.3). An admin who is also a member approves as a member.
+  (§5.3), and that includes `PLATFORM_OWNER`. An admin who is also a member
+  approves as a member. So an `owner_only` item can only exist where the owner
+  is a member, and a hold in `eng` or `u-alice` is never one that nobody there
+  can decide (SD11 (b) would make one audited exception).
 
 ### 4.7 Expiry
 
@@ -1156,9 +1216,10 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `GET /v1/schedules/{id}/audit` | the audit, newest first |
 | `POST /v1/schedules:preview` | §6.3 |
 | `GET /v1/approvals` | the inbox: `approvals/` plus projected `PLANNED` runs, filterable by kind |
+| `GET /v1/approvals/{id}` | one item, with what its kind needs to decide it: for `merge`, the run's `green_sha`, the review verdict and requirements, and the pull request's changed files checked against the protected paths |
 | `POST /v1/approvals/{id}:approve` · `:reject` | `{digest}` / `{reason}`. A projected run's id is `run:<run_id>` and calls its existing approve |
 | `POST /v1/admin/schedules/tick` | the tick (§2). Admits only the rollup sweeper |
-| `GET /v1/admin/schedules` | §5.3 |
+| `GET /v1/admin/schedules` | §5.3, with tick health read from `schedule_ticks/` (§2.10) |
 | `POST /v1/admin/schedules/{id}:pause` · `:disable` · `:enable` | §5.3 |
 
 ### 7.2 MCP tools
@@ -1278,14 +1339,15 @@ phases. New files are named without their root.
 | S0 | 0 | **Verification, no code.** Each result is dated in §0 of this document. It checks: which of `actions: read` and `checks: read` the GitHub App and tenant tokens hold (§3.7, §3.9); whether update-branch is refused when the base brings `.github/workflows/` changes (§3.6); SWEEP's merged names (§8.1); the composite index shape for the tick query; and the Cloud Scheduler job's identity reuse (SD10) | `docs/schedules.md` | SWEEP merged |
 | S1 | 1 | The model: the `schedules/` document and its validation, the cron parser with words and preview, gate resolution with floors, budget arithmetic, and the type catalogue with all twelve entries and `available` from the executor modules' presence (so later type lanes add a file and edit nothing shared) | new `swarm_api/schedules.py`, new `swarm_api/cronexpr.py`, new `swarm_api/scheduletypes.py`, new `tests/unit/control_plane/test_schedules_model.py`, new `test_cronexpr.py` | S0 |
 | S2 | 2 | The tick and firings: §2.1-§2.11, `schedule_owner_auth`, `metadata.schedule` reserved, the tick route, auto-pause and its codes and switches | new `swarm_api/schedulefire.py`, new `swarm_api/routes/schedule_tick.py`, `apps/swarm-api/swarm_api/auth.py` (`ROLLUP_SWEEPER_ROUTES`), `apps/swarm-api/swarm_api/validation.py` (`RESERVED_METADATA_KEYS`), `apps/swarm-api/swarm_api/refusals.py`, `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_schedule_tick.py` | S1 |
-| S4 | 2 | Terraform: `google_cloud_scheduler_job.schedule_tick` (every minute, `retry_count = 0`, the sweeper's OIDC), the composite indexes (`schedules`: `state`, `next_run_at`; `schedule_firings`: `schedule_id`, `slot` desc; `approvals`: `tenant_id`, `state`, `requested_at`), the TTL policy on `schedule_firings.expire_at`, the `schedule_auto_paused` and `schedule_needs_owner` log metrics and alerts, and `terraform test` assertions. **No new IAM member**, so it is an ordinary release with no `dev-iam` approval, under SD10 (a) | `terraform/modules/scheduler/jobs.tf`, `terraform/modules/scheduler/variables.tf`, `terraform/modules/firestore/indexes.tf`, `terraform/modules/monitoring/`, new `tests/terraform/schedule_tick.tftest.hcl` | S0 |
+| S4 | 2 | Terraform: `google_cloud_scheduler_job.schedule_tick` (every minute, `retry_count = 0`, the sweeper's OIDC), the composite indexes (`schedules`: `state`, `next_run_at`; `schedule_firings`: `schedule_id`, `slot` desc; `approvals`: `tenant_id`, `state`, `requested_at`), the TTL policies on `schedule_firings.expire_at` and `schedule_ticks.expire_at`, the `schedule_auto_paused` and `schedule_needs_owner` log metrics and alerts, and `terraform test` assertions. **No new IAM member**, so it is an ordinary release with no `dev-iam` approval, under SD10 (a) | `terraform/modules/scheduler/jobs.tf`, `terraform/modules/scheduler/variables.tf`, `terraform/modules/firestore/indexes.tf`, `terraform/modules/monitoring/`, new `tests/terraform/schedule_tick.tftest.hcl` | S0 |
+| S11 | 2 | The registration fields the hard stops read (§4.4): `platform` (bool, default false, set and cleared by a platform admin only, audited in `admin_audit`) and `hard_stop_paths` (the four defaults are a floor a member cannot remove), on create, patch and read, and a card for them on the repository's Settings tab | `apps/swarm-api/swarm_api/repositories.py` (`RepositoryCreate`, `RepositoryPatch`, the stored record), `apps/swarm-api/swarm_api/routes/repositories.py`, `apps/swarm-ui/src/RepositoriesDetail.tsx`, `apps/swarm-ui/src/api.ts`, new `tests/unit/control_plane/test_repository_hard_stops.py`, a vitest under `apps/swarm-ui/src/__tests__/` | S0 |
 | S3 | 3 | The tenant routes of §7.1 except approvals, and the admin list and actions | new `swarm_api/routes/schedules.py`, `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_schedule_routes.py` | S2 |
-| S5 | 3 | Approvals: `approvals/`, the inbox with projected `PLANNED` runs, the run, merge and proposal gates, the hard stops of §4.4 at plan and at merge, expiry, `schedule_audit/`, and the issue run's `metadata.schedule` with its lookup by firing id | new `swarm_api/approvals.py`, new `swarm_api/routes/approvals.py`, new `swarm_api/schedaudit.py`, `apps/swarm-api/swarm_api/issueruns.py`, `apps/swarm-api/swarm_api/issueci.py`, `apps/swarm-api/swarm_api/routes/runs.py`, new `tests/unit/control_plane/test_approvals.py` | S2 |
-| S6 | 4 | The first types (SD2): `issue-sweep` (adopting SWEEP's module), `issue-plan-only`, `repo-index-refresh`, `observer` | new `swarm_api/schedtypes/` (`issue_sweep.py`, `issue_plan_only.py`, `repo_index_refresh.py`, `observer.py`), SWEEP's module, new `tests/unit/control_plane/test_schedtypes_*.py` | S3, S5 |
-| S7 | 4 | The console: Work › Schedules (list, detail, create/edit, approvals pane), the Overview card, Admin › Schedules; the issue forms' "Where" list | new `Schedules.tsx`, `ScheduleDetail.tsx`, `ScheduleEdit.tsx`, `Approvals.tsx` and `AdminSchedules.tsx` in apps/swarm-ui/src, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Overview.tsx`, `.github/ISSUE_TEMPLATE/`, tests under `apps/swarm-ui/src/__tests__/` | S3, S5 |
-| S8 | 4 | The plugin: the MCP tools of §7.2, `sc schedules` and `sc approvals`, and the docs | `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/sc.py`, new `swarm_mcp/schedules.py`, `plugin/commands/sc.md`, `plugin/README.md`, new `tests/unit/mcp/test_schedules_tools.py` | S3, S5 |
-| S9 | 5 | Migration (§8.1-§8.2): the schedules created, SWEEP's job paused and later deleted, the session cron deleted; docs: issue-runs.md, operations.md, cost-control.md (§4.3's relation to 2026-10-01), multi-tenancy.md (§5.6) | `terraform/modules/scheduler/jobs.tf`, `apps/swarm-api/swarm_api/auth.py`, `docs/issue-runs.md`, `docs/operations.md`, `docs/cost-control.md`, `docs/multi-tenancy.md` | S6, S7, S8 |
-| S10a-h | 6+ | One lane per remaining type: `epic-triage`, `pr-shepherd`, `ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, `docs-drift`, `cost-report`, `custom-prompt` (with its admin spec approval). Each adds **one file** in `swarm_api/schedtypes/` and its test. They can run in parallel because the catalogue reads availability from the file's presence | one new file each | S6; S0 for the GitHub permissions |
+| S5 | 4 | Approvals: `approvals/`, the inbox with projected `PLANNED` runs, the run, merge and proposal gates, the hard stops of §4.4 at plan and at merge, the issue run's `hold` and its check in `_approve` and `issueci._merge` (§4.5), expiry, `schedule_audit/`, the issue run's `metadata.schedule` with its lookup by firing id, and mounting the approvals router. It follows S3 only because both mount a router in `main.py` | new `swarm_api/approvals.py`, new `swarm_api/routes/approvals.py`, new `swarm_api/schedaudit.py`, `apps/swarm-api/swarm_api/issueruns.py`, `apps/swarm-api/swarm_api/issueci.py`, `apps/swarm-api/swarm_api/routes/runs.py`, `apps/swarm-api/swarm_api/refusals.py` (the holds' report-only switches), `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_approvals.py`, new `tests/unit/control_plane/test_issue_run_holds.py` | S3, S11 |
+| S6 | 5 | The first types (SD2): `issue-sweep` (adopting SWEEP's module), `issue-plan-only`, `repo-index-refresh`, `observer` | new `swarm_api/schedtypes/` (`issue_sweep.py`, `issue_plan_only.py`, `repo_index_refresh.py`, `observer.py`), SWEEP's module, new `tests/unit/control_plane/test_schedtypes_*.py` | S3, S5 |
+| S7 | 5 | The console: Work › Schedules (list, detail, create/edit, approvals pane), the Overview card, Admin › Schedules; the issue forms' "Where" list | new `Schedules.tsx`, `ScheduleDetail.tsx`, `ScheduleEdit.tsx`, `Approvals.tsx` and `AdminSchedules.tsx` in apps/swarm-ui/src, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Overview.tsx`, `.github/ISSUE_TEMPLATE/`, tests under `apps/swarm-ui/src/__tests__/` (`nav.links.test.tsx` among them), `tests/unit/control_plane/test_nav_headings_agree.py` | S3, S5 |
+| S8 | 5 | The plugin: the MCP tools of §7.2, `sc schedules` and `sc approvals`, and the docs | `apps/swarm-mcp/swarm_mcp/server.py`, `apps/swarm-mcp/swarm_mcp/sc.py`, new `swarm_mcp/schedules.py`, `plugin/commands/sc.md`, `plugin/README.md`, new `tests/unit/mcp/test_schedules_tools.py` | S3, S5 |
+| S9 | 6 | Migration (§8.1-§8.2): the schedules created, SWEEP's job paused and later deleted, the session cron deleted; docs: issue-runs.md, operations.md, cost-control.md (§4.3's relation to 2026-10-01), multi-tenancy.md (§5.6) | `terraform/modules/scheduler/jobs.tf`, `apps/swarm-api/swarm_api/auth.py`, `docs/issue-runs.md`, `docs/operations.md`, `docs/cost-control.md`, `docs/multi-tenancy.md` | S6, S7, S8 |
+| S10a-h | 7+ | One lane per remaining type: `epic-triage`, `pr-shepherd`, `ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, `docs-drift`, `cost-report`, `custom-prompt` (with its admin spec approval). Each adds **one file** in `swarm_api/schedtypes/` and its test. They can run in parallel because the catalogue reads availability from the file's presence | one new file each | S6; S0 for the GitHub permissions |
 
 **Acceptance per lane, measurable:**
 
@@ -1295,20 +1357,42 @@ phases. New files are named without their root.
   refused.
 * **S2.** Two concurrent ticks over one due schedule create **one** firing,
   tested against the Firestore emulator in the integration job. A retried
-  create returns the first work. A schedule paused between the query and the
+  create of a **task or a workflow** returns the first work (the issue run's
+  lookup by firing id is S5's, and S5 tests it). A schedule paused between the query and the
   transaction fires nothing. Catch-up `skip` and `run_once` after a simulated
   3-hour gap write the expected records. The per-tenant cap of 5 holds.
 * **S4.** `terraform test` asserts one `schedule_tick` job, `retry_count = 0`,
   the sweeper's email, `managed-by=swarm-terraform` in its description, and
   the three indexes.
+* **S11.** A member's `PATCH` carrying `platform` answers 403, and an
+  admin's is recorded in `admin_audit`. A `hard_stop_paths` that drops one of
+  the four defaults answers 422 naming it. Both fields round-trip through
+  create, patch and read, and a registration stored before them reads as
+  `platform: false` with the defaults.
 * **S3.** Another tenant's schedule id answers 404 on every route. An unknown
   type answers 422 naming the available ones. A `params` extra key is refused
   by name.
 * **S5.** Approving a stale digest answers 409. Two approvals of one item make
   one transition. A merge approval after a new push answers 409
-  `merge_changed`. A plan touching `.github/workflows/` is refused, and one
-  touching `terraform/bootstrap/` is held for the owner. An expired plan ends
-  `REJECTED` with reason "expired" and no task exists.
+  `merge_changed`. An expired plan ends `REJECTED` with reason "expired" and
+  no task exists. The approvals route answers on a running app (`create_app()`
+  mounts it). For the hard stops:
+  - a planner plan naming `.github/workflows/` ends the run `FAILED` with
+    `WORKFLOWS_PATH`, no workflow is submitted, and the issue gets the comment.
+    A plan edit adding such a path answers 422;
+  - a plan touching `terraform/bootstrap/` in a `platform: true` repository is
+    held `NEEDS_OWNER`. A member's `POST /v1/runs/{id}/plan:approve` on it
+    answers 403 `hold_approver_required`, and so does `swarm_plan_approve`;
+    `PLATFORM_OWNER`'s approve succeeds;
+  - the same plan in a repository that is not `platform: true` is held
+    `NEEDS_SECOND_MEMBER`: its creator's approve answers 403 and another
+    member's succeeds;
+  - a `plan_approval: auto` run with a security-class issue or an IAM plan is
+    **not** auto-approved by the tick: after `advance_run` it is still
+    `PLANNED` with its `hold` set and nothing submitted;
+  - an edit that removes the held path leaves the hold in place;
+  - a held run with `auto_merge` does not merge until a `merge` approval from
+    the hold's approvers.
 * **S6.** SWEEP's tests pass unchanged against the executor. A dry-run sweep
   lists candidates and creates nothing. `observer` produces `report.md` from a
   fixture digest, offline with the mock runner.
@@ -1335,7 +1419,8 @@ missing, adding it to the GitHub App is an org-admin approval, which is the
 owner's, and only S10's `ci-flake-hunter` and `release-health` wait for it.
 
 **One review** (credentials, tenant isolation, IAM) for S2 (the tick
-submitting on behalf of members), S5 (approvals and hard stops) and S10's
+submitting on behalf of members), S11 (who may mark a repository
+`platform`), S5 (approvals and hard stops) and S10's
 `custom-prompt`.
 
 ---
@@ -1409,7 +1494,8 @@ they never claim to stop a run they cannot stop.
 
 * **(a) Any member of the tenant.** R3 needs a person other than the last
   editor of the gate, scope or spec when the tenant has more than one member.
-  Owner holds and security plans are owner-only.
+  §4.4's holds go to the owner in a `platform: true` repository and to a
+  second member elsewhere (SD11).
 * (b) Only the schedule's owner, plus the owner holds.
 * (c) Only platform admins.
 * (d) Members for R0-R2, admins for R3.
@@ -1463,6 +1549,34 @@ does not need.
   apply and `dev-iam`.
 
 **Recommendation: (a)** (§2.1).
+
+
+### SD11. Whose OK does a hold need outside the platform's own repositories?
+
+The 2026-10-08 decision says security-class plans need the owner's OK, and
+§4.4 holds IAM and bootstrap changes for the owner. §5 keeps every tenant's
+work its own, and no admin, the owner included, may approve another tenant's
+work. For the platform's repositories (`platform: true`, in the tenant the
+owner names under SD7) the two agree. For `eng` or `u-alice` they do not, so
+the owner decides which gives way.
+
+* **(a) Owner-only in `platform: true` repositories; elsewhere a second
+  member** (`approvers: second_member`, §4.6). A one-person `u-*` tenant
+  approves its own after a typed confirmation, which is audited.
+* (b) Owner-only everywhere, with one audited exception to §5.3:
+  `PLATFORM_OWNER`, and no other admin, may read and decide `kind: hold` items
+  of any tenant through `GET /v1/admin/approvals`. The item shows its summary
+  and matched paths only, never a prompt or a diff.
+* (c) Owner-only everywhere, with no exception. Outside the platform's tenant
+  such an item cannot be approved and expires to `REJECTED`, so IAM, bootstrap
+  and security-class work is refused in tenants' own repositories.
+
+**Recommendation: (a).** A tenant's own IAM and its own security issues are
+that tenant's business, and (a) keeps §5's isolation without exception while
+still requiring a second pair of eyes. (b) gives the owner a cross-tenant
+decision over code the owner cannot otherwise see. (c) makes the platform refuse
+ordinary work in tenants' repositories. S5 builds (a). (b) adds one admin
+route to S5, and (c) is one constant.
 
 ---
 
