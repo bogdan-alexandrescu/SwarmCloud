@@ -60,12 +60,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
-<<<<<<< HEAD
 | 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | proposed (owner 2026-10-07: not accepted for now) |
-| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 55 |
-=======
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
->>>>>>> origin/main
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 
