@@ -198,6 +198,12 @@ case "$*" in
   *"auth list"*) if [[ -f "${d}/account" ]]; then cat "${d}/account"; fi ;;
   *"iam service-accounts describe swarm-scheduler@"*) echo 117405034245659033603 ;;
   *"iam service-accounts describe swarm-reconciler@"*) echo 108023754768362642341 ;;
+  # Created by the owner's bootstrap apply (docs/workspaces.md §2.3), so it may
+  # not exist yet when the policies are applied.
+  *"iam service-accounts describe swarm-workspace-deployer@"*)
+    if [[ -f "${d}/deployer-uid" ]]; then cat "${d}/deployer-uid"; exit 0; fi
+    printf 'ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account.\n' >&2
+    exit 1 ;;
   *"iam service-accounts get-iam-policy"*)
     # gcloud's own words for the two failures that matter, measured 2026-09-25.
     if [[ -f "${d}/iam-denied" ]]; then
@@ -1171,6 +1177,57 @@ def test_policies_mode_runs_no_parity_check(tmp_path):
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert _parity_calls(cluster) == [], cluster.log("kubectl")
+
+
+def _workspace_deployer_users(applied: str) -> list[set[str]]:
+    """Each place the applied render names the workspace deployer: its two
+    bindings' subjects and its four policies' matched users."""
+    found: list[set[str]] = []
+    for doc in (d for d in yaml.safe_load_all(applied) if d):
+        name = doc["metadata"]["name"]
+        if not name.startswith("swarm-workspace-deployer"):
+            continue
+        if doc["kind"] in ("ClusterRoleBinding", "RoleBinding"):
+            found.append({s["name"] for s in doc["subjects"]})
+        elif doc["kind"] == "ValidatingAdmissionPolicy":
+            expression = doc["spec"]["matchConditions"][0]["expression"]
+            found.append(set(json.loads(expression.split(" in ", 1)[1])))
+    return found
+
+
+def test_policies_mode_binds_and_scopes_the_workspace_deployer_by_uniqueid(tmp_path):
+    """The uniqueId is what GKE presents for a service account with an access
+    token; the binding and the scope policy must both carry it, and the
+    control plane's, which the RoleBinding policy compares a tenant's bindings
+    against."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    (cluster.dir / "deployer-uid").write_text("100000000000000000042\n")
+    result = cluster.run(APPLY, "--policies", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    applied = (cluster.dir / "applied.yaml").read_text()
+    users = _workspace_deployer_users(applied)
+    assert len(users) == 6, users
+    deployer = "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    assert all(u == {deployer, "100000000000000000042"} for u in users), users
+    assert '"117405034245659033603"' in applied and '"108023754768362642341"' in applied
+
+
+def test_policies_mode_falls_back_to_the_email_before_the_deployer_exists(tmp_path):
+    """Before the bootstrap apply has created the account: the email alone, in
+    the binding AND the policy -- bound and scoped, or not bound at all -- and
+    a warning that says to re-run."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    result = cluster.run(APPLY, "--policies", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "could not resolve the uniqueId of swarm-workspace-deployer@" in output
+    users = _workspace_deployer_users((cluster.dir / "applied.yaml").read_text())
+    assert len(users) == 6, users
+    deployer = "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    assert all(u == {deployer} for u in users), users
 
 
 @pytest.mark.parametrize(
