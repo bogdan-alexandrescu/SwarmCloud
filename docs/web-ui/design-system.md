@@ -1669,6 +1669,17 @@ scrollport (floored at 600px) a `Top` control appears, sticky at the foot of the
 page so it sits above the dock rather than under it. On an 844px screen that is
 36px of header plus the ~32px collapsed dock: about 8% of the glass.
 
+The header is a row of the frame **above** the page scroller (`.ctl-scroll`),
+not inside it, so anything a page sticks under it — Agents' Live/Waiting/Recent
+strip, the timeline's axis — sticks at `top: 0`: the scroller's top edge already
+is the header's foot, at 44px and at 36px alike. A `top` equal to the header's
+height (Agents' strip had 44px, and 36px when compacted) pins the strip a whole
+header below the header with rows scrolling through the gap, and a second value
+for the compacted header moves it mid-scroll. The header's row never widens the
+page: the title gives way first, then a plain tenant label, capped at 40vw and
+cut with an ellipsis like the switchable chip; the menu, the mark and the env
+pill do not shrink.
+
 ---
 
 ## 7. Responsive

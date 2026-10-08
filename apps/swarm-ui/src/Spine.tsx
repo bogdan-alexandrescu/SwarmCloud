@@ -1199,7 +1199,10 @@ export function SkyShell({
               <Icon name="swap" />
             </button>
           ) : (
-            <span className="sk-tn">{who.tenant.display_name ?? who.tenant.tenant_id}</span>
+            // Cut with an ellipsis on a narrow phone (styles.css), so the whole name is its title.
+            <span className="sk-tn" title={who.tenant.display_name ?? who.tenant.tenant_id}>
+              {who.tenant.display_name ?? who.tenant.tenant_id}
+            </span>
           ))}
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
         {/* AN ADMIN IS MARKED ON THE PHONE TOO (#139, CH-20): the same grey
