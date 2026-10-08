@@ -194,6 +194,9 @@ class ParentEnd:
     state: TaskState
     end_cause: str | None = None
     cancel_requested: bool = False
+    #: When it ended: where the hold on a MERGE verdict's integrator starts
+    #: (#748, `Scheduler._held_for_control_publish`).
+    completed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -404,6 +407,7 @@ class SchedulerStore:
                     state=TaskState(data["state"]),
                     end_cause=str(cause) if cause is not None else None,
                     cancel_requested=bool(data.get("cancel_requested")),
+                    completed_at=as_datetime(data.get("completed_at")),
                 )
         return ends
 
