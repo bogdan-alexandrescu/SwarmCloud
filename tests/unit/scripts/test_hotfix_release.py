@@ -193,17 +193,24 @@ def test_it_obtains_ci_s_record_and_never_builds():
 
 def test_it_skips_what_the_normal_release_of_the_same_push_still_runs():
     """verify (CI's record implies it passed), warm, acceptance, the GKE proof
-    and the plugin tag -- all still run by release.yml on the same push."""
+    and the plugin tag -- all still run by release.yml (verify on a dispatch)
+    or by accept.yml after it."""
     jobs = _jobs()
     code = "\n".join(_code(s.get("run", "")) for job in jobs.values() for s in job.get("steps") or [])
     for absent in ("pytest", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch", "git push", "tag -a"):
         assert absent not in code, f"hotfix.yml runs {absent!r}"
     for present in ("push-images.sh", "plan-guard.sh", "--classify-iam", "deploy.sh --verify-only", "smoke-test"):
         assert present in code, f"hotfix.yml never runs {present!r}"
-    release = _workflow("release.yml")["jobs"]
-    rcode = "\n".join(_code(s.get("run", "")) for job in release.values() for s in job.get("steps") or [])
+    # release.yml, and since 2026-10-08 accept.yml, which runs when the
+    # release of the same push completes (cut A of the release timing report).
+    rcode = "\n".join(
+        _code(s.get("run", ""))
+        for name in ("release.yml", "accept.yml")
+        for job in _workflow(name)["jobs"].values()
+        for s in job.get("steps") or []
+    )
     for kept in ("pytest tests/unit", "warm-jobs.sh", "acceptance/", "prove-gke-dispatch"):
-        assert kept in rcode, f"release.yml no longer runs {kept!r}; the hotfix lane relies on it"
+        assert kept in rcode, f"neither release.yml nor accept.yml runs {kept!r}; the hotfix lane relies on it"
 
 
 def test_the_hotfix_waits_longer_for_terraform_s_state_lock():

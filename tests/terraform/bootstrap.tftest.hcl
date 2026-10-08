@@ -384,6 +384,93 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
   }
 }
 
+# accept.yml federates as its own account, never the deployer (owner decision
+# 2026-10-08, cuts A and C of the release timing report;
+# terraform/bootstrap/acceptance.tf). It starts verification executions and
+# reads release records, so every grant is held to that.
+run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_runs_only_verification" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  override_resource {
+    target          = google_project_iam_custom_role.acceptance_runner
+    override_during = plan
+    values = {
+      name = "projects/saga-agents-staging/roles/swarmAcceptanceRunner"
+    }
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].member == "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/accept.yml@refs/heads/main"
+    error_message = "the acceptance identity must be federated to exactly accept.yml on refs/heads/main, and nothing wider"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].role == "roles/iam.workloadIdentityUser"
+    error_message = "accept.yml federates through workloadIdentityUser; no key, and no hop from the deployer"
+  }
+
+  assert {
+    condition     = google_service_account.acceptance[0].account_id != google_service_account.deployer[0].account_id
+    error_message = "the acceptance identity must not be the deployer"
+  }
+
+  # Run and read, never change: no create, update, delete or IAM permission.
+  assert {
+    condition = alltrue([
+      for p in setunion(google_project_iam_custom_role.acceptance_runner[0].permissions, google_project_iam_custom_role.acceptance_lister[0].permissions) :
+      !can(regex("\\.(create|update|delete|setIamPolicy|cancel)$", p))
+    ])
+    error_message = "the acceptance roles may start and read executions only"
+  }
+
+  # Execution is conditioned to the verification job and the worker jobs.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_runs_jobs[0].condition) == 1 && strcontains(google_project_iam_member.acceptance_runs_jobs[0].condition[0].expression, "/jobs/swarm-verify") && strcontains(google_project_iam_member.acceptance_runs_jobs[0].condition[0].expression, "startsWith(\"swarm-job-\")")
+    error_message = "running jobs must be conditioned to swarm-verify and swarm-job-*"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_reads_verify_logs[0].condition[0].expression == "resource.name == \"projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-verify\""
+    error_message = "the acceptance identity may read the swarm-verify log view and no other log"
+  }
+
+  # The state bucket also holds every root's state: releases/ only.
+  assert {
+    condition     = google_storage_bucket_iam_member.acceptance_reads_release_records[0].role == "roles/storage.objectViewer" && google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-tfstate-saga-agents-staging/objects/releases/\")"
+    error_message = "the acceptance identity may read releases/ in the state bucket, never a state object"
+  }
+}
+
+run "the_acceptance_identity_is_absent_without_wif" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = length(google_service_account.acceptance) == 0 && length(google_service_account_iam_member.acceptance_wif) == 0
+    error_message = "no acceptance identity exists while GitHub workload identity is off"
+  }
+}
+
 run "the_ci_fixer_binding_is_absent_until_an_account_is_named" {
   command = plan
 

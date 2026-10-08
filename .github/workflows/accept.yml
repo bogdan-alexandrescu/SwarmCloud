@@ -1,0 +1,389 @@
+# Post-deploy acceptance of dev: warm, smoke, the GKE proof and the
+# acceptance suite, judged against exactly what dev runs.
+#
+# WHY A WORKFLOW OF ITS OWN (owner decision 2026-10-08, cuts A and C of the
+# release timing report; docs/ci.md, "The release timeline"). Measured that
+# day over 22 successful release.yml runs: the `release-dev` concurrency lock
+# was held 100 min p50 -- verify 26.4, deploy and smoke 23.6 (warm 11.4, smoke
+# 9-14, GKE proof 3.5) and acceptance 45.4 (five groups one after another:
+# mock 8-12, generic 6-8, claude-code 4-7, workflow ~13, browser 2-3). New
+# digests were live 43 min after the run started; the other 71 min held the
+# lock while every later push queued behind it. Everything here proves what is
+# ALREADY deployed, so none of it needs that lock: release.yml now ends at its
+# deploy on dev, and this file starts when it completes.
+#
+# IT JUDGES WHAT IS DEPLOYED, NOT WHAT TRIGGERED IT. `what dev runs` reads the
+# SHA from releases/dev/applied.json in the state bucket -- the record the
+# release lanes write after every successful apply (scripts/lib/
+# release-order.sh `deployed`) -- and every later job checks out THAT commit,
+# so the suite's fixtures and the scripts that drive it are the deployed
+# commit's. The run's summary names it. A completed release run is accepted
+# only when applied.json names that very run: a release a newer commit
+# superseded, or a prod release (which records nothing for dev), accepts
+# nothing. A dispatch accepts whatever dev runs now.
+#
+# ONLY THE NEWEST DEPLOYMENT IS WORTH ACCEPTING: `accept-dev` cancels the run
+# in progress. The group is computed so that a trigger which can accept
+# nothing -- a failed release, a prod release -- is put in a group of its own
+# and cannot cancel a real acceptance. A prod release is recognised by its
+# run-name (`release prod <ref>`, release.yml), the one place a workflow_run
+# event carries the dispatch's inputs.
+#
+# A RED ACCEPTANCE IS AN ISSUE, NOT A BLOCKED DEPLOY. `report` opens -- or,
+# when one is open, retitles and comments on -- ONE issue labelled bug naming
+# the SHA and the failing groups (scripts/accept-report.sh). The next push
+# deploys regardless; that is the trade the owner made.
+#
+# PROD IS NOT HERE. Acceptance never ran on prod (it spends subscription quota
+# and opens real pull requests on the sandbox), so there was no
+# acceptance-before-prod gate to keep; prod's warm, smoke and GKE proof still
+# run inside release.yml's prod deploy, behind `approval (prod)`, unchanged.
+#
+# ITS IDENTITY IS NOT THE DEPLOYER. Every job that reaches Google federates as
+# vars.GCP_ACCEPT_SA, an account terraform/bootstrap/acceptance.tf binds to
+# THIS file on refs/heads/main and nothing else, holding only what this file
+# does: execute the swarm-verify job and the per-tenant worker jobs (the
+# suites run INSIDE the VPC as swarm-verify, which has its own identity),
+# read run state, read the swarm-verify log view, and read releases/ in the
+# state bucket. It cannot plan, apply, promote or touch IAM. accept.yml is
+# therefore NOT in wif.tf's deployer_workflows, and
+# tests/unit/scripts/test_workflow_id_token_scope.py holds that. The binding
+# is in the bootstrap layer, which the owner applies: until it is, `what dev
+# runs` fails at authentication, and `report` files that as the red group.
+#
+# HOW THE SUITE IS SPLIT. The five groups run as matrix jobs, one swarm-verify
+# execution each, in TWO WAVES rather than five at once: the smoke tenant's
+# ceiling is 20 concurrent tasks (terraform/environments/dev/dev.tfvars,
+# tenants.smoke, max_active = capacity_units = 20), and the groups' peaks
+# summed are about 31 (mock submits 12 tasks and a workflow at once, generic
+# 8, workflow 4 roots, claude-code 3, browser 3). Wave 1 is the three longest
+# or heaviest -- mock, workflow, browser, a peak of ~20 -- and wave 2 the
+# rest -- generic, claude-code, ~11. Over the ceiling a task QUEUES (invariant
+# 1: queued costs nothing), so a burst would not fail outright, but every
+# check has a settle deadline and the queue would eat into it. So acceptance
+# takes about the longest of wave 1 (workflow, ~13 min) plus the longest of
+# wave 2 (generic, ~8), against 45.4 serially.
+
+name: accept
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
+  # Accept whatever dev runs now, e.g. after a hotfix (hotfix.yml) or to retry
+  # a red run. Main only: the identity is bound to this file on main.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || !startsWith(github.event.workflow_run.display_title, 'release prod ')))) && 'accept-dev' || format('accept-ignored-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+env:
+  ENVIRONMENT: dev
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # What dev runs, and whether this run should judge it.
+  # -------------------------------------------------------------------------
+  target:
+    name: what dev runs
+    runs-on: ubuntu-24.04
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || !startsWith(github.event.workflow_run.display_title, 'release prod ')))) }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.deployed.outputs.sha }}
+      accept: ${{ steps.decide.outputs.accept }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: read the deployed SHA from releases/dev/applied.json
+        id: deployed
+        run: ./scripts/lib/release-order.sh deployed --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+      - name: decide whether this run judges it
+        # On a completed release, only when THAT run applied what dev runs:
+        # a superseded release, or a prod one, accepts nothing and ends green.
+        id: decide
+        env:
+          SHA: ${{ steps.deployed.outputs.sha }}
+          APPLIED_RUN: ${{ steps.deployed.outputs.run_id }}
+          APPLIED_BY: ${{ steps.deployed.outputs.workflow }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          accept=true
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_run" ] && [ "${APPLIED_RUN}" != "${TRIGGER_RUN}" ]; then
+            accept=false
+            echo "::notice title=Nothing to accept::release run ${TRIGGER_RUN} did not apply what dev runs: applied.json names ${SHA}, applied by ${APPLIED_BY:-?} run ${APPLIED_RUN:-?}. That run's own completion accepts it."
+          fi
+          echo "accept=${accept}" >> "$GITHUB_OUTPUT"
+          {
+            if [ "${accept}" = true ]; then
+              echo "### Accepting \`${SHA}\` on dev"
+            else
+              echo "### Not accepting: dev runs \`${SHA}\`, which this release did not apply"
+            fi
+            echo
+            echo "releases/dev/applied.json: applied by ${APPLIED_BY:-?} run ${APPLIED_RUN:-?}."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # Warm, smoke and the GKE proof: release.yml's dev deploy steps until
+  # 2026-10-08, unchanged but for where they run and the commit they read.
+  # -------------------------------------------------------------------------
+  smoke:
+    name: warm, smoke and GKE proof (dev)
+    runs-on: ubuntu-24.04
+    needs: [target]
+    if: needs.target.outputs.accept == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: warm each Cloud Run worker job once on its new digest
+        # #363: the first execution of each Cloud Run job after a new digest
+        # spends 30-59 s importing the image. One `--self-test` execution per
+        # per-tenant worker job pays it here, before the smoke test and before
+        # acceptance. A failed warm run is a slower first task, not a broken
+        # deployment: the script warns and exits 0, and continue-on-error
+        # keeps a refused name (its only non-zero exit) from failing the run.
+        continue-on-error: true
+        timeout-minutes: 30
+        run: ./scripts/warm-jobs.sh
+
+      - name: smoke test (inside the VPC)
+        # The `mock` profile needs no provider key, so this proves submit,
+        # admit, dispatch, run and release without any tenant's credential.
+        # verify-remote.sh executes scripts/smoke-test.sh in the swarm-verify
+        # Cloud Run job, which IS in the VPC, and exits with its exit code.
+        id: smoke
+        run: ./scripts/verify-remote.sh smoke-test
+
+      - name: prove GKE dispatch with one browser task
+        # docs/incidents/2026-09-24-gke-dispatch.md section 5. Runs even when
+        # the smoke test failed -- the two paths share nothing below the API,
+        # so that is when this diagnosis is worth most -- but not after a
+        # cancel. SWITCHED BY vars.PROVE_GKE_DISPATCH, off until the owner
+        # restores browser admission; when off it SAYS it skipped.
+        if: ${{ !cancelled() }}
+        env:
+          PROVE_GKE_DISPATCH: ${{ vars.PROVE_GKE_DISPATCH }}
+        run: |
+          if [ "${PROVE_GKE_DISPATCH}" != "true" ]; then
+            echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this acceptance."
+            exit 0
+          fi
+          ./scripts/verify-remote.sh prove-gke-dispatch
+
+  # -------------------------------------------------------------------------
+  # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
+  # handed to the sync, the read-back and the sweep only, and never to the
+  # suite: the swarm-verify job holds no GitHub credential. The sync writes
+  # the deployed commit's tests/acceptance/fixtures/ to the private sandbox's
+  # main ONCE, before any group starts (the groups clone it), so it is a job
+  # of its own and not a step of each matrix job, which would race on one
+  # branch. It needs no Google identity, so it runs beside `smoke`.
+  # -------------------------------------------------------------------------
+  sandbox:
+    name: put the deployed commit's fixtures on the sandbox
+    runs-on: ubuntu-24.04
+    needs: [target]
+    if: needs.target.outputs.accept == 'true'
+    outputs:
+      since: ${{ steps.started.outputs.at }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      # Before the sync, so github-verify.sh judges only the pull requests
+      # this run's groups opened, not one an earlier, unswept run left.
+      - name: note when acceptance starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: put the fixtures on the sandbox
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+        run: ./scripts/acceptance/sandbox-sync.sh
+
+  # -------------------------------------------------------------------------
+  # ACCEPTANCE: real tasks, judged by what they produced (owner decision,
+  # 2026-09-29; docs/acceptance.md). One swarm-verify execution per group, in
+  # the smoke tenant against the private sandbox (scripts/acceptance/
+  # config.sh, #628). Two waves -- see the header for the ceiling that sets
+  # them. fail-fast false: one red group must not cancel the others, and the
+  # issue names every red group, not the first.
+  #
+  # Only after smoke succeeded, as before: a deployment that fails smoke
+  # fails acceptance for the same reason, and smoke says it in a tenth of
+  # the time.
+  # -------------------------------------------------------------------------
+  acceptance:
+    name: acceptance (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    needs: [target, smoke, sandbox]
+    if: ${{ !cancelled() && needs.target.outputs.accept == 'true' && needs.smoke.result == 'success' && needs.sandbox.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [mock, workflow, browser]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: acceptance suite, one group (inside the VPC)
+        env:
+          GROUP: ${{ matrix.group }}
+        run: ./scripts/verify-remote.sh "acceptance/${GROUP}"
+
+  # Wave 2: starts when wave 1 has finished, whatever it concluded, so a red
+  # group in wave 1 still lets wave 2 report its own.
+  acceptance-2:
+    name: acceptance (${{ matrix.group }})
+    runs-on: ubuntu-24.04
+    needs: [target, smoke, sandbox, acceptance]
+    if: ${{ !cancelled() && needs.target.outputs.accept == 'true' && needs.smoke.result == 'success' && needs.sandbox.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [generic, claude-code]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: acceptance suite, one group (inside the VPC)
+        env:
+          GROUP: ${{ matrix.group }}
+        run: ./scripts/verify-remote.sh "acceptance/${GROUP}"
+
+  # -------------------------------------------------------------------------
+  # The suite cannot read the private sandbox back (swarm-verify holds no
+  # GitHub token) and SKIPs those assertions; github-verify.sh makes them
+  # here, with the sandbox token, before the sweep closes anything. A failure
+  # there fails this job; the sweep still runs after it. github-cleanup.sh
+  # closes only swarm/task_ branches whose changes lie entirely under
+  # tests/acceptance/fixtures/.
+  # -------------------------------------------------------------------------
+  sandbox-results:
+    name: read back and sweep the sandbox
+    runs-on: ubuntu-24.04
+    needs: [target, sandbox, acceptance, acceptance-2]
+    if: ${{ !cancelled() && needs.sandbox.result == 'success' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+
+      - name: read the suite's pull requests back from the sandbox
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          SWARM_ACCEPTANCE_SINCE: ${{ needs.sandbox.outputs.since }}
+        run: ./scripts/acceptance/github-verify.sh
+
+      - name: close the pull requests and branches the suite opened on the sandbox
+        if: ${{ !cancelled() }}
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+        run: ./scripts/acceptance/github-cleanup.sh
+
+  # -------------------------------------------------------------------------
+  # Which SHA was accepted, in the summary; on red, ONE issue labelled bug
+  # naming that SHA and every failing group (scripts/accept-report.sh). It
+  # also runs when `what dev runs` itself failed -- an identity that cannot
+  # authenticate is a red acceptance too. Not after a cancel: a newer
+  # deployment's run replaced this one and reports for itself.
+  #
+  # If dev no longer runs the accepted SHA by the time this job looks (the
+  # hotfix lane applied a newer commit mid-run), a red result is reported in
+  # the summary and NOT filed: it judged a deployment that is gone.
+  # -------------------------------------------------------------------------
+  report:
+    name: report what was accepted
+    runs-on: ubuntu-24.04
+    needs: [target, smoke, sandbox, acceptance, acceptance-2, sandbox-results]
+    if: ${{ !cancelled() && (needs.target.result == 'failure' || needs.target.outputs.accept == 'true') }}
+    permissions:
+      contents: read
+      id-token: write
+      # The failing matrix jobs' names, read from this run's job list.
+      actions: read
+      # The one place this workflow writes to GitHub.
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # Best effort: the re-read below is what tells a superseded run from a
+      # red one, and without it the report still files.
+      - id: auth
+        continue-on-error: true
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        if: steps.auth.outcome == 'success'
+
+      - name: is the accepted SHA still what dev runs
+        id: now
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
+        run: ./scripts/lib/release-order.sh deployed --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+      - name: summary, and an issue when red
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPT_SHA: ${{ needs.target.outputs.sha }}
+          ACCEPT_NOW_SHA: ${{ steps.now.outputs.sha }}
+          ACCEPT_NEEDS: ${{ toJSON(needs) }}
+        run: ./scripts/accept-report.sh
