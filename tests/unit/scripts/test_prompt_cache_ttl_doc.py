@@ -21,8 +21,6 @@ import json
 import re
 from pathlib import Path
 
-from agent_worker.runners import claude_code, cliagent
-
 REPO = Path(__file__).resolve().parents[3]
 DOC = REPO / "docs" / "cost-control.md"
 
@@ -60,12 +58,16 @@ def test_the_doc_records_the_ttl_finding_and_the_knob():
 
 
 def test_the_runner_passes_no_ttl_variable_through():
+    from agent_worker.runners import cliagent
+
     passed = (*cliagent._PLAIN_PASSTHROUGH, *cliagent._SENSITIVE_PASSTHROUGH)
     for name in _TTL_ENV:
         assert name not in passed, f"cliagent now passes {name} through; {_STALE}"
 
 
 def test_the_headless_settings_choose_no_ttl(tmp_path):
+    from agent_worker.runners import claude_code
+
     settings = json.loads(claude_code.write_headless_settings(tmp_path / "settings-dir").read_text())
     assert "promptCacheTtl" not in settings, f"write_headless_settings now sets promptCacheTtl; {_STALE}"
     assert "subagentPromptCacheTtl" not in settings, (
