@@ -230,8 +230,9 @@ spec:
             - name: dshm
               mountPath: /dev/shm
             # The step-spec public keys (contract request 34): terraform's
-            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY and
-            # never in `env:`, as in worker-job-browser.yaml.
+            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY, the
+            # fallback behind the scheduler's SPEC_* values in the dispatched
+            # Job's `env:` (2026-10-08), as in worker-job-browser.yaml.
             - name: spec-verify-keys
               mountPath: /etc/swarm/spec-verify-keys
               readOnly: true
@@ -250,7 +251,8 @@ spec:
             medium: Memory
             sizeLimit: 2Gi
         # `optional`: a namespace whose ConfigMap has not been applied yet
-        # still starts its pod, and the worker exits CANNOT_START for every
+        # still starts its pod, and verifies with the keys in `env:`. Only
+        # with keys in neither does the worker exit CANNOT_START for every
         # task, signed or not -- loud, and never an unverified run.
         - name: spec-verify-keys
           configMap:
