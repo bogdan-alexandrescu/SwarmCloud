@@ -272,6 +272,26 @@ repository with no CI (`DONE`, `checks: none`).
 **`green_sha`** is the head sha at which every required check was green. It is
 set only on `DONE`, and it is what any future merge must pin to (below).
 
+**What a reading records besides its state (#503).** The one state above is
+what moves the run; it is not enough to read. A run page that said "pending at
+7138b1a" while GitHub listed 7 pending, 5 passed and 3 skipped was the measured
+defect. So every CI read also records on `pull_request`, and `GET /runs/{id}`
+serves:
+
+| field | what it is |
+|---|---|
+| `check_counts` | `{passed, failed, pending, skipped}` over the checks the reading evaluated -- the required set when the branch's rules name one, every check run and status otherwise. A run not `completed` is pending; `success` passed; `neutral`, `skipped` and `cancelled` skipped; any other conclusion failed. A status: `success`, `pending`, else failed |
+| `check_list` | `{name, state, url}` per evaluated check, `url` the check run's `html_url` or `details_url`, or the status's `target_url`, `null` when GitHub gave none. Capped at 50 (`issueci.MAX_CHECK_LIST`); `check_list_truncated` says so. The counts are over all of them |
+| `ci_url` | the first failing check's link, else the first pending one's, else the first link at all |
+| `merged`, `merged_at` | what the last read of the pull request said, and GitHub's `merged_at` when it merged |
+
+These are for display and **decide nothing**: a `cancelled` run counts as
+skipped and is still red in the state, exactly as the merge step reads it
+(`forgechecks.evaluate`, which `mergewake` also calls, is unchanged). A run
+document written before they were recorded serves each as `null`, never `0` or
+`false`: a zero would claim a reading that was never made, and the console
+prints "merge not reported" only for `merged: null`.
+
 ## `Closes #N` only when the review confirmed every requirement
 
 Repository rule ([CLAUDE.md](../CLAUDE.md#issues)): `Closes #N` only when it is
