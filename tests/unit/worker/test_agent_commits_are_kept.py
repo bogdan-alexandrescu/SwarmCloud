@@ -430,7 +430,7 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
 def test_the_pattern_scan_reads_only_the_lines_a_commit_adds(diff, found):
     """The control for the fold above: a line shaped like a key that a commit
     REMOVES was in its parent's tree already, and the commit is kept."""
-    assert lifecycle._adds_a_credential(diff) is found
+    assert _adds_a_credential(diff) is found
 
 
 def test_code_that_names_a_credential_without_holding_one_keeps_the_history(
@@ -697,6 +697,14 @@ def _scan_hit(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None)
     return scanner.close()
 
 
+def _adds_a_credential(diff: str) -> bool:
+    """Whether the publish scan -- the worker's own `_DiffLeakScanner`, with
+    the credential rules alone -- finds a credential this diff ADDS. The
+    worker's whole-diff twin of the scanner had no production caller and is
+    gone (#361); these cases now read the parser the worker runs."""
+    return _scan_hit(diff.encode(), window=1 << 20, overlap=64, piece=1 << 20) is not None
+
+
 def _scan(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None) -> str | None:
     """The path the scanner names, or None."""
     hit = _scan_hit(diff, window=window, overlap=overlap, piece=piece, leaks=leaks)
@@ -760,7 +768,7 @@ def test_a_lone_carriage_return_does_not_hide_a_credential_from_the_scan(
     embedded (git splits lines on `\\n` only). Reading the capture with the
     default newline handling translates that `\\r` into a `\\n`, splitting
     `+x = 1\\rAKIAIOSFODNN7EXAMPLE` into `+x = 1` and `AKIAIOSFODNN7EXAMPLE` --
-    the second half loses its `+` prefix, so `_adds_a_credential` (which reads
+    the second half loses its `+` prefix, so the publish scan (which reads
     only lines starting with `+`) never sees the credential that follows.
     Reading with `newline=""` keeps the `\\r` embedded in one line.
 
@@ -922,7 +930,7 @@ def test_an_added_line_that_reads_like_a_file_header_is_still_scanned():
         "@@ -0,0 +1 @@\n"
         f"+++ {UNREGISTERED_AWS_KEY}\n"
     )
-    assert lifecycle._adds_a_credential(diff) is True
+    assert _adds_a_credential(diff) is True
 
 
 # -- the tiered, path-aware publish guard (#373) ------------------------------
@@ -1228,13 +1236,13 @@ def test_a_refusal_names_the_rule_and_the_line_and_never_the_value():
 
 
 def test_the_per_commit_scan_reads_a_test_files_path():
-    """`_adds_a_credential` judges each file by its own path: the same line
+    """The publish scan judges each file by its own path: the same line
     passes in a test file and is caught in source."""
     line = 'assert masked == {"secret": "retained-9"}'
     in_tests = f"+++ b/tests/unit/test_mask.py\n@@ -0,0 +1 @@\n+{line}\n"
     in_src = f"+++ b/src/mask.py\n@@ -0,0 +1 @@\n+{line}\n"
-    assert lifecycle._adds_a_credential(in_tests) is False
-    assert lifecycle._adds_a_credential(in_src) is True
+    assert _adds_a_credential(in_tests) is False
+    assert _adds_a_credential(in_src) is True
 
 
 def _akia() -> str:
