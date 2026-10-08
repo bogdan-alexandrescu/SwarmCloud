@@ -1107,7 +1107,7 @@ def cmd_workflow_status(client: SwarmClient, args) -> int:
     """
     envelope = workflows.fetch(client, args.workflow_id)
     report = workflows.report(
-        envelope, describe=describe_task if args.result else None
+        envelope, describe=(lambda task: describe_task(task, client)) if args.result else None
     )
     if args.json:
         print(json.dumps(report, indent=2))
@@ -1317,7 +1317,10 @@ def cmd_profiles(_client, args) -> int:
     """
     entries = catalogue.catalogue()
     if args.json:
-        print(json.dumps({"profiles": entries}, indent=2))
+        # The bridge's OWN copy, named: this command reads no API, and the
+        # copy is as old as the installed package (`swarm_profiles` asks the
+        # platform's `/v1/runtimes` instead).
+        print(json.dumps({"catalogue_source": catalogue.bridge_copy_source(), "profiles": entries}, indent=2))
         return EXIT_OK
     for entry in entries:
         mark = "ok  " if entry["available"] else "--  "

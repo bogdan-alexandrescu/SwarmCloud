@@ -3602,7 +3602,7 @@ class Worker:
             # runner it started, so the summary a human reads and the typed
             # fields a query reads cannot disagree after an in-place retry.
             usage_summary = dict(self._spend)
-            summary["runner"] = self._scrub(
+            runner = self._scrub(
                 {
                     "status": runner_result.get("status"),
                     "summary": str(runner_result.get("summary", ""))[:4000],
@@ -3614,6 +3614,22 @@ class Worker:
                     "metrics": runner_result.get("metrics") or {},
                 }
             )
+            # NO LONE SURROGATE REACHES THE SUMMARY (#227). The agent CLI's
+            # JSON can carry a `\ud800` escape, which parses to a lone
+            # surrogate a Firestore write cannot carry: `finish` raised, and
+            # every retry read the same output. Each is replaced with U+FFFD,
+            # here, the one place every field above is written from, and
+            # counted, so a reader knows the text is not quite what the agent
+            # printed.
+            runner, replaced = redact_mod.replace_lone_surrogates(runner)
+            if replaced:
+                runner["surrogates_replaced"] = replaced
+                self.log.warning(
+                    "the runner's result held lone surrogates, which a Firestore "
+                    "write cannot carry; each was replaced with U+FFFD",
+                    count=replaced,
+                )
+            summary["runner"] = runner
         return runner_result
 
     # ------------------------------------------------------------------
@@ -5552,15 +5568,26 @@ class Worker:
         rest, because it is a Firestore document with a 1 MiB limit; these
         lines name all of them, and `LOG_BATCH` names to a line keep each well
         under Cloud Logging's 256 KiB entry however many files the agent left.
-        Every line carries `count`, the whole number, and `batch`, "i of n".
-        Nothing is written for no entries.
+        Every line carries `count`, the whole number, `by_reason`, that number
+        split by reason, and `batch`, "i of n". Nothing is written for no
+        entries.
+
+        BY REASON (#227). The artifacts folder's line counted every file it
+        did not upload -- a name too long as well as one past the cap -- while
+        the pane said "N over the 500-file cap" from `artifacts_over_cap`,
+        which counts only the cap. Two numbers for one folder that disagreed
+        with nothing to say why; `by_reason` states each.
         """
         batch = standalone_mod.LOG_BATCH
         batches = (len(entries) + batch - 1) // batch
+        by_reason: dict[str, int] = {}
+        for entry in entries:
+            by_reason[entry["reason"]] = by_reason.get(entry["reason"], 0) + 1
         for index in range(batches):
             self.log.warning(
                 message,
                 count=len(entries),
+                by_reason=by_reason,
                 batch=f"{index + 1} of {batches}",
                 files=[
                     f"{e['name']}: not uploaded: {e['reason']}"
@@ -10808,10 +10835,19 @@ class Worker:
                 unredacted.append(entry)
                 reported.add(entry.get("file"))
 
-        if skipped:
-            self.log.warning(
-                "artifacts skipped", count=len(skipped), cap_bytes=self.cfg.max_artifact_bytes
-            )
+        # EVERY SKIPPED NAME, IN THE LOG (#227). The summary lists the first
+        # 50; this line used to carry only the count, and `_upload_copy` logs
+        # no name for a file the byte cap kept, so the 51st on was named
+        # nowhere. Each name is already scrubbed and cut (`shown`), and
+        # `_log_not_uploaded` writes them `LOG_BATCH` to a line.
+        self._log_not_uploaded(
+            "artifacts skipped",
+            [
+                {"name": name, "reason": cause}
+                for name, cause in zip(skipped, skip_causes)
+            ],
+            cap_bytes=self.cfg.max_artifact_bytes,
+        )
         summary: dict[str, Any] = {
             "artifacts": artifacts,
             "artifact_bytes": total,
@@ -11600,9 +11636,11 @@ class _DiffLeakScanner:
     current window, the overlap carried from the one before, and one line's
     first few characters -- a 40 MB single-line file costs a window, not 40 MB.
 
-    The diff is parsed as `_added_by_file` parses a whole one: a `+++ `
-    line is a file's header only before its first `@@`, and every `+` line
-    after is content. Bytes are decoded incrementally as UTF-8 with
+    A `+++ ` line is a file's header only before its first `@@`, and every
+    `+` line after is content: an added line whose own text is `++ AKIA...`
+    prints as `+++ AKIA...`, and reading it as a header would let a
+    credential through behind two plus signs. A deleted file
+    (`+++ /dev/null`) adds nothing. Bytes are decoded incrementally as UTF-8 with
     replacement, and no newline translation happens, so a lone `\\r` stays
     inside its line (#259 review, M2).
 
@@ -11811,69 +11849,6 @@ def _scan_diff_stream(
     return code, scanner.close()
 
 
-def _adds_a_credential(diff: str) -> bool:
-    """True when a line this diff ADDS matches a credential pattern, each
-    file judged by its own path (`_credential_in`, #373).
-
-    The patterns are `swarm_redaction.RULES`, the same families swarm-api
-    masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
-    means one thing on the platform. Only added lines are read: a removed line
-    was in the parent's tree already -- the repository's own history, or an
-    earlier agent commit, whose own diff added it and is scanned in its turn --
-    and `+++ ` is a file header, not content.
-
-    A MATCH MUST START A TOKEN. swarm-api masks a run wherever it starts,
-    because there a false positive costs one masked word. Here it costs the
-    agent's whole history (a fold), and code is full of identifiers that hold
-    a family's prefix in the middle: `keyword_only` holds `eyword_only`, which
-    the JWT rule takes for a token. So a pattern match counts only when the
-    character before it is not a letter, a digit or `_`. The private-key
-    block is exempt: its marker is never part of an identifier.
-    """
-    return any(_credential_in(path, added) is not None for path, added in _added_by_file(diff))
-
-
-def _added_by_file(diff: str) -> list[tuple[str, str]]:
-    """Each file in a `git diff` that adds text, with that text, `+` removed.
-
-    A file's `+++ b/<path>` line is read as its header only BEFORE its first
-    `@@` hunk line. After that every line starting with `+` is content, even
-    one that reads `+++ ...`: an added line whose own text is `++ AKIA...`
-    prints as `+++ AKIA...`, so dropping every `+++ ` line as a header let a
-    credential through behind two plus signs. The path is what the `+++ `
-    header names after the `b/` destination prefix; a deleted file
-    (`+++ /dev/null`) adds nothing. Text before any `diff --git` line is read
-    as one file, named by its own `+++ ` header if it has one.
-    """
-    files: list[tuple[str, list[str]]] = []
-    path = ""
-    added: list[str] = []
-    # A file's header runs from its `diff --git` line (or the start of the
-    # text) to its first `@@`: git prints every hunk behind one.
-    in_header = True
-    for line in diff.split("\n"):
-        if line.startswith("diff --git "):
-            if added:
-                files.append((path, added))
-            path, added, in_header = "", [], True
-            continue
-        if line.startswith("@@"):
-            in_header = False
-            continue
-        if in_header:
-            if line.startswith("+++ "):
-                name = line[4:]
-                if len(name) > 1 and name.startswith('"') and name.endswith('"'):
-                    name = name[1:-1]
-                path = name[2:] if name.startswith("b/") else name
-            continue
-        if line.startswith("+"):
-            added.append(line[1:])
-    if added:
-        files.append((path, added))
-    return [(name, "\n".join(lines)) for name, lines in files]
-
-
 # -- the tiered, path-aware publish guard (#373) ------------------------------
 #
 # OWNER DECISION, 2026-09-30 (#373). The publish scans refused any added text
@@ -12030,12 +12005,23 @@ def _looks_like_a_credential(value: str) -> bool:
 def _decodes_as_a_jwt(token: str) -> bool:
     """True when `token`'s first segment base64url-decodes to a JSON object
     naming `alg`, which every JWT header does. `eyword_only_args`, or an
-    `ey...` run in a fixture, is not one."""
+    `ey...` run in a fixture, is not one.
+
+    A HEADER NESTED PAST THE PARSER'S DEPTH COUNTS AS ONE (#361). `json.loads`
+    raises RecursionError, not ValueError, on an array or object nested about a
+    thousand deep, and that escaped the publish guard and failed the attempt
+    with a traceback. Such a header base64url-decodes to JSON-shaped text, which
+    an identifier never does, so the guard fails CLOSED on it: a finding, which
+    folds or refuses. Text that does not decode at all stays "not a JWT" -- that
+    is what keeps `eyword_only_args` from folding every history that names it.
+    """
     header = token.split(".", 1)[0]
     try:
         decoded = json.loads(base64.urlsafe_b64decode(header + "=" * (-len(header) % 4)))
     except ValueError:  # binascii.Error, UnicodeDecodeError and JSONDecodeError all are
         return False
+    except RecursionError:
+        return True
     return isinstance(decoded, dict) and "alg" in decoded
 
 
@@ -12298,10 +12284,19 @@ def _credential_in(path: str, added: str) -> CredentialHit | None:
     """The first credential in `added` -- text the file at `path` adds, its
     `+` removed -- tiered by whether `path` is a test path (#373), or None.
 
-    A pattern match counts only where it starts a token (`_adds_a_credential`);
-    the private-key block is exempt, its marker is never part of an
-    identifier. Rules are asked in `swarm_redaction.RULES` order, and the
-    answer names the rule and where its match starts, never the value.
+    The patterns are `swarm_redaction.RULES`, the same families swarm-api
+    masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
+    means one thing on the platform.
+
+    A MATCH MUST START A TOKEN. swarm-api masks a run wherever it starts,
+    because there a false positive costs one masked word. Here it costs the
+    agent's whole history (a fold), and code is full of identifiers that hold
+    a family's prefix in the middle: `keyword_only` holds `eyword_only`, which
+    the JWT rule takes for a token. So a pattern match counts only when the
+    character before it is not a letter, a digit or `_`. The private-key
+    block is exempt: its marker is never part of an identifier. Rules are
+    asked in `swarm_redaction.RULES` order, and the answer names the rule and
+    where its match starts, never the value.
     """
     if not added:
         return None
@@ -12775,9 +12770,27 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
         bound = f"; expected {refused.expected}" if refused.expected else ""
         raise ConfigError(
             f"the task's input is refused by runner profile {runner_profile!r}: "
-            f"{', '.join(refused.keys)}{bound} (checked again by the worker, contract "
-            "request 32)"
+            f"{_refused_key_names(refused.keys)}{bound} (checked again by the worker, "
+            "contract request 32)"
         ) from None
+
+
+#: The most refused key names `_recheck_runner_input`'s message lists, and the
+#: most characters of each (#346). The names are the CALLER'S: a stored input
+#: of 10,000 keys of 10,000 characters each made a 100 MB task error.
+_REFUSED_NAMES_SHOWN = 10
+_REFUSED_NAME_CHARS = 64
+
+
+def _refused_key_names(keys: Sequence[str]) -> str:
+    """`keys` for an error message: the first `_REFUSED_NAMES_SHOWN`, each cut
+    to `_REFUSED_NAME_CHARS` characters, then "and N more" for the rest."""
+    shown = [
+        key if len(key) <= _REFUSED_NAME_CHARS else key[:_REFUSED_NAME_CHARS] + "..."
+        for key in (str(key) for key in keys[:_REFUSED_NAMES_SHOWN])
+    ]
+    rest = len(keys) - len(shown)
+    return ", ".join(shown) + (f" and {rest} more" if rest > 0 else "")
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

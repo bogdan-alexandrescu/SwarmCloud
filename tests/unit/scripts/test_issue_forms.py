@@ -327,6 +327,22 @@ def _declared_labels() -> list[dict[str, Any]]:
     return data
 
 
+def _labels_workflows_gate_on() -> set[str]:
+    """Every label a workflow passes as `--label <name>`."""
+    found: set[str] = set()
+    for path in sorted((REPO / ".github" / "workflows").glob("*.yml")):
+        found |= set(re.findall(r"--label\s+[\"']?([\w.-]+)", path.read_text()))
+    return found
+
+
+def test_the_hotfix_label_is_declared_and_gated_on() -> None:
+    """hotfix.yml proceeds only on a merged pull request carrying `hotfix`; a
+    label the repository does not declare is one nobody can apply."""
+    declared = {e.get("name") for e in _declared_labels() if isinstance(e, dict)}
+    assert "hotfix" in _labels_workflows_gate_on(), "no workflow gates on --label hotfix any more"
+    assert "hotfix" in declared
+
+
 def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     problems: list[str] = []
     names: list[str] = []
@@ -351,10 +367,13 @@ def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     if dupes:
         problems.append(f"declared twice: {dupes}")
 
-    # Every declared label is applied by some form. The file declares what the
-    # forms rely on; it is not a copy of every label on the repository, which
-    # would be a mirror of GitHub state that nothing here can check.
+    # Every declared label is applied by some form, or gated on by a workflow
+    # (`--label <name>`: hotfix.yml's `hotfix`). The file declares what the
+    # forms and workflows rely on; it is not a copy of every label on the
+    # repository, which would be a mirror of GitHub state that nothing here can
+    # check.
     applied = {label for p in FORMS for label in (_load(p).get("labels") or [])}
+    applied |= _labels_workflows_gate_on()
     unused = sorted(set(names) - applied, key=str)
     if unused:
         problems.append(f"declared but applied by no form: {unused}")
