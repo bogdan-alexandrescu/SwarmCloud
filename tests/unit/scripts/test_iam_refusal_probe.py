@@ -693,6 +693,101 @@ def test_preflight_refuses_whenever_the_verdict_would_not_be_the_conditions(tmp_
     assert probe.calls("add-iam-policy-binding") == []
 
 
+def _chunk(n: int, of: int, roles: list[str], quote: str = '"') -> dict:
+    """One of #275's conditioned projectIamAdmin bindings, as deployer_conditions.tf renders it."""
+    listed = ", ".join(f"{quote}{role}{quote}" for role in roles)
+    return {
+        "role": SCOPED_ROLE,
+        "members": [DEPLOYER],
+        "condition": {
+            "title": f"only the roles terraform infra grants (chunk {n} of {of})",
+            "expression": f"api.getAttribute({quote}iam.googleapis.com/modifiedGrantsByRole{quote}, [])"
+            f".hasOnly([{listed}])",
+        },
+    }
+
+
+def _chunked_policy(*chunks: dict) -> dict:
+    policy = _live_policy()
+    policy["bindings"][0:1] = list(chunks)
+    return policy
+
+
+FIRST_CHUNK = [f"roles/run.viewer{i}" for i in range(10)]
+SECOND_CHUNK = ["roles/cloudtrace.agent", "roles/run.invoker"]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        pytest.param([_chunk(1, 1, FIRST_CHUNK)], id="one-grant"),
+        pytest.param([_chunk(1, 2, FIRST_CHUNK), _chunk(2, 2, SECOND_CHUNK)], id="two-grants"),
+        pytest.param(
+            [_chunk(1, 2, FIRST_CHUNK), _chunk(2, 2, SECOND_CHUNK, quote="'")], id="two-grants-single-quoted"
+        ),
+    ],
+)
+def test_preflight_accepts_one_or_more_chunked_admin_grants(tmp_path, chunks):
+    """#276: since #275 the deployer's projectIamAdmin is one conditioned binding
+    per <=10-role chunk. MUTATION: restore the `== 1` count and two-grants fails."""
+    probe = Probe(tmp_path, _chunked_policy(*chunks), add="refuse")
+    preflight = probe.run("preflight")
+    assert preflight.returncode == 0, preflight.stderr
+    assert probe.outputs().get("ready") == "true"
+    assert f"conditioned in {len(chunks)} binding(s)" in preflight.stdout + preflight.stderr
+
+
+@pytest.mark.parametrize(
+    ("bad", "reason"),
+    [
+        pytest.param(
+            {"title": "t", "expression": 'resource.name.startsWith("projects/x")'},
+            "a chunk does not test modifiedGrantsByRole with hasOnly",
+            id="no-hasonly",
+        ),
+        pytest.param(
+            {
+                "title": "t",
+                "expression": 'api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", [])'
+                '.hasAny(["roles/run.viewer"])',
+            },
+            "a chunk tests modifiedGrantsByRole with hasAny, not hasOnly",
+            id="has-any",
+        ),
+        pytest.param(
+            {
+                "title": "t",
+                "expression": 'api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", [])'
+                '.hasOnly(["roles/run.viewer"]) || true',
+            },
+            "a chunk ORs its hasOnly with something that admits everything",
+            id="or-true",
+        ),
+        pytest.param(
+            _chunk(2, 2, ["roles/run.invoker", PROBE_ROLE])["condition"],
+            "a chunk lists the probe role",
+            id="lists-probe",
+        ),
+        pytest.param(
+            _chunk(2, 2, [PROBE_ROLE, "roles/run.invoker"], quote="'")["condition"],
+            "a chunk lists the probe role, single-quoted",
+            id="lists-probe-single-quoted",
+        ),
+    ],
+)
+def test_preflight_refuses_when_any_chunked_admin_grant_is_not_the_condition(tmp_path, bad, reason):
+    """Every chunk is checked, not the first: a bad SECOND chunk stops the run.
+    MUTATION: check only the first binding's condition."""
+    second = _chunk(2, 2, SECOND_CHUNK)
+    second["condition"] = bad
+    probe = Probe(tmp_path, _chunked_policy(_chunk(1, 2, FIRST_CHUNK), second), add="grant")
+    preflight = probe.run("preflight")
+    assert preflight.returncode != 0, f"preflight passed although {reason}"
+    assert probe.outputs().get("ready") != "true"
+    assert "Nothing was attempted" in preflight.stderr
+    assert probe.calls("add-iam-policy-binding") == []
+
+
 def test_an_unreadable_custom_role_is_a_caveat_on_a_grant_and_not_on_a_refusal(tmp_path):
     """After #150 the deployer cannot read its custom roles. A refusal is still
     proof (nothing admitted the write); a grant says it may not be the condition's."""

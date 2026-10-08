@@ -1,0 +1,101 @@
+/* ==========================================================================
+   WORK › SETUP AND WORK › ACCESS (#780, OB8; onboarding.html, owner picks
+   D10: Entry A, Chooser A, Verify A, Access A and B).
+
+   Built on the Repositories set (`ur-`, repositories.css) and the canonical
+   components; the classes here are layout only. Every colour is a token, so
+   light and dark come from the theme; nothing here has a fixed palette.
+   `ob-` is the checklist, `ac-` the Access page.
+   ========================================================================== */
+
+/* ---- the checklist (Setup, and the card on Overview) ----------------------- */
+.ob-card { display: flex; flex-direction: column; gap: 10px; }
+.ob-bar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.ob-bar > i { display: block; height: 6px; border-radius: 3px; background: var(--line); }
+.ob-bar > i.is-done { background: var(--s-live); }
+.ob-bar > i.is-in_progress { background: color-mix(in srgb, var(--s-live) 45%, var(--line)); }
+.ob-bar > i.is-failed { background: var(--s-bad); }
+.ob-bar > i.is-stale { background: var(--s-warn); }
+.ob-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ob-step { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
+.ob-step:first-child { border-top: 0; }
+.ob-step.is-next { background: var(--sk-acs); border-radius: var(--r-ctl); padding: 8px; margin: 0 -8px; }
+.ob-step-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ob-step-h { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ob-step-h code { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ob-state { font-size: var(--t-micro); color: var(--text-dim); }
+.ob-step.is-failed .ob-state { color: var(--s-bad); }
+.ob-step.is-stale .ob-state { color: var(--s-warn); }
+.ob-line { margin: 0; overflow-wrap: anywhere; }
+.ob-step-act { display: flex; justify-content: flex-end; }
+.ob-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.ob-issue { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; margin-top: 4px; border-left: 2px solid var(--s-bad); background: var(--s-badb); border-radius: 0 var(--r-ctl) var(--r-ctl) 0; }
+.ob-issue .c-link { font-size: var(--t-micro); }
+
+/* ---- Access ---------------------------------------------------------------- */
+.ac-rules { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ac-rules b { color: var(--text); font-weight: 600; }
+.ac-rules code { font-family: var(--mono); }
+.ac-conn { display: flex; flex-direction: column; gap: 8px; }
+
+/* Chooser A: owners on the left, one owner's repositories on the right. */
+.ac-choose { display: flex; flex-direction: column; gap: 12px; }
+.ac-chooser { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.ac-owners { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ac-owner-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ac-owner { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); min-width: 0; }
+.ac-owner.is-selected { border-color: var(--sk-ac); background: var(--sk-acs); }
+.ac-owner-h { display: flex; gap: 6px; align-items: center; justify-content: space-between; min-width: 0; }
+.ac-owner-h b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-owner-pick { all: unset; cursor: pointer; min-width: 0; color: var(--text); }
+.ac-owner-pick:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.ac-owner-acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ac-repos { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ac-repos-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.ac-search { display: flex; gap: 6px; align-items: center; flex: 1 1 240px; min-width: 0; }
+.ac-rows, .ac-grid { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ac-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.ac-row:first-child { border-top: 0; }
+.ac-row-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ac-row-name b { font-size: var(--t-meta); font-weight: 600; overflow-wrap: anywhere; }
+.ac-row-err, .ac-fails { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
+.ac-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; font-size: var(--t-micro); }
+.ac-typed { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.ac-typed-form { display: flex; flex-direction: column; gap: 6px; }
+.ac-typed-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ac-typed-row .ur-search { flex: 1 1 220px; width: auto; min-width: 0; }
+
+/* Verify A: one row per grant, failures first. */
+.ac-grants { display: flex; flex-direction: column; gap: 8px; }
+.ac-filter { max-width: 320px; }
+.ac-grid-h, .ac-grant { display: grid; grid-template-columns: minmax(0, 1.6fr) auto repeat(4, 84px) auto; gap: 6px 10px; align-items: center; }
+.ac-grid-h { font-size: var(--t-micro); color: var(--text-dim); font-weight: 600; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.ac-grant { padding: 8px 0; border-top: 1px solid var(--line); }
+.ac-grant:first-child { border-top: 0; }
+.ac-grant.is-rank-0 .ac-row-name b { color: var(--s-bad); }
+.ac-cell { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-micro); min-width: 0; }
+.ac-cell-l { display: none; color: var(--text-dim); }
+.ac-grant-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.ac-member { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+.ac-member:first-child { border-top: 0; }
+
+/* ---- narrower screens, and the 390px phone frame ---------------------------- */
+@media (max-width: 1079px) {
+  .ac-chooser { grid-template-columns: minmax(0, 1fr); }
+  .ac-grid-h { display: none; }
+  .ac-grant { grid-template-columns: minmax(0, 1fr) auto; }
+  .ac-grant .ac-cell { grid-column: 1 / -1; }
+  .ac-cell-l { display: inline; min-width: 84px; }
+  .ac-grant-acts { grid-column: 1 / -1; justify-content: flex-start; }
+}
+@media (max-width: 719px) {
+  .ob-step { grid-template-columns: 18px minmax(0, 1fr); }
+  .ob-step-act { grid-column: 2; justify-content: flex-start; }
+  .ob-step-act .c-btn, .ob-step-act a { min-height: 44px; }
+  .ac-row { grid-template-columns: minmax(0, 1fr); }
+  .ac-grant { grid-template-columns: minmax(0, 1fr); }
+  .ac-member { grid-template-columns: minmax(0, 1fr); }
+  .ac-member .ac-cell-l { display: inline; min-width: 84px; }
+  .ac-search { flex-basis: 100%; }
+  .ac-typed-row > * { flex-basis: 100%; }
+}
