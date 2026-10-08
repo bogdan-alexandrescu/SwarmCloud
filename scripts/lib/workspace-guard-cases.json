@@ -513,6 +513,99 @@
       ]
     },
     {
+      "name": "the network parity check asks which account is active",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "auth",
+        "list",
+        "--filter=status:ACTIVE",
+        "--format=value(account)"
+      ]
+    },
+    {
+      "name": "the network parity check reads this namespace's egress policy by name",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "swarm-allow-worker-egress",
+        "--namespace",
+        "{namespace}",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a list of this namespace's egress policy, which the deployer's ClusterRole cannot make",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a nameless get in this namespace, which is a list the deployer's ClusterRole cannot make",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "-n",
+        "{namespace}",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "the network parity listing across every namespace",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--all-namespaces",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a field selector naming another policy",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-default-deny",
+        "-o",
+        "json"
+      ]
+    },
+    {
       "name": "create the expected worker account",
       "rule": "C2",
       "expect": "allow",
@@ -1168,7 +1261,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: swarm-config\n  namespace: swarm-system\n"
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: swarm-system\n"
     },
     {
       "name": "a cluster-scoped binding",
@@ -1246,7 +1339,7 @@
         "-f",
         "-"
       ],
-      "stdin": "apiVersion: v1\nkind: ConfigMap\nmetadata: &m\n  name: x\n  namespace: {namespace}\n---\nkind: ConfigMap\nmetadata: *m\n"
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata: &m\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\nkind: ServiceAccount\nmetadata: *m\n"
     },
     {
       "name": "a List hides its items from a reader of kinds",

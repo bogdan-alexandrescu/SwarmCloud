@@ -832,3 +832,25 @@ variable "deployer_service_account" {
     error_message = "deployer_service_account must be a service account email, or empty."
   }
 }
+
+variable "api_refusals" {
+  description = <<-EOT
+    Which switched swarm-api refusals are on, by code: { "<code>" = true }.
+    Each entry renders REFUSAL_<CODE>=on (or =off) into swarm-api's
+    environment (local.api_refusal_env).
+
+    A refusal added to swarm-api ships OFF, report-only, until an entry here
+    turns it on (owner decision 2026-10-08, observer proposal I; see
+    docs/api-refusals.md). Empty means every switched refusal is at its
+    default, which is off. A code that names no switch in
+    swarm_api.refusals.SWITCHES is refused when swarm-api starts, so a typo
+    here fails the revision instead of leaving a refusal believed on.
+  EOT
+  type        = map(bool)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for code in keys(var.api_refusals) : can(regex("^[A-Za-z][A-Za-z0-9_]*$", code))])
+    error_message = "api_refusals keys are swarm-api error codes: letters, digits and underscores."
+  }
+}
