@@ -11,7 +11,7 @@ five variants, each a clickable 1280px screen with its entry points, a 390px
 phone layout, and light and dark themes. **Nothing here is built.** The
 viewer that exists today is described in
 [`docs/web-ui/diff-viewer.md`](../web-ui/diff-viewer.md). This note records
-why the five differ, what each would cost, and which one to build.
+why the five differ, what each would cost, and which one to build. The owner's decisions of 2026-10-08 are in §3.
 
 **Fixture.** Every diff in the mock-ups is real. It is 11 of the 29 files of
 commit `dbf6708` on main (2026-10-04, #553), with that commit's
@@ -195,10 +195,11 @@ stacked and tagged by step. A step that changed nothing is a measured zero
     so the same change can appear twice
     ([dispatch-and-integration.md](dispatch-and-integration.md)).
 
-## 3. Recommendation
+## 3. Recommendation and the owner's decisions
 
-**Build variant 2, use variant 5 as its workflow and run content, and add
-variant 3's pinned findings once findings carry a line.**
+The design's recommendation was: **build variant 2, use variant 5 as its
+workflow and run content, and add variant 3's pinned findings once findings
+carry a line.** The owner took it, with different choices on entry points.
 
 * **Variant 2** fixes reach, which is what the owner named, without
   reopening the one-file-at-a-time decision. It reuses `DiffView` whole and
@@ -210,21 +211,44 @@ variant 3's pinned findings once findings carry a line.**
 * **Variants 1 and 4 stay as the record:** 1 reverses an owner decision, and
   4 overlaps the page in the way the owner already turned down for logs.
 
-Click counts with the recommendation, from the frames:
+### Owner decisions on this design (2026-10-08)
 
-| From | Today | Recommended |
+The four questions in `questions.json` were answered by the owner on
+2026-10-08. The chosen option is in bold; the alternatives are kept because
+the reasons they lost are the record.
+
+1. **Variant. Owner decision 2026-10-08: variants 2 + 5, then 3.** The
+   Changes tab on agents, workflows and issue runs; the workflow and run tab
+   holds the files × steps matrix; findings beside lines come later, once a
+   finding carries a `file` and `line`. *Kept: variant 2 alone (a workflow
+   tab that lists step patches); variant 1 (review page, reverses the
+   2026-10-01 one-file-at-a-time decision); variant 4 (drawer, overlaps the
+   page as the log dock did).*
+2. **Entry points. Owner decision 2026-10-08: all at once, in ONE lane**
+   over `AgentSplit.tsx`, `AgentDetail.tsx`, `Workflows.tsx`, `Runs.tsx`,
+   `paths.ts` and `App.tsx`. *Kept: the recommended sequence, agent entry
+   first and workflow and run entry after it (two lanes, DIFF2 then DIFF3).
+   It lost because the two lanes edit the same routing files, so they were
+   one lane by the territory rule anyway.*
+3. **Syntax highlighting. Owner decision 2026-10-08: yes, about +6 kB gz,
+   lazily loaded with the Changes tab, emitting React text nodes only.**
+   `DiffView` rule 1 is kept: no `innerHTML`, so Prism's `highlight()` and
+   Shiki's HTML output are out; Prism's `tokenize()` output or a small
+   hand-written lexer would do. The size is an estimate, not measured; DIFF1
+   measures it and reports if it exceeds the budget. *Kept: no highlighting
+   (zero bytes, plain text diff).*
+4. **Phone. Owner decision 2026-10-08: one file at a time with a picker and
+   an "All files" sheet** (file 7 of 12, ‹ ›; unified only), as drawn in
+   variant 2's 390px frame. *Kept: all files stacked in one scroll (variant
+   1's phone layout).*
+
+Click counts with the decision, from the frames:
+
+| From | Today | Built |
 |---|---|---|
 | Agents | 2 + scroll | 2 |
 | Workflow | 3 | 1 |
 | Issue run | 2-3, after guessing the step | 1 |
-
-**Syntax highlighting** is the owner's call, given the bundle (see
-`questions.json`). The proposal is a budget of **+6 kB gz**, lazy-loaded with
-the Changes tab, for a token-level highlighter that emits React text nodes
-only. That rules out any `innerHTML` path, so Prism's `highlight()` and
-Shiki's HTML output are out; Prism's `tokenize()` output or a small
-hand-written lexer would do. These sizes are estimates. No build was run in
-this lane, so they are not measured.
 
 ## 4. Tenant isolation and redaction
 
@@ -241,17 +265,21 @@ same per-task service path, never a bucket listing. A task whose publish was
 refused for a credential shows **withheld** in every entry point, with no
 lines.
 
-## 5. Lane plan (after the owner picks)
+## 5. Lane plan (after the owner's decisions of 2026-10-08)
 
-Territory follows files, and two issues that edit one file are one lane.
+Territory follows files, and two issues that edit one file are one lane. The
+owner asked for every entry point at once, so the agent entry (formerly
+DIFF2) and the workflow and run entry (formerly DIFF3) are **one lane,
+DIFF2**. DIFF1 (the viewer, `diff/*`) and DIFF4 (the worker's per-file counts)
+stay separate: they touch different files from it and from each other.
 
 | Lane | Territory | Work | Depends on |
 |---|---|---|---|
-| **DIFF1 · viewer** | `apps/swarm-ui/src/diff/*`, its tests in `src/__tests__/diff/` | full-height mode; `initialFile` and `onFileChange`; a PR-link slot in the bar; a per-step source header for variant 5; the highlighter, if approved, behind the budget | none |
-| **DIFF2 · agent entry** | `AgentSplit.tsx`, `AgentDetail.tsx` (Code card), `paths.ts`, `App.tsx` | the Changes tab and route `/agents/<tab>/<id>/changes`, folding the list on open, "Changes ›" in the Code card, and the withheld/zero/omitted states | DIFF1 |
-| **DIFF3 · workflow and run entry** | `Workflows.tsx`, `WorkflowViews.tsx`, `Runs.tsx`, `RunSteps.tsx`, plus a new `WorkflowChanges.tsx` | the workflow and run Changes tab (variant 5 matrix), and the step inspector link | DIFF2 (routes) |
-| **DIFF4 · data** | `apps/agent-worker/agent_worker/gitops.py`, `apps/swarm-ui/src/types.ts` (`GitSummary`) | keep per-file numstat as `git.files` (path, old_path, status, insertions, deletions, binary), capped with `files_truncated`. `result_summary` is `dict[str, Any]` in the frozen contract (`models.py:334`), so this is **not a contract change** | none; DIFF2 and DIFF3 use it once it lands, and fall back to a dash |
-| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | owner pick |
+| **DIFF1 · viewer** | `apps/swarm-ui/src/diff/*`, its tests in `src/__tests__/diff/` | full-height mode; `initialFile` and `onFileChange`; a PR-link slot in the bar; a per-step source header for variant 5; the phone picker and "All files" sheet; the lazily loaded highlighter (about +6 kB gz, React text nodes only, no `innerHTML`) | none |
+| **DIFF2 · entry points (agents, workflows, issue runs)** | `AgentSplit.tsx`, `AgentDetail.tsx` (Code card), `Workflows.tsx`, `WorkflowViews.tsx`, `Runs.tsx`, `RunSteps.tsx`, `paths.ts`, `App.tsx`, plus a new `WorkflowChanges.tsx` | the Changes tab on all three: route `/agents/<tab>/<id>/changes` (list folded on open, "Changes ›" in the Code card), `/workflows/<id>/changes` and `/runs/<id>/changes` holding variant 5's files × steps matrix, the step inspector link, and the withheld/zero/omitted states | DIFF1; **waits for PRs 910 (`App.tsx`) and 898 (`Runs.tsx`) to merge** |
+| **DIFF4 · data** | `apps/agent-worker/agent_worker/gitops.py`, `apps/swarm-ui/src/types.ts` (`GitSummary`) | keep per-file numstat as `git.files` (path, old_path, status, insertions, deletions, binary), capped with `files_truncated`. `result_summary` is `dict[str, Any]` in the frozen contract (`models.py:334`), so this is **not a contract change** | none; DIFF2 uses it once it lands, and falls back to a dash |
+| **GR1 · graph** (not part of this design) | `Workflows.tsx`, `dag.ts` | the graph lane | **runs after DIFF2**, because both edit `Workflows.tsx` |
+| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | a later owner go-ahead |
 
 Every lane runs `scripts/changed-guards.sh`. DIFF1 keeps the existing
 50,000-line windowing test and the no-`innerHTML` test green.

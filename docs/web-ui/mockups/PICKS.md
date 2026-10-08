@@ -111,3 +111,14 @@ on the page are still recommendations and **have not been picked**.
 | Screen or decision | Pick | Why |
 |---|---|---|
 | 2 · Placement | **P3**, a new spine section, **Automate**: Overview · Work · Automate · Capacity · Admin, holding Schedules and the Approvals inbox (SD1) | **Not** the recommended P1 (Work › Schedules). The owner chose a section of its own for the two pages. `App.tsx` `SECTIONS` gains an `automate` section, and the issue forms' "Where" list follows it |
+
+## Diff viewer (picked 2026-10-08)
+
+From `diff-viewer.html` (lane DIFF0) and [`docs/design/diff-viewer.md`](../../design/diff-viewer.md) section 3.
+
+| Decision | Pick |
+|---|---|
+| Variant | **2 + 5, then 3**: the Changes tab on agents, workflows and issue runs; the workflow and run tab holds the files x steps matrix; findings beside lines later |
+| Entry points | **All at once, in one lane** (not agent first, then workflow) |
+| Syntax highlighting | **Yes**, about +6 kB gz, lazy with the Changes tab, React text nodes only (no `innerHTML`) |
+| Phone | **One file at a time** with a picker and an All files sheet |
