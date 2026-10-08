@@ -44,6 +44,7 @@ import urllib.request
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import quote, urlparse
 
@@ -104,6 +105,17 @@ MAX_ISSUE_PAGES = 3
 #: Wall clock for the whole read. Past it, no further pull request's files
 #: are read; the lists already read are kept. The console is waiting.
 OPEN_WORK_BUDGET_SECONDS = 30.0
+
+#: The issue sweeper's listing (`issuesweep`). Issues are read OLDEST-UPDATED
+#: first -- the order the sweep starts runs in -- so a cut keeps the ones it
+#: would reach first. Pull requests are read in full up to the cap, because
+#: the sweep must see every open one to know which issues one already claims;
+#: a repository with more is not swept (`SweepListing.pulls_truncated`).
+MAX_SWEEP_ISSUES = 300
+MAX_SWEEP_PULLS = 300
+MAX_SWEEP_PAGES = 3
+#: The most of a pull request's body kept for the closing-reference match.
+MAX_SWEEP_PULL_BODY_CHARS = 20_000
 
 
 # --------------------------------------------------------------------------
@@ -404,6 +416,57 @@ class OpenWork:
     issues_truncated: bool
     pull_requests: tuple[OpenItem, ...]
     pull_requests_truncated: bool
+
+
+@dataclass(frozen=True)
+class SweepIssue:
+    """One open issue as the sweeper reads it, before masking."""
+
+    number: int
+    title: str
+    labels: tuple[str, ...]
+    #: GitHub's `updated_at`; None when it did not say, or said it unreadably.
+    updated_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SweepPull:
+    """One open pull request as the sweeper reads it: its text, for the
+    closing references, and its changed files, for the planner's open work."""
+
+    number: int
+    title: str
+    body: str
+    files: tuple[str, ...] | None = None
+    files_truncated: bool = False
+
+
+@dataclass(frozen=True)
+class SweepListing:
+    repository: str
+    issues: tuple[SweepIssue, ...]
+    issues_truncated: bool
+    pulls: tuple[SweepPull, ...]
+    pulls_truncated: bool
+
+
+def _github_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _label_names(value: Any) -> tuple[str, ...]:
+    names = []
+    for label in value if isinstance(value, list) else []:
+        name = label.get("name") if isinstance(label, dict) else label
+        if isinstance(name, str) and name:
+            names.append(name)
+    return tuple(names)
 
 
 @dataclass(frozen=True)
@@ -713,6 +776,69 @@ class GitHubIssues:
             pull_requests_truncated=pulls_cut,
         )
 
+    def sweep_listing(self, owner: str, repo: str, token: str) -> SweepListing:
+        """A repository's open issues and open pull requests, for the sweeper.
+
+        The issues as `open_work` reads them plus what the sweep filters on --
+        labels and `updated_at` -- oldest-updated first; the pull requests
+        with their title and body, every one up to MAX_SWEEP_PULLS, and the
+        changed files of the first MAX_PULLS_WITH_FILES for the planner's
+        open-work section, under the same time budget. Failures map exactly
+        as `open_work`'s do.
+        """
+        ref = IssueRef(owner=owner, repo=repo, number=1)  # names the repository only
+        repository = ref.repository
+        issues, issues_cut = self._paged(
+            self._repo_url(ref, "issues?state=open&sort=updated&direction=asc"), token,
+            f"the open issues of {repository}",
+            keep=lambda entry: (
+                isinstance(entry, dict) and "pull_request" not in entry
+                and _is_int(entry.get("number"))
+            ),
+            cap=MAX_SWEEP_ISSUES, max_pages=MAX_SWEEP_PAGES,
+        )
+        pulls, pulls_cut = self._paged(
+            self._repo_url(ref, "pulls?state=open"), token,
+            f"the open pull requests of {repository}",
+            keep=lambda entry: isinstance(entry, dict) and _is_int(entry.get("number")),
+            cap=MAX_SWEEP_PULLS, max_pages=MAX_SWEEP_PAGES,
+        )
+        started = self._clock()
+        budget_left = MAX_TOTAL_PR_FILES
+        listed: list[SweepPull] = []
+        for index, pull in enumerate(pulls):
+            number = int(pull["number"])
+            files: tuple[str, ...] | None = None
+            files_cut = False
+            if (
+                index < MAX_PULLS_WITH_FILES
+                and budget_left > 0
+                and self._clock() - started < self._budget
+            ):
+                files, files_cut = self._pull_files(ref, number, token, min(MAX_PR_FILES, budget_left))
+                if files is not None:
+                    budget_left -= len(files)
+            body = pull.get("body")
+            listed.append(SweepPull(
+                number=number, title=str(pull.get("title") or ""),
+                body=(body if isinstance(body, str) else "")[:MAX_SWEEP_PULL_BODY_CHARS],
+                files=files, files_truncated=files_cut,
+            ))
+        return SweepListing(
+            repository=repository,
+            issues=tuple(
+                SweepIssue(
+                    number=int(entry["number"]), title=str(entry.get("title") or ""),
+                    labels=_label_names(entry.get("labels")),
+                    updated_at=_github_time(entry.get("updated_at")),
+                )
+                for entry in issues
+            ),
+            issues_truncated=issues_cut,
+            pulls=tuple(listed),
+            pulls_truncated=pulls_cut,
+        )
+
     def _pull_files(
         self, ref: IssueRef, number: int, token: str, cap: int
     ) -> tuple[tuple[str, ...] | None, bool]:
@@ -768,33 +894,70 @@ def read_open_work(
     token = tokens.token_for(tenant)
     try:
         work = issues.open_work(ref, token)
-        literals = (token,)
-        snapshot: dict[str, Any] = {
-            "repository": ref.repository,
-            "read_at": read_at,
-            "issues": [
-                {"number": item.number,
-                 "title": neutral_line(item.title, MAX_ITEM_TITLE_CHARS, literals=literals)}
-                for item in work.issues
-            ],
-            "issues_truncated": work.issues_truncated,
-            "pull_requests": [
-                {
-                    "number": item.number,
-                    "title": neutral_line(item.title, MAX_ITEM_TITLE_CHARS, literals=literals),
-                    "files": None if item.files is None else [
-                        neutral_line(path, MAX_FILE_PATH_CHARS, literals=literals)
-                        for path in item.files
-                    ],
-                    "files_truncated": item.files_truncated,
-                }
-                for item in work.pull_requests
-            ],
-            "pull_requests_truncated": work.pull_requests_truncated,
-        }
+        snapshot = _open_work_snapshot(ref.repository, work, read_at, literals=(token,))
     finally:
         token = ""
     return snapshot
+
+
+def _open_work_snapshot(
+    repository: str, work: OpenWork, read_at: Any, *, literals: tuple[str, ...]
+) -> dict[str, Any]:
+    """`work`, masked and bounded: the shape a run stores as `open_work`."""
+    return {
+        "repository": repository,
+        "read_at": read_at,
+        "issues": [
+            {"number": item.number,
+             "title": neutral_line(item.title, MAX_ITEM_TITLE_CHARS, literals=literals)}
+            for item in work.issues
+        ],
+        "issues_truncated": work.issues_truncated,
+        "pull_requests": [
+            {
+                "number": item.number,
+                "title": neutral_line(item.title, MAX_ITEM_TITLE_CHARS, literals=literals),
+                "files": None if item.files is None else [
+                    neutral_line(path, MAX_FILE_PATH_CHARS, literals=literals)
+                    for path in item.files
+                ],
+                "files_truncated": item.files_truncated,
+            }
+            for item in work.pull_requests
+        ],
+        "pull_requests_truncated": work.pull_requests_truncated,
+    }
+
+
+def open_work_from_listing(
+    listing: SweepListing, *, read_at: Any, literals: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The sweep's one listing of a repository as an open-work snapshot, masked:
+    every issue it read, and the pull requests up to `open_work`'s cap.
+    `open_work_without` cuts it down to what one run's planner is shown."""
+    work = OpenWork(
+        issues=tuple(OpenItem(number=i.number, title=i.title) for i in listing.issues),
+        issues_truncated=listing.issues_truncated,
+        pull_requests=tuple(
+            OpenItem(number=p.number, title=p.title, files=p.files,
+                     files_truncated=p.files_truncated)
+            for p in listing.pulls[:MAX_OPEN_PULLS]
+        ),
+        pull_requests_truncated=listing.pulls_truncated or len(listing.pulls) > MAX_OPEN_PULLS,
+    )
+    return _open_work_snapshot(listing.repository, work, read_at, literals=literals)
+
+
+def open_work_without(snapshot: Mapping[str, Any], number: int) -> dict[str, Any]:
+    """`snapshot` as `read_open_work` would have read it for issue `number`:
+    that issue left out, and at most MAX_OPEN_ISSUES of the others."""
+    others = [item for item in snapshot.get("issues") or [] if item.get("number") != number]
+    return {
+        **snapshot,
+        "issues": others[:MAX_OPEN_ISSUES],
+        "issues_truncated": bool(snapshot.get("issues_truncated")) or len(others) > MAX_OPEN_ISSUES,
+    }
+
 
 def preview(ref: IssueRef, tenant: Tenant, *, tokens: ForgeTokens, issues: GitHubIssues) -> dict[str, Any]:
     """The preview document, masked and bounded. The token lives in this frame only."""
