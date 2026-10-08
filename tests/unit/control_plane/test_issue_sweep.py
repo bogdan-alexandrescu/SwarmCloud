@@ -127,6 +127,9 @@ def _register(db, *, tenant_id="eng", owner=OWNER, repo=REPO, created_by="alice@
 
 
 def _enable(db, tenant_id="eng", **settings: Any) -> None:
+    # `submit_as` is explicit (owner decision 2026-10-08): a sweep without it
+    # starts nothing, so every test that expects runs names a current member.
+    settings.setdefault("submit_as", "alice@saga.xyz")
     issuesweep.set_config(db, tenant_id, SweepConfig(enabled=True, **settings))
 
 
@@ -350,18 +353,71 @@ def test_a_swept_run_fails_rather_than_submit_once_its_owner_leaves(client, db, 
     assert not [p for p in db.docs if p.startswith("workflows/")]
 
 
-def test_a_creator_no_longer_in_the_tenant_starts_nothing(client, db):
-    # carol is in no tenant group: the creator as they would read once removed.
-    _register(db, created_by="carol@saga.xyz")
+def test_submit_as_is_the_submitter_whoever_registered_the_repository(client, db, objects):
+    # bob registered it; the tenant's submit_as is alice. Alice carries the run.
+    _register(db, created_by="bob@saga.xyz")
     body = _sweep(client).json()
-    assert body["started"] == []
-    assert _reasons(body)[f"{REPOSITORY}#42"] == "start_failed: owner_not_member"
-    assert _runs(db) == {}
+    assert body["tenant_skipped"] is None
+    run = _run_of(db, 42)
+    assert body["started"] == [{"issue": f"{REPOSITORY}#42", "run_id": run["id"]}]
+    assert run["on_behalf_of"] == "alice@saga.xyz"
+    planner = db.docs[f"tasks/{run['planner_task_id']}"]
+    assert planner["submitted_by"] == "alice@saga.xyz"
+
+
+def test_the_registrant_is_no_longer_the_submitter(client, db):
+    # alice registered it, submit_as is bob (not an eng member): nothing starts
+    # as alice, and nothing falls back to her.
+    issuesweep.set_config(db, "eng", SweepConfig(enabled=True, submit_as="bob@saga.xyz"))
+    body = _sweep(client).json()
+    assert body["started"] == [] and _runs(db) == {}
+    assert "alice@saga.xyz" not in json.dumps(body)
+
+
+def test_an_unset_submit_as_skips_the_tenant_with_the_reason(client, db, github, caplog):
+    issuesweep.set_config(db, "eng", SweepConfig(enabled=True))
+    with caplog.at_level("WARNING"):
+        body = _sweep(client).json()
+    assert body["started"] == [] and _runs(db) == {}
+    assert body["tenant_skipped"] == "submit_as_unset"
+    assert "submit_as" in caplog.text
+    assert github.calls == []  # nothing is read for a tenant that cannot submit
+
+
+def test_a_submit_as_who_is_not_a_member_skips_the_tenant_with_the_reason(client, db, github, caplog):
+    issuesweep.set_config(db, "eng", SweepConfig(enabled=True, submit_as="carol@saga.xyz"))
+    with caplog.at_level("WARNING"):
+        body = _sweep(client).json()
+    assert body["started"] == [] and _runs(db) == {}
+    assert body["tenant_skipped"] == "submit_as_not_member: carol@saga.xyz"
+    assert "carol@saga.xyz" in caplog.text
+    assert github.calls == []
+
+
+def test_membership_is_rechecked_on_every_submission(client, db, github, monkeypatch):
+    github.issues = [_issue(1, minutes_ago=90), _issue(2, minutes_ago=80)]
+    # A member until the first run exists, then gone: only a check made at
+    # each submission (not once per sweep) can refuse the second.
+    monkeypatch.setattr(client.app.state.ctx.authenticator, "is_tenant_member",
+                        lambda email, tenant: not _runs(db))
+    body = _sweep(client).json()
+    assert _started(body) == [f"{REPOSITORY}#1"]
+    assert _reasons(body)[f"{REPOSITORY}#2"] == "start_failed: submit_as_not_member"
+
+
+def test_the_settings_route_carries_submit_as(client, db):
+    put = client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
+                     json={"enabled": True, "submit_as": " Bob@Saga.xyz "})
+    assert put.status_code == 200, put.text
+    assert put.json()["issue_sweep"]["submit_as"] == "bob@saga.xyz"
+    for bad in ({"submit_as": "not-an-address"}, {"submit_as": 5}):
+        assert client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
+                          json=bad).status_code == 422, bad
 
 
 def test_the_sweep_reads_and_starts_only_the_named_tenant(client, db, github):
     _register(db, tenant_id="research", created_by="bob@saga.xyz")
-    _enable(db, "research")
+    _enable(db, "research", submit_as="bob@saga.xyz")
     body = _sweep(client, "eng").json()
     assert body["repositories"] == 1
     assert {d["tenant_id"] for d in _runs(db).values()} == {"eng"}
@@ -651,7 +707,8 @@ def test_an_admin_sets_and_reads_the_tenants_sweep(client, db):
     assert put.status_code == 200, put.text
     read = client.get("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root")).json()
     assert read["issue_sweep"] == {"enabled": True, "max_live_runs": 4,
-                                   "exclude_issues": [12, 476], "exclude_labels": ["deferred"]}
+                                   "exclude_issues": [12, 476], "exclude_labels": ["deferred"],
+                                   "submit_as": None}
     assert read["platform_enabled"] is True
     for bad in ({"enabled": "true"}, {"max_live_runs": 0}, {"max_live_runs": 51},
                 {"exclude_issues": ["12"]}, {"surprise": 1}):
