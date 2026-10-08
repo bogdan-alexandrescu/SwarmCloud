@@ -99,7 +99,7 @@ jobs:
         # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
         # every group file, so the group files are analysed in that context
         # as well as on their own.
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
 
       - name: scripts are executable and strict
         # The property is "strict mode is on before anything runs", so the check
@@ -115,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
+          for f in scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
             [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
             first="$(awk 'NR==1 && /^#!/ {next} /^[[:space:]]*#/ {next} /^[[:space:]]*$/ {next} {print; exit}' "$f")"
             [ "$first" = "set -euo pipefail" ] \
@@ -136,7 +136,7 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD:/w" -w /w bash:3.2.57 bash -c '
             n=0; fail=0
-            for f in scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
+            for f in scripts/*.sh scripts/lib/*.sh scripts/lib/guard-bin/* scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
               n=$((n+1))
               bash -n "$f" || { echo "::error file=$f::does not parse under bash $BASH_VERSION"; fail=1; }
             done
@@ -180,6 +180,13 @@ jobs:
         # resources aged 133 days; the next command in that sequence was an
         # apply. It takes no arguments and reaches no network.
         run: ./scripts/lib/kubectl-guard.sh --self-test
+
+      - name: the workspace call guard still refuses what is not named for one workspace
+        # docs/workspaces.md §2.5. The guard is code, not IAM (residual risk R1):
+        # it is all that bounds swarm-workspace-deployer's project-wide account
+        # IAM, so every rule's refusal and allowance is proven on every change.
+        # Offline: it builds its expectation from a fixture record.
+        run: ./scripts/lib/workspace-guard.sh self-test
 
       - name: the auth guard still tells an expired session from an absent resource
         # Same gap, same reason. This is the predicate every script uses to

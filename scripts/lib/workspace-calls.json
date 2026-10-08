@@ -1,0 +1,168 @@
+{
+  "about": "The call guard's rules (docs/workspaces.md §2.5). scripts/lib/workspace-guard.sh judges every gcloud, kubectl and curl call the workspace job makes against these shapes; a call is allowed only if ONE shape matches it whole, every flag included. Values in braces are filled from the expectation file A1 writes from the approved workspace record; a shape naming a value the file does not hold yet matches nothing, so before A1 only A1's own reads can run. scripts/lib/workspace-guard-cases.json holds a call each rule must refuse and one it must allow, and tests/unit/scripts/test_workspace_guard.py runs them.",
+  "wd9_fallback": false,
+  "wd9_fallback_why": "Off while the WD9 principal-set grant gives every personal worker its database, bucket-metadata and telemetry roles once (docs/workspaces.md §2.3). Turn it on only if W0 finds that grant impossible; then C5 and the bucket-metadata shape of C4 start to allow, and nothing else changes.",
+  "tools": {
+    "gcloud": {
+      "flags": {
+        "--project": "{project_id}",
+        "--format": "*",
+        "--quiet": true,
+        "-q": true
+      },
+      "require_project": ["iam", "secrets", "container"],
+      "require_project_why": "Without --project the configured project decides where an account, a secret or a cluster call lands; the job's calls always name it."
+    },
+    "kubectl": {
+      "flags": {
+        "--context": "*",
+        "--request-timeout": "*"
+      },
+      "context_why": "--context is judged apart from the shapes: the effective context (the flag, else the kubeconfig's current-context) must be one of the expectation's two names for the swarm cluster, and a context whose cluster is on the shared deny-list is refused by name."
+    },
+    "curl": {
+      "flags": {
+        "-s": true, "-S": true, "-f": true, "-sS": true, "-sf": true, "-fsS": true, "-sSf": true,
+        "--silent": true, "--show-error": true, "--fail": true,
+        "-m": "*", "--max-time": "*",
+        "-o": "*", "--output": "*",
+        "-w": "*", "--write-out": "*",
+        "-X": "*", "--request": "*",
+        "-H": "*", "--header": "*",
+        "-K": "-", "--config": "-",
+        "--data-binary": "*"
+      },
+      "default_headers": ["Content-Type: application/json"],
+      "config_why": "fs_request hands curl its bearer header on stdin (-K -) so the token is never an argument. The guard reads that config in memory and allows exactly one kind of line, the Authorization header; a url, request or data line there would be a call the arguments do not show."
+    }
+  },
+  "kube_kinds": ["Namespace", "ServiceAccount", "ConfigMap", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding"],
+  "kube_kind_words_why": "The namespaced kinds a tenant namespace holds, as kubectl spells them. Namespace is not among them: it is cluster-scoped, so -n would not confine it, and its own shapes name it.",
+  "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "configmap", "configmaps", "cm", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
+  "kube_patch_kind_words": ["serviceaccount", "serviceaccounts", "sa", "configmap", "configmaps", "cm", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol"],
+  "kube_patch_kind_words_why": "A patch's payload is not read by the guard, so a Role or RoleBinding is changed only by apply, whose whole object the guard and the scope admission policy both see.",
+  "kube_role_names": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
+  "rules": [
+    {
+      "id": "C0",
+      "summary": "Nothing by default: a call no shape below matches stops the run. So does any argument naming a resource on the shared deny-list (scripts/lib/common.sh SHARED_DENY_LIST), whatever the call.",
+      "known_unused": [
+        {"tool": "gcloud", "command": ["identity", "groups", "describe"], "why": "register-tenant.sh checks a GROUP exists (§1); --workspace registers a person and skips it (docs/workspaces.md §4.1)"},
+        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"}
+      ],
+      "shapes": []
+    },
+    {
+      "id": "C1",
+      "summary": "Reads of this workspace's resources and of the fixed shared resources the script reads, plus the token plumbing every authenticated call needs. Before A1 writes the expectation, only A1's own reads match.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["auth", "print-access-token"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["config", "get-value"], "args": [["account", "project"]], "after_stop": true},
+        {"tool": "gcloud", "command": ["config", "config-helper"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "list"], "args": [], "flags": {"--filter": ["email:{worker_email}", "email={worker_email}"]}, "require": ["--filter"]},
+        {"tool": "gcloud", "command": ["iam", "roles", "describe"], "args": [["{firestore_role_id}", "{bucket_metadata_role_id}", "{firestore_role}", "{bucket_metadata_role}"]]},
+        {"tool": "gcloud", "command": ["projects", "get-iam-policy"], "args": ["{project_id}"], "flags": {"--flatten": "*", "--filter": "*"}},
+        {"tool": "gcloud", "command": ["storage", "buckets", "describe"], "args": ["{bucket_url}"]},
+        {"tool": "gcloud", "command": ["storage", "buckets", "get-iam-policy"], "args": ["{bucket_url}"]},
+        {"tool": "gcloud", "command": ["secrets", "describe"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
+        {"tool": "gcloud", "command": ["secrets", "get-iam-policy"], "args": [["{forge_slot}", "{forge_slot_twin}"]]},
+        {"tool": "gcloud", "command": ["secrets", "versions", "list"], "args": [["{forge_slot}", "{forge_slot_twin}"]], "flags": {"--filter": "*", "--limit": "*"}},
+        {"tool": "gcloud", "command": ["container", "clusters", "describe"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}"}},
+        {"tool": "gcloud", "command": ["container", "clusters", "get-credentials"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}", "--internal-ip": true, "--dns-endpoint": true}},
+
+        {"tool": "kubectl", "command": ["version"], "args": [], "flags": {"--client": true, "-o": "*", "--output": "*"}, "require": ["--client"], "local": true},
+        {"tool": "kubectl", "command": ["config", "current-context"], "args": [], "local": true},
+        {"tool": "kubectl", "command": ["config", "view"], "args": [], "flags": {"-o": "*", "--output": "*", "--minify": true}, "local": true},
+        {"tool": "kubectl", "command": ["get"], "args": [], "flags": {"--raw": ["/readyz", "/livez", "/healthz"]}, "require": ["--raw"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["service", "services", "svc"], "kube-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["daemonset", "daemonsets", "ds"], "node-local-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"-o": "*", "--output": "*"}},
+        {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}, "*"], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+
+        {"tool": "curl", "method": "GET", "url": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "headers": ["Metadata-Flavor: Google"], "body": "none", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "runQuery", "body": "runquery_workspace", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "runQuery", "body": "runquery_collection", "collections": ["admin_roles"]},
+        {"tool": "curl", "method": "GET", "doc": ["{workspace_doc}", "{tenant_doc}", "{pool_doc}", "admin_roles"], "doc_prefix": ["admin_roles/"], "query_keys": ["mask.fieldPaths", "pageSize", "pageToken", "transaction"], "body": "none", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "beginTransaction", "body": "transaction_options", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "rollback", "body": "transaction_id", "after_stop": true}
+      ]
+    },
+    {
+      "id": "C2",
+      "summary": "Create the expected worker account, and nothing else on accounts: no delete, disable, update, keys or set-iam-policy.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "create"], "args": ["{worker_id}"], "flags": {"--display-name": "*", "--description": "*"}}
+      ]
+    },
+    {
+      "id": "C3",
+      "summary": "Bind the expected worker account's own IAM: Workload Identity for the namespace's two Kubernetes service accounts, and act-as for the scheduler and the reconciler.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "add-iam-policy-binding"], "args": ["{worker_email}"], "flags": {"--role": "roles/iam.workloadIdentityUser", "--member": ["serviceAccount:{project_id}.svc.id.goog[{namespace}/swarm-agent-worker]", "serviceAccount:{project_id}.svc.id.goog[{namespace}/swarm-worker]"]}, "require": ["--role", "--member"]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "add-iam-policy-binding"], "args": ["{worker_email}"], "flags": {"--role": "roles/iam.serviceAccountUser", "--member": ["serviceAccount:{scheduler_email}", "serviceAccount:{reconciler_email}"]}, "require": ["--role", "--member"]}
+      ]
+    },
+    {
+      "id": "C4",
+      "summary": "The artifact bucket's two prefix-conditioned grants for the expected worker, each condition string-equal to the expression register-tenant.sh renders for tenants/<tenant>/, and the .tenant marker object. On the WD9 fallback only, the bucket-metadata role.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectViewer", "--condition-from-file": {"file_expression": "{read_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectUser", "--condition-from-file": {"file_expression": "{write_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "{bucket_metadata_role}", "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true},
+        {"tool": "gcloud", "command": ["storage", "cp"], "args": ["-", "{marker_url}"]}
+      ]
+    },
+    {
+      "id": "C5",
+      "summary": "WD9 fallback only: the expected worker's database and telemetry roles on the project. Under the principal-set grant this rule is off, and any project IAM call stops the run.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["projects", "add-iam-policy-binding"], "args": ["{project_id}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": ["{firestore_role}", "roles/logging.logWriter", "roles/monitoring.metricWriter"], "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true}
+      ]
+    },
+    {
+      "id": "C6",
+      "summary": "Create the person's forge slot and its -refresh twin, empty, and let the expected worker read the slot. Never the twin: terraform/bootstrap/forge_user_slots.tf keeps the refresh token from the worker.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["secrets", "create"], "args": [["{forge_slot}", "{forge_slot_twin}"]], "flags": {"--replication-policy": "*", "--labels": "*"}},
+        {"tool": "gcloud", "command": ["secrets", "add-iam-policy-binding"], "args": ["{forge_slot}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/secretmanager.secretAccessor"}, "require": ["--member", "--role"]}
+      ]
+    },
+    {
+      "id": "C7",
+      "summary": "kubectl apply, create, diff or patch whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only.",
+      "shapes": [
+        {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
+        {"tool": "kubectl", "command": ["create"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
+        {"tool": "kubectl", "command": ["diff"], "args": [], "flags": {"-f": "*", "--filename": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true},
+        {"tool": "kubectl", "command": ["patch"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"--type": "*", "-p": "*", "--patch": "*", "--dry-run": ["client", "server", "none"], "-o": "*", "--output": "*"}, "require_one": ["-p", "--patch"]},
+        {"tool": "kubectl", "command": ["patch"], "args": [{"rules_list": "kube_patch_kind_words"}, "*"], "flags": {"--type": "*", "-p": "*", "--patch": "*", "--dry-run": ["client", "server", "none"], "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-n", "--namespace"]}
+      ]
+    },
+    {
+      "id": "C8",
+      "summary": "Firestore writes on exactly tenants/<tenant>, pools/tenant:<tenant> and workspaces/<tenant> (a PATCH, or a commit whose every write is an update of one of them). After a stop only the workspace record may still be written, so the script can record needs_owner.",
+      "shapes": [
+        {"tool": "curl", "method": "PATCH", "doc": ["{tenant_doc}", "{pool_doc}", "{workspace_doc}"], "query_keys": ["updateMask.fieldPaths", "currentDocument.updateTime", "currentDocument.exists", "mask.fieldPaths"], "body": "document"},
+        {"tool": "curl", "method": "PATCH", "doc": ["{workspace_doc}"], "query_keys": ["updateMask.fieldPaths", "currentDocument.updateTime", "currentDocument.exists", "mask.fieldPaths"], "body": "document", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{tenant_doc}", "{pool_doc}", "{workspace_doc}"]},
+        {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{workspace_doc}"], "after_stop": true}
+      ]
+    },
+    {
+      "id": "C9",
+      "summary": "Never, whatever the target: a removal, a policy replacement, a delete, a disable, a key, kubectl delete or prune, a Firestore DELETE or a commit that deletes. The script's legacy repair paths hit this and go to the owner.",
+      "never": {
+        "gcloud_words": ["remove-iam-policy-binding", "set-iam-policy", "delete", "disable"],
+        "gcloud_sequences": [["keys", "create"], ["keys", "upload"]],
+        "kubectl_verbs": ["delete"],
+        "kubectl_flags": ["--prune", "--force"],
+        "curl_methods": ["DELETE"]
+      },
+      "shapes": []
+    }
+  ]
+}
