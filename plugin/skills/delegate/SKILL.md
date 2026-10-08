@@ -398,6 +398,16 @@ away.
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.
 
+**A 403 the API answered because setup is unfinished is not that.** A
+dispatch, workflow or issue run that comes back `✕ 403 WORKSPACE_NOT_READY:
+…` or `✕ 403 NO_CLAUDE_ACCOUNT: …`, then `Finish setup with /sc:setup.`,
+reached swarm-api, which refused it: the developer's own workspace is not
+ready yet, or they have no Claude account to run on (docs/workspaces.md §5.2).
+Show the API's message exactly as it came, tell them `/sc:setup` finishes it,
+and stop. Do not run `swarm doctor`, and do not retry: nothing was submitted,
+and nothing will be until an admin has approved the workspace and it reads
+ready.
+
 The fifth tell is the most common and the easiest: **`sign-in required for
 <context>: run … sc login`**. The deployment the developer configured takes
 them signed in as themselves, and they are not yet. Tell them to run the
