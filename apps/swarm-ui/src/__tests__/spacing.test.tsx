@@ -368,5 +368,11 @@ describe('spacing', () => {
     // with identical findings (dark 1741 shapes / 13, light 422 / 12).
     // Both landed in one tree (#572 merged into U12, 2026-10-05): each added
     // about 10% alone, so the sum is near 440 s, still inside 600.
-  }, 600000)
+    // 900 s, not 600 (#780 OB8, 2026-10-08): on the SwarmCloud container
+    // origin/main 891d53e measured 623 s ALONE -- already past 600, with its
+    // findings complete (dark 1808 shapes / 13, light 431 / 12, all exempt).
+    // OB8 adds the Setup and Access routes and Overview's setup card: 691 s
+    // alone, the same 13 and 12 exempt findings over 1952 and 457 shapes.
+    // 900 leaves about 30% for a loaded run.
+  }, 900000)
 })

@@ -32,7 +32,9 @@
 # bursting: bursting is what gets a two-hour agent container OOM-killed at
 # minute ninety. ephemeral-storage is the WHOLE pod's local disk -- workspace,
 # /tmp and HOME together, which kubelet sums -- not the workspace volume's
-# sizeLimit: see GKE_EPHEMERAL_STORAGE_GIB in apps/scheduler/scheduler/dispatch.py.
+# sizeLimit. It is the sum of the three volumes' sizeLimits, and all four numbers
+# are the dispatcher's, per resource class: see GkeDisk in
+# apps/scheduler/scheduler/dispatch.py.
 #
 # No `tolerations` and no `nodeSelector`. Adding either is how a pod ends up on
 # Spot capacity; the admission policy in `policies/pod-security.yaml` refuses
@@ -224,7 +226,7 @@ spec:
             sizeLimit: __DISK__
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__
         - name: home
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__

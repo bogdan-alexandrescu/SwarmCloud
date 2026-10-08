@@ -211,3 +211,13 @@ def test_a_url_stored_before_the_refusal_is_served_with_its_userinfo_masked(
     task = client.get("/v1/tasks/task_old", headers=auth_header("alice")).json()["task"]
     assert task["repository_url"] == served
     assert task["repository_url_redaction_count"] == 1
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

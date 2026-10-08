@@ -242,12 +242,14 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+        # /tmp and HOME from the dispatcher's GkeDisk, like the workspace: the
+        # three sizeLimits add up to the pod's ephemeral-storage, never past it.
         - name: tmp
           emptyDir:
-            sizeLimit: 2Gi
+            sizeLimit: __TMP_DISK__
         - name: home
           emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: __HOME_DISK__
         # `optional`: a namespace whose ConfigMap has not been applied yet
         # still starts its pod, and the worker exits CANNOT_START for every
         # task, signed or not (no keys, and no mode or cutover either) --

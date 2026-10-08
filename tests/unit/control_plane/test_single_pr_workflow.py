@@ -529,3 +529,13 @@ def test_builds_on_is_refused_under_single_pr(client, db, chain_enabled):
     body = _assert_refused(client, db, spec, "invalid_dispatch")
     assert body["detail"]["step_id"] == "review"
     assert body["detail"]["strategy"] == "single-pr"
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

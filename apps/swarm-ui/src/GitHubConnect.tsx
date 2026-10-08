@@ -81,8 +81,12 @@ function refusalOf(e: ApiError): GitHubRefusalDetail | null {
     : null
 }
 
-/** What a failed write says: the §2.3 recovery copy first, the server's own sentence under it. */
-function Refusal({ error, title, actions }: { error: ApiError; title: string; actions?: ReactNode }) {
+/**
+ * What a failed write says: the §2.3 recovery copy first, the server's own
+ * sentence under it. Exported for Setup and Access (OB8), whose refusals
+ * (`access.AccessRefused`) carry the same `failure_code` and `recovery`.
+ */
+export function Refusal({ error, title, actions }: { error: ApiError; title: string; actions?: ReactNode }) {
   const r = refusalOf(error)
   return (
     <Banner tone="bad" title={title} actions={actions} role="alert">
@@ -102,7 +106,8 @@ function Refusal({ error, title, actions }: { error: ApiError; title: string; ac
   )
 }
 
-function ConnectButton({ label = 'Connect GitHub' }: { label?: string }) {
+/** Connect GitHub (Connect A): one button for the App. Exported for Setup and Access (OB8). */
+export function ConnectButton({ label = 'Connect GitHub' }: { label?: string }) {
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
   return (

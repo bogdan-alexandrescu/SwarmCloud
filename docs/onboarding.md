@@ -391,11 +391,16 @@ swarm-api at submission and carried by name:
 
 The suffix must come from somewhere the worker can trust. Two ways:
 
-* **With request E (recommended)**: a `forge_credential` and a
-  `forge_access` field on `Task`, written by swarm-api only, covered by the
-  spec signature through a new projection in `canonical_step_spec`
-  (`apps/common/swarm_common/specsign.py::canonical_step_spec`), so a doctored
-  document fails verification.
+* **With request E (recommended; ACCEPTED by the owner 2026-10-07, filed
+  and applied as
+  [contract request 54](contract-change-requests.md#54-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write))**:
+  a `forge_credential` and a `forge_access` field on `Task`, written by
+  swarm-api only, covered by the spec signature through a new projection in
+  `canonical_step_spec`
+  (`apps/common/swarm_common/specsign.py::canonical_step_spec`, format 3), so a
+  doctored document fails verification. This is the path being built: the
+  frozen half is applied, and lanes OB7 (swarm-api writes the fields at
+  submission) and OB5 (the worker reads them) wire it.
 * **Without it**: the worker derives the suffix from the signed `submitted_by`
   (which `canonical_step_spec` already covers) and reads the grant for the
   mode. This needs no frozen change, but it restates the user-hash rule in
@@ -403,12 +408,14 @@ The suffix must come from somewhere the worker can trust. Two ways:
   does for the shell), and it cannot express "this task uses the tenant
   token", so D4's fallback would be impossible.
 
-#### Draft contract request (not filed)
+#### Contract request E (accepted by the owner 2026-10-07, filed as request 54)
 
-This is a draft for the owner, **not filed** in
-[contract-change-requests.md](contract-change-requests.md) and not a change
-to `apps/common/swarm_common/`; it supersedes request (E) as git-tokens.md §8
-sketched it, by adding the mode and the signature.
+This was written as a draft for the owner. **The owner accepted it on
+2026-10-07**; it is filed and applied as
+[request 54 in contract-change-requests.md](contract-change-requests.md#54-modelspy--specsignpy-a-task-does-not-say-which-forge-credential-it-uses-or-whether-it-may-write),
+which is now the record, and is no longer a draft that is not filed. It
+supersedes request (E) as git-tokens.md §8 sketched it, by adding the mode and
+the signature. The summary below is kept as the design's statement of it.
 
 * **What is true today:** `Task` (`apps/common/swarm_common/models.py::Task`)
   says nothing about which forge secret a task uses; the worker reads
@@ -420,8 +427,10 @@ sketched it, by adding the mode and the signature.
   `git(-[ru]-[0-9a-f]{16})?`) and `forge_access: str | None` (`read` or
   `write`), both set only by swarm-api at submission from the resolution in
   step 1 above and never accepted from a caller; and a new `SPEC_FORMAT` in
-  `specsign.py` whose projection includes both. Absent means `git` and
-  `write`, today's behaviour.
+  `specsign.py` (format 3) whose projection includes both. Absent means `git`
+  and `write`, today's behaviour. As applied, formats 1 and 2 refuse a
+  document that sets either field, so one cannot be added to a task signed
+  without it.
 * **What it would break if accepted:** nothing existing: documents without
   the fields decode as today, and the older spec format still verifies for
   documents signed under it.
