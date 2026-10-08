@@ -1,0 +1,341 @@
+# What the workspace deployer may write, enforced by the API server
+# (docs/workspaces.md §2.3, lane W5).
+#
+# kubernetes/rbac/provisioner-rbac.yaml gives `swarm-workspace-deployer` a
+# ClusterRole, because RBAC cannot restrict `create` by name: a role that can
+# create one namespace can create any, and a role that can create a Role in a
+# new namespace can create it in `swarm-system` or `kube-system`. These
+# policies are what narrow it, for requests by that identity and nobody else:
+#
+#   swarm-workspace-deployer-scope        every kind. The write is a CREATE or
+#                                         an UPDATE (never a DELETE), of a
+#                                         Namespace named swarm-tenant-u-*, or
+#                                         of an object inside one -- and only
+#                                         of a kind and name the tenant render
+#                                         produces.
+#   swarm-workspace-deployer-namespaces   the Namespace carries the labels the
+#                                         worker policies and the scheduler
+#                                         select on, and enforces `restricted`.
+#   swarm-workspace-deployer-roles        a Role's rules are EXACTLY the
+#                                         render's, so `escalate` (which RBAC
+#                                         cannot narrow on create) writes
+#                                         nothing else.
+#   swarm-workspace-deployer-rolebindings a RoleBinding names one of the three
+#                                         Roles, and binds it only to whom the
+#                                         render binds it: the dispatcher Role
+#                                         to the scheduler, the reaper Role to
+#                                         the reconciler, the worker Role to
+#                                         ServiceAccounts in the same
+#                                         namespace. Otherwise the deployer
+#                                         could bind Job creation to itself and
+#                                         run as a person's worker identity.
+#
+# THE LITERALS BELOW ARE A RESTATEMENT, AND A TEST HOLDS THEM.
+# tests/unit/worker/test_workspace_provisioner_scope.py renders the tenant
+# files and asserts the Role rules, the RoleBinding subjects and the
+# kind-to-names map here equal what render.py produces, and that the users
+# matched here are exactly the subjects provisioner-rbac.yaml binds. They are
+# written as JSON-shaped CEL literals so that test can read them.
+#
+# WHY THE SCOPE POLICY MATCHES EVERY KIND, against the one-kind-per-policy rule
+# pod-security.yaml states. That rule exists because CEL is type-checked
+# against the schema of what it matches; the scope policy reads `request`
+# alone and never `object`, so there is no schema to disagree about. The three
+# policies that read `object` match one kind each.
+#
+# WHY THE BINDINGS HAVE NO namespaceSelector, unlike every other binding in
+# this directory. A selector on the swarm label would let the deployer escape
+# by creating a namespace WITHOUT the label, or by writing into one that lacks
+# it. What scopes these is `matchConditions` on the caller: a request by anyone
+# but the deployer is not evaluated at all.
+#
+# Fail closed throughout: a policy that cannot be evaluated refuses the write.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-scope
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["*"]
+        resources: ["*", "*/*"]
+  # The deployer, by email and by numeric uniqueId -- the same two subjects
+  # provisioner-rbac.yaml binds. A spelling bound there and missing here would
+  # be RBAC without this policy.
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # `has()` on every optional request field: AdmissionRequest omits an empty
+    # group, namespace, name or subresource, and reading an absent field is an
+    # evaluation error -- which, failing closed, would refuse every write the
+    # deployer makes with a message about nothing.
+    - name: resource
+      expression: >-
+        (has(request.resource.group) ? request.resource.group : '') + '/' + request.resource.resource
+    - name: target
+      expression: >-
+        variables.resource == '/namespaces'
+          ? (has(request.name) ? request.name : '')
+          : (has(request.namespace) ? request.namespace : '')
+    # What the tenant render produces, by `group/resource`: render.py's
+    # TENANT_FILES and LEGACY_KSA_FILES, and the spec-verify-keys ConfigMap.
+    - name: names
+      expression: >-
+        {"/serviceaccounts": ["swarm-agent-worker", "default", "swarm-worker"],
+        "/configmaps": ["swarm-spec-verify-keys"],
+        "/resourcequotas": ["swarm-tenant-quota"],
+        "/limitranges": ["swarm-worker-limits"],
+        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress"],
+        "rbac.authorization.k8s.io/roles": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
+        "rbac.authorization.k8s.io/rolebindings": ["swarm-worker", "swarm-worker-legacy", "swarm-dispatcher", "swarm-reaper"]}
+  validations:
+    - expression: "request.operation == 'CREATE' || request.operation == 'UPDATE'"
+      message: >-
+        the workspace deployer creates and patches; it never deletes. Removing a
+        person's workspace is deprovisioning (docs/workspaces.md §7), which is
+        the owner's.
+      reason: Forbidden
+
+    - expression: "!has(request.subResource) || request.subResource == ''"
+      message: >-
+        the workspace deployer writes whole objects, never a subresource
+        (status, finalize, exec, ...).
+      reason: Forbidden
+
+    - expression: >-
+        variables.target.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      message: >-
+        the workspace deployer writes only a Namespace named swarm-tenant-u-<person>
+        or an object inside one. Every other namespace, and every other
+        cluster-scoped object, belongs to someone else.
+      reason: Forbidden
+
+    - expression: >-
+        variables.resource == '/namespaces' ||
+        (variables.resource in variables.names && has(request.name) &&
+          request.name in variables.names[variables.resource])
+      message: >-
+        the workspace deployer writes only the kinds and names the tenant render
+        produces (kubernetes/render.py TENANT_FILES). A new object in that
+        render must be added to swarm-workspace-deployer-scope as well; the
+        parity test says which.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-scope
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-scope
+  # Audit as well: the refusal reaches the job's log, and the audit log is
+  # where the alert of docs/workspaces.md §2.4 can see it.
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-namespaces
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  validations:
+    # The worker pod and Job policies in pod-security.yaml bind by this label.
+    # A namespace without it is a namespace where Spot, bursting and
+    # Kubernetes-level retries are allowed again.
+    - expression: >-
+        has(object.metadata.labels) &&
+        'app.kubernetes.io/part-of' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/part-of'] == 'swarm'
+      message: >-
+        a personal namespace must carry app.kubernetes.io/part-of=swarm, which
+        is what the worker admission policies select on.
+      reason: Forbidden
+
+    - expression: >-
+        has(object.metadata.labels) &&
+        'swarm-tenant' in object.metadata.labels &&
+        'swarm-tenant-' + object.metadata.labels['swarm-tenant'] == object.metadata.name
+      message: >-
+        a personal namespace's swarm-tenant label must name the tenant the
+        namespace is for (swarm-tenant-<tenant>).
+      reason: Forbidden
+
+    # Lowering enforcement for an incident stays possible (render.py
+    # --pss-enforce), and stays the owner's: the deployer always writes
+    # `restricted`.
+    - expression: >-
+        has(object.metadata.labels) &&
+        'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
+        object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'
+      message: >-
+        a personal namespace enforces Pod Security `restricted`; only the owner
+        may lower it.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-namespaces
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-namespaces
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-roles
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["roles"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # Each Role's rules as [apiGroups, resources, verbs], in the render's order:
+    # rbac/worker-rbac.yaml's empty swarm-worker and rbac/dispatcher-rbac.yaml's
+    # two. Order is compared too, which costs nothing: apply sends the render.
+    - name: expected
+      expression: >-
+        {"swarm-worker": [],
+        "swarm-dispatcher": [[["batch"], ["jobs"], ["create", "get", "list", "watch"]], [[""], ["pods"], ["get", "list", "watch"]], [[""], ["pods/log"], ["get"]], [[""], ["events"], ["get", "list", "watch"]]],
+        "swarm-reaper": [[["batch"], ["jobs"], ["get", "list", "watch", "delete"]], [[""], ["pods"], ["get", "list", "watch", "delete"]]]}
+    # A rule without apiGroups, resources or verbs is an evaluation error here,
+    # and so a refusal. None of the render's omits them.
+    - name: actual
+      expression: >-
+        has(object.rules) ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
+  validations:
+    - expression: "object.metadata.name in variables.expected"
+      message: >-
+        the workspace deployer creates only the swarm-worker, swarm-dispatcher
+        and swarm-reaper Roles.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.expected) ||
+        variables.actual == variables.expected[object.metadata.name]
+      message: >-
+        a Role the workspace deployer writes must carry exactly the rules
+        kubernetes/render.py renders for it. The deployer holds `escalate`
+        because these Roles grant what it does not hold; this is what keeps
+        that from meaning any rule at all.
+      reason: Forbidden
+
+    - expression: >-
+        !has(object.rules) ||
+        object.rules.all(r, !has(r.resourceNames) && !has(r.nonResourceURLs))
+      message: "the rendered Roles name no resourceNames and no nonResourceURLs."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-roles
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-roles
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-rolebindings
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rolebindings"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # Who rbac/dispatcher-rbac.yaml binds each control-plane Role to, by email
+    # and by uniqueId. swarm-worker is bound to ServiceAccounts, checked below.
+    - name: users
+      expression: >-
+        {"swarm-dispatcher": ["__SCHEDULER_GSA__", "__SCHEDULER_UID__"],
+        "swarm-reaper": ["__RECONCILER_GSA__", "__RECONCILER_UID__"]}
+  validations:
+    - expression: >-
+        object.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
+        object.roleRef.kind == 'Role' &&
+        (object.roleRef.name == 'swarm-worker' || object.roleRef.name in variables.users)
+      message: >-
+        a RoleBinding the workspace deployer writes references one of the
+        Roles swarm-worker, swarm-dispatcher or swarm-reaper -- never a
+        ClusterRole.
+      reason: Forbidden
+
+    - expression: >-
+        object.roleRef.name != 'swarm-worker' || !has(object.subjects) ||
+        object.subjects.all(s,
+          s.kind == 'ServiceAccount' && has(s.namespace) && has(request.namespace) &&
+          s.namespace == request.namespace)
+      message: >-
+        swarm-worker is bound only to ServiceAccounts in its own namespace.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.roleRef.name in variables.users) || !has(object.subjects) ||
+        object.subjects.all(s,
+          s.kind == 'User' && s.name in variables.users[object.roleRef.name])
+      message: >-
+        swarm-dispatcher is bound only to the scheduler and swarm-reaper only to
+        the reconciler. Binding either to anyone else -- the deployer included
+        -- would let that caller create or delete Jobs in a person's namespace.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-rolebindings
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-rolebindings
+  validationActions: ["Deny", "Audit"]

@@ -12,8 +12,9 @@ every pass it logged the same thing:
 
 `GkeBackend.list_executions` called `list_job_for_all_namespaces`, a
 CLUSTER-scope list. The reconciler's only Kubernetes grant is the namespaced
-`swarm-reaper` Role, and no ClusterRole exists anywhere by policy
-(kubernetes/rbac/worker-rbac.yaml). So GKE read as unreadable on every pass,
+`swarm-reaper` Role, and it holds no ClusterRole by policy
+(kubernetes/rbac/worker-rbac.yaml; the one ClusterRole in kubernetes/ is the
+workspace deployer's). So GKE read as unreadable on every pass,
 `_is_actionable` correctly refused to conclude that anything on it was dead,
 and the stale_lease + missing_execution findings for every stranded lease were
 dropped -- while the pass reported `findings=0`, which is also what a healthy
