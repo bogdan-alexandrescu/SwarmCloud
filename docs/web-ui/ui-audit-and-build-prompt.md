@@ -762,7 +762,7 @@ This is the one span in the platform whose two ends are written by two different
 processes: `dispatched` by the scheduler when it asks the backend
 (`scheduler/store.py:243`, detail `{execution_name, backend}`), `starting` by
 the **worker** as the first thing the container writes
-(`apps/agent-worker/.../control.py:414`). It is therefore the only segment that
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). It is therefore the only segment that
 is not the control plane describing its own bookkeeping, and the only one that
 measures the infrastructure rather than the application.
 
@@ -1477,7 +1477,7 @@ without hovering.
 10. **Outputs** — `GET /v1/tasks/{id}/artifacts`.
 
 **Must not imply:**
-- That `completed_at − started_at` is the agent's work. `control.py:410-413`
+- That `completed_at − started_at` is the agent's work. `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`
   overwrites `task.started_at` on every attempt, so on a retried task it is the
   *last* attempt's start. Only the sum of per-attempt intervals is work, and the
   panel does the summing and states it separately.
@@ -1549,11 +1549,11 @@ container". In the measured run it was 3m09s against 18s of agent.
 **Overlays, not segments** (they must not consume width in the stack):
 
 - `heartbeat` — tick marks inside segment 5. Detail
-  `{elapsed_seconds, peak_rss_bytes, checkpoints}` (`lifecycle.py:1471-1479`),
+  `{elapsed_seconds, peak_rss_bytes, checkpoints}` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._usage_reading`),
   one per 150s (`heartbeat_interval_seconds` 30 × `HEARTBEAT_EVENT_EVERY` 5).
 - `checkpoint_started` → `checkpoint_completed` — paired sub-spans inside
   segment 5. Completion detail `{checkpoint_id, uri, size_bytes, seq}`
-  (`control.py:479-482`). **An unpaired `checkpoint_started` is normal, not a
+  (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_checkpoint`). **An unpaired `checkpoint_started` is normal, not a
   stall:** a failed checkpoint must never end the attempt, so it retries at the
   next interval. Draw it as an open sub-span with its own marker, never as a
   hang.
@@ -2063,7 +2063,7 @@ not_recorded + profile_unknown == attempts`:
    `completed_at`. A row whose task is gone has ended: nothing holds its lease.
 
 Should also decide whether `models`, `num_turns` and `thinking_tokens` become
-queryable. `control.py:501-504` deliberately leaves them in the untyped
+queryable. `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` deliberately leaves them in the untyped
 `result_summary["runner"]["usage"]` dict — defensible per-agent, indefensible
 per-fleet.
 
