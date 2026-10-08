@@ -8,8 +8,9 @@ one has to be found by something else, and this is that something.
 
 WHAT IT COVERS NOW. Every runner profile, on both backends (D5;
 BUILD_PROMPT_V2 2.9 asks for the no-progress signal everywhere, and the owner's
-2026-10-01 decision keeps Cloud Run Jobs primary, so `mock`, `generic`,
-`claude-code` and `codex` all run there). A GKE attempt is judged when
+2026-10-01 decision keeps Cloud Run Jobs primary, so `mock`, `generic` and
+`codex` run there, and `claude-code` did until contract request 53 moved it to
+GKE Autopilot on 2026-10-08). A GKE attempt is judged when
 `enable_gke_eviction` is on, a Cloud Run attempt when
 `enable_cloud_run_stall_guard` is on. The verdict below is the same on both and
 so is the action: fence only (`repair.Reconciler._repair_stuck`). The

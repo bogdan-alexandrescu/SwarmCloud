@@ -97,7 +97,8 @@ BENCH_POOL_LIMIT = 1_000_000_000
 #: never from here.
 DEFAULT_PROFILE = "claude-code"
 DEFAULT_RESOURCE_CLASS = "standard"
-DEFAULT_BACKEND = "CLOUD_RUN_JOB"
+#: GKE_AUTOPILOT since contract request 53 (2026-10-08) moved claude-code there.
+DEFAULT_BACKEND = "GKE_AUTOPILOT"
 DEFAULT_PROVIDER = "anthropic"
 
 #: A row is suspect, not saturated, when the harness could not offer the rate.

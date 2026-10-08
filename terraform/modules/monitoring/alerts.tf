@@ -444,8 +444,8 @@ resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
 
       Check which: the alert groups by `backend`, so the firing series names it.
 
-      * `GKE_AUTOPILOT` — the `browser` profile is the only profile that uses
-        it. Confirm the tenant namespace exists (`swarm-tenant-<id>`, and note
+      * `GKE_AUTOPILOT` — the `browser` and `claude-code` profiles use it
+        (`claude-code` since contract request 53, 2026-10-08). Confirm the tenant namespace exists (`swarm-tenant-<id>`, and note
         the scheduler and `kubernetes/render.py` must agree on that spelling),
         that `kubernetes/rbac/dispatcher-rbac.yaml` is applied in it, and that
         the scheduler holds `container.jobs.create`. Kubernetes authorises
