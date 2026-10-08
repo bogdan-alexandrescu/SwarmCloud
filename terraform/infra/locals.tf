@@ -621,6 +621,13 @@ locals {
       # scripts/lib/check-env-parity.sh never sees one without the other.
       SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version
 
+      # The public keys the workers verify step specs with, the same value
+      # (spec_signing.tf). Read by swarm_api.verdictpublish, which must verify
+      # a gated step's signed spec before it trusts the step's forge_credential
+      # and forge_access for a control-plane push (#748). Public keys, not
+      # secrets.
+      SPEC_VERIFY_KEYS = jsonencode(local.spec_verify_keys)
+
       # The verification job's identity, admitted past the domain check.
       #
       # swarm-api admits a caller through ALLOWED_USERS or through the frozen
@@ -711,6 +718,14 @@ locals {
       # tick account minted for ANY other service was accepted here.
       PUSH_SERVICE_ACCOUNT = module.iam.tick_service_account
       PUSH_AUDIENCE        = local.push_audiences["swarm-scheduler"]
+
+      # #748: how long a MERGE verdict's integrator stays PARKED for swarm-api
+      # to open its pull request without a worker, after its last parent
+      # ended. swarm-api hears the same wake through modules/scheduler's
+      # `api_task_finished` subscription and decides in a few seconds; 60 s
+      # bounds what a lost push costs. Inert until contract request 52 lets a
+      # step end SUCCEEDED from PARKED (scheduler/loop.py checks it).
+      CONTROL_PUBLISH_HOLD_SECONDS = "60"
 
       GKE_CLUSTER  = var.enable_gke_autopilot ? "${var.name_prefix}-autopilot" : ""
       GKE_LOCATION = var.region

@@ -192,10 +192,12 @@ run "workers_trust_every_enabled_version_and_no_other" {
     error_message = "swarm-api must carry SPEC_SIGNING_KEY_VERSION as the full signing version name; a hardened swarm-api without it refuses to start"
   }
 
-  # swarm-api signs; it has no business holding the verification map.
+  # swarm-api signs, and since #748 also verifies one thing: a gated step's
+  # spec, before swarm_api.verdictpublish trusts its forge_credential and
+  # forge_access for a push. So it carries the workers' own map, not another.
   assert {
-    condition     = !contains(keys(output.spec_service_env["swarm-api"]), "SPEC_VERIFY_KEYS")
-    error_message = "swarm-api signs and never verifies; it does not carry SPEC_VERIFY_KEYS"
+    condition     = lookup(output.spec_service_env["swarm-api"], "SPEC_VERIFY_KEYS", "") == jsonencode(output.spec_verify_keys)
+    error_message = "swarm-api must carry SPEC_VERIFY_KEYS, the same map every worker verifies with: the control-plane publish verifies a step's signed spec before reading its forge credential"
   }
 
   # The GKE copy, for kubernetes/render.py: the same map, the same key.
