@@ -2,10 +2,20 @@
 §2.1-§2.3; #780, lane OB1).
 
 `GET /v1/onboarding` serves one resumable state machine, the same to the
-console's checklist and the plugin's `/sc:setup`: seven steps in order, each
+console's checklist and the plugin's `/sc:setup`: nine steps in order, each
 `todo`, `in_progress`, `done`, `failed` (with a §2.3 code and its recovery
 copy, word for word) or `stale` (done once, its evidence older than the
-re-verification interval). The next step is the first that is not `done`.
+re-verification interval). The next step is the first REQUIRED step that is
+not `done`.
+
+THE WORKSPACE STEPS (docs/workspaces.md §6.1; #847, lane W1). `workspace`
+and `claude_account` follow `signed_in`, from the person's own workspace
+record and the accounts that can serve their personal tenant. They carry
+`required`: true only while WORKSPACE_GATE is on AND the caller's tenant is
+the kind the gate judges (a person's own; never a group's or a service
+account's, WD7). A step that is not required is served for information and
+never holds back `ready`, `next_step` or `complete`, so with the gate off --
+as it ships -- the checklist completes exactly as it did before.
 
 DERIVED, NEVER SET. Every state is computed on each read from evidence that
 already exists, so a step that was done and stopped being true shows as such
@@ -94,6 +104,8 @@ from .gittokens import (
     store_command,
 )
 from .repositories import Repositories, repo_id_for
+from .store import Store
+from . import workspaces as ws
 
 log = logging.getLogger(__name__)
 
@@ -107,13 +119,16 @@ __all__ = [
 # --------------------------------------------------------------------------
 
 SIGNED_IN = "signed_in"
+WORKSPACE = "workspace"
+CLAUDE_ACCOUNT = "claude_account"
 GITHUB_CONNECTED = "github_connected"
 APP_INSTALLED = "app_installed"
 ORGS_ENABLED = "orgs_enabled"
 REPOS_CHOSEN = "repos_chosen"
 ACCESS_VERIFIED = "access_verified"
 READY = "ready"
-STEPS = (SIGNED_IN, GITHUB_CONNECTED, APP_INSTALLED, ORGS_ENABLED, REPOS_CHOSEN,
+STEPS = (SIGNED_IN, WORKSPACE, CLAUDE_ACCOUNT, GITHUB_CONNECTED, APP_INSTALLED,
+         ORGS_ENABLED, REPOS_CHOSEN,
          ACCESS_VERIFIED, READY)
 
 NOT_STARTED = "todo"
@@ -256,6 +271,67 @@ def _step(name: str, state: str, *, evidence: dict[str, Any], issues: list[dict]
 
 def _waiting(name: str, on: str) -> dict[str, Any]:
     return _step(name, NOT_STARTED, evidence={"waiting_for": on})
+
+
+# --------------------------------------------------------------------------
+# workspace and claude_account (docs/workspaces.md §6.1)
+# --------------------------------------------------------------------------
+
+#: The record's state, as a checklist state. `ready` is the only `done`, and
+#: only the workspace job writes it.
+_WORKSPACE_STATES = {
+    ws.NONE: NOT_STARTED,
+    ws.REQUESTED: IN_PROGRESS,
+    ws.APPROVED: IN_PROGRESS,
+    ws.APPLYING: IN_PROGRESS,
+    ws.NEEDS_OWNER: IN_PROGRESS,
+    ws.DENIED: FAILED,
+    ws.FAILED: FAILED,
+    ws.READY: DONE,
+}
+
+
+def _workspace_step(record: dict[str, Any] | None, *, required: bool,
+                    console_url: str) -> dict[str, Any]:
+    shown = ws.view(record, console_url=console_url)
+    state = _WORKSPACE_STATES[shown["state"]]
+    evidence = {key: shown.get(key) for key in (
+        "state", "workspace_id", "requested_at", "decision", "steps", "failure", "ready_at",
+        "request_again_at", "setup_url", "setup_command")}
+    code = copy = None
+    if shown["state"] == ws.FAILED:
+        code, copy = (shown["failure"] or {}).get("code"), (shown["failure"] or {}).get("copy")
+    elif shown["state"] == ws.DENIED:
+        reason = ((shown.get("decision") or {}).get("reason") or "").strip()
+        copy = f"Not approved: {reason}" if reason else "Not approved."
+    step = _step(WORKSPACE, state, evidence=evidence, code=code, copy=copy,
+                 checked_at=(record or {}).get("ready_at"))
+    step["required"] = required
+    return step
+
+
+def _claude_step(accounts: dict[str, Any], loan: dict[str, Any] | None, *, required: bool,
+                 console_url: str) -> dict[str, Any]:
+    """Ticked by §5.1 (3)'s rule, the gate's own: an account the tenant owns,
+    one lent to it, or a provider key."""
+    loan_state = (loan or {}).get("state")
+    evidence = {
+        "own": accounts.get("own", 0),
+        "lent": accounts.get("lent", 0),
+        "provider_key": bool(accounts.get("provider_key")),
+        "loan_request": loan_state,
+        "setup_url": ws.setup_url(console_url, "claude-account"),
+        "setup_command": ws.SETUP_COMMAND,
+    }
+    if accounts.get("has_account"):
+        state = DONE
+    elif loan_state == ws.REQUESTED:
+        state = IN_PROGRESS
+    else:
+        state = NOT_STARTED
+    step = _step(CLAUDE_ACCOUNT, state, evidence=evidence)
+    step["required"] = required
+    return step
 
 
 # --------------------------------------------------------------------------
@@ -579,13 +655,26 @@ def derive(
     now: datetime,
     registrations_capped: bool = False,
     installations: dict[str, Any] | None = None,
+    workspace: dict[str, Any] | None = None,
+    accounts: dict[str, Any] | None = None,
+    loan: dict[str, Any] | None = None,
+    workspace_required: bool = False,
+    console_url: str = "",
 ) -> dict[str, Any]:
     """The caller's checklist from evidence. Pure: no read, no write, no clock.
     `installations` is `AccessService.installations`'s answer for an App
     connection, or None when it was not asked.
 
     Every input is filtered on `caller.tenant_id` again here, whatever the
-    reads returned, and only the caller's own user slot is ever considered."""
+    reads returned, and only the caller's own user slot is ever considered.
+    The workspace record and loan request are the caller's PERSONAL tenant's
+    (`tenant_id_for_user` of their email), whatever tenant they act in, and
+    are dropped here if they name any other."""
+    personal = ws.personal_tenant_id(caller.email)
+    if workspace is not None and workspace.get("tenant_id") != personal:
+        workspace = None
+    if loan is not None and loan.get("tenant_id") != personal:
+        loan = None
     records = [r for r in records if r.tenant_id == caller.tenant_id]
     regs = sorted((r for r in registrations if r.get("tenant_id") == caller.tenant_id),
                   key=lambda r: _repository(r).lower())
@@ -594,6 +683,10 @@ def derive(
 
     steps = [_step(SIGNED_IN, DONE, checked_at=now, evidence={
         "email": caller.email, "tenant_id": caller.tenant_id, "is_admin": caller.is_admin})]
+    steps.append(_workspace_step(workspace, required=workspace_required,
+                                 console_url=console_url))
+    steps.append(_claude_step(accounts or {}, loan, required=workspace_required,
+                              console_url=console_url))
     record, via = _connection(caller, records, tenant_lists_git, now)
     connected = _connected_step(caller, record, via, now)
     steps.append(connected)
@@ -613,7 +706,10 @@ def derive(
         steps.append(chosen)
         steps.append(_waiting(ACCESS_VERIFIED, REPOS_CHOSEN) if chosen["state"] == NOT_STARTED
                      else _verified_step(record, regs, pair_docs, now))
-    before = next((s["step"] for s in steps if s["state"] != DONE), None)
+    def holds(s: dict[str, Any]) -> bool:
+        return s["state"] != DONE and s.get("required", True)
+
+    before = next((s["step"] for s in steps if holds(s)), None)
     if before is None:
         passed = [row["repository"] for row in steps[-1]["evidence"]["repositories"]
                   if row["result"] == "passed"]
@@ -621,7 +717,7 @@ def derive(
                            evidence={"first_repository": passed[0] if passed else None}))
     else:
         steps.append(_waiting(READY, before))
-    next_step = next((s["step"] for s in steps if s["state"] != DONE), None)
+    next_step = next((s["step"] for s in steps if holds(s)), None)
     return {
         "tenant_id": caller.tenant_id,
         "user": caller.email,
@@ -638,15 +734,31 @@ def derive(
 
 
 def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
-         installations: Callable[[], dict[str, Any]] | None = None) -> dict[str, Any]:
+         installations: Callable[[], dict[str, Any]] | None = None,
+         workspaces: "ws.Workspaces | None" = None,
+         workspace_required: bool = False) -> dict[str, Any]:
     """Read today's records for the caller's tenant and derive. Reads only,
     but for `installations`: called only for an active App connection, it is
-    `AccessService.installations` for this caller (see the module note)."""
+    `AccessService.installations` for this caller (see the module note).
+
+    `workspaces` reads the caller's personal workspace, its loan request and
+    the accounts that serve it; without it the two steps derive from nothing
+    (`todo`). `workspace_required` is the route's: the gate is on and judges
+    this caller's tenant."""
     tokens = GitTokens(db, now=lambda: now)
     records = tokens.list(caller.tenant_id)
     pair_docs = tokens.pair_docs(caller.tenant_id)
     regs, more = Repositories(db, now=lambda: now).list(caller.tenant_id,
                                                          limit=MAX_REGISTRATIONS)
+    workspace = loan = None
+    accounts: dict[str, Any] = {}
+    if workspaces is not None:
+        personal = ws.personal_tenant_id(caller.email)
+        workspace = workspaces.get(personal)
+        loan = workspaces.loan_request(personal)
+        own = tenant if tenant is not None and tenant.tenant_id == personal \
+            else Store(db).get_tenant(personal)
+        accounts = workspaces.claude_accounts(personal, own)
     lists_git = tenant is not None and GIT_PROVIDER in (tenant.credentials or [])
     record, via = _connection(caller, [r for r in records if r.tenant_id == caller.tenant_id],
                               lists_git, now)
@@ -663,6 +775,11 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         now=now,
         registrations_capped=more is not None,
         installations=found,
+        workspace=workspace,
+        accounts=accounts,
+        loan=loan,
+        workspace_required=workspace_required,
+        console_url=workspaces.console_url if workspaces is not None else "",
     )
     log.info("onboarding read tenant=%s user_hash=%s next=%s", caller.tenant_id,
              view["user_hash"], view["next_step"])
