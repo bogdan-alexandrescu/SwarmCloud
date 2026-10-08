@@ -31,7 +31,11 @@ the build path, a fake `gcloud`) on PATH:
     commit CI never built builds every image, at the commit's tag, and records
     the commit in the manifest;
   * the job and artifact the script looks for are the ones application.yml
-    actually has -- read from application.yml, not restated here.
+    actually has -- read from application.yml, not restated here;
+  * `--previous` (observer proposal H, 2026-10-08) hands main's build the
+    newest record of an ANCESTOR commit: never the commit itself, never a
+    later merge, never a failed or expired build; exit 3 when there is none
+    or the checkout is too shallow to tell, exit 1 when the API is unreadable.
 
 WHAT THIS CANNOT PROVE: that GitHub's API answers in the shape the fake
 serves. The shapes are the documented ones (workflow runs filtered by
@@ -194,7 +198,10 @@ if args[:1] == ["api"]:
         n = bump("runs")
         out = []
         for run in world["runs"]:
-            if run.get("workflow", "application.yml") != parts[5] or run["head_sha"] != query.get("head_sha"):
+            if run.get("workflow", "application.yml") != parts[5]:
+                continue
+            # --previous lists a branch's runs, not one commit's.
+            if "head_sha" in query and run["head_sha"] != query["head_sha"]:
                 continue
             if n <= run.get("appears_after", 0):
                 continue
@@ -677,3 +684,128 @@ def test_a_dispatched_release_does_not_rebuild_a_build_ci_failed(tmp_path):
     assert not [e for e in events if e["event"] == "builds-submit"]
     assert not manifest.exists()
     assert "failed" in _last_line(proc), _last_line(proc)
+
+
+# ---------------------------------------------------------------------------
+# --previous: the record main's incremental build builds on.
+# ---------------------------------------------------------------------------
+def _history(tmp_path: Path) -> tuple[Path, list[str], str]:
+    """A repository with three commits on main and one on a side branch:
+    (root, [first, second, head], stranger)."""
+    root = tmp_path / "repo"
+    shutil.copytree(REPO / "scripts", root / "scripts")
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+           "-c", "commit.gpgsign=false"]
+
+    def commit(message: str) -> str:
+        (root / "log.txt").write_text(message + "\n")
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", message], check=True)
+        return subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+    subprocess.run([*git, "init", "-q"], check=True)
+    first = commit("first")
+    second = commit("second")
+    subprocess.run([*git, "checkout", "-q", "-b", "side"], check=True)
+    stranger = commit("stranger")
+    subprocess.run([*git, "checkout", "-q", "-"], check=True)
+    head = commit("head")
+    return root, [first, second, head], stranger
+
+
+def previous(tmp_path: Path, world_for, *, root: Path | None = None, head: str | None = None, **env_extra: str):
+    made_root, commits, stranger = _history(tmp_path)
+    root = root or made_root
+    _, env = _fakes(tmp_path, world_for(commits, stranger))
+    env.update(env_extra)
+    out = tmp_path / "previous-images-dev.json"
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "lib" / "ci-built-images.sh"), "--previous",
+         "--sha", head or commits[-1], "--environment", "dev", "--out", str(out)],
+        env=env, capture_output=True, text=True, timeout=120, check=False,
+    )
+    return proc, out, _events(tmp_path), commits
+
+
+def test_previous_is_the_newest_successful_record_of_an_ancestor(tmp_path):
+    def world(commits, stranger):
+        first, second, head = commits
+        return {"runs": [
+            ci_run(301, sha=first),
+            ci_run(302, sha=second),
+            # Newer, but of a commit that is not behind head: a later merge.
+            ci_run(303, sha=stranger),
+            # Head itself: a re-run of its build means build it again.
+            ci_run(304, sha=head),
+        ]}
+
+    proc, out, events, commits = previous(tmp_path, world)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text()) == record_for(sha=commits[1]), "not the record of the newest ancestor"
+    assert [e["run"] for e in events if e["event"] == "download"] == [302]
+
+
+def test_previous_skips_a_failed_build_and_an_expired_record(tmp_path):
+    def world(commits, stranger):
+        first, second, head = commits
+        return {"runs": [
+            ci_run(311, sha=first),
+            ci_run(312, sha=second, job_conclusion="failure"),
+            ci_run(313, sha=second, expired=True),
+        ]}
+
+    proc, out, _, commits = previous(tmp_path, world)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text())["commit"] == commits[0]
+
+
+def test_previous_never_waits_for_a_build_still_running(tmp_path):
+    def world(commits, stranger):
+        return {"runs": [ci_run(321, sha=commits[0]), ci_run(322, sha=commits[1], job_pending=10_000)]}
+
+    proc, out, _, commits = previous(tmp_path, world, CI_BUILD_WAIT="1")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text())["commit"] == commits[0]
+
+
+def test_no_previous_record_exits_3_and_writes_nothing(tmp_path):
+    def world(commits, stranger):
+        return {"runs": [ci_run(331, sha=stranger), ci_run(332, sha=commits[1], job_conclusion="failure")]}
+
+    proc, out, events, _ = previous(tmp_path, world)
+    assert proc.returncode == 3, proc.stderr[-3000:]
+    assert not out.exists()
+    assert not [e for e in events if e["event"] == "download"]
+    assert "nothing to build on" in _last_line(proc), _last_line(proc)
+
+
+def test_a_shallow_checkout_cannot_tell_an_ancestor_and_exits_3(tmp_path):
+    made_root, commits, _ = _history(tmp_path / "full")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{made_root}", str(shallow)], check=True)
+    shutil.copytree(REPO / "scripts", shallow / "scripts", dirs_exist_ok=True)
+
+    proc, out, events, _ = previous(
+        tmp_path, lambda c, s: {"runs": [ci_run(341, sha=commits[1])]}, root=shallow, head=commits[-1])
+    assert proc.returncode == 3, proc.stderr[-3000:]
+    assert not out.exists()
+    assert "shallow" in _last_line(proc), _last_line(proc)
+
+
+def test_previous_with_an_unreadable_api_exits_1_not_3(tmp_path):
+    proc, out, _, _ = previous(
+        tmp_path, lambda c, s: {"runs": [ci_run(351, sha=c[1])]}, FAKE_GH_FAIL="always")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    assert "could not read" in _last_line(proc), _last_line(proc)
+
+
+def test_previous_takes_no_if_absent(tmp_path):
+    root, commits, _ = _history(tmp_path)
+    _, env = _fakes(tmp_path, {"runs": []})
+    proc = subprocess.run(
+        ["bash", str(root / "scripts" / "lib" / "ci-built-images.sh"), "--previous", "--if-absent", "build",
+         "--sha", commits[-1], "--environment", "dev", "--out", str(tmp_path / "x.json")],
+        env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert proc.returncode == 1 and "--if-absent" in proc.stderr

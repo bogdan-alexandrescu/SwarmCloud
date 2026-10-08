@@ -24,7 +24,12 @@ that decides "reuse only" versus "reuse or build" evaluated for each event:
     behind the approval);
   * application.yml builds every commit the release would ship, with no tag of
     its own, and a run on main is neither cancelled nor -- while still queued
-    -- replaced by the next push.
+    -- replaced by the next push;
+  * since observer proposal H (2026-10-08) application.yml's build is
+    INCREMENTAL -- unchanged images keep their previous digest under this
+    commit's tag, and the record still names every image -- while the
+    release's own build, when it has to make one (a dispatch, or prod), is
+    always whole.
 
 WHAT THIS CANNOT PROVE: that GitHub runs these workflows as read -- that the
 job gets the token scopes it asks for, that the API returns what the scripts
@@ -142,6 +147,12 @@ def test_the_release_builds_only_through_reuse_and_on_a_push_only_reuses():
         assert _reuse_mode(step, "workflow_dispatch") == "or-build", (
             "a release dispatched by hand for a commit CI never built cannot build it: "
             f"{_reuse_mode(step, 'workflow_dispatch')!r}"
+        )
+        # The build a release makes for itself is prod's, or a commit CI never
+        # built: it has no previous record of its own to build on, and prod
+        # is always built whole (build-images.sh plan_incremental).
+        assert "--incremental" not in _code(step["run"]), (
+            f"release.yml's {job_id} job builds incrementally; only application.yml's build may"
         )
     for job_id, job in release["jobs"].items():
         for step in job.get("steps") or []:
@@ -275,6 +286,10 @@ def test_application_builds_every_commit_the_release_would_ship():
     )
     code = _code(step["run"])
     assert "--reuse-ci" not in code, "application.yml's build reuses instead of building"
+    # Incremental, and the record it uploads still describes the whole build:
+    # build-images.sh writes every image to it, reused or rebuilt
+    # (test_build_images_incremental.py), so the release promotes all of them.
+    assert "build-images.sh --incremental" in code, "application.yml's build is not incremental"
     assert "--tag" not in code, (
         "application.yml's build names its own tag; the tag is the commit's, derived once "
         "(git_sha), so a release that builds a commit itself tags it the same way"
