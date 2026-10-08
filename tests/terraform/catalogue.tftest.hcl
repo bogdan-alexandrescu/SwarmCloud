@@ -114,9 +114,16 @@ run "runner_backends_match_resolve_backend" {
     error_message = "the browser profile runs on Autopilot: Chromium needs a /dev/shm size Cloud Run does not expose"
   }
 
+  # Contract request 55 (temporary): the request 53 canary, claude-code on
+  # Autopilot. Removed with the profile when claude-code itself moves.
   assert {
-    condition     = length(output.runner_backends) == 9
-    error_message = "nine runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, and contract request 48's indexer"
+    condition     = output.runner_backends["claude-code-gke"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-gke is claude-code on GKE Autopilot (contract request 55); on any other backend the canary measures nothing"
+  }
+
+  assert {
+    condition     = length(output.runner_backends) == 10
+    error_message = "ten runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, and contract request 55's temporary claude-code-gke"
   }
 }
 
@@ -154,7 +161,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
-        "runner:indexer",
+        "runner:indexer", "runner:claude-code-gke",
       ] :
       contains(output.pool_names, r)
     ])
@@ -229,6 +236,15 @@ run "jobs_exist_only_where_a_credential_does" {
       for name in output.job_names : strcontains(name, "browser")
     ])
     error_message = "the browser profile runs on Autopilot; it has no Cloud Run Job"
+  }
+
+  # Contract request 55's canary is GKE only: the Job loop filters on the
+  # backend, so eng, which holds anthropic, gets no Cloud Run Job for it.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-claude-code-gke")
+    ])
+    error_message = "claude-code-gke runs on GKE Autopilot only; it must have no Cloud Run Job"
   }
 
   assert {
@@ -327,8 +343,15 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 9
-    error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
+    condition     = length(output.runner_profiles) == 10
+    error_message = "expected 10 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, and request 55's claude-code-gke, built with replace() after the dict); the parser read a different number"
+  }
+
+  # The derived entry is read as its base with the backend overridden, and the
+  # base's own chunk does not swallow the assignment's `name=`/`backend=`.
+  assert {
+    condition     = output.runner_profiles["claude-code-gke"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "CLOUD_RUN_JOB" && output.runner_profiles["claude-code-gke"].image == output.runner_profiles["claude-code"].image
+    error_message = "the parser misread contract request 55's replace() entry: claude-code-gke must be claude-code with backend GKE_AUTOPILOT, and indexer must keep CLOUD_RUN_JOB"
   }
 
   assert {

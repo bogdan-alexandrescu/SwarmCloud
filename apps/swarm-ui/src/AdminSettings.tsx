@@ -74,6 +74,8 @@ export function AdminSettingsScreen() {
    */
   const [fresh, setFresh] = useState<{ over: Capacity; data: Capacity } | null>(null)
   const [saved, setSaved] = useState<Readonly<Record<string, SaveMark>>>({})
+  /** What each pool's last save's RESPONSE said the ceiling became, against what was asked. */
+  const [outcomes, setOutcomes] = useState<Readonly<Record<string, SaveOutcome>>>({})
   /**
    * WHO IS ASKING, from the session read the frame already makes (a `frame`
    * read, so it does not stand in for this screen's own newest read). A
@@ -103,7 +105,8 @@ export function AdminSettingsScreen() {
       return next
     })
 
-  const reread = async (over: Capacity, pool: string): Promise<boolean> => {
+  const reread = async (over: Capacity, pool: string, outcome: SaveOutcome): Promise<boolean> => {
+    setOutcomes((all) => ({ ...all, [pool]: outcome }))
     mark(pool, 'rereading')
     // With the record (#133), so the row names the change just made.
     const r = await loadLimits()
@@ -140,8 +143,16 @@ export function AdminSettingsScreen() {
           capacity={fresh !== null && fresh.over === d ? fresh.data : d}
           admin={admin}
           saved={saved}
-          onSaved={(pool) => reread(d, pool)}
-          onEdit={(pool) => mark(pool, null)}
+          outcomes={outcomes}
+          onSaved={(pool, outcome) => reread(d, pool, outcome)}
+          onEdit={(pool) => {
+            mark(pool, null)
+            setOutcomes((all) => {
+              const next = { ...all }
+              delete next[pool]
+              return next
+            })
+          }}
         />
       )}
     </Screen>
@@ -216,6 +227,56 @@ export async function loadLimits(): Promise<Result<Capacity>> {
 type SaveMark = 'rereading' | 'saved' | 'unread'
 
 /**
+ * What a save's RESPONSE said, against what was asked: `moved` only when the
+ * pool it returned has the hard limit that was typed.
+ *
+ * WHY THE RESPONSE IS COMPARED (2026-10-07). The owner raised tenant smoke's
+ * ceiling 8 -> 20 here. The route answered 200 with the pool still at 8 --
+ * `capacity_units` held it there -- and this screen said saved, because a 200
+ * was all it read. Every pool kind `setPoolLimit` routes returns the pool, so
+ * every save is checked, not only a tenant's. A response that carries no pool
+ * cannot confirm anything and is not a success either.
+ */
+export interface SaveOutcome {
+  moved: boolean
+  /** `tenant:smoke ceiling 8 → 20`, or `Saved, but the ceiling is still 8: …`. */
+  text: string
+}
+
+/** The response's own words for what held a pool below the limit (`capped_by`, routes/admin.py). */
+const CAPPED_BY: Readonly<Record<string, string>> = {
+  capacity_units: "the tenant's capacity_units",
+  max_active: "the tenant's max_active",
+  unknown: 'something the API could not name',
+}
+
+export function saveOutcome(name: string, from: number | null, asked: number, data: unknown): SaveOutcome {
+  const body = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {}
+  const pool = typeof body.pool === 'object' && body.pool !== null ? (body.pool as Record<string, unknown>) : null
+  const now = pool === null ? undefined : pool.hard_limit
+  if (now === asked) {
+    return { moved: true, text: `${name} ceiling ${from === null ? 'no limit set' : from} → ${asked}` }
+  }
+  if (typeof now !== 'number') {
+    return {
+      moved: false,
+      text:
+        pool === null
+          ? `Saved, but the response did not return ${name}, so the new ceiling is not confirmed`
+          : `Saved, but ${name} has no ceiling set`,
+    }
+  }
+  const cap = typeof body.capped_by === 'string' ? body.capped_by : null
+  const tenant = typeof body.tenant === 'object' && body.tenant !== null ? (body.tenant as Record<string, unknown>) : {}
+  const held = cap === null ? null : tenant[cap]
+  const reason =
+    cap === null
+      ? 'the response gave no reason'
+      : `capped by ${CAPPED_BY[cap] ?? cap}${typeof held === 'number' ? ` (${held})` : ''}`
+  return { moved: false, text: `Saved, but the ceiling is still ${now}: ${reason}` }
+}
+
+/**
  * One profile's ceiling, with the numbers it was taken over.
  *
  * `agents` is the pool's own effective limit divided by the profile's weight,
@@ -283,13 +344,15 @@ function Body({
   capacity,
   admin,
   saved,
+  outcomes,
   onSaved,
   onEdit,
 }: {
   capacity: Capacity
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
-  onSaved: (pool: string) => Promise<boolean>
+  outcomes: Readonly<Record<string, SaveOutcome>>
+  onSaved: (pool: string, outcome: SaveOutcome) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
   // THE PER-PROFILE "BINDING POOL" CARDS ARE GONE (owner decision,
@@ -300,7 +363,9 @@ function Body({
   // runs out first, and the side editor here says what a new limit does to
   // each profile's ceiling (`impactOf`, which still reads `arithmetic`). The
   // cards held no control, so nothing a person could do went with them.
-  return <PoolEditor capacity={capacity} admin={admin} saved={saved} onSaved={onSaved} onEdit={onEdit} />
+  return (
+    <PoolEditor capacity={capacity} admin={admin} saved={saved} outcomes={outcomes} onSaved={onSaved} onEdit={onEdit} />
+  )
 }
 
 /**
@@ -631,6 +696,7 @@ function PoolEditor({
   capacity,
   admin,
   saved,
+  outcomes,
   onSaved,
   onEdit,
 }: {
@@ -638,7 +704,8 @@ function PoolEditor({
   /** From the session read. null: not known (yet), and treated as allowed. */
   admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
-  onSaved: (pool: string) => Promise<boolean>
+  outcomes: Readonly<Record<string, SaveOutcome>>
+  onSaved: (pool: string, outcome: SaveOutcome) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
   const pools = capacity.pools
@@ -757,6 +824,7 @@ function PoolEditor({
               kind={kind}
               pools={rows}
               saved={saved}
+              outcomes={outcomes}
               editing={editing?.pool ?? null}
               target={target}
               held={held}
@@ -780,7 +848,7 @@ function PoolEditor({
             }}
             onClose={() => close(open.name)}
             onWriting={(on) => onWriting(open.name, on)}
-            onSaved={() => onSaved(open.name)}
+            onSaved={(outcome) => onSaved(open.name, outcome)}
           />
         )}
       </div>
@@ -807,6 +875,7 @@ function Family({
   kind,
   pools,
   saved,
+  outcomes,
   editing,
   target,
   held,
@@ -816,6 +885,7 @@ function Family({
   kind: PoolKind
   pools: Pool[]
   saved: Readonly<Record<string, SaveMark>>
+  outcomes: Readonly<Record<string, SaveOutcome>>
   /** The pool whose side editor is open, if one is. */
   editing: string | null
   target: string | null
@@ -865,6 +935,7 @@ function Family({
                   key={p.name}
                   pool={p}
                   mark={saved[p.name] ?? null}
+                  outcome={outcomes[p.name] ?? null}
                   open={editing === p.name}
                   target={target === p.name}
                   locked={held !== null && held !== p.name}
@@ -883,6 +954,7 @@ function Family({
 function PoolRow({
   pool,
   mark,
+  outcome,
   open,
   target,
   locked,
@@ -892,6 +964,8 @@ function PoolRow({
   pool: Pool
   /** What the last save of this row said. Held by the screen, not the row (AH-7). */
   mark: SaveMark | null
+  /** What the last save's response said the ceiling became. Held by the screen too. */
+  outcome: SaveOutcome | null
   /** This pool's side editor is the one open. */
   open: boolean
   /** The row a link named (#134). */
@@ -989,7 +1063,18 @@ function PoolRow({
             </span>
           )}
           {!editable && <span className="client-side">read-only</span>}
-          {mark !== null && <span className="tag ok">saved</span>}
+          {/* A SAVE IS A SUCCESS ONLY WHEN THE POOL MOVED TO WHAT WAS ASKED
+              (2026-10-07): tenant smoke was raised 8 -> 20, the route answered
+              200 with a pool still at 8, and this tag said saved. The
+              response's pool is compared with the request (`saveOutcome`);
+              a pool that did not move says so, with the reason the response
+              gave, and never wears the success tag. */}
+          {mark !== null && (outcome === null || outcome.moved) && <span className="tag ok">saved</span>}
+          {mark !== null && outcome !== null && (
+            <span className={outcome.moved ? 'adm-saved-what' : 'adm-saved-what warn-text'} role="status">
+              {outcome.text}
+            </span>
+          )}
           {mark === 'unread' && (
             <span className="warn-text" title="The write succeeded; reading the pools back afterwards did not, so the figures in this row are from before it.">
               not re-read
@@ -1042,7 +1127,7 @@ function SideEditor({
   /** From the click on Save until the read-back settles, or the write fails. */
   onWriting: (on: boolean) => void
   /** Resolves true once the pools have been read back after the write. */
-  onSaved: () => Promise<boolean>
+  onSaved: (outcome: SaveOutcome) => Promise<boolean>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
@@ -1085,7 +1170,7 @@ function SideEditor({
         // field never flicks back to the old limit in between. If the
         // read-back fails the editor stays open on what was written, and the
         // row says `not re-read`.
-        const reread = await onSaved()
+        const reread = await onSaved(saveOutcome(pool.name, pool.hard_limit, next, r.data))
         onWriting(false)
         if (reread) onClose()
       } else {

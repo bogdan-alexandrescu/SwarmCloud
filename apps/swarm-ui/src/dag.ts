@@ -2659,6 +2659,8 @@ export function edgePath(e: DagEdge): string {
  *                 includes the earlier run, so it has no figure (`elapsed()`).
  *  - `queued`  -- it is waiting. Time spent waiting is not time spent working.
  *  - `parked`  -- it waited, stopped, and holds nothing. Also not work.
+ *  - `held`    -- LEASED or DISPATCHED: it holds a slot and has not started.
+ *                 A wait, never "queued" -- it is past the queue (#503).
  *  - `running` -- elapsed so far. Real, and NOT a final duration.
  *  - `ran`     -- start to finish. The only arm that is a duration.
  *
@@ -2678,13 +2680,21 @@ export type StepDuration =
   | { readonly kind: 'none'; readonly text: string; readonly note: string }
   | { readonly kind: 'queued'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'parked'; readonly seconds: number; readonly text: string; readonly note: string }
+  | { readonly kind: 'held'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'running'; readonly seconds: number; readonly text: string; readonly note: string }
   | { readonly kind: 'ran'; readonly seconds: number; readonly text: string; readonly note: string }
 
 const at = (v: string | null | undefined): number => (v ? new Date(v).getTime() : NaN)
 const secs = (ms: number): number => Math.max(0, Math.round(ms / 1000))
 
-export function stepDuration(state: StepState, now: number): StepDuration {
+/**
+ * `enteredAt` is when the task entered the state it is in now, read from its
+ * events (`stepviews.ts` `stateEnteredAt`) for PARKED, LEASED and DISPATCHED;
+ * null when they were not read or do not show it. The task record holds no
+ * such time (types.ts `Task`), so without it a wait is given as a LOWER BOUND
+ * from `updated_at`, the record's last write, which is at or after the entry.
+ */
+export function stepDuration(state: StepState, now: number, enteredAt: number | null = null): StepDuration {
   if (state.kind === 'unstarted') {
     return {
       kind: 'none',
@@ -2754,9 +2764,21 @@ export function stepDuration(state: StepState, now: number): StepDuration {
     }
   }
 
+  // TIMED FROM THE PARKED EVENT (#503). This read `updated_at`, the record's
+  // LAST write: a `next_eligible_at` re-check or a cancel request moves it on,
+  // so the figure ran minutes short of the park. Without the event the same
+  // write still bounds the park from below, and says so with `≥`.
   if (task.state === 'PARKED') {
-    const parked = at(task.updated_at)
-    if (!Number.isFinite(parked)) {
+    if (enteredAt !== null && Number.isFinite(enteredAt)) {
+      return {
+        kind: 'parked',
+        seconds: secs(now - enteredAt),
+        text: `parked ${formatDuration(now - enteredAt)}`,
+        note: 'Time since it parked, from its PARKED event. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.',
+      }
+    }
+    const written = at(task.updated_at)
+    if (!Number.isFinite(written)) {
       return {
         kind: 'none',
         text: 'parked',
@@ -2765,9 +2787,41 @@ export function stepDuration(state: StepState, now: number): StepDuration {
     }
     return {
       kind: 'parked',
-      seconds: secs(now - parked),
-      text: `parked ${formatDuration(now - parked)}`,
-      note: 'Time spent parked. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.',
+      seconds: secs(now - written),
+      text: `parked ≥${formatDuration(now - written)}`,
+      note: "At least this long parked: timed from the record's last write, which is at or after the park, because its PARKED event was not read. A parked step holds no capacity and is doing no work, so this is time waited, never time worked.",
+    }
+  }
+
+  // HOLDING A SLOT IS NOT QUEUED (#503). A LEASED or DISPATCHED step has been
+  // admitted and holds capacity (invariant 1), and it read `queued 3m`, timed
+  // from submission. It says its state, timed from the event that entered it --
+  // for a second attempt too, because the event belongs to this attempt and the
+  // earlier run is not in the span. Without the event a first attempt is bounded
+  // from below by the record's last write (the lease or dispatch wrote it); a
+  // later one falls through to the between-attempts arm, with no figure.
+  if (task.state === 'LEASED' || task.state === 'DISPATCHED') {
+    const word = task.state.toLowerCase()
+    const holds = 'It holds a slot and has not started, so this is time waited for the container, never time run.'
+    if (enteredAt !== null && Number.isFinite(enteredAt)) {
+      return {
+        kind: 'held',
+        seconds: secs(now - enteredAt),
+        text: `${word} ${formatDuration(now - enteredAt)}`,
+        note: `Time since it was ${word}, from its ${task.state} event. ${holds}`,
+      }
+    }
+    const written = at(task.updated_at)
+    if (!Number.isFinite(started) && Number.isFinite(written)) {
+      return {
+        kind: 'held',
+        seconds: secs(now - written),
+        text: `${word} ≥${formatDuration(now - written)}`,
+        note: `At least this long ${word}: timed from the record's last write, which is at or after the transition, because its ${task.state} event was not read. ${holds}`,
+      }
+    }
+    if (!Number.isFinite(started)) {
+      return { kind: 'none', text: word, note: `${task.state}: when it got there was not recorded, so there is no figure. ${holds}` }
     }
   }
 

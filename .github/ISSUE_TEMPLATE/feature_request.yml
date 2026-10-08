@@ -51,6 +51,8 @@ body:
         - "Web UI · Work › Runs (/runs)"
         - "Web UI · Work › Timeline (/timeline)"
         - "Web UI · Work › Repositories (/repositories)"
+        - "Web UI · Work › Setup (/setup)"
+        - "Web UI · Work › Access (/access)"
         - "Web UI · Work › Submit a task (/submit/task)"
         - "Web UI · Work › Submit a workflow (/submit/workflow)"
         - "Web UI · Work › Submit from a GitHub issue (/submit/issue)"

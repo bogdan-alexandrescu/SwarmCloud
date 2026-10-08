@@ -107,3 +107,13 @@ def test_swarm_api_does_not_depend_on_the_worker():
         if importing.search(path.read_text())
     ]
     assert offenders == [], f"swarm_api imports the worker: {offenders}"
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

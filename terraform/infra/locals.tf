@@ -152,6 +152,23 @@ locals {
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
     }
+    # TEMPORARY. Contract request 55, accepted by the owner 2026-10-07: the
+    # canary for contract request 53, claude-code on GKE Autopilot. Built from
+    # claude-code's own entry with only the backend changed, as the Python is,
+    # so the two cannot drift. GKE_AUTOPILOT means the Job loop below creates no
+    # Cloud Run Job for it; the scheduler creates a batch/v1 Job per attempt.
+    # Removed in the same change that switches claude-code itself to GKE.
+    "claude-code-gke" = {
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "GKE_AUTOPILOT"
+      provider       = "anthropic"
+      # claude-code's two env-var names, each mapped to the provider id (not a
+      # credential), written as a comprehension as indexer's are. A GKE pod
+      # projects none of them: its worker reads the secret itself.
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+    }
   }
 
   # --- the retired #295 profiles: no Job for any tenant ----------------------
@@ -196,10 +213,14 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
+  # claude-code-gke is claude-code on GKE (contract request 55, temporary): the
+  # canary must run the same model, or it measures a different agent. It has no
+  # Cloud Run Job, so it reaches its pod only through WORKER_MODELS.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
     "indexer"            = "claude-opus-5-5"
+    "claude-code-gke"    = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -655,6 +676,17 @@ locals {
       # audience this service accepts, and the value the scheduler hands each
       # worker below. Harmless while child tasks are off: no worker calls.
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The SwarmCloud GitHub App's PUBLIC settings (github_app.tf; #780).
+      # swarm_api.forgeapp reads exactly these three names; without them every
+      # /v1/onboarding/github call answers 503 "the App is not configured".
+      # Until 2026-10-07 they reached only the `github_app` output, so the
+      # App registered that day was invisible to swarm-api (found by the
+      # owner's test 1). Empty strings when no App is registered, which
+      # forgeapp reads as "not configured".
+      GITHUB_APP_ID        = var.github_app_id
+      GITHUB_APP_CLIENT_ID = var.github_app_client_id
+      GITHUB_APP_SLUG      = var.github_app_slug
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings

@@ -74,8 +74,11 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // redirect (visual QA Q7, 2026-10-02).
     { key: 'runs', label: 'Runs', icon: 'runs', to: 'work/runs' },
     { key: 'timeline', label: 'Timeline', icon: 'timeline', to: 'work/timeline' },
-    // repositories.html's shell: the last Work page, with its own icon.
+    // repositories.html's shell: the Work page after Timeline, with its own icon.
     { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'work/repositories' },
+    // #780 OB8 (onboarding.html): Setup until it is done, then Access.
+    { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
+    { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
   ],
   capacity: [
     {
@@ -700,6 +703,19 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     <>
       <path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z" />
       <path d="M5.5 17.5a2 2 0 0 1 2-2h11M9 8.5h6" />
+    </>
+  ),
+  // #780 OB8: a checklist for Setup, a key for Access.
+  setup: (
+    <>
+      <path d="M4 6.5l1.6 1.6L8.5 5M4 12.5l1.6 1.6 2.9-3.1M4 18.5l1.6 1.6 2.9-3.1" />
+      <path d="M11.5 7h8.5M11.5 13h8.5M11.5 19h8.5" />
+    </>
+  ),
+  access: (
+    <>
+      <circle cx="8" cy="12" r="3.5" />
+      <path d="M11.5 12H20M17 12v3M20 12v2.5" />
     </>
   ),
   runtimes: (
@@ -1718,14 +1734,16 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
         const look = w.state === null || !current ? null : STATE_MARK[w.state]
         const said = w.state === null ? null : w.state.toLowerCase().replace('_', '-')
         const word = said === null ? 'state not recorded' : current ? said : `last seen ${said}; not re-read since this page loaded`
+        // A LINK, LIKE EVERY OTHER PANEL ROW (#503): a recent workflow opens
+        // in a new tab and copies as its own address.
+        const to = `work/workflows?wf=${encodeURIComponent(w.id)}`
         return (
-          <button
+          <a
             key={w.id}
-            type="button"
             className={`sk-kid sk-recent-kid${w.id === open ? ' is-on' : ''}`}
             aria-current={w.id === open ? 'page' : undefined}
             title={w.name !== null ? `${w.name} · ${w.id}` : w.id}
-            onClick={() => nav(`work/workflows?wf=${encodeURIComponent(w.id)}`)}
+            {...routed(to, () => nav(to))}
           >
             <span className="sk-recent-row">
               <NamedMark
@@ -1737,17 +1755,17 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
               />
               {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):
                   the ellipsis is drawn on this span, so the hover that
-                  explains it is too, not only on the button around it. */}
+                  explains it is too, not only on the link around it. */}
               <span className={RECENT_NAME_CLASS} title={w.name !== null ? `${w.name} · ${w.id}` : w.id}>
                 {w.name ?? w.id}
               </span>
             </span>
-          </button>
+          </a>
         )
       })}
-      <button type="button" className="sk-kid sk-recent-all" onClick={() => nav('work/workflows')}>
+      <a className={`sk-kid ${RECENT_ALL_CLASS}`} {...routed('work/workflows', () => nav('work/workflows'))}>
         All workflows →
-      </button>
+      </a>
     </div>
   )
 }
@@ -1758,6 +1776,8 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
  * then refuses the diff (owner rule, 2026-10-02).
  */
 const RECENT_NAME_CLASS = ['sk', 'recent', 'id'].join('-')
+/** "All workflows →"'s class, built from parts for the same reason. */
+const RECENT_ALL_CLASS = ['sk', 'recent', 'all'].join('-')
 
 /** The workflow the address names (`/workflows/<id>[/<pane>]`), or null. */
 function openWorkflowId(): string | null {

@@ -8,7 +8,8 @@
 //
 // What this file pins:
 //   * with no choice made, the pane opens the account that needs a person, else
-//     the first in list order -- never a placeholder while there are accounts;
+//     the most used, else the first by label (`defaultAccount`, pinned in
+//     accounts.default.test.tsx) -- never a placeholder while there are accounts;
 //   * choosing a row shows that one, and only that one;
 //   * `Add account` sits in the list's header row;
 //   * the list is a list: one item per account, no table and no column heads;
@@ -112,7 +113,7 @@ const TWO = [
 ]
 
 describe('the pane opens an account without being asked (#503)', () => {
-  it('opens the first account in list order, never the placeholder', async () => {
+  it('opens the first account by label when none is used, never the placeholder', async () => {
     await mount(TWO)
     expect(screen.queryByText('Choose an account.')).toBeNull()
     expect(document.querySelector('.acct-pane-empty')).toBeNull()

@@ -1234,13 +1234,16 @@ limited to the roles preflight could read, which is all of them before step 4
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
-**#275's chunking is not yet reflected in the probe script (#276).**
-[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
-still asserts *exactly one* conditioned `projectIamAdmin` binding
-(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
-will find two and stop before asking IAM anything. Filed as #276 rather than
-fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
-brief was terraform/tests/docs only.
+**Preflight checks every chunk, not one binding (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
+one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
+chunk -- and refuses unless each one's expression is exactly
+`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`
+and its list does not name `roles/browser`. A grant is admitted if *any*
+binding admits it, so one chunk with a broader condition (a `|| true`, a
+`hasAny`) or the probe role in its list would make a grant prove nothing; the
+whole expression is matched, and the list is parsed, for that reason. Before
+#276 it asserted exactly one binding and would have stopped at two.
 
 **What it cannot prove:**
 
@@ -1608,7 +1611,26 @@ It refuses, with a comment on the pull request saying which and why:
   requires only the checks that run on every pull request, plus `ci-gate`; a
   path-filtered workflow (`application.yml`, `terraform.yml`) is not required,
   but when a pull request's changes do trigger it, this still holds the merge
-  on its result.
+  on its result;
+* **a closing keyword that names an open pull request** (since 2026-10-08,
+  owner decision). The text of PR 857 named the open, unmerged PR 840 with a
+  closing keyword, and two seconds after the App merged 857, GitHub itself
+  closed 840. Before the gate, the enable job checks out the **default
+  branch's** `scripts/` (sparse, no credentials, never the pull request's
+  head) and runs
+  [`scripts/check-closing-references.sh`](../scripts/check-closing-references.sh).
+  GraphQL `closingIssuesReferences` is an IssueConnection and never lists a
+  pull request (PR 817 puts "fixes" before PR 777 and lists nothing). So the
+  script also reads the closing keywords in the title, the body and **every
+  commit message**, because this repository's squash message is the commit
+  messages. For each number in this repository it asks REST
+  `repos/<R>/issues/<n>` whether it is a pull request and whether it is open.
+  An open one refuses on the label and on a re-evaluation alike: `ready` is
+  removed and the comment says to reword the reference ("PR 840") or write
+  `part of #840`. An issue passes. So does a closed or merged pull request:
+  the keyword closes, never reopens, and cannot change a merged one. If the
+  check cannot tell (an error, a failed read other than a 404, more than one
+  page of references or commits), the job fails and nothing is armed.
 
 A check **still running** is not a refusal (since 2026-10-06, #697): if it
 is a *required* one the pull request is queued and waits, as the next section
@@ -1770,6 +1792,23 @@ pull request **merged into the default branch**:
   `part of #N` — which GitHub does not list as a closing reference — is never
   closed. Write `part of #N` for a partial fix, and a closing keyword only when
   it is unconditionally true (CLAUDE.md, "Issues");
+* it **never closes a pull request**. Owner decision, 2026-10-08: #857's
+  text said `fix #840`, and #840, an open pull request, was closed two
+  seconds after #857 merged. When a closing keyword names a pull request, the
+  script leaves that pull request open, whatever its state. It also posts one
+  comment on the merged pull request: "#N is a pull request named by a closing
+  keyword in this pull request's text; it was left open ...".
+  `closingIssuesReferences` is an `IssueConnection`, so GitHub types every
+  node as `Issue`, and a `... on PullRequest` fragment there is a GraphQL
+  validation error. For that reason the script reads the REST issue endpoint
+  before every close: its `pull_request` key is the authoritative answer. If
+  that check fails, nothing is closed for that reference and the job fails.
+  This guard covers only the script's own closes. In the #857 merge, the
+  job's log reads "#857 has no closing references", and #840's `closed`
+  event came at 04:16:21, nine seconds before the job ran. Its actor is
+  `swarmcloud-merge[bot]`, the merging App, so GitHub's own keyword handling
+  closed #840. Nothing in this repository can stop that. The only defence is
+  never to put a closing keyword before a pull request's number;
 * an issue that is already closed is left alone, with no second comment, and
   one in another repository is recorded in the run summary, not touched;
 * an unreadable answer or an unmerged pull request fails the job and closes
@@ -1791,7 +1830,8 @@ the release builds — never the pull request's head. A close made with the
 GITHUB_TOKEN starts no workflow, which is right here: nothing should.
 [`test_close_merged_issues.py`](../tests/unit/scripts/test_close_merged_issues.py)
 runs the script against a fake `gh` (`Closes` vs `part of` vs already closed,
-another repository, an unmerged or unreadable pull request), and
+another repository, a referenced pull request, an unmerged or unreadable pull
+request), and
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds the job's trigger, permissions and checkout.
 

@@ -564,6 +564,12 @@ export interface Task {
    */
   parent_task_id?: string | null
   parent_attempt_id?: string | null
+  /** #780 OB7: the slot the task's GitHub token is read from, by name. */
+  forge_credential?: string | null
+  /** `read` or `write`; null when the task names no GitHub credential. */
+  forge_access?: 'read' | 'write' | null
+  /** "the submitter's GitHub credential", "tenant token, service submission", or null. */
+  forge_credential_source?: string | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -2065,8 +2071,21 @@ export interface DispatchControl {
 /** `SubmissionService.providers`, service.py:334-350. */
 export interface ProviderEntry {
   provider: string
-  /** Provider NAMES only, from tenants/{id}.credentials. Never key material. */
+  /**
+   * True when the tenant's own key OR a pool account it owns or is lent
+   * serves this provider -- admission's rule (#76). Never key material.
+   */
   credential_registered: boolean
+  /**
+   * Which one: `tenant_key` (asked first, as admission does) or
+   * `account_pool`; null when neither. Optional: served after #76.
+   */
+  credential_source?: 'tenant_key' | 'account_pool' | null
+  /**
+   * The profiles that credential can run. A pool account runs only a profile
+   * that takes a subscription token, so it can be fewer than runner_profiles.
+   */
+  runnable_profiles?: string[]
   runner_profiles: string[]
   /** null when no quota document exists for this tenant yet. Not zeros. */
   quota: QuotaState | null
@@ -2075,6 +2094,11 @@ export interface ProviderEntry {
 export interface ProvidersPage {
   tenant_id: string
   providers: ProviderEntry[]
+  /**
+   * How the account pool was read for this page: `unreadable` means a false
+   * credential_registered may still be served by a lent account.
+   */
+  account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
   generated_at: string
 }
 
@@ -4828,6 +4852,13 @@ export interface IssueRun {
   requirements_met?: boolean | null
   requirements_unmet?: string[]
   requirements_note?: string | null
+  /**
+   * True once the write-back closed the issue (`issuesync`): only an
+   * `already_on_main` run with every requirement met is closed by the run
+   * itself. Null or absent: this run did not close it, which says nothing of
+   * a merge's `Closes #N`.
+   */
+  issue_closed?: boolean | null
 }
 
 /** `IssueRun.to_api().pull_request`. */
@@ -4999,4 +5030,190 @@ export interface OnboardingDoc {
   next_step: OnboardingStepName | null
   complete: boolean
   source: string
+}
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4; read by OB8's Access page)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/access.py and `access.py`
+// (`org_to_api`, `grant_to_api`, `owners`, `repositories`, `verify`,
+// `members`). Like the connection above, NO FIELD HOLDS A VALUE: the person's
+// token is in hand for one request inside swarm-api and no answer carries it.
+
+/** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
+export type AccessMode = 'read' | 'write'
+
+/** The checks verify runs (`access.CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request'
+
+/** A check's answer. `not_required` is push and pull request on a read grant. */
+export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
+
+export interface AccessCheck {
+  state: AccessCheckState
+  /** The §2.3 code a check that did not pass carries. */
+  code: string | null
+  checked_at: string | null
+}
+
+/** `access.org_to_api`: an owner the person enabled. */
+export interface AccessOrg {
+  owner: string
+  owner_type: 'User' | 'Organization' | null
+  installation_id: number | null
+  /** GitHub's `all` or `selected`. */
+  repository_selection: string | null
+  install_state: string | null
+  /** `ok`, `required` or `unknown`: what the last listing found about SAML SSO. */
+  sso: string | null
+  enabled: boolean
+  enabled_at: string | null
+  checked_at: string | null
+}
+
+/** `access.grant_to_api`: one repository the person chose. */
+export interface AccessGrant {
+  repo_id: string
+  repository: string
+  owner: string
+  mode: AccessMode
+  can_push: boolean | null
+  archived: boolean | null
+  granted_at: string | null
+  granted_by: string | null
+  checks: Partial<Record<AccessCheckName, AccessCheck>>
+  verified_at: string | null
+}
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants. No forge read. */
+export interface AccessOverview {
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+  tenant_id: string
+}
+
+/** One owner `GET /v1/access/orgs` found: the account, an installation, or an org with none. */
+export interface AccessOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  installation_id: number | null
+  repository_selection: string | null
+  install_state: 'installed' | 'not_installed'
+  sso: string
+  enabled: boolean
+  /** The App's install page, for an owner it is not installed on. */
+  install_url: string | null
+}
+
+/** `GET /v1/access/orgs`. */
+export interface AccessOwners {
+  owners: AccessOwner[]
+  /** False when GitHub did not list the person's orgs; installations are still listed. */
+  orgs_listed: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** One repository of an owner's installation, as `access._entries` serves it. */
+export interface AccessRepository {
+  repository: string
+  owner: string
+  repo: string
+  repo_id: string
+  visibility: string | null
+  archived: boolean
+  default_branch: string | null
+  /** Whether GitHub lets the person push: shown before Write is chosen (chooser A). */
+  can_push: boolean | null
+  registered: boolean
+  granted: boolean
+  mode: AccessMode | null
+}
+
+/** `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: one page. */
+export interface AccessRepositoryPage {
+  owner: string
+  repositories: AccessRepository[]
+  page: number
+  per_page: number
+  max_pages: number
+  next_page: number | null
+  /** The listing stopped at `max_pages`; past it a person types owner/repo. */
+  capped: boolean
+  q: string | null
+  /** GitHub's count for the installation; null under a search. */
+  total_count: number | null
+  tenant_id: string
+}
+
+/** `POST /v1/access/orgs`. */
+export interface AccessEnableResponse {
+  org: AccessOrg
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/orgs/{owner}`. */
+export interface AccessDisableResponse {
+  owner: string
+  grants_deleted: number
+  unregistered: string[]
+  /** Where an org owner uninstalls the App: SwarmCloud cannot narrow the person's token (§2.4). */
+  installation_settings_url: string | null
+  tenant_id: string
+}
+
+/** `PUT /v1/access/grants/{repo_id}`. */
+export interface AccessGrantResponse {
+  grant: AccessGrant
+  /** True when this grant registered the repository for the tenant. */
+  registered: boolean
+  registration_repo_id: string | null
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`. */
+export interface AccessRevokeResponse {
+  repo_id: string
+  revoked: boolean
+  unregistered: boolean
+  tenant_id: string
+}
+
+/** One check verify could not pass, with its §2.3 copy filled in. */
+export interface AccessVerifyFailure {
+  check: string
+  code: string
+  copy: string
+  url?: string | null
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`. */
+export interface AccessVerifyResponse {
+  grant: AccessGrant
+  failures: AccessVerifyFailure[]
+  passed: boolean
+  tenant_id: string
+}
+
+/** The `detail` of a refused access request (`access.AccessRefused`). */
+export interface AccessRefusalDetail {
+  failure_code: string
+  recovery: string
+  url: string | null
+}
+
+/** One member in `GET /v1/access/members` (admin): states and names, never a value. */
+export interface AccessMember {
+  user: string
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+}
+
+/** `GET /v1/access/members`. */
+export interface AccessMembers {
+  members: AccessMember[]
+  tenant_id: string
 }

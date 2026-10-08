@@ -1,50 +1,49 @@
 #!/usr/bin/env bash
 # The seams, end to end, against a deployed environment.
 #
-# The other suites here check PROPERTIES of the platform -- a pool is never over
-# its limit, a failure leaks no capacity, the last free slot goes to one task.
-# This one checks that the halves of the platform are actually JOINED, because
-# that is what has been breaking: over three days every defect found by running
-# something was a seam where both ends existed and nothing had ever executed the
-# middle. An agent that could not be told where to write its output. Five spend
-# fields written by the worker and never read by the API. A broker call with a
-# keyword the callee does not take. A handler reading app state nothing set.
+# The other suites check PROPERTIES of the platform. This one checks that its
+# halves are JOINED: every defect found by running something over three days
+# was a seam where both ends existed and nothing had executed the middle. Each
+# of its eleven cases is written so the FAILING platform does not satisfy it:
 #
-# Each check below is the one that would have caught one of those, and each is
-# written so the FAILING version of the platform does not satisfy it:
+#   handoff (1-5)  a two-step `mock` workflow (`--profile` to change) whose
+#                  producer's artifact must be in its manifest, under its own
+#                  attempt prefix and beside the runner's log streams; listed,
+#                  complete and with no download URL over HTTP; and recorded
+#                  as staged in the consumer's workspace with the same bytes,
+#                  path and source -- not merely SUCCEEDED, which the broken
+#                  platform also reached.
+#   negative (6)   a step promised a file nobody wrote must NOT succeed, and
+#                  its error must name the file: proof that 1-5 can fail.
+#   spend (7)      every attempt of the producer carries the 5 spend keys,
+#                  and up to 25 attempts Firestore holds usage for serve the
+#                  same values over HTTP. Present-when-present: the test that
+#                  missed this asserted only absent-when-absent.
+#   sign-in (8)    POST /accounts/authorize returns an https URL with a PKCE
+#                  challenge and its state, and no verifier or credential.
+#   agreement (9)  Firestore and the API give the same state for this run's
+#                  tasks, after one re-read.
+#   capacity (10)  platform-wide, no DISPATCHED/STARTING/RUNNING task names a
+#                  Cloud Run execution that is not running, or none at all.
+#   workflow (11)  a workflow whose steps all SUCCEEDED reads SUCCEEDED over
+#                  HTTP, as the API's read-time derivation should make it.
+# A case with nothing to compare is NOT MEASURED; --require-spend fails those.
 #
-#   1 handoff        a two-step workflow, asserted on the BYTES that reached
-#                    the downstream workspace -- not on a SUCCEEDED state, which
-#                    the broken platform also produced;
-#   2 provenance     an artifact the WORKLOAD produced, named apart from the
-#                    files the runner writes for itself -- `artifacts != []`
-#                    was true throughout the outage;
-#   3 spend          token counts and cost compared between Firestore and the
-#                    HTTP API, present-when-present, on every attempt that has
-#                    any -- the passing test that missed this asserted only
-#                    absent-when-absent, which the bug satisfied;
-#   4 sign-in        /v1/accounts/authorize answers with a usable URL and a
-#                    state and leaks no verifier;
-#   5 agreement      Firestore, the API and the Cloud Run execution say the same
-#                    thing about a live task, or the disagreement is REPORTED;
-#   6 negative       a step promised a file nobody wrote must NOT succeed. This
-#                    is the suite's own proof that check 1 can fail.
+# WHAT IT CANNOT PROVE: the `mock` runner IS its own workload, so it cannot tell
+# a file an agent CHILD PROCESS wrote from one the runner wrote -- the exact
+# distinction the SWARM_ARTIFACTS_DIR defect turned on. That is proved offline
+# in tests/unit/worker/test_agent_seam_end_to_end.py.
 #
-# WHAT THIS SUITE DELIBERATELY CANNOT PROVE, stated here rather than left for a
-# reader to assume: the `mock` profile's runner IS its own workload, so a mock
-# run cannot distinguish a file written by an agent CHILD PROCESS from one
-# written by the runner itself -- which is the precise distinction the
-# SWARM_ARTIFACTS_DIR defect turned on. That distinction is proved offline, with
-# a real agent child on the far side of run_child, in
-# tests/unit/worker/test_agent_seam_end_to_end.py. Check 2 here proves the rest
-# of the chain: harvest, manifest, GCS prefix and the HTTP read path.
+# Nothing here writes to Firestore directly. Through the API it creates two
+# workflows; on exit cleanup() asks to cancel their four step tasks, unless
+# --keep (cancel_all ignores failures, and a workflow is never cancelled as a
+# workflow). Case 8 leaves one pending sign-in record, carrying a PKCE
+# verifier, which nothing deletes: see case 8 for why.
 #
-# Nothing here writes to Firestore directly. What it creates through the API is
-# two workflows, whose step tasks are cancelled on the way out (cleanup()
-# cancels tasks; a workflow is never cancelled as a workflow), and one pending
-# sign-in record from check 4, which is left behind: see check 4 for why.
+# --help prints lines 2-46, so this header ends at line 46.
 #
-# Usage: scripts/e2e-test.sh [--timeout 900] [--keep] [--require-spend]
+# Usage: scripts/e2e-test.sh [--profile mock] [--timeout 900] [--keep]
+#                            [--require-spend]
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -561,14 +560,14 @@ fi
 # ---------------------------------------------------------------------------
 t_case "A workflow whose steps have all finished does not still read QUEUED"
 #
-# A workflow's `state` is written once, at creation, and nothing in this
-# repository ever advances it: `Store.create_workflow` sets it and
-# `Store.cancel_workflow` only sets `cancel_requested`. So a workflow whose
-# every step has SUCCEEDED still serves QUEUED, for ever, through the same field
-# a UI renders as progress.
+# A workflow's `state` was once written only at creation, so a workflow whose
+# every step had SUCCEEDED served QUEUED for ever, through the same field a UI
+# renders as progress. The API now derives it from the steps on every read
+# (`swarm_api.rollup`, `routes/workflows.py`) and writes it back through
+# `Store.set_workflow_state` when the stored copy disagrees.
 #
-# This is asserted rather than described because a check that agrees with the
-# defect is how the defect survives.
+# This is asserted rather than described because a check that agrees with a
+# defect is how the defect survives, and the derivation could regress.
 WF_BODY_OUT="$(mktemp "${TMPDIR:-/tmp}/swarm-e2e-wf.XXXXXX")"
 if api_fetch "/workflows/${WF_ID}" "${WF_BODY_OUT}"; then
   WF_STATE="$(jq -r '.workflow.state // "MISSING"' <"${WF_BODY_OUT}")"

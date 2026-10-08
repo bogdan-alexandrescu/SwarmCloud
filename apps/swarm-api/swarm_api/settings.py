@@ -411,6 +411,17 @@ class ApiSettings:
     #: reconciler left executions running 7-13 h after a cancel; off in this
     #: dataclass's own default so a test or a local run never reaches Google.
     execution_cancel_enabled: bool = False
+
+    # --- refusing a person's task on an ungranted repository (#780 D4) -----
+    #: Whether a PERSON's task on a GitHub repository they hold no grant for is
+    #: refused (403 REPOSITORY_NOT_GRANTED). OFF by default (owner decision
+    #: 2026-10-08): the check shipped (#845) before anyone could connect GitHub
+    #: and choose repositories, so it refused every person's task. While off, a
+    #: person with no grant runs with the tenant token, `git`, with write, as
+    #: before #780; a person WITH a grant still runs with their own slot. It is
+    #: switched on in the migration step (OB10), after the owner's connection
+    #: test (REPOSITORY_GRANTS_ENFORCED=true).
+    repository_grants_enforced: bool = False
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
     #: service, holds the stop permissions. Empty means a cancel is left to the
@@ -482,6 +493,7 @@ class ApiSettings:
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
+            repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),

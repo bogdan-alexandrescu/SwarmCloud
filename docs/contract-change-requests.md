@@ -60,8 +60,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
-| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | proposed |
+| 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 55 |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
+| 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | ACCEPTED 2026-10-07, applied; temporary, removed when `claude-code` moves to GKE |
 
 ---
 
@@ -284,7 +285,7 @@ if source.input_from:
 
 **Read by exactly one place.** `agent-worker/agent_worker/inputs.py:56`
 (`METADATA_KEY = "input_from"`) and `declared_inputs()` at `:109-154`, called
-from `lifecycle.py:875-905` (`_stage_declared_inputs`). `declared_inputs` then
+from `apps/agent-worker/agent_worker/lifecycle.py::Worker._stage_declared_inputs`. `declared_inputs` then
 re-validates every key and every value at runtime -- the key is a non-empty
 string, the value is a non-empty string, no two entries share a destination --
 because the contract types `metadata` as `dict[str, Any]` and says nothing about
@@ -402,7 +403,7 @@ re-validates every key at runtime."
 
 ### The shape, and its single writer
 
-`agent-worker/agent_worker/lifecycle.py:2110`, inside `_upload_outputs`:
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._upload_outputs`:
 
 ```python
 artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
@@ -433,7 +434,7 @@ rendered (`gs://...` in production, `file://...` locally).
 A fifth thing shares the name and not the shape:
 `agent-worker/agent_worker/runners/base.py:172` writes
 `"artifacts": [<filename>, ...]` -- a list of **strings** -- into the runner's
-`result.json`. It is not copied into `result_summary` (`lifecycle.py:697-707`
+`result.json`. It is not copied into `result_summary` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._add_runner_block`
 takes `status`, `summary`, `output` and `metrics` only), so the two do not
 collide today. They are two identically-named fields with incompatible shapes in
 one codebase, which is the ambiguity a named type removes.
@@ -650,7 +651,7 @@ The accepted vocabularies are `DISPATCH_STRATEGIES` (`:155`) and
   the API's defaults so a task predating the feature reads as
   `collect`/`checkpoints` rather than null, and `codec.workflow_dispatch`
   (`:122-149`) rolls that up to the workflow.
-* `agent-worker/lifecycle.py:1611-1675` -- for the worker. Five accessors:
+* `apps/agent-worker/agent_worker/lifecycle.py::Worker._dispatch_block` and the four beside it -- for the worker. Five accessors:
   `_dispatch_block`, `_dispatch_strategy`, `_dispatch_role`,
   `_dispatch_integrates`, `_dispatch_carrier`.
 
@@ -9416,3 +9417,133 @@ tenant token as a fallback for a user without a grant (decision D4).
   can never name another tenant's secret.
 - **Invariant 10.** No caller sets either field. swarm-api writes them from
   its own resolution of the grants, as it writes `parent_task_id`.
+
+---
+
+## 55. `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53
+
+**Status:** ACCEPTED by the owner 2026-10-07, and applied in the same change
+that files it. TEMPORARY: the entry is removed in the same change that
+switches `claude-code` itself to `Backend.GKE_AUTOPILOT` (request 53's last
+step), or, if request 53 is withdrawn after the canary, in the change that
+records that. This is the sanctioned edit to `apps/common/swarm_common/` for
+it; nothing else in the frozen package changes.
+
+### What is true today
+
+* **Request 53 is accepted, with conditions** (above): its follow-ups land
+  first, the `GKE_AUTOPILOT` ceiling rises to 100, and the Cloud Run
+  claude-code Jobs stay as a fallback until a week of clean GKE runs. The
+  `profiles.py` switch is the last change.
+* **Nothing can run claude-code on GKE before that switch.** A caller names a
+  profile, never a backend (invariant 10), and `claude-code` resolves to
+  `CLOUD_RUN_JOB`. Request 53's probe measured the image on Autopilot with a
+  no-op command: no Workload Identity token, no Secret Manager read, no
+  Firestore write, no clone, no `/dev/shm`/`/tmp`/HOME/spec-verify mounts, no
+  two-hour run (its "What the probe did NOT measure"). The only way to measure
+  those on real steps, without moving every claude-code step at once, is a
+  second catalogue name for the same runner on the other backend.
+* **The GKE pod carried no `MODEL`** (request 53, follow-up 1):
+  `GkeJobDispatcher._manifest` built its environment from `gke_worker_env`
+  and `RUNNER_JOB_NAME` only, so a claude-code pod would have run the CLI's
+  default model.
+
+### Why
+
+A canary on real steps answers what the probe could not -- the DISPATCHED ->
+STARTING time including the Job controller, the worker's first log and its
+STARTING write; the workspace on a 4Gi disk `emptyDir` instead of tmpfs;
+extended run time over a full run -- while `claude-code` keeps running on
+Cloud Run for everyone else. The week of clean GKE runs request 53's third
+condition asks for needs runs to count.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, after the `RUNNER_PROFILES` dict
+literal:
+
+```python
+RUNNER_PROFILES["claude-code-gke"] = replace(
+    RUNNER_PROFILES["claude-code"], name="claude-code-gke", backend=Backend.GKE_AUTOPILOT
+)
+```
+
+IDENTICAL to `claude-code` in every other field -- image, `runner_argv`,
+provider, secrets and `secrets_any_of`, resource class, timeout, checkpoint
+interval, inputs, availability -- because it is BUILT from that entry with
+`dataclasses.replace`, not restated, so the two cannot drift.
+`tests/unit/control_plane/test_claude_code_gke_canary.py` asserts that only
+`name` and `backend` differ.
+
+**The non-frozen mirrors, in the same change:**
+
+1. `terraform/infra/locals.tf`: `runner_profiles["claude-code-gke"]`
+   (backend `GKE_AUTOPILOT`), so the catalogue comparison holds and its pool
+   `runner:claude-code-gke` exists, with no `pool_limits.runner_profiles`
+   entry: it takes the `global` ceiling, and the `GKE_AUTOPILOT` backend pool
+   (shared with browser) is what binds. The Job matrix keeps only
+   `backend == "CLOUD_RUN_JOB"`, so **no Cloud Run Job is created for it**;
+   `catalogue.tftest.hcl` asserts that.
+   `runner_models["claude-code-gke"]` names claude-code's model, which reaches
+   the scheduler as `WORKER_MODELS`.
+2. `tests/terraform/catalogue_mirror/main.tf`: the text parser reads this
+   `replace(...)` shape as its base with the backend overridden, and cuts
+   each literal entry at the end of the dict so the last one does not absorb
+   the assignment.
+3. `apps/scheduler/scheduler/dispatch.py`: `profile_model(settings, profile)` (already on main from request 53),
+   one lookup for both backends, and `GkeJobDispatcher._manifest` sets `MODEL`
+   from it -- request 53's follow-up 1, for every GKE profile with a pinned
+   model (browser has none and gets none).
+4. Worker and API: `agent_worker.runners.streams.cli_agent_spec` and
+   `swarm_api.agent_streams.AGENT_STREAM_FILES` treat it as the claude_code
+   CLI, as they do `claude-code-review` and `indexer`.
+5. Console: `PLATFORM_RUNNERS` in `RunnerPicker.tsx` marks it "platform", so
+   the Submit picker lists it after the runners people submit rather than
+   beside `claude-code`. The console has no mechanism that hides a profile
+   (that list's comment says so: a name is drawn, never hidden), and the
+   frozen `RunnerProfile` has no audience field; a caller who names it can
+   still submit it, which is how the canary is run.
+6. `kubernetes/worker-templates/worker-job.yaml`: the reference GKE Job now
+   mounts `/dev/shm` and the spec-verify ConfigMap, which the dispatcher
+   already mounts on EVERY GKE pod; the template was unread while browser
+   was the only GKE profile.
+
+### What it would break if accepted
+
+* **A second name for claude-code.** Reports, pools and the console count
+  the canary apart from `claude-code`. That is the point of a canary, and it
+  is temporary.
+* **Shared memory on GKE.** Every GKE pod gets a 2Gi memory-backed
+  `/dev/shm`. It counts against the 8 GiB limit only as far as something
+  writes to it, which the claude CLI is not known to do; it is not measured.
+* **The `GKE_AUTOPILOT` pool** is shared with browser until request 53's
+  ceiling rise lands: a canary step can make a browser step wait.
+
+### If it is declined
+
+Request 53 is applied without a canary: `claude-code` moves to GKE for every
+step at once, and the probe's unmeasured items are first measured in
+production.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased,
+  admitted task; an unschedulable pod is a DISPATCHED lease bounded by the
+  dispatch deadline, never a backlog.
+- **Invariant 2.** Unchanged: admission reserves `runner:claude-code-gke`,
+  `backend:GKE_AUTOPILOT` and the rest in the same single transaction.
+- **Invariant 3.** Unchanged: counted from LEASED.
+- **Invariant 4.** Unchanged: the same image ENTRYPOINT and lifecycle.
+- **Invariant 5.** Unchanged: `GENERATION` in the pod's env and the Job
+  name; `backoffLimit: 0`.
+- **Invariant 6 (Spot).** Preserved: no Spot request, `safe-to-evict:
+  "false"` on the Job and the pod, `spot` copied as `ON_DEMAND_ONLY`.
+- **Invariant 7.** Preserved: `requests == limits` from
+  `RESOURCE_CLASSES["standard"]`.
+- **Invariant 8.** Unchanged: checkpointing is mandatory and periodic at
+  claude-code's interval; the node-side eviction paths are what it absorbs.
+- **Invariant 9.** Unchanged: the tenant's namespace, KSA, GSA, secrets and
+  GCS prefix, as browser's pods use today.
+- **Invariant 10.** Unchanged: a caller names `claude-code-gke`, and the
+  catalogue says where it runs. `MODEL` comes from the scheduler's
+  `WORKER_MODELS`, never from the task (`test_a_tasks_own_model_never_reaches_the_pod`).

@@ -29,11 +29,11 @@
    owner QA 2026-10-04). Two lines broken anywhere cut an unnamed workflow's
    id mid-token -- `wf_8fa28bbc798e4b8a8e7 / e` -- and an id broken across
    lines is a different id to the eye. One line, never broken; the whole name
-   and id are the button's title (Spine.tsx `RecentWorkflows`). */
-/* (Selected through the group and its buttons: a class name of seven or more
+   and id are the link's title (Spine.tsx `RecentWorkflows`). */
+/* (Selected through the group and its links: a class name of seven or more
    characters after the panel's two-letter prefix reads as a provider key to
    the worker's publish scan.) */
-.sk-recent > button.sk-kid > span > span:last-child {
+.sk-recent > a.sk-kid > span > span:last-child {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -41,7 +41,7 @@
   white-space: nowrap;
   overflow-wrap: normal;
 }
-.sk-recent > button.sk-kid > span { align-items: center; }
+.sk-recent > a.sk-kid > span { align-items: center; }
 
 /* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards and the
    phone's list. */

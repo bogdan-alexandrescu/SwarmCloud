@@ -310,8 +310,11 @@ difference. The check therefore has three modes:
 - **CI:** skips with a `::notice`, so the run page says it compared nothing
   rather than passing.
 - **Operator, with `--require-live`:** turns a skip into a failure.
-  `kubernetes/README.md` ("Using it") runs it this way after every apply, and
-  `apply.sh --confirm` prints the command.
+  `apply.sh --tenant <id> --confirm` runs it this way after the apply,
+  scoped to that tenant's namespace with the same context and `--cluster`,
+  and fails when it fails (#76). Scoped, so a stale neighbour cannot fail
+  another tenant's apply; the whole-cluster sweep (no `--namespace`) is
+  printed beside it. A dry run prints the command and runs nothing.
 - **Empty sweep:** refused, because no policy found is not agreement.
 
 **Why the cluster, not terraform, is the authority.** The ranges start in

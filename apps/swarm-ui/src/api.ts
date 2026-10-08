@@ -31,6 +31,8 @@ import type {
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
+  AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -2765,7 +2767,9 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 200))
-    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+    // The route's shape -- `{ pool }` with the pool's new hard limit -- because
+    // the editor compares that pool with what was asked (AdminSettings `saveOutcome`).
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: { name: poolName, hard_limit: limit } } }
   }
 
   return write(path, 'PUT', { limit })
@@ -3255,7 +3259,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
-  "indexer": {"required_keys": ["prompt"]}
+  "indexer": {"required_keys": ["prompt"]},
+  "claude-code-gke": {"required_keys": ["prompt"]}
 }
 
 /**
@@ -3287,7 +3292,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
-  "indexer": {"available": true, "disabled_reason": ""}
+  "indexer": {"available": true, "disabled_reason": ""},
+  "claude-code-gke": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -5372,4 +5378,83 @@ export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<G
 /** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
 export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
   return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
+}
+
+// ---------------------------------------------------------------------------
+// The access API (#780, OB4), read and written by the Access page (OB8).
+//
+// The routes are swarm_api/routes/access.py. Each acts as the caller with
+// THEIR OWN GitHub connection, inside the caller's tenant (`tenant_scope`);
+// none answers a value. The fixture build answers each as not served.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants (no GitHub read). */
+export async function loadAccess(): Promise<Result<AccessOverview>> {
+  return readAs(route('/v1/access'), (raw) => raw as AccessOverview)
+}
+
+/** `GET /v1/access/orgs`: every owner the caller's connection reaches, each with its install state. */
+export async function loadAccessOwners(): Promise<Result<AccessOwners>> {
+  return readAs(route('/v1/access/orgs'), (raw) => raw as AccessOwners)
+}
+
+/** `POST /v1/access/orgs`: enable an owner the App is installed on. */
+export async function enableAccessOwner(owner: string): Promise<Result<AccessEnableResponse>> {
+  return writeTo(route('/v1/access/orgs'), 'POST', { owner }) as Promise<Result<AccessEnableResponse>>
+}
+
+/** `DELETE /v1/access/orgs/{owner}`: disable it, and delete every grant under it in one write. */
+export async function disableAccessOwner(owner: string): Promise<Result<AccessDisableResponse>> {
+  return writeTo(route('/v1/access/orgs/{owner}', { owner }), 'DELETE') as Promise<Result<AccessDisableResponse>>
+}
+
+/**
+ * `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: ONE page of the
+ * owner's installation, searched server-side (a substring of the name).
+ */
+export async function loadAccessRepositories(owner: string, page = 1, q = ''): Promise<Result<AccessRepositoryPage>> {
+  const query = new URLSearchParams({ page: String(page) })
+  if (q.trim() !== '') query.set('q', q.trim())
+  return readAs(route('/v1/access/orgs/{owner}/repositories', { owner }, query), (raw) => raw as AccessRepositoryPage)
+}
+
+/** `PUT /v1/access/grants/{repo_id}`: grant read or write. The server reads the repository once, as the caller. */
+export async function putAccessGrant(repoId: string, repository: string, mode: AccessMode): Promise<Result<AccessGrantResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'PUT', { repository, mode }) as Promise<Result<AccessGrantResponse>>
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`: revoke the grant. */
+export async function revokeAccessGrant(repoId: string): Promise<Result<AccessRevokeResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'DELETE') as Promise<Result<AccessRevokeResponse>>
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`: run clone, push and pull request now. Reads only (D6). */
+export async function verifyAccessGrant(repoId: string, checks?: AccessCheckName[]): Promise<Result<AccessVerifyResponse>> {
+  return writeTo(route('/v1/access/grants/{repo_id}/verify', { repo_id: repoId }), 'POST', checks === undefined ? {} : { checks }) as Promise<
+    Result<AccessVerifyResponse>
+  >
+}
+
+/** `GET /v1/access/members` (admin): every member's connection state and grants in the caller's tenant. */
+export async function loadAccessMembers(): Promise<Result<AccessMembers>> {
+  return readAs(route('/v1/access/members'), (raw) => raw as AccessMembers)
+}
+
+/**
+ * THE REGISTRATION ID OF A TYPED `owner/repo`, for `PUT /v1/access/grants/{repo_id}`.
+ *
+ * A repository picked from a listing carries its `repo_id`, minted by the
+ * server; a TYPED one has none, and the route is keyed on it. This is
+ * `swarm_api/repositories.py::repo_id_for`, restated: `repo_` + the first 16
+ * hex of sha256(tenant + `github.com/` + lower-cased owner/repo). A drift
+ * cannot grant the wrong repository: the server recomputes it from the body's
+ * `repository` and refuses a mismatch ("repo_id is not this tenant's id for
+ * that repository"). `__tests__/access.test.tsx` pins it to a value the
+ * Python recipe produced.
+ */
+export async function typedRepoId(tenantId: string, repository: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${tenantId}github.com/${repository.toLowerCase()}`)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `repo_${hex.slice(0, 16)}`
 }

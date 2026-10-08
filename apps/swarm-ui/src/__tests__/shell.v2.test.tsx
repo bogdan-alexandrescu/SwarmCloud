@@ -13,7 +13,7 @@ import { App } from '../App'
 import { wholeAppFault } from '../AppStates'
 import { forgetProbes, type ProbeRecord, type Result } from '../fetch'
 import { Screen } from '../Shell'
-import { panelCounts } from '../Spine'
+import { panelCounts, RECENT_WORKFLOWS_KEY } from '../Spine'
 import type { Capacity, Me, Stats } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 
@@ -75,7 +75,7 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
     // MUTATION: drop `<Icon name={p.icon} />` from PanelPages.
     const c = await at('/agents/live')
     const rows = [...c.querySelectorAll('.sk-panel .sk-pk')]
-    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories'])
+    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories', 'Setup', 'Access'])
     for (const r of rows) expect(r.querySelector('svg.sk-ic'), `${r.textContent} has no icon`).not.toBeNull()
   })
 
@@ -131,6 +131,18 @@ describe('#503: the panel lights the current page, not its parent', () => {
     expect(c.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe('Agents')
   })
 
+  it.each([
+    ['/capacity/pools', 'Pools', 'Ceilings'],
+    ['/capacity/pools/profiles', 'Pools', 'By runner profile'],
+  ])('on %s it lights only the deepest match, %s › %s', async (path, group, page) => {
+    // MUTATION: light the group row as well (`on = group`).
+    const c = await at(path)
+    const current = [...c.querySelectorAll('.sk-panel [aria-current="page"]')]
+    expect(current.map((e) => e.textContent?.trim())).toEqual([page])
+    expect(c.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe(group)
+    expect(c.querySelector('.sk-panel .sk-pk.is-group')?.hasAttribute('aria-current')).toBe(false)
+  })
+
   it('lights a page with no children itself', async () => {
     const c = await at('/workflows')
     expect(c.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('Workflows')
@@ -168,6 +180,50 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     expect(window.location.pathname).toBe('/overview')
     fireEvent.click(work)
     await waitFor(() => expect(window.location.pathname).toBe('/agents'))
+  })
+
+  it.each([
+    ['meta', { metaKey: true }],
+    ['shift', { shiftKey: true }],
+    ['middle', { button: 1 }],
+  ])('leaves a %s-click on every section to the browser', async (_, init) => {
+    // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
+    const c = await at('/overview')
+    const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
+    expect(sections).toHaveLength(4)
+    for (const a of sections) {
+      const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
+      a.dispatchEvent(e)
+      expect(e.defaultPrevented, `${a.dataset.sec} took the click from the browser`).toBe(false)
+    }
+    expect(window.location.pathname).toBe('/overview')
+  })
+
+  it('takes a plain click from the browser, so the app routes without a reload', async () => {
+    // MUTATION: drop `e.preventDefault()` in `routed`.
+    const c = await at('/overview')
+    const cap = c.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="capacity"]')!
+    const e = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+    cap.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(window.location.pathname).toBe('/capacity/pools'))
+  })
+
+  it('draws a recent workflow and "All workflows" as links', async () => {
+    // MUTATION: put the Recent rows back as `<button>`s.
+    window.localStorage.setItem(RECENT_WORKFLOWS_KEY, JSON.stringify([{ id: 'wf_a', state: 'RUNNING', name: 'lane-a' }]))
+    const c = await at('/workflows')
+    const group = await waitFor(() => screen.getByRole('group', { name: 'Recent workflows' }))
+    expect(group.querySelectorAll('button')).toHaveLength(0)
+    const hrefs = [...group.querySelectorAll<HTMLAnchorElement>('a')].map((a) => a.getAttribute('href'))
+    expect(hrefs).toEqual(['/workflows/wf_a', '/workflows'])
+    const row = group.querySelector<HTMLAnchorElement>('a[href="/workflows/wf_a"]')!
+    const ctrl = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true })
+    row.dispatchEvent(ctrl)
+    expect(ctrl.defaultPrevented).toBe(false)
+    fireEvent.click(row)
+    await waitFor(() => expect(window.location.pathname).toBe('/workflows/wf_a'))
+    expect(c.querySelector('.sk-recent a[aria-current="page"]')?.getAttribute('href')).toBe('/workflows/wf_a')
   })
 
   it('draws the panel’s pages as links too', async () => {

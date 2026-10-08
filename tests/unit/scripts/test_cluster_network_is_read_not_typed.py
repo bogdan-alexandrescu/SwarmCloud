@@ -173,6 +173,8 @@ case "$*" in
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
   *"get networkpolicies"*) cat "${d}/policies.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
+  # The real apply, under --confirm.
+  *"apply -f -"*) cat >"${d}/applied.yaml"; printf 'namespace/swarm-tenant-eng configured\n' ;;
   # A server dry run prints kubectl's verdict per object -- the lines a real
   # apply prints, suffixed "(server dry run)" -- and exits 1 when any object
   # failed, having printed the ones that did not.
@@ -1079,6 +1081,116 @@ def test_parity_refuses_an_empty_sweep(tmp_path):
     assert result.returncode != 0, "an empty sweep passed"
     # Named, not merely non-zero: a missing script exits non-zero too.
     assert "nothing was compared" in result.stdout + result.stderr, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# kubernetes/apply.sh --confirm RUNS the parity check (#76)
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT. A tenant `--confirm` ended by PRINTING
+# `check-cluster-network-parity.sh --require-live --context ...` and running
+# nothing, so the applied copy was compared with the cluster only when someone
+# remembered to. It now runs, scoped to the namespace just applied.
+
+
+def _parity_calls(cluster: Cluster) -> list[str]:
+    return [line for line in cluster.log("kubectl").splitlines() if "get networkpolicies" in line]
+
+
+def test_confirm_runs_the_parity_check_on_the_namespace_it_applied(tmp_path):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([_render(FAKE)])
+    result = cluster.run(APPLY, "--tenant", "eng", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert (cluster.dir / "applied.yaml").exists(), "nothing was applied"
+    calls = _parity_calls(cluster)
+    assert calls, f"--confirm did not run the parity check:\n{output}"
+    # Scoped to this tenant, through the context apply.sh checked.
+    assert all(f"--namespace {NAMESPACE}" in c and "--all-namespaces" not in c for c in calls), calls
+    assert all(f"--context {CONTEXT}" in c for c in calls), calls
+    assert "every applied egress policy matches" in output, output
+    # The whole-cluster sweep is still offered, not run.
+    assert "--require-live --context swarm-dev --cluster swarm-autopilot" in output, output
+
+
+def test_confirm_fails_when_the_applied_policy_does_not_match_the_cluster(tmp_path):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([_render({**FAKE, "pod_cidr": "10.168.0.0/14"})])
+    result = cluster.run(APPLY, "--tenant", "eng", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, f"apply.sh passed over a parity failure:\n{output}"
+    assert "applied, but swarm-tenant-eng's egress policy does not match" in output, output
+    assert "10.168.0.0/14" in output, output
+
+
+def test_confirm_fails_when_parity_could_not_be_checked(tmp_path):
+    """--require-live: a skipped comparison is not a passed one."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.policies([_render(FAKE)])
+    result = cluster.run(APPLY, "--tenant", "eng", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "NOT checked" in output, output
+
+
+def test_confirm_checks_through_a_nickname_context_apply_accepted(tmp_path):
+    """apply.sh judges a context by the cluster entry it resolves to; the check
+    it runs must accept the same context, or an honest apply reads as failed."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([_render(FAKE)])
+    cluster.context("my-swarm")
+    result = cluster.run(APPLY, "--tenant", "eng", "--context", "my-swarm", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert all("--context my-swarm" in c for c in _parity_calls(cluster)), cluster.log("kubectl")
+
+
+def test_a_dry_run_prints_the_parity_check_and_runs_nothing(tmp_path):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([_render(FAKE)])
+    result = cluster.run(APPLY, "--tenant", "eng")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert _parity_calls(cluster) == [], "a dry run ran the parity check"
+    assert not (cluster.dir / "applied.yaml").exists()
+    assert (
+        "check-cluster-network-parity.sh --require-live --context swarm-dev "
+        f"--cluster swarm-autopilot --namespace {NAMESPACE}"
+    ) in output, output
+
+
+def test_policies_mode_runs_no_parity_check(tmp_path):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    result = cluster.run(APPLY, "--policies", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert _parity_calls(cluster) == [], cluster.log("kubectl")
+
+
+@pytest.mark.parametrize(
+    "args,named",
+    [
+        (["--cluster", "agents-staging"], "agents-staging"),
+        (["--namespace", "kube-system"], "not a tenant namespace"),
+        (["--context", OTHER_TEAM], "not the swarm cluster's"),
+    ],
+    ids=["other-team-cluster", "non-tenant-namespace", "other-team-context"],
+)
+def test_parity_refuses_what_is_not_the_swarm_cluster(tmp_path, args, named):
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    cluster.policies([_render(FAKE)])
+    result = cluster.run(PARITY, "--require-live", *args)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert named in output, output
+    assert _parity_calls(cluster) == [], cluster.log("kubectl")
 
 
 # ---------------------------------------------------------------------------
