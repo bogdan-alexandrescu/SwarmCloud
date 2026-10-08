@@ -55,7 +55,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from swarm_common import specsign
 
@@ -529,3 +529,28 @@ def verify_upstream_spec(
     return SpecCheck(
         reason="verified", task_id=upstream_task_id, key_version=version, digest=hexdigest
     )
+
+
+def upstream_verifier(
+    cfg: "WorkerConfig", workflow_id: str | None
+) -> Callable[..., SpecCheck]:
+    """`verify_upstream_spec` bound to this worker's keys and its workflow.
+
+    The `ActionContext.verify_upstream` every worker action calls. The
+    workflow an upstream must belong to is this execution's own unless the
+    caller names another with `of_workflow` -- which only `merge` does, for
+    a merge-only continuation, and only with the workflow its OWN signed
+    `merge_target` names (#900). Naming a workflow changes what the
+    upstream's signed `workflow_id` must equal, never whether its signature
+    is checked.
+    """
+
+    def verify(
+        upstream_task_id: str, doc: Mapping[str, Any], *, of_workflow: str | None = None
+    ) -> SpecCheck:
+        return verify_upstream_spec(
+            doc, upstream_task_id=upstream_task_id,
+            workflow_id=of_workflow if of_workflow is not None else workflow_id, cfg=cfg,
+        )
+
+    return verify

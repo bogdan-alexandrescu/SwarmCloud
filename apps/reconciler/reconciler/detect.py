@@ -86,7 +86,7 @@ from typing import Any, Iterable, Mapping
 #: a live execution it read as orphaned or never find a real orphan.
 #: docs/audits/2026-09-18/08-frozen-contract-restatements.md, finding 1.
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
-from swarm_common.models import utcnow
+from swarm_common.models import retries_exhausted, utcnow
 from swarm_common.profiles import Backend
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, ParkReason, TaskState
 from swarm_rollup import UNKNOWN, derive, read_steps, skipped_task_ids
@@ -103,6 +103,7 @@ from .model import (
     TaskView,
     WorkflowRead,
     WorkflowView,
+    count_disk_eviction,
     count_startup_end,
 )
 
@@ -166,6 +167,9 @@ class FindingKind(str, Enum):
     #: ago and whose current attempt's execution is still active: see
     #: `detect_cancel_overdue` (#627).
     CANCEL_OVERDUE = "cancel_overdue"
+    #: The current attempt's GKE pod was EVICTED by kubelet: see
+    #: `detect_evicted` (#893).
+    WORKER_EVICTED = "worker_evicted"
 
 
 @dataclass(frozen=True)
@@ -1669,6 +1673,149 @@ def detect_ended_at_startup(
     return findings
 
 
+#: kubelet's eviction messages for a pod past its OWN disk limits
+#: (pkg/kubelet/eviction/eviction_manager.go: `emptyDirMessageFmt`,
+#: `podEphemeralStorageMessageFmt`, `containerEphemeralStorageMessageFmt`),
+#: each with the one-line cause a task shows for it (#893). Anything else
+#: kubelet evicts for -- "The node was low on resource: ..." -- is the NODE's
+#: pressure, not this step's size, and is retried like any lost worker.
+_LIMIT_EVICTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r'Usage of EmptyDir volume "(?P<volume>[^"]*)" exceeds the limit "(?P<limit>[^"]*)"'
+        ),
+        'evicted: EmptyDir volume "{volume}" exceeds {limit}',
+    ),
+    (
+        re.compile(
+            r"Pod ephemeral local storage usage exceeds the total limit of containers "
+            r"(?P<limit>[^\s.]+(?:\.\d+)?[A-Za-z]*)"
+        ),
+        "evicted: the pod's ephemeral storage exceeds {limit}",
+    ),
+    (
+        re.compile(
+            r"Container (?P<container>\S+) exceeded its local ephemeral storage limit "
+            r'"(?P<limit>[^"]*)"'
+        ),
+        "evicted: container {container} exceeds its ephemeral storage limit {limit}",
+    ),
+)
+
+
+def eviction_cause(message: str) -> tuple[str, bool]:
+    """The task's one-line cause for a kubelet eviction, and whether it was a disk LIMIT.
+
+    `evicted: EmptyDir volume "tmp" exceeds 2Gi` names the volume and its size,
+    so the error says what to change. A message no pattern knows is kept, as
+    `evicted: <kubelet's words>`, and is not a limit eviction.
+    """
+    for pattern, shape in _LIMIT_EVICTIONS:
+        matched = pattern.search(message)
+        if matched:
+            return _one_line(shape.format(**matched.groupdict())), True
+    return _one_line(f"evicted: {message}"), False
+
+
+def detect_evicted(
+    snapshot: ControlSnapshot,
+    executions: Iterable[ExecutionView],
+    config: ReconcilerConfig,
+    now: datetime | None = None,
+) -> list[Finding]:
+    """Attempts whose GKE pod kubelet EVICTED: say so, and retry a disk eviction once (#893).
+
+    WHAT HAPPENED. On 2026-10-08 task_22e763906edd4edcb630's pod was evicted
+    three times -- `Usage of EmptyDir volume "tmp" exceeds the limit "2Gi"` --
+    and the task ended FAILED reading "reconciled: task is RUNNING but no
+    backend execution exists 539s after dispatch": the Job was listed but not
+    `ended` (fixed in `GkeBackend._job_view`), and nothing read the pod's own
+    reason. Each retry ran the same step on the same disk and died the same way.
+
+    THE RULE. The same subjects as `detect_cannot_start` (a FAILED execution
+    whose attempt holds its task's current lease at the current generation,
+    nothing of that attempt still active), in any concurrency state, when the
+    termination read (`snapshot.terminations`) names an eviction, and the Job
+    ended at least `ended_execution_grace_seconds` before the snapshot, so
+    the worker's last writes, if it made any in its grace period, are in it.
+
+    THE RETRY (`count_disk_eviction`). A pod past its own disk limit is
+    retried ONCE: the second such eviction of the task FAILS it, with the
+    eviction as its cause, whatever `max_attempts` says -- the frozen
+    `retries_exhausted` still ends it sooner if its attempts are spent. A
+    node-pressure eviction is not this step's size, and is requeued as any
+    lost worker is. Either way the task's end cause is the reconciler's
+    LOST_WORKER (contract request 23): the worker was lost, to kubelet.
+
+    It supersedes the absence rules and the ended-at-startup rule for the same
+    lease in `detect_all`, as the cannot-start rule does: one repair per lease,
+    and the one that says why.
+    """
+    terminations = getattr(snapshot, "terminations", None) or {}
+    taken = _as_utc(getattr(snapshot, "taken_at", None) or now or utcnow())
+    grace = int(getattr(config, "ended_execution_grace_seconds", 30))
+    findings: list[Finding] = []
+    for subject in cannot_start_candidates(snapshot, executions):
+        task, execution = subject.task, subject.execution
+        attempt_id = subject.lease.attempt_id
+        ended = terminations.get(attempt_id)
+        eviction = getattr(ended, "eviction", None) if ended is not None else None
+        if not eviction:
+            continue
+        if getattr(ended, "exit_code", None) == WORKER_EXIT_CANNOT_START:
+            continue  # the worker said why it could not start; that rule's
+        completed = execution.completed_at
+        if completed is None:
+            continue
+        ended_before = (taken - _as_utc(completed)).total_seconds()
+        if ended_before < grace:
+            continue
+        where = (
+            f"{execution.namespace}/{execution.name}" if execution.namespace else execution.name
+        )
+        cause, disk_limit = eviction_cause(str(eviction))
+        what = f"{cause} (execution {where})"
+        if disk_limit:
+            # The snapshot's prediction, for the finding's reason; the repair's
+            # transaction re-reads the task and decides with the same rule.
+            tail = count_disk_eviction(
+                task.attempt_count, task.max_attempts, getattr(task, "disk_evictions", 0)
+            ).tail
+        else:
+            tail = (
+                "no attempts left"
+                if retries_exhausted(task.attempt_count, task.max_attempts)
+                else "retrying"
+            )
+        findings.append(
+            Finding(
+                kind=FindingKind.WORKER_EVICTED,
+                reason=f"{what}; {tail}",
+                task_id=task.task_id,
+                lease_id=subject.lease.lease_id,
+                attempt_id=attempt_id,
+                tenant_id=task.tenant_id or execution.tenant_id,
+                generation=subject.lease.generation,
+                execution=execution,
+                detail={
+                    "eviction": str(eviction),
+                    "disk_limit": disk_limit,
+                    "execution": where,
+                    "exit_code": getattr(ended, "exit_code", None),
+                    "backend_detail": str(getattr(ended, "detail", "") or ""),
+                    "task_state": task.state.value,
+                    "attempt_count": task.attempt_count,
+                    "max_attempts": task.max_attempts,
+                    "disk_evictions": getattr(task, "disk_evictions", 0),
+                    # The reason without its prediction: the repair appends
+                    # what its transaction decided.
+                    "what_ended": what,
+                },
+            )
+        )
+    return findings
+
+
 #: Findings about a lease that a cannot-start or ended-at-startup finding
 #: repairs more exactly: each would requeue the task (or release its lease
 #: without failing it) on the strength of silence, where the exit code says
@@ -1897,9 +2044,25 @@ def detect_all(
     # would race its FAILED. A lease whose attempt ended before its runner
     # started is repaired by the ended-at-startup rule alone, for the same
     # reason: one repair per lease, and the one that says why (#198).
+    #
+    # An EVICTED attempt's lease is the eviction rule's (#893), ahead of the
+    # ended-at-startup rule as well: an eviction is a cause, and an early end
+    # with no exit code says less about the same Job.
     cannot_start = detect_cannot_start(snapshot, executions, config, now)
-    ended_at_startup = detect_ended_at_startup(snapshot, executions, config, now)
-    failing = {f.lease_id for f in (*cannot_start, *ended_at_startup) if f.lease_id}
+    evicted = [
+        f
+        for f in detect_evicted(snapshot, executions, config, now)
+        if f.lease_id not in {c.lease_id for c in cannot_start}
+    ]
+    evicted_leases = {f.lease_id for f in evicted}
+    ended_at_startup = [
+        f
+        for f in detect_ended_at_startup(snapshot, executions, config, now)
+        if f.lease_id not in evicted_leases
+    ]
+    failing = {
+        f.lease_id for f in (*cannot_start, *evicted, *ended_at_startup) if f.lease_id
+    }
     findings = [
         *(
             f
@@ -1907,6 +2070,7 @@ def detect_all(
             if not (f.kind in _CANNOT_START_SUPERSEDES and f.lease_id in failing)
         ),
         *cannot_start,
+        *evicted,
         *ended_at_startup,
     ]
     # A left-running repair releases its Job's lease only AFTER the kill is
