@@ -13,7 +13,9 @@ What these tests hold:
 
   1. The restated rules are the worker's and the scheduler's: file names,
      bounds, attribution markers and stripping, the verdict lines, the
-     marker key, the claim timeout, and which steps are held.
+     marker key, the claim timeout, and which steps are held. One table of
+     titles goes through the worker's `_agent_title`, the merge step's
+     `title_is_placeholder` and `title_refusal`, outcomes held equal.
   2. Off until contract request 52: with no PARKED -> SUCCEEDED edge,
      nothing is read, claimed or written.
   3. MERGE with one contributor: one branch at the implementer's pushed
@@ -40,6 +42,7 @@ import secrets
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -228,8 +231,82 @@ def _writes(github) -> list[tuple[str, str]]:
 # 1. the restated rules are the worker's and the scheduler's
 # --------------------------------------------------------------------------
 
+#: One table of titles, driven through the worker's own `Worker._agent_title`,
+#: the merge step's `merge.title_is_placeholder` and `title_refusal` alike, so
+#: a rule added on one side and not the other fails here rather than in a
+#: pull request. The implementer's worker checked the title against its OWN
+#: task id, so IMPL stands in for it below.
+SHARED_TITLES = (
+    TITLE,
+    "Fix the [swarm] dashboard",
+    "Tabs\tare allowed",
+    "x" * 400,
+    "",
+    "   ",
+    "two\nlines",
+    "carriage\rreturn",
+    "bell\x07",
+    "Fix it (Generated with a tool)",
+    "Co-Authored-By: someone",
+    "See claude.ai/code",
+    f"Finish {IMPL}",
+    "[swarm] task_abc",
+    "  [SWARM] Task_0123abcd",
+    "Fix [swarm] task_ handling",
+    "[Swarm]   TASK_retired",
+    "[swarm]\ttask_9be4128488d342208947",
+    "Undo what [swarm] task_ did",
+)
+
+#: Titles the API refuses and the implementer's worker accepted: any task id
+#: at all, where the worker refuses only its own. The title was written by
+#: another task, so every id in it is one the owner's rule (2026-09-28)
+#: forbids. The API may be the stricter; it is never the looser.
+API_STRICTER_TITLES = (
+    "Follow up on task_review0001",
+    "Revert TASK_abcdef12",
+)
+
+
+def _worker_title_refusal(title: str) -> str | None:
+    """The worker's own `_agent_title` over `title`, as `title_refusal` reports."""
+    from agent_worker import lifecycle
+
+    worker = lifecycle.Worker.__new__(lifecycle.Worker)
+    worker.cfg = SimpleNamespace(task_id=IMPL)
+    worker._read_agent_text = lambda name, refused: title
+    worker._scrub = lambda value: value
+    refused: list[str] = []
+    accepted = lifecycle.Worker._agent_title(worker, refused)
+    if accepted is not None:
+        assert refused == [], refused
+        return None
+    assert len(refused) == 1, refused
+    prefix = f"{lifecycle.PR_TITLE_FILE}: "
+    assert refused[0].startswith(prefix), refused
+    return refused[0][len(prefix):]
+
+
 def test_the_restated_worker_rules_are_the_workers():
-    from agent_worker import gitops, lifecycle, verdict
+    from agent_worker import gitops, lifecycle, merge, verdict
+
+    for title in SHARED_TITLES:
+        assert verdictpublish.title_refusal(title) == _worker_title_refusal(title), repr(title)
+        assert verdictpublish.title_is_placeholder(title) is merge.title_is_placeholder(title), (
+            repr(title))
+        if merge.title_is_placeholder(title):
+            assert verdictpublish.title_refusal(title) is not None, repr(title)
+    for title in API_STRICTER_TITLES:
+        assert _worker_title_refusal(title) is None, repr(title)
+        assert verdictpublish.title_refusal(title) == "names a task id", repr(title)
+    # The table reaches every refusal and acceptance, so it cannot pass empty.
+    outcomes = {verdictpublish.title_refusal(t) for t in SHARED_TITLES}
+    assert outcomes == {None, "blank", "more than one line", "holds control characters",
+                        "carries attribution", "names a task id"}, outcomes
+    assert any(merge.title_is_placeholder(t) for t in SHARED_TITLES)
+    assert verdictpublish.PLACEHOLDER_TITLE_PREFIX == merge.PLACEHOLDER_TITLE_PREFIX
+    assert verdictpublish._RETIRED_TITLE_RE.pattern == merge.RETIRED_TITLE_RE.pattern
+    assert verdictpublish._RETIRED_TITLE_RE.flags == lifecycle._RETIRED_TITLE_RE.flags
 
     assert verdictpublish.ATTRIBUTION_MARKERS == gitops.ATTRIBUTION_MARKERS
     assert verdictpublish.PR_TITLE_FILE == lifecycle.PR_TITLE_FILE
@@ -294,6 +371,27 @@ def test_contract_allows_reads_the_frozen_state_machine():
 ])
 def test_title_refusal_is_the_workers_list(title, why):
     assert verdictpublish.title_refusal(title) == why
+
+
+@pytest.mark.parametrize("title", [
+    "[swarm] task_",
+    "[swarm] task_abc",
+    "   [SWARM] TASK_x",
+    "Fix [swarm] task_ handling",
+    "fix [Swarm]task_ spacing",
+    "Undo [swarm]    task_ in the middle",
+    "[swarm]\ttask_tabbed",
+])
+def test_title_refusal_refuses_every_title_the_merge_step_calls_a_placeholder(title):
+    """Issue #748: "the same refusal scans the worker runs (... title
+    placeholder)". The merge step (`agent_worker.merge.title_is_placeholder`)
+    refuses to merge a pull request so titled; one the API opened with it
+    would sit unmergeable, so the API refuses it before opening anything."""
+    from agent_worker import merge
+
+    assert merge.title_is_placeholder(title) is True
+    assert verdictpublish.title_is_placeholder(title) is True
+    assert verdictpublish.title_refusal(title) == "names a task id"
 
 
 # --------------------------------------------------------------------------

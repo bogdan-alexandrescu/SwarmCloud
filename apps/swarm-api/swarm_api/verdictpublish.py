@@ -21,6 +21,30 @@ moved), and opens the pull request from it, so every reader that finds the
 integrator's pull request by its branch or its `result_summary.git` --
 issueci, cifix, the merge step, the UI -- reads it exactly as a worker's.
 
+THE REFUSAL SCANS ARE THE WORKER'S, IN TWO HALVES (#748: "the same refusal
+scans the worker runs (credentials, title placeholder)"). Nothing here is
+imported from the worker or moved into `swarm_common`; both halves are
+restated, and test_verdict_publish.py holds the restatement equal.
+
+  * THE TITLE. `title_refusal` refuses every title the worker's
+    `_agent_title` refuses, with its reasons, and everything the merge step's
+    `agent_worker.merge.title_is_placeholder` refuses (`[swarm] task_` in any
+    case, anywhere, any spacing), plus any task id at all. One table of
+    titles is driven through all three in
+    `test_the_restated_worker_rules_are_the_workers`.
+  * THE CREDENTIALS. The worker scans its final tree (`final_tree_leak`)
+    and scrubs its pull request text against the secrets it registered.
+    Here the tree needs no scan: the branch tip is the implementer's,
+    already through that same scan by the implementer's own worker before
+    it was pushed, and `implementer_branch_moved` declines a tip that is
+    not that commit. Only the title and body are new, and they are covered
+    twice: every artifact read goes through the API's redaction
+    (`_read_text` declines `credential` when it masked anything, rather
+    than publish masked text), and the step's own token, once read, must
+    appear in neither (`credential` again). The worker would scrub a
+    registered value out of a title and publish the rest; this module
+    declines instead, which is the stricter, and the worker then runs.
+
 WHAT IS PUBLISHED HERE, AND NOTHING ELSE. The step is published here only
 when every one of these holds; otherwise it is DECLINED and goes the
 worker's way, unchanged:
@@ -176,8 +200,11 @@ ATTRIBUTION_MARKERS = (
 )
 #: `agent_worker.lifecycle._ROBOT_FACE`: the "Generated with" footer opens with it.
 _ROBOT_FACE = "\U0001f916"
-#: `agent_worker.lifecycle._RETIRED_TITLE_RE`: the platform's old fallback title.
+#: `agent_worker.lifecycle._RETIRED_TITLE_RE` (and `agent_worker.merge.
+#: RETIRED_TITLE_RE`): the platform's old fallback title, anywhere, any case.
 _RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+#: `agent_worker.merge.PLACEHOLDER_TITLE_PREFIX`: auto-merge.yml gate 1's rule.
+PLACEHOLDER_TITLE_PREFIX = "[swarm] task_"
 #: Any task id, so a title naming the implementer's, the review's or this
 #: step's is refused alike (owner rule, 2026-09-28: no task id in a title).
 _TASK_ID_IN_TEXT = re.compile(r"\btask_[0-9a-z]{6,}", re.IGNORECASE)
@@ -279,12 +306,28 @@ def strip_attribution(text: str) -> str:
     return cleaned
 
 
+def title_is_placeholder(title: str) -> bool:
+    """`agent_worker.merge.title_is_placeholder`, restated (held equal by the test).
+
+    The merge step will not merge a pull request so titled, so one opened
+    here with it would sit unmergeable: `title_refusal` refuses it first.
+    """
+    return (
+        title.lstrip().lower().startswith(PLACEHOLDER_TITLE_PREFIX)
+        or _RETIRED_TITLE_RE.search(title) is not None
+    )
+
+
 def title_refusal(text: str) -> str | None:
     """Why `text` cannot title the pull request, or None when it can.
 
-    The worker's `_agent_title` checks, in its order, plus any task id at all
-    (the worker checks its own; the title here was written by another task,
-    so any id in it is one the owner's rule forbids).
+    The worker's `_agent_title` checks, in its order and with its reasons,
+    plus any task id at all (the worker checks its own; the title here was
+    written by another task, so any id in it is one the owner's rule
+    forbids), plus everything the merge step's `title_is_placeholder`
+    refuses -- which the worker reports as naming a task id, and so does
+    this. test_verdict_publish.py drives one table of titles through all
+    three and holds the outcomes equal.
     """
     text = text.strip()
     if not text:
@@ -295,7 +338,7 @@ def title_refusal(text: str) -> str | None:
         return "holds control characters"
     if _carries_attribution(text):
         return "carries attribution"
-    if _RETIRED_TITLE_RE.search(text) or _TASK_ID_IN_TEXT.search(text):
+    if title_is_placeholder(text) or _TASK_ID_IN_TEXT.search(text):
         return "names a task id"
     return None
 
