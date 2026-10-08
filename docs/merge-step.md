@@ -2512,9 +2512,10 @@ review**, or **the merge credential**.
     `tests/unit/scripts/test_release_id_token_scope.py`);
   * **a trust pin** — the deployer's workload identity binding names
     `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@refs/heads/main`
-    for exactly the five files that authenticate as it (`release.yml`,
+    for exactly the files that authenticate as it (`release.yml`,
     `application.yml`, `terraform.yml`, `security.yml`,
-    `iam-refusal-probe.yml`; `terraform/bootstrap/wif.tf`
+    `iam-refusal-probe.yml` and, since 2026-10-08, `hotfix.yml`;
+    `terraform/bootstrap/wif.tf`
     `deployer_workflows`), so a workflow added later is refused whatever it
     grants itself.
 
@@ -2532,7 +2533,9 @@ review**, or **the merge credential**.
   `scripts/iam-refusal-probe.sh` from `main`); and in `release.yml`
   `build`, `acceptance`, `infrastructure`, `infrastructure-iam`, `deploy`
   and `promote`. Read 2026-10-07 by listing every job that runs
-  `google-github-actions/auth` in those five files.
+  `google-github-actions/auth` in those five files. Since 2026-10-08 the hotfix
+  lane adds `images`, `promote`, `infrastructure` and `deploy` in `hotfix.yml`
+  (docs/ci.md, "Hotfix releases"); its `gate` does not authenticate.
 * **R5.** T12: today, any identity with write access — including `-git` — can
   still use the ordinary PR-merge route on `main`, even though `main-protection`
   (M1) has closed the direct-push bypass. M2's restrict-updates ruleset, with

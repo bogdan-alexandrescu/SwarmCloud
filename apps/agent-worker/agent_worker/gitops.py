@@ -39,6 +39,7 @@ leaves either way) and would turn away public repositories that work today.
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import os
@@ -1659,8 +1660,8 @@ def _git_text_full(
     THE FILE IS READ WITH `newline=""` FOR THE SAME REASON `\r` MUST NOT
     DISAPPEAR (#259 review, M2). Universal-newline translation also turns a
     LONE `\r` inside a line (no `\n` after it) into a `\n`, which splits that
-    one line into two. `lifecycle._adds_a_credential` reads only lines
-    starting with `+`; a line the translation split in two loses its `+`
+    one line into two. The publish scan (`lifecycle._DiffLeakScanner`) reads
+    only lines starting with `+`; a line the translation split in two loses its `+`
     prefix on the second half, so a credential that started after an embedded
     `\r` was read as un-prefixed context and never scanned. `newline=""`
     disables the translation: whatever bytes the stream carried are what this
@@ -2983,8 +2984,18 @@ def read_head_as_data(clone: Path) -> str | None:
             "the clone's HEAD is a symbolic ref outside refs/heads/; the worker "
             "follows no other ref, and nothing was pushed"
         )
-    loose = _read_in_git_dir(clone, *name.split("/"), cap=_REF_FILE_MAX_BYTES)
-    if loose is not None:
+    fd = _open_ref_file(clone, *name.split("/"), what="the branch the clone's HEAD names")
+    if fd is not None:
+        try:
+            loose = _read_capped_fd(fd, _REF_FILE_MAX_BYTES)
+        finally:
+            os.close(fd)
+        if loose is None:
+            raise GitError(
+                "the branch the clone's HEAD names is a file past "
+                f"{_REF_FILE_MAX_BYTES} bytes; the worker follows no such ref, and "
+                "nothing was pushed"
+            )
         value = loose.decode("ascii", "replace").strip()
         if _OBJECT_ID.match(value):
             return value
@@ -2992,15 +3003,95 @@ def read_head_as_data(clone: Path) -> str | None:
             "the branch the clone's HEAD names is not an object id (a symbolic "
             "ref, or damaged); the worker follows no further ref, and nothing was pushed"
         )
-    packed = _read_in_git_dir(clone, "packed-refs", cap=_PACKED_REFS_MAX_BYTES)
-    if packed is not None:
-        for line in packed.decode("utf-8", "surrogateescape").splitlines():
-            if not line or line[0] in "#^":
+    fd = _open_ref_file(clone, "packed-refs", what="the clone's packed-refs")
+    if fd is None:
+        return None
+    try:
+        return _packed_ref(fd, name.encode("utf-8", "surrogateescape"))
+    finally:
+        os.close(fd)
+
+
+def _open_ref_file(clone: Path, *names: str, what: str) -> int | None:
+    """`<clone>/.git/<names...>` open for reading, None when it does not exist.
+
+    Opened as `_read_in_git_dir` opens a file: one component at a time, with
+    O_NOFOLLOW and O_NONBLOCK. A ref that EXISTS but is not a regular file --
+    a link at it or at a folder above it, a FIFO, a directory -- raises
+    `GitError` (#346). It used to read as absent, and the caller then took the
+    branch from `packed-refs`: the agent could hide its loose ref behind a link
+    and have the worker publish whatever older line `packed-refs` held. Only a
+    component that is missing (ENOENT) is absence.
+    """
+    fds: list[int] = []
+    try:
+        try:
+            fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+            for folder in names[:-1]:
+                fds.append(
+                    os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1])
+                )
+            fd = os.open(names[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fds[-1])
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise GitError(
+                f"{what} is not a regular file reached without a link "
+                f"({errno.errorcode.get(exc.errno or 0, 'error')}); nothing was pushed"
+            ) from None
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise GitError(f"{what} exists but is not a regular file; nothing was pushed")
+        return fd
+    finally:
+        for opened in reversed(fds):
+            os.close(opened)
+
+
+def _packed_ref(fd: int, name: bytes) -> str | None:
+    """The object id `packed-refs`, open as `fd`, gives `name`, or None.
+
+    STREAMED (#346). The whole file -- up to `_PACKED_REFS_MAX_BYTES` -- used to
+    be read, decoded and split into a list of every line before one was
+    matched. It is read in 64 KiB chunks now, line by line, and reading stops
+    at the matching line or the cap. No line longer than `_REF_FILE_MAX_BYTES`
+    is held: a ref line is an object id and a name, and an over-long line
+    cannot be the one asked for, so it is skipped as it arrives.
+    """
+    total = 0
+    pending = b""
+    skipping = False
+    while total <= _PACKED_REFS_MAX_BYTES:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        lines = (pending + chunk).split(b"\n")
+        pending = lines.pop()
+        for line in lines:
+            if skipping:
+                skipping = False
                 continue
-            oid, _, ref = line.partition(" ")
-            if ref.strip() == name and _OBJECT_ID.match(oid):
+            oid = _packed_line_oid(line, name)
+            if oid is not None:
                 return oid
+        if len(pending) > _REF_FILE_MAX_BYTES:
+            pending, skipping = b"", True
+    if not skipping and total <= _PACKED_REFS_MAX_BYTES:
+        return _packed_line_oid(pending, name)
     return None
+
+
+def _packed_line_oid(line: bytes, name: bytes) -> str | None:
+    """The object id of one `packed-refs` line when it names `name`, else None."""
+    line = line.rstrip(b"\r")
+    if not line or line[:1] in (b"#", b"^"):
+        return None
+    oid, _, ref = line.partition(b" ")
+    if ref.strip() != name:
+        return None
+    text = oid.decode("ascii", "replace")
+    return text if _OBJECT_ID.match(text) else None
 
 
 _CONFIG_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)\s*(?:"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
