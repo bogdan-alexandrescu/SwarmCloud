@@ -3,7 +3,7 @@
 **Status: design, lane GFY (2026-10-08), owner request of 2026-10-08. Nothing
 here changes a screen.** It evaluates Graphify
 (<https://github.com/Graphify-Labs/graphify>) and asks the owner the decisions
-in section 7 (also filed as the lane's `questions.json`). A prototype is
+in section 8 (also filed as the lane's `questions.json`). A prototype is
 committed under `apps/swarm-ui/src/proto/`. No route reaches it, `vite build`
 never sees it, and the production bundle's hash is unchanged with it in the
 tree (section 2.4). The knowledge-graph design (lane GNX,
@@ -477,6 +477,9 @@ stay listed.
 5. The prototype.
    * **It stays until GR1 lands, and GR1 deletes it.**
    * Delete it now.
+
+
+**Owner addition 2026-10-08 (after the decisions above): the repository graph also offers a vis-network view.** It sits beside the structured view (option D) as a small two-option switch, 'Structure' | 'Network', in the graph's existing control row or card header. It reuses the console's segmented control and is not a new tab or route. The owner's words: "an option to toggle between them somewhere where it makes really good sense and it doesn't hurt the overall look and feel and easy navigation and easy to use clean UX". vis-network (pinned exactly) loads only through a dynamic `import()` when the Network view is first opened, so the main chunk stays within the +10 kB gz budget. The Network view keeps keyboard navigation on, reads the theme tokens, and starts from the same aggregated view above the node limit. The workflow DAG gets no vis-network view. Lane GR3 builds both views.
 
 ## 9. What was not verified
 
