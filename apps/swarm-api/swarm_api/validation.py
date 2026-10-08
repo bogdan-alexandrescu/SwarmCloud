@@ -775,6 +775,13 @@ EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 #: holds for `INPUT_FROM_METADATA_KEY`.
 STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 
+#: The reconciler's count of a task's attempts lost to its pod passing its own
+#: disk limit (#893, `reconciler.model.DISK_EVICTIONS_KEY`). A caller who set it
+#: would choose how often its task is retried after an eviction. Restated for
+#: the reason STARTUP_REFUNDS_METADATA_KEY is;
+#: tests/unit/worker/test_worker_evicted.py holds them equal.
+DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -808,6 +815,7 @@ RESERVED_METADATA_KEYS = (
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     CHILD_CASCADE_METADATA_KEY,
     MERGE_WAIT_METADATA_KEY,
+    DISK_EVICTIONS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1290,6 +1298,7 @@ class DispatchOptions:
         base: str | None = None,
         number: int | None = None,
         head_sha: str | None = None,
+        pull_request_workflow: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1301,7 +1310,11 @@ class DispatchOptions:
 
         A `merge_pr` workflow (#352) names the pull request by `number` and
         the `head_sha` the caller named instead of by the task that opened
-        it, because no task did; it has no review."""
+        it, because no task did; it has no review.
+
+        A merge-only continuation names `pull_request_workflow` too: the
+        continued task's own workflow, which the worker verifies that task's
+        signed spec against instead of the merge's (#900). It has no review."""
         target: list[tuple[str, Any]]
         if pull_request is None:
             if number is None or head_sha is None:
@@ -1311,6 +1324,10 @@ class DispatchOptions:
                 target.append(("base", base))
             return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
+        if pull_request_workflow is not None:
+            if review is not None or verdict_file is not None:
+                raise ValueError("a continued pull request's merge target names no review")
+            target.append(("pull_request_workflow", pull_request_workflow))
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
@@ -1456,6 +1473,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{MERGE_WAIT_METADATA_KEY} is reserved: it is set only on a merge "
         "step waiting for its pull request's checks, by the worker that parked it "
         "and the tick that wakes it. Drop the key from metadata."
+    ),
+    DISK_EVICTIONS_METADATA_KEY: (
+        f"metadata.{DISK_EVICTIONS_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to count attempts lost to the pod passing its own disk "
+        "limit (#893). Drop the key from metadata."
     ),
 }
 

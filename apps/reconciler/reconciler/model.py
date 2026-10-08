@@ -122,6 +122,72 @@ def startup_refunds_used(metadata: Any) -> int:
     return used if used is not None else 0
 
 
+#: Where a task counts the attempts it lost to its pod exceeding its OWN disk
+#: limit (#893, `detect.detect_evicted`). Free-form metadata, like
+#: STARTUP_REFUNDS_KEY, and reserved at the API beside it.
+DISK_EVICTIONS_KEY = "disk_evictions"
+
+#: How many such evictions a task is retried after. ONE, because of the two
+#: measured on 2026-10-08: task_5ccac63ae3724e72b5cd was evicted once on its
+#: workspace volume and SUCCEEDED on the retry, and task_22e763906edd4edcb630
+#: was evicted three times on /tmp, each identically, and FAILED after $5.38.
+#: Failing on the first would have failed the first task; retrying until
+#: `max_attempts` is what spent the second's budget. The retry is the same
+#: step on the same disk, so a second limit eviction is taken as the step
+#: needing more disk than the pod has, not as bad luck.
+DISK_EVICTION_RETRIES = 1
+
+
+def disk_evictions_used(metadata: Any) -> int:
+    """How many limit evictions a task's `metadata` records. Absent or unreadable is 0.
+
+    Read as totally as `startup_refunds_used`, and by the same reader: a
+    document can carry anything JSON allows, and a pass must not raise on it.
+    """
+    if not isinstance(metadata, dict):
+        return 0
+    used = _startup_refunds_int(metadata.get(DISK_EVICTIONS_KEY))
+    return used if used is not None else 0
+
+
+@dataclass(frozen=True)
+class DiskEvictionEnd:
+    """What one more limit eviction does to a task: its count, and whether it fails."""
+
+    evictions: int
+    exhausted: bool
+    tail: str
+
+
+def count_disk_eviction(
+    attempt_count: int, max_attempts: int, evictions_used: int
+) -> DiskEvictionEnd:
+    """Count one limit eviction; fail past DISK_EVICTION_RETRIES or on spent attempts.
+
+    Pure, so the snapshot's prediction (`detect.detect_evicted`) and the
+    transaction's decision (`ControlStore.repair_task_state`) are one rule.
+    The frozen `retries_exhausted` still applies on top: this only ever ends
+    a task SOONER than `max_attempts` would, never later.
+    """
+    used = evictions_used + 1
+    if used > DISK_EVICTION_RETRIES:
+        return DiskEvictionEnd(
+            evictions=used,
+            exhausted=True,
+            tail=(
+                f"evicted for disk {used} times: not retried again, the next "
+                "attempt would meet the same limit"
+            ),
+        )
+    if retries_exhausted(attempt_count, max_attempts):
+        return DiskEvictionEnd(evictions=used, exhausted=True, tail="no attempts left")
+    return DiskEvictionEnd(
+        evictions=used,
+        exhausted=False,
+        tail=f"retrying once ({used}/{DISK_EVICTION_RETRIES} disk evictions)",
+    )
+
+
 @dataclass(frozen=True)
 class StartupEnd:
     """What an attempt that ended before its runner started does to its task's count.
@@ -206,6 +272,9 @@ class TaskView:
     #: `metadata.startup_refunds`: attempts already taken back because they
     #: ended before their runner started (#67, `count_startup_end`).
     startup_refunds: int = 0
+    #: `metadata.disk_evictions`: attempts already lost to the pod passing its
+    #: own disk limit (#893, `count_disk_eviction`).
+    disk_evictions: int = 0
 
     @property
     def holds_capacity(self) -> bool:
@@ -234,6 +303,7 @@ class TaskView:
             latest_checkpoint=doc.get("latest_checkpoint"),
             completed_at=as_datetime(doc.get("completed_at")),
             startup_refunds=startup_refunds_used(doc.get("metadata")),
+            disk_evictions=disk_evictions_used(doc.get("metadata")),
         )
 
 
@@ -367,9 +437,11 @@ class ExecutionView:
     completed_at: datetime | None = None
     #: The backend's own record PROVES this execution's compute is gone: on
     #: Cloud Run, `backends.execution_is_finished` (completion time set,
-    #: nothing running, not reconciling). Stronger than "not active": the
-    #: phase's UNKNOWN bucket is not active and proves nothing. False wherever
-    #: a backend does not establish it (GKE leaves it False), which is the
+    #: nothing running, not reconciling); on GKE, the Job's own Complete or
+    #: Failed condition (`backends.job_phase`, #893 -- until then GKE left it
+    #: False, and a Failed Job read as no execution at all). Stronger than
+    #: "not active": the phase's UNKNOWN bucket is not active and proves
+    #: nothing. False wherever a backend does not establish it, which is the
     #: direction that holds a lease. Read by `detect.detect_stale_leases`: a
     #: lease past its TTL whose execution has ENDED is a lost worker, and needs
     #: no by-name probe to say so (2026-10-03, task_8fce64316ad14fc981fb).
@@ -402,6 +474,11 @@ class Termination:
     #: line only: Cloud Run's task status message, a pod's `reason`. Never
     #: presented as the worker's cause.
     detail: str = ""
+    #: kubelet's message on a pod it EVICTED (`status.reason == "Evicted"`),
+    #: one bounded line, or None when the pod was not evicted or nothing was
+    #: read (#893). Its own field because it is the cause, not the backend's
+    #: colour: `detect.detect_evicted` puts it on the attempt and the task.
+    eviction: str | None = None
 
 
 @dataclass(frozen=True)

@@ -754,6 +754,7 @@ class SubmissionService:
                 merge_plan=merge_plan,
                 merge_base=merge_base,
                 named_pull=named_pull,
+                continued_workflow=continuation.workflow_id if continuation else None,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -1010,6 +1011,7 @@ class SubmissionService:
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
         named_pull: NamedPull | None = None,
+        continued_workflow: str | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -1068,6 +1070,12 @@ class SubmissionService:
                 review=step_task_id[sources.review] if sources.review else None,
                 verdict_file=sources.verdict_file,
                 base=merge_base,
+                # A merge-only continuation's task is of an EARLIER workflow
+                # (#900): name it, signed, so the worker verifies the task's
+                # spec against the workflow it belongs to, not this one.
+                pull_request_workflow=(
+                    (continued_workflow or None) if sources.continued else None
+                ),
             )
         if integrator_step_id is None:
             return dispatch
