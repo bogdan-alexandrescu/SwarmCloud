@@ -1290,6 +1290,7 @@ class DispatchOptions:
         base: str | None = None,
         number: int | None = None,
         head_sha: str | None = None,
+        pull_request_workflow: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1301,7 +1302,11 @@ class DispatchOptions:
 
         A `merge_pr` workflow (#352) names the pull request by `number` and
         the `head_sha` the caller named instead of by the task that opened
-        it, because no task did; it has no review."""
+        it, because no task did; it has no review.
+
+        A merge-only continuation names `pull_request_workflow` too: the
+        continued task's own workflow, which the worker verifies that task's
+        signed spec against instead of the merge's (#900). It has no review."""
         target: list[tuple[str, Any]]
         if pull_request is None:
             if number is None or head_sha is None:
@@ -1311,6 +1316,10 @@ class DispatchOptions:
                 target.append(("base", base))
             return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
+        if pull_request_workflow is not None:
+            if review is not None or verdict_file is not None:
+                raise ValueError("a continued pull request's merge target names no review")
+            target.append(("pull_request_workflow", pull_request_workflow))
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
