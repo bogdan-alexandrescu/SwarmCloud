@@ -379,7 +379,11 @@ swarm-api at submission and carried by name:
    hours from expiry), registers it with the redaction filter as today, and
    reads it again before each push or pull request, since an attempt can
    outlive an 8-hour token. That re-read refreshes the token, not the grant;
-   step 4 re-reads the grant. A `read` grant makes the worker refuse to push:
+   step 4 re-reads the grant. On a 401 from GitHub -- a refresh elsewhere
+   ended the version it read -- the worker reads the slot's latest version
+   again and retries the call once (the issue fetch, the clone, the push
+   probe); a second 401 ends with a message saying the token was re-read and
+   refused again, so the person reconnects (owner decision 2026-10-08). A `read` grant makes the worker refuse to push:
    it never configures a push credential for that task.
 4. **Before cloning, and again before each push or pull request**, the
    worker re-reads the grant document by `repo_id` (tenant-scoped). A grant
@@ -482,9 +486,19 @@ does).
    authoritative binding for these slots only, and the review should weigh
    exactly that.
 5. **The refresher** (swarm-api in phase 2, decision D2) gets
-   `secretAccessor` and `secretVersionAdder` on the `-refresh` twins and
-   `secretVersionAdder` on the base slots, never accessor on a base slot, the
-   same split the subscription refresher has today. For "Disconnect GitHub"
+   `secretAccessor` and `secretVersionAdder` on the tenant's user-slot prefix:
+   the `-refresh` twins and the base slots alike. **Revised 2026-10-08 (owner
+   decision):** it was "never accessor on a base slot", so swarm-api could
+   act as the person only by refreshing, and every Access page load, grant
+   and verify refreshed. Measured that morning: the owner's slot reached 35
+   versions within minutes, and because each refresh makes GitHub end the
+   access token it replaces, a task holding the previous version failed
+   `401: Bad credentials`. Now a request reads the current access token and
+   reuses it, refreshing only within two hours of expiry or on a 401 (once,
+   under the refresh lease); in practice only the sweep refreshes. Reading
+   the access token adds no power: swarm-api already reads the refresh
+   token, which mints access tokens. The worker's grant is unchanged: base
+   slots only, never a twin. For "Disconnect GitHub"
    (owner decision 2026-10-07, OB3), swarm-api also holds a custom role,
    `swarmForgeSlotVersionManager`, with exactly
    `secretmanager.versions.disable` and `secretmanager.versions.enable` (no
