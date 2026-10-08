@@ -1413,8 +1413,8 @@ Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
 [`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
 as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
-list over 10 elements, and the fifteen grantable roles no longer fit in a
-single call. Every chunk still authorises only a `setIamPolicy` whose modified
+list over 10 elements, and the 14 grantable roles (15 until #150 took
+`swarmSecretLister` off) do not fit in a single call. Every chunk still authorises only a `setIamPolicy` whose modified
 roles stay inside it, which is what each Terraform-issued call already does.
 
 **The live project also still holds the deployer's UNCONDITIONED
@@ -1486,7 +1486,7 @@ whole expression is matched, and the list is parsed, for that reason. Before
   been used, preflight finds the permission on the role and stops. It does not
   show that the route is shut.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
-  grant changes. CI can still grant any of the fifteen, unconditioned, to
+  grant changes. CI can still grant any of the 14, unconditioned, to
   anyone.
 * **Routes through other identities.** Routes 1 and 3 in
   [the table above](#what-the-view-does-not-bound-the-deployer-can-reach-every-log)
