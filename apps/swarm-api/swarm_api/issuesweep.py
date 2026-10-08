@@ -47,12 +47,19 @@ the platform; `issue_sweep.enabled` on the tenant document turns it on for one
 tenant (`PUT /v1/admin/tenants/{tenant_id}/issue-sweep`). With either off the
 route answers what it would have done -- nothing -- and starts nothing.
 
-AS WHOM. The scheduler's identity is no tenant member and submits nothing as
-itself. A run is submitted as the creator of its repository's registration,
-asked of the directory first (`routes.admin.registration_owner_auth`, the
-repository poll's rule), and the run keeps that member as `on_behalf_of`, so
-every later submission -- the auto approval, CI fix rounds, the merge -- is
-made as them and only while they are still a member (`run_owner_auth`).
+AS WHOM (owner decision 2026-10-08). The scheduler's identity is no tenant
+member and submits nothing as itself. A run is submitted as the NAMED MEMBER
+in the tenant's `issue_sweep.submit_as`, independent of who registered each
+repository (that is the repository poll's rule, and the sweep no longer
+uses it): who the sweep's work is attributed to is a decision about the
+tenant, not a side effect of whoever once clicked "register". It is asked of
+the directory on EVERY submission (`routes.admin.sweep_submitter_auth`), and
+the run keeps that member as `on_behalf_of`, so every later submission -- the
+auto approval, CI fix rounds, the merge -- is made as them and only while
+they are still a member (`run_owner_auth`). A tenant whose `submit_as` is
+unset, or not a current member, is SKIPPED: nothing is read or started, the
+reason is logged and returned as `tenant_skipped`, and it never falls back
+to the registrant.
 
 INVARIANTS. The sweep itself creates no infrastructure demand: a planner is an
 ordinary task, admitted like any other (invariants 1-3), and a run waiting on
@@ -143,6 +150,23 @@ class SweepConfig(BaseModel):
     max_live_runs: StrictInt = Field(default=DEFAULT_MAX_LIVE_RUNS, ge=1, le=MAX_LIVE_RUNS_LIMIT)
     exclude_issues: list[_IssueNumber] = Field(default_factory=list, max_length=1_000)
     exclude_labels: list[_Label] = Field(default_factory=list, max_length=100)
+    #: The tenant member every swept run is submitted as. Unset by default
+    #: and required to sweep: see the module docstring, "AS WHOM".
+    submit_as: str | None = Field(default=None, max_length=320)
+
+    @field_validator("submit_as", mode="before")
+    @classmethod
+    def _submit_as(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("submit_as must be an email address")
+        value = value.strip().lower()
+        if not value:
+            return None
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            raise ValueError("submit_as must be an email address")
+        return value
 
     @field_validator("exclude_labels")
     @classmethod
@@ -307,6 +331,9 @@ class SweepReport:
     #: More work than one sweep reaches: registrations past MAX_REPOSITORIES,
     #: live runs past LIVE_SCAN, or the time budget spent.
     truncated: bool = False
+    #: Why the whole tenant was skipped though its switches are on: its
+    #: `submit_as` is unset or not a current member.
+    tenant_skipped: str | None = None
 
     def skip(self, issue: str, reason: str) -> None:
         kind = reason.split(":", 1)[0]
@@ -327,6 +354,7 @@ class SweepReport:
             "skipped_by_reason": dict(sorted(self.skipped_by_reason.items())),
             "failures": list(self.failures),
             "truncated": self.truncated,
+            "tenant_skipped": self.tenant_skipped,
         }
 
 
@@ -334,9 +362,10 @@ class SweepReport:
 #: fix_rounds=..., created_by=...) -> IssueRun: `routes.runs.start_run`,
 #: passed in so this module does not import the routes.
 StartRun = Callable[..., IssueRun]
-#: registration -> the AuthContext a run is submitted as, raising when its
-#: creator may not submit: `routes.admin.registration_owner_auth(ctx, tenant)`.
-OwnerAuth = Callable[[Mapping[str, Any]], Any]
+#: email -> the AuthContext a run is submitted as, raising when that address
+#: is not a current member of the tenant:
+#: `routes.admin.sweep_submitter_auth(ctx, tenant)`.
+OwnerAuth = Callable[[str], Any]
 
 
 def sweep_tenant(
@@ -360,6 +389,21 @@ def sweep_tenant(
         return report
     if not config.enabled:
         report.disabled_by = "tenant"
+        return report
+    submit_as = config.submit_as
+    if not submit_as:
+        report.tenant_skipped = "submit_as_unset"
+    else:
+        try:
+            owner_auth(submit_as)
+        except ApiError as refused:
+            report.tenant_skipped = (
+                f"submit_as_not_member: {submit_as}" if refused.code == "submit_as_not_member"
+                else f"submit_as_check_failed: {refused.code}"
+            )
+    if report.tenant_skipped is not None:
+        log.warning("issue sweep tenant=%s skipped: %s; set issue_sweep.submit_as to a current "
+                    "member (docs/issue-runs.md, Sweeper)", tenant_id, report.tenant_skipped)
         return report
     started_at = clock()
     runs = IssueRuns(ctx.db, now=ctx.now)
@@ -451,7 +495,7 @@ def sweep_tenant(
             report.skip(short, "budget: the sweep's time ran out")
             continue
         try:
-            auth = owner_auth(candidate.registration)
+            auth = owner_auth(submit_as)
             run = start_run(
                 ctx, auth, candidate.ref,
                 open_work=open_work_without(candidate.snapshot, candidate.ref.number),

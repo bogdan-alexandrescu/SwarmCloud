@@ -965,6 +965,46 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
     return _owner
 
 
+class SweepSubmitterNotMember(Forbidden):
+    """The tenant's `issue_sweep.submit_as` is not a current member."""
+
+    code = "submit_as_not_member"
+
+
+def sweep_submitter_auth(ctx: AppContext, tenant_id: str):
+    """email -> the AuthContext a swept run is submitted as: the tenant's named member.
+
+    Same shape as `registration_owner_auth` (built from the stored tenant,
+    never the caller; nothing wider than an ordinary member) but the address
+    is the tenant's `issue_sweep.submit_as`, not a registration's creator, and
+    membership is asked of the directory on every call.
+    """
+
+    def _submitter(email: str) -> AuthContext:
+        tenant = ctx.store.get_tenant(tenant_id)
+        if tenant is None:
+            raise NotFound(f"tenant {tenant_id!r} not found")
+        email = (email or "").strip().lower()
+        if not email or not ctx.authenticator.is_tenant_member(email, tenant):
+            raise SweepSubmitterNotMember(
+                f"issue_sweep.submit_as {email or '(unset)'} is not a current member of "
+                f"tenant {tenant_id!r}, so nothing is swept on their behalf"
+            )
+        return AuthContext(
+            principal=Principal(
+                email=email,
+                subject=f"issue-sweep:{tenant_id}",
+                domain=email.rsplit("@", 1)[-1],
+                groups=(),
+            ),
+            tenant_id=tenant_id,
+            is_admin=False,
+            tenant_principal=tenant.principal,
+        )
+
+    return _submitter
+
+
 @router.post("/repositories/poll")
 def poll_repositories(
     tenant_id: str = Query(..., min_length=1),
@@ -1037,8 +1077,10 @@ def sweep_issues(
     which switch is off and starts nothing.
 
     TENANT IS EXPLICIT, as on the other ticks. Each run is submitted in that
-    tenant as its registration's creator (`registration_owner_auth`), never
-    as the caller, and its planner waits for admission like any task.
+    tenant as the member named in its `issue_sweep.submit_as`
+    (`sweep_submitter_auth`), never the caller and never the registrant; a
+    tenant without a current-member `submit_as` is skipped, with the reason in
+    `tenant_skipped`. Its planner waits for admission like any task.
     """
     if not auth.is_rollup_sweeper:
         raise Forbidden(
@@ -1046,7 +1088,7 @@ def sweep_issues(
             "or start a run on the issue with POST /v1/runs"
         )
     report = sweep_tenant(
-        ctx, tenant_id, owner_auth=registration_owner_auth(ctx, tenant_id), start_run=start_run,
+        ctx, tenant_id, owner_auth=sweep_submitter_auth(ctx, tenant_id), start_run=start_run,
     )
     ctx.metrics.admin_actions.labels(action="issue_sweep").inc()
     return report.to_api()
@@ -1075,7 +1117,8 @@ def set_issue_sweep(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Replace the tenant's issue-sweep settings: `enabled` (default off),
-    `max_live_runs` (default 8), and the issues the sweep never starts, by
+    `max_live_runs` (default 8), `submit_as` (the member swept runs are
+    submitted as; required for a sweep to start anything), and the issues the sweep never starts, by
     number (`exclude_issues`) or label (`exclude_labels`). Whole, not merged:
     what is sent is what the next sweep reads."""
     config = set_sweep_config(ctx.db, tenant_id, body)

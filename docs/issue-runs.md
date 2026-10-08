@@ -276,6 +276,9 @@ started and what it skipped, each with its reason.
 | `unchanged_since_run: run_<id> (<STATE>)` | its last run ended any other way -- done, failed, rejected, cancelled -- and nothing changed on the issue since |
 | `cap: <n> live runs` | the tenant already has its cap of live runs |
 
+(A tenant-level skip is not a row here: with `submit_as` unset or not a member
+the whole tenant is skipped -- see "Turning it on", item 3.)
+
 A repository whose open pull requests number more than one sweep reads (300) is
 not swept at all (`too_many_pull_requests`): an unread pull request could claim
 any issue.
@@ -352,19 +355,36 @@ Off by default, twice over (the new-refusals-ship-off rule of PR 873):
    admin route, with the body
 
    ```json
-   {"enabled": true, "max_live_runs": 8, "exclude_issues": [], "exclude_labels": []}
+   {"enabled": true, "max_live_runs": 8, "exclude_issues": [], "exclude_labels": [],
+    "submit_as": "alice@saga.xyz"}
    ```
 
    `GET` on the same path reads it back with `platform_enabled`. The `PUT`
    replaces the settings whole. With it off a sweep answers
    `"disabled_by": "tenant"`.
 
-The runs are submitted as the **creator of each repository's registration**,
-asked of the directory first, exactly as the repository poll submits index
-runs; the run keeps them as `on_behalf_of`, and every later submission (the
-auto approval, CI fix rounds, the merge) is made as them and only while they
-are still a member. Register the repository as the person whose name the work
-should carry.
+3. **`submit_as`, the member the work is submitted as** (owner decision
+   2026-10-08). Every swept run is submitted as this address, set per tenant in
+   the same `PUT` body, and is **independent of who registered each
+   repository**. It is explicit because the alternative -- the repository poll's
+   rule, the registrant -- made the attribution of eight concurrent merging
+   runs an accident of who once clicked "register", and left it changing
+   whenever someone re-registered a repository. The run keeps the member as
+   `on_behalf_of`, and every later submission (the auto approval, CI fix
+   rounds, the merge) is made as them and only while they are still a member.
+
+   The sweep **refuses to start runs for a tenant whose `submit_as` is unset
+   or is not a current member**: it skips that tenant, reads nothing, logs the
+   reason and returns it as `"tenant_skipped": "submit_as_unset"` or
+   `"submit_as_not_member: <address>"`. It never falls back to the registrant
+   silently. Membership is asked of the directory again on **every**
+   submission, so a member removed mid-sweep stops the rest of that sweep
+   (`start_failed: submit_as_not_member`). To fix a skipped tenant, `PUT` a
+   `submit_as` that is a current member.
+
+Owner confirmations, 2026-10-08, of two behaviours as built: **any ended run
+waits for the issue to change** (not only `NOT_READY`), and **unapproved
+`PLANNED` runs do not hold the territory guard**.
 
 ### Excluding issues
 
