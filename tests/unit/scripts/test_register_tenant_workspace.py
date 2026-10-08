@@ -840,4 +840,5 @@ def test_the_build_file_runs_the_script_behind_the_guard() -> None:
     assert "guard-bin" in build and "SWARM_CALL_GUARD_ENFORCE=1" in build
     assert "workspace-guard.sh init --workspace-id" in build
     assert "CLOUD_LOGGING_ONLY" in build
-    assert "@sha256:" in build, "the build's image is pinned by digest (§2.2)"
+    assert "${_BUILDER_IMAGE}" in build, "every step runs in W4's builder image (owner, 2026-10-08)"
+    assert "google-cloud-cli:" not in build and "jq-linux" not in build, "no stock image, no downloaded jq"

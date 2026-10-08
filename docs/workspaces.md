@@ -276,8 +276,10 @@ for history.
 
 The build file has three build steps, all in one image pinned by digest that
 carries bash, gcloud, kubectl with `gke-gcloud-auth-plugin`, jq, curl and
-python3 (W0 confirms the stock `google-cloud-cli` image has them all; if not,
-the release builds a small one).
+python3: W4's own `images/workspace-apply`, passed to the build as the trigger
+substitution `${_BUILDER_IMAGE}`. Owner decision 2026-10-08: not the stock
+`google-cloud-cli` image, which lacks jq and whose bundled Python carries 7 HIGH
+CVEs.
 
 1. **Validate.** `_WORKSPACE_ID` must match `^w-[0-9a-f]{6}$` and `_MODE` must
    be `create` or `limits`, before anything else runs. A malformed message ends
