@@ -438,6 +438,20 @@ class ApiSettings:
     #: service, holds the stop permissions. Empty means a cancel is left to the
     #: worker's poll and the reconciler's pass, as before.
     execution_cancel_topic: str = ""
+    # --- the personal-workspace job's trigger (docs/workspaces.md §2.1, W7) -
+    #: The Pub/Sub topic an approval, a retry, a ceiling change and the
+    #: dispatch sweep publish a workspace id to (WORKSPACE_APPLY_TOPIC). The
+    #: Cloud Build trigger subscribed to it is the owner's bootstrap apply
+    #: (lane W4), so the name is the one that apply creates.
+    workspace_apply_topic: str = "swarm-workspace-apply"
+    #: Whether swarm-api publishes to it at all (WORKSPACE_APPLY_PUBLISH).
+    #: OFF by default, because the topic and its trigger do not exist until the
+    #: owner's W4 apply: publishing into a missing topic would fail every
+    #: approval's dispatch and fill the sweep's attempts with noise. Off, an
+    #: approval still records the decision and stays `approved`, and the sweep
+    #: publishes it once this is turned on (§2.2). Tests inject a fake
+    #: publisher instead of turning it on.
+    workspace_apply_publish: bool = False
 
     @property
     def project_id(self) -> str:
@@ -523,6 +537,11 @@ class ApiSettings:
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
+            workspace_apply_topic=os.environ.get(
+                "WORKSPACE_APPLY_TOPIC", "swarm-workspace-apply"
+            ).strip()
+            or "swarm-workspace-apply",
+            workspace_apply_publish=_bool("WORKSPACE_APPLY_PUBLISH", False),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),
