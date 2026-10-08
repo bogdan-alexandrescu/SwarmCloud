@@ -67,7 +67,7 @@ export function eventWord(e: Pick<TaskEvent, 'type' | 'detail'>): string {
  * capitals whatever the API writes next; the console words it at read.
  */
 const PROSE_STATES =
-  /\b(SUBMITTED|QUEUED|PARKED|READY|LEASED|DISPATCHED|STARTING|RUNNING|SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED|PLANNING|PLANNED|APPROVED|CHECKING|FIXING|DONE|REJECTED)\b/g
+  /\b(SUBMITTED|QUEUED|PARKED|READY|LEASED|DISPATCHED|STARTING|RUNNING|SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED|PLANNING|PLANNED|APPROVED|CHECKING|FIXING|DONE|REJECTED|NOT_READY)\b/g
 
 /** A sentence with every whole-word state token in it worded; nothing else in it changes. */
 export function proseWords(text: string): string {
