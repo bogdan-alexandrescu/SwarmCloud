@@ -244,7 +244,9 @@ export function heldSummary(count: number, heldAs = 'unavailable'): string {
  * the platform submits them for itself -- `merge` lands a workflow's pull
  * request, `post-verdict` and `claude-code-review` are the review chain's
  * steps, `indexer` is swarm-api's repository-index run
- * (`swarm_api.repoindex.INDEXER_PROFILE`), and `mock` is the smoke tests' --
+ * (`swarm_api.repoindex.INDEXER_PROFILE`), `claude-code-gke` is contract
+ * request 55's temporary canary of claude-code on GKE Autopilot, run by the
+ * operator to measure request 53, and `mock` is the smoke tests' --
  * so the task form marks them "platform" and lists them after the runners
  * people submit, rather than beside `claude-code` as if they were peers.
  *
@@ -252,7 +254,7 @@ export function heldSummary(count: number, heldAs = 'unavailable'): string {
  * `RunnerProfile` has no audience field. A name missing from this list is
  * drawn as an ordinary runner, which is the old behaviour, never a hidden one.
  */
-const PLATFORM_RUNNERS: ReadonlySet<string> = new Set(['claude-code-review', 'indexer', 'merge', 'mock', 'post-verdict'])
+const PLATFORM_RUNNERS: ReadonlySet<string> = new Set(['claude-code-gke', 'claude-code-review', 'indexer', 'merge', 'mock', 'post-verdict'])
 
 export function isPlatformRunner(name: string): boolean {
   return PLATFORM_RUNNERS.has(name)
