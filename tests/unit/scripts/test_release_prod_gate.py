@@ -217,6 +217,10 @@ _NEEDS_OUTPUT = re.compile(r"\bneeds\.([\w-]+)\.outputs\.([\w-]+)\b")
 # holds the step to writing only these.
 STEP_OUTPUTS = {
     ("infrastructure", "iam"): ("true", "false", ""),
+    # release-steps.yml's deploy stage: whether a newer commit reached dev
+    # while it ran (scripts/lib/release-order.sh). A boolean expression over
+    # three steps' outputs, so a started job renders exactly one of these.
+    ("deploy", "superseded"): ("true", "false"),
 }
 
 

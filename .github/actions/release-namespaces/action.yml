@@ -1,0 +1,115 @@
+# release-namespaces: apply each tenant namespace with its step-spec public
+# keys, before anything this release dispatches.
+#
+# THE STEPS ARE SHARED, THE GATES ARE NOT. This composite action is one stage
+# of a dev or prod release, run by BOTH release lanes: release.yml (the
+# normal release) and hotfix.yml (the hotfix lane, owner decision 2026-10-08,
+# observer proposal H; docs/ci.md, "Hotfix releases"). One copy, so the lanes
+# cannot drift. Each caller's JOB keeps its permissions, its checkout and
+# Google authentication, its `needs:` and its `if:` -- every gate stays in the
+# workflow file, where tests/unit/scripts/test_release_prod_gate.py reads it
+# with this action's steps inlined (test_release_reuses_ci_images.py,
+# `_workflow`).
+#
+# WHY A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW. The deployer trusts
+# workflow FILES, by `job_workflow_ref` (terraform/bootstrap/wif.tf, #457), and
+# for a reusable workflow that names the CALLED file -- which would have to be
+# pinned and callable at once, so any workflow on main that grants id-token
+# could call it and mint the deployer
+# (test_workflow_id_token_scope.py::test_no_deployer_pinned_workflow_is_callable).
+# A composite action runs inside the caller's job, so the token still names
+# release.yml or hotfix.yml.
+#
+# The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
+# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
+# below must be the same value as ENVIRONMENT.
+#
+# The caller sets up Terraform, and (when the switch is on) uv and the
+# project's Python, and runs this step only after release-verify succeeded.
+
+name: release-namespaces
+description: Apply each tenant namespace with its swarm-spec-verify-keys ConfigMap, when switched on.
+inputs:
+  environment:
+    description: "dev | prod"
+    required: true
+  apply_tenant_namespaces:
+    description: "vars.APPLY_TENANT_NAMESPACES: 'true' to apply"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: apply each tenant namespace with its step-spec public keys
+      # CONTRACT REQUEST 34 (#342), owner decision 2026-09-29 on #353: a GKE
+      # browser pod reads the step-spec public keys from the
+      # `swarm-spec-verify-keys` ConfigMap in its tenant's namespace, mounted
+      # read-only -- never from its `env:`, which the scheduler renders per
+      # task. There is no Kubernetes provider in terraform/infra, so the
+      # ConfigMap is rendered by kubernetes/render.py from the apply's own
+      # output (`spec_verify_keys_configmap`) and applied by
+      # kubernetes/apply.sh together with the rest of each tenant's
+      # namespace. Every release refreshes it, so a rotated or revoked key
+      # version reaches GKE in the same release that reaches Cloud Run.
+      # Both lanes: a hotfix that rotates a key must not leave GKE behind.
+      #
+      # BEFORE the smoke test and the GKE proof, so nothing this release
+      # dispatches runs against the previous release's keys.
+      #
+      # SWITCHED BY vars.APPLY_TENANT_NAMESPACES, off until the owner turns
+      # it on, like PROVE_GKE_DISPATCH below. This is the first time
+      # apply.sh runs from CI rather than from an operator's workstation, and
+      # it reads the cluster's network, the tenant GSAs' IAM policies and the
+      # control plane's uniqueIds as the deployer; a first run that fails
+      # must not be what turns every release red. When it is off, the step
+      # SAYS so, and GKE pods keep whatever ConfigMap was last applied (none,
+      # before the first: the mount is optional, and a worker with no keys
+      # refuses a signed task as CANNOT_START rather than run it unverified).
+      env:
+        APPLY_TENANT_NAMESPACES: ${{ inputs.apply_tenant_namespaces }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${APPLY_TENANT_NAMESPACES}" != "true" ]; then
+          echo "::notice title=Tenant namespaces not applied::vars.APPLY_TENANT_NAMESPACES is not 'true' -- this release did not refresh any tenant namespace or its swarm-spec-verify-keys ConfigMap."
+          exit 0
+        fi
+        # The outputs of the apply this release just made: the same backend
+        # and prefix the apply job planned against. Read-only.
+        terraform -chdir="${TF_ROOT}" init -input=false -reconfigure \
+          -backend-config="bucket=${TF_STATE_BUCKET}" \
+          -backend-config="prefix=infra/${ENVIRONMENT}"
+        mkdir -p build
+        terraform -chdir="${TF_ROOT}" output -json spec_verify_keys_configmap > build/spec-verify-keys.json
+        terraform -chdir="${TF_ROOT}" output -json tenant_namespaces > build/tenant-namespaces.json
+        GKE_CLUSTER="$(terraform -chdir="${TF_ROOT}" output -raw gke_cluster_name)"
+        export GKE_CLUSTER GKE_LOCATION="${REGION}"
+        if [ -z "${GKE_CLUSTER}" ]; then
+          echo "::notice title=No GKE cluster::this environment has no GKE cluster, so there is no tenant namespace to apply."
+          exit 0
+        fi
+        gcloud components install gke-gcloud-auth-plugin --quiet
+        gcloud container clusters get-credentials "${GKE_CLUSTER}" \
+          --project "${PROJECT_ID}" --location "${GKE_LOCATION}"
+        context="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
+        # apply.sh runs render.py with ${PYTHON_BIN:-python3}: the project's
+        # synced interpreter, never the runner's bare one (see above). Its
+        # imports are checked once here, before any tenant is applied, so a
+        # missing package fails the step before it writes to the cluster.
+        export PYTHON_BIN="${GITHUB_WORKSPACE}/.venv/bin/python"
+        "${PYTHON_BIN}" kubernetes/render.py --help >/dev/null
+        jq -r 'keys[]' build/tenant-namespaces.json > build/tenants.txt
+        # A while-read over a file, not `for t in $(...)`: see CLAUDE.md,
+        # "Empty output is not success" -- the count is printed and checked.
+        applied=0
+        while IFS= read -r tenant; do
+          [ -n "${tenant}" ] || continue
+          ./kubernetes/apply.sh --tenant "${tenant}" \
+            --context "${context}" --cluster "${GKE_CLUSTER}" \
+            --spec-verify-keys build/spec-verify-keys.json --confirm
+          applied=$((applied + 1))
+        done < build/tenants.txt
+        if [ "${applied}" -eq 0 ]; then
+          echo "::error::terraform output tenant_namespaces named no tenant; nothing was applied"
+          exit 1
+        fi
+        echo "applied ${applied} tenant namespace(s) with swarm-spec-verify-keys"
