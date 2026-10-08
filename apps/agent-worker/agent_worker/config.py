@@ -481,8 +481,9 @@ class WorkerConfig:
         ref = os.environ.get("REPOSITORY_REF", "").strip() or None
 
         # The step-spec verification settings (contract request 34). The Job's
-        # environment on Cloud Run; the read-only ConfigMap mount on GKE, read
-        # only when the environment carries no keys. On GKE the mount supplies
+        # environment on both backends (the GKE Job carries the scheduler's
+        # copy since 2026-10-08); the read-only ConfigMap mount on GKE is the
+        # fallback, read only when the environment carries no keys. On GKE the mount supplies
         # ALL FOUR, the mode and the cutover included (owner decision
         # 2026-09-29), so a GKE worker follows the legacy window exactly as a
         # Cloud Run one does; the environment still wins wherever it is set.
