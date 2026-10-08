@@ -362,13 +362,13 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
       for k, m in google_project_iam_member.forge_personal_slots :
       m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
       && startswith(m.condition[0].expression, "resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-u-\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-u-\") != \"\"")
-    ]) && toset(keys(google_project_iam_member.forge_personal_slots)) == toset(["version_adder", "version_manager", "refresh_reader"])
+    ]) && toset(keys(google_project_iam_member.forge_personal_slots)) == toset(["version_adder", "version_manager", "slot_reader"])
     error_message = "swarm-api's personal-slot grants are its three user-slot grants, bounded to swarm-tenant-u-*-git-u-* slots"
   }
 
   assert {
-    condition     = strcontains(google_project_iam_member.forge_personal_slots["refresh_reader"].condition[0].expression, "endsWith(\"-refresh\")") && google_project_iam_member.forge_personal_slots["refresh_reader"].role == "roles/secretmanager.secretAccessor"
-    error_message = "swarm-api reads personal refresh twins only, never a base slot (#780 D2)"
+    condition     = google_project_iam_member.forge_personal_slots["slot_reader"].condition[0].expression == google_project_iam_member.forge_personal_slots["version_adder"].condition[0].expression && google_project_iam_member.forge_personal_slots["slot_reader"].role == "roles/secretmanager.secretAccessor"
+    error_message = "swarm-api reads personal tenants' user slots, base and -refresh twin alike, on the same bound as its writes (owner decision 2026-10-08)"
   }
 }
 

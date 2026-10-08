@@ -330,11 +330,11 @@ locals {
       description = "managed-by=swarm-terraform; swarm-api disables personal tenants' GitHub user tokens on disconnect and enables them on reconnect (#780 OB3; #847)."
       expression  = local.forge_personal_any
     }
-    refresh_reader = {
+    slot_reader = {
       role        = "roles/secretmanager.secretAccessor"
-      title       = "swarm forge refresh twins personal"
-      description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub refresh tokens to refresh them, never a base slot (#780 D2; #847)."
-      expression  = "${local.forge_personal_any} && ${local.forge_is_refresh}"
+      title       = "swarm forge user slots personal"
+      description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub user slots: the refresh token to refresh, the current access token to reuse instead of refreshing per call (#780 D2, owner decision 2026-10-08; #847)."
+      expression  = local.forge_personal_any
     }
   } : {}
 }
