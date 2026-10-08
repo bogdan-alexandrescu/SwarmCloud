@@ -29,6 +29,7 @@
 //     It is drawn as waiting, never as running.
 
 import { NEVER_STARTED_WORD, SKIPPED_WORD, hasTokenKind, levelsOf, shapeOf, type ResultUsage } from './dag'
+import { eventKind } from './events'
 import { skippedByVerdict } from './wfreview'
 import {
   absentCell,
@@ -51,6 +52,7 @@ import {
   type AttemptRow,
   type StepState,
   type Task,
+  type TaskEvent,
   type TaskState,
   type Workflow,
   type WorkflowStep,
@@ -1818,4 +1820,55 @@ export function mergeCardOf(task: Task, tasks: Iterable<Task>): MergeCard | null
   }
   const first = strOf(wait?.['first_parked_at'])
   return { state, pullRequest: mergePullRequest(merge, wait, opener), firstParkedAt: first }
+}
+
+// ---------------------------------------------------------------------------
+// When the state a waiting step is in began (#503)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE EVENT EACH CLOCKED WAIT IS ENTERED BY. The task record keeps no time of
+ * its own for these three states: `updated_at` is its LAST write, which a
+ * `next_eligible_at` re-check or a cancel request moves on, so a park timed
+ * from it read minutes short. The event log records the transition itself.
+ * LEASED and DISPATCHED hold a slot (invariant 1), PARKED holds none; all
+ * three are waits, and none of them is "queued".
+ */
+export const ENTRY_EVENT: Readonly<Partial<Record<TaskState, string>>> = {
+  PARKED: 'parked',
+  LEASED: 'lease_acquired',
+  DISPATCHED: 'dispatched',
+}
+
+/** The events that move a task from one state to another; heartbeats and checkpoints do not. */
+const TRANSITIONS: ReadonlySet<string> = new Set([
+  'submitted', 'queued', 'parked', 'ready', 'lease_acquired', 'lease_released', 'dispatched',
+  'starting', 'running', 'retrying', 'succeeded', 'failed', 'cancelled', 'dead_lettered',
+])
+
+/**
+ * When the task entered the state it is in now, from its events, or null when
+ * the events read do not show it.
+ *
+ * THE NEWEST TRANSITION MUST BE THE STATE'S OWN ENTRY. Newest first, it skips
+ * what is not a transition, takes the run of entry events at the head (a
+ * re-park while parked keeps the first park's time: the step has been parked
+ * since then) and stops at the first other transition. A page whose newest
+ * transition is something else is a page that does not describe the current
+ * state -- a read older than the task record -- and gives no time at all
+ * rather than the time of an earlier park.
+ */
+export function stateEnteredAt(state: TaskState, events: readonly TaskEvent[]): number | null {
+  const entry = ENTRY_EVENT[state]
+  if (entry === undefined) return null
+  const newestFirst = events
+    .map((e) => ({ kind: eventKind(e), at: Date.parse(e.at) }))
+    .filter((e) => Number.isFinite(e.at) && TRANSITIONS.has(e.kind))
+    .sort((a, b) => b.at - a.at)
+  let at: number | null = null
+  for (const e of newestFirst) {
+    if (e.kind !== entry) break
+    at = e.at
+  }
+  return at
 }
