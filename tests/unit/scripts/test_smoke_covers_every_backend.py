@@ -166,8 +166,8 @@ def test_every_backend_a_profile_resolves_to_gets_a_row():
 
     # THE MUTATION THIS CATCHES: a program that keeps only the backends it found
     # an AVAILABLE profile for. Disable every GKE profile -- browser, and
-    # contract request 55's temporary claude-code-gke -- and GKE_AUTOPILOT must
-    # still be listed -- with `-` -- rather than simply stop being mentioned.
+    # claude-code since contract request 53 -- and GKE_AUTOPILOT must still be
+    # listed -- with `-` -- rather than simply stop being mentioned.
     disabled = copy.deepcopy(served)
     for entry in disabled["runtimes"].values():
         if entry["resolved_backend"] == "GKE_AUTOPILOT":

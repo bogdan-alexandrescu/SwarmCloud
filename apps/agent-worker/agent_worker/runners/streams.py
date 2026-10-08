@@ -67,9 +67,8 @@ def cli_agent_spec(profile: str) -> Any | None:
     """
     # claude-code-review (contract request 36) runs the claude_code runner
     # under its own Job and service account, and indexer (contract request 48)
-    # runs it on agent-runtime-indexer, and claude-code-gke (contract request
-    # 55, temporary) runs it on GKE Autopilot, so their child is the same CLI.
-    if profile in ("claude-code", "claude-code-review", "indexer", "claude-code-gke"):
+    # runs it on agent-runtime-indexer, so their child is the same CLI.
+    if profile in ("claude-code", "claude-code-review", "indexer"):
         from .claude_code import SPEC as claude_spec
 
         return claude_spec
