@@ -45,9 +45,9 @@ and that is what the prototype does.
 | Repository graph (`RepoGraph.tsx`) | **D: borrow Graphify's aggregation, search and neighbour-list ideas**, adopt nothing now | At 2,000 modules both renderers draw an unreadable hairball (screens 17-18). Scale here comes from aggregation and focus, not a faster canvas. Two defects measured below (clustering by `src`, nodes piling on the canvas floor) cost more than the renderer does. |
 | Both (option C) | Not recommended | vis-network is +159.2 kB gz (+33% on today's 477.8 kB), throws in jsdom, cannot read CSS variables, and Graphify's own configuration has `keyboard: false`. |
 
-Revisit option B, preferably with a WebGL or Cytoscape renderer rather than
-vis-network, if GNX's knowledge graph must show more than about 2,000 nodes *at
-once*. Section 3.4 explains why that is a product question before it is a
+**Owner decision 2026-10-08: D for both graphs (§8).** Revisit option B,
+with a WebGL renderer (Sigma.js or Cytoscape, not vis-network), when GNX's
+knowledge graph must show more than about 2,000 nodes *at once*. Section 3.4 explains why that is a product question before it is a
 rendering one.
 
 ## 2. Graphify, measured
@@ -350,7 +350,7 @@ make. A renderer choice cannot make it.
 | Option | What it means | Verdict |
 |---|---|---|
 | A. Adopt Graphify | Render with vis-network hierarchical (screens 7-8) | **No.** It loses stage bands, figures per step, semantic zoom, native-button access, phone cards and DOM tests, for +159 kB gz. Its `edgeMinimization` still leaves the security-scan's twelve edges crossing the row. |
-| D. Borrow the layout step | Add the barycentric ordering pass to `layoutOf`, before x is assigned (screens 5-6) | **Recommended.** 129 → 30 crossings at 48 steps. 2 ms. No dependency. The renderer, bands, zoom and phone view are untouched. |
+| D. Borrow the layout step | Add the barycentric ordering pass to `layoutOf`, before x is assigned (screens 5-6) | **Chosen (owner decision 2026-10-08).** 129 → 30 crossings at 48 steps. 2 ms. No dependency. The renderer, bands, zoom and phone view are untouched. |
 | E. Don't adopt, change nothing | Keep listing order | Leaves the braid. |
 
 The ordering pass is not Graphify's: it is the Sugiyama step every layered
@@ -364,7 +364,7 @@ on its own level (`proto.test.tsx`).
 | Option | What it means | Verdict |
 |---|---|---|
 | B. Adopt Graphify | vis-network with Graphify's physics (screens 11-12, 18) | **Not now.** It is faster than today at 2,000 nodes and still unreadable there. It is canvas-only, has no light theme of its own, throws in jsdom, and adds +159 kB gz. If GNX needs thousands of nodes drawn at once, evaluate a WebGL renderer (sigma.js) or Cytoscape at that point, behind a lazily loaded chunk. |
-| D. Borrow Graphify's ideas | Aggregate above a limit; cluster on real structure; search plus a neighbour list; a filtering legend; the layout off the main thread | **Recommended.** It fixes defects 7-11. Every piece is a change to `RepoGraph*.tsx` and needs no dependency. |
+| D. Borrow Graphify's ideas | Aggregate above a limit; cluster on real structure; search plus a neighbour list; a filtering legend; the layout off the main thread | **Chosen (owner decision 2026-10-08).** It fixes defects 7-11. Every piece is a change to `RepoGraph*.tsx` and needs no dependency. |
 | E. Don't adopt, change nothing | | Leaves a one-node clustered view for `src/` repositories. |
 
 ### 4.3 Both (C)
@@ -437,24 +437,46 @@ GR1 only through `dag.ts`'s exported API, and GR1 owns `dag.ts`.
 | **GR2** Composer preview | `SubmitWorkflow.tsx`, its CSS and tests | A DAG preview from `layoutOf` at the names tier | Preview nodes are exactly the draft's steps, with no state mark on any. At 390 px it shows stage cards, not a scaled canvas. Bundle +≤ 2 kB gz. |
 | **GR3** Repo graph | `RepoGraph.tsx`, `RepoGraphData.ts`, `styles/repograph.css`, their tests | Structural clustering; aggregated first view; neighbour list and filtering legend; layout in a Worker; soft bounds; disambiguated labels | A 200-module `src/` fixture folds to ≥ 6 clusters (from 2). The 2,000-module fixture keeps the main thread under 100 ms per task (Chromium, CI's browser job if one exists, else a recorded manual run). No node rests on the canvas boundary. Labels are unique within a view. Bundle +≤ 5 kB gz. |
 | **GR4** Impact graph | `RepoImpact.tsx`, `RepoTestMap.tsx`, their tests | Blast-radius and test-impact drawn as layered graphs, lists kept for phone and screen reader | Drawn nodes = the plan's rows, exactly. A cut list shows "N more not drawn". Bundle +≤ 4 kB gz. Lands **after GNX**'s API settles. |
-| GR0, only if the owner picks A/B/C | a lazily loaded chunk for one route | The adopted renderer behind a dynamic `import()` | Main chunk +0. Route chunk within the owner's budget (question 3). Trivy clean. A DOM fallback list for tests and screen readers. |
+| GR0, only if a renderer is later adopted (see the §8 trigger; not chosen) | a lazily loaded chunk for one route | The adopted renderer behind a dynamic `import()` | Main chunk +0. Route chunk within a budget the owner sets at that point. Trivy clean. A DOM fallback list for tests and screen readers. |
 
-When GR1 lands, `src/proto/` and the `vis-network` devDependency are deleted in
-the same PR, unless the owner keeps them (question 5).
+**Owner decision 2026-10-08: GR1 and GR3 run IN PARALLEL, first** (they share
+no file). GR2 and GR4 follow as above. The graph work's bundle budget is
+**+10 kB gz in total with no new runtime dependency** (§8 question 3), so the
+per-lane figures above sit inside it.
 
-## 8. Owner questions
+**Owner decision 2026-10-08: the prototype stays until GR1 lands, and GR1
+deletes it.** When GR1 lands, `src/proto/` and the `vis-network` devDependency
+are deleted in the same PR.
 
-The lane's `questions.json` carries these with options and recommendations:
+## 8. Owner decisions
 
-1. The workflow DAG: D (borrow the ordering pass), A (adopt vis-network), or E
-   (unchanged).
-2. The repo graph: D (borrow Graphify's ideas), B (adopt vis-network), B′ (a
-   different renderer when GNX needs one), or E.
-3. The bundle budget for graph work: +10 kB gz and no new runtime dependency;
-   +80 kB gz (React Flow + dagre); or a lazily loaded route chunk ≤ 160 kB gz.
-4. Which screen goes first: GR1 (DAG), GR3 (repo graph), GR2 (composer) or GR4
-   (impact).
-5. Whether the prototype stays in the tree until GR1, or goes now.
+**Owner decision 2026-10-08.** The chosen option is in bold; the alternatives
+stay listed.
+
+1. The workflow DAG.
+   * A. Adopt vis-network.
+   * **D. Borrow the ordering pass.**
+   * E. Unchanged.
+2. The repo graph.
+   * B. Adopt vis-network.
+   * B′. A different renderer when GNX needs one.
+   * **D. Borrow Graphify's ideas, now.**
+   * E. Unchanged.
+
+   **Stated trigger:** evaluate a WebGL renderer (Sigma.js or Cytoscape, **not**
+   vis-network) when the knowledge graph must show more than about 2,000 nodes
+   at once. Until then nothing is adopted (§3.4).
+3. The bundle budget for graph work.
+   * **+10 kB gz, no new runtime dependency.**
+   * +80 kB gz (React Flow + dagre).
+   * A lazily loaded route chunk ≤ 160 kB gz.
+4. Which screens go first.
+   * **GR1 (DAG) and GR3 (repo graph) IN PARALLEL, because their files are
+     disjoint.**
+   * GR2 (composer) or GR4 (impact) first.
+5. The prototype.
+   * **It stays until GR1 lands, and GR1 deletes it.**
+   * Delete it now.
 
 ## 9. What was not verified
 
