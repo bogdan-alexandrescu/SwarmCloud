@@ -16,7 +16,7 @@ Every row was checked by opening the file, and the token row was checked by **ex
 | **Jobs** per engineer, calendar range ("all of August") | **No** | `list_tasks` has no `since`/`until` and no index covers `submitted_by` — see P1 and P3 |
 | **Agents** (attempts that actually ran) per tenant, per hour/day/week/month | Yes, **but nothing in this repo can read it yet** | Cloud Monitoring `logging.googleapis.com/user/swarm/starting`, labelled `tenant_id` + `runner_profile` (`terraform/modules/monitoring/metrics.tf:42-101`, `:103-136`) |
 | **Agents** per *engineer* | **No, and not cheaply fixable** | `submitted_by` never reaches the worker — `worker_env` carries identifiers only (`apps/scheduler/scheduler/dispatch.py:194-220`), and `build_logger` binds no user label (`apps/agent-worker/agent_worker/logs.py:183-201`) |
-| **Tokens / provider cost** per task | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py:1055-1103`) is correct, but it is called on the **wrong object** at `lifecycle.py:474`. See the box below — `result_summary.runner.usage` is `{}` on every task in the database |
+| **Tokens / provider cost** per task | **No. The capture exists and never fires.** | `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`) is correct, but it is called on the **wrong object** in `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend`. See the box below — `result_summary.runner.usage` is `{}` on every task in the database |
 | **Tokens** per engineer, aggregated | **No**, twice over | Nothing to aggregate (above), and no index/`sum()` target if there were — see P4 |
 | **Cost / spend**, compute | **No** | No billing export anywhere in `terraform/` — no `google_logging_sink`, no BigQuery dataset |
 | **Budget per tenant** | **No — this is a trap** | `Tenant.monthly_budget_usd` exists in the model (`models.py:246`) and is returned by `tenant_to_api` (`codec.py:297`), but `PUT /v1/admin/tenants/{id}/limits` **422s** on it (`routes/admin.py:178-195`). It is `None` for every tenant. Rendering it is rendering a permanent blank that looks like "no budget set" |
@@ -28,13 +28,13 @@ Every row was checked by opening the file, and the token row was checked by **ex
 
 * A runner's `body()` returns `{summary, provider, model, exit_code, structured_output, limits, metrics}` (`apps/agent-worker/agent_worker/runners/cliagent.py:342-357`). The Claude Code JSON — the object that actually holds `usage` and `total_cost_usd` — is nested under **`structured_output`**.
 * `run_runner` writes `result.json` with `output` = that dict minus `status`/`summary`/`metrics` (`apps/agent-worker/agent_worker/runners/base.py:228-239`).
-* `lifecycle.py:474` then calls `_usage_summary(runner_result.get("output"))` — the envelope, whose top-level keys are `exit_code, limits, model, provider, structured_output`. `output.get("usage")` is `None`. `output.get("total_cost_usd")` is `None`.
+* `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` then calls `_usage_summary(runner_result.get("output"))` — the envelope, whose top-level keys are `exit_code, limits, model, provider, structured_output`. `output.get("usage")` is `None`. `output.get("total_cost_usd")` is `None`.
 
 Executed against the real functions with the real result shape:
 
 ```
 keys of result.json['output'] : ['exit_code', 'limits', 'model', 'provider', 'structured_output']
-what lifecycle.py:474 computes : {}
+what _collect_spend computes   : {}
 what the unit test computes    : {"input_tokens": 8, "output_tokens": 402, ... "total_cost_usd": 0.0642028}
 ```
 
@@ -103,7 +103,7 @@ The tenant's timeline. One screen, dense.
 Series and stack order, bottom to top: `SUCCEEDED` (green), `FAILED` (red), `DEAD_LETTERED` (dark red), `CANCELLED` (grey), `still open` (hatched — any task in the window whose `completed_at` is null).
 Bucketed on **`completed_at`** for the four terminal series and on **`created_at`** for a thin overlaid line labelled *submitted*. Both are labelled on the axis legend; they are genuinely different questions and the chart must not merge them.
 
-`completed_at` is safe to bucket on: **every** writer that moves a task to a terminal state sets it — the worker (`control.py:621`), the API's immediate cancel (`store.py:440`), the scheduler's cancel (`scheduler/store.py:318`) and the reconciler's reclaim (`reconciler/store.py:237`). A terminal row with a null `completed_at` is a data bug, and the chart should count it in *still open* **and** surface it in the state strip rather than dropping it.
+`completed_at` is safe to bucket on: **every** writer that moves a task to a terminal state sets it — the worker (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), the API's immediate cancel (`store.py:440`), the scheduler's cancel (`scheduler/store.py:318`) and the reconciler's reclaim (`reconciler/store.py:237`). A terminal row with a null `completed_at` is a data bug, and the chart should count it in *still open* **and** surface it in the state strip rather than dropping it.
 
 **Stat strip, four tiles.** Each tile carries its own state dot (see §6):
 - `Submitted` — count of rows in window. Sub-label: the span.
@@ -138,7 +138,7 @@ Bucketed on **`completed_at`** for the four terminal series and on **`created_at
 - **An honest hourly chart over a long span.** Hour buckets over 500 rows of a busy tenant cover a few hours. The bucket selector must *disable* Month when the covered span is under 60 days, with the reason in the tooltip — not render one lonely column.
 - **"Agents started"** as distinct from "tasks". The real per-attempt throughput signal is the Cloud Monitoring `starting` metric, and nothing in this repo can read it (**P5**). Until then the screen shows `attempt_count` and is explicit that it is admissions. Per-attempt documents cannot fill the gap either: the `attempts` collection has no route (§0).
 - **Total compute spend.** No billing export exists in `terraform/` — no `google_logging_sink`, no BigQuery dataset. `PUT /v1/admin/tenants/{id}/limits` refuses `monthly_budget_usd` for exactly this reason (`routes/admin.py:178-195`), and the UI must not quietly disagree with the API.
-- **Per-attempt history for a retried task.** `result_summary` is written only by `ControlPlane.finish()` (`apps/agent-worker/agent_worker/control.py:610-635`), once, at terminal state, and only when the worker reaches it. `park()` (`control.py:582-607`) writes none; a reconciler reclaim (`reconciler/store.py:225-241`) and an API or scheduler cancel write none; a fenced or crashed worker never reaches `finish()` at all. So even after P4a, a task that failed twice and succeeded on the third attempt will carry **attempt 3's numbers only**. Every row with `attempt_count > 1` must carry a marker: *"last attempt only — earlier attempts were not recorded."*
+- **Per-attempt history for a retried task.** `result_summary` is written only by `ControlPlane.finish()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.finish`), once, at terminal state, and only when the worker reaches it. `park()` (`apps/agent-worker/agent_worker/control.py::ControlPlane.park`) writes none; a reconciler reclaim (`reconciler/store.py:225-241`) and an API or scheduler cancel write none; a fenced or crashed worker never reaches `finish()` at all. So even after P4a, a task that failed twice and succeeded on the third attempt will carry **attempt 3's numbers only**. Every row with `attempt_count > 1` must carry a marker: *"last attempt only — earlier attempts were not recorded."*
 
 #### Refresh and cost
 
@@ -186,7 +186,7 @@ Sort defaults to `Tasks` descending.
 | Engineer | `task.submitted_by` (`codec.py:114`) — the verified email from the ID token, never client-supplied | group rows by this exact string; no normalisation, no display-name lookup (there is no directory read in this platform) |
 | Tasks / per-state counts | `task.state` | group + count |
 | Attempts | `task.attempt_count` | sum; same admissions caveat as A1 |
-| Runtime p50 / p95 | `task.completed_at - task.started_at` | **Only where both are non-null.** `started_at` is written at `DISPATCHED → STARTING` (`control.py:410-414`) and is **overwritten on every retry** — so this is the *last attempt's* wall time, not total compute. Column header reads **"Last-attempt runtime"**, and the tooltip says why. Per-attempt runtimes exist in the `attempts` collection and are unreachable: no route reads it |
+| Runtime p50 / p95 | `task.completed_at - task.started_at` | **Only where both are non-null.** `started_at` is written at `DISPATCHED → STARTING` (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`) and is **overwritten on every retry** — so this is the *last attempt's* wall time, not total compute. Column header reads **"Last-attempt runtime"**, and the tooltip says why. Per-attempt runtimes exist in the `attempts` collection and are unreachable: no route reads it |
 | Last active | `max(task.updated_at)` | — |
 
 #### What it cannot show yet
@@ -228,7 +228,7 @@ A second chart on A1, tab-switched with the task chart: `[ Tasks | Agents starte
 #### Where every value comes from
 
 - Metric: `logging.googleapis.com/user/swarm/starting`, DELTA INT64, labels `tenant_id` and `runner_profile` (`terraform/modules/monitoring/metrics.tf:48-54`; name assembled at `:107` as `${var.name_prefix}/${replace(key,"_","-")}`). `name_prefix` defaults to `swarm` at the root (`terraform/infra/variables.tf:24-28`), is passed straight through to the module (`terraform/infra/main.tf:397`), and no `.tfvars` under `terraform/environments/` overrides it — so the type is `logging.googleapis.com/user/swarm/starting`. **Read the deployed metric's name rather than hardcoding it** if that default ever becomes environment-specific.
-- Emitted once per attempt that actually began running, by `ControlPlane.emit(EventType.STARTING)` (`apps/agent-worker/agent_worker/control.py:345-376`, called from `advance_to_running`, `control.py:410-414`). This is genuinely "an agent started", not "a task was admitted".
+- Emitted once per attempt that actually began running, by `ControlPlane.emit(EventType.STARTING)` (`apps/agent-worker/agent_worker/control.py::ControlPlane.emit`, called from `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). This is genuinely "an agent started", not "a task was admitted".
 - Read via `projects.timeSeries.list`, filter `metric.type="…/starting" AND metric.labels.tenant_id="<tenant>"`, `perSeriesAligner=ALIGN_DELTA`, `crossSeriesReducer=REDUCE_SUM`, `groupByFields=metric.label.runner_profile`, `alignmentPeriod` 3600s / 86400s / 604800s.
 
 #### What has to be built first (P5)
@@ -342,7 +342,7 @@ Carried here so the prerequisites section picks them up; **P4a is new and is the
 
 | | What | Track | Size |
 |---|---|---|---|
-| **P4a** | `lifecycle.py:474` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every task. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
+| **P4a** | `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` must call `_usage_summary(runner_result["output"].get("structured_output"))` — today it passes the runner envelope and records `{}` on every task. Add a test at the `result.json` level, not the CLI-object level | B | one line + one test |
 | **P1** | `since`/`until` on `list_tasks`, mapping onto `tasks-tenant-created`; plus a `count()` variant per bucket | A | small |
 | **P3** | Index `tenant_id ASC, submitted_by ASC, created_at DESC`, and a `submitted_by` parameter on `GET /v1/tasks` | C + A | small (index build time is the real cost) |
 | **P4** | Somewhere typed to aggregate usage from — per-attempt fields plus a `sum()` target, which is a **frozen-contract change request** against `swarm_common.models.Attempt`, not an edit | contract request | medium |

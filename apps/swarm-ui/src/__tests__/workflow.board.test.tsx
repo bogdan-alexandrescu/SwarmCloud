@@ -335,7 +335,9 @@ function timings(): { w: Workflow; tasks: Map<string, Task> } {
       }),
     ],
     ['task_live', task('task_live', 'RUNNING', { started_at: iso(-68_000) })],
-    ['task_waiting', task('task_waiting', 'LEASED', { created_at: iso(-153_000) })],
+    // QUEUED, not LEASED (#503): a LEASED step holds a slot and says
+    // `leased`, which workflow.waits.test.tsx holds. This is the queue wait.
+    ['task_waiting', task('task_waiting', 'QUEUED', { created_at: iso(-153_000) })],
     [
       'task_held',
       task('task_held', 'PARKED', {
@@ -413,7 +415,10 @@ describe('how long a step has taken', () => {
     expect(text('done')).toBe('ran 1m 8s')
     expect(text('live')).toBe('running 1m 8s')
     expect(text('waiting')).toBe('queued 2m 33s')
-    expect(text('held')).toBe('parked 7m 11s')
+    // A LOWER BOUND, with `≥` (#503): this harness reads no events, so the
+    // park is timed from `updated_at`, the record's last write, which is at or
+    // after the park. Timed from the PARKED event: workflow.waits.test.tsx.
+    expect(text('held')).toBe('parked ≥7m 11s')
 
     // Four figures, four different sentences -- collapsing them into one
     // number is what this component exists to stop.
@@ -1615,7 +1620,7 @@ describe('the QA pass: the canvas', () => {
     expect(ran('publish')).toBe('not started')
     // A WAIT is not a run, and the `ran` figure cannot say it, so it stays.
     expect(nodeNamed(container, 'waiting').querySelector('.node-dur')!.textContent).toBe('queued 2m 33s')
-    expect(nodeNamed(container, 'held').querySelector('.node-dur')!.textContent).toBe('parked 7m 11s')
+    expect(nodeNamed(container, 'held').querySelector('.node-dur')!.textContent).toBe('parked ≥7m 11s')
   })
 })
 

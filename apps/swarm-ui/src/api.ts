@@ -2767,7 +2767,9 @@ export async function setPoolLimit(poolName: string, limit: number): Promise<Res
 
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 200))
-    return { status: 'ok', fetchedAt: Date.now(), data: { pool: poolName, limit } }
+    // The route's shape -- `{ pool }` with the pool's new hard limit -- because
+    // the editor compares that pool with what was asked (AdminSettings `saveOutcome`).
+    return { status: 'ok', fetchedAt: Date.now(), data: { pool: { name: poolName, hard_limit: limit } } }
   }
 
   return write(path, 'PUT', { limit })

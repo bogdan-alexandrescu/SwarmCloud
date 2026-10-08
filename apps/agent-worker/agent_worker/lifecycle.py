@@ -1945,6 +1945,15 @@ class Worker:
                 end_cause=outcome.end_cause,
             )
             self.log.warning("worker action failed retryably", action=action.value, code=code)
+            if state is TaskState.FAILED:
+                # The last attempt: the task ended as `end_cause` (an outage
+                # that spent its retries is how most MERGE_FAILED /
+                # VERDICT_FAILED end; CANCELLED ends as the cancel's cause and
+                # is not logged here). The same line as the non-retryable end
+                # below, which the monitoring module's worker-action-ended
+                # metric counts.
+                self.log.error("worker action ended", action=action.value, code=code,
+                               end_cause=outcome.end_cause.value if outcome.end_cause else None)
             return Outcome(exit_code=ExitCode.FAILED, state=state)
         self.control.finish(
             state=outcome.state,

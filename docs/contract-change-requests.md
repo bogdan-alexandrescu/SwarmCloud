@@ -285,7 +285,7 @@ if source.input_from:
 
 **Read by exactly one place.** `agent-worker/agent_worker/inputs.py:56`
 (`METADATA_KEY = "input_from"`) and `declared_inputs()` at `:109-154`, called
-from `lifecycle.py:875-905` (`_stage_declared_inputs`). `declared_inputs` then
+from `apps/agent-worker/agent_worker/lifecycle.py::Worker._stage_declared_inputs`. `declared_inputs` then
 re-validates every key and every value at runtime -- the key is a non-empty
 string, the value is a non-empty string, no two entries share a destination --
 because the contract types `metadata` as `dict[str, Any]` and says nothing about
@@ -403,7 +403,7 @@ re-validates every key at runtime."
 
 ### The shape, and its single writer
 
-`agent-worker/agent_worker/lifecycle.py:2110`, inside `_upload_outputs`:
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._upload_outputs`:
 
 ```python
 artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
@@ -434,7 +434,7 @@ rendered (`gs://...` in production, `file://...` locally).
 A fifth thing shares the name and not the shape:
 `agent-worker/agent_worker/runners/base.py:172` writes
 `"artifacts": [<filename>, ...]` -- a list of **strings** -- into the runner's
-`result.json`. It is not copied into `result_summary` (`lifecycle.py:697-707`
+`result.json`. It is not copied into `result_summary` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._add_runner_block`
 takes `status`, `summary`, `output` and `metrics` only), so the two do not
 collide today. They are two identically-named fields with incompatible shapes in
 one codebase, which is the ambiguity a named type removes.
@@ -651,7 +651,7 @@ The accepted vocabularies are `DISPATCH_STRATEGIES` (`:155`) and
   the API's defaults so a task predating the feature reads as
   `collect`/`checkpoints` rather than null, and `codec.workflow_dispatch`
   (`:122-149`) rolls that up to the workflow.
-* `agent-worker/lifecycle.py:1611-1675` -- for the worker. Five accessors:
+* `apps/agent-worker/agent_worker/lifecycle.py::Worker._dispatch_block` and the four beside it -- for the worker. Five accessors:
   `_dispatch_block`, `_dispatch_strategy`, `_dispatch_role`,
   `_dispatch_integrates`, `_dispatch_carrier`.
 

@@ -959,6 +959,21 @@ class PeerPin:
         return {"probe_peer": probe_peer, "git_peer": git_peer, "peer_pinned": pinned_now}
 
 
+#: `git config` arguments that make the clone's `origin` track every branch, as
+#: an ordinary clone does. `--single-branch` keeps the TRANSFER to one ref, and
+#: it also leaves `remote.origin.fetch` mapping only that ref -- so afterwards a
+#: `git fetch origin main` in a clone of `lane/x` updates FETCH_HEAD and never
+#: `refs/remotes/origin/main`. An `origin/main` that exists for any other reason
+#: (an earlier explicit fetch, a restored checkpoint's `.git`) then stays where
+#: it was, and `git merge origin/main` merges that stale main without a word:
+#: measured on F571b, PR #575 (#453). The wildcard changes nothing the clone
+#: transfers; it makes a later fetch by branch name move that branch's
+#: remote-tracking ref, which is what an agent told to fetch main relies on.
+TRACK_EVERY_BRANCH = (
+    "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*",
+)
+
+
 def shallow_clone(
     *,
     url: str,
@@ -1021,7 +1036,10 @@ def shallow_clone(
         if ref:
             clone += ["--branch", ref]
         clone += ["--", url, str(destination)]
-        steps = [clone]
+        steps = [
+            clone,
+            [git_binary, *config_args, "-C", str(destination), *TRACK_EVERY_BRANCH],
+        ]
 
     # Every step is traced into the same two files, so a by-sha clone's
     # fetch and checkout land on one timeline (`clone_phase_timings`).

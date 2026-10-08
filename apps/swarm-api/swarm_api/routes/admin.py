@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Depends, Query
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState
+from swarm_common.models import ProviderState, SlotPool, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
@@ -296,11 +296,45 @@ def set_tenant_concurrency(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    tenant = ctx.store.set_tenant_limits(tenant_id, max_active=body.limit, by=auth.email)
+    """The tenant's ceiling: ONE number, the one the admin typed.
+
+    Both `max_active` and `capacity_units` are written to `body.limit`, so the
+    pool -- the smaller of the two, `Store.set_tenant_limits` -- becomes exactly
+    the limit. Writing `max_active` alone is what held tenant `smoke` at 8 on
+    2026-10-07: the owner raised it 8 -> 20 in the console, `capacity_units`
+    stayed 8, the pool stayed 8, and this route answered 200 with a pool of 8
+    that the console reported as saved (owner decision, same day: the ceiling
+    is one number). PUT /v1/admin/tenants/{id}/limits still sets the two
+    separately and keeps the min() rule.
+
+    `capped_by` names what held the pool below the limit, for the console to
+    say instead of a success: null when the pool is the limit. With both
+    fields written it is null unless something wrote the tenant between the
+    write and the read-back.
+    """
+    tenant = ctx.store.set_tenant_limits(
+        tenant_id, max_active=body.limit, capacity_units=body.limit, by=auth.email
+    )
     ctx.metrics.admin_actions.labels(action="limit_tenant").inc()
-    return {"tenant": tenant_to_api(tenant), "pool": pool_to_api(
-        ctx.store.get_pool(f"tenant:{tenant_id}")
-    )}
+    pool = ctx.store.get_pool(f"tenant:{tenant_id}")
+    return {
+        "tenant": tenant_to_api(tenant),
+        "pool": pool_to_api(pool) if pool is not None else None,
+        "capped_by": _tenant_capped_by(tenant, pool, body.limit),
+    }
+
+
+def _tenant_capped_by(tenant: Tenant, pool: SlotPool | None, limit: int) -> str | None:
+    """Why `tenant:<id>` is not at `limit` after a ceiling write, or None if it is."""
+    if pool is not None and pool.hard_limit == limit:
+        return None
+    if pool is None:
+        return "pool_missing"
+    if tenant.capacity_units < limit:
+        return "capacity_units"
+    if tenant.max_active < limit:
+        return "max_active"
+    return "unknown"
 
 
 @router.put("/tenants/{tenant_id}/limits")
