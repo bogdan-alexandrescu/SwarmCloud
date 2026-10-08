@@ -249,6 +249,19 @@ def _iso(value: Any) -> Any:
 # configuration and the App's secret
 # --------------------------------------------------------------------------
 
+def _app_setting(name: str, environ: Mapping[str, str] | None = None) -> str:
+    """One of the App's public settings from the environment, stripped.
+
+    A module-level helper that touches os.environ ON PURPOSE:
+    scripts/lib/check-env-parity.sh counts a variable as read only through
+    `os.environ` or such a helper, so reading it off an injected mapping hid
+    these three reads and failed the parity check (#840). `environ` is the
+    tests' injection point.
+    """
+    env = os.environ if environ is None else environ
+    return (env.get(name) or "").strip()
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """The App's PUBLIC settings (terraform/infra/github_app.tf): never a secret."""
@@ -259,10 +272,9 @@ class AppConfig:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "AppConfig":
-        env = os.environ if environ is None else environ
-        return cls(client_id=(env.get("GITHUB_APP_CLIENT_ID") or "").strip(),
-                   app_id=(env.get("GITHUB_APP_ID") or "").strip(),
-                   slug=(env.get("GITHUB_APP_SLUG") or "").strip())
+        return cls(client_id=_app_setting("GITHUB_APP_CLIENT_ID", environ),
+                   app_id=_app_setting("GITHUB_APP_ID", environ),
+                   slug=_app_setting("GITHUB_APP_SLUG", environ))
 
     def missing(self) -> list[str]:
         return [] if self.client_id else ["GITHUB_APP_CLIENT_ID"]

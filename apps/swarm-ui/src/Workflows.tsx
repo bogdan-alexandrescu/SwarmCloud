@@ -14,6 +14,7 @@ import {
   cancelWorkflow,
   loadWorkflow,
   loadWorkflowBoard,
+  loadTaskEventsPage,
   loadWorkflowUsage,
   type CancelWorkflowResult,
   type ResourceClasses,
@@ -99,10 +100,12 @@ import {
   resultTokenKinds,
   sameStepAcross,
   shapeSignature,
+  stateEnteredAt,
   stateRankOf,
   stepOrder,
   stepTimes,
   stepWhy,
+  ENTRY_EVENT,
   tokenKindsCell,
   tokenKindsTotal,
   workflowLabel,
@@ -2588,6 +2591,64 @@ function Minimap({
  * instruction, and both zoom and collapsing are orthogonal to it -- a stage
  * drawn at any tier draws exactly the horizontal row it drew before.
  */
+/**
+ * At most this many event reads per poll. A wide stage of parked steps would
+ * otherwise be one request per step every time the task record moved; the
+ * rest keep their lower bound (`stepDuration`'s `≥`) until a later poll.
+ */
+const ENTERED_READS = 24
+
+/** One wait, as the record read now says it: a new park is a new key. */
+const enteredKey = (t: Task): string => `${t.id}:${t.state}:${t.updated_at}`
+
+/**
+ * WHEN EACH WAITING STEP ENTERED ITS STATE (#503), from its newest events
+ * page, for the steps that are PARKED, LEASED or DISPATCHED. The record keeps
+ * no such time and the API serves none (types.ts `Task`), so the node's
+ * `parked 7m` was timed from `updated_at`, and a slot held read `queued`.
+ * Read once per wait: a key is the task, its state and its last write.
+ */
+function useEnteredAt(
+  steps: readonly WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null,
+): (task: Task) => number | null {
+  const [entered, setEntered] = useState<ReadonlyMap<string, number | null>>(() => new Map())
+  const asked = useRef(new Set<string>())
+  const waiting: Task[] = []
+  for (const s of steps) {
+    const t = s.task_id ? taskById?.get(s.task_id) : undefined
+    if (t !== undefined && ENTRY_EVENT[t.state] !== undefined) waiting.push(t)
+  }
+  const want = waiting.map(enteredKey).join('|')
+  // A READ OUTLIVES THE EFFECT THAT ASKED FOR IT: a poll that moves one
+  // step's record re-runs the effect, and the reads already in flight for the
+  // others still land. Only unmounting drops them.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  useEffect(() => {
+    const fresh = waiting.filter((t) => !asked.current.has(enteredKey(t))).slice(0, ENTERED_READS)
+    for (const t of fresh) {
+      const key = enteredKey(t)
+      asked.current.add(key)
+      // A failed read leaves the lower bound, which is still true.
+      void loadTaskEventsPage(t.id, { order: 'desc' })
+        .then((r) => (r.status === 'ok' ? stateEnteredAt(t.state, r.data.events) : null))
+        .catch(() => null)
+        .then((at) => {
+          if (mounted.current) setEntered((m) => new Map(m).set(key, at))
+        })
+    }
+    // `want` is the waits' identity; `waiting` is rebuilt every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [want])
+  return (task) => entered.get(enteredKey(task)) ?? null
+}
+
 function WorkflowGraph({
   workflow,
   taskById,
@@ -2623,6 +2684,7 @@ function WorkflowGraph({
   onStageTable?: (level: number, word: string) => void
 }) {
   const now = useNow()
+  const enteredAt = useEnteredAt(workflow.steps, taskById)
   // THE STEP UNDER THE POINTER OR FOCUS, whose own edges are lit with the
   // picked step's (wide-workflows.html A: "lit on hover/select"). Focus does
   // what hover does, so it is not a mouse-only reading.
@@ -3015,6 +3077,7 @@ function WorkflowGraph({
                     onPick={onPick}
                     workflow={workflow}
                     now={now}
+                    enteredAt={enteredAt}
                     usage={usage}
                     tier={layout.tier}
                     x={n.x}
@@ -3475,6 +3538,7 @@ function StepNode({
   onPick,
   workflow,
   now,
+  enteredAt,
   usage,
   tier,
   x,
@@ -3502,6 +3566,8 @@ function StepNode({
   onPick: (stepId: string) => void
   workflow: Workflow
   now: number
+  /** When the step's task entered its state, from its events (`useEnteredAt`); null: not read. */
+  enteredAt: (task: Task) => number | null
   usage: UsageRead
   /**
    * How much this card is allowed to say. See `dag.ts`'s semantic-zoom section:
@@ -3528,7 +3594,7 @@ function StepNode({
   // SKIPPED BY ITS VERDICT GATE: no agent ran, so no figure on this card may
   // be read as the agent's run time (wide-workflows.html A).
   const skipped = look.kind === 'state' && look.skipped === true
-  const dur = stepDuration(state, now)
+  const dur = stepDuration(state, now, state.kind === 'state' ? enteredAt(state.task) : null)
   // THE FIGURES ARE THE TIER, so they are only computed at the tier that draws
   // them. `figuresFor` is pure and cheap, but computing four cells per node per
   // second for a canvas that is not drawing them is work done to be thrown
@@ -3624,7 +3690,7 @@ function StepNode({
       <div className="node-line">
         <LookMark look={look} />
         <span className="node-state">{p.word}</span>
-        {showFigures && (dur.kind === 'queued' || dur.kind === 'parked') && <StepTime dur={dur} />}
+        {showFigures && (dur.kind === 'queued' || dur.kind === 'parked' || dur.kind === 'held') && <StepTime dur={dur} />}
       </div>
       {/* WHY, ON ONE LINE, AT EVERY TIER (#105, #106). A failed node's cause
           was only in the inspector, and a waiting node said `queued` with

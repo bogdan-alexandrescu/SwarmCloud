@@ -75,7 +75,7 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
     // MUTATION: drop `<Icon name={p.icon} />` from PanelPages.
     const c = await at('/agents/live')
     const rows = [...c.querySelectorAll('.sk-panel .sk-pk')]
-    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories'])
+    expect(rows.map((r) => r.querySelector('.sk-pl')?.textContent)).toEqual(['Agents', 'Workflows', 'Runs', 'Timeline', 'Repositories', 'Setup', 'Access'])
     for (const r of rows) expect(r.querySelector('svg.sk-ic'), `${r.textContent} has no icon`).not.toBeNull()
   })
 

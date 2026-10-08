@@ -1853,7 +1853,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
 .node-dur { font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; font-style: normal; color: var(--text-dim); }
 .node-dur.is-ran { color: var(--text-dim); }
 .node-dur.is-running { color: var(--info-ink); }
-.node-dur.is-queued, .node-dur.is-parked { color: var(--warn-ink); }
+.node-dur.is-queued, .node-dur.is-parked, .node-dur.is-held { color: var(--warn-ink); }
 .node-dur.is-none { color: var(--text-faint); font-style: italic; }
 /* THE DEPENDENCY LIST WRAPS AND IS NEVER ELLIPSED. It is the only complete
    statement of the graph in text, and the screen-reader path to it. The board

@@ -8,17 +8,21 @@ with HOME the work directory either way and `--model` the Job's `MODEL`.
 Its environment is built from scratch by `cliagent.run_cli_agent`, not
 inherited. It holds the platform's own values (`PATH`, `HOME`, the locale,
 `TERM`, `CI`, `NO_COLOR`, `SWARM_ARTIFACTS_DIR`, `SWARM_WORK_DIR`, and this
-runner's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), the tenant's credential, and
-exactly these from the worker's own environment: `TMPDIR`; `HTTPS_PROXY`,
+runner's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`), one provider credential,
+and exactly these from the worker's own environment: `TMPDIR`; `HTTPS_PROXY`,
 `HTTP_PROXY`, `NO_PROXY` and `NODE_EXTRA_CA_CERTS` when set (the two proxy
-URLs registered for redaction, since one can embed a password); and the
-dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+URLs registered for redaction, since one can embed a password); and, when set,
+the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
 `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
 which the worker sets from the task so an agent's `git commit` names that
-person. Nothing else crosses. The credential is either `ANTHROPIC_API_KEY`
-(metered API access) or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token
-from `claude setup-token`) -- whichever the tenant's secret supplies. Only the
-one that is present is passed to the child.
+person. Nothing else crosses. The credential is the tenant's secret, or a pool
+account's OAuth token when the attempt holds an account, and it is passed in
+exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
+`CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
+`claude setup-token`). The tenant's one secret is projected into both, so
+`cliagent._credential_env` picks by the value's shape -- the subscription
+token's prefix, `_OAUTH_TOKEN_PREFIX`, means the OAuth variable -- and the
+other variable is dropped.
 
 About permissions: an interactive permission prompt in a non-interactive
 container is a hang, not a safety feature -- nobody is there to answer it, and
