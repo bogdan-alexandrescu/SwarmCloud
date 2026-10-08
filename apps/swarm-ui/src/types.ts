@@ -564,6 +564,12 @@ export interface Task {
    */
   parent_task_id?: string | null
   parent_attempt_id?: string | null
+  /** #780 OB7: the slot the task's GitHub token is read from, by name. */
+  forge_credential?: string | null
+  /** `read` or `write`; null when the task names no GitHub credential. */
+  forge_access?: 'read' | 'write' | null
+  /** "the submitter's GitHub credential", "tenant token, service submission", or null. */
+  forge_credential_source?: string | null
   cancel_requested: boolean
   repository_url: string | null
 

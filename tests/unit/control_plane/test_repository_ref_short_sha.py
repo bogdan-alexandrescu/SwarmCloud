@@ -84,3 +84,13 @@ def test_the_rule_matches_what_the_worker_reads_as_a_sha():
         assert check_repository_ref(ref) == ref
     with pytest.raises(ValidationFailed):
         check_repository_ref("deadbeef")
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

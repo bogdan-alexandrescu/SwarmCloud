@@ -441,3 +441,13 @@ def test_a_comment_posted_before_its_record_was_lost_is_not_posted_twice(fix_cli
     assert _tick(fix_client).status_code == 200
     assert len(_posted(github)) == 1
     assert db.docs[f"tasks/{task['id']}"]["metadata"]["ci_fix"]["postback"] == cifix.POSTED
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

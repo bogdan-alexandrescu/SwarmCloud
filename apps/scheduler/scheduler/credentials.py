@@ -93,14 +93,21 @@ Only admission and the sweep pass the task. The Cloud Run Job's secret mount
 does not: it runs after the lease is reserved, and nothing about the forge is
 decided in dispatch.py. It names the provider's secret, never the git one.
 
-WHICH TASK NEEDS A USER SLOT is `needs_user_slot`, and only there. Until the
-task carries the credential it uses (contract request E, drafted in
-docs/onboarding.md §3.3, "With request E"), it is derived the "Without it"
-way: from the signed `submitted_by` and the submitter's grant for the task's
-repository. A grant means the worker reads the user slot; no grant means the
-task runs as it did before onboarding, on the tenant's token, and the
-connection is not asked about. When `Task.forge_credential` exists, that
-function reads it instead, and nothing else here changes.
+WHICH TASK NEEDS A USER SLOT is `needs_user_slot`, and only there. It reads
+the task's `forge_credential` (contract request 54, request E of
+docs/onboarding.md §3.3; owner decision 2026-10-07, lane OB5), which swarm-api
+writes at submission and the spec signature covers: a `git-u-<hex>` suffix is
+a person's user slot, and the connection is asked about. `git` -- or None, a
+task written before the field -- is the tenant token, and a `git-r-<hex>`
+repository token is not a person's either: neither asks about any connection,
+exactly as before onboarding. Until OB5 this was derived the "Without it" way,
+from the signed `submitted_by` and that person's grant; the grant is now the
+worker's to re-read (§3.3 step 4), and the scheduler reads none.
+
+The scheduler does not verify the signature, and need not: a task whose
+`forge_credential` was rewritten fails the worker's spec check before any
+credential is read. What a rewrite could do here is park a task, or admit one
+the worker then refuses -- never hand a worker a credential.
 
 The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
 and never written. The id recipes are RESTATED below because the scheduler's
@@ -111,6 +118,7 @@ test_forge_connection_admission.py holds them to swarm-api's own functions.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Sequence
@@ -169,8 +177,8 @@ class ForgeAnswer(str, Enum):
     #: Not asked: the caller passed no task (the Job's secret mount), or the
     #: provider answer had already said no.
     NOT_ASKED = "not_asked"
-    #: The task needs no user slot (`needs_user_slot`): it has no GitHub
-    #: repository, or its submitter holds no grant for it.
+    #: The task needs no user slot (`needs_user_slot`): its signed
+    #: `forge_credential` is `git`, None or a repository token.
     NO_USER_SLOT = "no_user_slot"
     #: The connection is `active`: the refresh sweep keeps its token fresh.
     ACTIVE = "active"
@@ -423,25 +431,42 @@ class ForgeConnections:
         return _STATES.get(str(doc.get("state") or ""), ForgeAnswer.UNRECOGNISED)
 
 
-def needs_user_slot(task: Task, forge: ForgeConnections) -> bool:
+#: A user slot's suffix, `swarm_api.gittokens.provider_suffix(Scope.USER, ...)`:
+#: its hex is the person's `user_hash`. Anchored, like `FORGE_CREDENTIAL`.
+_USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
+
+
+def user_slot_hash(task: Task) -> str | None:
+    """The `user_hash` of the user slot the task's `forge_credential` names, or None."""
+    match = _USER_SLOT.fullmatch(task.forge_credential or "")
+    return match.group(1) if match else None
+
+
+def needs_user_slot(task: Task, forge: ForgeConnections | None = None) -> bool:
     """THE ONE PLACE that decides whether a task runs on its submitter's user slot.
 
-    The "Without it" path of docs/onboarding.md §3.3: the signed
-    `submitted_by` (covered by `canonical_step_spec`) and that person's grant
-    for the task's GitHub repository. When contract request E puts
-    `forge_credential` on `Task`, this reads it instead -- a `git-u-` suffix
-    needs the slot, `git` or None does not -- and no caller changes.
+    The task's signed `forge_credential` (contract request 54): a `git-u-`
+    suffix needs the slot; `git`, None or a `git-r-` repository token is the
+    tenant's fallback and does not. Reads no document: `forge` is kept so no
+    caller changes, and is not used.
     """
-    named = github_repository(task.repository_url)
-    if named is None:
-        return False
-    return forge.grant(task, repo_id_for(task.tenant_id, *named)) is not None
+    del forge
+    return user_slot_hash(task) is not None
 
 
 def forge_answer(task: Task, forge: ForgeConnections) -> ForgeAnswer:
-    """What the task's GitHub credential says about running it now."""
-    if not needs_user_slot(task, forge):
+    """What the task's GitHub credential says about running it now.
+
+    The connection is the submitter's (`submitted_by`, signed), and the slot
+    must be theirs: swarm-api names a person's task by that person's own slot,
+    so a slot whose hex is not the submitter's has no connection this task
+    may rely on, and parks as one missing.
+    """
+    hashed = user_slot_hash(task)
+    if hashed is None:
         return ForgeAnswer.NO_USER_SLOT
+    if hashed != user_hash(task.submitted_by):
+        return ForgeAnswer.CONNECTION_MISSING
     return forge.connection_state(task)
 
 

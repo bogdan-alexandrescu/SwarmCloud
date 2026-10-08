@@ -14,7 +14,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from swarm_common.models import ProviderState, QuotaState, SlotPool, Task, Tenant
+from swarm_common.models import (
+    FORGE_ACCESS,
+    FORGE_CREDENTIAL,
+    ProviderState,
+    QuotaState,
+    SlotPool,
+    Task,
+    Tenant,
+)
 from swarm_common.states import ParkReason, TaskState
 
 
@@ -76,7 +84,18 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # read to find a parent's children (docs/design/child-tasks.md).
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
+        # Contract request 54: the forge secret and access swarm-api resolved,
+        # which `credentials.needs_user_slot` reads at admission. A value of
+        # another shape decodes as None rather than failing the whole drain
+        # on `Task.__post_init__`: it cannot have been signed, so the worker's
+        # spec check refuses the task before any credential is read.
+        forge_credential=_shaped(data.get("forge_credential"), FORGE_CREDENTIAL.fullmatch),
+        forge_access=_shaped(data.get("forge_access"), FORGE_ACCESS.__contains__),
     )
+
+
+def _shaped(value: Any, ok: Any) -> str | None:
+    return value if isinstance(value, str) and ok(value) else None
 
 
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:

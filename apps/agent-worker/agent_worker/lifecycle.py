@@ -266,11 +266,16 @@ from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
     GIT_PROVIDER,
     CredentialMissing,
+    ForgeWriteRefused,
     SecretError,
     SecretManagerClient,
+    forge_read_only,
+    forge_suffix,
+    grant_refusal,
     load_tenant,
     resolve_credentials,
     resolve_git_token,
+    user_slot_hash,
 )
 from .startup import (
     CONTROL_PLANE_READ_SCHEDULE_SECONDS,
@@ -356,6 +361,23 @@ FORGE_UNREACHABLE = "forge_unreachable"
 #: delay keeps the retry from meeting the same outage at once. Bounded by
 #: `max_attempts`, like every retry.
 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: Why the worker refused a forge write the task's credential does not allow
+#: (docs/onboarding.md §3.3 steps 3-4, #780 lane OB5). Worker vocabulary in
+#: the error text and `result_summary.forge_check`, like the three above; the
+#: task's end cause is the frozen CANNOT_START before the agent ran and
+#: PUBLISH_REFUSED after it.
+#:
+#: FORGE_READ_GRANT: the task's signed `forge_access` is `read` (D9), and the
+#: step pushes or opens a pull request. NOT RETRIED: the next attempt reads the
+#: same signed document.
+FORGE_READ_GRANT = "forge_read_grant"
+#: FORGE_GRANT_REVOKED: the submitter's grant on the repository was deleted,
+#: or changed to `read`, after submission. NOT RETRIED: the next attempt would
+#: read the same grant; a person who grants again submits again.
+FORGE_GRANT_REVOKED = "forge_grant_revoked"
+#: FORGE_GRANT_UNREADABLE: the grant document could not be read. Retryable,
+#: like an unreachable forge: it says nothing about the grant.
+FORGE_GRANT_UNREADABLE = "forge_grant_unreadable"
 #: The answers `forge.probe_repository` turns into a `can_push=False` access
 #: whose reason starts "the forge answered <status>", and which say the forge
 #: could not answer now rather than that the token cannot push. Matched on
@@ -705,6 +727,11 @@ class Worker:
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
+        #: True once `_verify_spec` VERIFIED the signature over `_task` -- not
+        #: for a legacy unsigned task. Only then is its `forge_credential`
+        #: trusted (`_forge_suffix`): the generation check, then the
+        #: signature, then the credential read (invariant 5).
+        self._forge_signed = False
         #: An `input.issue` number's title, when something upstream of the pull
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
@@ -1846,22 +1873,36 @@ class Worker:
         return key
 
     def _read_action_git_token(self) -> str:
-        """The tenant's `-git` token, for the merge (contract request 47).
+        """The task's forge token, for the merge (contract request 47).
 
-        The secret `swarm-tenant-<tenant>-git`, read by the Job's account --
-        the tenant's worker account, the secret's ordinary reader -- through
-        `resolve_git_token`, which registers the value with the logger's
-        redaction before returning it and logs the secret's NAME only. Held in
-        this process's heap and nowhere else: never written to the workspace,
-        a file, an environment or an event. A tenant that has not registered
-        one raises `CredentialMissing`, which parks the step at no cost.
+        The secret `swarm-tenant-<tenant>-<suffix>`, the suffix being the
+        signed `forge_credential` (`_forge_suffix`, `git` when it names none,
+        contract request 54), read by the Job's account -- the tenant's worker
+        account, the secret's ordinary reader -- through `resolve_git_token`,
+        which registers the value with the logger's redaction before returning
+        it and logs the secret's NAME only. Held in this process's heap and
+        nowhere else: never written to the workspace, a file, an environment
+        or an event. A tenant that has not registered its `-git` token raises
+        `CredentialMissing`, which parks the step at no cost.
+
+        A merge is a forge write, so a read grant, or a grant gone since
+        submission, raises `ForgeWriteRefused` before any token is read; the
+        merge ends the step FAILED and names that type.
         """
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            raise ForgeWriteRefused(*forge_refused)
+        suffix = self._forge_suffix()
         tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
-        if GIT_PROVIDER not in tenant.credentials or self.secret_client is None:
-            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
-        token = resolve_git_token(tenant=tenant, client=self.secret_client, logger=self.log)
+        if self.secret_client is None or (
+            suffix == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials
+        ):
+            raise CredentialMissing(self.cfg.tenant_id, suffix)
+        token = resolve_git_token(
+            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix
+        )
         if not token:
-            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
+            raise CredentialMissing(self.cfg.tenant_id, suffix)
         return token
 
     def _action_recheck(self) -> bool:
@@ -2066,6 +2107,7 @@ class Worker:
             )
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
+            self._forge_signed = True
 
     def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
         """The signed parents of `task` that have not SUCCEEDED, with their state.
@@ -2266,6 +2308,20 @@ class Worker:
         # second read of a document that cannot have changed. It is the
         # VERIFIED document: nothing later reads a covered field from Firestore.
         self._task = task
+
+        # ---- STEP 4b': the submitter's grant still stands (OB5) -----------
+        # docs/onboarding.md §3.3 step 4. A task signed for a person's user
+        # slot re-reads that person's grant on the repository BEFORE a
+        # checkpoint is restored, the issue prefetch reads the token, or the
+        # repository is cloned: a grant deleted since submission ends the
+        # attempt here, before the agent starts, and the end releases the lease
+        # and touches it no further. After `verify_spec`, so the slot it reads
+        # by is the signed one. A tenant or repository token reads nothing.
+        if user_slot_hash(self._forge_suffix()) is not None:
+            self.phases.enter("forge_grant")
+            revoked = self._forge_grant_refusal(write=False)
+            if revoked is not None:
+                return functools.partial(self._end_forge_refused_before_start, *revoked)
         self._standalone = self._uploads_working_folder(task)
         self._restore_checkpoint(task)
         if self._standalone and self._restored_from is not None:
@@ -2294,6 +2350,23 @@ class Worker:
         # one most likely to vary with repository size.
         self._heartbeat()
 
+        # ---- before STEP 5a: a READ grant on a step that must push (D9, OB5) -
+        # A step whose job is to open a pull request, or to carry its work on a
+        # branch, could only ever be refused at its push, so it is refused now,
+        # before the agent spends time and provider quota on work that can
+        # never be delivered, and before `carrier_scope` reads a token to ask
+        # the forge a question whose answer would not matter. A step that
+        # pushes only incidentally (a contributor's branch) is refused at that
+        # push instead (`_forge_write_refusal`).
+        if forge_read_only(task) and (
+            self._opens_pull_request() or self._dispatch_carrier() == "branches"
+        ):
+            return functools.partial(
+                self._end_forge_refused_before_start,
+                FORGE_READ_GRANT,
+                "this task's grant on its repository is read-only, and this step "
+                "pushes or opens a pull request",
+            )
         # ---- STEP 5a: carrier: branches needs a token that can push (D13) --
         # Asked HERE, by the worker, and not by swarm-api at submission: the
         # answer needs the tenant's git secret, and exactly one identity may
@@ -3247,6 +3320,11 @@ class Worker:
             leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
             if leak:
                 return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
+            forge_refused = (
+                git_summary.get("forge_write_refused") if isinstance(git_summary, dict) else None
+            )
+            if isinstance(forge_refused, dict):
+                return self._fail_for_forge_write_refused(forge_refused, summary, exit_code=0)
             nothing = self._published_nothing(summary)
             if nothing is not None:
                 return self._fail_for_published_nothing(nothing, summary, exit_code=0)
@@ -4746,6 +4824,13 @@ class Worker:
                 "credential may be sent, so the minor findings were not posted",
                 **extra,
             )
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            # A comment on the epic is a forge write: a read grant, or a grant
+            # gone since submission, posts nothing (OB5).
+            return findings_epic_mod.not_filed(
+                epic, len(minors), f"{forge_refused[0]}: {forge_refused[1]}", **extra
+            )
         refusal = self._git_token_refusal()
         if refusal:
             return findings_epic_mod.not_filed(
@@ -5897,13 +5982,21 @@ class Worker:
         return text or None
 
     def _git_token(self) -> str | None:
-        """The TENANT's own clone token, or None.
+        """The TASK's forge token, or None.
 
-        Read from `swarm-tenant-<tenant>-git` through the same per-tenant Secret
-        Manager path as a provider key, never from a platform-wide `GIT_TOKEN`
-        in the worker's environment: one token able to clone every tenant's
+        Read from `swarm-tenant-<tenant>-<suffix>`, the suffix being the task's
+        signed `forge_credential` (`_forge_suffix`; `git`, the tenant's own
+        token, when it names none), through the same per-tenant Secret Manager
+        path as a provider key, never from a platform-wide `GIT_TOKEN` in the
+        worker's environment: one token able to clone every tenant's
         repositories would make a single malicious repository in one tenant a
         credential compromise for all of them (invariant 9).
+
+        READ AGAIN AT EVERY CALL, never cached: the clone, each carrier push
+        and the publish each call this, so each reads the `latest` version at
+        that moment. A user token lives 8 hours and an attempt can outlive it;
+        swarm-api's refresher keeps the latest version at least two hours from
+        expiry (docs/onboarding.md §3.3 step 3).
 
         None is not an error. A public repository clones without a credential
         and a private one fails with git's own message, which is the correct
@@ -5924,7 +6017,8 @@ class Worker:
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
             return resolve_git_token(
-                tenant=tenant, client=self.secret_client, logger=self.log
+                tenant=tenant, client=self.secret_client, logger=self.log,
+                provider=self._forge_suffix(),
             )
         except SecretError as exc:
             self.log.warning(
@@ -5932,6 +6026,159 @@ class Worker:
                 error=str(exc),
             )
             return None
+
+    def _forge_suffix(self) -> str:
+        """The provider suffix of this task's forge secret (contract request 54).
+
+        The VERIFIED document's `forge_credential` (`secrets.forge_suffix`),
+        and only once `_verify_spec` verified its signature. A task admitted
+        unsigned by the legacy window has no signature over the field, so it
+        reads the tenant token, as every task did before request 54: a field
+        anyone with write on the document could set must not choose which
+        member's slot this worker reads.
+        """
+        task = self._task or {}
+        if not self._forge_signed:
+            named = task.get("forge_credential")
+            if named not in (None, GIT_PROVIDER):
+                self.log.warning(
+                    "an unsigned task names a forge credential; reading the tenant token",
+                )
+            return GIT_PROVIDER
+        return forge_suffix(task)
+
+    def _forge_grant_refusal(self, *, write: bool) -> tuple[str, str] | None:
+        """`(cause, reason)` when the submitter's grant does not cover this, or None.
+
+        docs/onboarding.md §3.3 step 4: read again, by id, at every call
+        (`secrets.grant_refusal`). Nothing for a tenant or repository token.
+        The repository is the VERIFIED document's, which is the one the clone
+        reads. A grant that could not be read is not a revoked grant: it is
+        `FORGE_GRANT_UNREADABLE`, which the callers end retryably.
+        """
+        suffix = self._forge_suffix()
+        if user_slot_hash(suffix) is None:
+            return None
+        task = self._task or {}
+        url = task.get("repository_url") or self.cfg.repository_url or self._repo_url
+        try:
+            reason = grant_refusal(
+                self.db,
+                tenant_id=self.cfg.tenant_id,
+                suffix=suffix,
+                repository_url=url if isinstance(url, str) else None,
+                write=write,
+                call_options=self.control.call_options(),
+            )
+        except Exception as exc:  # noqa: BLE001 -- a read failure, said by type
+            self.log.warning("the forge grant could not be read", error=type(exc).__name__)
+            return FORGE_GRANT_UNREADABLE, (
+                f"the submitter's grant could not be read ({type(exc).__name__})"
+            )
+        if reason is None:
+            self.log.info("forge grant re-read: it still covers this", write=write)
+            return None
+        self.log.warning("forge grant re-read: refused", reason=reason, write=write)
+        return FORGE_GRANT_REVOKED, reason
+
+    def _forge_write_refusal(self) -> tuple[str, str] | None:
+        """`(cause, reason)` when this attempt may not push or open a pull request.
+
+        Asked before every forge write (the publish, each carrier push, the
+        findings epic, the merge) and BEFORE the token for it is read, so a
+        refused write never holds a push credential:
+
+          * the task's signed `forge_access` is `read` (D9): never a push;
+          * the submitter's grant, read again now, was deleted or turned
+            `read` since submission (§3.3 step 4).
+        """
+        if forge_read_only(self._task or {}):
+            return FORGE_READ_GRANT, "this task's grant on its repository is read-only"
+        return self._forge_grant_refusal(write=True)
+
+    def _end_forge_refused_before_start(self, cause: str, reason: str) -> Outcome:
+        """End the attempt before the agent ran: the grant does not allow the work.
+
+        Called after the startup window closes, like every ending `_prepare`
+        decides on. The agent never started and nothing was cloned with the
+        credential. `control.finish` (or `fail_retryably`) writes the task's
+        state and releases the lease, and that release is all this does to the
+        lease: no extension, no other write. An unreadable grant fails
+        retryably; a revoked or read grant does not, because the next attempt
+        would read the same.
+        """
+        reason = self._scrub(reason)
+        error = self._scrub(
+            f"{cause}: {reason}. The agent was not started. The submitter can "
+            "choose the repository again under Access (Write for a step that "
+            "pushes) and submit the task again."
+        )
+        self.log.error(
+            "the task's forge grant does not allow this work; ending before the agent runs",
+            cause=cause,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["forge_check"] = {"cause": cause, "reason": reason}
+        with self._metrics_after_the_record():
+            if cause == FORGE_GRANT_UNREADABLE:
+                state = self.control.fail_retryably(
+                    exit_code=None,
+                    error=error,
+                    cause=cause,
+                    result_summary=summary,
+                    retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                    detail={"forge_check": cause},
+                    end_cause=EndCause.CANNOT_START,
+                )
+                return Outcome(exit_code=ExitCode.FAILED, state=state)
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=None,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.CANNOT_START,
+            )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _fail_for_forge_write_refused(
+        self, refused: dict[str, Any], summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """End the attempt: its push or pull request was refused by the grant (OB5).
+
+        The final checkpoint is already taken (`_record_finalised` takes it
+        first, invariant 8), so the work is kept; the push was refused before
+        its token was read (`_publish_git`). PUBLISH_REFUSED: the worker
+        refused to publish. An unreadable grant fails the attempt retryably;
+        a read or revoked grant ends the task, because the next attempt would
+        read the same.
+        """
+        cause = str(refused.get("cause") or FORGE_GRANT_REVOKED)
+        reason = self._scrub(str(refused.get("reason") or ""))
+        error = self._scrub(
+            f"{cause}: {reason}. Nothing was pushed and no pull request was opened; "
+            "the work is in the attempt's final checkpoint and its patch artifact."
+        )
+        summary["forge_check"] = {"cause": cause, "reason": reason}
+        if cause == FORGE_GRANT_UNREADABLE:
+            state = self.control.fail_retryably(
+                exit_code=exit_code,
+                error=error,
+                cause=cause,
+                result_summary=summary,
+                retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                detail={"forge_check": cause},
+                end_cause=EndCause.PUBLISH_REFUSED,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=state)
+        self.control.finish(
+            state=TaskState.FAILED,
+            exit_code=exit_code,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.PUBLISH_REFUSED,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _git_token_refusal(self) -> str | None:
         """Why this worker must not hold the tenant git token, or None.
@@ -7412,6 +7659,11 @@ class Worker:
             return "the repository URL is unknown"
         if self._publish_base is None:
             return "the clone base is unknown, so the agent's commits cannot be told apart"
+        # Before the token, as the publish asks it (OB5): a read grant, or a
+        # grant gone since submission, pushes nothing and reads no token.
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            return f"{forge_refused[0]}: {forge_refused[1]}"
         refusal = self._git_token_refusal()
         if refusal:
             return f"the tenant git token is refused: {refusal}"
@@ -8989,6 +9241,22 @@ class Worker:
         url = self._repo_url or cfg.repository_url
         if not url:
             return {"published": False, "publish_reason": "the repository URL is unknown"}
+
+        # THE GRANT, BEFORE THE TOKEN (docs/onboarding.md §3.3 steps 3-4, OB5).
+        # A read grant never reads a push credential, and the submitter's
+        # grant is read again here, before this push and pull request. A
+        # refusal is recorded as `forge_write_refused`, which ends the attempt
+        # PUBLISH_REFUSED after the final checkpoint (`_record_finalised`).
+        forge_refused = self._forge_write_refusal()
+        if forge_refused is not None:
+            cause, reason = forge_refused
+            self.log.error("not publishing: the task's forge grant refuses it",
+                           cause=cause, reason=reason)
+            return {
+                "published": False,
+                "publish_reason": f"{cause}: {reason}",
+                "forge_write_refused": {"cause": cause, "reason": reason},
+            }
 
         # Before the token is read, not after: see `_git_token_refusal`. Asked
         # here as well as inside `_git_token`, so the publish says WHY it did

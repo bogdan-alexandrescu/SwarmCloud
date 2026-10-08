@@ -227,3 +227,13 @@ def test_a_run_created_before_runs_kept_the_read_serves_none(make, db):
     served = again.json()["run"]
     assert served["issue_read"] is None
     assert served["issue_read_error"] is None
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)
