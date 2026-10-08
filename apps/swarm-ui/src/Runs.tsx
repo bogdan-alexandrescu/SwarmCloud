@@ -6,7 +6,7 @@ import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, WarnMark } from './components'
 import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
-import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
+import { workflowPullRequest, type MergeCard, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
 import {
   CostFact, PlanStepLive, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
@@ -458,7 +458,7 @@ export function RunOutcome({ run }: { run: IssueRun }) {
   )
 }
 
-export function runStateLine(run: IssueRun): string {
+export function runStateLine(run: IssueRun, merge: MergeCard | null = null): string {
   switch (run.state) {
     case 'PLANNING':
       return 'A planner task is reading the issue and the repository. It changes nothing.'
@@ -483,7 +483,13 @@ export function runStateLine(run: IssueRun): string {
           : 'The work was already on main: the build changed nothing. Its verification table is on the issue, which stays open: not every planned requirement was shown met.'
       }
       // The CI loop ends a run DONE when its PR merged OR when every required
-      // check is green; the run does not serve which (`pull_request.merged`).
+      // check is green; the run does not serve which (`pull_request.merged`),
+      // so it is said only where `mergeKnown` can settle it from what is.
+      if (mergeKnown(run, merge).kind === 'merged') {
+        return run.green_sha
+          ? 'The pull request merged, with every required check green.'
+          : 'The pull request merged, which ended the run before its checks were green.'
+      }
       return run.green_sha
         ? 'Every required check is green on the pull request. Its merge is not reported by this run.'
         : run.pull_request
@@ -594,6 +600,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
   const read = useRunWorkflows(run)
   const wfPr = wfPrOf(run, read)
   const rows = stepRows(run, read)
+  const merge = runMergeCard(rows)
   const progress = progressEntries(run, rows)
   const approved = planApproved(run)
   // From CHECKING the pull request is the subject: its card leads (item 5).
@@ -624,7 +631,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
         <div className="rn-state">
           <RunStateMark state={run.state} />
           <RunOutcome run={run} />
-          <span className="rn-state-t">{runStateLine(run)}</span>
+          <span className="rn-state-t">{runStateLine(run, merge)}</span>
           {run.state === 'PLANNED' && <span className="sb-note">planned {timeAgo(run.updated_at, now)}</span>}
           {run.approved_by !== null && (
             <span className="sb-note">
@@ -639,7 +646,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           // state tokens are worded at read (QA G2-25, `proseWords`).
           <p className="rn-error" role="alert"><b>Why:</b> {proseWords(run.error)}</p>
         )}
-        {prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} />}
+        {prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} merge={merge} />}
         <StepsCard run={run} read={read} go={go} now={now} />
         {run.state === 'REJECTED' && (
           <p className="sb-note">
@@ -741,7 +748,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </Fold>
         </section>
 
-        {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} />}
+        {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} merge={merge} />}
         {textList(run.plan?.risks) !== null && (
           <section className="rn-risks" aria-label="Risks">
             <h3>Risks the planner named</h3>
@@ -1485,7 +1492,9 @@ function hasCi(run: IssueRun): boolean {
  * keyword the requirements finding chose, and a FAILED run's excerpt -- the
  * server's redacted text, drawn as text.
  */
-function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string) => void; wfPr: WfPrRead; index: RunIndexRead }) {
+function CiCard({ run, go, wfPr: read, index, merge }: {
+  run: IssueRun; go: (to: string) => void; wfPr: WfPrRead; index: RunIndexRead; merge: MergeCard | null
+}) {
   if (!hasCi(run)) {
     // A FINISHED RUN DRAWS THE CARD ANYWAY (browser QA N15): no card at all
     // read as "nothing to say", on a run whose workflow opened a PR. The CI
@@ -1531,6 +1540,14 @@ function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string
   const redAtHead = red !== null && head !== null && head.startsWith(red.sha)
   const notServed = (what: string) =>
     `${what} not served: the run records one aggregate reading of the required checks (pull_request.checks), not each check.`
+  // THE PENDING CHECKS BY NAME (#503): a merge step parked on CI_PENDING
+  // records the checks it waits for (`metadata.merge_wait.pending`) at the
+  // head it read them at -- the one served list of pending checks.
+  const waiting = merge?.state.kind === 'waiting' && merge.state.pending.length > 0 ? merge.state : null
+  const counts: string[] = []
+  if (redAtHead && pr?.checks === 'red') counts.push(`failed ${red!.names.length}`)
+  if (waiting !== null) counts.push(`pending ${waiting.pending.length}`)
+  const known = mergeKnown(run, merge)
   const issueUrl = githubLink(run.issue.url)
   return (
     <Card level={3} className={lead(run) ? 'rn-ci is-lead' : 'rn-ci'} title={pr === null || pr.number === null ? 'Pull request and checks' : (
@@ -1553,10 +1570,22 @@ function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string
             the failures its excerpt names at this head. */}
         <li className="ctl-fact rn-ci-counts">
           <b>by check</b>
-          {redAtHead && pr?.checks === 'red'
-            ? <span>failed {red!.names.length} · <i className="ctl-em" title={notServed('How many passed, are pending or were skipped is')}>the other counts not served</i></span>
+          {counts.length > 0
+            ? <span>{counts.join(' · ')} · <i className="ctl-em" title={notServed(waiting !== null ? 'How many passed or were skipped is' : 'How many passed, are pending or were skipped is')}>the other counts not served</i></span>
             : <i className="ctl-em" title={notServed('Each count is')}>per-check counts not served</i>}
         </li>
+        {waiting !== null && (
+          <li className="ctl-fact rn-ci-pending">
+            <b>{waiting.head === null ? 'pending' : <>pending at <code title={waiting.head}>{shortSha(waiting.head)}</code></>}</b>
+            <ul className="rn-failed-checks">
+              {waiting.pending.map((name, i) => (
+                <li key={`${i}-${name}`}>
+                  <span className="rn-pending-check" title="The merge step's last read of the checks it waits for (merge_wait.pending).">{name}</span>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
         {red !== null && red.names.length > 0 && (
           <li className="ctl-fact rn-ci-failed">
             <b>{redAtHead ? 'failed' : `red at ${red.sha}, before the head moved`}</b>
@@ -1595,18 +1624,8 @@ function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string
             ? <span><code title={run.green_sha}>{shortSha(run.green_sha)}</code><CopyText text={run.green_sha} /></span>
             : <i className="ctl-em">not green yet</i>}
         </li>
-        {pr !== null && <MergeFact run={run} />}
-        <li className="ctl-fact">
-          <b>issue</b>
-          <span>
-            {issueUrl === null ? <span className="mono">#{n}</span>
-              : <a href={issueUrl} target="_blank" rel="noreferrer" className="mono" title={issueUrl}>#{n}</a>}
-            {' · '}
-            <i className="ctl-em" title="The issue's state now is not served: the run read the issue once, at submission (issue_read).">
-              state not served{run.issue_read?.state ? ` · ${run.issue_read.state} when the run was created` : ''}
-            </i>
-          </span>
-        </li>
+        {pr !== null && <MergeFact run={run} known={known} />}
+        <IssueFact run={run} known={known} url={issueUrl} />
         <li className="ctl-fact">
           <b>keyword</b>
           {run.requirements_met === true ? <code>Closes #{n}</code>
@@ -1635,21 +1654,160 @@ function lead(run: IssueRun): boolean {
   return run.state === 'CHECKING' || run.state === 'FIXING' || run.state === 'DONE'
 }
 
+/** The run's merge step's card, the newest round's when several have one; null when no step is a merge step. */
+export function runMergeCard(rows: readonly StepRow[]): MergeCard | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const card = rows[i]?.merge ?? null
+    if (card !== null) return card
+  }
+  return null
+}
+
+/** What the served data settles about the pull request's merge. */
+export type MergeKnown =
+  /** `step`: the merge step's result says so; `ci`: the CI loop's DONE without a green sha does. */
+  | { kind: 'merged'; via: 'step'; commit: string | null; already: boolean; closed: readonly number[] }
+  | { kind: 'merged'; via: 'ci' }
+  | { kind: 'refused'; failed: boolean; code: string | null; reason: string | null }
+  /** The merge step is parked on CI_PENDING: open, and it merges once the checks settle. */
+  | { kind: 'waiting' }
+  /** CHECKING or FIXING: the last CI read found it open. */
+  | { kind: 'open' }
+  | { kind: 'unknown' }
+
 /**
- * WHETHER THE PULL REQUEST MERGED (lane U14 item 6). The CI loop reads it
- * (`pull_request.merged`) and ends the run DONE on a merge OR on green, but
- * `IssueRun.to_api` does not serve it, and no merger or merge time is kept.
- * So a DONE run says "merge not reported"; while CHECKING or FIXING the last
- * read found it open, since a merged PR ends the run and a closed one fails it.
+ * WHETHER THE PULL REQUEST MERGED (lane U14 item 6, #503). The CI loop reads
+ * it (`pull_request.merged`), but `IssueRun.to_api` does not serve it, and no
+ * merger or merge time is kept. Two served things settle it anyway:
+ *
+ *  1. the merge step's own result (`result_summary.merge`, read by
+ *     `mergeCardOf` from the run's workflow): merged, with its commit and the
+ *     issues it closed, or refused, or parked waiting for CI;
+ *  2. the CI loop's transitions (`issueci`): a closed pull request FAILS the
+ *     run, and a green one that ends it DONE always records `green_sha`. So a
+ *     DONE run with a pull request and no green sha was ended by GitHub
+ *     reporting it merged.
+ *
+ * A DONE run that IS green settles nothing: green alone ends a run without
+ * auto_merge, and a merge at green records the same sha. That case still
+ * says "merge not reported" and names the field. While CHECKING or FIXING the
+ * last read found it open, since a merged PR ends the run and a closed one
+ * fails it.
  */
-function MergeFact({ run }: { run: IssueRun }) {
+export function mergeKnown(run: IssueRun, card: MergeCard | null): MergeKnown {
+  const s = card?.state
+  if (s?.kind === 'merged') return { kind: 'merged', via: 'step', commit: s.commit, already: s.already && s.byThisTask !== true, closed: s.closed }
+  if (s?.kind === 'refused') return { kind: 'refused', failed: s.failed, code: s.code, reason: s.reason }
+  if (s?.kind === 'waiting' || s?.kind === 'updated') return { kind: 'waiting' }
+  if (run.state === 'CHECKING' || run.state === 'FIXING') return { kind: 'open' }
+  if (run.state === 'DONE' && (run.pull_request ?? null) !== null && !run.green_sha && runOutcomeLabel(run) === null) {
+    return { kind: 'merged', via: 'ci' }
+  }
+  return { kind: 'unknown' }
+}
+
+function MergeFact({ run, known }: { run: IssueRun; known: MergeKnown }) {
   const why = 'Not served: the CI loop reads whether the pull request merged, but the run does not serve pull_request.merged, and records no merger or merge time.'
+  switch (known.kind) {
+    case 'merged':
+      return (
+        <li className="ctl-fact rn-ci-merge" data-merge="merged">
+          <b>merge</b>
+          {known.via === 'step'
+            ? (
+              <span title="From the merge step's result (result_summary.merge).">
+                merged
+                {known.commit !== null && <> · <code title={known.commit}>{shortSha(known.commit)}</code><CopyText text={known.commit} /></>}
+                {known.already ? ' · already merged at the pinned head' : ' · by the merge step'}
+              </span>
+            )
+            : (
+              <span title="A closed pull request fails the run and a green one records its sha, so a DONE run with no green sha was ended by GitHub reporting the pull request merged. The merge commit and time are not served (pull_request.merged).">
+                merged · <i className="ctl-em">commit and time not served</i>
+              </span>
+            )}
+        </li>
+      )
+    case 'refused':
+      return (
+        <li className="ctl-fact rn-ci-merge" data-merge="refused">
+          <b>merge</b>
+          <span title={known.reason ?? undefined}>
+            not merged · {known.failed ? 'the merge step failed' : 'the merge step refused'}
+            {known.code !== null && <> · <code>{known.code}</code></>}
+          </span>
+        </li>
+      )
+    case 'waiting':
+      return (
+        <li className="ctl-fact rn-ci-merge" data-merge="waiting">
+          <b>merge</b>
+          <span title="The merge step is parked on CI_PENDING: it holds no capacity and merges once the checks settle.">open · the merge step waits for CI</span>
+        </li>
+      )
+    case 'open':
+      return (
+        <li className="ctl-fact is-absent">
+          <b>merge</b>
+          <i className="ctl-em" title="A merged pull request ends the run DONE and a closed one fails it, so a CHECKING or FIXING run's was open at its last read.">open · not merged at the last read</i>
+        </li>
+      )
+    case 'unknown':
+      return (
+        <li className="ctl-fact is-absent">
+          <b>merge</b>
+          <i className="ctl-em" title={run.state === 'DONE' ? why : undefined}>merge not reported</i>
+        </li>
+      )
+  }
+}
+
+/**
+ * WHETHER THE ISSUE CLOSED (#503). The issue's state now is not served: the
+ * run read the issue once, at submission (`issue_read`). What is served:
+ * `issue_closed`, set when the run's own write-back closed it (an
+ * already_on_main run with every requirement met); the merge step's
+ * `issues_closed`; and, for a pull request the CI loop saw merged, the
+ * keyword the run wrote into it -- `Closes #N` closes the issue on a merge
+ * into the default branch, `part of #N` does not.
+ */
+function issueKnown(run: IssueRun, known: MergeKnown): { text: string; title: string; settled: boolean } {
+  const n = run.issue.number
+  if (run.issue_closed === true) {
+    return { text: 'closed by this run', settled: true, title: "The run's write-back closed it (issue_closed): the work was already on main and every requirement was shown met." }
+  }
+  if (known.kind === 'merged' && known.via === 'step') {
+    return known.closed.includes(n)
+      ? { text: 'closed by the merge', settled: true, title: "The merge step's result lists it among the issues it closed (issues_closed)." }
+      : { text: 'not closed by the merge', settled: true, title: "The merge step's result lists the issues it closed (issues_closed); this one is not among them. Its state now is not served." }
+  }
+  if (known.kind === 'merged' && run.requirements_met === true) {
+    return { text: `closed by the merge · Closes #${n}`, settled: true, title: `The merged pull request carries "Closes #${n}", which closes the issue on a merge into the default branch. Its state now is not served.` }
+  }
+  if (known.kind === 'merged' && run.requirements_met === false) {
+    return { text: `left open · part of #${n}`, settled: true, title: `The merged pull request says "part of #${n}", which does not close the issue. Its state now is not served.` }
+  }
+  return {
+    text: `state not served${run.issue_read?.state ? ` · ${run.issue_read.state} when the run was created` : ''}`,
+    settled: false,
+    title: "The issue's state now is not served: the run read the issue once, at submission (issue_read).",
+  }
+}
+
+function IssueFact({ run, known, url }: { run: IssueRun; known: MergeKnown; url: string | null }) {
+  const n = run.issue.number
+  const said = issueKnown(run, known)
   return (
-    <li className="ctl-fact is-absent">
-      <b>merge</b>
-      {run.state === 'CHECKING' || run.state === 'FIXING'
-        ? <i className="ctl-em" title="A merged pull request ends the run DONE and a closed one fails it, so a CHECKING or FIXING run's was open at its last read.">open · not merged at the last read</i>
-        : <i className="ctl-em" title={why}>merge not reported</i>}
+    <li className="ctl-fact rn-ci-issue">
+      <b>issue</b>
+      <span>
+        {url === null ? <span className="mono">#{n}</span>
+          : <a href={url} target="_blank" rel="noreferrer" className="mono" title={url}>#{n}</a>}
+        {' · '}
+        {said.settled
+          ? <span title={said.title}>{said.text}</span>
+          : <i className="ctl-em" title={said.title}>{said.text}</i>}
+      </span>
     </li>
   )
 }

@@ -62,9 +62,10 @@ different words, never on the same axis.
 **Trap B — `lease.state` only ever holds `LEASED` or `DISPATCHED`.** Admission writes
 `LEASED` (`admission.py:196`), `scheduler/store.py:235-237` writes `DISPATCHED`, and
 **nothing writes `STARTING` or `RUNNING` to the lease document** — the worker advances
-the *task* through those states (`agent_worker/control.py:399-421`) and touches the
-lease only to read it (`control.py:216`) and to write `heartbeat_at` / `expires_at`
-(`control.py:509-516`). A "state" column on the lease table would therefore show
+the *task* through those states (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_starting`,
+`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`) and touches the
+lease only to read it (`apps/agent-worker/agent_worker/control.py::ControlPlane.fetch_lease`) and to write `heartbeat_at` / `expires_at`
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.heartbeat`). A "state" column on the lease table would therefore show
 `DISPATCHED` for an agent that has been running for an hour. The column is labelled
 **"dispatch"** with values `awaiting dispatch` / `dispatched`, and liveness is expressed
 by the *heartbeat age* next to it. (`Lease.dispatch_overdue` at `models.py:144-146` is

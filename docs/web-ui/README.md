@@ -350,7 +350,7 @@ is under `/v1`.
 | what | area | effort |
 |---|---|---|
 | NOT REQUESTED, and worth recording as declined: a denormalised active_by_resource_class field on SlotPool. The investigation raise | cluster-state | none — explicitly not requested |
-| Commit and deploy the already-written worker usage extraction. _usage_summary() at apps/agent-worker/agent_worker/lifecycle.py:105 | agents-and-workflows | small to ship the worker half; the typed Attempt fields are  |
+| Commit and deploy the already-written worker usage extraction. _usage_summary() at `apps/agent-worker/agent_worker/lifecycle.py::_usage_summary` | agents-and-workflows | small to ship the worker half; the typed Attempt fields are  |
 | Runtime agent-spawns-agent, if the owner genuinely wants the sub-agent tree rather than the workflow DAG. Three independent walls  | agents-and-workflows | large |
 | A model-driven browser agent, without which 'watch a Claude agent do visual QA' describes nothing. The browser profile is a script | live-logs | large |
 | Account-to-agent assignment: call choose() at admission, record the assignment on the lease, install the account credential in the | accounts | large |

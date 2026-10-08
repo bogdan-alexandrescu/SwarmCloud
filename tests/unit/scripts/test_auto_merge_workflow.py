@@ -141,13 +141,25 @@ def test_the_job_is_gated_on_the_ready_label(job: dict):
 
 
 def test_it_never_checks_out_or_runs_the_pull_requests_code(workflow: dict, job: dict):
-    """MUTATION: add `- uses: actions/checkout@v5` with `ref: ${{ github.event.pull_request.head.sha }}`."""
+    """MUTATION: add `- uses: actions/checkout@v5` with `ref: ${{ github.event.pull_request.head.sha }}`.
+
+    One checkout is allowed: the DEFAULT branch's scripts/, sparse and without
+    credentials, for scripts/check-closing-references.sh -- main's reviewed
+    code, never the pull request's (test_check_closing_references.py)."""
     text = AUTO_MERGE.read_text()
     steps = job.get("steps") or []
     assert steps, "the job has no steps, so this checked nothing"
     for step in steps:
         uses = str(step.get("uses") or "")
-        assert "checkout" not in uses, f"a pull_request_target job checks out code: {uses}"
+        if "checkout" not in uses:
+            continue
+        inputs = step.get("with") or {}
+        assert inputs.get("ref") == "${{ github.event.repository.default_branch }}", (
+            f"a pull_request_target job checks out something other than the default branch: {inputs}"
+        )
+        assert inputs.get("persist-credentials") is False, inputs
+        assert inputs.get("sparse-checkout") == "scripts", inputs
+        assert set(inputs) == {"ref", "persist-credentials", "sparse-checkout"}, inputs
     # The head SHA is read (HEAD_SHA) to PIN the check-runs read and both merge
     # calls to the reviewed commit -- fencing against a push after the label,
     # not a way to find or run the fork's code. Reading it is safe only

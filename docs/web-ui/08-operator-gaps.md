@@ -183,7 +183,7 @@ was opened and read.
    sentinel and says so.
 3. **Attempts carry no `runner_profile` and no `resource_class`.**
    `ControlPlane.record_attempt_start`
-   (`apps/agent-worker/agent_worker/control.py:425-457`) writes exactly sixteen keys and
+   (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start`) writes exactly sixteen keys and
    neither is among them. The runbook's "peak RSS by profile" therefore needs a join from
    every attempt to its task — 200 extra document reads for a 200-attempt panel.
 4. **The event TTL is configured on a field nothing writes.**
@@ -192,7 +192,7 @@ was opened and read.
    (`terraform/modules/firestore/variables.tf:67-71`). No event writer sets it:
    `TaskEvent` (`models.py:219-228`) has no such field, `event_to_firestore`
    (`codec.py:139-142`) is `asdict(event)`, and the worker's explicit dict
-   (`control.py:363-375`) does not include it. **Task events never expire**, despite the
+   (`apps/agent-worker/agent_worker/control.py::ControlPlane._event_write`) does not include it. **Task events never expire**, despite the
    comment at `indexes.tf:249-250` saying that without a TTL the subcollection grows
    without bound. Any event-derived feed sits on an unbounded collection.
 5. **The account sweep's result is keyed by label, not by account.**
