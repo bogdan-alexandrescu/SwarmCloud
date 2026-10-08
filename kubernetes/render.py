@@ -742,20 +742,48 @@ SPEC_CONFIG_MAP_REQUIRED = ("SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY")
 _PEM_PUBLIC_KEY = re.compile(
     r"-----BEGIN PUBLIC KEY-----\n(?:[A-Za-z0-9+/=]{1,76}\n)+-----END PUBLIC KEY-----\n?"
 )
-_KMS_NAME_SEGMENT = r"[A-Za-z0-9_-]{1,63}"
 _CUTOVER = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})"
 )
 
 
-def spec_verify_keys_data(path: str, project: str) -> dict[str, str]:
+#: The environment names terraform/bootstrap's `spec_signing_environments`
+#: accepts, restated as a refusal here so a bad --environment cannot widen the
+#: key pattern below.
+_ENVIRONMENT = re.compile(r"[a-z][a-z0-9-]{0,19}")
+
+#: The ring and key terraform/modules/spec_signing_key names, for the
+#: `swarm` name prefix both roots use: `${name_prefix}-${environment}-specs`
+#: and `step-spec` (terraform/bootstrap/spec_signing.tf passes
+#: var.environment per ring). Spelled here because render.py reads no
+#: terraform; a rename there must be made here too, or every apply refuses.
+SPEC_KEY_RING = "swarm-{environment}-specs"
+SPEC_CRYPTO_KEY = "step-spec"
+
+
+def spec_verify_keys_data(path: str, project: str, environment: str) -> dict[str, str]:
     """The ConfigMap's data, from `terraform output -json spec_verify_keys_configmap`.
 
     Refuses, before anything is rendered, anything the worker would refuse or
     that could carry YAML: an unknown key, a key version outside the signing
-    key, a signing key in another project, a value that is not a PEM public key.
+    key, a signing key that is not THIS environment's step-spec key, a value
+    that is not a PEM public key.
+
+    THE RING AND THE KEY ARE PINNED, not just the project (#346). Any crypto
+    key in the project used to pass, so a payload naming dev's ring, or some
+    other key in the shared project, rendered a ConfigMap whose workers would
+    verify specs signed by whatever holds that key -- the canonical form
+    carries no environment, which is why each environment has its own ring.
+    Only the location is free: it is the region the environment runs in.
     """
     import json
+
+    if not _ENVIRONMENT.fullmatch(environment or ""):
+        raise RenderError(
+            f"render: --environment {environment!r} is not an environment name; the "
+            "step-spec key is per environment (swarm-<env>-specs), so the keys cannot be "
+            "checked without it"
+        )
 
     try:
         payload = json.loads(Path(path).read_text())
@@ -777,14 +805,16 @@ def spec_verify_keys_data(path: str, project: str) -> dict[str, str]:
         )
 
     signing_key = payload["SPEC_SIGNING_KEY"]
+    ring = SPEC_KEY_RING.format(environment=environment)
     key_pattern = re.compile(
         rf"projects/{re.escape(project)}/locations/[a-z0-9-]{{1,63}}"
-        rf"/keyRings/{_KMS_NAME_SEGMENT}/cryptoKeys/{_KMS_NAME_SEGMENT}"
+        rf"/keyRings/{re.escape(ring)}/cryptoKeys/{re.escape(SPEC_CRYPTO_KEY)}"
     )
     if not key_pattern.fullmatch(signing_key):
         raise RenderError(
-            f"render: SPEC_SIGNING_KEY {signing_key!r} is not a Cloud KMS crypto key in "
-            f"project {project!r}"
+            f"render: SPEC_SIGNING_KEY {signing_key!r} is not "
+            f"projects/{project}/locations/<region>/keyRings/{ring}/cryptoKeys/"
+            f"{SPEC_CRYPTO_KEY}, the {environment!r} environment's step-spec key"
         )
 
     try:
@@ -1076,6 +1106,15 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "any existing one is left as it is."
         ),
     )
+    parser.add_argument(
+        "--environment",
+        default="",
+        help=(
+            "the environment the keys belong to (dev, prod, ...): "
+            "--spec-verify-keys-file accepts only that environment's step-spec key, "
+            "swarm-<env>-specs/step-spec. kubernetes/apply.sh passes its ${ENVIRONMENT}."
+        ),
+    )
     # THE TENANT NAMESPACE'S ResourceQuota, FLAT FOR EVERY TENANT. Owner
     # decision 2026-10-07 (contract request 53, moving claude-code to GKE),
     # flat over per-tenant: 100 pods matches the GKE_AUTOPILOT backend ceiling
@@ -1206,7 +1245,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         # Validated BEFORE anything is written, so a bad output renders nothing.
         spec_data = (
-            spec_verify_keys_data(args.spec_verify_keys_file, args.project)
+            spec_verify_keys_data(args.spec_verify_keys_file, args.project, args.environment)
             if args.spec_verify_keys_file
             else None
         )
