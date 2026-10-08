@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, loadAccess, loadAccessMembers, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, revokeAccessGrant, typedRepoId, verifyAccessGrant,
@@ -49,6 +49,15 @@ import './styles/onboarding.css'
  *
  * VERIFY A: a grid, failures first, the fix inline. `unknown` is a measured
  * answer (the check could not be read), never a pass, and is drawn grey.
+ *
+ * CONNECTED IS NOT INSTALLED (#780, found live 2026-10-08). The owner
+ * connected GitHub -- the App showed under Authorized GitHub Apps -- but never
+ * installed it, and this page showed no orgs and no repositories with no word
+ * why: GitHub lists an org to the App only where the App is installed. So
+ * when no owner has an installation the page says so first, with Install
+ * buttons; each owner row with none offers Install; and because installing
+ * happens on GitHub's page, the owners are read again on Refresh and when the
+ * window regains focus.
  */
 
 type View = 'mine' | 'members'
@@ -67,6 +76,10 @@ function dataOf<T>(r: Result<T>): T | null {
 function refusalUrl(e: ApiError): string | null {
   const d = e.detail as { url?: unknown } | null | undefined
   return d && typeof d.url === 'string' && d.url.startsWith('https://github.com/') ? d.url : null
+}
+
+function isGitHubUrl(url: string | null | undefined): url is string {
+  return typeof url === 'string' && url.startsWith('https://github.com/')
 }
 
 function GitHubLink({ url, children }: { url: string; children: ReactNode }) {
@@ -341,8 +354,10 @@ function Owners({
                   <Button size="sm" kind="primary" busy={busy === o.owner} onClick={() => void enable(o.owner)}>
                     Enable
                   </Button>
-                ) : o.install_url !== null && o.install_url.startsWith('https://github.com/') ? (
-                  <GitHubLink url={o.install_url}>Install on GitHub</GitHubLink>
+                ) : isGitHubUrl(o.install_url) ? (
+                  <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
+                    Install on {o.owner}
+                  </ButtonLink>
                 ) : (
                   <Dash why="The App's install page is not configured on this API" />
                 )}
@@ -813,6 +828,75 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
  * one refresh per request (access.py) -- so it is mounted only for an active
  * connection, never fired to be refused.
  */
+/** The least time between two focus re-reads: each owners read is one refresh of your token. */
+const FOCUS_REREAD_MS = 15_000
+
+/**
+ * Re-run `reload` when the person comes back to this tab -- from GitHub's
+ * install page, most often. Focus and visibility both fire on one return, so
+ * a second within FOCUS_REREAD_MS is dropped.
+ */
+function useRereadOnFocus(reload: () => void) {
+  const last = useRef(0)
+  const latest = useRef(reload)
+  latest.current = reload
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (now - last.current < FOCUS_REREAD_MS) return
+      last.current = now
+      latest.current()
+    }
+    window.addEventListener('focus', back)
+    document.addEventListener('visibilitychange', back)
+    return () => {
+      window.removeEventListener('focus', back)
+      document.removeEventListener('visibilitychange', back)
+    }
+  }, [])
+}
+
+/**
+ * NOTHING INSTALLED YET. Connecting authorised the App to act as the person;
+ * it lists nothing until it is installed on an account or an organisation.
+ * Both buttons open the same install page: GitHub asks there which account,
+ * and offers only the person's own account and the orgs they may install on
+ * or ask for. Back from GitHub, the card's Refresh (or returning to the tab)
+ * reads the owners again.
+ */
+export function NotInstalledNotice({ login, installUrl }: { login: string | null; installUrl: string | null }) {
+  return (
+    <section className="ac-install" aria-label="SwarmCloud Saga is not installed">
+      <p className="ac-install-h">
+        <b>
+          {login !== null ? `You're connected as @${login}` : "You're connected"}, but SwarmCloud Saga isn't installed anywhere yet.
+        </b>{' '}
+        Install it on the accounts and repositories you want SwarmCloud to use.
+      </p>
+      {isGitHubUrl(installUrl) ? (
+        <div className="ur-gh-acts">
+          <ButtonLink kind="primary" size="sm" href={installUrl} target="_blank" rel="noreferrer">
+            {login !== null ? `Install on ${login}` : 'Install on your account'}
+          </ButtonLink>
+          <ButtonLink size="sm" href={installUrl} target="_blank" rel="noreferrer">
+            Install on an organisation…
+          </ButtonLink>
+        </div>
+      ) : (
+        <p className="ur-small">
+          <Dash why="The App's install page is not configured on this API" /> This API names no install page for the App; an
+          operator sets its slug.
+        </p>
+      )}
+      <p className="ur-hint">
+        Organisations you don't see (for example your company's) appear here after the App is installed there; if you're
+        not an owner, GitHub sends the owners a request.
+      </p>
+    </section>
+  )
+}
+
 function Choose({ overview, reloadOverview }: { overview: AccessOverview; reloadOverview: () => void }) {
   const owners = useUrRead(loadAccessOwners, 'access-owners')
   const [picked, setPicked] = useState<string | null>(null)
@@ -822,27 +906,55 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
     reloadOverview()
     owners.reload()
   }
+  useRereadOnFocus(reloadAll)
+  const login = overview.connection?.forge_login ?? null
   return (
-    <Card className="ac-choose" title="Choose repositories" id="ac-choose">
+    <Card
+      className="ac-choose"
+      title="Choose repositories"
+      id="ac-choose"
+      action={
+        <Button size="sm" kind="ghost" busy={owners.state.status === 'loading'} onClick={reloadAll}>
+          Refresh
+        </Button>
+      }
+    >
+      <p className="ur-hint ac-authz">
+        Authorized is not installed: Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps); installing it on
+        an account or org lets it reach that owner's repositories (Installed GitHub Apps).
+      </p>
       <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3}>
         {(o) => (
-          <div className="ac-chooser">
-            <Owners
-              owners={o.owners}
-              orgsListed={o.orgs_listed}
-              grants={overview.grants}
-              selected={selected}
-              onSelect={setPicked}
-              onChange={reloadAll}
-            />
-            {selected !== null ? (
-              <RepoChooser key={selected} owner={selected} onChange={reloadOverview} />
-            ) : (
-              <EmptyState kind="empty" heading="No owner enabled yet">
-                Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
-              </EmptyState>
+          <>
+            {!o.owners.some((x) => x.install_state === 'installed') && (
+              <NotInstalledNotice
+                login={login ?? o.owners.find((x) => x.owner_type === 'User')?.owner ?? null}
+                installUrl={o.install_url}
+              />
             )}
-          </div>
+            <div className="ac-chooser">
+              <Owners
+                owners={o.owners}
+                orgsListed={o.orgs_listed}
+                grants={overview.grants}
+                selected={selected}
+                onSelect={setPicked}
+                onChange={reloadAll}
+              />
+              {selected !== null ? (
+                <RepoChooser key={selected} owner={selected} onChange={reloadOverview} />
+              ) : o.owners.some((x) => x.install_state === 'installed') ? (
+                <EmptyState kind="empty" heading="No owner enabled yet">
+                  Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
+                </EmptyState>
+              ) : (
+                <EmptyState kind="empty" heading="Nothing to list until the App is installed">
+                  Install SwarmCloud Saga on an owner on the left; its repositories are listed here once it is, and you have
+                  enabled it.
+                </EmptyState>
+              )}
+            </div>
+          </>
         )}
       </UrRegion>
       <TypedRepository tenantId={overview.tenant_id} onChange={reloadAll} />
