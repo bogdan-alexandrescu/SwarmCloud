@@ -266,8 +266,8 @@ tenants = {
     # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
     # the tenant document once and ignores later changes, so these record the
     # live state rather than enforce it.
-    max_active      = 45
-    capacity_units  = 45
+    max_active     = 45
+    capacity_units = 45
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared
