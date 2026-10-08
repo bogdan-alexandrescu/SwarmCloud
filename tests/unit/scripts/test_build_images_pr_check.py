@@ -439,6 +439,11 @@ def test_mains_build_and_push_is_unchanged():
     # ...and not on a merge queue entry, whose ref the pool rejects as it
     # rejects a pull request's (test_merge_queue_workflows.py).
     assert build["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
-    runs = [str(s.get("run", "")).strip() for s in build["steps"] if s.get("run")]
-    assert "./scripts/build-images.sh" in runs, runs
+    runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
+    # Main builds and pushes: incrementally since observer proposal H
+    # (test_build_images_incremental.py), never without pushing.
+    builds = [r for r in runs if "./scripts/build-images.sh" in r]
+    assert len(builds) == 1, runs
+    assert "./scripts/build-images.sh --incremental" in builds[0], builds[0]
+    assert not re.search(r"--(build-only|local)\b", builds[0]), builds[0]
     assert "build-not-run" not in _jobs(), "the 'not built' notice outlived the pull-request build"
