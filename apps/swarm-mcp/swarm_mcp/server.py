@@ -1314,6 +1314,153 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["run_id", "reason"],
         },
     },
+    # -- onboarding (#780, OB9) ---------------------------------------------
+    #
+    # The calls `sc setup` and `sc access` make, for /sc:setup. None takes or
+    # returns a token, a code or a state: swarm_setup_connect returns the
+    # authorize URL, whose `state` GitHub requires, and nothing else carries it.
+    {
+        "name": "swarm_setup_status",
+        "description": (
+            "The caller's SwarmCloud onboarding checklist, the one the console "
+            "draws: six steps in order (signed_in, github_connected, "
+            "orgs_enabled, repos_chosen, access_verified, ready), each todo, "
+            "in_progress, done, failed or stale, with every failure's code and "
+            "its recovery copy word for word, and `next_step` (null when ready). "
+            "`checklist` is the text to show. `connected_as_you` is the GitHub "
+            "login SwarmCloud acts as YOU through, or null -- a step that is done "
+            "through the tenant's token is not that. With "
+            "`wait_for_github_seconds`, holds until GitHub is connected as you or "
+            "that many seconds pass (at most 600): call it that way right after "
+            "swarm_setup_connect, while the person approves in the browser."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wait_for_github_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 600, "default": 0,
+                    "description": "Hold until GitHub is connected as you, up to this long.",
+                },
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_connect",
+        "description": (
+            "Start connecting GitHub as the caller, through SwarmCloud's GitHub "
+            "App: returns `authorize_url` and `expires_in_seconds` (the link "
+            "works once, for 10 minutes), and opens the browser on this machine "
+            "when it can (`opened`). Show the person the URL in case it did not "
+            "open; repeat it nowhere else. The console's callback page finishes "
+            "the connection in their browser -- nothing comes back here -- so "
+            "follow with swarm_setup_status and `wait_for_github_seconds`. If "
+            "GitHub is already connected as them, starts nothing and says as whom."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "open_browser": {"type": "boolean", "default": True,
+                                 "description": "Open the URL in this machine's browser."},
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_orgs",
+        "description": (
+            "The GitHub owners the caller reaches -- their account and each "
+            "organisation -- with `install_state` (installed / not_installed), "
+            "`sso` and `enabled`, plus the App's `install_url` for an owner it is "
+            "not installed on (an org the person does not own sends its owners a "
+            "request). With `enable`, enables that installed owner first; an "
+            "owner without the App is refused with REPO_NOT_INSTALLED and its "
+            "recovery copy."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "enable": {"type": "string", "description": "An installed owner's login to enable."},
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_repos",
+        "description": (
+            "One page (up to 100) of an ENABLED owner's repositories that the "
+            "App's installation covers, each with `visibility`, `can_push`, "
+            "`archived`, and whether the caller already `granted` it and in which "
+            "`mode`. `q` filters by name server-side; `next_page` is the page to "
+            "ask for next, null on the last; `capped` says the listing stops "
+            "there -- search, or grant a typed owner/repo."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string"},
+                "page": {"type": "integer", "minimum": 1, "default": 1},
+                "q": {"type": "string", "description": "Only names containing this."},
+            },
+            "required": ["owner"],
+        },
+    },
+    {
+        "name": "swarm_setup_grant",
+        "description": (
+            "Let SwarmCloud use one repository AS THE CALLER: `read` (clone) or "
+            "`write` (clone, push, pull request). The API reads it once as them "
+            "and refuses write on an archived repository or one they cannot push "
+            "to, with the code and recovery copy; the first grant registers it "
+            "for the tenant. Only what the person chose: never grant a repository "
+            "or a mode they did not name."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {"type": "string", "description": "owner/repo"},
+                "mode": {"type": "string", "enum": ["read", "write"]},
+            },
+            "required": ["repository", "mode"],
+        },
+    },
+    {
+        "name": "swarm_setup_revoke",
+        "description": (
+            "Revoke the caller's grant on one repository: their tasks for it are "
+            "refused from then on, and a running worker is refused at its next "
+            "push. The tenant's registration goes with the last grant on it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"repository": {"type": "string", "description": "owner/repo"}},
+            "required": ["repository"],
+        },
+    },
+    {
+        "name": "swarm_setup_verify",
+        "description": (
+            "Check what SwarmCloud can do as the caller in each granted "
+            "repository (or only those named): clone, and for a write grant push "
+            "and pull request -- reads only, nothing is pushed. Per repository: "
+            "`passed`, each check's state (ok / missing / unknown / not_required) "
+            "and every failure's code and recovery copy. `unknown` with "
+            "FORGE_UNREACHABLE means GitHub did not answer, not that it failed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repositories": {"type": "array", "items": {"type": "string"},
+                                 "description": "owner/repo each; default every grant."},
+            },
+        },
+    },
+    {
+        "name": "swarm_access",
+        "description": (
+            "The caller's Access page: their GitHub connection (state, login -- "
+            "never a token), the owners they enabled, and every repository grant "
+            "with its mode and last checks. `text` is what to show."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # -- cluster state -----------------------------------------------------
     #
     # These return the SAME text `sc` prints, at a fixed 80 columns with no
@@ -2234,6 +2381,105 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     return json.dumps(runs.summary(client, run), indent=2, default=str)
 
 
+_SETUP_TOOLS = frozenset(
+    {"swarm_setup_status", "swarm_setup_connect", "swarm_setup_orgs", "swarm_setup_repos",
+     "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify", "swarm_access"}
+)
+
+#: The longest `swarm_setup_status` holds for GitHub: the authorize link's life.
+MAX_SETUP_WAIT_SECONDS = 600
+
+
+def _setup_view(view: dict[str, Any]) -> dict[str, Any]:
+    """The checklist for a tool reply: the text, and each step without its
+    evidence -- which names secrets and records the model has no use for --
+    bar who GitHub is connected as."""
+    from .sc import connected_as_you, setup_checklist
+
+    steps = [
+        {key: step.get(key) for key in ("step", "state", "code", "copy", "issues")}
+        for step in view.get("steps") or [] if isinstance(step, dict)
+    ]
+    return {
+        "checklist": "\n".join(setup_checklist(view)),
+        "next_step": view.get("next_step"),
+        "complete": view.get("next_step") is None,
+        "connected_as_you": connected_as_you(view),
+        "steps": steps,
+    }
+
+
+def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    """The onboarding tools (#780, OB9): the calls `sc setup` and `sc access`
+    make, through the same functions, so the terminal and /sc:setup cannot
+    disagree about a step. A §2.3 refusal answers with its code and recovery
+    copy, word for word, as `sc` prints it."""
+    from . import sc
+
+    def reply(value: Any) -> str:
+        return json.dumps(value, indent=2, default=str)
+
+    try:
+        if name == "swarm_setup_status":
+            wait = _int_arg(args, "wait_for_github_seconds", 0)
+            if wait < 0 or wait > MAX_SETUP_WAIT_SECONDS:
+                raise SwarmError(
+                    f"wait_for_github_seconds is 0-{MAX_SETUP_WAIT_SECONDS}. Nothing was read")
+            if wait:
+                login, view = sc.wait_for_github(client, timeout=wait)
+                answer = _setup_view(view)
+                if login is None:
+                    answer["not_connected"] = sc.not_connected_text(wait)
+                return reply(answer)
+            return reply(_setup_view(sc.setup_status(client)))
+        if name == "swarm_setup_connect":
+            already = sc.connected_as_you(sc.setup_status(client))
+            if already is not None:
+                return reply({"already_connected_as": already,
+                              "next": "swarm_setup_orgs: enable the owners to choose from"})
+            started = sc.start_github_connect(client)
+            opened = bool(args.get("open_browser", True)) and sc._open_browser(  # noqa: SLF001
+                started["authorize_url"])
+            return reply({**started, "opened": opened,
+                          "next": "swarm_setup_status with wait_for_github_seconds, while "
+                                  "the person approves in the browser"})
+        if name == "swarm_setup_orgs":
+            owner = args.get("enable")
+            enabled = None
+            if owner is not None:
+                done = sc.enable_owner(client, _text_arg(args, "enable", name))
+                enabled = done.get("org") if isinstance(done, dict) else None
+            listing = sc.access_owners(client)
+            answer = {"owners": listing.get("owners"), "install_url": listing.get("install_url"),
+                      "orgs_listed": listing.get("orgs_listed")}
+            if owner is not None:
+                answer["enabled"] = enabled
+            return reply(answer)
+        if name == "swarm_setup_repos":
+            page = _int_arg(args, "page", 1)
+            listing = sc.repositories_page(client, _text_arg(args, "owner", name), page=page,
+                                           query=(args.get("q") or None))
+            return reply({key: value for key, value in listing.items() if key != "tenant_id"})
+        if name == "swarm_setup_grant":
+            mode = _text_arg(args, "mode", name)
+            return reply(sc.grant_repository(client, _text_arg(args, "repository", name), mode))
+        if name == "swarm_setup_revoke":
+            return reply(sc.revoke_repository(client, _text_arg(args, "repository", name)))
+        if name == "swarm_setup_verify":
+            wanted = args.get("repositories") or []
+            if not isinstance(wanted, list) or not all(isinstance(r, str) for r in wanted):
+                raise SwarmError("repositories is a list of owner/repo. Nothing was verified")
+            results = sc.verify_repositories(client, wanted)
+            return reply({"results": results, "text": "\n".join(sc.verify_lines(results)),
+                          "passed": bool(results) and all(r.get("passed") for r in results)})
+        overview = sc.access_overview(client)
+        return reply({**overview, "text": "\n".join(sc.access_lines(overview))})
+    except SwarmError as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("failure_code"):
+            raise sc._refused(exc) from None  # noqa: SLF001
+        raise
+
+
 def _follow_rows(
     client: SwarmClient,
     args: dict[str, Any],
@@ -2865,6 +3111,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
 
     if name in _RUN_TOOLS:
         return _run_tool(client, name, args)
+
+    if name in _SETUP_TOOLS:
+        return _setup_tool(client, name, args)
 
     if name in _SC_VIEWS:
         from . import render

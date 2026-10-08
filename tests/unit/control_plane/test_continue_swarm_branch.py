@@ -27,6 +27,8 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import pytest
+
 from swarm_api.validation import DispatchOptions
 
 from .conftest import auth_header
@@ -336,3 +338,13 @@ def test_the_role_helpers_keep_the_continuation():
     options = DispatchOptions(strategy="direct-pr", continues="task_0123456789abcdef0123")
     assert options.to_metadata()["continues"] == "task_0123456789abcdef0123"
     assert options.with_role("contributor").continues == "task_0123456789abcdef0123"
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

@@ -5,6 +5,9 @@ a session's work out there a decision the session takes on its own.
 
 * `/sc` — the overview, or `/sc accounts`, `/sc agents`, `/sc capacity`,
   `/sc trouble`, `/sc task <id>`
+* `/sc:setup` — connect GitHub as yourself, enable your orgs and choose the
+  repositories SwarmCloud may use, resumed wherever the checklist stands
+  ([below](#setting-up-github-as-yourself-and-the-repositories-swarmcloud-may-use))
 * the **`sc` skill** teaches the session how to **read** that output — chiefly
   that `~12%` is a projection and `—` is "not measured", never zero. It is
   read-only and lists no tool that writes.
@@ -1038,6 +1041,58 @@ stops at a plan waiting for approval.
 `run --issue` and `plan approve|edit|reject` write, so no skill or command is
 granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
 grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
+
+## Setting up: GitHub as yourself, and the repositories SwarmCloud may use
+
+SwarmCloud acts **as you** at GitHub, through its GitHub App (#780,
+[docs/onboarding.md](../docs/onboarding.md)). `/sc:setup` walks the same
+checklist the console draws — `signed_in`, `github_connected`,
+`orgs_enabled`, `repos_chosen`, `access_verified`, `ready` — from wherever it
+stands, so a person who connected GitHub in the console and chooses
+repositories here sees one checklist. Every step's state is read from `GET
+/v1/onboarding`; nothing on this side decides a step is done.
+
+| Surface | Walk it | Read it | Change it later |
+|---|---|---|---|
+| `/sc:setup` | `/sc:setup` | `/sc:setup status` | `swarm_setup_grant`, `swarm_setup_revoke`, `swarm_setup_verify` |
+| MCP | `swarm_setup_connect`, `swarm_setup_orgs`, `swarm_setup_repos`, `swarm_setup_grant`, `swarm_setup_verify` | `swarm_setup_status`, `swarm_access` | `swarm_setup_revoke` |
+| terminal | `uv run sc setup` | `uv run sc setup status`, `uv run sc access list` | `uv run sc access grant o/r --read\|--write`, `revoke o/r`, `verify [o/r]`, `add-org`, `remove-org`, `disconnect` |
+
+**Connecting happens in your browser.** `sc setup` and `swarm_setup_connect`
+ask the API for an authorize link, open it, and print it once in case the
+browser did not open. You approve SwarmCloud at GitHub, and the console's
+callback page finishes the exchange under your own sign-in; the terminal (or
+`swarm_setup_status` with `wait_for_github_seconds`) only waits for the
+checklist to say GitHub is connected as you. The link lasts 10 minutes and
+works once; on a timeout, run it again for a fresh one. A step that is done
+through the **tenant's** token is not connected as you, and is not taken for
+it.
+
+**No token, code or state is printed.** No route these call returns a token.
+The authorize URL carries GitHub's `state` because GitHub requires it there;
+it is shown once, as the URL, and repeated nowhere — not in an error, not in
+a tool reply's other fields.
+
+**Choosing is yours.** Owners are enabled and repositories granted only as
+you name them, each `read` (clone) or `write` (clone, push, pull request). The
+API reads a repository once as you and refuses write on one that is archived
+or that you cannot push to, with the recovery copy of docs/onboarding.md §2.3,
+which both surfaces print word for word. Verifying reads only: nothing is
+pushed.
+
+`sc setup` exits 0 when the checklist ends ready, 3 when it stopped short (a
+step failed, the browser half timed out, nothing installed yet) and 1 when
+something could not be read; `sc setup status` the same. `sc access verify`
+exits 3 when a check did not pass.
+
+`setup` and the `access` verbs write — they change what SwarmCloud may do as
+you — so no skill or `/sc` grant reaches them
+(`tests/unit/mcp/test_plugin_commands.py`), and `/sc:setup` is granted only
+the onboarding tools, by name. Disabling an org
+(`uv run sc access remove-org <owner>`) deletes every grant under it, and
+`uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
+confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
+holds the flow against a fake API, including that no secret is printed.
 
 ## What keeps these honest
 

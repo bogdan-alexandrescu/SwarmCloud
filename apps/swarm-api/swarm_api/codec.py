@@ -20,6 +20,8 @@ from urllib.parse import quote
 from swarm_common.models import (
     Attempt,
     EndCause,
+    FORGE_ACCESS,
+    FORGE_CREDENTIAL,
     Lease,
     QuotaState,
     SlotPool,
@@ -187,7 +189,48 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 14. Absent on every task that is not a child.
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
+        # Contract request 54. Read back so a task this service decodes and
+        # writes again keeps the signed fields it was submitted with.
+        forge_credential=_forge_credential(data.get("forge_credential")),
+        forge_access=_forge_access(data.get("forge_access")),
     )
+
+
+def _forge_credential(value: Any) -> str | None:
+    """A stored forge credential, or None for an old document and for a value
+    of the wrong shape. A tenant's agent can write its task documents, and one
+    malformed field must not make a task unreadable to every listing here.
+    Nothing here acts on it: the worker verifies the signed document itself,
+    and a None written back over a signed value fails that check."""
+    if isinstance(value, str) and FORGE_CREDENTIAL.fullmatch(value):
+        return value
+    return None
+
+
+def _forge_access(value: Any) -> str | None:
+    """A stored forge access mode, or None -- as `_forge_credential`."""
+    return value if isinstance(value, str) and value in FORGE_ACCESS else None
+
+
+#: What `task_to_api` says a task's `forge_credential` is, by its prefix.
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+_FORGE_SOURCES = (
+    ("git-u-", "the submitter's GitHub credential"),
+    ("git-r-", "the repository's token"),
+)
+
+
+def forge_credential_source(value: str | None) -> str | None:
+    """The words for a task's forge credential, or None when it names none
+    (no repository, not GitHub, or submitted before #780)."""
+    if value is None:
+        return None
+    if value == "git":
+        return "tenant token, service submission"
+    for prefix, words in _FORGE_SOURCES:
+        if value.startswith(prefix):
+            return words
+    return None
 
 
 def _spec_format(value: Any) -> int | None:
@@ -367,6 +410,12 @@ def task_to_api(
         # child was submitted by, set by swarm-api, null for everything else.
         "parent_task_id": task.parent_task_id,
         "parent_attempt_id": task.parent_attempt_id,
+        # #780 OB7: which GitHub credential the task runs with, by NAME (a
+        # slot suffix, never a value), and whether it may push. The owner's
+        # D4 for automation (2026-10-07): "the task says so".
+        "forge_credential": task.forge_credential,
+        "forge_access": task.forge_access,
+        "forge_credential_source": forge_credential_source(task.forge_credential),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,

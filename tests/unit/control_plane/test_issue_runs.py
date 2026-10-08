@@ -1349,3 +1349,13 @@ def test_a_join_stages_every_ancestor_its_base_branch_does_not_carry(client, db,
     _finish_planner(db, objects, run, plan)
     read = _run(client, run["id"]).json()["run"]
     assert _approve(client, run["id"], read["plan_digest"]).status_code == 200
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

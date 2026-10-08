@@ -61,6 +61,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | ACCEPTED by the owner 2026-10-07, with conditions; its canary is request 55 |
+| 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | ACCEPTED 2026-10-07, applied; temporary, removed when `claude-code` moves to GKE |
 
 ---
@@ -9300,6 +9301,122 @@ touches the 138 s median in `ResourcesAvailable -> Started`.
   it. Its GCS prefix is the same.
 - **Invariant 10.** Unchanged: the backend is a catalogue field; a caller
   still names `claude-code` and cannot choose where it runs.
+
+---
+
+## 54. `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write
+
+**Status:** ACCEPTED by the owner 2026-10-07, APPLIED 2026-10-07 by the pull
+request that adds this entry (part of #780). This is request E of
+[docs/onboarding.md §3.3](onboarding.md#33-how-the-worker-gets-the-per-task-credential)
+("With request E (recommended)" and the draft after it), accepted by the
+owner 2026-10-07 for the guided-onboarding work of #780; it supersedes request
+(E) as [git-tokens.md §8](git-tokens.md) sketched it, by adding the access mode
+and the signature. Only the frozen half is applied here: swarm-api writing the
+fields at submission is lane OB7, and the worker reading them is lane OB5.
+
+### What is true today
+
+`Task` (`apps/common/swarm_common/models.py::Task`) says nothing about which
+forge secret a task uses. The worker reads `Tenant.secret_name("git")`
+(`Worker._git_token`, through `resolve_git_token`), so registration, clone and
+push all use the one tenant token `swarm-tenant-<tenant>-git`. The
+repository-scoped (`git-r-<hex>`) and per-user (`git-u-<hex>`) slots of
+docs/git-tokens.md exist, and swarm-api can resolve them, but no task can name
+one. `canonical_step_spec` (`apps/common/swarm_common/specsign.py`) signs
+`submitted_by` and the signed metadata keys, and no credential.
+
+### Why
+
+#780 asks for SwarmCloud to act **as the user**, across more than one GitHub
+org, on repositories the user chose to grant read or write. That needs a task
+to carry two decisions swarm-api makes at submission (onboarding.md §3.3 step
+1): whose token the worker reads, and whether it may push with it. Both must
+come from somewhere the worker can trust. A tenant's agents can write any task
+document of their tenant (docs/multi-tenancy.md), so an unsigned field would
+let one user's agent point its task at another user's slot in the same tenant,
+or lift a `read` grant to `write`. Inside the spec signature, a rewrite fails
+the worker's check (`SPEC_SIGNATURE_INVALID`) before anything runs.
+
+The alternative -- the worker derives the user's slot from the signed
+`submitted_by` -- needs no frozen change, but restates the user-hash rule in
+the worker and cannot say "this task uses the tenant token", so the tenant
+fallback of decision D4 would be impossible.
+
+### The requested change
+
+In `apps/common/swarm_common/models.py`:
+
+* `FORGE_CREDENTIAL = re.compile(r"git(-[ru]-[0-9a-f]{16})?")`, matched with
+  `fullmatch`, and `FORGE_ACCESS = ("write", "read")`;
+* on `Task`, after `parent_attempt_id`, two optional fields:
+  `forge_credential: str | None = None` (the provider suffix the worker reads:
+  `git` for the tenant token, `git-r-<16 hex>` for a repository token,
+  `git-u-<16 hex>` for a user's slot; None is `git`, today's behaviour) and
+  `forge_access: str | None = None` (`write` or `read`; None is `write`, for
+  backward compatibility). Both are **written by swarm-api only**, at
+  submission, and never accepted from a caller;
+* `Task.__post_init__` refuses a value of any other shape, so a writer cannot
+  construct a malformed task. It checks only these two fields, so no document
+  that decodes today is refused.
+
+In `apps/common/swarm_common/specsign.py`, **format 3**: format 2's projection
+plus `forge_credential` and `forge_access`. `SPEC_FORMAT` becomes 3 and
+`SPEC_FORMATS` `(1, 2, 3)`. `signing_format` signs at the oldest format that
+covers every field a task sets: 1 with no parent and no forge field, 2 with a
+parent and no forge field, 3 when either forge field is set. Formats 1 and 2
+**refuse** (`SpecNotCanonical`) a document that sets either forge field. A
+parent added to a format-1 document stays outside the signed bytes (#476); a
+forge field must not, because the worker acts on it itself.
+
+swarm-api's `codec.task_from_dict` reads both back, so a task it decodes and
+writes again keeps its signed fields; a stored value of the wrong shape
+decodes as None rather than making the task unreadable. Neither field is
+served by the API: `test_api_contract_shapes` lists them as deliberate
+omissions until OB7 decides otherwise.
+
+### What it would break if accepted
+
+Nothing existing. A document without the fields decodes as it does today, and
+a task that sets neither is signed at format 1 or 2 with **the same canonical
+bytes as before**: `tests/unit/common/test_specsign.py` pins the SHA-256 of
+both formats as computed before format 3 existed, and verifies a P-256
+signature over that pinned digest against the digest the new code computes.
+A worker built before format 3 knows only formats 1 and 2, and refuses a
+format-3 task as `unknown_format`. Only a task swarm-api resolved a forge
+field for is signed at format 3, and swarm-api writes none until OB7, so the
+rollout order is the worker (OB5) first, then the submission (OB7).
+
+One edge is said plainly: the worker's legacy window (`SPEC_LEGACY_UNTIL`)
+admits an UNSIGNED task created before signing shipped. Such a task has no
+signature to protect a forge field, so the worker that reads the fields (OB5)
+must ignore both on an unsigned task and read `git`/`write`, as today.
+
+### If it is declined
+
+The "without it" path of onboarding.md §3.3: the worker derives the user slot
+from the signed `submitted_by`, reads the grant for the mode, restates the
+user-hash rule beside swarm-api's under a parity test, and no task can use the
+tenant token as a fallback for a user without a grant (decision D4).
+
+### Invariants
+
+- **Invariants 1, 2 and 3.** Untouched: no state, lease, pool count or
+  admission transaction reads or writes either field here. (The scheduler's
+  `CREDENTIAL_MISSING` check reading the named slot is OB7's, and parks at no
+  cost as today.)
+- **Invariant 4.** No wait is added.
+- **Invariant 5.** The worker verifies the signature, fenced as today, before
+  it reads anything the fields name; a stale worker still exits without
+  running the agent. A rewrite of either field, or adding one to a task
+  signed without it, fails verification.
+- **Invariants 6, 7 and 8.** Untouched.
+- **Invariant 9.** The field is a suffix, not a secret name: the worker
+  places it with `Tenant.secret_name` under the task's OWN tenant, and the
+  anchored shape admits no other tenant's prefix and no `-refresh` twin, so it
+  can never name another tenant's secret.
+- **Invariant 10.** No caller sets either field. swarm-api writes them from
+  its own resolution of the grants, as it writes `parent_task_id`.
 
 ---
 

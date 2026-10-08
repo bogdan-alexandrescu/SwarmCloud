@@ -1234,13 +1234,16 @@ limited to the roles preflight could read, which is all of them before step 4
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
-**#275's chunking is not yet reflected in the probe script (#276).**
-[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
-still asserts *exactly one* conditioned `projectIamAdmin` binding
-(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
-will find two and stop before asking IAM anything. Filed as #276 rather than
-fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
-brief was terraform/tests/docs only.
+**Preflight checks every chunk, not one binding (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
+one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
+chunk -- and refuses unless each one's expression is exactly
+`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`
+and its list does not name `roles/browser`. A grant is admitted if *any*
+binding admits it, so one chunk with a broader condition (a `|| true`, a
+`hasAny`) or the probe role in its list would make a grant prove nothing; the
+whole expression is matched, and the list is parsed, for that reason. Before
+#276 it asserted exactly one binding and would have stopped at two.
 
 **What it cannot prove:**
 

@@ -20,6 +20,8 @@ tests/unit/worker/test_merge_verdict_runs_no_fix_agent.py.
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from swarm_common.states import TaskState
@@ -186,3 +188,13 @@ def test_the_workflow_read_names_the_skipped_steps(db, client):
 
     listed = client.get("/v1/workflows", headers=auth_header("alice")).json()
     assert listed["workflows"][0]["rollup"]["skipped_steps"] == ["review", "fix"]
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)
