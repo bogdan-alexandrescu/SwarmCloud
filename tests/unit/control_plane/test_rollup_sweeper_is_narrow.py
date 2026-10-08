@@ -66,6 +66,9 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: decision D2 on #780, lane OB3) was added for the swarm-forge-refresh job
 #: OB2 built: it refreshes due connections into their own users' slots, and
 #: submits nothing and moves no task.
+#: The personal-workspace dispatch sweep (docs/workspaces.md §2.2, lane W7
+#: of #847) is called by swarm-tick every 5 minutes: it publishes again the
+#: opaque id of a workspace an admin already approved, and approves nothing.
 #: The `task_finished` push (#748, filed by the owner 2026-10-06) was added
 #: so a MERGE verdict's pull request is opened without a worker: it acts only
 #: on the finished task's own tenant's gated integrator, with that tenant's
@@ -76,6 +79,7 @@ DECIDED = frozenset({
     ("POST", "/v1/admin/repositories/poll"),
     ("POST", "/v1/admin/merges/wake"),
     ("POST", "/v1/admin/forge/refresh"),
+    ("POST", "/v1/admin/workspaces/sweep"),
     ("POST", "/v1/admin/tasks/finished"),
 })
 
