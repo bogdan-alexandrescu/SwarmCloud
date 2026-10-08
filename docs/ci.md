@@ -798,9 +798,19 @@ reads the label of the commit at `main`'s head.
 
 * GitHub evaluates `concurrency:` **before any job**, so nothing a run learns
   -- a label -- can move it out of `release-dev`. `hotfix.yml` is in
-  `hotfix-dev`, runs on every push that would start a release, and its first
-  job, `is this a hotfix`, decides; every other job runs only on its answer.
-  A commit without the label ends there, green, in seconds.
+  the `hotfix-dev` group is on its work jobs only. The workflow runs on every
+  push that would start a release, and its first job, `is this a hotfix`,
+  decides; every other job runs only on its answer. A commit without the
+  label ends there, green, in seconds.
+* **The gate is deliberately outside the group.** GitHub keeps one running
+  plus one pending run per group and cancels the older pending one when a
+  newer arrives. With the group on the workflow, an ordinary push's gate-only
+  run would displace a queued hotfix, which would then silently never run.
+  A job the gate skips never enters the group. The ordering between hotfixes
+  is held by `scripts/lib/release-order.sh`, not by the group.
+* A re-run of an old release, or a dispatch whose SHA is older than
+  `applied.json`, ends green as "superseded" and changes nothing on dev too.
+  A deliberate dev rollback therefore needs the documented path, not a re-run.
 * It runs on `main` only, never on a pull request: workload identity admits
   only `refs/heads/main` (the comment on `application.yml`'s `build images`
   auth step), and a pull request's ref is refused by the pool's condition.

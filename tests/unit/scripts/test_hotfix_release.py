@@ -101,9 +101,28 @@ def test_it_runs_on_main_only_and_never_on_a_pull_request():
     assert ".github/workflows/hotfix.yml" in on["push"]["paths"]
 
 
-def test_it_has_a_concurrency_group_of_its_own_that_never_cancels_a_running_lane():
-    concurrency = _hotfix()["concurrency"]
-    assert concurrency == {"group": "hotfix-dev", "cancel-in-progress": False}, concurrency
+def test_the_concurrency_group_is_on_the_work_jobs_and_never_on_the_gate_or_the_workflow():
+    # An ordinary push's gate-only run must not enter the group: GitHub keeps
+    # one pending run per group, and it would displace a queued hotfix.
+    assert "concurrency" not in _hotfix(), _hotfix().get("concurrency")
+    jobs = _jobs()
+    assert "concurrency" not in jobs["gate"]
+    work = [name for name in jobs if name != "gate"]
+    assert work, "no work jobs"
+    for name in work:
+        assert jobs[name].get("concurrency") == {"group": "hotfix-dev", "cancel-in-progress": False}, name
+    # Every work job runs only on the gate's proceed output: the first
+    # directly, the rest through the chain of needs.
+    assert jobs["images"]["needs"] == ["gate"]
+    assert jobs["images"]["if"] == "needs.gate.outputs.proceed == 'true'"
+
+    def reaches_images(name):
+        needs = jobs[name].get("needs") or []
+        needs = [needs] if isinstance(needs, str) else needs
+        return name == "images" or any(reaches_images(n) for n in needs)
+
+    for name in work:
+        assert reaches_images(name), name
     assert "release-" not in str(_workflow("release.yml")["concurrency"]["group"]).replace("release-${{", "")
 
 

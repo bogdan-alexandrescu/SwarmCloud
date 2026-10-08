@@ -81,13 +81,6 @@ env:
   TF_ROOT: terraform/infra
   TRIVY_VERSION: "0.74.0"
 
-concurrency:
-  # Its own group, so it never waits for `release-dev`. Never cancelled in
-  # progress: a lane half-way through an apply is not one to stop. The order
-  # guard, not this group, keeps it from rolling dev back.
-  group: hotfix-dev
-  cancel-in-progress: false
-
 jobs:
   # -------------------------------------------------------------------------
   # THE GATE. Proceeds only when this commit is a pull request merged into
@@ -139,6 +132,20 @@ jobs:
     name: images and scan (dev, hotfix)
     runs-on: ubuntu-24.04
     needs: [gate]
+    # Its own group, so it never waits for `release-dev`. It is on the WORK
+    # jobs only, never on the workflow and never on `gate`: this workflow runs
+    # on every push to main that touches the release paths, GitHub keeps one
+    # running plus one pending run per group, and a newer arrival cancels the
+    # older pending one. An ordinary push that joined the group would displace
+    # a queued hotfix, which would then never run. A job that `gate` skips
+    # never enters the group. Never cancelled in progress: a lane half-way
+    # through an apply is not one to stop. What keeps two hotfixes from
+    # interleaving or rolling dev back between jobs is the lock and the
+    # applied record of scripts/lib/release-order.sh (the older commit ends
+    # green, superseded), not this group.
+    concurrency:
+      group: hotfix-dev
+      cancel-in-progress: false
     if: needs.gate.outputs.proceed == 'true'
     # actions: read lets the stage find application.yml's run of this commit
     # and download its record (scripts/lib/ci-built-images.sh).
@@ -177,6 +184,9 @@ jobs:
     name: promote (dev, hotfix)
     runs-on: ubuntu-24.04
     needs: [images]
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -209,6 +219,9 @@ jobs:
     name: terraform apply (dev, hotfix)
     runs-on: ubuntu-24.04
     needs: [promote]
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -252,6 +265,9 @@ jobs:
     name: deploy and smoke (dev, hotfix)
     runs-on: ubuntu-24.04
     needs: [images, infrastructure]
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
