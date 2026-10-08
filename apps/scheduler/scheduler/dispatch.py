@@ -195,9 +195,11 @@ class GkeDisk:
     """A GKE worker pod's disk-backed scratch volumes, in GiB, for one resource class.
 
     `readOnlyRootFilesystem` makes these the only places the worker and its
-    toolchain can write: the workspace, /tmp (where `checkpoint.py` builds its
-    archive, up to `max_checkpoint_bytes`, 2 GiB) and HOME (npm, uv and git
-    caches). kubelet sums every disk-backed emptyDir against the pod's ONE
+    toolchain can write: the workspace (the attempt tree, which is also the
+    agent's HOME and TMPDIR -- see GKE_DISK), /tmp (where `checkpoint.py`
+    builds its archive, up to `max_checkpoint_bytes`, 2 GiB, and wherever an
+    agent names /tmp by its literal path) and the WORKER's HOME, /home/swarm.
+    kubelet sums every disk-backed emptyDir against the pod's ONE
     ephemeral-storage limit and evicts the pod -- no checkpoint, no park -- when
     the sum passes it, so the pod's limit IS the sum (`ephemeral_gib`): each
     volume's own sizeLimit binds first, and never the pod's. requests == limits
@@ -219,14 +221,63 @@ class GkeDisk:
 #: renders the GKE manifest for every class and holds sum(sizeLimits) <=
 #: ephemeral-storage <= AUTOPILOT_MAX_EPHEMERAL_GIB.
 #:
-#: standard: 4 + 2 + 4 = 10 (contract request 53, follow-up "the workspace is
-#: sized for the 4Gi disk emptyDir"). On Cloud Run claude-code's 4 GiB workspace
-#: is a tmpfs (`workspace_size_gib`) and /tmp and HOME sit OUTSIDE it, in the
-#: container's in-memory writable layer, bounded only by the 8 GiB memory limit.
-#: On GKE all three are disk, and at a 4 GiB pod limit a full workspace left no
-#: room for the checkpoint archive in /tmp: a run that fits on Cloud Run would be
-#: evicted on GKE the first time it checkpointed. The workspace stays at the
-#: class's 4 GiB, the size it has on Cloud Run; 10 is Autopilot's maximum.
+#: WHAT EACH VOLUME HOLDS, read from the worker (#893). Every value below is
+#: sized from this, not from a formula:
+#:
+#: * workspace -- `<WORKSPACE_ROOT>/<attempt>/` (agent_worker/workspace.py):
+#:   the checkout, `node_modules`, and the agent's HOME and TMPDIR both. The
+#:   runner child's environment is built from an allowlist
+#:   (`Workspace.child_env`, `cliagent.run_cli_agent`, `generic.py`), and it
+#:   sets HOME to `work/` and TMPDIR to the attempt's own `tmp/`, so npm's,
+#:   uv's, pip's and git's caches and every `mkdtemp` land HERE. `restore/`
+#:   stages a downloaded checkpoint here too, before the agent starts.
+#: * tmp -- the WORKER's own temp dir: its TMPDIR is unset, so `checkpoint.py`'s
+#:   `tempfile.TemporaryDirectory` builds the archive here, while the agent
+#:   runs, up to `max_checkpoint_bytes` (2 GiB). The agent reaches this volume
+#:   only by naming `/tmp` literally -- `cd /tmp && git clone ...` -- which no
+#:   environment variable can redirect. That is what evicted
+#:   task_22e763906edd4edcb630 three times on 2026-10-08 (`Usage of EmptyDir
+#:   volume "tmp" exceeds the limit "2Gi"`): at 2 GiB, a literal /tmp write
+#:   and a checkpoint archive shared the same 2 GiB.
+#: * home -- `/home/swarm`, the image's HOME, which only the worker process
+#:   itself inherits: no child it starts keeps it (the runner gets `work/`,
+#:   git gets the attempt's `private/`). It holds the worker's own dotfiles and
+#:   nothing of the agent's, which is why it can give up three of its four GiB.
+#:
+#: WHY NOT POINT THE AGENT'S TMPDIR AND CACHES ELSEWHERE (#893, option a).
+#: They are already on the workspace volume, as above, and the caches are left
+#: out of every checkpoint (`checkpoint.py`, `.cache`, `.npm`,
+#: `**/node_modules`). Setting TMPDIR/TMP/TEMP, npm_config_cache,
+#: XDG_CACHE_HOME, UV_CACHE_DIR or PIP_CACHE_DIR again would move nothing, and
+#: none of them reaches a literal `/tmp`. Only room on the `tmp` volume does.
+#:
+#: HOW GKE FAILS WHEN A VOLUME FILLS, compared with Cloud Run. Cloud Run's
+#: workspace is a memory-medium tmpfs with a size (`workspace_size_gib`): a
+#: write past it fails in the writing process with ENOSPC, and the worker
+#: survives to checkpoint and report it. A disk emptyDir's sizeLimit is NOT a
+#: filesystem size: the write succeeds, kubelet's eviction manager notices on
+#: its next scan, and the whole pod is evicted -- no ENOSPC, no checkpoint, no
+#: park, the Job Failed. That cannot be made in-process on Autopilot (a
+#: memory-medium /tmp would be charged to the 8 GiB memory limit and OOM-kill
+#: the agent instead). What this layout does is make the limit hard to reach;
+#: what the reconciler does when it is reached anyway is name the eviction and
+#: retry it at most once (`reconciler.detect.detect_evicted`).
+#:
+#: standard: workspace 5 + /tmp 4 + HOME 1 = 10, Autopilot's maximum (#893).
+#:   It was 4 + 2 + 4 (contract request 53).
+#:   - /tmp 4: the 2 GiB checkpoint archive (`max_checkpoint_bytes`) plus 2 GiB
+#:     an agent can write under a literal /tmp while one is being built, and 4
+#:     when none is. The checkpoint cap still fits on its own:
+#:     tests/unit/control_plane/test_gke_workspace_fits.py holds tmp >= the cap.
+#:   - workspace 5: one more than Cloud Run's 4 GiB tmpfs (the test holds it no
+#:     smaller), because on GKE it ALSO carries the agent's TMPDIR and caches,
+#:     which on Cloud Run sit in the in-memory writable layer outside it.
+#:     task_5ccac63ae3724e72b5cd was evicted on the 4 GiB workspace once on
+#:     2026-10-08.
+#:   - HOME 1: what is left. It holds the worker's own files only (above).
+#:   On Cloud Run claude-code's /tmp and HOME sit in the container's in-memory
+#:   writable layer, bounded only by the 8 GiB memory limit; on GKE all three
+#:   are disk, and their sum is the pod's ephemeral-storage limit.
 #:
 #: browser: 4 + 2 + 2 = 8, the class's disk_gib and the pod limit it always had.
 #: Owner decisions 2026-10-07 (contract request 53): it was workspace 8 + /tmp 2 +
@@ -234,17 +285,18 @@ class GkeDisk:
 #: evicted before any one volume was full; then 5 + 1 + 2, which left /tmp below
 #: the checkpoint cap. /tmp must hold the worker's largest checkpoint archive
 #: (agent_worker/config.py max_checkpoint_bytes = 2 GiB), so /tmp is 2 and the
-#: workspace gives up the GiB: 4 + 2 + 2.
+#: workspace gives up the GiB: 4 + 2 + 2. Left as the owner set it: #893 is
+#: claude-code's eviction, and browser's numbers are a decision of their own.
 #:
-#: large: 4 + 2 + 4 = 10, standard's layout. No GKE profile can reach it --
+#: large: 5 + 4 + 1 = 10, standard's layout. No GKE profile can reach it --
 #: none is `large`, and a step's resource_class override may only shrink
 #: (swarm_api.validation.validate_resource_class_override) -- but the manifest
 #: renders any class it is given, and its disk_gib of 16 alone is past what
 #: Autopilot admits, so a pod sized from it would never start.
 GKE_DISK: dict[str, GkeDisk] = {
-    "standard": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
+    "standard": GkeDisk(workspace_gib=5, tmp_gib=4, home_gib=1),
     "browser": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=2),
-    "large": GkeDisk(workspace_gib=4, tmp_gib=2, home_gib=4),
+    "large": GkeDisk(workspace_gib=5, tmp_gib=4, home_gib=1),
 }
 
 
