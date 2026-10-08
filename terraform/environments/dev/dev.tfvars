@@ -543,6 +543,10 @@ quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 # admin_pool_users below instead. Do not put it back.
 admin_users = ["bogdan@saga.xyz"]
 
+# The protected owner (docs/workspaces.md §6.5, owner 2026-10-08): no other
+# admin can remove this person's admin rights.
+platform_owner = "bogdan@saga.xyz"
+
 # The verification gate's ONE admin route, by owner decision on 2026-09-24.
 #
 # scripts/race-test.sh narrows runner:mock to one slot to force contention, and

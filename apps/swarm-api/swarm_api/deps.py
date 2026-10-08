@@ -17,6 +17,7 @@ from fastapi import Depends, Header, Request
 
 from swarm_common.models import utcnow
 
+from .admins import build_admin_roles
 from .auth import (
     TENANT_HEADER,
     TENANT_QUERY,
@@ -177,7 +178,12 @@ def build_context(
     # IAP-protected resource anywhere, so "not configured" must mean "not used"
     # rather than "used without the check".
     iap = IapAssertionVerifier(settings.iap_audiences)
-    authenticator = Authenticator(settings, verifier, groups, iap=iap)
+    # Admin roles in Firestore (docs/workspaces.md §6.5), beside the
+    # configuration fallback the authenticator still reads.
+    authenticator = Authenticator(
+        settings, verifier, groups, iap=iap,
+        admin_roles=build_admin_roles(db, settings, now=now),
+    )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's
     # pull request with them (#352), and handed to the context as the same two.
