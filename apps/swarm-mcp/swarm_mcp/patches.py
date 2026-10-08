@@ -427,6 +427,20 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     return done
 
 
+def _git_dir(repo: Path) -> Path:
+    """The repository's git directory, as git itself resolves it (#872).
+
+    Not `repo / ".git"`: in a linked worktree (`git worktree add`) or a
+    submodule `.git` is a FILE pointing elsewhere, and writing the incoming
+    patch under it raised `NotADirectoryError` -- measured 2026-10-08,
+    recovering task_6a0c9afdbaea449eb53d's work. Relative answers are
+    relative to `repo`.
+    """
+    out = _git(repo, "rev-parse", "--git-dir").stdout.strip()
+    path = Path(out)
+    return path if path.is_absolute() else repo / path
+
+
 def apply_patch(patch: bytes, repo: Path, *, task_id: str = "") -> ApplyResult:
     """Apply one patch with a three-way fallback. Returns rather than raises.
 
@@ -435,7 +449,7 @@ def apply_patch(patch: bytes, repo: Path, *, task_id: str = "") -> ApplyResult:
     whole repository in front of them, rather than as an exception that throws
     away the four patches that did apply.
     """
-    tmp = repo / ".git" / "swarm-incoming.patch"
+    tmp = _git_dir(repo) / "swarm-incoming.patch"
     tmp.write_bytes(patch)
     try:
         done = subprocess.run(

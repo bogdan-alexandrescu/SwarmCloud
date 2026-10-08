@@ -547,10 +547,29 @@ reads FAILED through the ordinary rollup, and `on_step_failure` acts on it
 as on any failed step. A step that opens no pull request still SUCCEEDS when
 it changes nothing, because for a contributor, a review or a `collect` step
 that is a correct result. The guard also exempts a step whose verdict gate
-kept its agent from running, and a step that declared `allow_empty_diff` and
-changed nothing ([below](#an-empty-diff-can-succeed-allow_empty_diff)). A forge that cannot be reached at all is not a
+kept its agent from running, and a step that declared `allow_empty_diff`, or
+wrote `verification.md`, and changed nothing ([below](#an-empty-diff-can-succeed-allow_empty_diff)). A forge that cannot be reached at all is not a
 refusal, and that step reads as it did before. Until contract request 46 is
 decided, the end cause is `outputs_missing`, the closest existing one.
+
+**A pull-request step whose push failed is FAILED (#872).** Measured
+2026-10-08 on `task_6a0c9afdbaea449eb53d`: the agent left 18 files
+uncommitted and exited 0, the worker committed them, and the push failed with
+`push failed with exit 1: error: failed to push some refs`. The step and its
+workflow read SUCCEEDED, no branch or pull request existed, and the work was
+found by chance in `swarm-work.patch` six hours later. Now, when git fails the
+publish of a step whose job is to open a pull request (the same three kinds as
+above) -- the push, or the commit, fold or authorship check before it -- the
+publish records `result_summary.git.publish_failed: true` and the step ends
+FAILED. Its `last_error` begins `publish_failed:`, quotes git's error, and
+names the uploaded `swarm-work.patch` uri, so the work can be recovered with
+`swarm_apply`; with no patch uploaded it says why and that the work is in the
+attempt's final checkpoint. It is not retried: a refused push meets the same
+refusal on the same branch. The end cause is `outputs_missing`, as for
+`published_nothing:`, because the frozen contract has no publish-failed cause
+and no new `TaskState` was added for it. A step that publishes nothing by
+design -- a review, an `integrate` contributor, a `collect` step, a step with
+no repository -- is unaffected.
 
 ## An empty diff can succeed: `allow_empty_diff`
 
@@ -587,6 +606,19 @@ says which it is.
 * **The flag is stored where the worker reads it**, `metadata.dispatch.
   allow_empty_diff`, inside the block the spec signature covers, and served in
   the task's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
+
+**Or the agent says why: `verification.md` (Proposal J, 2026-10-08).** A
+step's author cannot always know in advance that the work may already be done:
+an issue run whose issue was fixed on main by another lane is the common case.
+So an agent that changes nothing AND writes `$SWARM_ARTIFACTS_DIR/
+verification.md` gets the same result the flag gives -- SUCCEEDED,
+`result_summary.no_change: true` -- whatever the step's `allow_empty_diff`
+says, and the file's text (masked, cut at 4,000 bytes) is kept as
+`result_summary.no_change_reason`. The file is uploaded whole like any other
+artifact. The evidence is the price: with no change and no `verification.md`
+(or a blank one), the `empty_diff` or `published_nothing:` failure above is
+unchanged. "No change" is the same harvest measurement as for the flag, and an
+integrator still owed its contributors' merge is still never `no_change`.
 
 ### The steps that needed the change are SKIPPED
 

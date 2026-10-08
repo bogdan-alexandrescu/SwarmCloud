@@ -958,6 +958,14 @@ def _session_of(parsed: Any) -> str | None:
 #: How many repair turns a step may take. Two: a third start rarely succeeds
 #: where two named failures did not, and every start costs a model turn.
 REPAIR_MAX_TURNS = 2
+#: A turn asking ONLY for the pull request's title is given once (Proposal B,
+#: owner decision 2026-10-08). After it the worker fails a step that has no
+#: other title, or titles the pull request from its issue with a visible
+#: `[title missing] ` prefix (`lifecycle.Worker._generated_pull_request_title`).
+TITLE_REPAIR_MAX_TURNS = 1
+#: `lifecycle.PR_TITLE_FILE`; named here because the runner never imports the
+#: worker.
+PR_TITLE_NAME = "pr-title.txt"
 
 #: At most this many items of each kind are named in a prompt or recorded per
 #: turn. The runner's whole output reaches `result_summary.runner.output`
@@ -1000,6 +1008,24 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
     except OSError as exc:
         return [], f"{type(exc).__name__}: the scan could not run"
     return [f"{hit.path}:{hit.line} {hit.rule}" for hit in hits], None
+
+
+#: THE ONE PLATFORM PARAGRAPH EVERY claude-code AND codex PROMPT WITH A
+#: REPOSITORY ENDS WITH (Proposal A, owner decision 2026-10-08). The observer
+#: read 31 answers on 2026-10-08 that said no pull request existed because the
+#: agent had no GitHub credentials -- true of the agent, false of the step: the
+#: worker pushes the committed branch and opens the pull request after the
+#: agent exits. Fixed text, so it is the same in every prompt and a test can
+#: hold it; it carries no rate-limit or credential marker
+#: (`_RATE_LIMIT_MARKERS`, `_CREDENTIAL_MARKERS`) for a CLI that echoes it.
+PUBLISH_PARAGRAPH = (
+    "You do not push or open a pull request; the worker publishes your committed "
+    "branch. Commit your work. Write the pull request's title (one line) to "
+    "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
+    "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
+    "request exists because you lack GitHub credentials: the worker opens it "
+    "after you finish."
+)
 
 
 def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str) -> str:
@@ -1207,6 +1233,11 @@ def run_cli_agent(
         stdin_prompt = resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip())
     else:
         stdin_prompt = expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged)
+        if cwd != ctx.work_dir:
+            # A task with a repository (Proposal A, owner decision 2026-10-08):
+            # the platform paragraph, last. Not on a resume: the session
+            # already holds it.
+            stdin_prompt = f"{stdin_prompt}\n\n{PUBLISH_PARAGRAPH}"
     argv += spec.stdin_arg
     # `run_child`'s `child started` line prints the argv (the PR #229 review:
     # this process's stderr is served by `/logs`) and the prompt's size only.
@@ -1617,6 +1648,15 @@ def run_cli_agent(
                 error=repair_scan_error,
             )
         while missing or flagged:
+            if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged \
+                    and list(missing) == [PR_TITLE_NAME]:
+                # Only the title is still missing: it had its one follow-up
+                # turn (Proposal B), and the worker decides the rest.
+                log.warning(
+                    f"{PR_TITLE_NAME} is still missing after its follow-up turn; "
+                    "the worker's own checks decide",
+                )
+                break
             if repair_turns >= REPAIR_MAX_TURNS:
                 log.warning(
                     f"the repair turns did not clear every check; after {REPAIR_MAX_TURNS} "
