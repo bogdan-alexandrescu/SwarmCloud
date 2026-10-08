@@ -51,6 +51,9 @@ NEEDS_ID_TOKEN = {
     "security.yml": {"images"},
     "iam-refusal-probe.yml": {"probe"},
     "release.yml": {"build", "promote", "infrastructure", "infrastructure-iam", "deploy", "acceptance"},
+    # The hotfix lane (owner decision 2026-10-08, observer proposal H): its
+    # `gate` reads labels with no Google identity.
+    "hotfix.yml": {"images", "promote", "infrastructure", "deploy"},
 }
 
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"
