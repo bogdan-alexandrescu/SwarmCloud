@@ -65,7 +65,7 @@ from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
-from .store import Store
+from .store import Store, derived_service_account
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
@@ -110,6 +110,7 @@ from .validation import (
     workflow_label,
 )
 from .waker import SchedulerWaker, ring
+from .workspaces import Workspaces
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +151,7 @@ class SubmissionService:
         signer: SpecSigner | None = None,
         forge_tokens: Any = None,
         forge_writer: Any = None,
+        workspaces: Workspaces | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -165,6 +167,13 @@ class SubmissionService:
         #: `continuation.resolve_merge_pr`). Neither builds a client until used.
         self._forge_tokens = forge_tokens
         self._forge_writer = forge_writer
+        #: Personal workspaces (docs/workspaces.md, #847 W1): the submission
+        #: gate, behind WORKSPACE_GATE, which is OFF unless the environment
+        #: says on (`workspaces.gate_from_env`). Off, it reads and refuses
+        #: nothing.
+        self.workspaces = workspaces if workspaces is not None else Workspaces(
+            getattr(store, "db", None), now=now,
+            console_url=getattr(settings, "console_url", ""))
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -284,6 +293,20 @@ class SubmissionService:
                 "and remove it from `secret_admin_members`."
             )
 
+        # The People screen's sighting (docs/workspaces.md §6.4), here and not
+        # in `scope_for`: a read path must not write (see there), and this is
+        # the entry every console load (`GET /v1/tenants/me`) and every
+        # submission already takes. At most once per ten minutes per person.
+        self.workspaces.touch_person(ctx)
+        if self.workspaces.withholds_tenant(ctx):
+            # WORKSPACE_GATE on: a person's tenant is made by the workspace job
+            # (docs/workspaces.md A8), never written here on first sight. Until
+            # then they may still sign in and look around, so the read paths
+            # get the tenant as it would be, unwritten, and every submission
+            # path refuses it in `workspace_gate`.
+            existing = self._store.get_tenant(ctx.tenant_id)
+            if existing is None:
+                return self._unwritten_tenant(ctx)
         tenant = self._store.ensure_tenant(
             ctx.tenant_id,
             # The TENANT's principal (the group, for a group tenant), never the
@@ -301,6 +324,40 @@ class SubmissionService:
         if not tenant.enabled:
             raise Forbidden(f"tenant {tenant.tenant_id!r} is disabled")
         return tenant
+
+    def _unwritten_tenant(self, ctx: AuthContext) -> Tenant:
+        """The personal tenant `Store.ensure_tenant` would write, NOT written.
+
+        The same fields by the same naming rule, so a read of it says what the
+        workspace job will make. store.py is not lane W1's file; a write-free
+        mode there would replace this."""
+        tenant_id = ctx.tenant_id
+        return Tenant(
+            tenant_id=tenant_id,
+            kind="user",
+            principal=(ctx.tenant_principal or ctx.email).strip().lower(),
+            created_at=self._now(),
+            display_name=tenant_id,
+            max_active=self._settings.core.default_tenant_max_active,
+            capacity_units=self._settings.core.default_tenant_capacity_units,
+            service_account=derived_service_account(
+                tenant_id, project_id=self._settings.project_id,
+                prefix=self._settings.tenant_service_account_prefix,
+            ),
+            gcs_prefix=f"gs://{self._settings.core.artifact_bucket}/tenants/{tenant_id}",
+            namespace=f"{self._settings.tenant_namespace_prefix}{tenant_id}",
+        )
+
+    def workspace_gate(self, ctx: AuthContext, tenant: Tenant) -> None:
+        """docs/workspaces.md §5: a person's submission into their own tenant
+        is refused until its workspace is `ready` and it has a Claude account.
+
+        Called FIRST in both submission methods, right after `tenant_for`,
+        before any compile, signature or write, so a refused workflow creates
+        no workflow document, no task and no event (§5.3). A group tenant, a
+        service account and a listed scoped identity are never judged (WD7).
+        With WORKSPACE_GATE off it returns at once."""
+        self.workspaces.check(ctx, tenant)
 
     def scope_for(self, ctx: AuthContext) -> str:
         """The tenant id this caller may READ, with the collision check applied.
@@ -448,6 +505,7 @@ class SubmissionService:
         runs repository indexing with the tenant token."""
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
+        self.workspace_gate(ctx, tenant)
         now = self._now()
         try:
             # Inside the try so a refused dispatch is counted like every other
@@ -519,6 +577,8 @@ class SubmissionService:
                 "continues_task; it cannot start new work"
             )
         tenant = self.tenant_for(ctx)
+        # Before compiling any step: the workflow is admitted or refused whole.
+        self.workspace_gate(ctx, tenant)
         integrator_step_id: str | None = None
         try:
             # The WORKFLOW's own metadata, up front and inside this try. It is

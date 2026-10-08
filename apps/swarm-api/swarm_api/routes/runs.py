@@ -193,6 +193,12 @@ def _approve(
     """
     runs = _runs(ctx)
     compile_plan(run)
+    # docs/workspaces.md §5.3 (#847 W1): the submission gate, asked BEFORE the
+    # claim, so a run whose submitter's workspace is not ready is refused and
+    # stays awaiting approval -- approving again once it is ready works --
+    # rather than being claimed and then FAILED by `submit_workflow`'s
+    # refusal below. Off (WORKSPACE_GATE), it returns at once.
+    ctx.submissions.workspace_gate(auth, ctx.submissions.tenant_for(auth))
     approved = runs.transition(
         tenant_id, run.id, RunState.APPROVED, by=by, digest=digest, from_states=_PLANNED_ONLY,
         patch=lambda current: {

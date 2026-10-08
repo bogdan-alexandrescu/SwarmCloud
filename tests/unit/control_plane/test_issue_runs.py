@@ -1359,3 +1359,19 @@ def _members_hold_grants(db):
     from .conftest import TEST_REPOSITORIES, grant_members
 
     grant_members(db, *TEST_REPOSITORIES)
+
+
+def test_a_plan_approval_refused_by_the_workspace_gate_leaves_the_run_planned(
+        api_context, client, db, objects):
+    # docs/workspaces.md §5.3 (#847 W1): the gate is asked before the claim, so
+    # a person whose workspace is not ready is refused and can approve again
+    # once it is -- not left with a FAILED run.
+    run = _planned(client, db, objects, user="carol")
+    api_context.submissions.workspaces.gate = True
+    db.docs["workspaces/u-carol"] = {"tenant_id": "u-carol", "workspace_id": "w-3f9a2c",
+                                     "state": "requested", "request_id": "r"}
+    response = _approve(client, run["id"], run["plan_digest"], user="carol")
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "WORKSPACE_NOT_READY"
+    assert _run(client, run["id"], "carol").json()["run"]["state"] == "PLANNED"
+    assert not _docs(db, "workflows")

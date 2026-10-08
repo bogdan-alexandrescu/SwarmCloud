@@ -43,6 +43,7 @@ from .routes import (
     tasks,
     tenants,
     workflows,
+    workspaces,
 )
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -128,6 +129,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The onboarding checklist (docs/onboarding.md §2, lane OB1): derived on
     # each read from the records above, read-only, the caller's own tenant.
     app.include_router(onboarding.router)
+    app.include_router(workspaces.router)
     # Connect GitHub as yourself (docs/onboarding.md §3.2, lane OB3):
     # authorise, exchange, disconnect, and the refresh sweep the
     # swarm-forge-refresh job calls. No route returns a token.
