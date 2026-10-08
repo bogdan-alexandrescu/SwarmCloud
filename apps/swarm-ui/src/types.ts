@@ -4661,6 +4661,8 @@ export type IssueRunState =
   | 'FAILED'
   | 'REJECTED'
   | 'CANCELLED'
+  /** The planner found the issue not ready and said why (`IssueRun.not_ready`). Terminal. */
+  | 'NOT_READY'
 
 /** `IssueRef.to_dict()`: the reference in its short form and the two URLs. */
 export interface IssueRefDoc {
@@ -4859,6 +4861,21 @@ export interface IssueRun {
    * a merge's `Closes #N`.
    */
   issue_closed?: boolean | null
+  /** The planner's NOT_READY verdict (`issueruns.NotReadyVerdict`), masked; null on any other run. */
+  not_ready?: RunNotReady | null
+  /** Why an `auto` run's approval waits, e.g. `territory_overlap: run_<id>`; null when nothing holds it. */
+  hold?: string | null
+  /** The member a run the issue sweeper created (`created_by: issue-sweep`) submits as. */
+  on_behalf_of?: string | null
+}
+
+/** `IssueRun.to_api().not_ready`: why the planner found the issue not ready. */
+export interface RunNotReady {
+  /** `already_done`, `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or `other`; null when unsaid. */
+  kind: string | null
+  reason: string | null
+  /** What would make it ready, one per entry. */
+  needs: string[]
 }
 
 /** `IssueRun.to_api().pull_request`. */

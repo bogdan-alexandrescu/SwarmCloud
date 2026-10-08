@@ -303,7 +303,11 @@ def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
 # --------------------------------------------------------------------------
 
 def test_the_machine_is_the_one_454_names():
-    assert RUN_TRANSITIONS[RunState.PLANNING] == {RunState.PLANNED, RunState.FAILED, RunState.CANCELLED}
+    # NOT_READY: the planner's verdict instead of a plan (the issue sweeper,
+    # owner decisions 2026-10-08).
+    assert RUN_TRANSITIONS[RunState.PLANNING] == {
+        RunState.PLANNED, RunState.NOT_READY, RunState.FAILED, RunState.CANCELLED,
+    }
     # FAILED: an `auto` run whose creator left the tenant before the tick approved it.
     assert RUN_TRANSITIONS[RunState.PLANNED] == {
         RunState.PLANNED, RunState.APPROVED, RunState.REJECTED, RunState.CANCELLED, RunState.FAILED,
@@ -319,7 +323,7 @@ def test_the_machine_is_the_one_454_names():
     }
     assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
     assert TERMINAL_RUN_STATES == {
-        RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED,
+        RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED, RunState.NOT_READY,
     }
     for state in TERMINAL_RUN_STATES:
         assert RUN_TRANSITIONS[state] == frozenset()
