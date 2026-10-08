@@ -32,6 +32,15 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      # `build images` rebuilds only the images a commit changed (docs/ci.md
+      # "Main builds only the images a commit changed"). This rebuilds every
+      # one, for when a reused digest is suspect or a base image's patch is
+      # wanted before the seven-day limit brings it.
+      full_build:
+        description: "Rebuild every image instead of reusing the digests of unchanged ones"
+        type: boolean
+        default: false
 
 # Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
 # `id-token: write` lets a job mint a Google identity token through workload
@@ -1576,8 +1585,11 @@ jobs:
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
+    # actions: read lists this workflow's earlier runs on main and downloads
+    # the newest ancestor's `images-dev` record (ci-built-images.sh --previous).
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -1588,6 +1600,17 @@ jobs:
       ENVIRONMENT: dev
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The whole history: --incremental diffs this commit against the
+          # one each reused digest was built from, and --previous tells an
+          # ancestor's run from a later merge's by git. A one-commit clone can
+          # do neither, and would rebuild everything every time.
+          fetch-depth: 0
+
+      # uv.lock precision: a Python image is rebuilt on a uv.lock change only
+      # if its own pruned `uv export` exports something different. Without uv
+      # the script cannot tell, and rebuilds it.
+      - uses: astral-sh/setup-uv@v7
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -1606,7 +1629,61 @@ jobs:
         # tags it exactly as this job would have. This used to be
         # `pr-<run>-<sha>` -- a pull-request name for a build that only ever
         # runs on main.
-        run: ./scripts/build-images.sh
+        #
+        # ONLY WHAT THE COMMIT CHANGED (owner decision 2026-10-08, observer
+        # proposal H; docs/ci.md). Measured that day: this job rebuilt all 9
+        # images on every push, 9.0-10.4 min (the base 5m04, then the
+        # browser 3m21; a service image 2m09-2m42), and a uv.lock change
+        # alone reached 7 of 9. --previous finds the newest record this job
+        # made for an ancestor of this commit; --incremental rebuilds the
+        # images a diff from it reaches and gives every other image's
+        # previous digest this commit's tag. The record it uploads below
+        # still names all 9 digests, so the release, both scans and the
+        # deploy see a whole build. Exit 3 (nothing to build on) and exit 1
+        # (the API could not be read) both mean a full build, said in the
+        # log and in the summary.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.full_build && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          previous="build/previous-images-${ENVIRONMENT}.json"
+          if [ "${FULL_BUILD}" = "true" ]; then
+            ./scripts/build-images.sh --incremental none --full-build "the full_build input was set on this dispatch"
+            exit 0
+          fi
+          rc=0
+          ./scripts/lib/ci-built-images.sh --previous --sha "${GITHUB_SHA}" \
+            --environment "${ENVIRONMENT}" --out "${previous}" || rc=$?
+          if [ "${rc}" -eq 0 ]; then
+            ./scripts/build-images.sh --incremental "${previous}"
+          elif [ "${rc}" -eq 3 ]; then
+            ./scripts/build-images.sh --incremental none
+          else
+            ./scripts/build-images.sh --incremental none --full-build "the previous build could not be read from the GitHub API (exit ${rc})"
+          fi
+
+      - name: say which images were rebuilt and which reused
+        # After a failed build there is no manifest, and nothing to say.
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          manifest="build/images-${ENVIRONMENT}.json"
+          [ -f "${manifest}" ] || exit 0
+          {
+            echo "### Images for \`$(jq -r .tag "${manifest}")\`"
+            echo
+            jq -r '
+              if (.incremental.full_build // null) != null then "Every image rebuilt: \(.incremental.full_build)."
+              elif (.incremental.previous // null) != null then "Unchanged images reuse the digests built for an ancestor; the previous build was of `\(.incremental.previous[0:12])`."
+              else "Every image rebuilt." end' "${manifest}"
+            echo
+            echo "| image | | digest | built from |"
+            echo "|---|---|---|---|"
+            jq -r '.images[] | "| \(.name) | \(if .reused then "reused" else "**rebuilt**" end) | `\(.digest[7:19])` | `\((.built_from // "")[0:12])` |"' "${manifest}"
+            echo
+            echo "$(jq '[.images[] | select(.reused | not)] | length' "${manifest}") rebuilt, $(jq '[.images[] | select(.reused)] | length' "${manifest}") reused, of $(jq '.images | length' "${manifest}")."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: record the digests for the release
         uses: actions/upload-artifact@v6
