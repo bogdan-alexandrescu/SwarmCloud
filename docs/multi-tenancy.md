@@ -528,6 +528,19 @@ Until 2026-09-25 the script wrote `capacity_units` and Terraform wrote
 `max_active`, so a pool one of them created before then can hold the larger
 value; setting either limit through the admin route rewrites it.
 
+**The tenant ceiling route sets both, so the ceiling is the number typed.**
+`PUT /v1/admin/limits/tenant/{id}` — what the console's Pool limits editor
+sends for a `tenant:` pool — writes `max_active` AND `capacity_units` to the
+requested limit, and the pool becomes exactly that limit. On 2026-10-07 it
+wrote `max_active` alone: the owner raised `smoke` 8 -> 20, `capacity_units`
+stayed 8, the min() held the pool at 8, and the route answered 200 with a
+pool of 8 that the console called saved. The owner decided the ceiling is one
+number. The min() rule stays for `PUT /v1/admin/tenants/{id}/limits`, which
+sets the two separately, and the ceiling route's response carries
+`capped_by` (`capacity_units`, `max_active`, …, or null) so the console can
+say "Saved, but the ceiling is still N" instead of a success when a pool did
+not move.
+
 ---
 
 ## 6. The personal fallback tenant

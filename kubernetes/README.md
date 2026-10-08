@@ -40,11 +40,13 @@ which renders them with the real renderer and asserts the properties that matter
 kubernetes/render.py tenant --tenant eng
 
 # Dry run against the cluster (reads its network, prints a diff and what
-# --confirm will report for each object), then apply.
+# --confirm will report for each object), then apply. --confirm then runs the
+# network parity check on swarm-tenant-eng's egress policy and fails if it
+# does not match the live cluster.
 kubernetes/apply.sh --tenant eng
 kubernetes/apply.sh --tenant eng --confirm
 
-# Afterwards: every applied egress policy against the live cluster's network.
+# The sweep: every applied egress policy against the live cluster's network.
 scripts/lib/check-cluster-network-parity.sh --require-live
 
 # The cluster-scoped admission policies, once per cluster.

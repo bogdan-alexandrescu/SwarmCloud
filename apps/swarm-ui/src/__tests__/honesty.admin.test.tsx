@@ -150,7 +150,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       ],
     })
     api.loadCapacity.mockResolvedValueOnce(ok(capacity())).mockResolvedValueOnce(ok(after))
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 
@@ -182,7 +182,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     api.loadCapacity
       .mockResolvedValueOnce(ok(capacity()))
       .mockReturnValueOnce(new Promise<Result<Capacity>>((resolve) => (land = resolve)))
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 
@@ -204,7 +204,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       status: 'error',
       error: { kind: 'upstream_degraded', httpStatus: 503, code: 'unavailable', message: 'Firestore did not answer.' },
     })
-    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
+    api.setPoolLimit.mockResolvedValue({ status: 'ok', data: { pool: pool('global', { hard_limit: 25, effective_limit: 25 }) }, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
     await limitsDrawn()
 

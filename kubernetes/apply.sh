@@ -57,8 +57,13 @@
 # cluster's OWN network -- pod range, service range, kube-dns Service IP,
 # NodeLocal DNSCache address -- read from the cluster this script just checked
 # (kubernetes/cluster-network.sh), never typed and never taken from the command
-# line. Afterwards, scripts/lib/check-cluster-network-parity.sh compares every
-# applied copy with the live cluster. Likewise the Kubernetes service accounts
+# line. Afterwards, scripts/lib/check-cluster-network-parity.sh compares the
+# applied copy with the live cluster: a tenant `--confirm` RUNS it, with
+# --require-live, the same context and --cluster, scoped to the namespace just
+# applied, and exits non-zero when it fails -- the apply happened, but the
+# tenant's egress does not match the cluster's network (#76). Scoped, so a stale
+# NEIGHBOUR cannot fail this tenant's apply; the whole-cluster sweep is printed.
+# A dry run only prints the command. Likewise the Kubernetes service accounts
 # the tenant GSA binds for Workload Identity are read from the GSA's IAM policy
 # and passed as --bound-ksa: the older `swarm-worker` account is rendered only
 # where it is bound (kubernetes/render.py LEGACY_KSA_NAME).
@@ -554,10 +559,24 @@ preview_verdicts() {
   fi
 }
 
+# THE NETWORK PARITY CHECK, after a tenant apply. The context is the one this
+# script resolved and checked above (`CURRENT`), passed explicitly so a
+# current-context changed in between cannot redirect the read, and --cluster is
+# this run's. Scoped to the tenant's namespace (`render.py identity`).
+PARITY="${REPO}/scripts/lib/check-cluster-network-parity.sh"
+PARITY_ARGS=()
+if [[ "${MODE}" == "tenant" ]]; then
+  PARITY_ARGS=(--require-live --context "${CURRENT}" --cluster "${CLUSTER}" --namespace "${TENANT_NAMESPACE}")
+fi
+
 if [[ "${CONFIRM}" -ne 1 ]]; then
   printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" \
     diff -f - || true      # `diff` exits 1 when there IS a difference
   preview_verdicts
+  if [[ "${MODE}" == "tenant" ]]; then
+    dim "  --confirm then compares ${TENANT_NAMESPACE}'s egress policy with the live cluster:"
+    dim "    scripts/lib/check-cluster-network-parity.sh ${PARITY_ARGS[*]}"
+  fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
 fi
@@ -573,9 +592,16 @@ fi
 printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" apply -f -
 ok "applied"
 if [[ "${MODE}" == "tenant" ]]; then
-  # Not run from here: it checks EVERY tenant namespace, and a stale neighbour
-  # must not turn this tenant's successful apply into a failure that
-  # register-tenant.sh would then report as "not isolated".
-  dim "  compare every applied egress policy with the live cluster:"
-  dim "    scripts/lib/check-cluster-network-parity.sh --require-live${CONTEXT:+ --context ${CONTEXT}}"
+  # RUN, not printed (#76): printed, the comparison happened only when someone
+  # remembered to. Scoped to this tenant's namespace, so a stale neighbour
+  # cannot turn this apply into a failure register-tenant.sh would report as
+  # "not isolated" -- and a mismatch in THIS namespace is exactly that: its
+  # egress policy does not match the network its workers resolve names on.
+  info "comparing ${TENANT_NAMESPACE}'s egress policy with the live cluster"
+  if ! "${PARITY}" "${PARITY_ARGS[@]}"; then
+    die "applied, but ${TENANT_NAMESPACE}'s egress policy does not match the live cluster's network
+       (scripts/lib/check-cluster-network-parity.sh, above). Its workers may not resolve names."
+  fi
+  dim "  every tenant namespace, not just this one:"
+  dim "    scripts/lib/check-cluster-network-parity.sh --require-live --context ${CURRENT} --cluster ${CLUSTER}"
 fi

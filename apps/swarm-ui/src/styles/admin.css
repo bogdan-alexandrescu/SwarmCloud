@@ -72,6 +72,11 @@
    outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
    own change back to them, not a fault. */
 .adm-over { display: inline-block; padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+/* WHAT A SAVE DID, read from its response (2026-10-07): `tenant:smoke ceiling
+   8 → 20`, or, in the warn colour, `Saved, but the ceiling is still 8: …`. It
+   takes a line of its own under `edit`, so its length never moves `edit`. */
+.adm-saved-what { display: block; flex-basis: 100%; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.adm-saved-what.warn-text { color: var(--warn); }
 .adm-family tr.is-editing > th[scope="row"],
 .adm-family tr.is-editing > td { background: var(--sk-acs); }
 @media (max-width: 560px) {
