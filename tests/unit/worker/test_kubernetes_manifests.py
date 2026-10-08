@@ -2378,10 +2378,13 @@ def test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops(argv):
 # The step-spec verification keys (contract request 34, section 3)
 # ---------------------------------------------------------------------------
 #
-# A GKE worker verifies swarm-api's signature with public keys from the
-# `swarm-spec-verify-keys` ConfigMap in its tenant's namespace, mounted
-# read-only. They never go in the pod's `env:` (a template placeholder away
-# from a tenant-writable copy), and the fact that matters is the ABSENCE of a
+# A GKE worker verifies swarm-api's signature with public keys from its
+# Job's `env:` -- the scheduler's own settings, since 2026-10-08, held in
+# tests/unit/control_plane/test_spec_signing_dispatch_env.py -- or, as the
+# fallback, the `swarm-spec-verify-keys` ConfigMap in its tenant's namespace,
+# mounted read-only. No TEMPLATE carries them (a placeholder away from a
+# tenant-writable copy): the render below, and a dispatcher whose settings
+# have none, set no SPEC_* name. The fact that matters is the ABSENCE of a
 # write grant on that ConfigMap to anything the tenant runs as: the worker
 # Role, any subject bound to it, and the tenant's GSA named either way a
 # Kubernetes subject can name it -- by email AND by numeric uniqueId, because

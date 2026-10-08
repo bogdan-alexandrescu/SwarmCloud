@@ -7664,6 +7664,26 @@ it were found wrong while building it (#353, #354), and one decision was added:
    as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
    loudly.
 
+### Addendum 2026-10-08: the GKE Job carries the keys in its environment
+
+Owner decision, 2026-10-08. The "not inlined into the pod's `env:`" design
+above is reversed. `GkeJobDispatcher._manifest` now puts the scheduler's own
+`SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE` and
+`SPEC_LEGACY_CUTOVER` (`scheduler.dispatch.spec_job_env`) on the worker
+container's `env:`, as on a Cloud Run Job the scheduler creates. The
+`swarm-spec-verify-keys` ConfigMap stays mounted read-only, as the fallback
+the worker reads only when its environment carries no keys (amendment 3
+above). Why: claude-code moved to GKE (PR 866), and onboarding (#847) creates
+a namespace per person with no ConfigMap in it, so every task there ended
+`CANNOT_START` under amendment 4.
+
+The tenant still cannot choose its keys. The values come from the
+scheduler's settings and never from `worker_env()`, which a task shapes; a
+test holds both dispatchers to that. A pod's manifest is built by the
+scheduler and is not writable from the tenant namespace. The worker still
+fails closed on a missing or bad signature. Only a missing ConfigMap stopped
+being fatal. Nothing under `apps/common/swarm_common/` changed.
+
 ---
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
