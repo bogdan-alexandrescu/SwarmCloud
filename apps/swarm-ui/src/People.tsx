@@ -385,6 +385,13 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
             <Deny row={row} reload={reload} />
           </span>
         )}
+        {/* An admin may approve a denied record at any time, inside the
+            person's 24-hour wait too (§1.3, confirmed by the owner). */}
+        {hasRecord && w.state === 'denied' && (
+          <span className="ob-acts">
+            <Approve row={row} reload={reload} />
+          </span>
+        )}
         {hasRecord && w.state === 'failed' && (
           <span className="ob-acts">
             <Retry row={row} reload={reload} />

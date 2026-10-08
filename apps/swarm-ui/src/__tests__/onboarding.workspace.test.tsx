@@ -257,6 +257,25 @@ describe('the record is read every 5 s until it is ready', () => {
     expect(workspaceReads(calls), 'it kept polling a ready record').toBe(atReady)
   })
 
+  it('stops when the record is refused, as for a service account', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const calls = serve((m, url) => {
+      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: doc(record()) }
+      if (m === 'GET' && url === '/v1/workspace') {
+        return { status: 403, body: { code: 'WORKSPACE_NOT_FOR_SERVICE_ACCOUNTS', message: "A workspace is a person's own space." } }
+      }
+      return null
+    })
+    const { OnboardingScreen } = await load()
+    render(<OnboardingScreen />)
+    await screen.findByRole('list', { name: 'Setup steps' }, WAIT)
+    await waitFor(() => expect(workspaceReads(calls)).toBe(1), WAIT)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(workspaceReads(calls), 'it kept asking for a record it was refused').toBe(1)
+    // The step still draws from the checklist's own evidence.
+    expect(within(stepEl('workspace')).getByRole('button', { name: 'Request my workspace' })).toBeTruthy()
+  })
+
   it('stops on unmount', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const r = withId({ state: 'requested' })

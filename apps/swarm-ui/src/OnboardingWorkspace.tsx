@@ -117,7 +117,11 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
   const polled = live.state.status === 'ok' || live.state.status === 'stale' ? live.state.data : null
   const record: WorkspaceView = polled ?? evidence
   const ready = record.state === 'ready'
-  usePoll(WORKSPACE_POLL_MS, live.reload, ready)
+  // A 4xx on the record (a service account has no workspace; an API without
+  // the route) will not change by asking again every 5 s, so the poll stops
+  // there; a 5xx or an unreachable API keeps it going.
+  const refusedRead = live.state.status === 'error' && live.state.error.httpStatus !== null && live.state.error.httpStatus < 500
+  usePoll(WORKSPACE_POLL_MS, live.reload, ready || refusedRead)
   const now = useNow(1_000)
   const [posting, setPosting] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)

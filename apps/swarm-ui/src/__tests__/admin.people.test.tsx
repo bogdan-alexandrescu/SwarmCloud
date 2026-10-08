@@ -155,6 +155,21 @@ describe('the people table', () => {
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-d4n000/retry' })
   })
 
+  it('a denied row may still be approved, and is not offered Retry', async () => {
+    const denied = person('fay@example.com', ws('denied', 'w-fa1000', { decision: { verdict: 'denied', reason: 'Use the eng space.', at: now() } }))
+    const { calls } = await mount(people([denied]), {
+      'POST /v1/admin/workspaces/w-fa1000/approve': () => ({ status: 200, body: { workspace: ws('approved', 'w-fa1000'), dispatch: { published: true, mode: 'create', reason: null } } }),
+    })
+    await waitFor(() => expect(rowOf('fay@example.com')).not.toBeNull(), WAIT)
+    const row = rowOf('fay@example.com')
+    expect(visible(row)).toContain('“Use the eng space.”')
+    expect(within(row).queryByRole('button', { name: 'Retry' })).toBeNull()
+    fireEvent.click(within(row).getByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(await screen.findByRole('dialog', {}, WAIT)).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
+    expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-fa1000/approve' })
+  })
+
   it('draws zero pending as a measured zero', async () => {
     await mount(people([ROWS[0]!]))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
