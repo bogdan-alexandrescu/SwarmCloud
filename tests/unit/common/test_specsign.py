@@ -17,6 +17,7 @@ no dependency, because `swarm_common` declares none. So it is held to:
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import struct
@@ -250,8 +251,8 @@ def test_the_golden_vector():
     canonical = canonical_step_spec(GOLDEN_DOC, task_id="task_0123456789abcdef", spec_format=1)
     assert canonical == GOLDEN_BYTES
     assert spec_digest(canonical).hex() == GOLDEN_SHA256
-    assert specsign.SPEC_FORMAT == 2
-    assert specsign.SPEC_FORMATS == (1, 2)
+    assert specsign.SPEC_FORMAT == 3
+    assert specsign.SPEC_FORMATS == (1, 2, 3)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
 
 
@@ -267,10 +268,10 @@ GOLDEN_BYTES_V2 = (
 def test_format_2_covers_the_parent_fields():
     """Contract request 42: a child's parent is inside the signed bytes."""
     doc = {**GOLDEN_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"}
-    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef")
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=2)
     assert canonical == GOLDEN_BYTES_V2
     rewritten = canonical_step_spec(
-        {**doc, "parent_task_id": "task_other"}, task_id="task_0123456789abcdef"
+        {**doc, "parent_task_id": "task_other"}, task_id="task_0123456789abcdef", spec_format=2
     )
     assert spec_digest(rewritten) != spec_digest(canonical)
     # Format 1 does not see them, so a format-1 document's digest is unchanged.
@@ -288,7 +289,7 @@ def test_a_task_that_names_no_parent_is_signed_at_format_1():
 
 def test_an_unknown_format_has_no_projection():
     with pytest.raises(specsign.SpecNotCanonical):
-        canonical_step_spec(GOLDEN_DOC, task_id="task_x", spec_format=3)
+        canonical_step_spec(GOLDEN_DOC, task_id="task_x", spec_format=4)
 
 
 def test_the_task_id_is_the_one_read_by_never_the_documents_own():
@@ -315,3 +316,95 @@ def test_a_missing_key_reads_as_null_and_a_missing_metadata_as_empty():
     got = canonical_step_spec({}, task_id="t").decode()
     assert '"metadata":{"dispatch":null,"expected_outputs":null,"input_from":null}' in got
     assert '"input":null' in got and '"depends_on":null' in got
+
+
+# ---------------------------------------------------------------------------
+# Format 3: the forge credential and access (contract request 54, request E)
+# ---------------------------------------------------------------------------
+
+#: SHA-256 of format 1's and format 2's canonical bytes, computed by the code
+#: BEFORE format 3 existed (2026-10-07, at f7b22be) and pinned here, so this
+#: change cannot have moved them: a signature swarm-api made then is a
+#: signature over exactly these digests.
+PRE_FORMAT_3_DIGESTS = {
+    1: "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4e",
+    2: "6db82cf17b794a27ee4e975130d43fbc94ae957b443297c0597abb6a9f2e6ef3",
+}
+
+CHILD_DOC = {**GOLDEN_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"}
+FORGE = {"forge_credential": "git-u-" + "0123456789abcdef", "forge_access": "read"}
+
+
+@pytest.mark.parametrize("forge", [{}, {"forge_credential": None, "forge_access": None}],
+                         ids=["absent", "none"])
+@pytest.mark.parametrize("spec_format,doc", [(1, GOLDEN_DOC), (2, CHILD_DOC)], ids=["f1", "f2"])
+def test_a_task_with_no_forge_fields_keeps_its_pre_format_3_bytes(spec_format, doc, forge):
+    """Absent or None, the two fields change nothing: the signer still picks
+    the old format and the old format still projects the old bytes."""
+    stored = {**doc, **forge}
+    assert specsign.signing_format(stored) == spec_format
+    canonical = canonical_step_spec(stored, task_id="task_0123456789abcdef", spec_format=spec_format)
+    assert spec_digest(canonical).hex() == PRE_FORMAT_3_DIGESTS[spec_format]
+
+
+@pytest.mark.parametrize("spec_format,doc", [(1, GOLDEN_DOC), (2, CHILD_DOC)], ids=["f1", "f2"])
+def test_a_spec_signed_before_format_3_still_verifies(spec_format, doc):
+    """A P-256 signature over the PINNED pre-change digest -- what swarm-api
+    produced before this change -- verifies against the digest this code
+    computes from the same document, decoded the way it is stored today."""
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    prehashed = ec.ECDSA(utils.Prehashed(hashes.SHA256()))
+    signature = key.sign(bytes.fromhex(PRE_FORMAT_3_DIGESTS[spec_format]), prehashed)
+    stored = {**doc, "forge_credential": None, "forge_access": None}
+    digest = spec_digest(
+        canonical_step_spec(stored, task_id="task_0123456789abcdef", spec_format=spec_format)
+    )
+    key.public_key().verify(signature, digest, prehashed)  # raises InvalidSignature
+
+
+GOLDEN_BYTES_V3 = (
+    GOLDEN_BYTES.replace(b'"format":1,', b'"format":3,')
+    .replace(
+        b'"depends_on":["task_impl"],',
+        b'"depends_on":["task_impl"],"forge_access":"read",'
+        + json.dumps({"forge_credential": FORGE["forge_credential"]}, separators=(",", ":"))[1:-1]
+        .encode()
+        + b",",
+    )
+    .replace(b'"model":null,', b'"model":null,"parent_attempt_id":null,"parent_task_id":null,')
+)
+
+
+def test_format_3_covers_the_forge_fields():
+    doc = {**GOLDEN_DOC, **FORGE}
+    assert specsign.signing_format(doc) == 3
+    assert specsign.signing_format({**GOLDEN_DOC, "forge_access": "write"}) == 3
+    assert specsign.signing_format({**GOLDEN_DOC, "forge_credential": "git"}) == 3
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef")
+    assert canonical == GOLDEN_BYTES_V3
+    for key, value in {
+        "forge_credential": "git-u-" + "fedcba9876543210",
+        "forge_access": "write",
+        "parent_task_id": "task_other",
+    }.items():
+        rewritten = canonical_step_spec({**doc, key: value}, task_id="task_0123456789abcdef")
+        assert spec_digest(rewritten) != spec_digest(canonical), key
+    # Removing a field is a rewrite too: None is not the value that was signed.
+    for key in FORGE:
+        rewritten = canonical_step_spec({**doc, key: None}, task_id="task_0123456789abcdef")
+        assert spec_digest(rewritten) != spec_digest(canonical), key
+
+
+@pytest.mark.parametrize("spec_format", [1, 2])
+@pytest.mark.parametrize("key", ["forge_credential", "forge_access"])
+def test_a_forge_field_added_to_an_older_format_has_no_canonical_form(spec_format, key):
+    """A tenant's agent can write its task documents. Adding a forge field to
+    one signed at format 1 or 2 must not leave the field outside the signed
+    bytes, as a parent added to a format-1 document is: the worker acts on it."""
+    doc = {**CHILD_DOC, key: FORGE[key]}
+    with pytest.raises(SpecNotCanonical):
+        canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=spec_format)

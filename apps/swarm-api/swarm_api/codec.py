@@ -20,6 +20,8 @@ from urllib.parse import quote
 from swarm_common.models import (
     Attempt,
     EndCause,
+    FORGE_ACCESS,
+    FORGE_CREDENTIAL,
     Lease,
     QuotaState,
     SlotPool,
@@ -187,7 +189,27 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # Contract request 14. Absent on every task that is not a child.
         parent_task_id=data.get("parent_task_id") or None,
         parent_attempt_id=data.get("parent_attempt_id") or None,
+        # Contract request 54. Read back so a task this service decodes and
+        # writes again keeps the signed fields it was submitted with.
+        forge_credential=_forge_credential(data.get("forge_credential")),
+        forge_access=_forge_access(data.get("forge_access")),
     )
+
+
+def _forge_credential(value: Any) -> str | None:
+    """A stored forge credential, or None for an old document and for a value
+    of the wrong shape. A tenant's agent can write its task documents, and one
+    malformed field must not make a task unreadable to every listing here.
+    Nothing here acts on it: the worker verifies the signed document itself,
+    and a None written back over a signed value fails that check."""
+    if isinstance(value, str) and FORGE_CREDENTIAL.fullmatch(value):
+        return value
+    return None
+
+
+def _forge_access(value: Any) -> str | None:
+    """A stored forge access mode, or None -- as `_forge_credential`."""
+    return value if isinstance(value, str) and value in FORGE_ACCESS else None
 
 
 def _spec_format(value: Any) -> int | None:
