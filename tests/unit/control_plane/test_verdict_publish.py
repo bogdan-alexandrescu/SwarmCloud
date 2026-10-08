@@ -30,6 +30,9 @@ What these tests hold:
      open pull request already there is adopted.
   6. The scheduler holds the step only while it should, and never while
      the contract or its setting says no.
+  7. The forge credential is trusted only as signed: a spec that does not
+     verify declines before any secret is read, and a user slot's grant is
+     read again and must still be `write`.
 
 No credentials, no network, no emulator. Every token is built at runtime.
 """
@@ -49,16 +52,19 @@ from urllib.parse import urlparse
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forge, forgewrite, gittokens, verdictpublish
+from swarm_api import access, forge, forgeapp, forgewrite, gittokens, verdictpublish
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.repositories import repo_id_for
+from swarm_common import specsign
 from swarm_common.states import ParkReason, TaskState, can_transition
 
 from . import forge_fakes
+from .spec_signer import KEY_VERSION, LocalSpecSigner
 from .conftest import (
     PROJECT,
     api_settings,
@@ -79,6 +85,10 @@ FIX = "task_fix0000001"
 WORKFLOW = "wf_0000000001"
 TITLE = "The widget cache expires entries on read"
 BODY = "Expire on read.\n\nCloses #12\n\nGenerated with [Claude Code](https://claude.com/claude-code)"
+
+#: The step-spec key, made at import: the one submission signs the fix step
+#: with, and the one whose public half is swarm-api's SPEC_VERIFY_KEYS.
+SIGNER = LocalSpecSigner()
 
 
 class RecordingWaker:
@@ -150,8 +160,13 @@ def client(db, tokens, group_map, objects, github, waker, store) -> TestClient:
     tokens = dict(tokens)
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
     context = build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,)),
+        settings=api_settings(
+            rollup_sweeper_users=(SWEEPER,),
+            spec_signing_key_version=KEY_VERSION,
+            spec_verify_keys=json.dumps({KEY_VERSION: SIGNER.public_pem()}),
+        ),
         db=db,
+        signer=SIGNER,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(),
@@ -204,7 +219,13 @@ def _workflow(db, objects, *, verdict: dict | str | None = None, title: str | No
         **(dispatch or {}),
     }
     fix["metadata"] = {"dispatch": block, "input_from": {REVIEW: "verdict.json"}}
-    return fix
+    return _sign(fix)
+
+
+def _sign(doc: dict) -> dict:
+    """Sign the stored document in place, as submission does: call again after
+    a test changes a signed field, or the publish declines it as rewritten."""
+    return SIGNER.sign_document(doc, doc["id"])
 
 
 def _push(client: TestClient, task_id: str = REVIEW, *, tenant_id: str = "eng",
@@ -646,6 +667,7 @@ def test_the_steps_own_forge_credential_opens_the_pull_request(
     fix = _workflow(db, objects)
     fix["forge_credential"] = REPO_SLOT
     fix["forge_access"] = "write"
+    _sign(fix)
     narrow = "ghp_" + secrets.token_hex(18)
     store.put(gittokens.secret_name_for("eng", REPO_SLOT), narrow)
 
@@ -678,6 +700,7 @@ def test_a_read_only_forge_credential_declines_to_the_worker(
     fix["forge_access"] = access
     if credential is not None:
         fix["forge_credential"] = credential
+    _sign(fix)
     if stored:
         store.put(gittokens.secret_name_for("eng", REPO_SLOT), "ghp_" + secrets.token_hex(18))
 
@@ -706,6 +729,7 @@ def test_the_token_in_the_body_declines(db, objects, client, github, waker, stor
     _workflow(db, objects, body=f"Expire on read.\n\nUse {token} to test.")
     fix = _fix(db)
     fix["forge_credential"] = REPO_SLOT
+    _sign(fix)
     store.put(gittokens.secret_name_for("eng", REPO_SLOT), token)
 
     body = _push(client).json()
@@ -716,6 +740,185 @@ def test_the_token_in_the_body_declines(db, objects, client, github, waker, stor
     assert token not in json.dumps(_fix(db), default=str)
     assert token not in json.dumps(body)
     assert github.calls == [] and github.pulls == {}
+
+
+# --------------------------------------------------------------------------
+# 4c. the credential is trusted only as signed, and a person's grant is re-read
+# --------------------------------------------------------------------------
+
+#: Another member of the tenant: their user slot, and the grant behind it.
+MEMBER = "dana@saga.xyz"
+USER_SLOT = gittokens.provider_suffix(gittokens.Scope.USER, user=MEMBER)
+
+
+def _grant(db, *, mode: str = "write", tenant_id: str = "eng") -> str:
+    """The member's grant on the step's repository, by swarm-api's own id recipe."""
+    repo_id = repo_id_for("eng", "saga-xyz", "widgets")
+    doc_id = access.grant_id_for("eng", MEMBER, repo_id)
+    db.docs[f"{forgeapp.GRANTS}/{doc_id}"] = {
+        "tenant_id": tenant_id, "user": MEMBER, "user_hash": forgeapp.user_hash(MEMBER),
+        "repo_id": repo_id, "repository": "saga-xyz/widgets", "mode": mode,
+    }
+    return f"{forgeapp.GRANTS}/{doc_id}"
+
+
+def _user_slot_step(db, objects, store) -> tuple[dict, str]:
+    """A step submitted with the member's slot, their grant on file, their token stored."""
+    fix = _workflow(db, objects)
+    fix["forge_credential"] = USER_SLOT
+    _sign(fix)
+    _grant(db)
+    token = "ghp_" + secrets.token_hex(18)
+    store.put(gittokens.secret_name_for("eng", USER_SLOT), token)
+    return fix, token
+
+
+def _declined_unread(body: dict, db, github, store) -> None:
+    assert body["report"]["published"] == [], body
+    assert body["report"]["declined"] == [{"task_id": FIX, "code": "credential"}], body
+    assert _fix(db)["state"] == TaskState.PARKED.value
+    # Declined before any secret was read and before GitHub was asked anything.
+    assert store.asked == []
+    assert github.calls == [] and github.pulls == {}
+
+
+def _rewrite(fix: dict, case: str) -> None:
+    """The tenant's rewrite: always `forge_access` cleared, which is what buys
+    a push, plus one more change that the signature check has to catch."""
+    fix["forge_access"] = None
+    if case == "unsigned":
+        for key in ("spec_signature", "spec_key_version", "spec_format"):
+            fix.pop(key, None)
+    elif case == "credential_swapped":
+        fix["forge_credential"] = USER_SLOT
+    elif case == "repository_swapped":
+        fix["repository_url"] = "https://github.com/saga-xyz/other"
+    elif case == "foreign_key":
+        LocalSpecSigner().sign_document(fix, fix["id"])
+    elif case == "unknown_format":
+        fix["spec_format"] = max(specsign.SPEC_FORMATS) + 1
+    elif case == "signature_garbled":
+        fix["spec_signature"] = base64.b64encode(b"\x00" * 70).decode("ascii")
+
+
+@pytest.mark.parametrize("case", [
+    "unsigned", "access_cleared", "credential_swapped", "repository_swapped",
+    "foreign_key", "unknown_format", "signature_garbled",
+])
+def test_a_spec_that_does_not_verify_declines_before_any_credential_is_read(
+    db, objects, client, github, waker, store, contract, case
+):
+    """A tenant's agents can write the step's document; the push credential
+    it names is trusted only as swarm-api signed it.
+
+    The step is signed read-only. Every rewrite clears `forge_access`, which
+    alone would buy a push with the tenant's `-git` token; `credential_swapped`
+    also points `forge_credential` at another member's slot, whose grant and
+    token are both in place. `test_the_control_a_signed_rewrite_publishes`
+    shows the same document, signed, does publish, so each decline here is
+    the signature check's.
+    """
+    fix = _workflow(db, objects)
+    fix["forge_access"] = "read"
+    _sign(fix)
+    _grant(db)
+    store.put(gittokens.secret_name_for("eng", USER_SLOT), "ghp_" + secrets.token_hex(18))
+    _rewrite(fix, case)
+
+    body = _push(client).json()
+
+    _declined_unread(body, db, github, store)
+    marker = _fix(db)["metadata"][verdictpublish.CONTROL_PUBLISH_METADATA_KEY]
+    assert "spec" in marker["reason"], marker
+    assert waker.rung == [("task_finished",
+                           {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
+
+
+def test_the_control_a_signed_rewrite_publishes(db, objects, client, github, store, contract):
+    """The control for the test above: the same write-capable document,
+    signed as swarm-api signs it, publishes, so a decline there is the
+    signature and not the rewrite's content."""
+    fix, token = _user_slot_step(db, objects, store)
+    fix["forge_access"] = None
+    _sign(fix)
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [FIX], body
+    assert store.asked == [gittokens.secret_name_for("eng", USER_SLOT)]
+    assert all(token in value for value in _authorisations(github))
+
+
+def test_the_spec_is_verified_by_the_id_it_was_read_by(db, objects, client, github, contract):
+    """A rewritten `id` field names neither the signed spec nor the branch."""
+    fix = _workflow(db, objects)
+    fix["id"] = "task_other00001"
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [FIX], body
+    assert f"swarm/{FIX}" in github.branches and "swarm/task_other00001" not in github.branches
+
+
+@pytest.mark.parametrize("keys,signing", [
+    ("", KEY_VERSION),
+    ("not json", KEY_VERSION),
+    ("[]", KEY_VERSION),
+    (None, ""),
+    (None, KEY_VERSION.replace("step-spec", "other-key")),
+])
+def test_no_trusted_key_verifies_nothing(db, objects, keys, signing):
+    """Without SPEC_VERIFY_KEYS, or a version outside the signing key, nothing
+    verifies, so nothing is pushed. The control: the configured pair verifies."""
+    fix = _workflow(db, objects)
+    good = json.dumps({KEY_VERSION: SIGNER.public_pem()})
+    trusted = SimpleNamespace(spec_verify_keys=good, spec_signing_key_version=KEY_VERSION)
+    assert verdictpublish.spec_refusal(trusted, fix, FIX) is None
+    settings = SimpleNamespace(spec_verify_keys=good if keys is None else keys,
+                               spec_signing_key_version=signing)
+    assert verdictpublish.spec_refusal(settings, fix, FIX) is not None
+
+
+@pytest.mark.parametrize("change", ["removed", "read", "other_tenant"])
+def test_a_user_slots_grant_is_read_again_and_must_still_be_write(
+    db, objects, client, github, waker, store, contract, change
+):
+    """agent_worker.secrets.grant_refusal(write=True), at the control-plane
+    push: a revoked or downgraded grant pushes nothing with that person's
+    token, which is never even read."""
+    _user_slot_step(db, objects, store)
+    if change == "removed":
+        del db.docs[_grant(db)]
+    elif change == "read":
+        _grant(db, mode="read")
+    else:
+        _grant(db, tenant_id="research")
+
+    body = _push(client).json()
+
+    _declined_unread(body, db, github, store)
+    reason = _fix(db)["metadata"][verdictpublish.CONTROL_PUBLISH_METADATA_KEY]["reason"]
+    assert "grant" in reason, reason
+    assert waker.rung == [("task_finished",
+                           {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
+
+
+def test_a_user_slot_with_its_grant_in_place_publishes(db, objects, client, github, store,
+                                                       contract):
+    """The control for the grant test: the same step with the grant unchanged."""
+    _, token = _user_slot_step(db, objects, store)
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [FIX], body
+    assert all(token in value for value in _authorisations(github))
+
+
+def test_a_repository_or_tenant_slot_reads_no_grant():
+    """A repository or tenant token is not a person's: no grant is read (db is None)."""
+    ref = verdictpublish._repository(REPO_URL)
+    assert verdictpublish.grant_refusal(None, "eng", REPO_SLOT, ref) is None
+    assert verdictpublish.grant_refusal(None, "eng", forge.GIT_PROVIDER, ref) is None
 
 
 def test_a_parent_that_has_not_succeeded_leaves_the_step_alone(

@@ -67,12 +67,18 @@ worker's way, unchanged:
     finds anything in it. Both are read through the same tenant-checked,
     redacted artifact read the API serves (`InspectionService.read_artifact`),
     at most 256 KiB each, and every mention in them is neutralised;
-  * the step may write (`forge_access` absent or `write`), and the token
-    its own worker would read -- the secret its `forge_credential` names,
-    `git` (the tenant's `-git`) when it names none, contract request 54 --
-    is readable, appears in neither text, and GitHub creates the branch and
-    opens (or already has) the pull request. A read-only step, a malformed
-    suffix or an unreadable slot is declined with code `credential`.
+  * the step's spec signature verifies (`spec_refusal`), BEFORE any field
+    that picks the push credential is read, as the worker reads them only
+    from the verified document (`agent_worker.secrets.forge_suffix`);
+  * the step may write (`forge_access` absent or `write`), a user slot's
+    grant still covers a write to this repository (`grant_refusal`, read
+    again at the publish), and the token its own worker would read -- the
+    secret its `forge_credential` names, `git` (the tenant's `-git`) when it
+    names none, contract request 54 -- is readable, appears in neither text,
+    and GitHub creates the branch and opens (or already has) the pull
+    request. A spec that does not verify, a read-only step, a revoked or
+    downgraded grant, a malformed suffix or an unreadable slot is declined
+    with code `credential`.
 
 A step declined here is ordinary: no write but the decline marker, and the
 scheduler admits it on the wake this module rings.
@@ -109,16 +115,29 @@ today, so `contract_allows()` is false and both this module and the
 scheduler's hold do nothing until it is applied. Nothing is changed in
 `swarm_common` here.
 
-A FORGED MARKER OR DISPATCH BLOCK IS THE TENANT'S OWN. Firestore has no
-document-level IAM, and swarm-api does not verify the step-spec signature
-the worker verifies. What a tenant can make this module do by writing its
-own documents is open a pull request in its own repository, with its own
-token, from a branch its own task pushed: what its own worker would do. A
-forged decline costs the hold; a forged claim, the claim timeout.
+A FORGED DOCUMENT PICKS NO CREDENTIAL. Firestore has no document-level
+IAM, and a tenant's agents can write any task document of their tenant
+(`specsigning`). The fields that pick the push credential and its target --
+`forge_credential`, `forge_access`, `repository_url` -- and the dispatch
+block are all inside the signed spec (`swarm_common.specsign`, format 3), so
+this module verifies the step's signature with the workers' own keys
+(SPEC_VERIFY_KEYS) before it reads any of them, by the document's id as
+read, never its `id` field. Unsigned (the worker's legacy window), a version
+not in the keys, a format it does not know, a value with no canonical form
+or a signature that does not match: declined `credential`, and the worker,
+which runs its own check, takes the step. Without that check, clearing
+`forge_access: read` would buy a push with the tenant's `-git` token, and
+rewriting `forge_credential` to another member's `git-u-<hex>` a push as
+that person. A user slot is a person's, so their grant is also read again,
+as the worker reads it before each push (`grant_refusal`). What remains
+unsigned is the marker: a forged decline costs the hold; a forged claim,
+the claim timeout.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
@@ -131,6 +150,7 @@ from typing import Any, Mapping
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from swarm_common import specsign
 from swarm_common.admission import _snapshot
 from swarm_common.models import FORGE_ACCESS, FORGE_CREDENTIAL
 from swarm_common.states import EventType, ParkReason, TaskState, can_transition
@@ -138,11 +158,12 @@ from swarm_common.states import EventType, ParkReason, TaskState, can_transition
 from .cifix import BRANCH_PREFIX
 from .errors import ApiError
 from .forge import GIT_PROVIDER
+from .forgeapp import GRANTS
 from .forgewrite import ForgeWriteError, GitHubWriter
 from .gittokens import secret_name_for
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import neutralise_mentions
-from .repositories import parse_repository
+from .repositories import parse_repository, repo_id_for
 from .rollup import SKIPPED_SUMMARY_KEY
 from .validation import (
     DISPATCH_METADATA_KEY,
@@ -669,7 +690,116 @@ def _forge_slot(doc: Mapping[str, Any]) -> str:
     return suffix
 
 
-def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> str:
+#: `agent_worker.specverify._VERSION_SUFFIX`: what follows the crypto key in
+#: a full version name.
+_VERSION_SUFFIX = re.compile(r"/cryptoKeyVersions/[0-9]+")
+
+
+def _verify_keys(settings: Any) -> dict[str, str]:
+    """SPEC_VERIFY_KEYS as {full version name: PEM}; {} when unset or malformed."""
+    raw = str(getattr(settings, "spec_verify_keys", "") or "")
+    try:
+        keys = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(keys, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in keys.items()
+    ):
+        return {}
+    return keys
+
+
+def _signature_matches(pem: str, signature_b64: Any, digest: bytes) -> bool:
+    """`agent_worker.specverify._verify_signature`, restated: ECDSA P-256 over the digest."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, utils
+
+    if not isinstance(signature_b64, str):
+        return False
+    try:
+        signature = base64.b64decode(signature_b64, validate=True)
+        key = serialization.load_pem_public_key(pem.encode("ascii"))
+    except (binascii.Error, ValueError, UnicodeEncodeError):
+        return False
+    if not isinstance(key, ec.EllipticCurvePublicKey):
+        return False
+    try:
+        key.verify(signature, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+    except InvalidSignature:
+        return False
+    return True
+
+
+def spec_refusal(settings: Any, doc: Mapping[str, Any], task_id: str) -> str | None:
+    """Why the step's signed spec does not verify, or None when it does.
+
+    The worker's checks 1 to 4 (`agent_worker.specverify.verify_step_spec`
+    and `_verify_signed`) with no legacy window: a signature and a version
+    are present, the format is one `swarm_common.specsign` knows, the version
+    is one of the step-spec key's (`SPEC_SIGNING_KEY_VERSION`'s key) and in
+    SPEC_VERIFY_KEYS, and the signature matches the canonical spec of the
+    document as read by `task_id`. The reason names the check, never a
+    value from the document.
+    """
+    signature = doc.get("spec_signature")
+    version = doc.get("spec_key_version")
+    if not signature or not isinstance(version, str) or not version:
+        return "the step's spec is unsigned"
+    spec_format = doc.get("spec_format")
+    if isinstance(spec_format, bool) or spec_format not in specsign.SPEC_FORMATS:
+        return "the step's spec is signed at a format this platform does not know"
+    signing = str(getattr(settings, "spec_signing_key_version", "") or "")
+    matched = _VERSION_SUFFIX.search(signing)
+    crypto_key = signing[:matched.start()] if matched and matched.end() == len(signing) else ""
+    keys = _verify_keys(settings)
+    if (not crypto_key or not version.startswith(crypto_key)
+            or not _VERSION_SUFFIX.fullmatch(version[len(crypto_key):]) or version not in keys):
+        return "the step's spec is signed by a key version this platform does not trust"
+    try:
+        digest = specsign.spec_digest(
+            specsign.canonical_step_spec(doc, task_id=task_id, spec_format=int(spec_format))
+        )
+    except specsign.SpecNotCanonical:
+        return "the step's spec has no canonical form"
+    if not _signature_matches(keys[version], signature, digest):
+        return "the step's spec signature does not match the document"
+    return None
+
+
+#: `agent_worker.secrets._USER_SLOT`: a person's slot, its hex their `user_hash`.
+_USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
+
+
+def grant_refusal(db: Any, tenant_id: str, suffix: str, ref: IssueRef) -> str | None:
+    """Why the submitter's grant no longer covers a write here, or None.
+
+    `agent_worker.secrets.grant_refusal(write=True)`, restated: the worker
+    re-reads it before every push and pull request (docs/onboarding.md §3.3
+    step 4), and this module pushes and opens one. Only for a user slot: a
+    tenant or repository token is not a person's. The grant is read by id
+    -- `{tenant}__{user_hash}__{repo_id}` (`access.grant_id_for`), the step's
+    OWN tenant, the hex of the verified suffix and the verified repository's
+    `repo_id` -- and must name all three back, and its mode must be `write`.
+    Removed, changed to read, or of another tenant, person or repository: a
+    refusal. Never cached.
+    """
+    matched = _USER_SLOT.fullmatch(suffix)
+    if matched is None:
+        return None
+    hashed = matched.group(1)
+    repo_id = repo_id_for(tenant_id, ref.owner, ref.repo)
+    snap = db.collection(GRANTS).document(f"{tenant_id}__{hashed}__{repo_id}").get()
+    data = (snap.to_dict() or {}) if snap.exists else None
+    if (data is None or data.get("tenant_id") != tenant_id or data.get("user_hash") != hashed
+            or data.get("repo_id") != repo_id):
+        return f"the submitter's grant on {repo_id} has been removed since the task was submitted"
+    if data.get("mode") != _WRITE:
+        return f"the submitter's grant on {repo_id} is now {data.get('mode')!r}, not 'write'"
+    return None
+
+
+def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef) -> str:
     """The step's forge token, read now from Secret Manager; else `Decline`.
 
     `swarm-tenant-<tenant>-<suffix>` (`gittokens.secret_name_for`), under the
@@ -677,9 +807,17 @@ def _step_token(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> str:
     probe uses (`forge.SecretManagerForgeTokens.read_slot`). A slot swarm-api
     is not bound to answers PermissionDenied and is declined like a missing
     one: the worker, which is bound to it, publishes instead. The decline
-    names the secret and the error's type, never the value.
+    names the secret and the error's type, never the value. A user slot's
+    grant is read again first, and a refusal fetches no token.
     """
     suffix = _forge_slot(doc)
+    try:
+        refused = grant_refusal(ctx.store.db, tenant.tenant_id, suffix, ref)
+    except Exception as exc:  # unreadable is not revoked, but it is not a grant either
+        raise Decline("credential", f"the submitter's grant could not be read "
+                                    f"({type(exc).__name__})") from None
+    if refused:
+        raise Decline("credential", refused)
     secret = secret_name_for(tenant.tenant_id, suffix)
     try:
         return ctx.forge_tokens.read_slot(tenant, suffix).value
@@ -693,6 +831,11 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
     """Open the step's pull request; its `result_summary`, or `Decline`."""
     tenant_id = tenant.tenant_id
     task_id = str(doc.get("id"))
+    # First: every field below -- the dispatch block, the repository, the
+    # forge credential and its access mode -- is trusted only as signed.
+    unverified = spec_refusal(ctx.settings, doc, task_id)
+    if unverified:
+        raise Decline("credential", unverified)
     review, verdict_in, builds_on = _dispatch_facts(doc)
     ref = _repository(doc.get("repository_url"))
     workflow_id = doc.get("workflow_id")
@@ -725,7 +868,7 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
         stripped = strip_attribution(raw_body.strip())
         agent_body = neutralise_mentions(stripped) if stripped else None
 
-    token = _step_token(ctx, tenant, doc)
+    token = _step_token(ctx, tenant, doc, ref)
     try:
         if not token or token in (raw_title or "") or token in (raw_body or ""):
             raise Decline("credential", "the implementer's pull request text holds the step's token")
@@ -892,7 +1035,10 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
         .limit(MAX_DEPENDANTS)
     )
     for dependant in query.stream():
-        doc = dependant.to_dict() or {}
+        # The id it was READ BY, never its own `id` field: the signature is
+        # checked against this id (`spec_refusal`), and the branch is named
+        # after it.
+        doc = {**(dependant.to_dict() or {}), "id": dependant.id}
         # Tenant, state and park reason checked here, as the scheduler's
         # `dependants_waiting_on` checks them (invariant 9).
         if not _claimable(doc, owner) or not held_by_scheduler(doc.get("metadata")):

@@ -820,7 +820,11 @@ So swarm-api can open the pull request itself
    token the step's own worker would read, read from Secret Manager at that
    moment: the secret the step's `forge_credential` names (`git`,
    `git-r-<hex>` or `git-u-<hex>`, through `gittokens.secret_name_for`), the
-   tenant's `-git` when it names none (contract request 54). The token is
+   tenant's `-git` when it names none (contract request 54). It reads none
+   of those fields until the step's spec signature verifies, with the
+   workers' own keys (`SPEC_VERIFY_KEYS`), and for a `git-u-<hex>` slot it
+   reads that person's grant again, as the worker does before each push
+   (docs/onboarding.md §3.3 step 4). The token is
    never written to the repository, a Job environment or a log. Finally it ends the step
    SUCCEEDED, in the same `result_summary.git` shape a worker writes, plus
    `published_by: "control_plane"` and `verdict_gate.agent_ran: false`. The
@@ -838,9 +842,21 @@ or pushed nothing, a missing title, or one the worker would refuse (two lines,
 a control character, attribution, a task id, or the `[swarm] task_`
 placeholder anywhere in it). Also declined, with code `credential`: anything
 in the title or body that swarm-api's redaction masks or that holds the
-token, a step whose `forge_access` is set and is not `write` (absent means
-write, as for the worker), a malformed `forge_credential`, and an unreadable
-token. Any refusal from GitHub is declined too. The body keeps the worker's
+token, a spec whose signature does not verify (unsigned, an untrusted key
+version, an unknown format, or a document rewritten since it was signed), a
+step whose `forge_access` is set and is not `write` (absent means write, as
+for the worker), a user slot whose grant was removed or is no longer `write`,
+a malformed `forge_credential`, and an unreadable token.
+
+**Why the signature is checked first.** A tenant's agents can write any task
+document of their tenant. `forge_credential`, `forge_access`,
+`repository_url` and the dispatch block are all inside the signed spec
+(`swarm_common.specsign`, format 3) for exactly that reason, and the worker
+reads them only from the verified document. Read unverified, clearing
+`forge_access: read` would buy a push with the tenant's `-git` token, and
+rewriting `forge_credential` to another member's `git-u-<hex>` a push as that
+person. The check uses the id the document was read by, never its `id`
+field. Any refusal from GitHub is declined too. The body keeps the worker's
 rules: attribution lines removed (#735), mentions neutralised, 60 KiB at most.
 
 **The refusal scans are the worker's.** #748 asks for "the same refusal scans

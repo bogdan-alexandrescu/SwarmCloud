@@ -618,6 +618,13 @@ locals {
       # scripts/lib/check-env-parity.sh never sees one without the other.
       SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version
 
+      # The public keys the workers verify step specs with, the same value
+      # (spec_signing.tf). Read by swarm_api.verdictpublish, which must verify
+      # a gated step's signed spec before it trusts the step's forge_credential
+      # and forge_access for a control-plane push (#748). Public keys, not
+      # secrets.
+      SPEC_VERIFY_KEYS = jsonencode(local.spec_verify_keys)
+
       # The verification job's identity, admitted past the domain check.
       #
       # swarm-api admits a caller through ALLOWED_USERS or through the frozen
