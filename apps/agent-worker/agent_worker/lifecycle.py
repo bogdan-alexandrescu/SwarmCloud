@@ -1837,9 +1837,7 @@ class Worker:
                 tenant_id=self.cfg.tenant_id,
                 call_options=self.control.call_options(),
             ),
-            verify_upstream=lambda upstream, doc: specverify.verify_upstream_spec(
-                doc, upstream_task_id=upstream, workflow_id=workflow_id, cfg=self.cfg
-            ),
+            verify_upstream=specverify.upstream_verifier(self.cfg, workflow_id),
             read_app_key=self._read_action_app_key,
             environ=self.action_environ,
             recheck=self._action_recheck,
