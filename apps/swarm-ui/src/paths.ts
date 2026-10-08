@@ -51,6 +51,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   'work/new-issue': '/submit/issue',
   'work/runs': '/runs',
   'work/repositories': '/repositories',
+  // #780 OB8: the onboarding checklist and the steady-state Access page.
+  'work/setup': '/setup',
+  'work/access': '/access',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
