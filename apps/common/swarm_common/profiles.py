@@ -895,6 +895,18 @@ _MOCK_INPUTS: dict[str, RunnerInput] = {
         maximum=3600,
         means="the retry-after that simulated rate limit reports",
     ),
+    # CONTRACT REQUEST 56, accepted by the owner 2026-10-08, for #166's live
+    # proof: a file written to the artifacts folder before a park reaches the
+    # attempt that succeeds, by reference (`parked_uploads`, `carried_from`).
+    # Without it the mock parks BEFORE it writes its artifact, so no live run
+    # could show the carry. With it, the parking attempt writes
+    # `artifact_name`/`artifact_text` and then parks, and the attempt after
+    # the park writes nothing under that name, so the file the task ends with
+    # can only have arrived by carry. Inert without `quota_exhausted`.
+    "artifact_before_park": RunnerInput(
+        "boolean",
+        means="write the output artifact before the simulated rate limit parks the first attempt",
+    ),
 }
 
 

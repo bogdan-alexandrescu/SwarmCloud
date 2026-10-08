@@ -237,6 +237,9 @@ class PullSnapshot:
     #: named none: a head in another repository is a fork (`resolve_merge_pr`).
     head_repo: str = ""
     base_repo: str = ""
+    #: When GitHub says it merged (ISO 8601, UTC), "" while it has not: the
+    #: run page prints it beside "merged" (#503).
+    merged_at: str = ""
 
 
 def _int(value: Any) -> int | None:
@@ -273,6 +276,7 @@ def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
     body = data.get("body")
     title = data.get("title")
     state = data.get("state")
+    merged_at = data.get("merged_at")
     return PullSnapshot(
         number=number,
         url=url if isinstance(url, str) else f"{ref.repository_url}/pull/{number}",
@@ -285,6 +289,7 @@ def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
         title=title if isinstance(title, str) else "",
         head_repo=_full_name(head),
         base_repo=_full_name(base),
+        merged_at=merged_at if isinstance(merged_at, str) else "",
     )
 
 
