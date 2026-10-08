@@ -9846,8 +9846,8 @@ In `apps/common/swarm_common/profiles.py`:
 
    Exact, not a suffix: `.goog` is a real gTLD that Google serves public
    pages on, so `.goog` as a suffix would refuse public sites.
-3. The host loses AT MOST ONE trailing dot (`host[:-1] if
-   host.endswith(".") else host`) instead of `.rstrip(".")`. So
+3. The host loses AT MOST ONE trailing dot (`host.removesuffix(".")`)
+   instead of `.rstrip(".")`. So
    `example.com.`, a fully-qualified name, is still accepted, and
    `example.com..` reaches the empty-label check and is refused exactly as
    `a..b.com` is. `169.254.169.254.` is still read as the address and refused.

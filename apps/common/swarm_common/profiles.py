@@ -397,8 +397,7 @@ def url_refusal(value: str) -> str:
     # At most ONE trailing dot: `example.com.` is a fully-qualified name, but
     # `.rstrip(".")` also made `example.com..` into an accepted host while
     # `a..b` was refused (request 57). A second dot is an empty label.
-    if host.endswith("."):
-        host = host[:-1]
+    host = host.removesuffix(".")
     if not host:
         return "it has no host"
     # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
