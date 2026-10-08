@@ -59,6 +59,7 @@
         {"tool": "gcloud", "command": ["auth", "print-access-token"], "args": [], "after_stop": true},
         {"tool": "gcloud", "command": ["config", "get-value"], "args": [["account", "project"]], "after_stop": true},
         {"tool": "gcloud", "command": ["config", "config-helper"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["auth", "list"], "args": [], "flags": {"--filter": "status:ACTIVE"}, "require": ["--filter"], "why": "scripts/lib/check-cluster-network-parity.sh, which kubernetes/apply.sh --confirm runs after a tenant apply, asks which account is active before it reads the cluster"},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
         {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
@@ -82,6 +83,7 @@
         {"tool": "kubectl", "command": ["get"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"-o": "*", "--output": "*"}},
         {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}, "*"], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["networkpolicies", "networkpolicy", "netpol"]], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "--field-selector": "metadata.name=swarm-allow-worker-egress", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"], "why": "the same parity check, scoped to the tenant's namespace, lists its egress policy by name"},
 
         {"tool": "curl", "method": "GET", "url": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "headers": ["Metadata-Flavor: Google"], "body": "none", "after_stop": true},
         {"tool": "curl", "method": "POST", "op": "runQuery", "body": "runquery_workspace", "after_stop": true},

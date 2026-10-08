@@ -513,6 +513,68 @@
       ]
     },
     {
+      "name": "the network parity check asks which account is active",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "auth",
+        "list",
+        "--filter=status:ACTIVE",
+        "--format=value(account)"
+      ]
+    },
+    {
+      "name": "the network parity check lists this namespace's egress policy",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "the network parity listing across every namespace",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--all-namespaces",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a field selector naming another policy",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-default-deny",
+        "-o",
+        "json"
+      ]
+    },
+    {
       "name": "create the expected worker account",
       "rule": "C2",
       "expect": "allow",
