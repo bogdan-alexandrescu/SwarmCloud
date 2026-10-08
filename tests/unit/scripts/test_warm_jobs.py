@@ -225,9 +225,11 @@ def test_a_parallelism_that_is_not_a_positive_integer_is_refused(world):
 
 
 def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
-    import yaml
+    from .test_release_reuses_ci_images import _workflow
 
-    workflow = yaml.safe_load((REPO / ".github" / "workflows" / "release.yml").read_text())
+    # Composite actions flattened into the steps they run (the verify step is
+    # .github/actions/release-verify).
+    workflow = _workflow("release.yml")
     steps = workflow["jobs"]["deploy"]["steps"]
     runs = [str(s.get("run", "")) for s in steps]
     warm = [i for i, r in enumerate(runs) if "scripts/warm-jobs.sh" in r]

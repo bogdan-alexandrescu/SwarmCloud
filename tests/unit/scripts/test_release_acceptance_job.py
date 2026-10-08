@@ -46,7 +46,7 @@ def _job() -> dict:
     return jobs["acceptance"]
 
 
-def _starts(environment, deploy: str = "success") -> bool:
+def _starts(environment, deploy: str = "success", superseded: str = "false") -> bool:
     condition = str(_job()["if"])
     # The status function is modelled by test_release_prod_gate.py; here a
     # run that was not cancelled is the case that matters.
@@ -55,7 +55,11 @@ def _starts(environment, deploy: str = "success") -> bool:
     return bool(
         _evaluate(
             condition,
-            **{"needs.deploy.result": deploy, "github.event.inputs.environment": environment},
+            **{
+                "needs.deploy.result": deploy,
+                "needs.deploy.outputs.superseded": superseded,
+                "github.event.inputs.environment": environment,
+            },
         )
     )
 
@@ -75,6 +79,17 @@ def test_it_runs_on_dev_only_after_deploy_succeeded(environment):
 
 def test_it_never_starts_on_prod():
     assert not _starts("prod", "success")
+
+
+@pytest.mark.parametrize("environment", [None, "dev"], ids=["push", "dev-dispatch"])
+def test_it_does_not_accept_a_release_a_newer_commit_superseded(environment):
+    """The hotfix lane (owner decision 2026-10-08, observer proposal H) may
+    apply a newer commit while this release deploys; the deploy stage then
+    stops green with superseded=true, and accepting what is no longer this
+    release's deployment would spend 45 minutes proving nothing about it.
+    MUTATION: drop `needs.deploy.outputs.superseded != 'true'` from the `if:`."""
+    assert not _starts(environment, "success", superseded="true")
+    assert _starts(environment, "success", superseded="")
 
 
 def test_it_runs_every_group_through_verify_remote():

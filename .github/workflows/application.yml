@@ -360,6 +360,10 @@ jobs:
     # Pinned, like every other scanner here, so the gate cannot change its mind
     # between two runs of the same commit.
     #
+    # hotfix.yml likewise runs only on main, and it and release.yml run the
+    # stages in .github/actions/release-*, whose inputs actionlint checks at
+    # each `uses:` (owner decision 2026-10-08, observer proposal H).
+    #
     # iam-refusal-probe.yml is linted here for the same reason as release.yml,
     # more so: it runs only when the owner dispatches it, once, so a broken
     # expression in its revert gate would otherwise first show on that run.
@@ -373,7 +377,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
+      - name: actionlint release.yml, hotfix.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -381,7 +385,8 @@ jobs:
           bash "${RUNNER_TEMP}/download-actionlint.bash" "${ACTIONLINT_VERSION}" "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
-            .github/workflows/release.yml .github/workflows/application.yml \
+            .github/workflows/release.yml .github/workflows/hotfix.yml \
+            .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
             .github/workflows/auto-merge.yml
 
@@ -476,6 +481,12 @@ jobs:
             # to hold it to reusing this workflow's build. release.yml never runs on
             # a pull request, so without this a PR touching only it ran nothing.
             .github/workflows/release.yml
+            # The hotfix lane, and the stages both lanes run: held to their shape
+            # by tests/unit/scripts/test_hotfix_release.py and the release tests,
+            # which flatten each stage into the job that runs it. Neither runs on a
+            # pull request.
+            .github/workflows/hotfix.yml
+            .github/actions/**
             # tests/unit/scripts/test_issue_forms.py validates the issue forms and
             # the label declaration. Without these a PR editing only a form would run
             # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
