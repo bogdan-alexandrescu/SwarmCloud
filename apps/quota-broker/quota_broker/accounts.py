@@ -134,10 +134,22 @@ HOLD_END_EXPIRED = "expired"
 #: `swapped_to`; the new hold's record carries `swapped_from`, so the 90-day
 #: history serves the swap from both accounts' side with no second store.
 HOLD_END_SWAPPED = "swapped"
+#: The account was removed (`DELETE /v1/accounts/{id}`) while the hold was
+#: open. Closed in the removal's own transaction with `released_at` = the
+#: removal, so the span ends when the account stopped existing -- rather than
+#: staying open until its TTL and then reading as `expired`, a worker killed
+#: outright, which is not what happened.
+HOLD_END_ACCOUNT_REMOVED = "account_removed"
 
 #: Every end a record may carry. The broker's history read and swarm-api's
 #: serve exactly these and nothing else.
-HOLD_ENDS = (HOLD_END_RELEASED, HOLD_END_UNUSABLE, HOLD_END_EXPIRED, HOLD_END_SWAPPED)
+HOLD_ENDS = (
+    HOLD_END_RELEASED,
+    HOLD_END_UNUSABLE,
+    HOLD_END_EXPIRED,
+    HOLD_END_SWAPPED,
+    HOLD_END_ACCOUNT_REMOVED,
+)
 
 #: Why an attempt moved from one account to another mid-run (S13/S14).
 #:
@@ -754,8 +766,9 @@ def hold_log_entry(
 
     `expires_at` is the TTL field. A closed record keeps `HOLD_LOG_RETENTION`
     from when it closed; an OPEN one keeps it from when its hold would lapse,
-    so a record whose hold is never closed -- the account removed under a live
-    agent -- still ages out rather than living forever.
+    so a record whose hold is never closed still ages out rather than living
+    forever. (Removing the account closes its open records as
+    `account_removed`; see `main.remove_account_and_close_holds`.)
 
     A SWAP IS TWO RECORDS (S13/S14). The hold that was left closes with
     `end: swapped` and `swapped_to` naming the account the attempt moved to;
@@ -1046,6 +1059,7 @@ __all__ = [
     "DEFAULT_ASSIGN_FLOOR",
     "DEFAULT_HOLD_TTL",
     "DEFAULT_STALE_AFTER",
+    "HOLD_END_ACCOUNT_REMOVED",
     "HOLD_END_EXPIRED",
     "HOLD_END_RELEASED",
     "HOLD_END_SWAPPED",
