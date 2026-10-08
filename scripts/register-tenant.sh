@@ -1213,9 +1213,11 @@ ws_a9() {
   fi
   # The forge slot, its twin, and who reads them.
   for name in "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}"; do
-    ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json \
-      && [[ "$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")" == "${WS_TENANT}" ]] \
-      || { ws_object "forge slot"; return 1; }
+    if ! ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json \
+      || [[ "$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")" != "${WS_TENANT}" ]]; then
+      ws_object "forge slot"
+      return 1
+    fi
     n=$((n + 1))
   done
   ws_call "${WS_WORK}/slot-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_SLOT}" \
