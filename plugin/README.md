@@ -473,7 +473,10 @@ finishes: the mock parks the task's first attempt only, counted by the task's
 own `attempt_count`, so the bound holds even when the park's checkpoint fails
 to upload. Before 0.5.3 the rate limit fired on every attempt, a park does not
 spend one, and the step parked until cancelled, which is why 0.5.2 withheld
-both keys. `exit_code` refuses the codes the worker reads as a success, a rate
+both keys. With `"artifact_before_park": true` beside it, the mock writes
+its artifact before that park and not again after it, so the file the step
+ends with can only have been carried from the parked attempt (contract
+request 56, #166; the recipe is in docs/workflows.md). `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
 restated here. `claude-code` and `codex` declare one input, `issue`: the
@@ -511,6 +514,7 @@ What each declaring profile takes, as `swarm_profiles` lists it:
 | `artifact_name` | filename | the output artifact's file name |
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+| `artifact_before_park` | boolean | write the output artifact before the simulated rate limit parks the first attempt |
 <!-- /runner-inputs:mock -->
 
 <!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
