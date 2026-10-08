@@ -7,7 +7,12 @@
     "and by scripts/lib/check-contract-parity.sh (section 8).",
     "The private-key markers are written with \\u002d for their first dash, so no",
     "tracked file holds a PEM header a secret scanner (security.yml) would flag;",
-    "every JSON reader decodes it to the real marker. Every value is synthetic."
+    "every JSON reader decodes it to the real marker. Every value is synthetic.",
+    "The kv-224- cases (and control-224-gh-token) are issue #224's reproduction,",
+    "word for word: a rule change that un-masks any of them reopens that issue.",
+    "Their `text` writes the separator as \\u003d or \\u003a for the same reason as",
+    "the PEM dash: the line then is not a NAME=value a publish scan would refuse;",
+    "every JSON reader decodes it to the plain `=` or `:`."
   ],
   "cases": [
     {
@@ -242,6 +247,94 @@
       "name": "control-revoked-times",
       "text": "credential_revoked_times: 2",
       "expected": "credential_revoked_times: 2",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "kv-224-password-hash-equals",
+      "text": "password_hash\u003dpbkdf2-synthetic",
+      "expected": "password_hash\u003dpbkdf2-synthetic",
+      "never": [
+        "pbkdf2-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-plain-credentials",
+      "text": "credentials\u003a cedar-synthetic-0042",
+      "expected": "credentials: ********",
+      "never": [
+        "cedar-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-plain-api-keys",
+      "text": "api_keys\u003a birch-synthetic-0042",
+      "expected": "api_keys: ********",
+      "never": [
+        "birch-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-plain-passwords",
+      "text": "passwords\u003a alder-synthetic-0042",
+      "expected": "passwords: ********",
+      "never": [
+        "alder-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-aws-secret-issue-value",
+      "text": "AWS_SECRET_ACCESS_KEY\u003dwJalr-synthetic-0042",
+      "expected": "AWS_SECRET_ACCESS_KEY=********",
+      "never": [
+        "wJalr-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-private-key-issue-value",
+      "text": "private_key\u003a abc-synthetic-0042",
+      "expected": "private_key: ********",
+      "never": [
+        "abc-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-plural-secrets-issue-value",
+      "text": "secrets\u003a s3-synthetic-0042",
+      "expected": "secrets: ********",
+      "never": [
+        "s3-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-x-api-key-issue-value",
+      "text": "x-api-key\u003a c2Vy-synthetic",
+      "expected": "x-api-key: ********",
+      "never": [
+        "c2Vy-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "control-224-gh-token",
+      "text": "GH_TOKEN\u003dabc-synthetic-0042",
+      "expected": "GH_TOKEN=********",
+      "never": [
+        "abc-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-224-count-input-tokens-colon",
+      "text": "input_tokens: 10",
+      "expected": "input_tokens: 10",
       "never": [],
       "count": 0
     },
