@@ -870,3 +870,76 @@ def test_no_step_prints_the_project_policy_or_asks_for_a_token(tmp_path):
     # The code, not the header that says it never does this.
     code = "\n".join(line for line in SCRIPT.read_text().splitlines() if not line.lstrip().startswith("#"))
     assert "print-access-token" not in code and "print-identity-token" not in code
+
+
+# ---------------------------------------------------------------------------
+# #69: a refusal of PROBE_ROLE stands for swarmSecretLister
+# ---------------------------------------------------------------------------
+#
+# hasOnly() treats every role it does not list alike, so a refusal of
+# roles/browser is a refusal of swarmSecretLister exactly when no live chunk
+# lists swarmSecretLister. The probe never asks for swarmSecretLister itself:
+# if the condition were broken, the deployer would hold project-wide
+# secrets.setIamPolicy over the other team's secrets until the revert.
+
+SECRET_LISTER = "projects/saga-agents-staging/roles/swarmSecretLister"
+
+
+def test_preflight_stops_when_a_chunk_lists_swarm_secret_lister(tmp_path):
+    """MUTATION: drop the `lists-secret-lister` verdict, or its case arm."""
+    second = _chunk(2, 2, SECOND_CHUNK + [SECRET_LISTER])
+    probe = Probe(tmp_path, _chunked_policy(_chunk(1, 2, FIRST_CHUNK), second), add="grant")
+    preflight = probe.run("preflight")
+    assert preflight.returncode != 0, "preflight passed although a chunk lists swarmSecretLister"
+    assert probe.outputs().get("ready") != "true"
+    assert "Nothing was attempted" in preflight.stderr
+    assert "swarmSecretLister" in preflight.stderr and "#69" in preflight.stderr, preflight.stderr
+    assert probe.calls("add-iam-policy-binding") == []
+
+
+def test_a_pass_says_the_refusal_stands_for_swarm_secret_lister(tmp_path):
+    """MUTATION: drop the swarmSecretLister clause from preflight's summary line."""
+    probe = Probe(
+        tmp_path, _chunked_policy(_chunk(1, 2, FIRST_CHUNK), _chunk(2, 2, SECOND_CHUNK)), add="refuse"
+    )
+    preflight = probe.run("preflight")
+    assert preflight.returncode == 0, preflight.stderr
+    assert probe.outputs().get("ready") == "true"
+    assert "no chunk lists swarmSecretLister" in preflight.stdout + preflight.stderr
+    lines = [
+        line for line in probe.summary_file.read_text().splitlines()
+        if "swarmSecretLister" in line and "#69" in line
+    ]
+    assert lines, probe.summary_file.read_text()
+    assert any("no chunk lists" in line and "also" in line for line in lines), lines
+    # It is said, never asked: the probe's only write is still PROBE_ROLE.
+    assert probe.run("grant").returncode == 0
+    (call,) = probe.calls("add-iam-policy-binding")
+    assert f"--role={PROBE_ROLE}" in call and not any("swarmSecretLister" in arg for arg in call)
+
+
+@pytest.mark.parametrize(
+    ("role", "quote", "stops"),
+    [
+        pytest.param(SECRET_LISTER, '"', True, id="shared-project-double-quoted"),
+        pytest.param(SECRET_LISTER, "'", True, id="shared-project-single-quoted"),
+        pytest.param(f"projects/{PROJECT}/roles/swarmSecretLister", '"', True, id="other-project"),
+        pytest.param(f"projects/{PROJECT}/roles/swarmSecretLister", "'", True, id="other-project-single"),
+        # Controls: the match is on the whole role id, not a substring.
+        pytest.param(f"projects/{PROJECT}/roles/swarmSecretListerV2", '"', False, id="longer-id"),
+        pytest.param(f"projects/{PROJECT}/roles/notswarmSecretLister", "'", False, id="prefixed-id"),
+    ],
+)
+def test_swarm_secret_lister_is_matched_by_role_id_in_either_quote_style(tmp_path, role, quote, stops):
+    """MUTATION: compare the whole entry to one project's role name, or match a
+    substring instead of the `/roles/swarmSecretLister` suffix."""
+    second = _chunk(2, 2, [role] + SECOND_CHUNK, quote=quote)
+    probe = Probe(tmp_path, _chunked_policy(_chunk(1, 2, FIRST_CHUNK), second), add="refuse")
+    preflight = probe.run("preflight")
+    if stops:
+        assert preflight.returncode != 0, f"preflight passed although a chunk lists {role}"
+        assert "swarmSecretLister" in preflight.stderr and "#69" in preflight.stderr, preflight.stderr
+        assert probe.calls("add-iam-policy-binding") == []
+    else:
+        assert preflight.returncode == 0, preflight.stderr
+        assert probe.outputs().get("ready") == "true"
