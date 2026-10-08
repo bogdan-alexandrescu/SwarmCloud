@@ -20,7 +20,7 @@ four steps:
 
 | step | what it does | writes? |
 |---|---|---|
-| `preflight (read-only)` | Stops unless the verdict can only be the condition's. The conditioned `projectIamAdmin` is live, and the unconditioned one is gone. The condition does not list `roles/browser`. The deployer holds no `roles/browser` binding yet. No other role it holds carries `resourcemanager.projects.setIamPolicy`. | no |
+| `preflight (read-only)` | Stops unless the verdict can only be the condition's. The conditioned `projectIamAdmin` bindings are live (one per chunk of at most 10 roles since #275, so two today), and the unconditioned one is gone. Every one of them is exactly the `modifiedGrantsByRole` `hasOnly([...])` test, and none lists `roles/browser`. The deployer holds no `roles/browser` binding yet. No other role it holds carries `resourcemanager.projects.setIamPolicy`. | no |
 | `ask for roles/browser as the deployer` | `gcloud projects add-iam-policy-binding`, deployer to itself, `--condition=None`. Passes **only** on a PERMISSION_DENIED for `saga-agents-staging:setIamPolicy`. | only if the condition fails |
 | `revert and read back` | Runs on every path after preflight, including a failed or cancelled grant. Reads the policy. If `roles/browser` is on the deployer, it removes exactly that binding, reads again to confirm, and fails. | only to undo the grant |
 | `what this run means` | Writes one line to the run summary. | no |
@@ -53,7 +53,11 @@ project ones, and this project has no organisation or folder.
          | (.condition.title // "NO CONDITION")'
    ```
 
-   Expect exactly one line, `only the roles terraform infra grants`. A
+   Expect one line per chunk and nothing else: since #275 the grant is one
+   conditioned binding per chunk of at most 10 roles, because `hasOnly()`
+   refuses a longer list, so fifteen roles read as
+   `only the roles terraform infra grants (chunk 1 of 2)` and
+   `... (chunk 2 of 2)`. Preflight checks every one of them, not the first. A
    `NO CONDITION` line means the apply has not landed, or has been reverted.
    Preflight would stop there anyway, and nothing would be written.
 
@@ -89,7 +93,7 @@ refuses any other ref by name, before the auth step is reached.
 | green; summary **PASS** | IAM refused the deployer's grant of `roles/browser` with PERMISSION_DENIED on `saga-agents-staging:setIamPolicy`. The policy read back afterwards has no such binding. | Comment on #68 with the run URL: the refusal side is proven. #68's fifth criterion (#79) is **not** met by this. |
 | red at `refuse any ref but main` | It was dispatched on another ref. Nothing authenticated. | Dispatch again with `--ref main`. |
 | red at `google-github-actions/auth` | WIF refused the token, or a repository variable is missing. Nothing was attempted. | Read the step. The auth step and variables are the same ones `release.yml` uses. |
-| red at `preflight (read-only)` | Nothing was written. Its last line names the reason: the unconditioned `projectIamAdmin` is still there, the condition lists `roles/browser`, the deployer already holds `roles/browser`, a role it holds carries `setIamPolicy`, or the policy could not be read. | Fix what it names, then dispatch again. **A role that carries `setIamPolicy` is a finding in itself.** Take it to #79, because it means CI can already write the project policy without the condition. |
+| red at `preflight (read-only)` | Nothing was written. Its last line names the reason: the unconditioned `projectIamAdmin` is still there, there is no conditioned one, one of the chunks' conditions is not the bare `modifiedGrantsByRole` `hasOnly([...])` test or lists `roles/browser`, the deployer already holds `roles/browser`, a role it holds carries `setIamPolicy`, or the policy could not be read. | Fix what it names, then dispatch again. **A role that carries `setIamPolicy` is a finding in itself.** Take it to #79, because it means CI can already write the project policy without the condition. |
 | red at `ask for roles/browser`, **GRANTED — reopen #68**; the revert step says the binding was removed and the read-back confirms it | The condition admitted a role it does not list. | Reopen #68 with the run URL. The binding is already gone. Whether to revert the scoping or fix the condition is an owner decision. |
 | red at `revert and read back`, **REVERT FAILED** | The grant landed, and the probe could not remove it. The deployer may still hold `roles/browser`. | Remove it now ([below](#if-the-revert-did-not-finish)). Reopen #68. |
 | red at `ask for roles/browser`, **inconclusive**; the revert step is green | Neither a refusal nor a grant: an auth failure, a network error, a disabled API, or a gcloud wording the probe does not recognise. The green revert means the read-back found nothing bound. | Read the grant step's redacted error. If it is a refusal in words `classify` does not know, fix `classify` in `scripts/iam-refusal-probe.sh` in a pull request and run again. **Do not read it as a pass.** |

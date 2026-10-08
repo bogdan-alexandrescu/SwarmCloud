@@ -637,3 +637,13 @@ def test_the_workflow_list_holds_only_what_the_listed_account_submitted(fixer_cl
     assert mine.json()["workflows"] == []
     everyone = fixer_client.get("/v1/workflows", headers=ALICE)
     assert alices["workflow_id"] in {w["workflow_id"] for w in everyone.json()["workflows"]}
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

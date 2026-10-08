@@ -258,11 +258,14 @@ CODECS: tuple[Codec, ...] = (
         # 2026-10-01: the API is the one source of a console link). The three
         # heartbeat fields (#179) are the task's current LEASE, read by
         # `swarm_api.heartbeats`, never stored on the task.
+        # `forge_credential_source` (#780 OB7) is the words for the stored
+        # `forge_credential`, `codec.forge_credential_source`.
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
+            "forge_credential_source",
         ),
     ),
     Codec(

@@ -360,3 +360,13 @@ def test_membership_is_asked_of_the_directory_for_the_tenants_one_group(group_ma
     down = Authenticator(api_settings(), StaticTokenVerifier({}), Unreachable())
     with pytest.raises(UpstreamUnavailable):
         down.is_tenant_member("alice@saga.xyz", eng)
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

@@ -2101,8 +2101,12 @@ class RepoIndex:
             return run, True
         try:
             choice = self._choose(tenant_id, repo_id, sha, kind)
+            # A service submission (owner's D4 for automation, 2026-10-07): the
+            # index runs with the tenant token whoever registered the
+            # repository, so it does not stop when they hold no grant (#780 OB7).
             submission = self._submissions.submit_tasks(
-                auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)]
+                auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)],
+                service_submission=True,
             )
         except Exception:
             self._confirm(tenant_id, repo_id, claim, None)

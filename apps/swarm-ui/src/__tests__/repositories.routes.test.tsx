@@ -49,7 +49,9 @@ describe('the Work section carries Repositories', () => {
 
   it('draws a Repositories row in the Work panel, after Timeline', () => {
     const keys = PANEL_PAGES.work.map((p) => p.key)
-    expect(keys[keys.length - 1]).toBe('repositories')
+    // Followed only by OB8's Setup and Access (#780).
+    expect(keys.indexOf('repositories')).toBe(keys.indexOf('timeline') + 1)
+    expect(keys.slice(keys.indexOf('repositories') + 1)).toEqual(['setup', 'access'])
     const row = PANEL_PAGES.work.find((p) => p.key === 'repositories')!
     expect([row.label, row.to, row.icon]).toEqual(['Repositories', 'work/repositories', 'repo'])
   })

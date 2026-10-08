@@ -540,3 +540,13 @@ def test_the_console_run_link_is_the_route_paths_ts_serves():
     assert "return `/runs/${encodeURIComponent(run)}`" in paths
     assert run_console_url(CONSOLE + "/", "run_a b") == f"{CONSOLE}/runs/run_a%20b"
     assert run_console_url("", "run_1") is None
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

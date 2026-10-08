@@ -247,3 +247,13 @@ def test_a_child_inherits_its_parents_person():
 def test_a_service_account_caller_is_never_named():
     assert gitidentity.for_caller(FIXER) == gitidentity.BOT_IDENTITY
     assert gitidentity.for_caller(ALICE, "Alice <x>\n") == {"name": "Alice x", "email": ALICE}
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

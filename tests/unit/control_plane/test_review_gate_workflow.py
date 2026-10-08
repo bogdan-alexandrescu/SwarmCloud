@@ -283,3 +283,13 @@ def test_building_on_a_branch_nobody_pushes_is_refused(client, db, strategy):
     body = _assert_refused(client, db, spec, "invalid_dispatch")
     assert body["detail"]["step_id"] == "b"
     assert body["detail"]["strategy"] == strategy
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

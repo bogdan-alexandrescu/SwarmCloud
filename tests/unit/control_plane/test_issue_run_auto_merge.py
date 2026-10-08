@@ -22,6 +22,8 @@ network, no emulator.
 
 from __future__ import annotations
 
+import pytest
+
 import json
 
 from swarm_api import issueci, issueruns
@@ -198,3 +200,13 @@ def test_a_refused_merge_fails_the_run_with_the_steps_reason_and_is_not_resubmit
     assert run["state"] == "FAILED"
     assert "token_lacks_rights" in run["error"]
     assert len(_merge_workflows(db)) == 1
+
+
+
+@pytest.fixture(autouse=True)
+def _members_hold_grants(db):
+    """#780 OB7: a person's task on GitHub needs their grant. This file is about
+    something else, so its members hold one on every repository it names."""
+    from .conftest import TEST_REPOSITORIES, grant_members
+
+    grant_members(db, *TEST_REPOSITORIES)

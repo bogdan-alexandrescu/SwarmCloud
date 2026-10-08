@@ -429,6 +429,19 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_plan_approve",
         "sc.cmd_plan_edit",
         "sc.cmd_plan_reject",
+        # #780 (OB9): connecting GitHub opens a browser and waits, and the
+        # access verbs change what SwarmCloud may do as the person -- grant,
+        # revoke, re-verify, enable or disable an owner, disconnect. /sc:setup
+        # reaches them through the bridge tools, granted by name; no Bash
+        # grant may reach them, and one for a view must not.
+        "sc.cmd_setup",
+        "sc.cmd_access",
+        "sc.cmd_access_add_org",
+        "sc.cmd_access_remove_org",
+        "sc.cmd_access_grant",
+        "sc.cmd_access_revoke",
+        "sc.cmd_access_verify",
+        "sc.cmd_access_disconnect",
     }
 )
 
