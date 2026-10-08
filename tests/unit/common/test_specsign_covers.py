@@ -120,9 +120,11 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: the reconciler's refund counter, the worker's await-refund counter and the
 #: cascade marker (written on a running child), the child's request id,
 #: which only swarm-api's dedupe reads (docs/design/child-tasks.md §6.4), and
-#: a merge step's CI wait, written by its park and its wake tick (lane MS2).
+#: a merge step's CI wait, written by its park and its wake tick (lane MS2),
+#: and the reconciler's disk-eviction count, written on an evicted attempt (#893).
 UNSIGNED_PLATFORM_KEYS = {
     "startup_refunds",
+    "disk_evictions",
     "child_await_resumes",
     "child_cascade",
     "child_request_id",
@@ -135,6 +137,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         CHILD_AWAIT_RESUMES_METADATA_KEY,
         CHILD_CASCADE_METADATA_KEY,
         CHILD_REQUEST_ID_METADATA_KEY,
+        DISK_EVICTIONS_METADATA_KEY,
         MERGE_WAIT_METADATA_KEY,
         RESERVED_METADATA_KEYS,
         STARTUP_REFUNDS_METADATA_KEY,
@@ -147,4 +150,5 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         CHILD_CASCADE_METADATA_KEY,
         CHILD_REQUEST_ID_METADATA_KEY,
         MERGE_WAIT_METADATA_KEY,
+        DISK_EVICTIONS_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
