@@ -99,8 +99,10 @@ FROM ${NGINX_IMAGE}
 # runs as uid 101; the USER line hands it back after the root-only apk step.
 # Release 36970395891 (2026-10-02) refused the image again, this time over
 # pcre2 10.48-r0 (CVE-2026-103111, HIGH, fixed in 10.49-r0); same reason, same fix.
+# Releases 37812320090 and 37816339298 (2026-10-08) refused it over tiff 4.7.1-r0
+# (CVE-2026-4775, HIGH, fixed in 4.7.2-r0), holding every merge since 09:37Z.
 USER root
-RUN apk upgrade --no-cache libexpat pcre2
+RUN apk upgrade --no-cache libexpat pcre2 tiff
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
