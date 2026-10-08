@@ -97,7 +97,7 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
   }
 
   assert {
-    condition     = length(output.worker_models) == 4 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5" && output.worker_models["indexer"] == "claude-opus-5-5" && output.worker_models["claude-code-gke"] == "claude-opus-5-5"
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's and claude-code-gke's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on GKE Autopilot, contract request 55), so a Job the scheduler creates runs what a Terraform Job runs"
+    condition     = length(output.worker_models) == 3 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5" && output.worker_models["indexer"] == "claude-opus-5-5"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's and indexer's (the same: claude-code under its own account, #295; on the indexer image, contract request 48). claude-code runs on GKE Autopilot (contract request 53), so WORKER_MODELS is the only way its MODEL reaches a pod"
   }
 }

@@ -63,19 +63,18 @@ def _backends() -> dict[str, Backend]:
 
 
 def test_the_catalogue_is_what_the_amendment_describes():
-    """The premise: Cloud Run Jobs for four profiles, GKE for browser alone.
+    """The premise: Cloud Run Jobs for most profiles, GKE for browser and claude-code.
 
     If this fails the profiles moved, and every document below is describing
     the old split: amend them before changing the expectation here.
     """
     backends = _backends()
-    # claude-code-gke: contract request 55 (accepted 2026-10-07), TEMPORARY --
-    # the request 53 canary, gone when claude-code itself moves to GKE.
-    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code-gke"}
+    # claude-code: contract request 53, applied 2026-10-08 after request 55's
+    # canary (claude-code-gke, removed by the same change).
+    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code"}
     assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
         "mock",
         "generic",
-        "claude-code",
         "codex",
         # #295, contract requests 33, 35 and 36 (accepted 2026-10-01).
         "merge",
