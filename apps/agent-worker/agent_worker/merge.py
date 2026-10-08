@@ -770,6 +770,12 @@ class MergeTarget:
     #: both set, and `pull_request` None.
     number: int | None = None
     head_sha: str | None = None
+    #: A merge-only continuation's (#900): the workflow the continued task
+    #: `pull_request` belongs to, which swarm-api read from that task's record
+    #: at submission and signed here. The opener's spec is verified against
+    #: THIS workflow, not the merge's own; None for a merge inside the
+    #: workflow that opened the pull request.
+    pull_request_workflow: str | None = None
 
 
 class TargetInvalid(ValueError):
@@ -785,7 +791,8 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
         )
     unknown = sorted(
         str(k) for k in raw
-        if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha")
+        if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha",
+                     "pull_request_workflow")
     )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
@@ -799,6 +806,18 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request is not a task id")
     review = raw.get("review")
     verdict_file = raw.get("verdict_file")
+    if "pull_request_workflow" in raw:
+        # A merge-only continuation's target (#900): the continued task and
+        # its workflow, and no review -- `validation.merge_sources` gives a
+        # continuation none. A workflow id has a task id's shape.
+        workflow = _task_id(raw.get("pull_request_workflow"))
+        if workflow is None:
+            raise TargetInvalid(f"{MERGE_TARGET_FIELD}.pull_request_workflow is not a workflow id")
+        if review is not None or verdict_file is not None:
+            raise TargetInvalid(
+                f"{MERGE_TARGET_FIELD} names another workflow's pull request and also a review"
+            )
+        return MergeTarget(pull_request, base=base, pull_request_workflow=workflow)
     if review is None and verdict_file is None:
         return MergeTarget(pull_request, base=base)
     if _task_id(review) is None or not isinstance(verdict_file, str) or not verdict_file:
@@ -898,7 +917,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
 
     try:
         opener = ctx.fetch_upstream(target.pull_request)
-        ctx.verify_upstream(target.pull_request, opener)
+        _verify_opener(ctx, target, opener)
         if target.review is not None:
             ctx.verify_upstream(target.review, ctx.fetch_upstream(target.review))
     except UpstreamSpecUnverified as exc:
@@ -946,6 +965,31 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+def _verify_opener(ctx: ActionContext, target: MergeTarget, opener: Mapping[str, Any]) -> None:
+    """The opener's signed spec, against the workflow IT belongs to (#900).
+
+    Inside one workflow that is this step's own, as for every upstream. A
+    merge-only continuation merges a task of an EARLIER workflow -- an issue
+    run's integrator, or its last CI-fix round -- so its spec is verified
+    against the workflow the merge's own signed target names, which the
+    opener's signed `workflow_id` must then equal: a forged or edited spec
+    is still `signature_mismatch`, and an honest spec of any other workflow
+    still `workflow_mismatch`. Authority is bound separately, by this
+    step's own signed spec: a continuation's dispatch block `continues` the
+    branch the opener's pull request is on, or the target is not this
+    continuation's to merge (`workflow_mismatch` too, fail closed).
+    swarm-api bound the target to the issue run's record before signing it
+    (`issueci.merge_target_bound`).
+    """
+    assert target.pull_request is not None
+    if target.pull_request_workflow is None:
+        ctx.verify_upstream(target.pull_request, opener)
+        return
+    ctx.verify_upstream(target.pull_request, opener, of_workflow=target.pull_request_workflow)
+    if _task_id(ctx.dispatch.get("continues")) != _branch_task(opener, target.pull_request):
+        raise UpstreamSpecUnverified(target.pull_request, "workflow_mismatch")
 
 
 def _merge_named(run: _Run, target: MergeTarget) -> ActionOutcome:

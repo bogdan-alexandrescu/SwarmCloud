@@ -933,6 +933,35 @@ def merge_workflow(run: IssueRun, pushed_by: str, head_sha: str) -> WorkflowCrea
     })
 
 
+def merge_target_unbound(ctx: Any, tenant_id: str, run: IssueRun, pushed_by: str) -> str:
+    """Why the run's record does not bind `pushed_by` and its workflow, or ''.
+
+    The merge workflow's signed `merge_target` names the task it merges and
+    that task's OWN workflow, read from the task's record at submission
+    (#900): the worker verifies the task's signed spec against that
+    workflow, not the merge's. This is what makes that workflow this run's
+    to merge: the integrator is `run.pr_task_id` of `run.workflow_id`, and
+    any other pushing task is a CI-fix round of one of `run.ci_fix_workflows`.
+    Anything else -- a task of another workflow, a run that recorded no
+    workflow -- refuses the merge before it is submitted, fail closed.
+    """
+    try:
+        task = ctx.store.get_task(tenant_id, pushed_by, submitted_by=None)
+    except NotFound:
+        return f"its pushing task {pushed_by} no longer exists"
+    workflow_id = getattr(task, "workflow_id", None)
+    if pushed_by == run.pr_task_id:
+        bound = bool(run.workflow_id) and workflow_id == run.workflow_id
+    else:
+        bound = bool(workflow_id) and workflow_id in run.ci_fix_workflows
+    if bound:
+        return ""
+    return (
+        f"its pushing task {pushed_by} belongs to workflow {workflow_id}, which is not this "
+        f"run's (workflow {run.workflow_id}, CI-fix rounds {list(run.ci_fix_workflows)})"
+    )
+
+
 def _pushed_head(task: Any) -> str | None:
     summary = getattr(task, "result_summary", None)
     git = summary.get("git") if isinstance(summary, Mapping) else None
@@ -1070,6 +1099,9 @@ def _merge(
     pushed_by = _pushing_task(ctx, tenant_id, run, head)
     if pushed_by is None:
         return _fail(f"its head {head[:12]} was not pushed by any of this run's tasks")
+    unbound = merge_target_unbound(ctx, tenant_id, run, pushed_by)
+    if unbound:
+        return _fail(unbound)
     try:
         owner = owner_auth(ctx, run)
     except UpstreamUnavailable:

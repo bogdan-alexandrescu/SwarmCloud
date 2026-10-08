@@ -926,6 +926,25 @@ rests on the review's verdict of the code before the round and on green
 required checks. A merge-only continuation is a tenant member's: the
 continuation-scoped CI-fixer account (request 30) is refused one.
 
+**A merge-only continuation verifies its task against THAT task's workflow
+(#900).** The task it merges ran in an earlier workflow -- the run's, or a
+fix round's -- and the merge runs in its own. Verifying the task's signed
+spec against the merge's own workflow, as every other upstream is, made
+every issue run's auto-merge end `spec_unverified ... workflow_mismatch`. So
+the signed `merge_target` also names `pull_request_workflow`, the task's
+workflow as swarm-api read it from the task's record at submission
+(`continuation.resolve_continuation`), and the worker verifies the task's
+spec against that (`merge._verify_opener`): a forged or edited spec is still
+`signature_mismatch`, an honest spec of any other workflow still
+`workflow_mismatch`. Authority is bound twice, separately from the
+signature. The issue-run loop refuses to submit unless the run's record names
+that task and workflow (`issueci.merge_target_unbound`: `run.pr_task_id` of
+`run.workflow_id`, or a CI-fix task of one of `run.ci_fix_workflows`), and
+the worker refuses (`workflow_mismatch`) unless its own signed dispatch block
+`continues` the branch the task's pull request is on. A merge inside the
+workflow that opened the pull request names no `pull_request_workflow` and is
+checked against its own workflow exactly as before.
+
 **Operator step: the merge Job needs `git` in the tenant's providers.** The
 merge profile now runs on the tenant's `-git` token, so its Job exists only
 for a tenant whose tfvars `providers` lists `"git"`

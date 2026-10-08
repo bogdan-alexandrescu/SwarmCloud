@@ -106,7 +106,13 @@ def test_green_with_the_keyword_written_submits_one_merge_continuing_the_integra
     integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
     task = _merge_task(db, merge_wf)
     assert task["runner_profile"] == "merge" and task["provider"] == "git"
-    assert task["metadata"]["dispatch"]["merge_target"] == {"pull_request": integrator["id"]}
+    # The integrator's OWN workflow, signed beside it (#900): the worker
+    # verifies the integrator's spec against the run's workflow, not the merge's.
+    assert task["metadata"]["dispatch"]["merge_target"] == {
+        "pull_request": integrator["id"], "pull_request_workflow": running["workflow_id"],
+    }
+    assert integrator["workflow_id"] == running["workflow_id"] != merge_wf["workflow_id"]
+    assert task["metadata"]["dispatch"]["continues"] == integrator["id"]
     assert task["repository_url"].startswith("https://github.com/saga-xyz/widgets")
 
     # Another read while the merge runs submits nothing more.
@@ -153,9 +159,26 @@ def test_red_ci_on_an_auto_merge_run_is_a_fix_round_then_the_merge_continues_it(
     assert run["state"] == "CHECKING", run.get("error")
     (merge_wf,) = _merge_workflows(db)
     assert _merge_task(db, merge_wf)["metadata"]["dispatch"]["merge_target"] == {
-        "pull_request": fixer["id"],
+        "pull_request": fixer["id"], "pull_request_workflow": round_one,
     }
     assert run["merge"]["head_sha"] == SHA_B
+
+
+def test_a_pushing_task_of_a_workflow_not_the_runs_is_not_merged(client, db, objects, writes, clock):
+    """#900: the run's record binds the task the merge names AND its workflow.
+
+    MUTATION: drop `merge_target_unbound` from `issueci._merge` -- the merge
+    is submitted for an integrator whose workflow is not the run's."""
+    running = _checking(client, db, objects, writes)
+    integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
+    integrator["workflow_id"] = "wf_" + "f" * 20
+    writes.check(SHA_A, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "which is not this run's" in run["error"]
+    assert _merge_workflows(db) == []
 
 
 def test_a_review_verdict_of_not_yet_fails_the_merge_and_submits_none(
