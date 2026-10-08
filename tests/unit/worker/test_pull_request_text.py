@@ -448,10 +448,11 @@ def test_the_worker_always_offers_an_amendment_never_a_replacement(
 @pytest.mark.parametrize(
     ("issue", "expected"),
     [
-        (42, "Work on issue #42 (part of #42)"),
-        ("42", "Work on issue #42 (part of #42)"),
+        # Prefixed (Proposal B, 2026-10-08): the agent wrote no pr-title.txt.
+        (42, "[title missing] Work on issue #42 (part of #42)"),
+        ("42", "[title missing] Work on issue #42 (part of #42)"),
         ({"number": 42, "title": "The widget accepts a negative size"},
-         "The widget accepts a negative size (part of #42)"),
+         "[title missing] The widget accepts a negative size (part of #42)"),
     ],
     ids=["number", "numeric-string", "with-title"],
 )
@@ -483,7 +484,9 @@ def test_a_mention_in_an_issue_title_is_neutralised(
         task_input={"issue": {"number": 8, "title": mentioned}}, with_title=False,
     )
     pull = _only_pull(forge)
-    assert pull["title"] == f"{mentioned.replace('@', '@' + chr(0x200D))} (part of #8)", pull["title"]
+    assert pull["title"] == (
+        f"[title missing] {mentioned.replace('@', '@' + chr(0x200D))} (part of #8)"
+    ), pull["title"]
 
 
 #: A closing keyword as GitHub reads one in a squash-merge commit subject.
@@ -519,7 +522,7 @@ def test_without_the_issue_title_the_number_names_the_work_whatever_the_label(
         worker_factory, monkeypatch, origin, task_id="t-pr-label", files={},
         task_input={"issue": 42}, label="Sort the widget list", with_title=False,
     )
-    assert _only_pull(forge)["title"] == "Work on issue #42 (part of #42)"
+    assert _only_pull(forge)["title"] == "[title missing] Work on issue #42 (part of #42)"
 
 
 def test_the_prompt_alone_opens_no_pull_request(
@@ -564,7 +567,8 @@ def test_an_agent_title_carrying_a_task_id_is_treated_as_absent(
         task_input={"prompt": "Make the widget refuse negatives. More.", "issue": 77},
     )
     pull = _only_pull(forge)
-    assert pull["title"] == "Work on issue #77 (part of #77)", pull["title"]
+    # The issue's fallback, marked (Proposal B, 2026-10-08).
+    assert pull["title"] == "[title missing] Work on issue #77 (part of #77)", pull["title"]
     assert config.task_id not in pull["title"]
     assert out["pull_request_text"]["title"] == "platform", out
 

@@ -269,6 +269,48 @@ what happens to a file written to `$SWARM_ARTIFACTS_DIR`. A file caught in the
 working folder is a net under the agent that wrote somewhere else, not a
 second place to write.
 
+## A task with a repository: the worker publishes, the agent titles it
+
+The observer's report of 2026-10-08 read 32 pull requests and their tasks'
+answers. 31 answers said no pull request existed because the agent had no
+GitHub credentials, which was true of the agent and false of the step: the
+worker pushes the committed branch and opens the pull request after the agent
+exits. And 17 of the 32 pull requests were titled with their issue's title,
+because the worker never asked an issue step for `pr-title.txt` and titled the
+pull request from the issue without saying so. The owner decided two things.
+
+**Proposal A: one fixed paragraph ends every prompt with a repository.** A
+claude-code or codex task whose agent starts in a checkout gets, after the
+deliverables line and the questions sentence:
+
+```
+You do not push or open a pull request; the worker publishes your committed branch. Commit your work. Write the pull request's title (one line) to $SWARM_ARTIFACTS_DIR/pr-title.txt and its body to $SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull request exists because you lack GitHub credentials: the worker opens it after you finish.
+```
+
+It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
+CLIs, and fixed text, so a test holds it and it carries none of the rate-limit
+or credential markers a CLI that echoes its prompt would trip. A task with no
+repository does not get it, and neither does a resumed session, which already
+holds it. It goes to every step with a repository, a review included: the
+worker's strategy, not the agent, decides whether anything is pushed.
+
+**Proposal B: an issue step is asked for its title, and a missing one is
+visible.** `pr-title.txt` is now an expected output of every step that opens a
+pull request (`_title_requested`: `direct-pr`, the `integrate` integrator, a
+`single-pr` author, with a repository), with or without an `issue` input. So
+the runner names it in the prompt and, when the agent ends without it, resumes
+the session for **one** follow-up turn that asks for that file alone
+(`cliagent.TITLE_REPAIR_MAX_TURNS`; a turn that also has other repairs to ask
+for is the ordinary repair turn). Then:
+
+| still no usable `pr-title.txt` | the step names an issue | it does not |
+|---|---|---|
+| what happens | the pull request is titled `[title missing] <issue title> (part of #N)` | the attempt fails retryably, as before (`_title_owed`) |
+
+The prefix is the point: a fallback title is the worker's, and a reviewer has
+to be able to tell it from one the agent chose. A title a later step declared
+it will stage is never excused, issue or not: that step needs the file.
+
 ## At most 500 files from `$SWARM_ARTIFACTS_DIR`
 
 Found by reading on 2026-09-26 (#228), not measured: every file in the
