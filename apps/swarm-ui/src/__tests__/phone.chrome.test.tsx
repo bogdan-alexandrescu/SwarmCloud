@@ -202,6 +202,72 @@ describe('#139 at 390: every section is reachable from any scroll position, and 
   })
 })
 
+describe("#139 at 390: a section's sticky page strip sits flush under the header", () => {
+  it('nests the strip in the page scroller and the header outside it, and sticks the strip at 0 in both header heights', async () => {
+    // MUTATION: put `.ag-list-tabs`'s phone `top` back to 44px (36px when
+    // scrolled). The header is a row ABOVE `.ctl-scroll`, so the scroller's
+    // top edge already is the header's foot; any `top` past 0 leaves a band
+    // of rows scrolling through between the header and the strip, and a
+    // second value for the compacted header moves the strip mid-scroll.
+    const c = await at('/agents')
+    const strip = await waitFor(() => {
+      const el = c.querySelector<HTMLElement>('.ag-list-tabs')
+      expect(el, 'the Agents page drew no page strip').not.toBeNull()
+      return el!
+    })
+    const scroller = c.querySelector<HTMLElement>('.ctl-scroll')!
+    const bar = c.querySelector<HTMLElement>('.sk-pbar')!
+    expect(scroller.contains(strip), 'the strip is not inside the page scroller').toBe(true)
+    expect(scroller.contains(bar), 'the header is inside the page scroller').toBe(false)
+    expect(painted(strip, 'position', PHONE)).toBe('sticky')
+    expect(painted(strip, 'top', PHONE), 'the strip sticks below a gap under the header').toBe('0')
+    await scrollTo(scroller, 400)
+    expect(c.querySelector('.sk-app')!.classList.contains('is-scrolled')).toBe(true)
+    expect(painted(strip, 'top', PHONE), 'the strip moves when the header compacts').toBe('0')
+    // Painted in the page's own ground, a token in both themes, so rows do not show through.
+    expect(painted(strip, ['background', 'background-color'], PHONE)).toBe('var(--bg)')
+  })
+})
+
+describe('#139 at 390: the header row never widens the page', () => {
+  it("cuts a long tenant name with an ellipsis, after the title has given way, and keeps the whole name as its title", async () => {
+    // MUTATION: drop `min-width: 0` / `max-width` / `overflow: hidden` from
+    // `.sk-pbar .sk-tn`, or let the menu, the mark or the env pill shrink.
+    const long = me(false)
+    const name = 'someone.with.a.rather.long.address' + '@' + 'saga.xyz'
+    ;(long.tenant as { display_name: string }).display_name = name
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.stubEnv('VITE_SWARM_ENV', 'dev')
+    vi.resetModules()
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(String(input).includes('/v1/tenants/me') ? json(200, long) : json(503, {})),
+    ) as unknown as typeof fetch
+    const { SkyShell } = await import('../Spine')
+    const { container } = render(
+      <SkyShell section="overview" tab="now" title="Overview" go={() => {}} foot={null}>
+        {null}
+      </SkyShell>,
+    )
+    const tn = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.sk-pbar .sk-tn')
+      expect(el?.textContent).toBe(name)
+      return el!
+    })
+    expect(tn.getAttribute('title'), 'a cut name has no way to read it whole').toBe(name)
+    expect(painted(tn, 'min-width', PHONE)).toBe('0')
+    expect(painted(tn, 'max-width', PHONE)).toBe('40vw')
+    expect(painted(tn, 'overflow', PHONE)).toBe('hidden')
+    expect(painted(tn, 'text-overflow', PHONE)).toBe('ellipsis')
+    expect(painted(tn, 'white-space', PHONE)).toBe('nowrap')
+    const bar = container.querySelector<HTMLElement>('.sk-pbar')!
+    expect(painted(bar.querySelector('b')!, 'flex', PHONE), 'the title no longer gives way first').toBe('1')
+    const fixed = [bar.querySelector(':scope > .sk-ibtn')!, bar.querySelector(':scope > svg')!, bar.querySelector(':scope > .sk-pill')!]
+    expect(fixed.filter((el) => el !== null).length, 'the sweep did not find the menu, the mark and the env').toBe(3)
+    for (const el of fixed) expect(painted(el, 'flex', PHONE), `${el.getAttribute('class')} shrinks`).toBe('none')
+    vi.unstubAllEnvs()
+  })
+})
+
 describe('#139 at 390: a long page has a way back to the top', () => {
   it('offers `Top` past a screen of a long page, and it goes there', async () => {
     // MUTATION: never render `.sk-top`, hide it at 390, or make it do nothing.

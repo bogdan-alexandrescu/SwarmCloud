@@ -5,7 +5,7 @@
  * canonical set that is on main (components.html A); lane U0's set is landing
  * in parallel, and a later pass can swap each of these for its own by name.
  */
-import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
@@ -14,15 +14,33 @@ import { addressToPath } from './paths'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
-/** One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped. */
+/**
+ * One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped.
+ *
+ * A RELOAD THAT FAILS WITH DATA IN HAND IS `stale`, NEVER `error` (fetch.ts's
+ * `Result` rule). `readAs` reads without `previous`, so this hook keeps it:
+ * before, a background re-read that hit a passing 409 (swarm-api answers one
+ * while a GitHub token refresh holds its lease) swapped the region for the
+ * failure panel and unmounted everything inside it -- a typed owner/repo, a
+ * pending Enable and its answer (QA of /access, 2026-10-08). Only the SAME
+ * key's data is kept: another key's is another question's answer.
+ */
 export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): UrRead<T> {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   const [nonce, setNonce] = useState(0)
+  const heldKey = useRef<string | null>(null)
   useEffect(() => {
     let live = true
     setState((was) => (was.status === 'ok' || was.status === 'stale' ? was : { status: 'loading', since: Date.now() }))
     void load().then((r) => {
-      if (live) setState(r)
+      if (!live) return
+      setState((was) => {
+        if (r.status === 'error' && heldKey.current === key && (was.status === 'ok' || was.status === 'stale')) {
+          return { status: 'stale', data: was.data, fetchedAt: was.fetchedAt, error: r.error }
+        }
+        heldKey.current = r.status === 'ok' || r.status === 'stale' ? key : null
+        return r
+      })
     })
     return () => {
       live = false
@@ -99,6 +117,7 @@ export function UrRegion<T>({
   lines = 3,
   alsoNotServed,
   plural = false,
+  reading,
   children,
 }: {
   state: Result<T>
@@ -113,25 +132,42 @@ export function UrRegion<T>({
   alsoNotServed?: (e: ApiError) => boolean
   /** `what` is plural: "… are not served" (QA G4-20). */
   plural?: boolean
+  /** Said in words while the first read runs, for a read slow enough that a bare skeleton reads as broken. */
+  reading?: ReactNode
   children: (data: T) => ReactNode
 }) {
-  if (state.status === 'loading') return <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
+  if (state.status === 'loading') {
+    if (reading === undefined) return <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
+    return (
+      <div className="ur-reading">
+        <p className="ur-reading-why" role="status">
+          {reading}
+        </p>
+        <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
+      </div>
+    )
+  }
   if (state.status === 'error') {
     if (notServed(state.error) || alsoNotServed?.(state.error) === true) return <UrNotServed route={route} what={what} plural={plural} />
     return <FailedPanel error={state.error} onRetry={onRetry} />
   }
   if (state.status === 'empty') return <>{empty ?? null}</>
-  if (state.status === 'stale') {
-    return (
-      <div className="ur-stale">
+  // ONE TREE FOR A LIVE AND A STALE READ. These used to be two shapes (a bare
+  // fragment, and the data inside two divs), so a re-read going stale or
+  // recovering remounted the region: every control in it lost its state.
+  // `.ur-held` is `display: contents` until it dims, so the live shape lays
+  // out exactly as the bare fragment did.
+  const stale = state.status === 'stale'
+  return (
+    <>
+      {stale ? (
         <p className="ur-stale-why" role="status">
           The last read failed ({state.error.message}); this is the previous answer.
         </p>
-        <div className="ur-dim">{children(state.data)}</div>
-      </div>
-    )
-  }
-  return <>{children(state.data)}</>
+      ) : null}
+      <div className={stale ? 'ur-held ur-dim' : 'ur-held'}>{children(state.data)}</div>
+    </>
+  )
 }
 
 /** The freshness pill (components.html A `c-pill`), with its reason as its title. */
