@@ -559,7 +559,7 @@ holds for schedules exactly as for tasks.
 
 | # | type | executor | risk | pushes | default gate | floor | creates | min interval | phase |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | `issue-sweep` | issue runs | R3 with `merge: auto`, else R2 | yes | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (§4.2, SD3); in a `platform: true` repository the switch is owner-only | members | 15 min | 1 |
+| 1 | `issue-sweep` | issue runs | R3 with `merge: auto`, else R2 | yes | plan auto · **approve merge** | plan auto · merge auto, reached only through the audited switch (§4.2, SD3); in a `platform: true` repository only a platform admin may make the switch (Owner decision 2026-10-08) | members | 15 min | 1 |
 | 2 | `issue-plan-only` | issue runs | R1 | no, until approved | **approve plan** | **approve plan** | members | 15 min | 1 |
 | 3 | `repo-index-refresh` | `indexer` tasks | R0 | no | auto | auto | members | 1 h | 1 |
 | 4 | `observer` | one `claude-code` task | R0 | no | auto | auto | members (tenant), owner (platform) | 1 h | 1 |
@@ -574,8 +574,9 @@ holds for schedules exactly as for tasks.
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
-exception: the merge switch of SD3, which any member may use under the
-two-person rule of §4.6. A floor of "auto"
+exception: the merge switch of SD3, which in a repository that is not
+`platform: true` any member may use under the two-person rule of §4.6, and in a
+`platform: true` repository only a platform admin may (Owner decision 2026-10-08). A floor of "auto"
 still leaves every hard stop of §4.4 in force.
 
 **Platform-wide (admin) types** run with `scope: {mode: "platform"}`: the
@@ -898,8 +899,11 @@ once CI is green and the review's verdict is MERGE at the `green_sha`.
   it on must not be the last editor of the schedule's gate, scope or spec when
   the tenant has more than one member, so one person cannot set a gate and
   then switch it open alone. In a one-person `u-*` tenant the person switches
-  it after a typed confirmation, which is audited. In a `platform: true`
-  repository the switch is owner-only, as the unattended merge always was.
+  it after a typed confirmation, which is audited. **In a `platform: true`
+  repository only platform admins may switch to `merge: auto`** (**Owner
+  decision 2026-10-08**: "only admins in the platform repos"): the admin
+  roles of PR 860 (`admin_roles/`, `PLATFORM_OWNER` included). Elsewhere the
+  SD5 rule above applies.
 * **Switching back to approval is always allowed**, by any member, at once,
   and takes effect at the next merge decision. A run already awaiting merge
   approval keeps waiting.
@@ -1132,7 +1136,8 @@ returns pending items, the operator's Claude session asks the person with the
 item's summary and the choices Approve, Reject or Later. Approve calls
 `swarm_schedule_approve` with the digest shown. **A GitHub comment
 (`/swarmcloud approve <digest>`) approves, in the first build** (**Owner
-decision 2026-10-08, SD9**: it is not phase 2). It is lane S12 (§9).
+decision 2026-10-08, SD9**: it is not phase 2). It is lane S12 (§9). The rules
+below are **Owner decision 2026-10-08 (accepted as designed)**.
 
 * **Where.** On the issue, for a plan; on the pull request, for a merge. The
   plan comment and the merge request show the exact command with the item's
@@ -1344,7 +1349,7 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `POST /v1/schedules` | create: `{name, type, scope, cron, timezone, params?, gate?, budget?, policy?, state?}`. Takes an optional `client_request_id`; a repeat within 24 h returns the schedule the first one created |
 | `GET /v1/schedules/{id}` | one schedule, with its last 50 firings |
 | `PATCH /v1/schedules/{id}` | edit, carrying `revision`. A gate below the default needs `is_admin`. `gate.merge: auto` is **refused here** with 422 `use_merge_switch`; the switch has its own route, next row |
-| `POST /v1/schedules/{id}:merge-mode` | the SD3 switch (§4.2): `{mode: "approve" \| "auto", revision, confirm?}`. `auto` is allowed to a member who is not the last editor of the gate, scope or spec (`confirm` carries the typed confirmation in a one-person tenant), owner-only in a `platform: true` repository, and only where the type's floor permits it. `approve` is allowed to any member. Both write a `schedule_audit` entry in the same transaction |
+| `POST /v1/schedules/{id}:merge-mode` | the SD3 switch (§4.2): `{mode: "approve" \| "auto", revision, confirm?}`. `auto` is allowed to a member who is not the last editor of the gate, scope or spec (`confirm` carries the typed confirmation in a one-person tenant), allowed only to a platform admin (the admin roles of PR 860, `PLATFORM_OWNER` included) in a `platform: true` repository (Owner decision 2026-10-08), and only where the type's floor permits it. `approve` is allowed to any member. Both write a `schedule_audit` entry in the same transaction |
 | `DELETE /v1/schedules/{id}` | delete (the console's typed confirmation is client-side; the route takes `confirm: <name>`) |
 | `POST /v1/schedules/{id}:pause` · `:resume` · `:run` | `:run` takes `{dry_run?}` and makes a `run_now` firing, under the gate's `run` point |
 | `POST /v1/schedules/{id}:take-ownership` | the caller becomes the owner. Audited |
@@ -1498,7 +1503,7 @@ phases. New files are named without their root.
 | S4 | 2 | Terraform: `google_cloud_scheduler_job.schedule_tick` (every minute, `retry_count = 0`, the OIDC of `swarm-schedule-tick`), the composite indexes (`schedules`: `state`, `next_run_at`; `schedule_firings`: `schedule_id`, `slot` desc; `approvals`: `tenant_id`, `state`, `requested_at`), the TTL policies on `schedule_firings.expire_at` and `schedule_ticks.expire_at`, the `schedule_auto_paused` and `schedule_needs_owner` log metrics and alerts, and `terraform test` assertions. **No IAM change of its own**: the account is S13's, so this is an ordinary release once S13 has been applied | `terraform/modules/scheduler/jobs.tf`, `terraform/modules/scheduler/variables.tf`, `terraform/modules/firestore/indexes.tf`, `terraform/modules/monitoring/`, new `tests/terraform/schedule_tick.tftest.hcl` | S13 applied |
 | S11 | 2 | The registration fields the hard stops read (§4.4): `platform` (bool, default false, set and cleared by a platform admin only, audited in `admin_audit`) and `hard_stop_paths` (the four defaults are a floor a member cannot remove), on create, patch and read, and a card for them on the repository's Settings tab | `apps/swarm-api/swarm_api/repositories.py` (`RepositoryCreate`, `RepositoryPatch`, the stored record), `apps/swarm-api/swarm_api/routes/repositories.py`, `apps/swarm-ui/src/RepositoriesDetail.tsx`, `apps/swarm-ui/src/api.ts`, new `tests/unit/control_plane/test_repository_hard_stops.py`, a vitest under `apps/swarm-ui/src/__tests__/` | S0 |
 | S3 | 3 | The tenant routes of §7.1 except approvals and the merge switch, and the admin list and actions | new `swarm_api/routes/schedules.py`, `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_schedule_routes.py` | S2 |
-| S5 | 4 | Approvals: `approvals/`, the inbox with projected `PLANNED` runs, the run, merge and proposal gates, the hard stops of §4.4 at plan and at merge, the issue run's `hold` and its check in `_approve` and `issueci._merge` (§4.5), expiry, `schedule_audit/`, the issue run's `metadata.schedule` with its lookup by firing id, the SD3 merge switch (`POST /v1/schedules/{id}:merge-mode`, its approver rule and its audit entry), and mounting the approvals router. It follows S3 only because both mount a router in `main.py` | new `swarm_api/approvals.py`, new `swarm_api/routes/approvals.py`, new `swarm_api/schedaudit.py`, `apps/swarm-api/swarm_api/issueruns.py`, `apps/swarm-api/swarm_api/issueci.py`, `apps/swarm-api/swarm_api/routes/runs.py`, `apps/swarm-api/swarm_api/refusals.py` (the holds' report-only switches), `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_approvals.py`, new `tests/unit/control_plane/test_issue_run_holds.py` | S3, S11 |
+| S5 | 4 | Approvals: `approvals/`, the inbox with projected `PLANNED` runs, the run, merge and proposal gates, the hard stops of §4.4 at plan and at merge, the issue run's `hold` and its check in `_approve` and `issueci._merge` (§4.5), expiry, `schedule_audit/`, the issue run's `metadata.schedule` with its lookup by firing id, the SD3 merge switch (`POST /v1/schedules/{id}:merge-mode`, its approver rule, with platform admins only in `platform: true` repositories, and its audit entry), and mounting the approvals router. It follows S3 only because both mount a router in `main.py` | new `swarm_api/approvals.py`, new `swarm_api/routes/approvals.py`, new `swarm_api/schedaudit.py`, `apps/swarm-api/swarm_api/issueruns.py`, `apps/swarm-api/swarm_api/issueci.py`, `apps/swarm-api/swarm_api/routes/runs.py`, `apps/swarm-api/swarm_api/refusals.py` (the holds' report-only switches), `apps/swarm-api/swarm_api/main.py`, new `tests/unit/control_plane/test_approvals.py`, new `tests/unit/control_plane/test_issue_run_holds.py` | S3, S11 |
 | S6 | 5 | The first types (SD2): `issue-sweep` (adopting SWEEP's module from PR 898), `issue-plan-only`, `repo-index-refresh`, `observer` | new `swarm_api/schedtypes/` (`issue_sweep.py`, `issue_plan_only.py`, `repo_index_refresh.py`, `observer.py`), SWEEP's module, new `tests/unit/control_plane/test_schedtypes_*.py` | S3, S5, SWEEP merged |
 | S7 | 5 | The console (SD1): the new **Automate** section in `SECTIONS` with Schedules (list, detail, create/edit, the SD3 merge switch on the gate card, the built-in index rows) and Approvals as its two pages, the section's badge, the Overview card, Admin › Schedules, and `App.tsx`'s header comment; the issue forms' "Where" list | new `Schedules.tsx`, `ScheduleDetail.tsx`, `ScheduleEdit.tsx`, `Approvals.tsx` and `AdminSchedules.tsx` in apps/swarm-ui/src, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Overview.tsx`, `.github/ISSUE_TEMPLATE/`, tests under `apps/swarm-ui/src/__tests__/` (`nav.links.test.tsx` among them), `tests/unit/control_plane/test_nav_headings_agree.py`, and `tests/unit/scripts/test_issue_forms.py` only if its section parser needs the new entry (S7 says so in its PR) | S3, S5 |
 | S12 | 5 | **GitHub-comment approvals (SD9), in the first build.** The poll that reads `/swarmcloud approve <digest>` comments on pending approvals' threads, the GitHub-login-to-member mapping and its verification (§4.9), the command shown in the plan comment and the merge request, and the audit's `via: github_comment` | new `swarm_api/ghapprove.py`, `apps/swarm-api/swarm_api/schedulefire.py` (one call from the advance step), `apps/swarm-api/swarm_api/issueruns.py` and `apps/swarm-api/swarm_api/issueci.py` (the comment text only), new `tests/unit/control_plane/test_github_comment_approvals.py`. If the verified login needs a field onboarding does not store, the lane stops and asks | S5, S11 |
