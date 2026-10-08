@@ -253,7 +253,7 @@
     {
       "name": "kv-224-password-hash-equals",
       "text": "password_hash\u003dpbkdf2-synthetic",
-      "expected": "password_hash\u003dpbkdf2-synthetic",
+      "expected": "password_hash=********",
       "never": [
         "pbkdf2-synthetic"
       ],
