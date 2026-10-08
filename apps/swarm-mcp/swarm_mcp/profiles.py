@@ -250,6 +250,116 @@ def catalogue() -> list[dict[str, Any]]:
     return usable + refused
 
 
+#: Where a `swarm_profiles` answer came from.
+CATALOGUE_FROM_PLATFORM = "platform (GET /v1/runtimes)"
+
+
+def bridge_copy_source() -> str:
+    """This bridge's own catalogue, named by the package version that carries it.
+
+    THE COPY IS AS OLD AS THE INSTALLED PLUGIN. The bridge imports
+    `swarm_common` from the tag the plugin was installed at, so a profile the
+    platform has since moved -- claude-code to GKE Autopilot in PR 866, deployed
+    by release 37757901721 on 2026-10-08 -- still reads at its old backend
+    here until a plugin tag catches up.
+    """
+    from importlib import metadata
+
+    try:
+        version = metadata.version("swarm-mcp")
+    except metadata.PackageNotFoundError:
+        return "bridge copy (swarm-mcp not installed as a package; version unknown)"
+    return f"bridge copy (swarm-mcp {version})"
+
+
+def _served_entry(name: str, served: dict[str, Any]) -> dict[str, Any] | None:
+    """One `/v1/runtimes` entry in `public_profile`'s shape, or None if malformed.
+
+    THE SAME ALLOW-LIST. `/v1/runtimes` serves `image` and `secrets` too; they
+    are dropped here for the reason this module's header gives, and a field
+    the route adds later is dropped with them.
+    """
+    resources = served.get("resources")
+    if not isinstance(resources, dict) or not isinstance(served.get("available"), bool):
+        return None
+    backend = served.get("resolved_backend") or served.get("backend")
+    out: dict[str, Any] = {
+        "name": served.get("name") or name,
+        "available": served["available"],
+        "backend": backend if isinstance(backend, str) and backend else None,
+        "resource_class": served.get("resource_class"),
+        "cpu": resources.get("cpu"),
+        "memory_gib": resources.get("memory_gib"),
+        "workspace_gib": resources.get("disk_gib"),
+        "timeout_seconds": served.get("timeout_seconds"),
+        "needs_provider_credential": served.get("provider") is not None,
+        "provider": served.get("provider"),
+    }
+    if not out["available"]:
+        out["disabled_reason"] = served.get("disabled_reason")
+    if name in RUNNER_PROFILES:
+        # The inputs are the bridge's to check before a dispatch travels
+        # (`check_inputs`), so they are the copy's -- the API refuses an
+        # undeclared key from every caller regardless.
+        local = public_profile(name)
+        if local.get("inputs"):
+            out["inputs"] = local["inputs"]
+        if local["backend"] != out["backend"]:
+            # Said, not hidden: the copy this bridge checks names against
+            # disagrees with the platform, which means the plugin is behind.
+            out["bridge_copy_backend"] = local["backend"]
+    return out
+
+
+def served_catalogue(client: Any) -> dict[str, Any]:
+    """`swarm_profiles`' answer: the platform's catalogue, else the labelled copy.
+
+    THE PLATFORM FIRST. `GET /v1/runtimes` is swarm-api reading the frozen
+    catalogue it was DEPLOYED with, so its backend and `available` flag are
+    the ones admission uses. This bridge's copy is the one the plugin was
+    installed with, and on 2026-10-08 the two disagreed about claude-code.
+
+    THE COPY WHEN THE PLATFORM CANNOT BE READ, and still an answer: this was
+    the one tool that answered with the cluster unreachable, and a session
+    guessing at a profile name is exactly the one that needs it then. It is
+    labelled `catalogue_source` with the bridge's version and a note saying
+    plainly that the platform may differ.
+    """
+    try:
+        data = client.request("GET", "/v1/runtimes")
+    except SwarmError as exc:
+        data, why = None, f"GET /v1/runtimes could not be read: {exc}"
+    else:
+        why = "GET /v1/runtimes answered without a `runtimes` object"
+    runtimes = data.get("runtimes") if isinstance(data, dict) else None
+    if isinstance(runtimes, dict) and runtimes:
+        entries, unread = [], []
+        for name, served in sorted(runtimes.items()):
+            entry = _served_entry(name, served) if isinstance(served, dict) else None
+            if entry is None:
+                unread.append(name)
+            else:
+                entries.append(entry)
+        if entries:
+            # Dispatchable first, as `catalogue()` orders them.
+            entries.sort(key=lambda e: (not e["available"], e["name"]))
+            out: dict[str, Any] = {"catalogue_source": CATALOGUE_FROM_PLATFORM, "profiles": entries}
+            if unread:
+                # Named, never dropped silently: a profile missing from this
+                # list reads as one the platform does not hold.
+                out["profiles_not_read"] = unread
+            return out
+    return {
+        "catalogue_source": bridge_copy_source(),
+        "catalogue_note": (
+            f"{why}. These are this bridge's own copy of the catalogue, as old "
+            "as the installed plugin; the platform may differ -- a backend or an "
+            "availability here may not be what the platform uses now"
+        ),
+        "profiles": catalogue(),
+    }
+
+
 def check(name: str, *, where: str = "") -> str:
     """Refuse a profile name here, before it costs a dispatch. Returns the name.
 
