@@ -362,10 +362,22 @@ class SweepReport:
 #: fix_rounds=..., created_by=...) -> IssueRun: `routes.runs.start_run`,
 #: passed in so this module does not import the routes.
 StartRun = Callable[..., IssueRun]
-#: email -> the AuthContext a run is submitted as, raising when that address
-#: is not a current member of the tenant:
-#: `routes.admin.sweep_submitter_auth(ctx, tenant)`.
+#: email -> the AuthContext a run is submitted as, raising
+#: `SweepSubmitterNotMember` when that address is not a current member of the
+#: tenant: `routes.admin.sweep_submitter_auth(ctx, tenant)`.
 OwnerAuth = Callable[[str], Any]
+
+
+class SweepSubmitterNotMember(Exception):
+    """The tenant's `issue_sweep.submit_as` is not a current member.
+
+    Not an `ApiError`: it is never served to a caller. `sweep_tenant` catches
+    it and reports the tenant or the issue as skipped. It is not a refusal
+    switch either (`swarm_api.refusals`), because switched off it would let
+    the sweep submit as someone outside the tenant (invariant 9).
+    """
+
+    code = "submit_as_not_member"
 
 
 def sweep_tenant(
@@ -396,7 +408,7 @@ def sweep_tenant(
     else:
         try:
             owner_auth(submit_as)
-        except ApiError as refused:
+        except (ApiError, SweepSubmitterNotMember) as refused:
             report.tenant_skipped = (
                 f"submit_as_not_member: {submit_as}" if refused.code == "submit_as_not_member"
                 else f"submit_as_check_failed: {refused.code}"
@@ -503,7 +515,8 @@ def sweep_tenant(
                 fix_rounds=SWEEP_FIX_ROUNDS, created_by=SWEEP_CREATOR,
             )
         except Exception as exc:  # noqa: BLE001 -- one issue's refusal is its own
-            code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+            code = (exc.code if isinstance(exc, (ApiError, SweepSubmitterNotMember))
+                    else type(exc).__name__)
             log.warning("issue sweep tenant=%s issue=%s not started (%s)", tenant_id, short, code)
             report.skip(short, f"start_failed: {code}")
             continue

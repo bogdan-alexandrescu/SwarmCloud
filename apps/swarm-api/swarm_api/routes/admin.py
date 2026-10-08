@@ -57,7 +57,7 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
-from ..issuesweep import SweepConfig, sweep_tenant
+from ..issuesweep import SweepConfig, SweepSubmitterNotMember, sweep_tenant
 from ..issuesweep import get_config as get_sweep_config
 from ..issuesweep import set_config as set_sweep_config
 from .runs import advance_tenant_runs, start_run
@@ -963,12 +963,6 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
         )
 
     return _owner
-
-
-class SweepSubmitterNotMember(Forbidden):
-    """The tenant's `issue_sweep.submit_as` is not a current member."""
-
-    code = "submit_as_not_member"
 
 
 def sweep_submitter_auth(ctx: AppContext, tenant_id: str):
