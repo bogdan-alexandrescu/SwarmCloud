@@ -1792,6 +1792,23 @@ pull request **merged into the default branch**:
   `part of #N` — which GitHub does not list as a closing reference — is never
   closed. Write `part of #N` for a partial fix, and a closing keyword only when
   it is unconditionally true (CLAUDE.md, "Issues");
+* it **never closes a pull request**. Owner decision, 2026-10-08: #857's
+  text said `fix #840`, and #840, an open pull request, was closed two
+  seconds after #857 merged. When a closing keyword names a pull request, the
+  script leaves that pull request open, whatever its state. It also posts one
+  comment on the merged pull request: "#N is a pull request named by a closing
+  keyword in this pull request's text; it was left open ...".
+  `closingIssuesReferences` is an `IssueConnection`, so GitHub types every
+  node as `Issue`, and a `... on PullRequest` fragment there is a GraphQL
+  validation error. For that reason the script reads the REST issue endpoint
+  before every close: its `pull_request` key is the authoritative answer. If
+  that check fails, nothing is closed for that reference and the job fails.
+  This guard covers only the script's own closes. In the #857 merge, the
+  job's log reads "#857 has no closing references", and #840's `closed`
+  event came at 04:16:21, nine seconds before the job ran. Its actor is
+  `swarmcloud-merge[bot]`, the merging App, so GitHub's own keyword handling
+  closed #840. Nothing in this repository can stop that. The only defence is
+  never to put a closing keyword before a pull request's number;
 * an issue that is already closed is left alone, with no second comment, and
   one in another repository is recorded in the run summary, not touched;
 * an unreadable answer or an unmerged pull request fails the job and closes
@@ -1813,7 +1830,8 @@ the release builds — never the pull request's head. A close made with the
 GITHUB_TOKEN starts no workflow, which is right here: nothing should.
 [`test_close_merged_issues.py`](../tests/unit/scripts/test_close_merged_issues.py)
 runs the script against a fake `gh` (`Closes` vs `part of` vs already closed,
-another repository, an unmerged or unreadable pull request), and
+another repository, a referenced pull request, an unmerged or unreadable pull
+request), and
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds the job's trigger, permissions and checkout.
 

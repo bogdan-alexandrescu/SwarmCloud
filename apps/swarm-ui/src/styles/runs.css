@@ -115,3 +115,9 @@
 .rn-ci .c-card-h a { color: var(--sk-ac); }
 .rn-failed-checks { margin: 0; padding: 0 0 0 18px; display: grid; gap: 2px; }
 .rn-failed-check { color: var(--bad-ink); overflow-wrap: anywhere; }
+/* The checks a parked merge step waits for (#503): plain ink, not the red of
+   a failure -- pending holds no capacity and settles by itself. */
+.rn-pending-check { color: var(--text); overflow-wrap: anywhere; }
+/* At 390 a fact's label sits over its value, so a long merge commit or
+   check name wraps instead of widening the card. */
+.rn-ci-merge > span, .rn-ci-issue > span { min-width: 0; overflow-wrap: anywhere; }

@@ -223,9 +223,10 @@ peak_rss_bytes                     firestore=123456789      api=123456789
 `peak_rss_bytes` is the control: the harness is correct, the round-trip works, and
 exactly the five spend fields are dropped.
 
-The write path is fine. `lifecycle.py:688-694` extracts usage and calls
+The write path is fine. `apps/agent-worker/agent_worker/lifecycle.py::Worker._collect_spend` extracts usage and
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._record_spend` calls
 `control.record_spend`, which merge-sets those five keys with a
-`not isinstance(v, bool)` guard (`control.py:497-530`). The numbers reach Firestore
+`not isinstance(v, bool)` guard (`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`). The numbers reach Firestore
 and die at the decoder.
 
 Two things make this worse than an ordinary bug:
@@ -639,7 +640,7 @@ terminal, plus `parked`, `retrying`, `quota_exhausted`, `generation_fenced`,
 admission→dispatch, dispatch→start (container cold start), start→running, and
 running duration as separate segments.
 
-**The trap: `task.started_at` is overwritten on every attempt.** `control.py:410-413`
+**The trap: `task.started_at` is overwritten on every attempt.** `apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`
 sets it in the `DISPATCHED → STARTING` transition, which runs once per attempt. On a
 retried task it is the *last* attempt's start. So `completed_at - started_at` is the
 last attempt's runtime, and `completed_at - created_at` is total wall time including
@@ -660,7 +661,7 @@ simply not have a CPU row** — an empty row would imply a measurement that was 
 and came back zero.
 
 **What reaches Firestore is high-water marks only.** `control.record_resource_usage`
-(`control.py:484-495`) writes `peak_rss_bytes`, `peak_disk_bytes` and `oom_near_miss`
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.record_resource_usage`) writes `peak_rss_bytes`, `peak_disk_bytes` and `oom_near_miss`
 once at teardown. `ResourceUsage.samples` (`metrics.py:46`) is a *count*; the samples
 themselves are discarded, and `merge_rss`/`merge_disk` are `max()`. Cloud Monitoring
 gets three GAUGE points per attempt, also written once at the end, and swarm-api
@@ -713,12 +714,12 @@ Three coverage gaps the panel must **state**, not smooth over:
 - **`result_summary` is written once, at terminal state.** A RUNNING agent has no
   figure, and a PARKED one never will for the attempt it lost.
 
-`record_spend` also **drops the model list**: `control.py:510-514` writes only the
-four token fields plus `cost_usd`, while `_usage_summary` (`lifecycle.py:2344-2375`)
+`record_spend` also **drops the model list**: `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` writes only the
+four token fields plus `cost_usd`, while `_usage_summary` (`apps/agent-worker/agent_worker/lifecycle.py::_usage_summary`)
 also produces `models`, `num_turns`, `duration_ms`, `duration_api_ms` and
 `thinking_tokens`. Those survive only inside `task.result_summary["runner"]["usage"]`,
 an untyped dict no index can reach — readable on one agent, not aggregatable. The
-docstring at `control.py:501-504` says that is deliberate. Cross-task spend needs
+docstring of `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` says that is deliberate. Cross-task spend needs
 seam **S4**.
 
 ### The dock — logs — NEEDS A ROUTE, but less of one than expected
@@ -726,7 +727,7 @@ seam **S4**.
 The brief says live logs "are written to GCS by the worker and nothing serves them."
 Both halves are true, and the writer is much better than "written to GCS" suggests.
 
-`lifecycle.py:1552-1601` publishes a bounded, scrubbed **tail** of each stream to
+`apps/agent-worker/agent_worker/lifecycle.py::Worker._publish_live_logs` publishes a bounded, scrubbed **tail** of each stream to
 `{log_prefix}/live/{stdout,stderr}.tail.log`, and its docstring records three
 decisions worth preserving in any reader:
 
@@ -818,7 +819,7 @@ drops it, and the fix is five lines.
 | 12 | **Account quota windows** | `/v1/accounts` → `utilization` (0.0–1.0), `resets_at`, `observed_at`, `stale`, `state` | Radial gauge — the **only** genuinely 0..1 quantity in the platform — with an explicit staleness marker | That a stale reading is live. `usage.py:72-81` distinguishes `UsageUnavailable` from a zero on purpose and `usagepoll.py` refuses to record a failed poll; rendering a stale 12% as a live 12% undoes all of it. Also: never join an account to an agent — `Lease` and `Attempt` carry no account field, so "this account's quota is being burned by that agent" is unanswerable. |
 | 13 | **Task state distribution** | `/v1/stats` → `tasks_by_state`, `platform_tasks_by_state` | Horizontal bars, tenant and platform in **separate blocks** | That the two scopes are comparable in one row (`PlatformCounts.tsx:18-22`). That `QUEUED`/`PARKED`/`READY` are demand — only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand (CONTRACT invariant 1). |
 | 14 | **Outcome mix over history** | `/v1/tasks` → `state` | Stacked bar by day | That failed and cancelled are the same thing. They currently render identically in greyscale (§1.5) and must not. |
-| 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the task's start — it is overwritten per attempt (`control.py:410-413`). Only the sum of per-attempt intervals is agent work. |
+| 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the task's start — it is overwritten per attempt (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). Only the sum of per-attempt intervals is agent work. |
 | 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the task and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for #72: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
 
 Two rows of that table (#4, #6) depend on the event page not truncating, and one
@@ -1068,7 +1069,7 @@ it being fixed.
 `GET /v1/tasks/{id}/attempts/{attempt_id}/logs/{stream}` returning the object at
 `{log_prefix}/live/{stream}.tail.log`.
 
-Most of the work is done: the writer exists and is careful (`lifecycle.py:1552-1601`
+Most of the work is done: the writer exists and is careful (`apps/agent-worker/agent_worker/lifecycle.py::Worker._publish_live_logs`
 — bounded, scrubbed on every flush, `#swarm-tail offset= size=` header), the IAM
 exists (`bindings.tf:228-233`, `roles/storage.objectViewer`), and a reader already
 exists outside the browser (`swarm_mcp/cli.py:62-69`).
@@ -1215,7 +1216,7 @@ browser**, and it will be written by whoever builds the History screen, so the r
 is cheaper than the alternative.
 
 Should also decide whether `models`, `num_turns` and `thinking_tokens` become
-queryable. `control.py:501-504` deliberately leaves them in the untyped
+queryable. `apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend` deliberately leaves them in the untyped
 `result_summary["runner"]["usage"]` dict; that is defensible per-agent and
 indefensible per-fleet.
 

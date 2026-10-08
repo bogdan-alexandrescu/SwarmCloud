@@ -46,8 +46,12 @@ LIVE_POOLS = {
     "runner:codex": 20,
     "runner:generic": 20,
     "runner:mock": 40,
-    "tenant:eng": 40,
-    "tenant:smoke": 8,
+    # 40 until the owner raised eng's capacity_units to 45 through the admin
+    # API on 2026-10-07 (max_active was already 45; dev.tfvars says why).
+    "tenant:eng": 45,
+    # 8 until the owner raised it to 20 through the admin API on 2026-10-07
+    # (~23:4xZ), setting max_active and capacity_units both to 20.
+    "tenant:smoke": 20,
     "tenant:u-bogdan": 80,
     "tenant:u-sw-c90291": 4,
 }
@@ -68,10 +72,12 @@ PENDING_POOLS = {
     "backend:GKE_AUTOPILOT": 100,
 }
 
-#: (max_active, capacity_units) of every live dev tenant, read 2026-10-02.
+#: (max_active, capacity_units) of every live dev tenant, read 2026-10-02;
+#: smoke's as the owner set it on 2026-10-07 (it was (20, 8)), and eng's as
+#: the owner set it on 2026-10-07 (it was (40, 40)).
 LIVE_TENANTS = {
-    "eng": (40, 40),
-    "smoke": (20, 8),
+    "eng": (45, 45),
+    "smoke": (20, 20),
     "u-bogdan": (80, 80),
     "u-sw-c90291": (4, 8),
 }
