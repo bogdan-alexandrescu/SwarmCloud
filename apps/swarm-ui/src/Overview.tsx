@@ -84,8 +84,11 @@ import {
  *     Run, Firestore or GCS spend, and the cost card's foot names the scope.
  *   - an alert inbox. Nothing stores, routes or acknowledges an alert. The
  *     checks are DERIVED from state that exists, re-derived on every read.
+ *
+ * `setup` is the onboarding card (#780 OB8, Entry A), passed in by App rather
+ * than imported here, so this screen reads only its own routes.
  */
-export function OverviewScreen() {
+export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
   // THREE REFRESH CADENCES, on purpose. `live` drives the six cheap reads
   // every twenty seconds; `counted` drives `/v1/stats` -- twelve count()
   // queries -- every sixty (OV-16, owner decision 2026-09-25); `heavy` drives
@@ -229,6 +232,12 @@ export function OverviewScreen() {
           <HelpCard topic="absent-vs-zero" />
         </span>
       </CountNote>
+
+      {/* SETUP, ENTRY A (#780 OB8, owner pick D10): the onboarding checklist
+          where a person already lands, above the tiles until every step is
+          done. App passes Onboarding.tsx's `SetupCard` in; it draws nothing
+          while its read is pending or failed. */}
+      {setup}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
