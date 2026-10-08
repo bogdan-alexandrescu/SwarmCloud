@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { SECTIONS } from '../App'
+import { SkyShell } from '../Spine'
 
 const WAIT = { timeout: 4000 }
 
@@ -118,6 +119,19 @@ describe('the tab', () => {
     const admin = SECTIONS.find((s) => s.id === 'admin')!
     const tab = admin.tabs.find((t) => t.id === 'people')
     expect(tab).toEqual({ id: 'people', label: 'People', admin: true })
+  })
+
+  // A tab and a route are not enough: the panel draws PANEL_PAGES, and a page
+  // missing there is reachable only by typing its address (visual QA Q7).
+  it('is drawn in the Admin panel, and lit on /admin/people', () => {
+    render(
+      <SkyShell section="admin" tab="people" title="People" go={vi.fn()} foot={null}>
+        {null}
+      </SkyShell>,
+    )
+    const labels = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => el.textContent)
+    expect(labels).toContain('People')
+    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People')
   })
 })
 

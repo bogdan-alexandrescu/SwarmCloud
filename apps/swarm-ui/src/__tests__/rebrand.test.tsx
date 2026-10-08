@@ -328,7 +328,7 @@ describe('the Sky spine shell', () => {
     render(<App />)
     await waitFor(() => expect(document.querySelector('.sk-pnote')).not.toBeNull())
     const rows = [...document.querySelectorAll<HTMLElement>('.sk-panel .sk-pk')]
-    expect(rows.map((r) => r.textContent?.trim())).toEqual(['Pool limits', 'Tenants', 'Platform counts'])
+    expect(rows.map((r) => r.textContent?.trim())).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
     // Disabled, and not a link anywhere: no href to follow into a new tab.
     for (const r of rows) {
       expect(r.getAttribute('aria-disabled')).toBe('true')

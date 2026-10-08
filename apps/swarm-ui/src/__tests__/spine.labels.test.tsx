@@ -5,7 +5,7 @@
  *     a bare `?` whose only name is in `title`. (The Sky spine built it so in
  *     #432; this pins it.)
  *   * The Admin section's pages read `Pool limits`, `Tenants`, `Platform
- *     counts` -- the section heading already says Admin.
+ *     counts`, `People` -- the section heading already says Admin.
  *   * The `admin` mark appears only where an admin page sits among pages that
  *     are not: Provider quota under Capacity › Accounts. Which pages those are
  *     is read from App.tsx `SECTIONS`, so the mark cannot drift from the flag.
@@ -45,10 +45,10 @@ describe('the rail names Help (#136)', () => {
 })
 
 describe('Admin pages do not repeat admin (#136)', () => {
-  it('reads Pool limits, Tenants and Platform counts with no admin mark', () => {
+  it('reads Pool limits, Tenants, Platform counts and People with no admin mark', () => {
     shell('admin', 'limits')
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk')]
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
     for (const p of pages) {
       expect(p.textContent ?? '').not.toMatch(/admin/i)
       expect(p.querySelector('.sk-adm')).toBeNull()
@@ -107,6 +107,15 @@ describe('the Work panel lists every Work page (visual QA Q7, 2026-10-02)', () =
     const pages = work.tabs.map((t) => t.id).filter((id) => !id.startsWith('new'))
     const rows = new Set(PANEL_PAGES.work.flatMap((p) => [p.key === 'agents' ? 'running' : p.key, ...(p.kids ?? []).map((k) => k.key)]))
     expect(pages.filter((id) => !rows.has(id))).toEqual([])
+  })
+
+  // People (#847 W8) was the same defect in Admin: a SECTIONS tab and a
+  // route, and no panel row. MUTATION: drop the `people` row from
+  // PANEL_PAGES.admin and this goes red.
+  it('draws a panel row for each Admin tab', () => {
+    const admin = SECTIONS.find((s) => s.id === 'admin')!
+    const rows = new Set(PANEL_PAGES.admin.flatMap((p) => [p.key, ...(p.kids ?? []).map((k) => k.key)]))
+    expect(admin.tabs.map((t) => t.id).filter((id) => !rows.has(id))).toEqual([])
   })
 
   it('lights Runs when /runs is open', () => {
