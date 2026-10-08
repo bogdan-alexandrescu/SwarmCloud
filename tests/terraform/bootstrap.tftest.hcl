@@ -432,12 +432,25 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_runs_only_verifi
   }
 
   # Run and read, never change: no create, update, delete or IAM permission.
+  # The one exception is run.executions.cancel on the runner role, which
+  # accept.yml uses to stop swarm-verify executions an earlier cancelled run
+  # left running; it cannot create or delete anything.
   assert {
     condition = alltrue([
       for p in setunion(google_project_iam_custom_role.acceptance_runner[0].permissions, google_project_iam_custom_role.acceptance_lister[0].permissions) :
-      !can(regex("\\.(create|update|delete|setIamPolicy|cancel)$", p))
+      !can(regex("\\.(create|update|delete|setIamPolicy)$", p))
     ])
-    error_message = "the acceptance roles may start and read executions only"
+    error_message = "the acceptance roles may start, read and cancel executions only"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in google_project_iam_custom_role.acceptance_lister[0].permissions : !can(regex("\\.cancel$", p))
+    ]) && alltrue([
+      for p in google_project_iam_custom_role.acceptance_runner[0].permissions :
+      !can(regex("\\.cancel$", p)) || p == "run.executions.cancel"
+    ])
+    error_message = "the only cancel permission is run.executions.cancel, on the runner role"
   }
 
   # Execution is conditioned to the verification job and the worker jobs.
