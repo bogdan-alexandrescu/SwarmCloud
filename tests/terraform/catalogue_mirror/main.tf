@@ -70,11 +70,19 @@ locals {
 
   # Each entry is a multi-line RunnerProfile(...) call, so the section is split
   # on the constructor and element 0 (everything before the first one) dropped.
-  runner_chunks = local.runner_section == "" ? [] : slice(
-    split("RunnerProfile(", local.runner_section),
-    1,
-    length(split("RunnerProfile(", local.runner_section)),
-  )
+  #
+  # Each chunk is cut at the first `\n}\n`, the end of a top-level dict
+  # literal, so the last entry of RUNNER_PROFILES does not run on into any
+  # statement after the dict, whose `name=` or `backend=` would otherwise sit
+  # in the last entry's chunk. (Contract request 55's temporary canary was
+  # such a statement; it was removed on 2026-10-08, the cut stays.)
+  runner_chunks = local.runner_section == "" ? [] : [
+    for c in slice(
+      split("RunnerProfile(", local.runner_section),
+      1,
+      length(split("RunnerProfile(", local.runner_section)),
+    ) : split("\n}\n", c)[0]
+  ]
 
   # `timeout_seconds: int = 3600` on the dataclass. Read rather than assumed: a
   # profile that states no timeout takes this, and hard-coding it here would put

@@ -2071,8 +2071,21 @@ export interface DispatchControl {
 /** `SubmissionService.providers`, service.py:334-350. */
 export interface ProviderEntry {
   provider: string
-  /** Provider NAMES only, from tenants/{id}.credentials. Never key material. */
+  /**
+   * True when the tenant's own key OR a pool account it owns or is lent
+   * serves this provider -- admission's rule (#76). Never key material.
+   */
   credential_registered: boolean
+  /**
+   * Which one: `tenant_key` (asked first, as admission does) or
+   * `account_pool`; null when neither. Optional: served after #76.
+   */
+  credential_source?: 'tenant_key' | 'account_pool' | null
+  /**
+   * The profiles that credential can run. A pool account runs only a profile
+   * that takes a subscription token, so it can be fewer than runner_profiles.
+   */
+  runnable_profiles?: string[]
   runner_profiles: string[]
   /** null when no quota document exists for this tenant yet. Not zeros. */
   quota: QuotaState | null
@@ -2081,6 +2094,11 @@ export interface ProviderEntry {
 export interface ProvidersPage {
   tenant_id: string
   providers: ProviderEntry[]
+  /**
+   * How the account pool was read for this page: `unreadable` means a false
+   * credential_registered may still be served by a lent account.
+   */
+  account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
   generated_at: string
 }
 
@@ -4834,6 +4852,13 @@ export interface IssueRun {
   requirements_met?: boolean | null
   requirements_unmet?: string[]
   requirements_note?: string | null
+  /**
+   * True once the write-back closed the issue (`issuesync`): only an
+   * `already_on_main` run with every requirement met is closed by the run
+   * itself. Null or absent: this run did not close it, which says nothing of
+   * a merge's `Closes #N`.
+   */
+  issue_closed?: boolean | null
 }
 
 /** `IssueRun.to_api().pull_request`. */
@@ -4936,7 +4961,7 @@ export interface GitHubRefusalDetail {
 // The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
 // `derive`): six steps, each derived on every read, never set.
 
-export type OnboardingStepName = 'signed_in' | 'github_connected' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+export type OnboardingStepName = 'signed_in' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
 
 export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
 
@@ -4959,6 +4984,22 @@ export interface OnboardingStep {
   /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
   evidence: Record<string, unknown>
   issues: OnboardingIssue[]
+}
+
+/**
+ * `app_installed`'s evidence (`onboarding._installed_step`, #780 2026-10-08):
+ * whether the GitHub App is installed on any owner the person reaches.
+ * `needed` is false for a connection that is a token, not the App.
+ */
+export interface AppInstalledEvidence {
+  needed: boolean
+  /** False when the installations could not be read: never "installed nowhere". */
+  read?: boolean
+  source?: 'enabled' | 'github' | null
+  login?: string | null
+  installed?: string[]
+  not_installed?: string[]
+  install_url?: string | null
 }
 
 /** `github_connected`'s evidence: the record the caller acts through, or none. */

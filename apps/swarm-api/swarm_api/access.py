@@ -569,6 +569,38 @@ class AccessService:
         return {"owners": rows, "orgs_listed": orgs is not None,
                 "install_url": self._install_url()}
 
+    def installations(self, caller: Caller) -> dict[str, Any]:
+        """Whether the App is installed anywhere the person reaches: the
+        onboarding checklist's `app_installed` (#780, 2026-10-08).
+
+        An owner the person enabled was installed when it was enabled
+        (`enable` refuses any other), so its document answers with no GitHub
+        read. Otherwise this is one `owners` read -- one refresh, as on every
+        Access visit. A read that did not come back, a refresh running
+        elsewhere (409) or a refused one is `read: False`, never "installed
+        nowhere": the step stays in progress rather than sending someone to
+        install an App they already installed."""
+        installed = sorted(str(d.get("owner_login") or d.get("owner"))
+                           for d in self._mine(ORGS, caller)
+                           if d.get("install_state") == "installed")
+        if installed:
+            return {"read": True, "source": "enabled", "installed": installed,
+                    "not_installed": [], "install_url": self._install_url()}
+        try:
+            found = self.owners(caller)
+        except ApiError as refused:
+            log.info("access installations unread tenant=%s user_hash=%s code=%s",
+                     caller.tenant_id, user_hash(caller.key), refused.code)
+            return {"read": False, "source": "github", "error": refused.code,
+                    "unreachable": refused.status_code == 503,
+                    "install_url": self._install_url()}
+        rows = found["owners"]
+        return {"read": True, "source": "github",
+                "installed": [r["owner"] for r in rows if r["install_state"] == "installed"],
+                "not_installed": [r["owner"] for r in rows
+                                  if r["install_state"] != "installed"],
+                "install_url": found["install_url"]}
+
     def enable(self, caller: Caller, owner: str) -> dict[str, Any]:
         """Enable an owner the App is installed on. Refused when it is not."""
         check_owner(owner)

@@ -37,6 +37,7 @@ from .routes import (
     leases,
     onboarding,
     outcomes,
+    people,
     platform,
     repositories,
     runs,
@@ -144,6 +145,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.include_router(accounts.router)
     app.include_router(platform.router)
     app.include_router(admin.router)
+    # Admin roles in Firestore: grant and remove, audited (docs/workspaces.md
+    # §6.5, lane W2). Admin-only; W7 adds the People list to the same router.
+    app.include_router(people.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.

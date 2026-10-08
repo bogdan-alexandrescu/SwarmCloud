@@ -432,7 +432,19 @@ _semver_minor() {
 KUBECTL=""
 # Resolve a kubectl new enough for a 1.35 control plane. The old binaries on this
 # machine win $PATH, so PATH order is deliberately consulted LAST.
+#
+# UNDER THE WORKSPACE CALL GUARD (SWARM_CALL_GUARD set; docs/workspaces.md
+# §2.5) this returns the guard's shim and nothing else, ahead of the cache and
+# the candidates below: they name kubectl by absolute path, which is exactly how
+# a call would step around a guard installed on PATH. The shim judges the call
+# and then runs the real kubectl ($SWARM_KUBECTL, else PATH outside guard-bin/).
 kubectl_bin() {
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    local shim="${SWARM_LIB_DIR}/guard-bin/kubectl"
+    [[ -x "${shim}" ]] || die "SWARM_CALL_GUARD is set but ${shim} is missing; refusing to run kubectl unguarded"
+    printf '%s' "${shim}"
+    return 0
+  fi
   if [[ -n "${KUBECTL}" ]]; then printf '%s' "${KUBECTL}"; return 0; fi
 
   local candidates=() c parsed major minor
@@ -468,8 +480,18 @@ kc() {
 # $PATH. This is not cosmetic: on this workstation Homebrew's checkov 3.3.10 is
 # broken (it raises on import) and shadows the working 3.3.17 in ~/.local/bin,
 # exactly as three old kubectl binaries shadow 1.36.3.
+#
+# Under the workspace call guard only the three guarded tools resolve, each to
+# its shim; anything else has no guard, so it does not run at all.
 prefer_local_bin() {
   local name="$1" override="${2:-}"
+  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
+    case "${name}" in
+      gcloud|kubectl|curl) printf '%s' "${SWARM_LIB_DIR}/guard-bin/${name}"; return 0 ;;
+      *) err "under the workspace call guard only gcloud, kubectl and curl run (through scripts/lib/guard-bin/); ${name} has no guard"
+         return 1 ;;
+    esac
+  fi
   if [[ -n "${override}" ]]; then printf '%s' "${override}"; return 0; fi
   if [[ -x "${HOME}/.local/bin/${name}" ]]; then printf '%s' "${HOME}/.local/bin/${name}"; return 0; fi
   command -v "${name}" 2>/dev/null || return 1

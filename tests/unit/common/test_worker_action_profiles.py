@@ -114,8 +114,13 @@ def test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkp
     code = RUNNER_PROFILES["claude-code"]
     assert review.never_restore_checkpoint is True
     assert review.worker_action is None
+    # Not the backend: contract request 53 (2026-10-08) moved claude-code to
+    # GKE Autopilot, and the retired review profile, which has no Job for any
+    # tenant, stayed where it was.
+    assert review.backend is Backend.CLOUD_RUN_JOB
+    assert code.backend is Backend.GKE_AUTOPILOT
     for field in (
-        "image", "resource_class", "backend", "runner_argv", "provider", "secrets",
+        "image", "resource_class", "runner_argv", "provider", "secrets",
         "secrets_any_of", "timeout_seconds", "cost_declared", "supports_checkpoint",
         "checkpoint_interval_seconds",
     ):

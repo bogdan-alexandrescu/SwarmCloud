@@ -280,8 +280,8 @@ require_platform() {
 # `actions` ("browser runner needs input.url or at least one action",
 # apps/agent-worker/agent_worker/runners/browser.py), so the `{message, run_id}`
 # every suite used to send fails at the runner with dispatch working perfectly.
-# That made the smoke suite's GKE_AUTOPILOT row -- browser is its only profile
-# -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
+# That made the smoke suite's GKE_AUTOPILOT row -- browser was its only profile
+# then -- a check that could not pass, and `smoke-test.sh --profile browser` a proof
 # that could not prove anything.
 #
 # One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the

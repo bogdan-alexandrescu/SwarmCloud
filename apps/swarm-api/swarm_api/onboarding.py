@@ -2,7 +2,7 @@
 §2.1-§2.3; #780, lane OB1).
 
 `GET /v1/onboarding` serves one resumable state machine, the same to the
-console's checklist and the plugin's `/sc:setup`: eight steps in order, each
+console's checklist and the plugin's `/sc:setup`: nine steps in order, each
 `todo`, `in_progress`, `done`, `failed` (with a §2.3 code and its recovery
 copy, word for word) or `stale` (done once, its evidence older than the
 re-verification interval). The next step is the first REQUIRED step that is
@@ -29,6 +29,15 @@ the evidence is today's:
     probe (`github_connected`). Another member's user slot is never read
     into the answer: U1 lets the worker account read every member's slot,
     the checklist is the caller's alone;
+  * for a connection through the GitHub App, whether the App is INSTALLED
+    anywhere the person reaches (`app_installed`, #780, 2026-10-08).
+    Authorising the App (Connect) and installing it are two acts at GitHub,
+    and the owner did the first without the second and saw an empty Access
+    page. The answer is the access service's (`AccessService.installations`):
+    an owner the person enabled was installed when enabled, so that answers
+    with no forge read; otherwise one owners read, which is one refresh of the
+    person's token -- the read Work › Access makes on every visit. A
+    connection that is a token, not the App, needs no installation;
   * that record's reach, read by the probe (OB0b, #794): the account login,
     `GET /user/orgs`, the orgs whose SAML SSO the token is not authorised
     for, the orgs that refuse a classic token, and how many orgs GitHub hid
@@ -48,7 +57,10 @@ records (OB3, OB4), so no step derives them yet; their copy is served in
 A clone refused for no reason the evidence names is OB0b's
 `ACCOUNT_CANNOT_SEE`, with `gittokens.refusal_cause`'s sentence.
 
-READ-ONLY. Nothing here writes: not the §3.1 `onboarding/` cache (a later
+READ-ONLY. Nothing here writes -- the one exception is the refresh above,
+which `app_installed` causes only for an App connection with no enabled
+installed owner, and which stores the person's own renewed token exactly as
+every Access read does. Not the §3.1 `onboarding/` cache (a later
 lane's, when there are client-set fields such as `dismissed_at` to keep),
 and not the tenant default's record, which `GET /v1/git-tokens` creates
 lazily -- a tenant that lists the slot but has no record yet is answered
@@ -67,7 +79,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from swarm_common.models import Tenant
 
@@ -110,11 +122,13 @@ SIGNED_IN = "signed_in"
 WORKSPACE = "workspace"
 CLAUDE_ACCOUNT = "claude_account"
 GITHUB_CONNECTED = "github_connected"
+APP_INSTALLED = "app_installed"
 ORGS_ENABLED = "orgs_enabled"
 REPOS_CHOSEN = "repos_chosen"
 ACCESS_VERIFIED = "access_verified"
 READY = "ready"
-STEPS = (SIGNED_IN, WORKSPACE, CLAUDE_ACCOUNT, GITHUB_CONNECTED, ORGS_ENABLED, REPOS_CHOSEN,
+STEPS = (SIGNED_IN, WORKSPACE, CLAUDE_ACCOUNT, GITHUB_CONNECTED, APP_INSTALLED,
+         ORGS_ENABLED, REPOS_CHOSEN,
          ACCESS_VERIFIED, READY)
 
 NOT_STARTED = "todo"
@@ -191,6 +205,10 @@ _UNANSWERED = re.compile(r"GitHub answered HTTP (?:429|5\d\d)|the read failed \(
 #: The pull-request row GitHub does not expose for these kinds: the role
 #: allows it, so it passes on the push it needs (§2.2, git-tokens.md §5.2).
 _BY_DESIGN = frozenset({FINE_GRAINED_UNKNOWN, APP_UNKNOWN})
+
+#: The token kind a GitHub App connection stores (`forgeapp.METHOD_APP_USER`;
+#: forgeapp imports this module, so the word is restated, not imported).
+APP_USER = "app_user"
 
 #: Kinds whose SSO is authorised on the token's own settings page.
 _PAT_KINDS = frozenset({"classic_pat", "fine_grained_pat"})
@@ -394,6 +412,48 @@ def _connected_step(caller: Caller, record: GitTokenRecord | None, via: str | No
 
 
 # --------------------------------------------------------------------------
+# app_installed
+# --------------------------------------------------------------------------
+
+def uses_app(record: GitTokenRecord | None, via: str | None) -> bool:
+    """Whether the caller acts through their own GitHub App connection, the
+    one kind of connection that needs the App installed to reach anything."""
+    return record is not None and via == "user" and record.kind == APP_USER
+
+
+def _installed_step(record: GitTokenRecord, via: str,
+                    installations: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
+    """Done when the App is installed on at least one owner the person
+    reaches. `installations` is `AccessService.installations`'s answer, or
+    None when nothing could ask."""
+    if not uses_app(record, via):
+        # A token (the tenant's, or a PAT of one's own) reaches what its
+        # owner reaches; no installation is involved.
+        return _step(APP_INSTALLED, DONE, checked_at=now,
+                     evidence={"needed": False, "via": via, "kind": record.kind})
+    found = installations or {}
+    evidence = {
+        "needed": True,
+        "read": bool(found.get("read")),
+        "source": found.get("source"),
+        "login": record.forge_login,
+        "installed": list(found.get("installed") or []),
+        "not_installed": list(found.get("not_installed") or []),
+        "install_url": found.get("install_url"),
+    }
+    if not found.get("read"):
+        unreachable = bool(found.get("unreachable"))
+        return _step(APP_INSTALLED, IN_PROGRESS, evidence=evidence, checked_at=now,
+                     code=FORGE_UNREACHABLE if unreachable else None,
+                     copy=COPY[FORGE_UNREACHABLE] if unreachable else None)
+    if evidence["installed"]:
+        return _step(APP_INSTALLED, DONE, evidence=evidence, checked_at=now)
+    # Connected, authorised, installed nowhere: the next thing to do, not a
+    # failure. The console and the plugin offer the install page.
+    return _step(APP_INSTALLED, NOT_STARTED, evidence=evidence, checked_at=now)
+
+
+# --------------------------------------------------------------------------
 # orgs_enabled
 # --------------------------------------------------------------------------
 
@@ -594,6 +654,7 @@ def derive(
     tenant_lists_git: bool,
     now: datetime,
     registrations_capped: bool = False,
+    installations: dict[str, Any] | None = None,
     workspace: dict[str, Any] | None = None,
     accounts: dict[str, Any] | None = None,
     loan: dict[str, Any] | None = None,
@@ -601,6 +662,8 @@ def derive(
     console_url: str = "",
 ) -> dict[str, Any]:
     """The caller's checklist from evidence. Pure: no read, no write, no clock.
+    `installations` is `AccessService.installations`'s answer for an App
+    connection, or None when it was not asked.
 
     Every input is filtered on `caller.tenant_id` again here, whatever the
     reads returned, and only the caller's own user slot is ever considered.
@@ -629,8 +692,15 @@ def derive(
     steps.append(connected)
     if record is None or via is None or connected["state"] not in (DONE, STALE):
         steps += [_waiting(name, GITHUB_CONNECTED)
+                  for name in (APP_INSTALLED, ORGS_ENABLED, REPOS_CHOSEN, ACCESS_VERIFIED)]
+    elif (installed := _installed_step(record, via, installations, now))["state"] == NOT_STARTED:
+        # Installed nowhere: an App connection reaches no org and no
+        # repository until it is, so the rest waits for the install.
+        steps.append(installed)
+        steps += [_waiting(name, APP_INSTALLED)
                   for name in (ORGS_ENABLED, REPOS_CHOSEN, ACCESS_VERIFIED)]
     else:
+        steps.append(installed)
         steps.append(_orgs_step(caller, record, via, regs, now))
         chosen = _repos_step(caller, record, regs, registrations_capped, now)
         steps.append(chosen)
@@ -657,15 +727,19 @@ def derive(
         "steps": steps,
         "next_step": next_step,
         "complete": next_step is None,
-        "source": ("derived on this read from the git token record, its probe, the tenant's "
-                   "registrations and the stored checks; nothing is stored by it"),
+        "source": ("derived on this read from the git token record, its probe, the App's "
+                   "installations, the tenant's registrations and the stored checks; "
+                   "nothing is stored by it but an App connection's own token refresh"),
     }
 
 
 def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
+         installations: Callable[[], dict[str, Any]] | None = None,
          workspaces: "ws.Workspaces | None" = None,
          workspace_required: bool = False) -> dict[str, Any]:
-    """Read today's records for the caller's tenant and derive. Reads only.
+    """Read today's records for the caller's tenant and derive. Reads only,
+    but for `installations`: called only for an active App connection, it is
+    `AccessService.installations` for this caller (see the module note).
 
     `workspaces` reads the caller's personal workspace, its loan request and
     the accounts that serve it; without it the two steps derive from nothing
@@ -685,14 +759,22 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         own = tenant if tenant is not None and tenant.tenant_id == personal \
             else Store(db).get_tenant(personal)
         accounts = workspaces.claude_accounts(personal, own)
+    lists_git = tenant is not None and GIT_PROVIDER in (tenant.credentials or [])
+    record, via = _connection(caller, [r for r in records if r.tenant_id == caller.tenant_id],
+                              lists_git, now)
+    found = None
+    if installations is not None and uses_app(record, via) \
+            and record.state is TokenState.ACTIVE:
+        found = installations()
     view = derive(
         caller,
         records=records,
         pair_docs=pair_docs,
         registrations=regs,
-        tenant_lists_git=tenant is not None and GIT_PROVIDER in (tenant.credentials or []),
+        tenant_lists_git=lists_git,
         now=now,
         registrations_capped=more is not None,
+        installations=found,
         workspace=workspace,
         accounts=accounts,
         loan=loan,

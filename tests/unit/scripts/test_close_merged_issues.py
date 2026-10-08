@@ -19,7 +19,14 @@ parsing and the close decision are exercised, not read:
 * an already-closed reference is left alone, and so is one in another
   repository;
 * an unreadable answer, an unmerged pull request, or a merge into a branch
-  other than the default one closes nothing, and the first two fail loudly.
+  other than the default one closes nothing, and the first two fail loudly;
+* a PULL REQUEST a closing keyword names is never closed (owner decision,
+  2026-10-08, after `fix #840` in #857's text left open pull request #840
+  closed two seconds after #857 merged): the script leaves it open and posts
+  one comment on the merged pull request saying so. GitHub types every
+  `closingIssuesReferences` node as `Issue`, so the script asks the REST issue
+  endpoint, whose `pull_request` key is the authoritative answer, before every
+  close.
 
 The job's own shape (trigger, permissions, checkout) is held in
 `test_auto_merge_workflow.py`. Nothing here touches the network.
@@ -83,6 +90,28 @@ if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
   cat "${FAKE_GH_GRAPHQL}"
   exit "${FAKE_GH_GRAPHQL_EXIT:-0}"
 fi
+if [[ "${1:-}" == "api" && "${2:-}" == repos/*/issues/* ]]; then
+  number="${2##*/}"
+  case " ${FAKE_GH_REST_FAIL:-} " in
+    *" ${number} "*) echo "fake gh: HTTP 502 for #${number}" >&2; exit 1 ;;
+  esac
+  case " ${FAKE_GH_PULLS:-} " in
+    *" ${number} "*) echo "pull" ;;
+    *) echo "issue" ;;
+  esac
+  exit 0
+fi
+if [[ "${1:-} ${2:-}" == "pr comment" ]]; then
+  number="$3"
+  shift 3
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --body-file) printf 'PR#%s: %s\n' "${number}" "$(cat "$2")" >> "${FAKE_GH_PR_COMMENTS}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  exit 0
+fi
 if [[ "${1:-} ${2:-}" == "issue close" ]]; then
   number="$3"
   shift 3
@@ -103,7 +132,25 @@ exit 3
 
 
 def _node(number: int, state: str = "OPEN", repository: str = THIS_REPO) -> dict:
-    return {"number": number, "state": state, "repository": {"nameWithOwner": repository}}
+    return {
+        "__typename": "Issue",
+        "number": number,
+        "state": state,
+        "url": f"https://github.com/{repository}/issues/{number}",
+        "repository": {"nameWithOwner": repository},
+    }
+
+
+def _pull(number: int, state: str = "OPEN", repository: str = THIS_REPO) -> dict:
+    """A pull request as a closing reference would carry it, if GitHub ever
+    typed it as one."""
+    return {
+        "__typename": "PullRequest",
+        "number": number,
+        "state": state,
+        "url": f"https://github.com/{repository}/pull/{number}",
+        "repository": {"nameWithOwner": repository},
+    }
 
 
 def _answer(
@@ -140,13 +187,22 @@ def run_close(tmp_path: Path):
     fake.write_text(FAKE_GH)
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
-    def run(answer: dict | str, *, pr: str = "4242", refuse: str = "", graphql_exit: int = 0):
+    def run(
+        answer: dict | str,
+        *,
+        pr: str = "4242",
+        refuse: str = "",
+        graphql_exit: int = 0,
+        pulls: str = "",
+        rest_fail: str = "",
+    ):
         graphql = tmp_path / "graphql.json"
         graphql.write_text(answer if isinstance(answer, str) else json.dumps(answer))
         log = tmp_path / "gh.log"
         comments = tmp_path / "comments.txt"
+        pr_comments = tmp_path / "pr-comments.txt"
         summary = tmp_path / "summary.md"
-        for path in (log, comments, summary):
+        for path in (log, comments, pr_comments, summary):
             path.write_text("")
         env = {
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -159,12 +215,16 @@ def run_close(tmp_path: Path):
             "FAKE_GH_GRAPHQL_EXIT": str(graphql_exit),
             "FAKE_GH_COMMENTS": str(comments),
             "FAKE_GH_REFUSE": refuse,
+            "FAKE_GH_PULLS": pulls,
+            "FAKE_GH_REST_FAIL": rest_fail,
+            "FAKE_GH_PR_COMMENTS": str(pr_comments),
         }
         proc = subprocess.run(
             ["bash", str(SCRIPT), "--pr", pr],
             env=env, capture_output=True, text=True, timeout=30, check=False,
         )
         closes = re.findall(r"^issue close (\d+)", log.read_text(), re.MULTILINE)
+        run.pr_comments = pr_comments.read_text()
         return proc, [int(n) for n in closes], log.read_text(), comments.read_text(), summary.read_text()
 
     return run
@@ -310,3 +370,74 @@ def test_a_pull_request_number_that_is_not_a_number_is_refused(run_close, pr: st
     proc, closed, calls, _comments, _summary = run_close(_answer([_node(1)]), pr=pr)
     assert proc.returncode != 0
     assert closed == [] and "api graphql" not in calls, calls
+
+
+# ---------------------------------------------------------------------------
+# A pull request named by a closing keyword is never closed (2026-10-08)
+# ---------------------------------------------------------------------------
+
+
+def _left_open_comment(number: int) -> str:
+    return (
+        f"#{number} is a pull request named by a closing keyword in this pull request's text; "
+        "it was left open (scripts/close-merged-issues.sh never closes pull requests)."
+    )
+
+
+def test_a_pull_request_typed_as_one_is_not_closed_and_the_merged_pr_says_so(run_close):
+    """`fix #840` in #857's text, where #840 is an open pull request.
+    MUTATION: drop the pull-request branch, and #840 is closed."""
+    proc, closed, calls, comments, summary = run_close(_answer([_pull(840)]))
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert closed == [], calls
+    assert "issue close" not in calls and "pr close" not in calls, calls
+    assert comments == "", comments
+    assert run_close.pr_comments == f"PR#4242: {_left_open_comment(840)}\n", run_close.pr_comments
+    assert "#840" in summary, summary
+
+
+def test_a_pull_request_graphql_types_as_an_issue_is_caught_by_the_rest_check(run_close):
+    """`closingIssuesReferences` is an IssueConnection: GitHub types every node
+    `Issue` (and `... on PullRequest` there is a validation error), so the
+    GraphQL answer cannot be trusted to say "pull request". The REST issue
+    endpoint's `pull_request` key can.
+    MUTATION: trust `__typename` alone."""
+    proc, closed, calls, _comments, _summary = run_close(_answer([_node(840)]), pulls="840")
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert closed == [], calls
+    assert f"api repos/{THIS_REPO}/issues/840" in calls, calls
+    assert run_close.pr_comments == f"PR#4242: {_left_open_comment(840)}\n", run_close.pr_comments
+
+
+def test_issues_and_pull_requests_mixed_close_only_the_issues(run_close):
+    """One comment per pull request, posted on the merged pull request; every
+    issue closed as before."""
+    proc, closed, calls, comments, _summary = run_close(
+        _answer([_node(124), _pull(840), _node(125), _node(841)]), pulls="841"
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    assert closed == [124, 125], calls
+    assert re.findall(r"^#(\d+):", comments, re.MULTILINE) == ["124", "125"], comments
+    assert run_close.pr_comments == (
+        f"PR#4242: {_left_open_comment(840)}\nPR#4242: {_left_open_comment(841)}\n"
+    ), run_close.pr_comments
+    assert re.findall(r"^pr comment (\d+)", calls, re.MULTILINE) == ["4242", "4242"], calls
+
+
+def test_a_closed_pull_request_reference_is_still_named_but_never_closed(run_close):
+    proc, closed, calls, _comments, _summary = run_close(_answer([_pull(840, "CLOSED"), _node(9)]))
+    assert proc.returncode == 0, proc.stderr
+    assert closed == [9], calls
+    assert run_close.pr_comments == f"PR#4242: {_left_open_comment(840)}\n", run_close.pr_comments
+
+
+def test_an_unanswered_pull_request_check_closes_nothing_for_it_and_fails(run_close):
+    """Empty is not success: an issue the check could not classify is not
+    closed, the others are, and the run fails naming it.
+    MUTATION: close when the check fails."""
+    proc, closed, calls, _comments, summary = run_close(
+        _answer([_node(1), _node(2), _node(3)]), rest_fail="2"
+    )
+    assert proc.returncode != 0
+    assert closed == [1, 3], calls
+    assert "#2" in (summary + proc.stderr), summary + proc.stderr

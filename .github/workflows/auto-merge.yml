@@ -26,7 +26,8 @@
 # token on an event the pull request's author can influence, so:
 #
 #   * it never checks out and never runs the pull request's code. It reads
-#     three event fields and calls `gh`; that is all;
+#     three event fields and calls `gh`, and runs one script from the
+#     DEFAULT branch's scripts/ (sparse, no credentials); that is all;
 #   * the title reaches the shell through `env:` only. A `${{ }}` expansion of
 #     the title inside `run:` would be the title executed as bash;
 #   * its GITHUB_TOKEN reads the base branch, the head commit's check runs and
@@ -104,6 +105,14 @@
 # fallback enqueues through GraphQL `enqueuePullRequest`, pinned to the head
 # like every merge here -- never a direct merge, which would be the queue
 # bypassed. Without the rule, everything below is exactly what it was.
+#
+# A CLOSING KEYWORD MUST NOT NAME AN OPEN PULL REQUEST (owner decision
+# 2026-10-08). 857's text named the open, unmerged 840 with a closing keyword,
+# and GitHub itself closed 840 two seconds after the App merged 857. Before
+# the gate, the enable job runs main's scripts/check-closing-references.sh;
+# an open pull request named that way is refused on the label and on a
+# re-evaluation alike: `ready` removed, a comment saying what to reword, and
+# nothing armed. A check that cannot tell fails the job: fail closed.
 #
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue and disable jobs' shells against a fake `gh`;
@@ -248,6 +257,51 @@ jobs:
             echo "head_sha=${head_sha}"
           } >>"${GITHUB_OUTPUT}"
 
+      # The DEFAULT branch's scripts/, for the closing-references check below:
+      # main's reviewed code, never the pull request's head or fork, and no
+      # credentials left in the checkout. Nothing of the pull request runs.
+      - name: check out the default branch's scripts
+        id: main-scripts
+        if: steps.pr.outputs.evaluate == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # A CLOSING KEYWORD BEFORE AN OPEN PULL REQUEST (owner decision
+      # 2026-10-08). 857's text named the open, unmerged 840 with a closing
+      # keyword, and GitHub closed 840 two seconds after the App merged 857.
+      # The script reads GitHub's closing references and the keywords in the
+      # title, body and commit messages (closingIssuesReferences never lists a
+      # pull request), and asks of each whether it is an open pull request.
+      # Exit 2 hands the gate its refusal comment; any other failure fails this
+      # step, so the gate never runs and nothing is armed: fail closed.
+      - name: find open pull requests this one's closing keywords would close
+        id: closing-references
+        if: steps.pr.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          rc=0
+          scripts/check-closing-references.sh --pr "${PR_NUMBER}" >"${out}" || rc=$?
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "refusal=" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${rc}" -ne 2 || ! -s "${out}" ]]; then
+            echo "::error::could not tell whether #${PR_NUMBER}'s closing keywords name an open pull request (exit ${rc}): not merged"
+            exit 1
+          fi
+          delimiter="REFUSAL_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "refusal<<${delimiter}"
+            cat "${out}"
+            echo "${delimiter}"
+          } >>"${GITHUB_OUTPUT}"
+
       - name: refuse what must not be queued, and say why on the pull request
         id: gate
         if: steps.pr.outputs.evaluate == 'true'
@@ -258,6 +312,7 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           MERGE_APP_ID: ${{ vars.MERGE_APP_ID }}
           HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
+          CLOSING_REFUSAL: ${{ steps.closing-references.outputs.refusal }}
         # Says `decision` = merge, wait or refused; only `merge` runs the
         # steps after it. A refusal on the label fails the run, as it always
         # has. A refusal on a re-evaluation runs on main's head commit, so it
@@ -313,6 +368,35 @@ jobs:
             echo "::error::not queued for auto-merge: $1"
             exit 1
           }
+
+          # 0. A closing keyword names an OPEN pull request (the step before
+          #    found it; owner decision 2026-10-08). Unlike the refusals
+          #    below, `ready` comes off on the label too, and the comment is
+          #    the check's own: it says what to reword. On a re-evaluation it
+          #    also says `disarm`, for an auto-merge an earlier run armed.
+          if [[ -n "${CLOSING_REFUSAL:-}" ]]; then
+            echo "decision=refused" >>"${GITHUB_OUTPUT}"
+            gh pr edit "${PR_NUMBER}" --remove-label ready
+            body="$(mktemp)"
+            {
+              printf '%s\n' "${CLOSING_REFUSAL}"
+              echo
+              echo "(.github/workflows/auto-merge.yml, scripts/check-closing-references.sh)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not merged: a closing keyword names an open pull request"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            if [[ "${reevaluation}" == "true" ]]; then
+              echo "disarm=true" >>"${GITHUB_OUTPUT}"
+              echo "::warning::not merged on re-evaluation: a closing keyword names an open pull request"
+              exit 0
+            fi
+            echo "::error::not queued for auto-merge: a closing keyword names an open pull request"
+            exit 1
+          fi
 
           # 1. A worker's placeholder title. The squash subject below IS the
           #    title (and through a merge queue, the merge commit's message

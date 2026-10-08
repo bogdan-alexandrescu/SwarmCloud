@@ -63,17 +63,18 @@ def _backends() -> dict[str, Backend]:
 
 
 def test_the_catalogue_is_what_the_amendment_describes():
-    """The premise: Cloud Run Jobs for four profiles, GKE for browser alone.
+    """The premise: Cloud Run Jobs for most profiles, GKE for browser and claude-code.
 
     If this fails the profiles moved, and every document below is describing
     the old split: amend them before changing the expectation here.
     """
     backends = _backends()
-    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser"}
+    # claude-code: contract request 53, applied 2026-10-08 after request 55's
+    # canary (claude-code-gke, removed by the same change).
+    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code"}
     assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
         "mock",
         "generic",
-        "claude-code",
         "codex",
         # #295, contract requests 33, 35 and 36 (accepted 2026-10-01).
         "merge",
@@ -242,8 +243,13 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
     assert "`kubernetes/render.py::JOB_FILES_GVISOR`" in isolation
     gvisor = _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR")
-    assert "--runtime gvisor" in gvisor
-    assert "NOT the" in gvisor
+    # One line says both: that `--runtime gvisor` selects it and that it is
+    # NOT the default. Two phrases anywhere in the symbol's comment block
+    # would pass a comment that split or dropped the negation (#453).
+    assert any("--runtime gvisor" in line and "NOT the" in line for line in gvisor.splitlines()), (
+        "kubernetes/render.py JOB_FILES_GVISOR no longer says, on one line, that "
+        "`--runtime gvisor` selects it and it is NOT the default"
+    )
 
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch

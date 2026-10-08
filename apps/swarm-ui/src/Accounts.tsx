@@ -427,22 +427,70 @@ function AddButton({ ui, patch }: { ui: Persisted; patch: Patch }) {
 }
 
 /**
- * The account the pane shows: the one a reader chose, else the default.
+ * How badly an account needs a person, lower first; null when it does not.
  *
- * THE DEFAULT IS AN ACCOUNT, NEVER A PLACEHOLDER (#503). An account that needs
- * a sign-in comes first -- REAUTH_REQUIRED is the one state whose controls are
- * the reason for visiting, and the sweep has stopped retrying it -- and
- * otherwise the first in list order. A dashed "Choose an account." beside a
- * list of accounts was a pane spent on saying nothing.
+ *   0  REAUTH_REQUIRED: its sign-in expired. The sweep has stopped retrying,
+ *      so it stays until a person signs in again.
+ *   1  the broker refuses it to this tenant (`unreadable_now`): its secret
+ *      could not be read, so it looks idle while every task goes elsewhere.
+ *   2  exhausted: its binding window is spent (100%) and has not reset, so it
+ *      gives out nothing until that window refills.
+ *
+ * PAUSED and DRAINING are not here: a person chose them, and they are not
+ * waiting on anyone.
+ */
+export function attentionRank(a: Account, scope: string | null): number | null {
+  if (needsAHuman(a)) return 0
+  if (unreadableFor(a, scope)) return 1
+  const binding = bindingWindow(a)
+  if (binding !== null) {
+    const r = readingOf(a, binding.key)
+    if ((r.kind === 'live' || r.kind === 'stale') && r.pct >= 100) return 2
+  }
+  return null
+}
+
+/** Alphabetical, the way a reader sees the list: by label, then by id for two equal labels. */
+function byName(a: Account, b: Account): number {
+  return a.label.localeCompare(b.label) || a.account_id.localeCompare(b.account_id)
+}
+
+/**
+ * THE ACCOUNT THE PAGE OPENS ON when nobody chose one (#503: it opened on an
+ * arbitrary account, the first by opaque id). The rule, in order:
+ *
+ *   1. the first account that NEEDS ATTENTION -- the most urgent by
+ *      `attentionRank` (expired sign-in, then unreadable, then exhausted),
+ *      alphabetical among equals. Its controls are the reason to visit;
+ *   2. else the MOST USED -- the most agents holding it now (`assigned`),
+ *      alphabetical among equals. It is the account whose figures are moving;
+ *   3. else, when no account is held at all, ALPHABETICAL by label.
+ */
+export function defaultAccount(accounts: readonly Account[], scope: string | null): Account | null {
+  if (accounts.length === 0) return null
+  const ranked = accounts
+    .map((a) => ({ a, rank: attentionRank(a, scope) }))
+    .filter((x): x is { a: Account; rank: number } => x.rank !== null)
+    .sort((x, y) => x.rank - y.rank || byName(x.a, y.a))
+  if (ranked[0] !== undefined) return ranked[0].a
+  const used = accounts.filter((a) => a.assigned > 0).sort((x, y) => y.assigned - x.assigned || byName(x, y))
+  return used[0] ?? [...accounts].sort(byName)[0] ?? null
+}
+
+/**
+ * The account the pane shows: the one a reader chose, else `defaultAccount`.
+ *
+ * THE DEFAULT IS AN ACCOUNT, NEVER A PLACEHOLDER (#503). A dashed "Choose an
+ * account." beside a list of accounts was a pane spent on saying nothing.
  *
  * A chosen account that is no longer in the read (removed, or no longer lent)
  * falls back to the default rather than to nothing.
  */
-function shownAccount(accounts: Account[], chosen: string | null): { account: Account; explicit: boolean } | null {
+function shownAccount(accounts: Account[], chosen: string | null, scope: string | null): { account: Account; explicit: boolean } | null {
   const picked = chosen === null ? undefined : accounts.find((a) => a.account_id === chosen)
   if (picked !== undefined) return { account: picked, explicit: true }
-  const first = accounts.find(needsAHuman) ?? accounts[0]
-  return first === undefined ? null : { account: first, explicit: false }
+  const first = defaultAccount(accounts, scope)
+  return first === null ? null : { account: first, explicit: false }
 }
 
 /**
@@ -534,7 +582,7 @@ function Pool({
   // figures in the same pane disagree by a second, which is exactly the kind
   // of flicker that makes a number look untrustworthy when it is not.
   const now = Date.now()
-  const shown = shownAccount(accounts, ui.chosen)
+  const shown = shownAccount(accounts, ui.chosen, board.page.tenant_id)
 
   if (shown === null) {
     return (

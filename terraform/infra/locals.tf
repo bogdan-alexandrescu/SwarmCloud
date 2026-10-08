@@ -61,8 +61,12 @@ locals {
     "claude-code" = {
       image          = "agent-runtime-base"
       resource_class = "standard"
-      backend        = "CLOUD_RUN_JOB"
-      provider       = "anthropic"
+      # GKE Autopilot since contract request 53 (applied 2026-10-08): it starts
+      # in about 23 s there against Cloud Run's 128 s median. Its tenants'
+      # Cloud Run Jobs are still created, as the rollback, by
+      # `cloud_run_fallback_profiles` below.
+      backend  = "GKE_AUTOPILOT"
+      provider = "anthropic"
       # Both names map to the SAME tenant secret, and that is deliberate: a
       # tenant holds one credential per provider and it is either metered API
       # access or a Claude subscription token from `claude setup-token`. The
@@ -169,6 +173,22 @@ locals {
   # apps/common/swarm_common/profiles.py names this list.
   profiles_without_a_job = ["post-verdict", "claude-code-review"]
 
+  # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
+  #
+  # Kept until 2026-10-15 as the request 53 rollback; remove then.
+  #
+  # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
+  # profile, so moving claude-code to GKE Autopilot (contract request 53,
+  # applied 2026-10-08) would otherwise have DESTROYED every tenant's
+  # `swarm-job-<tenant>-claude-code`. The owner kept them for one week of clean
+  # GKE runs (request 53, condition 3): while they exist, rolling back is one
+  # line in profiles.py (backend back to CLOUD_RUN_JOB) and a release, with no
+  # Terraform apply. A Job listed here is idle: the scheduler routes by the
+  # catalogue's backend, so nothing dispatches to it while the profile names
+  # GKE_AUTOPILOT. tests/terraform/catalogue.tftest.hcl holds that the Jobs are
+  # still planned.
+  cloud_run_fallback_profiles = ["claude-code"]
+
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
   # THE ONE PLACE A PROFILE'S MODEL IS STATED. It becomes `MODEL` on the
@@ -196,6 +216,10 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
+  # claude-code runs on GKE Autopilot (contract request 53), where no Job of
+  # this root exists to carry MODEL: the scheduler's WORKER_MODELS sets it on
+  # each pod. Its Cloud Run fallback Jobs (`cloud_run_fallback_profiles`)
+  # carry the same model from this map.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
@@ -381,7 +405,7 @@ locals {
           env_name => "swarm-tenant-${tenant_id}-${provider}"
         }
       }
-      if profile.backend == "CLOUD_RUN_JOB" && (
+      if(profile.backend == "CLOUD_RUN_JOB" || contains(local.cloud_run_fallback_profiles, profile_name)) && (
         profile.provider == null || contains(cfg.providers, profile.provider)
       ) && !contains(local.profiles_without_a_job, profile_name)
     ]
@@ -578,6 +602,7 @@ locals {
       # docs/audits/2026-09-22/race-test-needs-a-write.md.
       ADMIN_GROUPS            = join(",", sort(var.admin_groups))
       ADMIN_USERS             = join(",", sort(var.admin_users))
+      PLATFORM_OWNER          = var.platform_owner
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
