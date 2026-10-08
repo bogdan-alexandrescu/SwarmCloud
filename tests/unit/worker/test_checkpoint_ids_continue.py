@@ -16,7 +16,8 @@ too, and goes red here.
 MUTATIONS: restore the old `max(self._seq, 0)` line (the continuation tests go
 red); return the id sequence from `seq` (the per-attempt assertions go red);
 drop the type check on `record.seq` (the tampered-manifest test raises in
-`create`).
+`create`); drop the upper bound `RESTORED_SEQ_MAX` (the past-the-bound test
+sees a ten- or 1,100-digit id).
 """
 
 from __future__ import annotations
@@ -26,11 +27,16 @@ import json
 import pytest
 
 from agent_worker import workspace as workspace_mod
+from agent_worker import checkpoint as checkpoint_mod
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.errors import ExitCode
 from agent_worker.logs import build_logger
 
 from worker_seeds import TENANT, seed_attempt
+
+#: `checkpoint.RESTORED_SEQ_MAX`, written out: the past-the-bound test must
+#: fail on a module with no bound by its behaviour, not by an ImportError.
+SEQ_BOUND = 10**9
 
 
 def _logger(log_stream):
@@ -130,6 +136,52 @@ def test_a_manifest_seq_that_is_not_a_count_is_not_continued_from(
     record = manager.create(resumed)
     assert record.checkpoint_id == "ckpt-00001"
     assert manager.seq == 1
+
+
+@pytest.mark.parametrize(
+    "huge_seq", [SEQ_BOUND + 1, 10**1100], ids=["one-past-the-bound", "1100-digits"]
+)
+def test_a_manifest_seq_past_the_bound_is_not_continued_from(
+    store, tmp_path, log_stream, huge_seq
+):
+    """#227: a non-negative `seq` with no upper bound was continued from, and
+    a planted seq of ~1,100 digits made every later checkpoint's object key
+    longer than GCS's 1,024 bytes. Past `RESTORED_SEQ_MAX` the ids start again
+    at 1, with the same warning as any other seq that is not a count."""
+    logger = _logger(log_stream)
+    records = _first_attempt(store, tmp_path, logger, count=1)
+    manifest = json.loads(store.download_bytes(records[0].manifest_key))
+    manifest["seq"] = huge_seq
+    store.upload_bytes(records[0].manifest_key, json.dumps(manifest).encode("utf-8"))
+
+    resumed = workspace_mod.create(tmp_path / "ws2", "att_2")
+    manager = _manager(store, logger, attempt_id="att_2", generation=2)
+    found = manager.find_by_uri(records[0].uri)
+    assert found is not None
+    manager.restore(found, resumed)
+
+    record = manager.create(resumed)
+    assert record.checkpoint_id == "ckpt-00001"
+    assert len(record.archive_key.encode()) < 1024
+    assert "seq is not a count" in log_stream.getvalue()
+
+
+def test_a_manifest_seq_at_the_bound_is_still_continued_from(store, tmp_path, log_stream):
+    """The control: the bound refuses only what is past it."""
+    assert checkpoint_mod.RESTORED_SEQ_MAX == SEQ_BOUND
+    logger = _logger(log_stream)
+    records = _first_attempt(store, tmp_path, logger, count=1)
+    manifest = json.loads(store.download_bytes(records[0].manifest_key))
+    manifest["seq"] = SEQ_BOUND
+    store.upload_bytes(records[0].manifest_key, json.dumps(manifest).encode("utf-8"))
+
+    resumed = workspace_mod.create(tmp_path / "ws2", "att_2")
+    manager = _manager(store, logger, attempt_id="att_2", generation=2)
+    found = manager.find_by_uri(records[0].uri)
+    assert found is not None
+    manager.restore(found, resumed)
+
+    assert manager.create(resumed).checkpoint_id == f"ckpt-{SEQ_BOUND + 1:05d}"
 
 
 def test_through_the_whole_worker_the_second_attempts_ids_follow_the_first(
