@@ -4228,6 +4228,15 @@ class Worker:
         # `gitops.PeerPin`). One for the whole clone, so a pin decided on the
         # base pin's fetch carries to the branch-tip clone of the same host.
         peers = PeerPin(self._egress, url)
+        # Whether each try handed git a token, latest last: an "Authentication
+        # failed" from a clone that held none is git asking for a credential
+        # nobody gave it, which reading the slot again cannot change.
+        held: list[bool] = []
+
+        def clone_token() -> str | None:
+            token = None if refusal else self._git_token()
+            held.append(bool(token))
+            return token
 
         def retry(call: Callable[[], CloneResult]) -> CloneResult:
             def tried(again: bool) -> CloneResult:
@@ -4254,13 +4263,15 @@ class Worker:
             # A refused credential (git's "Authentication failed", a 401) is
             # read again and the clone tried once more (owner decision
             # 2026-10-08): a refresh may have ended the version first read.
-            # Never when this worker clones without the token.
+            # Never when the refused try held no token -- this worker clones
+            # without it, or the task has none -- and never for a missing
+            # repository, which `forge_credential_refused` does not match.
             return call_reading_again(
                 tried,
                 logger=self.log,
                 what="the clone",
                 twice=lambda exc: GitError(f"{exc}; {FORGE_REFUSED_TWICE}"),
-                refused=lambda exc: not refusal
+                refused=lambda exc: bool(held) and held[-1]
                 and not isinstance(exc, GitTransient)
                 and forge_credential_refused(exc),
             )
@@ -4276,7 +4287,7 @@ class Worker:
                     logs_dir=ws.logs,
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
-                    token=None if refusal else self._git_token(),
+                    token=clone_token(),
                     egress=self._egress,
                     peers=peers,
                 ))
@@ -4324,7 +4335,7 @@ class Worker:
                 logs_dir=ws.logs,
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
-                token=None if refusal else self._git_token(),
+                token=clone_token(),
                 egress=self._egress,
                 peers=peers,
                 # An index run reads 90 days of history (hot spots,
