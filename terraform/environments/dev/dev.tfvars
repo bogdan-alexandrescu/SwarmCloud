@@ -262,8 +262,12 @@ tenants = {
     directory_group = true
     display_name    = "Engineering"
     providers       = ["anthropic", "openai"]
-    max_active      = 40
-    capacity_units  = 40
+    # Live values, set via the admin API on 2026-10-07 (owner): max_active was
+    # already 45 but capacity_units 40 capped the pool at 40. Terraform creates
+    # the tenant document once and ignores later changes, so these record the
+    # live state rather than enforce it.
+    max_active      = 45
+    capacity_units  = 45
     # The CI fixer (.github/workflows/ci-fix.yml) acts for this tenant, which
     # owns the swarm pull requests it fixes. Listed here, NOT added to
     # eng@saga.xyz: that group holds project-wide admin roles on this shared
