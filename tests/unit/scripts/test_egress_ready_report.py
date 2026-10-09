@@ -155,6 +155,18 @@ def test_gke_and_cloud_run_are_kept_apart():
     assert row(result, GKE)["max"] == 0.7
 
 
+def test_the_apis_lowercase_event_type_is_read():
+    # GET /v1/tasks/{id}/events serves "type": "running" (lowercase); a report
+    # that only matched "RUNNING" read zero of 167 live marks on 2026-10-09.
+    docs = task_docs(CLOUD_RUN, [4.0, 6.0])
+    for doc in docs:
+        for event in doc.get("events", []):
+            event["type"] = "running"
+    result = report(docs)
+    assert row(result, CLOUD_RUN)["n"] == 2
+    assert row(result, CLOUD_RUN)["max"] == 6.0
+
+
 def test_an_unknown_backend_is_counted_under_unknown_not_dropped():
     docs = task_docs("SOMETHING_NEW", [3.0])
     # And a mark whose attempt the attempts page never listed.
