@@ -23,7 +23,8 @@ from google.iam.v1 import policy_pb2
 
 from swarm_common.models import Tenant
 
-from swarm_api.credentials import ACCESSOR_ROLE, SecretManagerCredentials
+from swarm_api import validation
+from swarm_api.credentials import ACCESSOR_ROLE, InMemoryCredentials, SecretManagerCredentials
 from swarm_api.errors import UpstreamUnavailable, ValidationFailed
 
 from .conftest import PROJECT
@@ -294,3 +295,52 @@ def test_key_material_is_validated_before_anything_is_created(bad):
     with pytest.raises(ValidationFailed):
         writer(client).put_credential(tenant(), "anthropic", bad)
     assert client.created == []
+
+
+# -- providers the worker account must never read (#364) ------------------
+
+#: The retired #295 App keys and the forge token. None of these may ever be
+#: bound to a tenant's worker account, whichever route reaches the store.
+NEVER_THE_WORKERS = sorted(validation.APP_CREDENTIAL_PROVIDERS | {validation.FORGE_PROVIDER})
+
+
+def test_the_refused_set_is_not_empty():
+    """Without this the parametrized refusal below could pass over nothing."""
+    assert {"git-merge", "git-review", "git"} <= set(NEVER_THE_WORKERS)
+
+
+@pytest.mark.parametrize("provider", NEVER_THE_WORKERS)
+def test_the_secret_manager_store_refuses_before_any_write(provider):
+    """The route allow-list is one call site; `_grant_accessor` is the hazard.
+
+    The store itself refuses, before a secret, a policy or a version is
+    written, so a future route that forgets `known_providers()` still cannot
+    hand an App key or the forge token to the worker account.
+    """
+    client = FakeSecretManager()
+    key = "sk-" + "x" * 40
+    with pytest.raises(ValidationFailed) as refused:
+        writer(client).put_credential(tenant(), provider, key)
+    assert provider in str(refused.value)
+    assert key not in str(refused.value)
+    assert client.created == []
+    assert client.policy_writes == []
+    assert client.versions == []
+
+
+@pytest.mark.parametrize("provider", NEVER_THE_WORKERS)
+def test_the_in_memory_store_refuses_them_too(provider):
+    creds = InMemoryCredentials()
+    with pytest.raises(ValidationFailed):
+        creds.put_credential(tenant(), provider, "sk-" + "x" * 40)
+    assert creds._bindings == {}
+
+
+def test_an_ordinary_provider_is_still_stored_and_bound_on_both_stores():
+    """The control: the refusal is about these providers, not every provider."""
+    client = FakeSecretManager()
+    writer(client).put_credential(tenant(), "anthropic", "sk-" + "x" * 40)
+    assert len(client.versions) == 1 and len(client.policy_writes) == 1
+
+    result = InMemoryCredentials().put_credential(tenant(), "anthropic", "sk-" + "x" * 40)
+    assert result.accessor == WORKER_SA
