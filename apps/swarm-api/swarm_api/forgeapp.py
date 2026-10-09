@@ -1274,7 +1274,14 @@ class ForgeApp:
         owners: list[str] = []
         for org in owner_docs:
             owner = str(org.get("owner") or "").lower()
-            disabled.update(self.revoke_owner_token(caller, owner))
+            try:
+                disabled.update(self.revoke_owner_token(caller, owner))
+            except UpstreamUnavailable:
+                # The document stays, so disconnecting again finds and
+                # disables the token; the answer says it was not.
+                disabled[secret_name_for(caller.tenant_id, owner_suffix(caller.key, owner))] = \
+                    "not disabled: disconnect again"
+                continue
             self._db.collection(ORGS).document(
                 f"{caller.tenant_id}__{user_hash(caller.key)}__{owner}").delete()
             owners.append(owner)
@@ -1423,6 +1430,15 @@ class ForgeApp:
                 detail={"field": "token"})
         owner_key = owner.strip().lower()
         suffix = owner_suffix(caller.key, owner_key)
+        ref = self._db.collection(ORGS).document(
+            f"{caller.tenant_id}__{user_hash(caller.key)}__{owner_key}")
+        snap = ref.get()
+        previous = snap.to_dict() if snap.exists else None
+        if previous is not None and (previous.get("tenant_id") != caller.tenant_id
+                                     or previous.get("user") != caller.key):
+            # The id is a hash of the tenant and the person: a document there
+            # that names anyone else is a collision, refused, never shared.
+            raise NotFound(f"{owner_key} not found")
         granted = self._granted_under(caller, owner_key)
         now = self._now()
         with redaction_literal(value):
@@ -1443,6 +1459,44 @@ class ForgeApp:
                 raise UpstreamUnavailable(
                     f"the token for {owner_key} could not be stored ({type(exc).__name__}); "
                     "nothing changed, try again") from None
+        try:
+            doc, stored = self._record_owner_token(caller, owner, reach, kind, suffix,
+                                                   version, granted, previous, now)
+        except Exception as exc:
+            # The value is stored and nothing may name it: disable the slot
+            # again rather than leave an enabled version no document or
+            # record finds (which no removal could then reach).
+            log.error("owner token not recorded tenant=%s user_hash=%s owner=%s (%s); "
+                      "disabling its slot", caller.tenant_id, user_hash(caller.key), owner_key,
+                      type(exc).__name__)
+            try:
+                self._slots.disable(caller.tenant_id, suffix)
+            except Exception as undo:
+                log.error("owner slot versions not disabled tenant=%s secret=%s (%s)",
+                          caller.tenant_id, secret_name_for(caller.tenant_id, suffix),
+                          type(undo).__name__)
+            if isinstance(exc, ApiError):
+                raise
+            raise UpstreamUnavailable(
+                f"the token for {owner_key} could not be recorded ({type(exc).__name__}); its "
+                "slot was disabled -- store it again") from None
+        login = doc["forge_login"] or ""
+        log.info("owner token stored tenant=%s user_hash=%s owner=%s secret=%s kind=%s "
+                 "login=%s version=%s", caller.tenant_id, user_hash(caller.key), owner_key,
+                 stored.secret_name, kind, login, version)
+        return {"org": doc, "token": {
+            "token_id": stored.token_id, "secret_name": stored.secret_name, "kind": kind,
+            "forge_login": login or None, "state": stored.state.value,
+            "expires_at": _iso(stored.expires_at)}}
+
+    def _record_owner_token(self, caller: Caller, owner: str, reach: OwnerReach, kind: str,
+                            suffix: str, version: str, granted: list[tuple[str, str]],
+                            previous: dict[str, Any] | None, now: datetime
+                            ) -> tuple[dict[str, Any], Any]:
+        """The records that name a stored owner token: its `git_tokens`
+        record, with the probe's evidence, and the owner's `forge_orgs`
+        document. Names, times and states; no value."""
+        owner_key = owner.strip().lower()
         result = reach.result
         result.read_value = True
         result.version = version or None
@@ -1451,13 +1505,6 @@ class ForgeApp:
             caller.tenant_id, user=caller.key, owner=owner_key,
             repo_ids=[repo_id for repo_id, _ in granted], registered_by=caller.key, now=now))
         stored = tokens_db._store_probe(record, result, scoped=None)
-        doc_id = f"{caller.tenant_id}__{user_hash(caller.key)}__{owner_key}"
-        ref = self._db.collection(ORGS).document(doc_id)
-        snap = ref.get()
-        previous = snap.to_dict() if snap.exists else None
-        if previous is not None and (previous.get("tenant_id") != caller.tenant_id
-                                     or previous.get("user") != caller.key):
-            raise NotFound(f"{owner_key} not found")
         login = stored.forge_login or ""
         doc = {
             "tenant_id": caller.tenant_id,
@@ -1481,14 +1528,9 @@ class ForgeApp:
             "enabled_by": caller.key,
             "checked_at": now,
         }
-        ref.set(doc)
-        log.info("owner token stored tenant=%s user_hash=%s owner=%s secret=%s kind=%s "
-                 "login=%s version=%s", caller.tenant_id, user_hash(caller.key), owner_key,
-                 stored.secret_name, kind, login, version)
-        return {"org": doc, "token": {
-            "token_id": stored.token_id, "secret_name": stored.secret_name, "kind": kind,
-            "forge_login": login or None, "state": stored.state.value,
-            "expires_at": _iso(stored.expires_at)}}
+        self._db.collection(ORGS).document(
+            f"{caller.tenant_id}__{user_hash(caller.key)}__{owner_key}").set(doc)
+        return doc, stored
 
     def _refuse_owner_token(self, caller: Caller, reach: OwnerReach, kind: str) -> None:
         """Raise when the token does not reach the owner, with §2.3's code
@@ -1543,15 +1585,23 @@ class ForgeApp:
         """Disable every enabled version of the caller's slot for `owner` and
         mark its record revoked. The slot is named from the caller and the
         owner, never from a document. Answers `{secret name: versions
-        disabled}`; a failure is named by type."""
+        disabled}`.
+
+        A disable that fails RAISES (503), before the record is touched, and
+        every caller calls this BEFORE it deletes or overwrites the owner's
+        `forge_orgs` document: the document is what finds the slot again, so
+        a failure keeps it, and a retry -- or a disconnect -- disables the
+        token then, instead of leaving an enabled version nothing names."""
         suffix = owner_suffix(caller.key, owner)
         name = secret_name_for(caller.tenant_id, suffix)
         try:
-            disabled: Any = self._slots.disable(caller.tenant_id, suffix)
+            disabled = self._slots.disable(caller.tenant_id, suffix)
         except Exception as exc:
             log.error("owner slot versions not disabled tenant=%s secret=%s (%s)",
                       caller.tenant_id, name, type(exc).__name__)
-            disabled = f"not disabled ({type(exc).__name__})"
+            raise UpstreamUnavailable(
+                f"your token for {owner.lower()} could not be disabled in {name} "
+                f"({type(exc).__name__}); nothing was removed, try again") from None
         try:
             GitTokens(self._db, now=self._now).revoke(
                 caller.tenant_id, owner_token_id(caller.tenant_id, caller.key, owner),
