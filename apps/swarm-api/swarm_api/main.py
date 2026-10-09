@@ -41,6 +41,7 @@ from .routes import (
     platform,
     repositories,
     runs,
+    schedule_tick,
     tasks,
     tenants,
     workflows,
@@ -148,6 +149,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Admin roles in Firestore: grant and remove, audited (docs/workspaces.md
     # §6.5, lane W2). Admin-only; W7 adds the People list to the same router.
     app.include_router(people.router)
+    # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
+    # to the `swarm-schedule-tick` identity alone (SD10).
+    app.include_router(schedule_tick.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
