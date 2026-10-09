@@ -22,6 +22,11 @@
                  red at `fix_rounds`.
       CANCELLED  the planner, the workflow or a fix round was cancelled.
       REJECTED   the plan was turned down.
+      NOT_READY  the planner found the issue not ready to work on and said why
+                 (`NotReadyVerdict`) instead of writing a plan: already done on
+                 main, an owner decision, blocked by other work, too vague,
+                 deferred security work, or an epic. Terminal, holds nothing,
+                 and the status comment carries the reason and what it needs.
 
 WHY A WAITING RUN COSTS NOTHING (invariant 1). The planner is a task like any
 other; once it has ended, a PLANNED run is a Firestore document and nothing
@@ -262,11 +267,19 @@ class RunState(str, Enum):
     FAILED = "FAILED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
+    #: The planner's verdict that the issue is not ready (`NotReadyVerdict`).
+    #: A state of its own rather than REJECTED with `rejected_by: planner`:
+    #: RunState is this module's, not the frozen contract's, and a rejection
+    #: is a person turning a plan down -- there is no plan here to turn down.
+    NOT_READY = "NOT_READY"
 
 
 RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
-    # The planner ends: a plan, a failure, or a cancellation of the planner.
-    RunState.PLANNING: frozenset({RunState.PLANNED, RunState.FAILED, RunState.CANCELLED}),
+    # The planner ends: a plan, a NOT_READY verdict instead of one, a
+    # failure, or a cancellation of the planner.
+    RunState.PLANNING: frozenset(
+        {RunState.PLANNED, RunState.NOT_READY, RunState.FAILED, RunState.CANCELLED}
+    ),
     # PLANNED -> PLANNED is an edit: a new plan, a new digest, still waiting.
     # PLANNED -> FAILED is an `auto` run whose creator left the tenant before
     # the tick approved it: nothing is submitted as them (`run_owner_auth`).
@@ -295,6 +308,7 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.FAILED: frozenset(),
     RunState.REJECTED: frozenset(),
     RunState.CANCELLED: frozenset(),
+    RunState.NOT_READY: frozenset(),
 }
 
 TERMINAL_RUN_STATES: frozenset[RunState] = frozenset(
@@ -586,6 +600,94 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
     return plan
 
 
+#: Why a planner may find an issue not ready. The owner's list (2026-10-08);
+#: `other` is for a reason the planner can state but the list does not name.
+NOT_READY_KINDS = (
+    "already_done", "owner_decision", "blocked", "too_vague", "security_deferred", "epic",
+    "other",
+)
+MAX_NOT_READY_NEEDS = 20
+
+
+class NotReadyVerdict(_PlanModel):
+    """The planner's answer when the issue is not ready: no plan, and why.
+
+    `ready` is the explicit field the owner asked for (2026-10-08: readiness
+    is the PLANNER's call, not a label's): it must be `false` -- a planner
+    that finds the issue ready writes a plan. `reason` is a paragraph;
+    `needs` lists what would make it ready ("owner decision: ...", "depends
+    on #N"), one per entry, and may be empty only when `reason` says it all.
+    """
+
+    ready: Literal[False]
+    kind: Literal[NOT_READY_KINDS] | None = None  # type: ignore[valid-type]
+    reason: str = Field(min_length=1, max_length=2_000)
+    needs: list[_Line] = Field(default_factory=list, max_length=MAX_NOT_READY_NEEDS)
+
+
+def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
+    """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
+
+    A JSON object carrying `"ready": false` is a `NotReadyVerdict` and is
+    checked as strictly as a plan is; `"ready": true` beside a plan is
+    accepted and dropped, so the plan digests exactly as one written without
+    it. Anything else is a plan, through `parse_plan`.
+    """
+    if isinstance(value, (str, bytes)):
+        try:
+            value = json.loads(value)
+        except (ValueError, UnicodeDecodeError):
+            raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
+    if isinstance(value, Mapping) and "ready" in value:
+        ready = value.get("ready")
+        if ready is True:
+            return "plan", parse_plan({k: v for k, v in value.items() if k != "ready"})
+        if ready is not False:
+            raise InvalidPlan('"ready" is true (and a plan follows) or false (and a reason does)')
+        try:
+            verdict = NotReadyVerdict.model_validate(dict(value))
+        except ValidationError as exc:
+            problems = [
+                f"{'.'.join(str(p) for p in e.get('loc') or ()) or 'verdict'}: {e.get('msg')}"
+                for e in exc.errors()
+            ]
+            raise InvalidPlan(
+                "the not-ready verdict does not match its schema: " + "; ".join(problems),
+                detail={"errors": problems},
+            ) from None
+        return "not_ready", {
+            "kind": verdict.kind,
+            # Agent text, shown in the console and quoted on the issue:
+            # masked here, once, as a run's error is (`failure_text`).
+            "reason": redact_detail(verdict.reason, limit=2_000),
+            "needs": [redact_detail(need, limit=500) for need in verdict.needs],
+        }
+    return "plan", parse_plan(value)
+
+
+def plan_files(plan: Mapping[str, Any] | None) -> set[str]:
+    """Every path a plan's steps say they touch, normalised for comparison."""
+    files: set[str] = set()
+    for step in (plan or {}).get("steps") or []:
+        for path in (step.get("files") if isinstance(step, Mapping) else None) or []:
+            norm = str(path).strip().removeprefix("./").strip("/")
+            if norm:
+                files.add(norm)
+    return files
+
+
+def territory_overlap(ours: set[str], theirs: set[str]) -> list[str]:
+    """The paths two plans share: the same file, or a directory one names and
+    the other edits inside. Sorted, so the reason a run waits reads the same
+    on every tick."""
+    shared = set()
+    for a in ours:
+        for b in theirs:
+            if a == b or b.startswith(a + "/") or a.startswith(b + "/"):
+                shared.add(min(a, b, key=len))
+    return sorted(shared)
+
+
 def plan_stages(plan: Mapping[str, Any]) -> list[list[str]]:
     """A parsed plan's step ids, grouped into the stages `compile_plan` runs them in."""
     return _stages(list(plan["steps"]))
@@ -700,6 +802,29 @@ def _open_work_section(work: Mapping[str, Any], marker: str, budget: int) -> str
     return head + body + tail
 
 
+#: The readiness criteria (owner decision 2026-10-08: the planner decides
+#: whether an issue is ready, not a label). The last part of every planner
+#: prompt; `parse_planner_output` reads the answer.
+_READINESS = (
+    "\n\nFIRST DECIDE WHETHER THE ISSUE IS READY TO WORK ON. It is NOT ready when: "
+    "its work is already done on the default branch (name the files, functions and "
+    "tests that show it -- that is the evidence); it needs a decision only the "
+    "repository's owner can make and the issue does not record one; it is blocked by "
+    "another open issue or pull request that must land first; it is too vague to "
+    "state its requirements; it is security work the owner has deferred; or it is an "
+    "epic -- a tracking issue whose work is its child issues. If it is not ready, do "
+    f"not write a plan: write $SWARM_ARTIFACTS_DIR/{PLAN_FILE} as exactly\n"
+    '  {"ready": false, "kind": "already_done" | "owner_decision" | "blocked" | '
+    '"too_vague" | "security_deferred" | "epic" | "other",\n'
+    '   "reason": "<why, with the evidence>",\n'
+    '   "needs": ["<what would make it ready, one per entry, e.g. owner decision: '
+    '<the question>, or depends on #N>"]}\n'
+    "and nothing else. SwarmCloud posts the reason and the needs on the issue and plans "
+    "it again only after the issue is edited or commented on. If it is ready, write "
+    'the plan above, without a "ready" key.'
+)
+
+
 def planner_prompt(
     ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None
 ) -> str:
@@ -751,6 +876,7 @@ def planner_prompt(
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
         "No other keys. A person reads this plan and approves it before any step runs."
+        + _READINESS
     )
     if open_work is None:
         return lead + instructions
@@ -1462,6 +1588,23 @@ class IssueRun:
     #: True once the write-back closed the issue -- only an already_on_main
     #: run with every planned requirement met (`requirements_met`) is closed.
     issue_closed: bool | None = None
+    # -- the issue sweeper (`issuesweep`, owner decisions 2026-10-08). All
+    # optional, so a run stored before them reads as one a person created.
+    #: The planner's NOT_READY verdict, `{kind, reason, needs}` (masked);
+    #: set by the transition to NOT_READY and by nothing else.
+    not_ready: dict[str, Any] | None = None
+    #: Why an `auto` run's approval is waiting, e.g. `territory_overlap:
+    #: run_<id>` -- another live run's plan in the same repository names a
+    #: file this plan does. None when nothing holds it.
+    hold: str | None = None
+    #: The member a run the SWEEP created submits as (`created_by` is
+    #: `issue-sweep`): its repository registration's creator, asked of the
+    #: directory again on every submission (`routes.runs.run_owner_auth`).
+    on_behalf_of: str | None = None
+    #: When the write-back last wrote to the issue. A comment edit moves the
+    #: issue's `updated_at`; the sweep needs to tell its own write from a
+    #: person's edit (`issuesweep`).
+    last_writeback_at: datetime | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1516,6 +1659,10 @@ class IssueRun:
             "verification_comment_id": self.verification_comment_id,
             "last_verification_posted": self.last_verification_posted,
             "issue_closed": self.issue_closed,
+            "not_ready": dict(self.not_ready) if self.not_ready is not None else None,
+            "hold": self.hold,
+            "on_behalf_of": self.on_behalf_of,
+            "last_writeback_at": self.last_writeback_at,
         }
 
     @classmethod
@@ -1580,6 +1727,15 @@ class IssueRun:
             last_verification_posted=data.get("last_verification_posted"),
             issue_closed=(
                 data["issue_closed"] if isinstance(data.get("issue_closed"), bool) else None
+            ),
+            not_ready=(
+                dict(data["not_ready"]) if isinstance(data.get("not_ready"), Mapping) else None
+            ),
+            hold=_opt_str(data.get("hold")),
+            on_behalf_of=_opt_str(data.get("on_behalf_of")),
+            last_writeback_at=(
+                data["last_writeback_at"]
+                if isinstance(data.get("last_writeback_at"), datetime) else None
             ),
         )
 
@@ -1674,6 +1830,17 @@ class IssueRun:
             "verification": self.verification,
             "verification_comment_id": self.verification_comment_id,
             "issue_closed": self.issue_closed,
+            # The sweeper: the planner's NOT_READY verdict, why an auto
+            # approval waits, and whom a swept run submits as.
+            "not_ready": (
+                None if self.not_ready is None else {
+                    "kind": _opt_str(self.not_ready.get("kind")),
+                    "reason": _opt_str(self.not_ready.get("reason")),
+                    "needs": [str(n) for n in self.not_ready.get("needs") or []],
+                }
+            ),
+            "hold": self.hold,
+            "on_behalf_of": self.on_behalf_of,
         }
 
 
@@ -1723,6 +1890,9 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "requirements_met", "requirements_unmet", "requirements_note",
     "merge",
     "verification_comment_id", "last_verification_posted", "issue_closed",
+    # The sweeper's bookkeeping: why an auto approval waits (cleared when it
+    # stops waiting), and when the write-back last wrote to the issue.
+    "hold", "last_writeback_at",
 })
 
 
@@ -1841,6 +2011,53 @@ class IssueRuns:
         ]
         rows.sort(key=lambda r: (r.created_at, r.id))
         return rows[:limit], len(rows) > limit
+
+    def live(self, tenant_id: str, *, limit: int) -> tuple[list[IssueRun], bool]:
+        """Up to `limit` of the tenant's NON-TERMINAL runs, oldest first, and
+        whether there were more. PLANNED runs waiting for a person included:
+        they are live work on their issue, and they count against the
+        sweeper's cap (`issuesweep`). Index: issue-runs-tenant-state-created.
+        """
+        live_states = sorted(s.value for s in RunState if s not in TERMINAL_RUN_STATES)
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "in", live_states))
+            .order_by("created_at", direction=firestore.Query.ASCENDING)
+            .limit(limit + 1)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id and row.state not in TERMINAL_RUN_STATES
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id))
+        return rows[:limit], len(rows) > limit
+
+    def for_issue(self, tenant_id: str, ref: IssueRef, *, limit: int = 50) -> list[IssueRun]:
+        """The tenant's runs of ONE issue, newest first, at most `limit`.
+
+        Equality filters only, so Firestore serves it by merging the
+        automatic single-field indexes and it needs no composite index; the
+        order is applied here. Filtered again in the application, as every
+        read is.
+        """
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("issue.number", "==", ref.number))
+            .where(filter=FieldFilter("issue.repo", "==", ref.repo))
+            .where(filter=FieldFilter("issue.owner", "==", ref.owner))
+            .limit(limit)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id and row.issue.number == ref.number
+            and row.issue.repository.lower() == ref.repository.lower()
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id), reverse=True)
+        return rows
 
     def transition(
         self,

@@ -487,7 +487,11 @@ module "scheduler" {
   # the module's rollup-sweeper account. The audience is the service URL, the
   # same value verify.tf gives its own direct caller of swarm-api. The same
   # tenants get the #454 issue-run tick (`issue_run_advance`), as the same
-  # account, on var.issue_run_advance_schedule's default of every minute.
+  # account, on var.issue_run_advance_schedule's default of every minute,
+  # and the issue sweeper (`issue_sweep`), as the same account, on
+  # var.issue_sweep_schedule's default of :07 and :37 -- which starts nothing
+  # until var.enable_issue_sweep (swarm-api's SWEEP_ENABLED) and the tenant's
+  # own switch are on.
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 

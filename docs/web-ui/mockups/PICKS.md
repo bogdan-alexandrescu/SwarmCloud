@@ -100,3 +100,25 @@ recommended variant of every other screen. Built by lane OB8 as
 | 3 · Org and repository chooser | **A**: owners on the left (the installations, plus orgs with none), the selected owner's repositories on the right, paged and searched server-side, each Not chosen, Read or Write with push ability shown before Write; "Not listed? type owner/repo" carries the recovery copy |
 | 4 · Verification results | **A**: a grid, failures first, the fix inline; ok / missing / unknown as the permission matrix draws them. Reads only (D6); the opt-in write test is not served yet, and the column says so |
 | 5 · Access | **A**, Work › Access, for each person, **plus B**, the admin's Members view. The page states D9 (SwarmCloud enforces a read grant) and D8 (no workflows write) |
+
+## Schedules and the Approvals inbox (placement picked 2026-10-08)
+
+Mock-up page: `schedules.html`, drawn by design lane SCHED0 (#892); the design is
+[docs/schedules.md](../../schedules.md). The owner answered the design's eleven
+questions on 2026-10-08. Only the placement is a screen pick; the other screens
+on the page are still recommendations and **have not been picked**.
+
+| Screen or decision | Pick | Why |
+|---|---|---|
+| 2 · Placement | **P3**, a new spine section, **Automate**: Overview · Work · Automate · Capacity · Admin, holding Schedules and the Approvals inbox (SD1) | **Not** the recommended P1 (Work › Schedules). The owner chose a section of its own for the two pages. `App.tsx` `SECTIONS` gains an `automate` section, and the issue forms' "Where" list follows it |
+
+## Diff viewer (picked 2026-10-08)
+
+From `diff-viewer.html` (lane DIFF0) and [`docs/design/diff-viewer.md`](../../design/diff-viewer.md) section 3.
+
+| Decision | Pick |
+|---|---|
+| Variant | **2 + 5, then 3**: the Changes tab on agents, workflows and issue runs; the workflow and run tab holds the files x steps matrix; findings beside lines later |
+| Entry points | **All at once, in one lane** (not agent first, then workflow) |
+| Syntax highlighting | **Yes**, about +6 kB gz, lazy with the Changes tab, React text nodes only (no `innerHTML`) |
+| Phone | **One file at a time** with a picker and an All files sheet |
