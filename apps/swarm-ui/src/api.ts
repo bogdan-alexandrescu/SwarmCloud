@@ -31,6 +31,7 @@ import type {
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
   AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
@@ -5379,6 +5380,21 @@ export async function disconnectGitHub(): Promise<Result<GitHubDisconnectRespons
   return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
 }
 
+/**
+ * `POST /v1/onboarding/github/token` (D5): the signed-in person's fallback
+ * token for ONE owner, probed and stored once in their per-owner slot. The
+ * one route a value goes out on: posted once, never retried, never kept or
+ * logged here, and the answer carries the token's names, never the value.
+ */
+export async function storeOwnerToken(owner: string, token: string): Promise<Result<OwnerTokenResponse>> {
+  return writeTo(route('/v1/onboarding/github/token'), 'POST', { owner, token }) as Promise<Result<OwnerTokenResponse>>
+}
+
+/** `POST /v1/onboarding/dismiss`: hide the caller's checklist (`true`), or show it again. Steps keep their state. */
+export async function dismissOnboarding(dismissed = true): Promise<Result<OnboardingDismissal>> {
+  return writeTo(route('/v1/onboarding/dismiss'), 'POST', { dismissed }) as Promise<Result<OnboardingDismissal>>
+}
+
 // ---------------------------------------------------------------------------
 // Personal workspaces (#847, lane W8; docs/workspaces.md §6.3).
 //
@@ -5498,11 +5514,21 @@ export async function revokeAccessGrant(repoId: string): Promise<Result<AccessRe
   return writeTo(route('/v1/access/grants/{repo_id}', { repo_id: repoId }), 'DELETE') as Promise<Result<AccessRevokeResponse>>
 }
 
-/** `POST /v1/access/grants/{repo_id}/verify`: run clone, push and pull request now. Reads only (D6). */
+/**
+ * `POST /v1/access/grants/{repo_id}/verify`: run clone, push and pull request
+ * now, which only read. `['push_test']` is D6's opt-in write, on a write
+ * grant only: one `swarmcloud/onboarding-check-<nonce>` branch created and
+ * deleted.
+ */
 export async function verifyAccessGrant(repoId: string, checks?: AccessCheckName[]): Promise<Result<AccessVerifyResponse>> {
   return writeTo(route('/v1/access/grants/{repo_id}/verify', { repo_id: repoId }), 'POST', checks === undefined ? {} : { checks }) as Promise<
     Result<AccessVerifyResponse>
   >
+}
+
+/** `POST /v1/access/orgs/{owner}/install-request`: record that the person asked {owner}'s owners to install the App (ORG_APPROVAL_PENDING). */
+export async function requestAccessInstall(owner: string): Promise<Result<AccessInstallRequestResponse>> {
+  return writeTo(route('/v1/access/orgs/{owner}/install-request', { owner }), 'POST') as Promise<Result<AccessInstallRequestResponse>>
 }
 
 /** `GET /v1/access/members` (admin): every member's connection state and grants in the caller's tenant. */

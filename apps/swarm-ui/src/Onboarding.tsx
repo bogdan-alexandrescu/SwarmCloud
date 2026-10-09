@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
-import { loadOnboarding } from './api'
+import { dismissOnboarding, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
-import { ConnectButton, connectionOf } from './GitHubConnect'
+import type { ApiError } from './fetch'
+import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
@@ -32,10 +33,14 @@ import './styles/onboarding.css'
  * action: Connect GitHub here, the rest on Work › Access, where OB4's routes
  * act. Re-check is a fresh read, which is a fresh derivation.
  *
- * HIDE IS THIS BROWSER'S. §3.2 drafts `POST /v1/onboarding/dismiss`, and no
- * lane has built it, so Hide is kept in localStorage per tenant and person:
- * the steps keep their state, Work › Setup still shows them, and another
- * browser still shows the card. Said on the card, not implied.
+ * HIDE IS THE PERSON'S, KEPT BY THE SERVER (§3.1-§3.2). Hide posts
+ * `POST /v1/onboarding/dismiss`, which sets `dismissed_at` on the caller's own
+ * onboarding document, and the card is drawn only while `GET /v1/onboarding`
+ * answers `dismissed: false` -- so a person who hid it does not meet it again
+ * in another browser or on the plugin's surface. It was a localStorage flag
+ * until that route was built (#780, step 3), which hid the card in one browser
+ * only. The steps keep their state, Work › Setup still shows them, and Show on
+ * Overview there posts `{dismissed: false}`.
  */
 
 export const SETUP = 'work/setup'
@@ -292,30 +297,6 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
   )
 }
 
-// ---------------------------------------------------------------------------
-// Hide, kept in this browser (see the note at the top)
-// ---------------------------------------------------------------------------
-
-function hideKey(doc: OnboardingDoc): string {
-  return `swarm.setup.hidden:${doc.tenant_id}:${doc.user_hash}`
-}
-
-export function setupHidden(doc: OnboardingDoc): boolean {
-  try {
-    return window.localStorage.getItem(hideKey(doc)) === '1'
-  } catch {
-    return false
-  }
-}
-
-function hideSetup(doc: OnboardingDoc): void {
-  try {
-    window.localStorage.setItem(hideKey(doc), '1')
-  } catch {
-    // Storage refused (private mode): the card hides for this visit only.
-  }
-}
-
 /**
  * ENTRY A, THE CARD ON OVERVIEW. It draws nothing until the read lands, and
  * nothing when the read failed or is not served: Overview's own reads are
@@ -324,9 +305,26 @@ function hideSetup(doc: OnboardingDoc): void {
 export function SetupCard() {
   const doc = useUrRead(loadOnboarding, 'onboarding')
   const [hidden, setHidden] = useState(false)
+  const [hiding, setHiding] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
   if (doc.state.status !== 'ok' && doc.state.status !== 'stale') return null
   const d = doc.state.data
-  if (d.complete || !Array.isArray(d.steps) || hidden || setupHidden(d)) return null
+  if (d.complete || !Array.isArray(d.steps) || hidden || d.dismissed === true) return null
+
+  // Hidden only once the server has kept it: a refused dismiss leaves the
+  // card where it was and says so, rather than hiding it for this visit and
+  // bringing it back on the next.
+  async function hide() {
+    setHiding(true)
+    setRefused(null)
+    const res = await dismissOnboarding(true)
+    setHiding(false)
+    if (res.status === 'error') {
+      setRefused(res.error)
+      return
+    }
+    setHidden(true)
+  }
   return (
     <Card
       className="ob-card"
@@ -336,14 +334,7 @@ export function SetupCard() {
           <Chip>
             {doneCount(d)} of {d.steps.length} done
           </Chip>
-          <Button
-            kind="ghost"
-            size="sm"
-            onClick={() => {
-              hideSetup(d)
-              setHidden(true)
-            }}
-          >
+          <Button kind="ghost" size="sm" busy={hiding} onClick={() => void hide()}>
             Hide
           </Button>
           <ButtonLink kind="primary" size="sm" href={addressToPath(SETUP)}>
@@ -352,11 +343,12 @@ export function SetupCard() {
         </span>
       }
     >
+      {refused !== null && <Refusal error={refused} title="The checklist could not be hidden" />}
       <StepBar doc={d} />
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
-        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, in this browser
-        only; Work › Setup still shows them.
+        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
+        browser; Work › Setup still shows them.
       </p>
     </Card>
   )
@@ -386,9 +378,12 @@ export function OnboardingScreen() {
               className="ob-card"
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
-                <Chip>
-                  {doneCount(d)} of {d.steps.length} done
-                </Chip>
+                <span className="ur-acts">
+                  <Chip>
+                    {doneCount(d)} of {d.steps.length} done
+                  </Chip>
+                  {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
+                </span>
               }
               foot={
                 <>
@@ -406,5 +401,34 @@ export function OnboardingScreen() {
         }
       </UrRegion>
     </div>
+  )
+}
+
+/**
+ * A hidden checklist's way back onto Overview: `{dismissed: false}`, then a
+ * fresh read, so the button goes once the server says the card is shown.
+ */
+function ShowOnOverview({ reload }: { reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  return (
+    <>
+      <Button
+        size="sm"
+        busy={busy}
+        onClick={() => {
+          setBusy(true)
+          setRefused(null)
+          void dismissOnboarding(false).then((res) => {
+            setBusy(false)
+            if (res.status === 'error') setRefused(res.error)
+            else reload()
+          })
+        }}
+      >
+        Show on Overview
+      </Button>
+      {refused !== null && <Refusal error={refused} title="The checklist is still hidden from Overview" />}
+    </>
   )
 }
