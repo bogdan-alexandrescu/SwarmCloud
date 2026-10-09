@@ -625,8 +625,8 @@ locals {
       # The schedule tick's identity (modules/scheduler, docs/schedules.md
       # SD10): may call POST /v1/admin/schedules/tick and no other route
       # (swarm_api.auth.SCHEDULE_TICK_ROUTES, lane S2). Derived, not a tfvars
-      # entry, for the reason ROLLUP_SWEEPER_USERS is. Until S2 ships, no
-      # setting reads it, so rendering it first changes nothing the API does.
+      # entry, for the reason ROLLUP_SWEEPER_USERS is. Until S2 ships, ApiSettings
+      # reads it and no route consults it, so it changes nothing the API does.
       SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email
 
       # The issue sweeper's platform switch (swarm_api.issuesweep, owner
