@@ -362,7 +362,9 @@ jobs:
     #
     # hotfix.yml likewise runs only on main, and it and release.yml run the
     # stages in .github/actions/release-*, whose inputs actionlint checks at
-    # each `uses:` (owner decision 2026-10-08, observer proposal H).
+    # each `uses:` (owner decision 2026-10-08, observer proposal H). So does
+    # accept.yml, which runs only when a release completes on main (cuts A
+    # and C of the release timing report, the same day).
     #
     # iam-refusal-probe.yml is linted here for the same reason as release.yml,
     # more so: it runs only when the owner dispatches it, once, so a broken
@@ -377,7 +379,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, hotfix.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
+      - name: actionlint release.yml, hotfix.yml, accept.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -386,7 +388,7 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/hotfix.yml \
-            .github/workflows/application.yml \
+            .github/workflows/accept.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
             .github/workflows/auto-merge.yml
 
@@ -434,6 +436,7 @@ jobs:
       python: ${{ steps.diff.outputs.python }}
       areas: ${{ steps.diff.outputs.areas }}
       ui: ${{ steps.diff.outputs.ui }}
+      images: ${{ steps.images.outputs.images }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -487,6 +490,10 @@ jobs:
             # pull request.
             .github/workflows/hotfix.yml
             .github/actions/**
+            # Post-deploy acceptance runs only after a release completes on main,
+            # so a pull request is the only place it is linted (actionlint below)
+            # and held to its shape (tests/unit/scripts/test_release_acceptance_job.py).
+            .github/workflows/accept.yml
             # tests/unit/scripts/test_issue_forms.py validates the issue forms and
             # the label declaration. Without these a PR editing only a form would run
             # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
@@ -594,6 +601,51 @@ jobs:
             if [ "${ui_src}" -eq 1 ]; then areas="${areas:+${areas} }swarm-ui"; fi
             emit true subset "${areas}" "${ui}"
           fi
+
+      - name: does the change reach an image
+        id: images
+        # `images`: `true` when `build changed images without pushing` has
+        # something to build, so on `false` that job is skipped by its own
+        # `if:` and takes no runner (2026-10-09; runners were the largest
+        # share of pull-request wall time, docs/ci.md "Where pull-request CI
+        # time goes"). The answer is the one that job's plan step reads,
+        # `build-images.sh --affected-by` over the same diff -- from the
+        # Dockerfiles, never a list here. A separate step from the diff above,
+        # which test_ui_changes_gate.py runs in a scratch repository with no
+        # scripts/ in it.
+        #
+        # Doubt builds: on anything but a pull request (where the job does not
+        # run at all), and when the diff cannot be read, it says `true` and the
+        # job's own plan decides. If the script fails, this job fails, and
+        # every gate fails with it -- never "nothing to build".
+        env:
+          EVENT: ${{ github.event_name }}
+          APP: ${{ steps.diff.outputs.app }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" != "pull_request" ]; then
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            echo "${EVENT}: not a pull request, so not decided here"
+            exit 0
+          fi
+          if [ "${APP}" != "true" ]; then
+            echo "images=false" >> "$GITHUB_OUTPUT"
+            echo "nothing reaches this workflow, so no image"
+            exit 0
+          fi
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/image-changed"; then
+            echo "images=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::could not diff ${BASE_SHA}...${HEAD_SHA}; leaving the image decision to the build job"
+            exit 0
+          fi
+          ./scripts/build-images.sh --affected-by "${RUNNER_TEMP}/image-changed" > "${RUNNER_TEMP}/image-list"
+          count="$(grep -c . "${RUNNER_TEMP}/image-list" || true)"
+          images=false
+          if [ "${count:-0}" -gt 0 ]; then images=true; fi
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+          echo "the change reaches ${count:-0} image(s): $(paste -sd' ' "${RUNNER_TEMP}/image-list")"
 
   python-checks:
     # Everything `format / unit tests` checked besides the unit suite: the lock,
@@ -912,6 +964,19 @@ jobs:
         #
         # xunit1 puts each test's `file` in the report, which the next step
         # sums into this shard's measured weights.
+        #
+        # `--dist worksteal`, NOT xdist's default `load` (measured 2026-10-09,
+        # docs/ci.md "Where pull-request CI time goes"). Shard 3 of 4 was the
+        # last job to finish in 8 of 17 pull-request runs: ~347 s of tests
+        # against ~145-235 s for the others, although the pick step gives every
+        # shard the same measured test time. The weights were right; the
+        # schedule inside the shard was not. `load` hands each worker a fixed
+        # block up front, and shard 3's long tests -- six in
+        # test_startup_is_loud.py that wait out real DNS and network back-offs,
+        # 30-67 s each -- sit together and land on one worker. `worksteal` lets
+        # an idle worker take half of a busy one's queue. Shard 3 alone, 4
+        # workers, same files: 404 s under `load`, 287 s under `worksteal`,
+        # against a floor of 276 s (its summed test time / 4).
         if: steps.pick.outputs.count != '0'
         env:
           SWARM_REQUIRE_REAL_REAP: "1"
@@ -920,7 +985,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < "${SHARD_FILES}"
-          uv run pytest -q -n auto -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
+          uv run pytest -q -n auto --dist worksteal -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
 
       - name: record this shard's measured durations
         # The weights the pick step splits by go stale as tests are added and
@@ -1388,20 +1453,23 @@ jobs:
     # of them from the Dockerfiles into this job's summary. Nothing here names
     # one. Main's `build images` below is unchanged.
     #
-    # SKIPPED STEPS, NOT A SKIPPED JOB. The job runs on every pull request the
-    # `changes` job says reaches this workflow, so ci-gate sees it and fails
-    # when it fails. It concludes `success` in
-    # seconds when no image input changed, and on a pull request from a fork,
-    # which the owner's brief (2026-10-05) says skips. A maintainer who wants a
-    # fork's images built pushes its branch here. Either way the summary says
-    # why.
+    # SKIPPED BY ITS OWN `if:` WHEN NO IMAGE INPUT CHANGED (2026-10-09): the
+    # `changes` job runs the same `--affected-by` over the same diff and says
+    # `images=false`, so a pull request that reaches no image takes no runner
+    # for this. Skipped by its own `if:` reads as a pass to ci-gate only while
+    # `changes` succeeded. Otherwise it runs, ci-gate sees it and fails when
+    # it fails. It still concludes `success` in seconds, with skipped steps,
+    # when its own plan finds nothing to build, and on a pull request from a
+    # fork, which the owner's brief (2026-10-05) says skips. A maintainer who
+    # wants a fork's images built pushes its branch here. Either way the
+    # summary says why.
     name: build changed images without pushing
     runs-on: ubuntu-24.04
     # Not after the other checks, as `build` is: this spends no cloud money,
     # and the image build is the slowest check, so it starts at once.
     timeout-minutes: 120
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'
     permissions:
       contents: read
     env:
@@ -1460,6 +1528,11 @@ jobs:
           build=true
           [ "${count}" -gt 0 ] || build=false
           echo "build=${build}" >> "$GITHUB_OUTPUT"
+          # Only the agent-runtime family needs the disk freed (the step below
+          # says why); a service image or swarm-ui builds in what the runner has.
+          free_disk=false
+          if grep -q '^agent-runtime-' "${RUNNER_TEMP}/images"; then free_disk=true; fi
+          echo "free_disk=${free_disk}" >> "$GITHUB_OUTPUT"
           {
             echo "### Images built without pushing"
             echo
@@ -1478,8 +1551,15 @@ jobs:
       # two compiled language servers) are built on it. The runner's free disk
       # before and after is written to the summary, so the first run records
       # what was there and what this freed.
+      #
+      # ONLY FOR THAT FAMILY (2026-10-09). Deleting these trees took a median
+      # 92 s and up to 261 s -- three times the median build itself -- on every
+      # pull request that built any image, a service image alone included
+      # (docs/ci.md "Where pull-request CI time goes"). Every agent-runtime-*
+      # image is either the base or built FROM it, so the plan step asks for
+      # this whenever one of them is in the list.
       - name: free runner disk
-        if: steps.plan.outputs.build == 'true'
+        if: steps.plan.outputs.build == 'true' && steps.plan.outputs.free_disk == 'true'
         run: |
           set -euo pipefail
           before="$(df -h --output=avail / | tail -n 1 | tr -d ' ')"
@@ -1731,9 +1811,21 @@ jobs:
     # would read as passed. If this workflow fails to start at all, no
     # `ci-gate` check exists and the ruleset holds the pull request: closed,
     # not open.
+    #
+    # EVERY JOB BUT THE TWO NAME-KEEPERS, `python` (`format / unit tests`) and
+    # `ui` (`swarm-ui typecheck / component tests`) (2026-10-09). They run no
+    # check of their own: each judges its `needs` exactly as the first step
+    # below does, and every job they need is in this list, so the gate already
+    # reads every result they read. Waiting for them was one more runner to
+    # queue for between the last shard and the gate: a median 40 s and up to
+    # 311 s on the pull-request critical path, measured over the 17 runs in
+    # docs/ci.md "Where pull-request CI time goes (2026-10-09)". They still
+    # run and still report their names. test_ci_gate.py holds both halves:
+    # the gate needs every other job, and each name-keeper's `needs` is inside
+    # the gate's.
     name: ci-gate
     runs-on: ubuntu-24.04
-    needs: [shell, workflows, changes, python-checks, python-unit, python, ui-build, ui-tests, ui, integration, manifests, build-check, build]
+    needs: [shell, workflows, changes, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build]
     if: always()
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.

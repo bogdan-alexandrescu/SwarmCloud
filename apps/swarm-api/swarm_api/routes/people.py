@@ -145,6 +145,14 @@ def list_people(
     except Exception as exc:  # noqa: BLE001 - one section, never the page
         body["lendable_accounts"] = None
         body["lendable_error"] = getattr(exc, "code", None) or type(exc).__name__
+    # Who the admins are, for the Admins card: one more section of this read,
+    # not a route of its own, and like the lendable list it fails alone.
+    try:
+        body["admins"] = _roles(ctx).holders()
+        body["admins_error"] = None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        body["admins"] = None
+        body["admins_error"] = getattr(exc, "code", None) or type(exc).__name__
     return body
 
 

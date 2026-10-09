@@ -19,9 +19,8 @@ as it ships -- the checklist completes exactly as it did before.
 
 DERIVED, NEVER SET. Every state is computed on each read from evidence that
 already exists, so a step that was done and stopped being true shows as such
-without anyone editing it. Phase 1 has no connection, org or grant documents
-(§3.1's `forge_connections`, `forge_orgs`, `forge_grants` are OB3/OB4's), so
-the evidence is today's:
+without anyone editing it. The evidence (`forge_grants`, OB4's, is read for
+an App connection only):
 
   * the caller's identity and resolved tenant (`signed_in`);
   * the git token record the caller acts through -- their OWN user slot when
@@ -42,11 +41,16 @@ the evidence is today's:
     `GET /user/orgs`, the orgs whose SAML SSO the token is not authorised
     for, the orgs that refuse a classic token, and how many orgs GitHub hid
     behind SSO (`orgs_enabled`);
-  * the tenant's repository registrations, each `write` when its read found
-    push and `read` otherwise -- today's stand-in for a grant
-    (`repos_chosen`);
-  * the token x repository checks the probe stored (`git_token_checks`):
-    clone for every registration, push and pull request for a write one
+  * for a GitHub App connection, the person's OWN grants (`forge_grants`,
+    OB4's), each `read` or `write`, and the checks Work › Access's Verify
+    stored on them with their `verified_at` (`repos_chosen`,
+    `access_verified`; #896). Setup and Access read the same records, so
+    pressing Verify on Access completes the step on the next read;
+  * for a token connection (the tenant token, or a PAT of one's own) -- the
+    LEGACY path -- the tenant's repository registrations, each `write` when
+    its read found push and `read` otherwise (`repos_chosen`), and the
+    token x repository checks the probe stored (`git_token_checks`): clone
+    for every registration, push and pull request for a write one
     (`access_verified`).
 
 What today's records cannot say is not guessed: `ORG_APPROVAL_PENDING`,
@@ -80,6 +84,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterable
+
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.models import Tenant
 
@@ -209,6 +215,23 @@ _BY_DESIGN = frozenset({FINE_GRAINED_UNKNOWN, APP_UNKNOWN})
 #: The token kind a GitHub App connection stores (`forgeapp.METHOD_APP_USER`;
 #: forgeapp imports this module, so the word is restated, not imported).
 APP_USER = "app_user"
+
+#: `forgeapp.GRANTS`: one document per person x repository they chose
+#: (§3.1). Restated for the same reason as APP_USER.
+GRANTS = "forge_grants"
+
+#: The most grants one read considers: `access.MAX_DOCS`, what Access reads.
+MAX_GRANTS = 1000
+
+#: The checklist's capability -> the grant check that answers it. The names
+#: differ: a grant's Verify (`access.CHECKS`) says `pull_request`, while the
+#: checklist's rows -- like `git_token_checks` -- say `open_pull_requests`.
+#: Mapped here, once, so neither record has to be renamed.
+_GRANT_CHECK = {"clone": "clone", "push": "push", "open_pull_requests": "pull_request"}
+
+#: Where a person changes which repositories an installation covers, for a
+#: REPO_NOT_INSTALLED a grant's check stored without its installation id.
+_INSTALLATIONS_URL = "https://github.com/settings/installations"
 
 #: Kinds whose SSO is authorised on the token's own settings page.
 _PAT_KINDS = frozenset({"classic_pat", "fine_grained_pat"})
@@ -544,11 +567,36 @@ def _mode(reg: dict[str, Any]) -> str:
     return "write" if (reg.get("access") or {}).get("can_push") else "read"
 
 
+def _grant_mode(grant: dict[str, Any]) -> str:
+    return "write" if grant.get("mode") == "write" else "read"
+
+
+def _grant_owner(grant: dict[str, Any]) -> str:
+    return str(grant.get("owner") or str(grant.get("repository") or "").split("/", 1)[0])
+
+
+def _own_grants(caller: Caller, grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The caller's own grants in their tenant, whatever the read returned
+    (invariant 9): another member's grant is never this checklist's."""
+    return sorted((g for g in grants if g.get("tenant_id") == caller.tenant_id
+                   and str(g.get("user") or "").lower() == caller.key),
+                  key=lambda g: str(g.get("repository") or "").lower())
+
+
 def _repos_step(caller: Caller, record: GitTokenRecord, regs: list[dict[str, Any]],
-                capped: bool, now: datetime) -> dict[str, Any]:
-    rows = [{"repository": _repository(reg), "repo_id": reg.get("repo_id"),
-             "owner": reg.get("owner"), "mode": _mode(reg), "archived": bool(reg.get("archived"))}
-            for reg in regs]
+                capped: bool, now: datetime, *,
+                grants: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """`grants` is the caller's own (`_own_grants`) for an App connection,
+    None for the legacy token path, which reads the tenant's registrations."""
+    if grants is not None:
+        rows = [{"repository": str(g.get("repository") or ""), "repo_id": g.get("repo_id"),
+                 "owner": _grant_owner(g), "mode": _grant_mode(g),
+                 "archived": bool(g.get("archived"))} for g in grants]
+        capped = len(grants) >= MAX_GRANTS
+    else:
+        rows = [{"repository": _repository(reg), "repo_id": reg.get("repo_id"),
+                 "owner": reg.get("owner"), "mode": _mode(reg),
+                 "archived": bool(reg.get("archived"))} for reg in regs]
     evidence = {"repositories": rows, "capped": capped}
     if not rows:
         return _step(REPOS_CHOSEN, NOT_STARTED, evidence=evidence, checked_at=now)
@@ -584,8 +632,106 @@ def _clone_issue(record: GitTokenRecord, reg: dict[str, Any]) -> dict[str, Any]:
     return issue
 
 
+def _grant_issue(record: GitTokenRecord, grant: dict[str, Any], code: str | None,
+                 capabilities: list[str], login: str) -> dict[str, Any]:
+    """A grant check Verify stored as `missing`: its §2.3 code and copy,
+    naming the repository and the capabilities it refused."""
+    repository = str(grant.get("repository") or "")
+    owner = _grant_owner(grant)
+    code = code if code in COPY else "PERMISSION_MISSING"
+    url = ""
+    if code == "SSO_NOT_AUTHORISED":
+        url = _sso_url(record, owner)
+    elif code == "REPO_NOT_INSTALLED":
+        url = _INSTALLATIONS_URL
+    issue = {"code": code, "owner": owner, "repository": repository,
+             "repo_id": grant.get("repo_id"), "capability": capabilities[0],
+             "capabilities": capabilities,
+             "copy": recovery_copy(code, owner=owner, repo=repository, url=url, login=login)}
+    if url:
+        issue["url"] = url
+    return issue
+
+
+def _grants_verified_step(record: GitTokenRecord, grants: list[dict[str, Any]],
+                          now: datetime) -> dict[str, Any]:
+    """`access_verified` for an App connection, from the caller's own grants:
+    the checks Work › Access's Verify stored (`AccessService.verify`).
+
+    DONE when every grant has `ok` for each check its mode needs -- clone,
+    and for a write grant push and pull request -- and a `verified_at`.
+    FAILED when any check is `missing`, naming the repository and the
+    capability. PENDING otherwise, with the grants still to verify in
+    `evidence.unverified`; an `unknown` check GitHub did not answer says
+    FORGE_UNREACHABLE.
+
+    Never STALE: nothing re-verifies a grant on a schedule (Verify is the
+    person's press), so an age would mark the step undone with no pass
+    coming to redo it. The legacy path's daily `reverify` has no grant twin."""
+    login = record.forge_login or "the stored token"
+    rows, issues, unverified = [], [], []
+    unanswered = False
+    checked: datetime | None = None
+    for grant in grants:
+        mode = _grant_mode(grant)
+        needed = ("clone", "push", "open_pull_requests") if mode == "write" else ("clone",)
+        stored = grant.get("checks") if isinstance(grant.get("checks"), dict) else {}
+        row_checks: dict[str, str] = {}
+        refused: dict[str, list[str]] = {}
+        waiting: list[str] = []
+        for cap in needed:
+            cell = stored.get(_GRANT_CHECK[cap])
+            cell = cell if isinstance(cell, dict) else {}
+            state = cell.get("state") or "unknown"
+            row_checks[cap] = state
+            at = cell.get("checked_at")
+            if isinstance(at, datetime):
+                checked = at if checked is None or at > checked else checked
+            if state == OK:
+                continue
+            if state == MISSING:
+                refused.setdefault(str(cell.get("code") or ""), []).append(cap)
+            else:
+                waiting.append(cap)
+                if cell.get("code") == FORGE_UNREACHABLE:
+                    unanswered = True
+        at = grant.get("verified_at")
+        if refused:
+            result = "failed"
+            issues += [_grant_issue(record, grant, code or None, caps, login)
+                       for code, caps in refused.items()]
+        elif waiting or not isinstance(at, datetime):
+            result = "pending"
+            unverified.append({"repository": grant.get("repository"),
+                               "repo_id": grant.get("repo_id"),
+                               "checks": waiting, "verified_at": _iso(at)})
+        else:
+            result = "passed"
+        rows.append({"repository": grant.get("repository"), "repo_id": grant.get("repo_id"),
+                     "mode": mode, "checks": row_checks, "result": result,
+                     "verified_at": _iso(at)})
+    evidence = {"source": "grants", "token_id": record.token_id, "repositories": rows,
+                "unverified": unverified}
+    if issues:
+        return _step(ACCESS_VERIFIED, FAILED, evidence=evidence, issues=issues,
+                     checked_at=checked)
+    if unverified:
+        return _step(ACCESS_VERIFIED, IN_PROGRESS, evidence=evidence, checked_at=checked,
+                     code=FORGE_UNREACHABLE if unanswered else None,
+                     copy=COPY[FORGE_UNREACHABLE] if unanswered else None)
+    return _step(ACCESS_VERIFIED, DONE, evidence=evidence, checked_at=checked)
+
+
 def _verified_step(record: GitTokenRecord, regs: list[dict[str, Any]],
-                   pair_docs: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+                   pair_docs: list[dict[str, Any]], now: datetime, *,
+                   grants: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """`grants` is the caller's own for an App connection: the step is then
+    the grants' (`_grants_verified_step`). Registrations x `git_token_checks`
+    below are the LEGACY tenant-token path ONLY -- an App connection's Verify
+    never writes `git_token_checks` (#896), so reading them for it would
+    leave the step pending forever."""
+    if grants is not None:
+        return _grants_verified_step(record, grants, now)
     pairs = {doc.get("repo_id"): doc for doc in pair_docs
              if doc.get("tenant_id") == record.tenant_id
              and doc.get("token_id") == record.token_id}
@@ -655,6 +801,7 @@ def derive(
     now: datetime,
     registrations_capped: bool = False,
     installations: dict[str, Any] | None = None,
+    grants: list[dict[str, Any]] | None = None,
     workspace: dict[str, Any] | None = None,
     accounts: dict[str, Any] | None = None,
     loan: dict[str, Any] | None = None,
@@ -663,7 +810,8 @@ def derive(
 ) -> dict[str, Any]:
     """The caller's checklist from evidence. Pure: no read, no write, no clock.
     `installations` is `AccessService.installations`'s answer for an App
-    connection, or None when it was not asked.
+    connection, or None when it was not asked. `grants` is the caller's
+    `forge_grants`, read only for an App connection; None is none.
 
     Every input is filtered on `caller.tenant_id` again here, whatever the
     reads returned, and only the caller's own user slot is ever considered.
@@ -702,10 +850,12 @@ def derive(
     else:
         steps.append(installed)
         steps.append(_orgs_step(caller, record, via, regs, now))
-        chosen = _repos_step(caller, record, regs, registrations_capped, now)
+        # An App connection's repositories are the caller's own grants (#896).
+        mine = _own_grants(caller, grants or []) if uses_app(record, via) else None
+        chosen = _repos_step(caller, record, regs, registrations_capped, now, grants=mine)
         steps.append(chosen)
         steps.append(_waiting(ACCESS_VERIFIED, REPOS_CHOSEN) if chosen["state"] == NOT_STARTED
-                     else _verified_step(record, regs, pair_docs, now))
+                     else _verified_step(record, regs, pair_docs, now, grants=mine))
     def holds(s: dict[str, Any]) -> bool:
         return s["state"] != DONE and s.get("required", True)
 
@@ -731,6 +881,16 @@ def derive(
                    "installations, the tenant's registrations and the stored checks; "
                    "nothing is stored by it but an App connection's own token refresh"),
     }
+
+
+def _read_grants(db: Any, caller: Caller) -> list[dict[str, Any]]:
+    """The caller's own grants, queried as `AccessService._mine` reads them:
+    on the tenant and the person's hash, filtered again in `derive`."""
+    hashed = _user_suffix(caller).rsplit("-", 1)[-1]
+    query = db.collection(GRANTS).where(
+        filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
+        filter=FieldFilter("user_hash", "==", hashed)).limit(MAX_GRANTS)
+    return [snap.to_dict() or {} for snap in query.stream()]
 
 
 def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
@@ -766,6 +926,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
     if installations is not None and uses_app(record, via) \
             and record.state is TokenState.ACTIVE:
         found = installations()
+    grants = _read_grants(db, caller) if uses_app(record, via) else None
     view = derive(
         caller,
         records=records,
@@ -775,6 +936,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         now=now,
         registrations_capped=more is not None,
         installations=found,
+        grants=grants,
         workspace=workspace,
         accounts=accounts,
         loan=loan,

@@ -944,6 +944,20 @@ reads `input.prompt` gets the masked prompt. Where two keys of one object mask
 to the same text, the second is served as `<masked key> (2)`, because an
 object cannot hold a key twice.
 
+A literal the task named is masked when it comes back as a JSON **number**,
+on every route, by one rule: `JsonMasker.number`. A task that submits
+eight or more digits as a string under a credential's name, and whose agent
+echoes `{"n": <the same digits>}`, gets the number served as the JSON string `"********"` and counted,
+whether it is the number itself, inside a longer one, or `N.0`. Before #387
+the artifact routes masked it (PR #378) through their own copy of the rule,
+while `JsonMasker` returned every number untouched, so `/input`, `GET
+/v1/tasks/{id}` and `/logs` served the digits in clear: on a log line the
+structural walk masked anything else in, `redact_lines` skips its text pass
+(owner decision, 2026-09-30), and nothing else looked at a number. Two
+copies of one rule had already drifted once; `json_masking` now calls the
+same method, and `tests/unit/control_plane/test_learned_number_literal_387.py`
+holds the routes to one answer.
+
 The CLI and the MCP tools say `masked N`: `swarm status` ends each line with
 it, `swarm result` prints `masked 3  (input 2 · metadata 1)`, `swarm
 workflow-status` puts it on each step, and `swarm_status`, `swarm_result`,
