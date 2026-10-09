@@ -324,6 +324,26 @@ and ages from `built_at`, never from the record's own commit. Otherwise a
 change made two builds ago could hide behind a build that reused its image.
 The job's summary lists every image as rebuilt or reused.
 
+**A reused image reports the commit that built it, not the release.** The
+`GIT_SHA` and `BUILD_TIME` build args are baked in when a digest is built, and
+re-tagging does not change a digest. So on a reused image, swarm-api's
+`/v1/version` (`git_sha`, `build_time`, from the `ENV` in
+`images/swarm-api/Dockerfile`) and the indexer's
+`org.opencontainers.image.revision` label name its `built_from` commit, which
+can be several merges behind the release that deploys it. That is the truth
+about the bytes: nothing in the image changed since `built_from`. The release
+that deploys it is the image's tag and the manifest's `commit`, and Cloud Run's
+`revision` (also on `/v1/version`) names the deploy. Read `git_sha` as "the
+code in this container is that commit's", not "this is the release".
+
+Every other value an image bakes in is recorded too: each manifest entry's
+`build_args` lists them (`VITE_SWARM_ENV=dev` for `swarm-ui`, none for the
+rest). An image whose baked values differ from its previous digest's is
+rebuilt whatever the diff says, because a value fed from outside the tree (a
+GitHub variable, say) changes no file and would otherwise ride a reused digest
+until the 7-day limit. A record from before `build_args` existed rebuilds
+`swarm-ui` once.
+
 **`uv.lock` is narrowed to each image.** When `uv.lock` is the only input of a
 Python image that changed, the script runs that image's own `uv export ...
 --prune ...` line, read from its Dockerfile (held by
@@ -340,7 +360,11 @@ summary and the manifest's `incremental.full_build`:
 * **there is no ancestor record**: the first build, a record past its 30-day
   retention, a shallow checkout (the job checks out with `fetch-depth: 0` for
   this), or a GitHub API that could not be read. A full build is the safe
-  answer to "I could not tell", only a slower one;
+  answer to "I could not tell", only a slower one, which is also why
+  `--previous` retries a failed read only once, 5 s later
+  (`CI_PREVIOUS_TRIES`=2, `CI_PREVIOUS_POLL`=5), not the release lookup's
+  5 x 30 s: two minutes of retries on every build to save one ~10-minute
+  build was the wrong trade;
 * **a reused digest is more than 7 days old** (`BUILD_REUSE_MAX_AGE_DAYS`), so
   patches to `python:3.11-slim`, node and nginx arrive within a week even in a
   corner of the tree nobody touches;
@@ -1004,9 +1028,11 @@ holds a dev plan that changes IAM. `test_release_prod_gate.py` and
 `refs/heads/main` alone. It is **not** on `wif.tf`'s `deployer_workflows`, and
 `test_workflow_id_token_scope.py` keeps it off. What the account can do:
 
-* execute `swarm-verify` and the `swarm-job-*` worker jobs, and read their
-  executions (a custom role conditioned to those names). The suites run
-  *inside* the VPC as swarm-verify, under swarm-verify's own identity;
+* execute `swarm-verify` and the `swarm-job-*` worker jobs, read their
+  executions and cancel a running one (the custom role
+  `swarmAcceptanceRunner`, granted at project level **with no condition**:
+  see below). The suites run *inside* the VPC as swarm-verify, under
+  swarm-verify's own identity;
 * list jobs and read operations, read-only;
 * read the swarm-verify log view;
 * read `releases/` in the state bucket, and no state object.
@@ -1017,10 +1043,34 @@ repository variable `GCP_ACCEPT_SA` to the `github_accept_service_account`
 output. Until then `what dev runs` fails at authentication, and the report
 files that as a red acceptance.
 
-What only a live run proves: that IAM evaluates the role's resource-name
-condition for Cloud Run jobs and executions as documented. A condition that
-matches nothing shows as `Permission 'run.jobs.runWithOverrides' denied` in
-`warm, smoke and GKE proof (dev)`.
+**The runner grant is unconditioned. Owner decision 2026-10-09 (#965).** It
+was conditioned to the job names (`resource.name.endsWith("/jobs/swarm-verify")`,
+`extract("/jobs/{job}").startsWith("swarm-job-")`), and that condition never
+matched any job: Cloud Run does not expose `resource.name` to IAM Conditions.
+Google's "Resource attributes for IAM Conditions" page lists no
+`run.googleapis.com` resource ("Other services and resource types do not
+recognize resource attributes"), and the IAM Policy Troubleshooter, measured
+read-only on 2026-10-09, evaluates the `endsWith` clause as false even with the
+job's name supplied. So `swarm-accept` was denied `run.jobs.get` on
+swarm-verify and `warm, smoke and GKE proof (dev)` was red on every run.
+
+The trade-off the owner accepted: in the **shared** project
+`saga-agents-staging`, the grant reaches **every Cloud Run job, present and
+future** — the other team's, and swarm's own merge job `swarm-job-eng-merge` —
+not only swarm-verify and the worker jobs. What it allows on any of them is
+the role and no more: get a job, start an execution (with overridden
+arguments), read executions and tasks, cancel a running execution. No create,
+update, delete or IAM permission, so it cannot change what a job runs or who
+may run it; `tests/terraform/bootstrap.tftest.hcl` holds both the absent
+condition and those permissions. What bounds the account is that only
+`accept.yml` on `refs/heads/main` can become it. Do not put a job-name
+condition back: it denies every job.
+
+The log-view and `releases/` grants keep their conditions: Cloud Logging and
+Cloud Storage do evaluate `resource.name`. What only a live run proves is that
+those two evaluate as documented; a condition that matches nothing shows as a
+`Permission ... denied` in the step that reads the transcript or
+`releases/dev/applied.json`.
 
 ## Hotfix releases
 
@@ -3154,6 +3204,41 @@ job new in this release (a new tenant or profile) has no such execution and is
 warmed even when no digest changed, which comparing manifests alone would
 miss.
 
+**That skip's premise is still unmeasured (2026-10-09, box 94 of #888).** It
+assumes the import is paid once per digest for good. #363's 2026-10-07 reading
+(497 claude-code executions over 09-30..10-07: "first execution of each job
+after a new digest 30-59 s, every later start 1-3 s") is consistent with that
+over gaps of up to a week, but it never compared a digest's start after a long
+idle gap with one after a short gap, so a cache Cloud Run evicts after some
+idle time would read the same. The lane sent to measure it on 2026-10-09
+could not read anything: from a SwarmCloud worker,
+`gcloud run jobs executions list` is denied `run.jobs.list`,
+`gcloud logging read` is denied every log view, and the API answers 401 at
+IAP. So the code is unchanged and no numbers are recorded here. The
+measurement is one read-only command for an operator, per job: it prints,
+for every execution after the first on a digest, the hours since that job's
+previous execution of the same digest, the `ContainerReady` import seconds,
+and the start time.
+
+```bash
+gcloud run jobs executions list --job swarm-job-eng-claude-code \
+  --project saga-agents-staging --region us-central1 --limit 500 --format=json \
+| jq -r 'def secs: capture("in (?:(?<m>[0-9]+)m)?(?<s>[0-9.]+)s")
+           | ((.m // "0" | tonumber) * 60 + (.s | tonumber));
+  [.[] | {t: (.metadata.creationTimestamp | sub("\\.[0-9]+Z$"; "Z") | fromdate),
+          img: ([.spec | .. | objects | .image? // empty][0]),
+          imp: ([.status.conditions[]? | select(.type == "ContainerReady")
+                 | .message | secs][0])} | select(.imp != null)]
+  | sort_by(.t) | group_by(.img)[] | . as $r | range(1; length) as $i
+  | [(($r[$i].t - $r[$i-1].t) / 3600 | floor), $r[$i].imp, ($r[$i].t | todate)]
+  | @tsv'
+```
+
+If the rows with a gap of a day or more show 1-3 s like the rest, the premise
+holds and this paragraph records the numbers. If they show the 30-59 s of a
+fresh digest, `already_started()` must count only executions newer than the
+largest gap that still read 1-3 s.
+
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
 `accept.yml` runs `scripts/acceptance/` after every dev deploy
@@ -3342,6 +3427,23 @@ deadlines so the whole stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
+and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
+it). The pytest call carries `--durations=10`, so a run that ends by itself
+lists its ten slowest tests. That report never prints on an overrun: measured
+2026-10-09 under xdist, `timeout`'s SIGTERM leaves no report and SIGINT leaves
+an xdist teardown traceback. So the call also sets pytest's
+`faulthandler_timeout=60`, which dumps the stack of any test still running
+after a minute, and on exit 124 the script prints the dump's frames in a
+`test_*.py` file (file, line, function). The fixed guard set alone runs in
+about 50 s (2026-10-09), so one test past a minute is the suspect; if none
+was, the line says so and the log's durations are where to look. Its first
+reading (2026-10-09, the 30-file selection of the change that added it: 1,038
+tests in 166-181 s, under the cap): the slowest was
+`test_ui_changes_gate.py::test_the_shared_reading_of_the_list_agrees_with_the_step`
+at 80 s, then `test_release_acceptance_job.py::test_the_acceptance_scripts_are_shellcheck_clean`
+at 41 s and four `test_build_images_incremental.py` tests at 22-25 s each.
 
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run

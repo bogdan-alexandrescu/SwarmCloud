@@ -17,7 +17,7 @@
  * `workflowQueryString` writes one canonical order -- wf, tab, then the filters
  * -- because paths.ts round-trips an address only when the order is its own.
  */
-import { failureCause, WORKFLOW_VIEWS, type WorkflowView } from './stepviews'
+import { failureCause, WORKFLOW_TABS, type WorkflowView } from './stepviews'
 import {
   formatDuration,
   reasonCopy,
@@ -111,7 +111,7 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
   const stepState = p.get('stepstate')
   return {
     wf: wf === null || wf === '' ? null : wf,
-    tab: tab !== null && (WORKFLOW_VIEWS as readonly string[]).includes(tab) ? (tab as WorkflowView) : 'graph',
+    tab: tab !== null && (WORKFLOW_TABS as readonly string[]).includes(tab) ? (tab as WorkflowView) : 'graph',
     state: state !== null && (BUCKET_FILTERS as readonly string[]).includes(state) ? (state as BucketFilter) : 'all',
     q: p.get('q') ?? '',
     owner: p.get('owner') ?? '',

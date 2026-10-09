@@ -13,7 +13,8 @@
 //   * a ceiling save sends `{max_active}` and nothing else;
 //   * Lend posts `{account_id, lend: true}` for the account chosen;
 //   * the API's refusal for the last admin is shown as it came;
-//   * zero pending is drawn as a measured zero; an unread lendable list as
+//   * zero pending is prose, `none pending`, with "measured" in its accessible
+//     name and no `real zero` mark (owner, 2026-10-09); an unread lendable list as
 //     not read, never as an empty one;
 //   * the layout seen live at 1456 on 2026-10-09: the table has its own scroll
 //     container inside the card and no action control has a width of its own
@@ -226,12 +227,13 @@ describe('the people table', () => {
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-fa1000/approve' })
   })
 
-  it('draws zero pending as a measured zero', async () => {
+  it('writes zero pending as words, measured, not as the real-zero mark', async () => {
     await mount(people([ROWS[0]!]))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
     const chip = document.querySelector<HTMLElement>('.pp-people')!
-    expect(visible(chip)).toContain('1 person')
-    expect(chip.querySelector('.ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(visible(chip)).toContain('1 person · none pending')
+    expect(within(chip).getByLabelText('none pending (measured)')).toBeTruthy()
+    expect(chip.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 
   it('draws an unread lendable list as not read, never as an empty one', async () => {

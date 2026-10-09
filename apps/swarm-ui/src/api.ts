@@ -518,8 +518,10 @@ export async function loadResourceClasses(): Promise<Result<{ resource_classes: 
  * A task's checkpoints, across every attempt.
  *
  * `GET /v1/tasks/{id}/checkpoints`. Newest attempt first, newest checkpoint
- * first within an attempt -- which is the order a resume would consider them
- * in, because `CheckpointManager.find_latest` scans the whole task prefix.
+ * first within an attempt. That is a reading order, not a resume order: a
+ * resume restores only the checkpoint `task.latest_checkpoint` names (the
+ * page's `latest_checkpoint`, and the row with `is_latest_pointer`), or
+ * nothing -- there is no fallback to the newest one listed (#347).
  *
  * NO EMPTY PREDICATE IS PASSED, deliberately. `checkpoints: []` with
  * `listed: true` is a real answer -- this task has written none -- and the

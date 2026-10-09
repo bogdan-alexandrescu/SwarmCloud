@@ -118,6 +118,12 @@ def _old_digest(name: str, commit: str) -> str:
     return "sha256:" + hashlib.sha256(f"previous {name} {commit}".encode()).hexdigest()
 
 
+def _baked(name: str, environment: str) -> list[str]:
+    """The build args build-images.sh bakes into an image beyond GIT_SHA and
+    BUILD_TIME: swarm-ui's environment, which Vite inlines at compile time."""
+    return [f"VITE_SWARM_ENV={environment}"] if name == "swarm-ui" else []
+
+
 def _iso(seconds_ago: float = 3600) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago))
 
@@ -186,8 +192,9 @@ class Sandbox:
         return {path: (self.root / path).read_text() + text}
 
     def record(self, commit: str, *, environment: str = "dev", built_at: str | None = None,
-               per_image: dict[str, dict] | None = None) -> Path:
-        """What build-images.sh wrote for `commit`, as --previous fetches it."""
+               per_image: dict[str, dict] | None = None, baked_args: bool = True) -> Path:
+        """What build-images.sh wrote for `commit`, as --previous fetches it.
+        baked_args=False is a record written before the manifest named them."""
         images = []
         for name in IMAGES:
             entry = {
@@ -197,6 +204,8 @@ class Sandbox:
                 "digest": _old_digest(name, commit),
                 "ref": f"{REGISTRY}/{name}@{_old_digest(name, commit)}",
             }
+            if baked_args:
+                entry["build_args"] = _baked(name, environment)
             entry.update((per_image or {}).get(name, {}))
             images.append(entry)
         path = self.tmp / f"previous-{commit[:12]}.json"
@@ -312,6 +321,43 @@ def test_a_reused_image_is_diffed_from_the_commit_its_digest_was_built_from(box)
     assert proc.returncode == 0, proc.stderr[-4000:]
     assert _submitted(events) == {"swarm-ui"}
     _assert_whole(manifest, head)
+
+
+def test_the_manifest_records_each_image_s_baked_build_args(box):
+    """The next incremental build compares against these, so a reused entry
+    carries them as much as a rebuilt one does."""
+    box.commit("ui", box.append("apps/swarm-ui/src/App.tsx", "export const x = 1;\n"))
+    proc, manifest, _ = box.build(box.record(box.first))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    for image in manifest["images"]:
+        assert image["build_args"] == _baked(image["name"], "dev"), image
+
+
+def test_a_baked_build_arg_that_changed_rebuilds_its_image_and_nothing_else(box):
+    """#888 box 91: no input file changed, but swarm-ui's previous digest was
+    built with a value that is no longer passed -- one a GitHub variable might
+    one day supply. Reuse keyed on files alone would serve that stale value
+    until the 7-day limit."""
+    head = box.commit("docs", {"docs/ci.md": "words\n"})
+    stale = ["VITE_SWARM_ENV=dev", "VITE_" + "FROM_A_VARIABLE=old"]
+    proc, manifest, events = box.build(box.record(box.first, per_image={"swarm-ui": {"build_args": stale}}))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert _submitted(events) == {"swarm-ui"}, f"submitted {_submitted(events)}"
+    assert _retagged(events) == set(IMAGES) - {"swarm-ui"}
+    assert "baked build args changed" in proc.stderr, proc.stderr[-4000:]
+    _assert_whole(manifest, head)
+    ui = next(i for i in manifest["images"] if i["name"] == "swarm-ui")
+    assert ui["reused"] is False and ui["build_args"] == _baked("swarm-ui", "dev")
+
+
+def test_a_record_that_does_not_name_its_baked_args_rebuilds_only_the_images_that_bake_one(box):
+    """A record written before the manifest named build args says nothing
+    about swarm-ui's; an image that bakes none has nothing to disagree with."""
+    box.commit("docs", {"docs/ci.md": "words\n"})
+    proc, _, events = box.build(box.record(box.first, baked_args=False))
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert _submitted(events) == {"swarm-ui"}, f"submitted {_submitted(events)}"
+    assert "baked build args were not recorded" in proc.stderr, proc.stderr[-4000:]
 
 
 # ---------------------------------------------------------------------------

@@ -747,8 +747,17 @@ def acquire_hold(
     or preempted never releases and nothing else in this repository knows its
     assignment existed, so without an expiry the count would only ever climb.
 
-    None when the account no longer exists -- an operator may remove one
-    between the listing and this call, and nothing was counted.
+    None when the account no longer exists, or can no longer take a new agent
+    for this tenant -- an operator may remove, pause or drain one, or an owner
+    revoke its loan, between the listing and this call -- and nothing was
+    counted.
+
+    ELIGIBILITY IS RE-CHECKED HERE, IN THE TRANSACTION (#227): state, owner
+    and `lend_to`, through `_raw_assignable`, the check `swap_hold` already
+    makes of the account it moves to. The route's `accounts_serving` reads a
+    listing taken before this transaction, and checking only that the
+    document still exists handed a revoked borrower the account anyway --
+    invariant 9, enforced at the one read that commits.
 
     THE RECORD IS OPENED IN THIS TRANSACTION (#379): `account_holds/{id}` is
     set alongside the account, and every expired hold dropped on the way
@@ -767,7 +776,10 @@ def acquire_hold(
         snap = _txn_snapshot(txn.get(ref))
         if not getattr(snap, "exists", False):
             return None
-        holds, expired = _split_holds(snap.to_dict() or {}, now)
+        data = snap.to_dict() or {}
+        if not _raw_assignable(data, tenant_id):
+            return None
+        holds, expired = _split_holds(data, now)
         hold = Hold(
             assignment_id=assignment_id,
             tenant_id=tenant_id,
@@ -3193,8 +3205,9 @@ def create_app(
             attempt_id=asked.attempt_id,
         )
         if held is None:
-            # Removed between the read and the hold. Nothing was counted, so
-            # there is nothing to undo and nothing to hand out.
+            # Removed, paused, drained or no longer lent to this tenant between
+            # the read and the hold. Nothing was counted, so there is nothing
+            # to undo and nothing to hand out.
             return {
                 "account_id": None,
                 "assignment_id": None,
