@@ -2000,6 +2000,16 @@ and what a rewritten test pins.
 | **A truncated list** | `.ctl-table caption` — `showing the 20 longest-running of 143` | `?` topic | the caption's figure, and that it names a total |
 | **A stale reading** | `.ctl-stale-note` banner + `.ctl-stale-body` (dimmed, left rule); rows **stay** | the age, in the banner | the banner, the age, the body class |
 
+**A measured zero in prose is written as words** (owner, 2026-10-09). The
+`real zero` mark (`<Mark kind="zero">`, `.ctl-mark.is-zero`) is for tables,
+figures and fact cards, where it is what separates a measured zero from `not
+measured`. Inside a sentence it reads as a word dropped from the line — the
+Setup page said `your own [real zero] · lent to you [real zero]` — so prose says
+`none of your own`, `no accounts to lend`, `none pending`, and keeps "measured"
+in the accessible name (`aria-label="none of your own (measured)"`). A count
+that was not read is not a zero: it keeps the `not measured` mark in prose too,
+never the word `none`.
+
 ### 8.7 The three distinctions that must never collapse
 
 1. **Still reading ≠ nothing reported.** This was the one gap in the absence kit:
