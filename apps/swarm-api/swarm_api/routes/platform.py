@@ -41,7 +41,11 @@ def version(
 
     `git_sha` and `build_time` are the `GIT_SHA` / `BUILD_TIME` build args
     `scripts/build-images.sh` passes, which images/swarm-api/Dockerfile sets as
-    ENV. `revision` and `service` are Cloud Run's own `K_REVISION` and
+    ENV. They name the commit whose build MADE this image, not the release
+    that deployed it: main's incremental build re-tags an unchanged image's
+    previous digest, so a reused swarm-api reports its manifest entry's
+    `built_from`, possibly several merges back (docs/ci.md, "Main builds only
+    the images a commit changed"). `revision` and `service` are Cloud Run's own `K_REVISION` and
     `K_SERVICE`. Each is NULL when its variable is unset or empty -- a laptop
     build, a test, a run outside Cloud Run -- never "unknown" and never a
     guess, because a placeholder string reads as an answer.

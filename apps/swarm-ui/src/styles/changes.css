@@ -1,0 +1,26 @@
+/* --- THE CHANGES TAB (docs/design/diff-viewer.md §2 variant 2) ------------ */
+/* THE VIEWER FILLS THE PANE (DiffView `fullHeight`): the pane does not
+   scroll, the file list and the lines scroll inside the viewer, as the Logs
+   tab's body does. WorkflowChanges.tsx. */
+.ag-split > .ag-split-pane.is-changes { display: flex; flex-direction: column; overflow: hidden; }
+.ag-split-pane.is-changes > .chg-tab { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.chg-patch { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.chg-diff { flex: 1 1 auto; min-height: 0; }
+
+/* THE SUMMARY LINE: the base, the patch and its size, the masked count. */
+.chg-sum { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0 0 8px; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); }
+.chg-window { display: inline-flex; gap: 6px; align-items: baseline; }
+
+/* The workflow's and the run's step list, until the matrix fills the tab. */
+.chg-note { margin: 0 0 10px; color: var(--text-dim); max-width: 72ch; }
+.chg-steps { list-style: none; margin: 0; padding: 0; }
+.chg-step { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.chg-step-id { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.chg-step-n { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* ON A PHONE THE COLUMN IS THE ONE SCROLLER (agents.css G2-01), so the pane
+   has no height to fill: the viewer is given most of the screen instead. */
+@media (max-width: 560px) {
+  .ag-split > .ag-split-pane.is-changes { display: block; overflow: visible; }
+  .ag-split-pane.is-changes .chg-diff { height: 80vh; }
+}

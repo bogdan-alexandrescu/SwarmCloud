@@ -62,6 +62,25 @@ from .errors import CheckpointError
 from .objectstore import ObjectStore
 from .workspace import Workspace, walk_tree
 
+
+class RestoreResourceError(CheckpointError):
+    """A restore that failed for want of LOCAL room, not for anything in the archive.
+
+    ENOSPC on the memory-backed workspace, EIO, out of file handles or memory
+    (`_LOCAL_RESOURCE_ERRNOS`). Every other `CheckpointError` out of `restore`
+    is a refusal of the checkpoint, and the worker starts clean on it (#346);
+    this one says nothing against the checkpoint, so the attempt fails as it
+    always did and a retry resumes the same one. Starting clean on it would
+    let the attempt's first checkpoint move `latest_checkpoint` off the
+    earlier attempt's work for good.
+    """
+
+
+#: What makes an extraction failure the worker's, not the archive's.
+_LOCAL_RESOURCE_ERRNOS = frozenset(
+    {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
+)
+
 #: How many folders deep a checkpoint archives. The archive walk holds one
 #: open descriptor per level (it opens each child relative to its parent so
 #: that no link is followed, #227), so an unbounded depth is an unbounded
@@ -1490,6 +1509,13 @@ class CheckpointManager:
 
         The refusal is the point: restoring over an existing tree produces a
         workspace that matches no checkpoint, which is worse than failing.
+
+        Every refusal raises `CheckpointError` with `work/` left empty, and
+        the caller (`Worker._restore_checkpoint`) starts the attempt from that
+        empty workspace rather than failing it (#346): an archive whose bytes
+        no longer match the recorded digest is a checkpoint not to trust, not
+        a reason to burn a retry. The one exception is `RestoreResourceError`,
+        an extraction that ran out of local room: it fails the attempt.
         """
         if not self._owns(record):
             raise CheckpointError(
@@ -1675,7 +1701,12 @@ class CheckpointManager:
                     f"refuses: {type(exc).__name__}"
                 ) from exc
             except OSError as exc:
-                raise CheckpointError(
+                error = (
+                    RestoreResourceError
+                    if exc.errno in _LOCAL_RESOURCE_ERRNOS
+                    else CheckpointError
+                )
+                raise error(
                     f"checkpoint {checkpoint_id} could not be extracted: {type(exc).__name__}"
                 ) from exc
         _unmake_escaped_links(work, members, on_skip)

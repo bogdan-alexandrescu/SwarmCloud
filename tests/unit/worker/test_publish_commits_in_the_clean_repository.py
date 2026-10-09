@@ -300,6 +300,32 @@ def test_the_workers_artifacts_link_is_not_published(
     assert not [f for f in files if f == "artifacts" or f.startswith("artifacts/")], files
 
 
+def test_a_gitignore_that_unignores_the_artifacts_link_does_not_publish_it(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The tree's own `.gitignore` outranks `.git/info/exclude`, so hiding the
+    worker's link by an exclude pattern alone let a `!/artifacts` line in the
+    agent's `.gitignore` un-hide it (#346). The link is not created in the
+    publish repository at all, so no pattern can bring it back."""
+    def edit(repo: Path) -> None:
+        link = repo / "artifacts"
+        assert link.is_symlink(), "the worker did not link the checkout's ./artifacts"
+        (link / "report.txt").write_text("an artifact, not part of the work\n")
+        (repo / ".gitignore").write_text("!/artifacts\n!artifacts\n!/artifacts/**\n")
+        (repo / "work.txt").write_text("the work\n")
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-unignore-artifacts", edit=edit,
+        link_artifacts=True,
+    )
+
+    assert out["published"] is True, out.get("publish_reason")
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    files = tree_at(origin, branch)
+    assert "work.txt" in files and ".gitignore" in files
+    assert not [f for f in files if f == "artifacts" or f.startswith("artifacts/")], files
+
+
 # -- the harvest reads no agent configuration either (#259, owner item 3) ----
 
 
