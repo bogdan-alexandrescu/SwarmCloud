@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
+import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import type { ApiError } from './fetch'
 import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
@@ -430,7 +431,9 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
               : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
           </p>
-          {sending.kind === 'failed' && (
+          {/* The submission gate's refusal (#847): why, and the setup step that fixes it. */}
+          {sending.kind === 'failed' && workspaceRefusal(sending.error) !== null && <WorkspaceRefusalBanner error={sending.error} />}
+          {sending.kind === 'failed' && workspaceRefusal(sending.error) === null && (
             <>
               <FailedPanel error={sending.error} onRetry={() => void submit()} />
               <p className="warn-text">

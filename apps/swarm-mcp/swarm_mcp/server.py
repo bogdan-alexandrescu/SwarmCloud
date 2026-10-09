@@ -1323,8 +1323,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_setup_status",
         "description": (
             "The caller's SwarmCloud onboarding checklist, the one the console "
-            "draws: six steps in order (signed_in, github_connected, "
-            "orgs_enabled, repos_chosen, access_verified, ready), each todo, "
+            "draws: the steps in order (signed_in, workspace, claude_account, "
+            "github_connected, app_installed, orgs_enabled, repos_chosen, "
+            "access_verified, ready, as the API serves them), each todo, "
             "in_progress, done, failed or stale, with every failure's code and "
             "its recovery copy word for word, and `next_step` (null when ready). "
             "`checklist` is the text to show. `connected_as_you` is the GitHub "
@@ -1341,6 +1342,29 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer", "minimum": 0, "maximum": 600, "default": 0,
                     "description": "Hold until GitHub is connected as you, up to this long.",
                 },
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_workspace",
+        "description": (
+            "The caller's OWN personal workspace (docs/workspaces.md): the "
+            "isolated space their tasks and workflows run in, and the checklist's "
+            "`workspace` and `claude_account` steps. `action` `status` (the "
+            "default) reads it; `request` asks for it -- an admin approves it in "
+            "the console and a job sets it up a few minutes later; asking again "
+            "changes nothing -- and `loan` asks an admin to lend a Claude account "
+            "(refused until the workspace was requested). Returns `workspace` "
+            "(state, workspace_id, the job's steps, a failure's copy word for "
+            "word) and `text`. It never waits for the approval or the job: read "
+            "it again later, or call swarm_setup_status. Takes no other argument."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "request", "loan"],
+                           "default": "status",
+                           "description": "status reads; request and loan post once, then read."},
             },
         },
     },
@@ -2382,8 +2406,9 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
 
 
 _SETUP_TOOLS = frozenset(
-    {"swarm_setup_status", "swarm_setup_connect", "swarm_setup_orgs", "swarm_setup_repos",
-     "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify", "swarm_access"}
+    {"swarm_setup_status", "swarm_setup_workspace", "swarm_setup_connect", "swarm_setup_orgs",
+     "swarm_setup_repos", "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify",
+     "swarm_access"}
 )
 
 #: The longest `swarm_setup_status` holds for GitHub: the authorize link's life.
@@ -2432,6 +2457,23 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     answer["not_connected"] = sc.not_connected_text(wait)
                 return reply(answer)
             return reply(_setup_view(sc.setup_status(client)))
+        if name == "swarm_setup_workspace":
+            # ONE POST AT MOST, THEN ONE READ, AND NO WAIT (invariant 4's
+            # spirit): an approval is a person's, minutes or days away, and a
+            # tool call held open for it holds the session. The record says
+            # where it stands; /sc:setup reads it again.
+            action = args.get("action") or "status"
+            if action not in ("status", "request", "loan"):
+                raise SwarmError(
+                    f"action is status, request or loan, not {action!r}. Nothing was sent")
+            answer: dict[str, Any] = {"action": action}
+            if action == "request":
+                sc.request_workspace(client)
+            elif action == "loan":
+                answer["loan_request"] = sc.request_loan(client)
+            record = sc.workspace_status(client)
+            return reply({**answer, "workspace": record, "text": sc.workspace_line(record),
+                          "setup_command": sc.PLUGIN_SETUP_COMMAND})
         if name == "swarm_setup_connect":
             already = sc.connected_as_you(sc.setup_status(client))
             if already is not None:
@@ -2477,6 +2519,12 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     except SwarmError as exc:
         if isinstance(exc.detail, dict) and exc.detail.get("failure_code"):
             raise sc._refused(exc) from None  # noqa: SLF001
+        if name == "swarm_setup_workspace" and exc.code:
+            # The workspace routes' refusals carry an upper-case code and a
+            # sentence for the person (`WORKSPACE_REQUEST_TOO_SOON`,
+            # `WORKSPACE_NOT_REQUESTED`, ...): both, word for word.
+            raise SwarmError(sc.api_refusal(exc), status=exc.status, edge=exc.edge,
+                             code=exc.code, detail=exc.detail) from None
         raise
 
 
@@ -3198,6 +3246,15 @@ def _tool_error_text(exc: SwarmError) -> str:
     API itself -- a 409, a validation error -- means the request arrived, and
     doctor, which explains how a request fails to arrive, is no answer to it.
     """
+    from .sc import PLUGIN_SETUP_COMMAND, workspace_refusal_text
+
+    # THE SUBMISSION GATE'S REFUSAL (#847, docs/workspaces.md §6.2), from
+    # every submitting tool at once -- swarm_dispatch, swarm_workflow and
+    # swarm_run_issue -- because they all fail through here: the
+    # API's message word for word, and the command that fixes it.
+    refused = workspace_refusal_text(exc, PLUGIN_SETUP_COMMAND)
+    if refused is not None:
+        return refused
     text = str(exc)
     if getattr(exc, "edge", False):
         text = text.rstrip().rstrip(".") + (
