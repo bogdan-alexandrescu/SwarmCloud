@@ -715,6 +715,12 @@ _EXPRESSION = (
 #: MyDogRex`, `vault_token: s.<base62>` -- and stays masked (the #403
 #: security review: these were served whatever followed them). The builtin
 #: and typing names may end anywhere.
+#:
+#: SO `api_key: Promise` IS SHOWN, AND THAT IS ACCEPTED (owner, the security
+#: pass, 2026-10-09; #361 box 65). The value is one of these fixed type
+#: names, so what is served is the name, not a secret; a generated key never
+#: equals `Promise` or `Record`. Masking it would hide every TypeScript
+#: annotation under a credential key and reveal nothing in exchange.
 _TYPE_END = (
     r"(?=[ \t]+=[ \t]|[ \t]+\|[ \t]+(?:None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])"
     r"|\)[ \t]*(?:->|:?$)"
