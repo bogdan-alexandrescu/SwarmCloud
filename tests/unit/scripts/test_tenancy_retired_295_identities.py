@@ -86,7 +86,8 @@ def test_infra_managed_is_the_platform_and_worker_accounts_alone():
         "keys(local.platform)",
         "[local.tick_id",
         "local.verify_id",
-        "local.rollup_sweeper_id]",
+        "local.rollup_sweeper_id",
+        "local.schedule_tick_id]",
         "values(local.worker_ids)",
     ], parts
 

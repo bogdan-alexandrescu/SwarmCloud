@@ -9,22 +9,35 @@
 // filter; and on the right ONLY THE SELECTED FILE: its badges (binary,
 // renamed, copied, mode change, added, deleted), hunk headers and both
 // line-number gutters -- unified, or side by side from 700px of pane width.
-// Under 700px the list becomes a picker at the top (`file 2 of 4`, the name,
-// the counts, previous and next) and the file is always unified.
+// Under 700px of pane width, and always at the console's phone width
+// (`phoneWidth`, 560px), the list becomes a picker at the top (`file 2 of 4`,
+// the name, the counts, previous and next, and an `All files` sheet listing
+// every file with its counts) and the file is always unified (owner decision
+// 2026-10-08, design §3 question 4: one file at a time on a phone).
+//
+// WHAT A ROUTE GIVES IT (design docs/design/diff-viewer.md §5, lane DIFF1):
+// `fullHeight` fills the route's pane instead of capping the list and the
+// lines at 70vh; `initialFile` opens a named file and `onFileChange` reports
+// each file the reader opens, so the route can put it in the address;
+// `pullRequest` puts a link to the PR in the bar; `stepOf` names the workflow
+// step each hunk came from, drawn as a row above that step's hunks.
 //
 // THERE IS NO WHOLE-PATCH READING MODE. A patch is read a file at a time; the
 // whole of it is what Copy patch and Download are for.
 //
 // VIEWED IS MEMORY, NOT STORAGE. A file is viewed once it has been opened, and
 // the dots live in this component's state: a reload or a remount clears them.
-// Nothing about which file is open reaches the address either -- the URL names
-// the patch and the viewer always opens at the first file.
+// The viewer never writes the address itself. A route that wants the open
+// file in its URL passes `initialFile` and listens to `onFileChange`; without
+// them the viewer opens at the first file, as it always did.
 //
 // THREE RULES IT KEEPS, each the reason something below looks the way it does.
 //
 //   1. TEXT EXACTLY AS GIVEN. Every character of the patch reaches the DOM as
-//      a React text node: no `dangerouslySetInnerHTML`, no highlighter, no
-//      trimming. A carriage return that belongs to the content and a missing
+//      a React text node: no `dangerouslySetInnerHTML`, no trimming. The
+//      syntax colour (highlight.ts, loaded lazily) is TOKENS, not markup: a
+//      line is cut into pieces that concatenate back to it, each drawn as a
+//      text node inside a `<span>`, so colour cannot change a character. A carriage return that belongs to the content and a missing
 //      final newline are drawn as visible marks rather than dropped, because
 //      both are real differences a reader may be looking for.
 //   2. NO INVENTED LINES. The unchanged lines between hunks are not in the
@@ -62,7 +75,7 @@
 // non-empty find or path filter also stops there, because the agent drawer
 // this view sits in closes on any Escape that reaches it.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 
 import { findMatches, firstMatchFrom, hitSegments, hitsInFile, type FindMatch, type LineHit } from './find'
@@ -86,7 +99,14 @@ import {
   type Row,
 } from './rows'
 import { rememberedViewMode, rememberViewMode, type ViewMode } from './storage'
+import type { Token } from './highlight'
+import { HIGHLIGHT_MAX_LINE, highlightLanguage } from './lang'
+import { useHighlighter } from './useHighlighter'
 import { Button, ButtonLink } from '../components'
+// The console's one definition of phone width (HelpCard `phoneWidth`, 560px),
+// as a hook that follows the media query.
+import { usePhoneTables as usePhoneWidth } from '../capacityPoll'
+import './diff.css'
 
 export type FileSide = 'old' | 'new'
 
@@ -132,6 +152,36 @@ export interface DiffViewProps {
   note?: ReactNode
   /** Drawn between the bar and the files: the caller's provenance strip. */
   meta?: ReactNode
+  /**
+   * Fill the route's pane: the viewer takes its parent's height, and the file
+   * list and the lines scroll inside it instead of each stopping at 70vh. The
+   * parent must give it a height (a flex or grid child with `min-height: 0`).
+   */
+  fullHeight?: boolean
+  /**
+   * The file to open first, by path (the new path, or the old one of a
+   * deletion or a rename). A path the patch does not hold opens the first
+   * file. Changing it later opens the file it names, so a route's back button
+   * moves the viewer; that does not call `onFileChange`.
+   */
+  initialFile?: string | null
+  /** Called with the path of each file the READER opens (list, picker, sheet, n / p, find). */
+  onFileChange?: (path: string) => void
+  /**
+   * The pull request this patch became, linked from the bar. Drawn only when
+   * given, and only for an http(s) address: a `javascript:` URL from anywhere
+   * upstream never becomes a link.
+   */
+  pullRequest?: { url: string; label?: string }
+  /**
+   * The workflow step a hunk came from (variant 5: a file's hunks from each
+   * step, stacked and tagged). Return null for a hunk no step is named for.
+   * A file several steps changed is ONE file section whose hunks are in step
+   * order; the viewer draws a `from step` row above each step's run of hunks,
+   * and offers no unchanged lines between two steps' hunks. Pass a stable
+   * function (useCallback): a new one rebuilds the open file's rows.
+   */
+  stepOf?: (path: string, hunk: number) => string | null | undefined
 }
 
 /** Below this pane width the viewer is unified and the list is a picker: two columns of code do not fit. */
@@ -197,9 +247,11 @@ function Bar({
   note,
   copy: copyWhat,
   download: downloadFrom,
+  pullRequest,
   layout,
   fold,
 }: DiffViewProps & { layout?: ReactNode; fold?: ReactNode }) {
+  const prHref = pullRequest === undefined ? null : httpUrl(pullRequest.url)
   const [copy, setCopy] = useState<'idle' | 'done' | 'failed'>('idle')
   const copyText = copyWhat?.text ?? patch
   const copyLabel = copyWhat?.label ?? 'Copy patch'
@@ -236,6 +288,11 @@ function Bar({
       {size !== undefined ? <span className="diff-meta">{size}</span> : null}
       {attempt ? <span className="diff-meta">attempt {attempt}</span> : null}
       {note}
+      {prHref !== null ? (
+        <a className="diff-pr" href={prHref} target="_blank" rel="noopener noreferrer">
+          {pullRequest?.label ?? prLabel(prHref)} ↗
+        </a>
+      ) : null}
       <span className="diff-bar-end">
         {fold}
         {layout}
@@ -260,8 +317,31 @@ function Bar({
   )
 }
 
+/** The address as given when it is http(s), else null: nothing else becomes a link. */
+export function httpUrl(url: string): string | null {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? url : null
+  } catch {
+    return null
+  }
+}
+
+/** `PR #123` for a GitHub pull request address, `Pull request` for any other. */
+function prLabel(href: string): string {
+  const m = /\/pull\/(\d+)(?:[/?#]|$)/.exec(href)
+  return m ? `PR #${m[1]}` : 'Pull request'
+}
+
+/** The index of the file a path names: its shown path first, then its new or old path. -1 for none. */
+export function fileIndex(files: readonly DiffFile[], path: string | null | undefined): number {
+  if (path === null || path === undefined || path === '') return -1
+  const exact = files.findIndex((f) => f.path === path)
+  return exact !== -1 ? exact : files.findIndex((f) => f.newPath === path || f.oldPath === path)
+}
+
 function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
-  const { getFile } = props
+  const { getFile, stepOf, onFileChange, initialFile, fullHeight } = props
   const rootRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLInputElement>(null)
@@ -276,9 +356,13 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const [filter, setFilter] = useState('')
   // The first file of the patch is the first row of the list (rows.ts
-  // `groupByDirectory`), so opening at 0 is opening at the top of the list.
-  const [selected, setSelected] = useState(0)
-  const [viewed, setViewed] = useState<ReadonlySet<number>>(() => new Set([0]))
+  // `groupByDirectory`), so opening at 0 is opening at the top of the list --
+  // unless the route named a file.
+  const [first] = useState(() => Math.max(0, fileIndex(files, initialFile)))
+  const [selected, setSelected] = useState(first)
+  const [viewed, setViewed] = useState<ReadonlySet<number>>(() => new Set([first]))
+  // The phone's `All files` sheet.
+  const [sheet, setSheet] = useState(false)
   // Find: the query, its matches across the whole patch, which one is current,
   // and the match still to be scrolled to once its file's rows are built.
   const [found, setFound] = useState<{ query: string; matches: FindMatch[] }>({ query: '', matches: [] })
@@ -291,7 +375,8 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   )
   const [hunkReveal, setHunkReveal] = useState<{ file: number; hunk: number } | null>(null)
 
-  const narrow = width < SPLIT_MIN_WIDTH
+  const phone = usePhoneWidth()
+  const narrow = width < SPLIT_MIN_WIDTH || phone
   const mode: ViewMode = narrow ? 'unified' : preferred
 
   useEffect(() => {
@@ -342,10 +427,11 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   }, [files])
 
   const isCollapsed = collapsed.has(selected)
-  const rows = useMemo(
-    () => buildRows({ files, file: selected, mode, canExpand: getFile !== undefined, context, opened, collapsed: isCollapsed }),
-    [files, selected, mode, getFile, context, opened, isCollapsed],
-  )
+  const rows = useMemo(() => {
+    const path = files[selected]!.path
+    const sourceOf = stepOf === undefined ? undefined : (hunk: number) => stepOf(path, hunk)
+    return buildRows({ files, file: selected, mode, canExpand: getFile !== undefined, context, opened, collapsed: isCollapsed, sourceOf })
+  }, [files, selected, mode, getFile, context, opened, isCollapsed, stepOf])
   const offsets = useMemo(() => rowOffsets(rows), [rows])
   const total = offsets[rows.length] ?? 0
 
@@ -362,11 +448,45 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     setScrollTop(top)
   }, [])
 
-  const open = (fi: number): void => {
+  // Syntax colour for the open file: its lexer is fetched the first time a
+  // file with a known language is shown (useHighlighter.ts), and until then,
+  // or for an unknown language or a file over the size cap, lines are plain.
+  const lang = highlightLanguage(files[selected]!)
+  const highlighter = useHighlighter(lang !== null)
+  const paint = useMemo(() => {
+    if (highlighter === null || lang === null) return undefined
+    // Rows are redrawn on every scroll; a line is cut once per file shown.
+    const cache = new Map<string, Token[]>()
+    return (text: string): Token[] | null => {
+      if (text.length > HIGHLIGHT_MAX_LINE) return null
+      let t = cache.get(text)
+      if (t === undefined) {
+        t = highlighter.tokenize(text, lang)
+        cache.set(text, t)
+      }
+      return t
+    }
+  }, [highlighter, lang])
+
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+
+  const open = (fi: number, notify = true): void => {
+    if (notify && fi !== selectedRef.current) onFileChange?.(files[fi]!.path)
+    selectedRef.current = fi
     setSelected(fi)
     setViewed((prev) => (prev.has(fi) ? prev : new Set(prev).add(fi)))
     scrollTo(0)
   }
+
+  // The route moved (its back button, a link to another file of this patch):
+  // open the file it names. Keyed on the prop alone, so a route that does not
+  // follow onFileChange never pulls the reader back to the file it named first.
+  useEffect(() => {
+    const fi = fileIndex(files, initialFile)
+    if (fi !== -1 && fi !== selectedRef.current) open(fi, false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFile])
 
   const stepFile = (dir: 1 | -1): void => {
     if (order.length === 0) return
@@ -411,13 +531,16 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
       return
     }
     const y = scrollTop
+    // A hunk under a step's `from step` row is reached at that row, so the
+    // step that wrote it is on screen with it.
+    const top = (i: number): number => offsets[rows[i - 1]?.t === 'source' ? i - 1 : i]!
     if (dir === 1) {
       for (let i = 0; i < rows.length; i++) {
-        if (rows[i]!.t === 'hunk' && offsets[i]! > y + 0.5) return scrollTo(offsets[i]!)
+        if (rows[i]!.t === 'hunk' && top(i) > y + 0.5) return scrollTo(top(i))
       }
     } else {
       for (let i = rows.length - 1; i >= 0; i--) {
-        if (rows[i]!.t === 'hunk' && offsets[i]! < y - 0.5) return scrollTo(offsets[i]!)
+        if (rows[i]!.t === 'hunk' && top(i) < y - 0.5) return scrollTo(top(i))
       }
     }
   }
@@ -466,7 +589,7 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     if (hunkReveal === null || hunkReveal.file !== selected || isCollapsed) return
     const i = rows.findIndex((r) => r.t === 'hunk' && r.hunk === hunkReveal.hunk)
     setHunkReveal(null)
-    if (i !== -1) scrollTo(offsets[i]!)
+    if (i !== -1) scrollTo(offsets[rows[i - 1]?.t === 'source' ? i - 1 : i]!)
   }, [hunkReveal, selected, isCollapsed, rows, offsets, scrollTo])
 
   const hits = useMemo(() => hitsInFile(found.matches, selected), [found.matches, selected])
@@ -551,6 +674,7 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         current={current}
         collapsed={isCollapsed}
         onToggle={toggle}
+        paint={paint}
       />,
     )
   }
@@ -583,12 +707,26 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   const shownCount = listOrder(groups).length
 
   return (
-    <section className={`diff${narrow ? ' is-narrow' : ''}`} aria-label="Diff" ref={rootRef} onKeyDown={onKey}>
+    <section
+      className={`diff${narrow ? ' is-narrow' : ''}${phone ? ' is-phone' : ''}${fullHeight ? ' is-full' : ''}`}
+      aria-label="Diff"
+      ref={rootRef}
+      onKeyDown={onKey}
+    >
       <Bar {...props} layout={layout} fold={fold} />
       {props.meta}
       <div className="diff-body">
         {narrow ? (
-          <Picker files={files} order={everyFile} selected={selected} onOpen={open} />
+          <Picker
+            files={files}
+            order={everyFile}
+            selected={selected}
+            onOpen={open}
+            sheet={sheet}
+            onSheet={setSheet}
+            totals={totals}
+            viewed={viewed}
+          />
         ) : (
           <nav className="diff-files" aria-label="Files in this diff">
             <p className="diff-files-head" data-testid="diff-files-head">
@@ -705,8 +843,24 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   )
 }
 
-/** One row of the file list: change letter, name, +N -N, the five-cell bar, the viewed dot. */
-function FileRow({ file, on, viewed, onOpen }: { file: DiffFile; on: boolean; viewed: boolean; onOpen: () => void }) {
+/**
+ * One row of the file list: change letter, name, +N -N, the five-cell bar, the
+ * viewed dot. `whole`: the whole path rather than the name, for the phone's
+ * sheet, which has no directory groups to say where a name lives.
+ */
+function FileRow({
+  file,
+  on,
+  viewed,
+  onOpen,
+  whole = false,
+}: {
+  file: DiffFile
+  on: boolean
+  viewed: boolean
+  onOpen: () => void
+  whole?: boolean
+}) {
   const letter = changeLetter(file)
   const moved = (file.status === 'renamed' || file.status === 'copied') && file.oldPath !== null && file.oldPath !== file.path
   return (
@@ -723,7 +877,7 @@ function FileRow({ file, on, viewed, onOpen }: { file: DiffFile; on: boolean; vi
       <span className={`diff-kind is-${letter}`} aria-hidden="true">
         {letter}
       </span>
-      <span className="diff-fname">{baseOf(file.path)}</span>
+      <span className="diff-fname">{whole ? file.path : baseOf(file.path)}</span>
       <span className="diff-plus">+{file.additions}</span>
       <span className="diff-minus">−{file.deletions}</span>
       <StatBar file={file} />
@@ -742,47 +896,125 @@ function StatBar({ file }: { file: DiffFile }) {
   )
 }
 
-/** The phone's file list: where you are, the open file, and previous / next. */
+/**
+ * The phone's file list: where you are, the open file, previous / next, and
+ * `All files`, a sheet of every file with its counts. Choosing a file in the
+ * sheet opens it and closes the sheet; Escape and Close close it without
+ * moving. ONE FILE IS DRAWN AT A TIME here as everywhere else (owner decision
+ * 2026-10-08, design §3 question 4).
+ */
 function Picker({
   files,
   order,
   selected,
   onOpen,
+  sheet,
+  onSheet,
+  totals,
+  viewed,
 }: {
   files: DiffFile[]
   order: number[]
   selected: number
   onOpen: (fi: number) => void
+  sheet: boolean
+  onSheet: (open: boolean) => void
+  totals: { add: number; del: number }
+  viewed: ReadonlySet<number>
 }) {
   const at = order.indexOf(selected)
   const f = files[selected]!
   const prev = order[at - 1]
   const next = order[at + 1]
+  const allRef = useRef<HTMLButtonElement>(null)
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const wasOpen = useRef(sheet)
+  // Focus follows the sheet: into it on the open file's row when it opens,
+  // back to `All files` when it closes, so a keyboard reader is never left on
+  // a control that has gone.
+  useEffect(() => {
+    if (sheet) sheetRef.current?.querySelector<HTMLElement>('.diff-file.is-on, .diff-file')?.focus()
+    else if (wasOpen.current) allRef.current?.focus()
+    wasOpen.current = sheet
+  }, [sheet])
   return (
-    <div className="diff-picker" role="group" aria-label="File">
-      <Button
-        size="sm"
-        aria-label="Previous file"
-        disabled={prev === undefined}
-        onClick={() => prev !== undefined && onOpen(prev)}
-      >
-        ‹
-      </Button>
-      <span className="diff-picker-at">
-        <span className="diff-picker-pos" data-testid="diff-picker-pos">
-          file {at + 1} of {order.length}
+    <div className="diff-picker-wrap">
+      <div className="diff-picker" role="group" aria-label="File">
+        <Button
+          size="sm"
+          aria-label="Previous file"
+          disabled={prev === undefined}
+          onClick={() => prev !== undefined && onOpen(prev)}
+        >
+          ‹
+        </Button>
+        <span className="diff-picker-at">
+          <span className="diff-picker-pos" data-testid="diff-picker-pos">
+            file {at + 1} of {order.length}
+          </span>
+          <span className="diff-fname">{f.path}</span>
+          <span className="diff-plus">+{f.additions}</span> <span className="diff-minus">−{f.deletions}</span>
         </span>
-        <span className="diff-fname">{f.path}</span>
-        <span className="diff-plus">+{f.additions}</span> <span className="diff-minus">−{f.deletions}</span>
-      </span>
-      <Button
-        size="sm"
-        aria-label="Next file"
-        disabled={next === undefined}
-        onClick={() => next !== undefined && onOpen(next)}
-      >
-        ›
-      </Button>
+        <Button
+          size="sm"
+          aria-label="Next file"
+          disabled={next === undefined}
+          onClick={() => next !== undefined && onOpen(next)}
+        >
+          ›
+        </Button>
+        <button
+          ref={allRef}
+          type="button"
+          className="diff-all"
+          aria-haspopup="dialog"
+          aria-expanded={sheet}
+          onClick={() => onSheet(!sheet)}
+        >
+          All files
+        </button>
+      </div>
+      {sheet ? (
+        <div
+          ref={sheetRef}
+          className="diff-sheet"
+          role="dialog"
+          aria-label="All files"
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return
+            // Consumed: the agent drawer around the viewer closes on any Escape that reaches it.
+            e.preventDefault()
+            e.stopPropagation()
+            onSheet(false)
+          }}
+        >
+          <div className="diff-sheet-head">
+            <p className="diff-files-head" data-testid="diff-sheet-head">
+              {files.length} {files.length === 1 ? 'file' : 'files'} <span className="diff-plus">+{totals.add}</span>{' '}
+              <span className="diff-minus">−{totals.del}</span>
+            </p>
+            <Button size="sm" onClick={() => onSheet(false)}>
+              Close
+            </Button>
+          </div>
+          <ol className="diff-sheet-list">
+            {order.map((fi) => (
+              <li key={fi}>
+                <FileRow
+                  file={files[fi]!}
+                  on={fi === selected}
+                  viewed={viewed.has(fi)}
+                  whole
+                  onOpen={() => {
+                    onOpen(fi)
+                    onSheet(false)
+                  }}
+                />
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -803,6 +1035,8 @@ function rowKey(r: Row): string {
       return `p${r.file}:${r.hunk}:${r.left ?? '-'}:${r.right ?? '-'}`
     case 'context':
       return `c${r.file}:${r.gap}:${r.newNo}`
+    case 'source':
+      return `s${r.file}:${r.hunk}`
   }
 }
 
@@ -838,9 +1072,11 @@ interface RowProps {
   /** The open file is collapsed: its header is the only row. */
   collapsed: boolean
   onToggle: (file: number) => void
+  /** The open file's lexer, once loaded: a line's tokens, or null to draw it plain. */
+  paint?: (text: string) => Token[] | null
 }
 
-function RowView({ row, files, context, canExpand, onExpandGap, hits, current, collapsed, onToggle }: RowProps) {
+function RowView({ row, files, context, canExpand, onExpandGap, hits, current, collapsed, onToggle, paint }: RowProps) {
   const f = files[row.file]!
   const common = { 'data-path': f.path, style: { height: rowHeight(row) } }
 
@@ -881,6 +1117,12 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
           {row.text}
         </div>
       )
+    case 'source':
+      return (
+        <div className="diff-row is-source" data-diff-row="source" data-step={row.step} {...common}>
+          <span className="diff-source-what">from step</span> <span className="diff-source-step">{row.step}</span>
+        </div>
+      )
     case 'hunk':
       return (
         <div className="diff-row is-hunk" data-diff-row="hunk" {...common}>
@@ -900,7 +1142,7 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
           <span className="diff-no">{row.newNo}</span>
           <span className="diff-sign"> </span>
           <span className="diff-text">
-            <LineText text={row.text} noNewline={false} />
+            <LineText text={row.text} noNewline={false} paint={paint} />
           </span>
         </div>
       )
@@ -912,7 +1154,13 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
           <span className="diff-no">{l.newNo ?? ''}</span>
           <span className="diff-sign">{sign(l)}</span>
           <span className="diff-text">
-            <LineText text={l.text} noNewline={l.noNewlineAtEnd} hits={hits.get(`${row.hunk}:${row.line}`)} current={current} />
+            <LineText
+              text={l.text}
+              noNewline={l.noNewlineAtEnd}
+              hits={hits.get(`${row.hunk}:${row.line}`)}
+              current={current}
+              paint={paint}
+            />
           </span>
         </div>
       )
@@ -935,7 +1183,13 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
             <span className="diff-no">{(side === 'old' ? l.oldNo : l.newNo) ?? ''}</span>
             <span className="diff-sign">{sign(l)}</span>
             <span className="diff-text">
-              <LineText text={l.text} noNewline={l.noNewlineAtEnd} hits={hits.get(`${row.hunk}:${idx}`)} current={current} />
+              <LineText
+                text={l.text}
+                noNewline={l.noNewlineAtEnd}
+                hits={hits.get(`${row.hunk}:${idx}`)}
+                current={current}
+                paint={paint}
+              />
             </span>
           </div>
         )
@@ -990,36 +1244,74 @@ function GapBody({
 }
 
 /**
+ * The pieces of `tokens` that fall in [from, to) of the line: plain text as
+ * text nodes, a token with a kind as a `<span>` around its text node. Never
+ * markup from a string -- the characters are the line's, cut, not rewritten.
+ */
+function painted(tokens: readonly Token[], from: number, to: number): ReactNode[] {
+  const out: ReactNode[] = []
+  let at = 0
+  for (const t of tokens) {
+    const start = at
+    at += t.s.length
+    if (at <= from) continue
+    if (start >= to) break
+    const s = t.s.slice(Math.max(0, from - start), Math.min(t.s.length, to - start))
+    out.push(
+      t.k === null ? (
+        s
+      ) : (
+        <span key={start} className={`diff-tk is-${t.k}`}>
+          {s}
+        </span>
+      ),
+    )
+  }
+  return out
+}
+
+/**
  * The line's text as React text nodes, with a content CR drawn as a visible
  * `␍` rather than as nothing, and each find match wrapped in a `<mark>` -- the
- * current one `is-current` -- around the characters already there.
+ * current one `is-current` -- around the characters already there. With
+ * `paint`, the characters are also cut into syntax tokens (`painted`); a
+ * match that crosses tokens holds the pieces of each.
  */
 function LineText({
   text,
   noNewline,
   hits,
   current = -1,
+  paint,
 }: {
   text: string
   noNewline: boolean
   hits?: readonly LineHit[]
   current?: number
+  paint?: (text: string) => Token[] | null
 }) {
   const cr = text.endsWith('\r')
   const body = cr ? text.slice(0, -1) : text
+  const tokens = paint?.(body) ?? null
+  let at = 0
   return (
     <>
       {hits === undefined
-        ? body
-        : hitSegments(body, hits).map((p, i) =>
-            p.index === null ? (
-              p.text
+        ? tokens === null
+          ? body
+          : painted(tokens, 0, body.length)
+        : hitSegments(body, hits).map((p, i) => {
+            const from = at
+            at += p.text.length
+            const inner = tokens === null ? p.text : painted(tokens, from, at)
+            return p.index === null ? (
+              <Fragment key={i}>{inner}</Fragment>
             ) : (
               <mark key={i} className={`diff-hit${p.index === current ? ' is-current' : ''}`} data-match={p.index + 1}>
-                {p.text}
+                {inner}
               </mark>
-            ),
-          )}
+            )
+          })}
       {cr ? (
         <span className="diff-cr" role="img" aria-label="carriage return">
           ␍

@@ -7,7 +7,7 @@
 # WHY (#628). Acceptance used to clone this platform's own public repository,
 # where tests/acceptance/fixtures/ already was. It now clones the private
 # sandbox (scripts/acceptance/config.sh), which holds nothing of this
-# repository unless something puts it there. So the release's acceptance job
+# repository unless something puts it there. So accept.yml, in a job of its own,
 # runs this BEFORE the suite, with the sandbox's own token (the repository
 # secret SWARM_SANDBOX_GITHUB_TOKEN), and the fixtures a release's tasks clone
 # are the ones of the commit it deployed -- the same property cloning `main`
