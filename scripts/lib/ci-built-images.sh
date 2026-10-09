@@ -65,10 +65,13 @@
 #           completed run of an ancestor in the newest CI_PREVIOUS_LOOK runs
 #           built and kept a record, or this checkout has no history to tell
 #           an ancestor by (a shallow clone)
-#   exit 1  the API could not be read after CI_BUILD_API_TRIES tries
+#   exit 1  the API could not be read after CI_PREVIOUS_TRIES tries (default
+#           2, CI_PREVIOUS_POLL 5s apart)
 #
 # The caller builds everything on 3 and on 1 alike: a full build is the safe
-# answer to "I could not tell", only a slower one. --sha itself is never
+# answer to "I could not tell", only a slower one. That is also why --previous
+# does not retry with the lookup's 5 x 30s: two minutes of retries on the
+# critical path of every build, to avoid a build that costs ~10. --sha itself is never
 # "previous": a re-run of its build means it is to be built again.
 #
 # Usage:
@@ -81,7 +84,8 @@
 # Needs `gh` authenticated for the repository -- GH_TOKEN, with actions: read.
 # CI_BUILD_WAIT (default 2700s) bounds the wait for a running build,
 # CI_BUILD_APPEAR (default 300s) the wait for its run to appear at all, and
-# CI_BUILD_POLL (default 30s) is the interval between looks.
+# CI_BUILD_POLL (default 30s) is the interval between looks. --previous uses
+# CI_PREVIOUS_TRIES and CI_PREVIOUS_POLL instead (see above).
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -119,6 +123,12 @@ API_TRIES="${CI_BUILD_API_TRIES:-5}"
 # a day of merges, and a record older than that is past build-images.sh's
 # seven-day reuse limit more often than not.
 PREVIOUS_LOOK="${CI_PREVIOUS_LOOK:-20}"
+# --previous's own retry: a failed read falls back to a full build, never to a
+# wrong answer, so it is retried once, briefly, rather than CI_BUILD_API_TRIES
+# times CI_BUILD_POLL apart (#888 box 93). Long enough to ride out a single
+# 502; an API down for longer costs one full build, not two minutes of waiting.
+PREVIOUS_TRIES="${CI_PREVIOUS_TRIES:-2}"
+PREVIOUS_POLL="${CI_PREVIOUS_POLL:-5}"
 PREVIOUS=0
 IF_ABSENT_SET=0
 
@@ -133,7 +143,9 @@ while [[ $# -gt 0 ]]; do
     --workflow)    WORKFLOW="$2"; shift 2 ;;
     --job)         JOB="$2"; shift 2 ;;
     --branch)      BRANCH="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,84p' "$0"; exit 0 ;;
+    # The header, up to the first line that is not a comment: a hand-kept
+    # line range drifted every time the header grew (#888 box 92).
+    -h|--help)     awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 0 ;;
     *)             die "unknown argument: $1" ;;
   esac
 done
@@ -150,12 +162,14 @@ esac
   || die "no repository to ask: set GITHUB_REPOSITORY or pass --repo owner/name"
 [[ "${PREVIOUS}" -eq 0 || "${IF_ABSENT_SET}" -eq 0 ]] \
   || die "--previous never builds and never waits; it takes no --if-absent"
-for knob in WAIT APPEAR API_TRIES PREVIOUS_LOOK; do
+for knob in WAIT APPEAR API_TRIES PREVIOUS_LOOK PREVIOUS_TRIES; do
   name="CI_BUILD_${knob}"
-  [[ "${knob}" != PREVIOUS_LOOK ]] || name="CI_PREVIOUS_LOOK"
+  [[ "${knob}" != PREVIOUS_* ]] || name="CI_${knob}"
   [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${name} must be a whole number of seconds (or tries, or runs), not '${!knob}'"
 done
 [[ "${POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "CI_BUILD_POLL must be a number of seconds, not '${POLL}'"
+[[ "${PREVIOUS_POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+  || die "CI_PREVIOUS_POLL must be a number of seconds, not '${PREVIOUS_POLL}'"
 
 require_cmd gh jq
 
@@ -426,11 +440,11 @@ if [[ "${PREVIOUS}" -eq 1 ]]; then
     if [[ "${rc}" -eq 0 ]]; then break; fi
     FAILED_READS=$((FAILED_READS + 1))
     reason="$(api_reason)"
-    warn "could not read the GitHub API (${FAILED_READS} of ${API_TRIES}): ${reason:-no reason given}"
-    if [[ "${FAILED_READS}" -ge "${API_TRIES}" ]]; then
-      fail_with "could not read ${WORKFLOW}'s runs on ${BRANCH} after ${API_TRIES} tries (${reason:-no reason given}); with no previous build known, every image is built"
+    warn "could not read the GitHub API (${FAILED_READS} of ${PREVIOUS_TRIES}): ${reason:-no reason given}"
+    if [[ "${FAILED_READS}" -ge "${PREVIOUS_TRIES}" ]]; then
+      fail_with "could not read ${WORKFLOW}'s runs on ${BRANCH} after ${PREVIOUS_TRIES} tries (${reason:-no reason given}); with no previous build known, every image is built"
     fi
-    sleep "${POLL}"
+    sleep "${PREVIOUS_POLL}"
   done
   if [[ "${VERDICT}" == reuse ]]; then
     exit 0

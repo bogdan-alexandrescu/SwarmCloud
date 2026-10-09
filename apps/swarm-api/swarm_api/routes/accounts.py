@@ -83,10 +83,12 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from ..accountholds import (
     EVERY_ACCOUNT,
+    OWN_CURSOR_MARK,
     TaskCheck,
     Viewer,
     history_view,
     holders_view,
+    own_cursor_position,
     own_page,
     viewer_of,
 )
@@ -507,6 +509,10 @@ def account_holders(
 #: the value; this refuses a forged one before a broker call is made.
 _CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
 _CURSOR_RE = re.compile(_CURSOR_SHAPE)
+#: A BORROWER's cursor -- `<instant>|own<k>`, `k` its own spans at that instant
+#: (#361, `accountholds.OWN_CURSOR_MARK`). Served only to a borrower and
+#: accepted only from one; every other viewer pages on the broker's own.
+_OWN_CURSOR_RE = re.compile(rf"^[0-9TZ:+.\-]{{1,40}}\|{OWN_CURSOR_MARK}[0-9]{{1,3}}$")
 
 
 def _opaque_cursor(raw: str | None) -> str | None:
@@ -524,7 +530,11 @@ def _opaque_cursor(raw: str | None) -> str | None:
 
 
 def _broker_cursor(served: str | None) -> str | None:
-    """The broker's cursor inside one this route served, or a 422.
+    """The raw cursor inside one this route served, or a 422.
+
+    Either the broker's own `<instant>|<skip>` or a borrower's
+    `<instant>|own<k>`; which viewer may send which is decided once the viewer
+    is known (`account_history`).
 
     THE RAW FORM IS STILL ACCEPTED FOR ONE RELEASE (owner decision 2026-10-05),
     so a client holding a cursor from before the change keeps paging. It
@@ -543,7 +553,7 @@ def _broker_cursor(served: str | None) -> str | None:
             ).decode("ascii")
         except (binascii.Error, UnicodeError, ValueError):
             raw = ""
-    if not _CURSOR_RE.match(raw):
+    if not (_CURSOR_RE.match(raw) or _OWN_CURSOR_RE.match(raw)):
         raise ValidationFailed("the cursor is not one this route issued")
     return raw
 
@@ -608,24 +618,50 @@ def _ceil_hour(value: datetime) -> datetime:
     return floor if floor == value else floor + timedelta(hours=1)
 
 
-def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime) -> None:
-    """A borrower's cursor must be the `assigned_at` of one of ITS OWN spans.
+def _require_own_cursor(
+    pool: AccountPool, account_id: str, tenant_id: str | None, cursor: str
+) -> str:
+    """The broker's cursor for a borrower's `<instant>|own<k>`, or a 422.
 
-    Otherwise `T|0` for any T is a probe: the page it opens counts the other
-    tenants' rows at or below T, so a borrower could bisect T to read when
-    another tenant held the account. This service mints a borrower cursor only
-    from the borrower's own row (`own_page`), so that is the only kind it
-    accepts back. One lookup, of exactly the instant, no page walk.
+    THE INSTANT MUST BE ONE OF THE BORROWER'S OWN SPANS. Otherwise `T|0` for
+    any T is a probe: the page it opens counts the other tenants' rows at or
+    below T, so a borrower could bisect T to read when another tenant held the
+    account. This service mints a borrower cursor only from the borrower's own
+    row (`own_page`), so that is the only kind it accepts back.
+
+    AND `k` MUST NAME ONE OF THOSE OWN SPANS: 1 <= k <= the borrower's spans at
+    exactly that instant (#361). The broker's skip counts every row at the
+    instant, other tenants' included; a borrower cursor used to carry that
+    count, and sending `T|n` back for each n read exactly how many other
+    tenants' spans lay between two of its own. The skip is now computed HERE,
+    from the lookup: every row at T, in the broker's order, up to and
+    including the borrower's k-th own row -- the same order the paging read
+    returns them in, since both are one query on the same index. It is sent to
+    the broker and never served.
+
+    One lookup, of exactly the instant, no page walk. Its first page holds
+    `HISTORY_PAGE` (100) rows; more than that sharing one microsecond is not
+    a shape the hold log has, and a cursor past them is refused, not guessed.
     """
+    position = own_cursor_position(cursor)
+    if position is None:
+        raise ValidationFailed("the cursor is not one this route issued to you")
+    stamp, at, k = position
     page = pool.hold_history(
         account_id,
         start=at.isoformat(),
         end=(at + timedelta(microseconds=1)).isoformat(),
         cursor=None,
     )
+    seen = own = 0
     for r in page.get("spans") or []:
-        if isinstance(r, dict) and r.get("tenant_id") == tenant_id and _utc(r.get("assigned_at")) == at:
-            return
+        if not isinstance(r, dict) or _utc(r.get("assigned_at")) != at:
+            continue
+        seen += 1
+        if r.get("tenant_id") == tenant_id:
+            own += 1
+            if own == k:
+                return f"{stamp}|{seen}"
     raise ValidationFailed("the cursor is not one this route issued to you")
 
 
@@ -648,7 +684,9 @@ def account_history(
     the window and the cursor and answers a bad one with a 422 that names it.
 
     `next_cursor` is OPAQUE (base64url, F12): send it back as served. The raw
-    `<instant>|<skip>` form is still accepted for one release.
+    `<instant>|<skip>` form is still accepted for one release -- except from
+    a borrower, whose cursor is `<instant>|own<k>` since #361 and whose cursor
+    from before that is refused with a 422.
     """
     # First, as the Query pattern used to: a forged cursor reaches no broker call.
     cursor = _broker_cursor(cursor)
@@ -659,10 +697,16 @@ def account_history(
     _check_range(start, "from", now)
     _check_range(end, "to", now)
     at_cursor = _check_range(cursor.rpartition("|")[0], "cursor", now) if cursor else None
+    # Each viewer pages on its own kind of cursor, and the other kind is a 422
+    # before any broker call: a borrower's from before #361 counted other
+    # tenants' rows, and an own-count cursor means nothing to the broker.
+    own_cursor = cursor if viewer == "borrower" else None
+    if cursor and bool(_OWN_CURSOR_RE.match(cursor)) != (viewer == "borrower"):
+        raise ValidationFailed("the cursor is not one this route issued to you")
     if viewer == "borrower" and cursor:
         if at_cursor is None:
             raise ValidationFailed("the cursor is not one this route issued to you")
-        _require_own_cursor(pool, account_id, tenant_id, at_cursor)
+        cursor = _require_own_cursor(pool, account_id, tenant_id, cursor)
 
     if viewer == "borrower":
         # THE UTC HOUR GRID. A borrower is told how many other agents held the
@@ -684,7 +728,7 @@ def account_history(
 
     payload = fetch(cursor)
     if viewer == "borrower":
-        payload = own_page(payload, tenant_id=tenant_id, cursor=cursor, fetch=fetch)
+        payload = own_page(payload, tenant_id=tenant_id, cursor=own_cursor, fetch=fetch)
     served = history_view(
         payload,
         viewer=viewer,

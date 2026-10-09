@@ -12,8 +12,11 @@ Owner decision 2026-09-24 (redesign-v2 S3, item A3) -- all three of:
         the whole archive, streamed, `Content-Disposition: attachment`.
 
 `{checkpoint_id}` is the id the checkpoint LISTING returns (`ckpt-00001`),
-not a bare sequence number: ids restart per attempt, and a number that meant
-"the first checkpoint" would name one per attempt. `attempt_id` narrows to one
+not a bare sequence number: ids continue from the restored checkpoint, but
+two attempts can still share one (an attempt that resumed from an OLDER
+checkpoint reuses ids a later attempt already wrote, and one that restored
+nothing starts again at `ckpt-00001`), so a number that meant "the first
+checkpoint" could name more than one. `attempt_id` narrows to one
 attempt and is what a client that already has a listing row always sends; left
 out, the server resolves the id across the task's attempts and refuses (422,
 naming them) when more than one attempt wrote it.
