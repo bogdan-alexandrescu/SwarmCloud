@@ -53,9 +53,21 @@ A READ THAT DID NOT COME BACK IS NOT AN ANSWER: a 5xx, a 429 or a network
 error is FORGE_UNREACHABLE (503), a check it decides stays `unknown`, and
 nothing is recorded as failed because of it.
 
+AN OWNER REACHED THROUGH A TOKEN (D5). An org whose admin will not install
+the App is enabled by the person's fallback token for it
+(`ForgeApp.store_owner_token`): its `forge_orgs` document says `method: pat`.
+Everything here that reads under that owner -- its repositories, a grant, a
+verify -- reads with THAT token, from the person's per-owner slot
+(`gittokens.owner_suffix`), never the App's user token; the owners list
+shows it from its document with no GitHub read. Removing the owner disables
+every version of that slot and revokes its record (`ForgeApp.revoke_owner_token`).
+A token's pull-request ability is not readable (a fine-grained token's
+permissions are not exposed), so verify passes it on the push it needs, as
+the probe does (`gittokens.FINE_GRAINED_UNKNOWN`).
+
 NOT HERE. `ORG_APPROVAL_PENDING` (GitHub does not show a user token an
-install request it is waiting on), the D5 fallback PAT, and the onboarding
-checklist reading these documents (onboarding.py, OB1's) are other lanes'.
+install request it is waiting on) and the onboarding checklist reading these
+documents (onboarding.py, OB1's) are other lanes'.
 """
 
 from __future__ import annotations
@@ -78,9 +90,12 @@ from .forge import ForgeTokens, git_basic_headers, repository_from
 from .forgeapp import (
     CONNECTIONS,
     GRANTS,
+    METHOD_PAT,
+    ORGS,
     REFRESH_FAILED,
     REUSE_WHILE_LEFT,
     REVOKED,
+    SSO_URL,
     Caller,
     ForgeApp,
     HttpAnswer,
@@ -94,7 +109,15 @@ from .forgeapp import (
     urllib_send,
     user_hash,
 )
-from .gittokens import Scope, parse_sso_header, provider_suffix, redaction_literal
+from .gittokens import (
+    _CLASSIC_BLOCKED,
+    Scope,
+    owner_suffix,
+    parse_sso_header,
+    provider_suffix,
+    redaction_literal,
+    secret_name_for,
+)
 from .onboarding import recovery_copy
 from .repositories import (
     SCOPE_USER,
@@ -119,8 +142,6 @@ __all__ = [
 # --------------------------------------------------------------------------
 # constants
 # --------------------------------------------------------------------------
-
-ORGS = "forge_orgs"
 
 API = "https://api.github.com"
 _API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
@@ -147,7 +168,6 @@ MAX_DOCS = 1000
 #: Where an org owner installs the App or changes its repositories.
 INSTALL_URL = "https://github.com/apps/{slug}/installations/new"
 INSTALLATION_SETTINGS_URL = "https://github.com/settings/installations/{installation_id}"
-SSO_URL = "https://github.com/orgs/{owner}/sso"
 
 _OWNER = re.compile(rf"^{_ISSUE_OWNER}$")
 _REPO_ID = re.compile(r"^repo_[0-9a-f]{16}$")
@@ -214,9 +234,15 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def via_token(org: dict[str, Any] | None) -> bool:
+    """True when the owner is enabled through the person's fallback token (D5)."""
+    return bool(org) and org.get("method") == METHOD_PAT
+
+
 def org_to_api(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "owner": doc.get("owner"),
+        "method": METHOD_PAT if via_token(doc) else "app",
         "owner_type": doc.get("owner_type"),
         "installation_id": doc.get("installation_id"),
         "repository_selection": doc.get("repository_selection"),
@@ -327,6 +353,22 @@ class _AsUser:
             if len(data) < PAGE_SIZE:
                 break
         return logins
+
+    def owner_page(self, owner: str, page: int, *, own_account: bool
+                   ) -> tuple[list[Any], int | None, HttpAnswer]:
+        """One page of what a token reaches under `owner` (D5): the person's
+        own repositories, or an org's. GitHub answers a list, with no total."""
+        if own_account:
+            path = "/user/repos?" + urlencode({"affiliation": "owner", "per_page": PAGE_SIZE,
+                                               "page": page})
+        else:
+            path = (f"/orgs/{quote(owner, safe='')}/repos?"
+                    + urlencode({"type": "all", "per_page": PAGE_SIZE, "page": page}))
+        answer = self.get(path)
+        data = answer.json()
+        if answer.status != 200 or not isinstance(data, list):
+            return [], None, answer
+        return data, None, answer
 
     def installation_page(self, installation_id: int, page: int) -> tuple[list[Any], int | None,
                                                                          HttpAnswer]:
@@ -606,6 +648,33 @@ class AccessService:
             token = session.open()
             yield _AsUser(self._github, token, renew=session.renew), session.held(token)
 
+    @contextmanager
+    def _as_owner(self, caller: Caller, org: dict[str, Any] | None
+                  ) -> Iterator[tuple[_AsUser, HeldCredential]]:
+        """The reads under one owner: with the person's token for it when the
+        owner is enabled through one (D5), else with their App user token.
+        The slot is named from the caller and the owner, never a document."""
+        if not via_token(org):
+            with self._as_user(caller) as pair:
+                yield pair
+            return
+        owner = str(org.get("owner") or "")
+        suffix = owner_suffix(caller.key, owner)
+        with ExitStack() as stack:
+            try:
+                token = self._app._slots.read_access(caller.tenant_id, suffix)
+            except Exception as exc:
+                log.warning("access could not read the owner token tenant=%s user_hash=%s "
+                            "owner=%s (%s)", caller.tenant_id, user_hash(caller.key), owner,
+                            type(exc).__name__)
+                raise UpstreamUnavailable(
+                    f"your token for {owner} could not be read ({type(exc).__name__}); store "
+                    f"it again with `uv run sc setup token --owner {owner}`") from None
+            stack.enter_context(redaction_literal(token))
+            yield (_AsUser(self._github, token),
+                   HeldCredential(SCOPE_USER, secret_name_for(caller.tenant_id, suffix), token,
+                                  login=str(org.get("forge_login") or "")))
+
     # -- documents -----------------------------------------------------------
 
     def _mine(self, collection: str, caller: Caller) -> list[dict[str, Any]]:
@@ -653,6 +722,15 @@ class AccessService:
     def owners(self, caller: Caller) -> dict[str, Any]:
         """Every owner the person reaches, each with its install state."""
         enabled = {str(d.get("owner")).lower(): d for d in self._mine(ORGS, caller)}
+        tokens = {key: doc for key, doc in enabled.items() if via_token(doc)}
+        connection = self.connection(caller)
+        if tokens and (connection is None or connection.get("state") == REVOKED):
+            # D5: a person who reaches GitHub only through owner tokens has no
+            # App token to list installations with; their owners are the ones
+            # their tokens enabled.
+            rows = sorted((_token_row(doc) for doc in tokens.values()),
+                          key=lambda e: (e["owner_type"] != "User", e["owner"].lower()))
+            return {"owners": rows, "orgs_listed": False, "install_url": self._install_url()}
         with self._as_user(caller) as (github, held):
             own_login = held.login or ""
             try:
@@ -678,8 +756,9 @@ class AccessService:
                     "repository_selection": inst.repository_selection if inst else None,
                     "install_state": "installed" if inst else "not_installed",
                     "sso": doc.get("sso") or "unknown",
-                    "enabled": bool(doc) and inst is not None,
+                    "enabled": bool(doc) and inst is not None and not via_token(doc),
                     "install_url": None if inst else self._install_url(),
+                    "method": "app",
                 }
 
         for inst in installed:
@@ -688,6 +767,10 @@ class AccessService:
             add(own_login, "User", None)
         for login in orgs or []:
             add(login, "Organization", None)
+        for key, doc in tokens.items():
+            # Enabled through the person's token for it: what that token
+            # reached when it was stored, never the App's view of the owner.
+            by_owner[key] = _token_row(doc)
         rows = sorted(by_owner.values(), key=lambda e: (e["owner_type"] != "User",
                                                         e["owner"].lower()))
         log.info("access owners tenant=%s user_hash=%s owners=%d installed=%d",
@@ -767,6 +850,10 @@ class AccessService:
             "checked_at": now,
         }
         self._db.collection(ORGS).document(doc_id).set(doc)
+        if via_token(previous):
+            # The App now reaches the owner: the person's token for it is no
+            # longer read by anything, so it is not left enabled.
+            self._app.revoke_owner_token(caller, match.login)
         log.info("access owner enabled tenant=%s user_hash=%s owner=%s installation=%s",
                  caller.tenant_id, user_hash(caller.key), doc["owner"], match.installation_id)
         return {"org": org_to_api(doc)}
@@ -786,12 +873,16 @@ class AccessService:
             batch.delete(self._db.collection(GRANTS).document(
                 grant_id_for(caller.tenant_id, caller.key, str(grant["repo_id"]))))
         batch.commit()
+        # D5: an owner enabled through the person's token loses the token too,
+        # every version of it, so removing the org revokes SwarmCloud's access.
+        slot_versions = self._app.revoke_owner_token(caller, owner) if via_token(doc) else {}
         unregistered = [g["repo_id"] for g in grants
                         if self._unregister_if_last(caller.tenant_id, str(g["repo_id"]))]
         log.info("access owner disabled tenant=%s user_hash=%s owner=%s grants_deleted=%d",
                  caller.tenant_id, user_hash(caller.key), owner.lower(), len(grants))
         return {"owner": owner.lower(), "grants_deleted": len(grants),
-                "unregistered": unregistered,
+                "unregistered": unregistered, "token_revoked": via_token(doc),
+                "slot_versions_disabled": slot_versions,
                 # What GitHub still allows, said plainly (§2.4): the user's
                 # token is not per org, so the installation stays until an
                 # org owner removes it.
@@ -812,24 +903,39 @@ class AccessService:
         if len(needle) > MAX_QUERY_CHARS:
             raise ValidationFailed(f"q must be at most {MAX_QUERY_CHARS} characters")
         org = self._org(caller, owner)
-        if org is None or not org.get("installation_id"):
+        if org is None or not (org.get("installation_id") or via_token(org)):
             raise NotFound(f"{owner} is not enabled for you in this tenant: enable it first")
-        installation_id = int(org["installation_id"])
+        token = via_token(org)
+        installation_id = 0 if token else int(org["installation_id"])
+        own_account = org.get("owner_type") == "User"
         total: int | None = None
         capped = False
-        with self._as_user(caller) as (github, _held):
+
+        def page_of(github: _AsUser, n: int) -> tuple[list[Any], int | None, HttpAnswer]:
+            if token:
+                return github.owner_page(owner, n, own_account=own_account)
+            return github.installation_page(installation_id, n)
+
+        def refuse(answer: HttpAnswer) -> None:
+            if token:
+                if answer.status != 200:
+                    raise self._owner_refusal(answer, owner, "", org)
+                return
+            self._refuse_listing(caller, answer, owner, installation_id)
+
+        with self._as_owner(caller, org) as (github, _held):
             try:
                 if not needle:
-                    raw, total, answer = github.installation_page(installation_id, page)
-                    self._refuse_listing(caller, answer, owner, installation_id)
+                    raw, total, answer = page_of(github, page)
+                    refuse(answer)
                     window = raw
                     more = len(raw) >= PAGE_SIZE and page < MAX_PAGES
                     capped = len(raw) >= PAGE_SIZE and page == MAX_PAGES
                 else:
                     matched: list[Any] = []
                     for gh_page in range(1, MAX_PAGES + 1):
-                        raw, total, answer = github.installation_page(installation_id, gh_page)
-                        self._refuse_listing(caller, answer, owner, installation_id)
+                        raw, total, answer = page_of(github, gh_page)
+                        refuse(answer)
                         matched += [r for r in raw if needle in _name(r)]
                         if len(raw) < PAGE_SIZE:
                             break
@@ -873,6 +979,34 @@ class AccessService:
                              f"GitHub answered HTTP {answer.status} for {what} through "
                              "SwarmCloud's installation", owner=owner, repo=repo or owner,
                              url=url, status=403)
+
+    def _owner_refusal(self, answer: HttpAnswer, owner: str, repo: str,
+                       org: dict[str, Any] | None) -> AccessRefused:
+        """`_refusal` for an owner reached through the App; for one reached
+        through the person's token (D5), §2.3's token causes instead: SSO,
+        the classic-token policy, a fine-grained token not yet approved, and
+        otherwise the token's own lack of access to what was read."""
+        if not via_token(org):
+            return self._refusal(answer, owner, repo, (org or {}).get("installation_id"))
+        sso = _sso_owner(answer)
+        if sso is not None:
+            return self._refusal(answer, owner, repo, None)
+        data = answer.json()
+        message = data.get("message") if isinstance(data, dict) else None
+        if answer.status == 403 and isinstance(message, str) and _CLASSIC_BLOCKED.search(message):
+            return AccessRefused("CLASSIC_PAT_BLOCKED",
+                                 f"{owner} does not accept classic personal access tokens",
+                                 owner=owner, status=403)
+        what = f"{owner}/{repo}" if repo else f"{owner}'s repositories"
+        if (org or {}).get("token_kind") == "fine_grained_pat" \
+                and (org or {}).get("owner_type") != "User":
+            return AccessRefused("FINE_GRAINED_PAT_PENDING",
+                                 f"GitHub answered HTTP {answer.status} for {what} to your "
+                                 f"fine-grained token for {owner}", owner=owner, status=403)
+        return AccessRefused("PERMISSION_MISSING",
+                             f"GitHub answered HTTP {answer.status} for {what} to your token "
+                             f"for {owner}", repo=what, login=str((org or {}).get("forge_login")
+                                                                  or ""), status=403)
 
     def _entries(self, caller: Caller, owner: str, raw: list[Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -918,7 +1052,7 @@ class AccessService:
                 "REPO_NOT_INSTALLED", f"{owner} is not enabled for you in this tenant: enable "
                 "it under Access first", owner=owner, repo=f"{owner}/{repo}",
                 url=self._install_url() or "")
-        with self._as_user(caller) as (github, held):
+        with self._as_owner(caller, org) as (github, held):
             try:
                 answer = github.get(f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}")
             except _Unanswered:
@@ -926,13 +1060,13 @@ class AccessService:
             # Names only: the credential, value and all, stays inside the `with`.
             secret_name, login = held.secret_name, held.login or ""
         if answer.status != 200:
-            raise self._refusal(answer, owner, repo, org.get("installation_id"))
+            raise self._owner_refusal(answer, owner, repo, org)
         read = repository_from(answer.json())
         if read is None or (read.owner.lower(), read.repo.lower()) != (owner.lower(),
                                                                        repo.lower()):
             raise UpstreamUnavailable(f"GitHub's answer for {owner}/{repo} is not that repository")
         if not read.can_read:
-            raise self._refusal(HttpAnswer(403, {}), owner, repo, org.get("installation_id"))
+            raise self._owner_refusal(HttpAnswer(403, {}), owner, repo, org)
         full = f"{read.owner}/{read.repo}"
         if mode == "write" and read.archived:
             raise AccessRefused("REPO_ARCHIVED", f"{full} is archived on GitHub", repo=full,
@@ -1027,7 +1161,8 @@ class AccessService:
                 failures.append({"check": name, "code": code,
                                  "copy": recovery_copy(code, **fill)})
 
-        with self._as_user(caller) as (github, held):
+        token = via_token(org)
+        with self._as_owner(caller, org) as (github, held):
             login = held.login or ""
             try:
                 answer = github.get(f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}")
@@ -1039,7 +1174,7 @@ class AccessService:
                 for name in wanted:
                     put(name, UNKNOWN, "FORGE_UNREACHABLE")
             elif read is None:
-                refusal = self._refusal(answer, owner, repo, org.get("installation_id"))
+                refusal = self._owner_refusal(answer, owner, repo, org)
                 code = refusal.detail["failure_code"]
                 for name in wanted:
                     results[name] = {"state": MISSING, "code": code, "checked_at": now}
@@ -1064,14 +1199,19 @@ class AccessService:
                     if not write:
                         put("pull_request", NOT_REQUIRED)
                     else:
-                        try:
-                            installed = github.installations()
-                            inst = next((i for i in installed
-                                         if i.login.lower() == owner.lower()), None)
-                            pr_ok: bool | None = (inst is not None
-                                                  and inst.pull_requests == "write")
-                        except (_Unanswered, _Refused):
-                            pr_ok = None
+                        pr_ok: bool | None
+                        if token:
+                            # A token that pushes opens a pull request; its
+                            # pull-request permission is not readable (D5).
+                            pr_ok = True
+                        else:
+                            try:
+                                installed = github.installations()
+                                inst = next((i for i in installed
+                                             if i.login.lower() == owner.lower()), None)
+                                pr_ok = inst is not None and inst.pull_requests == "write"
+                            except (_Unanswered, _Refused):
+                                pr_ok = None
                         if push_ok is None or pr_ok is None:
                             put("pull_request", UNKNOWN, "FORGE_UNREACHABLE")
                         elif push_ok and pr_ok:
@@ -1137,6 +1277,22 @@ class AccessService:
                 else:
                     row["grants"].append(grant_to_api(doc))
         return {"members": [people[k] for k in sorted(people)]}
+
+
+def _token_row(doc: dict[str, Any]) -> dict[str, Any]:
+    """An owner enabled through the person's token (D5), as the owners list
+    shows it: from its document, which the token's probe wrote."""
+    return {
+        "owner": str(doc.get("owner_login") or doc.get("owner")),
+        "owner_type": doc.get("owner_type") or "Organization",
+        "installation_id": None,
+        "repository_selection": None,
+        "install_state": doc.get("install_state") or "token",
+        "sso": doc.get("sso") or "unknown",
+        "enabled": True,
+        "install_url": None,
+        "method": METHOD_PAT,
+    }
 
 
 def _name(raw: Any) -> str:

@@ -52,12 +52,12 @@ from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
 from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
-from .access import MODES, grant_id_for
+from .access import MODES, grant_id_for, org_id_for, via_token
 from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import GIT_PROVIDER
-from .forgeapp import GRANTS, Caller
-from .gittokens import Scope, provider_suffix
+from .forgeapp import GRANTS, ORGS, Caller
+from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
 from .repositories import Repositories, repo_id_for
 from .runnerinputs import input_contract
@@ -193,7 +193,9 @@ class SubmissionService:
 
         BEFORE `_sign`, so the signature covers both (contract request 54).
         A person's task on a GitHub repository runs with the person's own
-        user slot, `git-u-<hex>`, and their grant's mode; a person with no
+        user slot, `git-u-<hex>`, and their grant's mode -- their slot for
+        that owner (`gittokens.owner_suffix`, D5) when they enabled the
+        owner through a fallback token, their App slot otherwise; a person with no
         grant on it is refused, every refused task named in one 403
         (`validation.repository_not_granted`), before anything is stored. A
         service submission runs with the tenant token, `git`, with write. A
@@ -227,7 +229,7 @@ class SubmissionService:
                     continue
                 refused.append((task.step_id, f"{owner}/{repo}"))
                 continue
-            task.forge_credential = provider_suffix(Scope.USER, user=task.submitted_by)
+            task.forge_credential = self._person_slot(tenant_id, task.submitted_by or "", owner)
             task.forge_access = mode
         if refused:
             error = repository_not_granted(refused)
@@ -235,6 +237,21 @@ class SubmissionService:
             log.info("submission refused tenant=%s code=%s repositories=%s",
                      tenant_id, error.code, ",".join(error.detail["repositories"]))
             raise error
+
+    def _person_slot(self, tenant_id: str, email: str, owner: str) -> str:
+        """The person's slot for a repository of `owner`: their token for that
+        owner when their `forge_orgs` document says they enabled it through
+        one (D5), else their App slot. The document is read by id and checked
+        on its own fields, as `_grant_mode` checks a grant; the suffix is
+        computed from the person and the owner, never taken from it."""
+        caller = Caller(email=email, tenant_id=tenant_id)
+        snap = self._store.db.collection(ORGS).document(
+            org_id_for(tenant_id, email, owner)).get()
+        doc = snap.to_dict() if snap.exists else None
+        if (doc and doc.get("tenant_id") == tenant_id and doc.get("user") == caller.key
+                and str(doc.get("owner") or "") == owner.lower() and via_token(doc)):
+            return owner_suffix(email, owner)
+        return provider_suffix(Scope.USER, user=email)
 
     def _grant_mode(self, tenant_id: str, email: str, repo_id: str) -> str | None:
         """The mode of `email`'s grant on `repo_id` in `tenant_id`, or None.
