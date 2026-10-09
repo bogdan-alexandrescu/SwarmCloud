@@ -32,9 +32,11 @@ That also gives each group its own execution and its own 30-minute timeout
 (`terraform/infra/verify.tf`); the five together would not fit in one.
 
 Each check prints `PASS`, `FAIL` or `SKIP` with a one-line reason and the task
-id, and the run exits non-zero when any check failed. The release runs every
-group in the `acceptance (dev)` job after `deploy and smoke`, and a `FAIL` fails
-the release.
+id, and the run exits non-zero when any check failed. `accept.yml` runs every
+group after a dev release completes, one matrix job per group in two waves
+that fit the smoke tenant's ceiling, after its own warm and smoke. A `FAIL`
+fails that group's job and opens (or updates) the one acceptance issue; it no
+longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
 
 ## Where it runs: the smoke tenant and a private sandbox
 

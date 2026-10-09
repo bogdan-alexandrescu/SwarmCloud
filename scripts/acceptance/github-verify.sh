@@ -8,7 +8,7 @@
 # which holds no GitHub credential on purpose (CLAUDE.md: a forge token lives
 # only in Secret Manager for the worker). The sandbox is private, so the suite
 # cannot read a pull request back and SKIPs those assertions, naming this
-# script. The release's acceptance job holds the sandbox's own token (the
+# script. accept.yml's read-back job holds the sandbox's own token (the
 # repository secret SWARM_SANDBOX_GITHUB_TOKEN) on the GitHub runner, so it
 # runs this after the suite and BEFORE github-cleanup.sh closes anything.
 # Without it, every release would go green with the pull-request half of the

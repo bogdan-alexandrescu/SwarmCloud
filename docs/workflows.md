@@ -225,7 +225,14 @@ and started, and failed inside the pod. Each is a 422 at the door now.
   `user:password@`, and name a public host: the metadata server, private and
   cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
   single-label host and any host that is not plain ASCII letters, digits, dots
-  and hyphens are refused (`url_refusal` in the frozen catalogue). That check
+  and hyphens are refused (`url_refusal` in the frozen catalogue). Contract
+  request 57 (#349) added site-local (`fec0::/10`), Teredo (`2001::/32`,
+  refused outright because its embedded IPv4 is obfuscated) and the reserved
+  `3fff::/20` and `5f00::/16` IPv6 ranges, the exact names `metadata.goog` and
+  `localhost.localdomain`, and a host ending in two dots (`example.com..` is
+  refused like `a..b`; the fully-qualified `example.com.` is still accepted).
+  A refusal never repeats a value containing `@`, so a 422 cannot quote a
+  URL's `user:password@` back. That check
   is **not** the SSRF control -- it sees the URL typed, never a redirect, a
   page's subresources or what a name resolves to in the pod. The worker's
   NetworkPolicy is the control.
