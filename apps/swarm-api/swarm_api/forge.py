@@ -169,9 +169,15 @@ class SecretManagerForgeTokens:
     """Reads `swarm-tenant-<tenant>-git`'s latest version, and only that.
 
     swarm-api's service account holds `secretAccessor` on each tenant's `-git`
-    secret, by a per-secret binding (terraform/modules/secret_manager), and on
-    no other secret of any tenant. The client is built on first use, never at
-    construction, so `create_app()` builds no client.
+    secret by a per-secret binding (terraform/modules/secret_manager), and on
+    a tenant's `-git-u-` user slots by a CONDITIONAL PROJECT binding
+    (terraform/bootstrap/forge_user_slots.tf: `google_project_iam_member.
+    forge_refresh_reader`, condition "swarm forge user slots api <tenant>",
+    `resource.name.startsWith` the tenant's `-git-u-` prefix; a personal
+    tenant's slots by `forge_personal_grants`' slot_reader, "swarm forge user
+    slots personal"). `grant_hint` names the one a refused read is missing.
+    The client is built on first use, never at construction, so
+    `create_app()` builds no client.
     """
 
     def __init__(self, project_id: str, *, client: Any | None = None) -> None:
@@ -194,9 +200,11 @@ class SecretManagerForgeTokens:
         The git token probe's read (docs/git-tokens.md §5.4). The name is built
         through the frozen `Tenant.secret_name`, from the caller's own tenant,
         so this can name no other tenant's secret. swarm-api is bound only to
-        the slots Terraform grants it (`-git` today; the narrower `git-r-`/
-        `git-u-` slots once lane GT4 declares them), and a slot it is not
-        bound to answers the PermissionDenied branch below.
+        the slots Terraform grants it -- the tenant's `-git` secret per
+        secret, its `-git-u-` user slots by the conditional project binding
+        (see the class) -- and a slot it is not bound to answers the
+        PermissionDenied branch below, whose sentence names the grant THAT
+        slot needs (`grant_hint`).
         """
         from google.api_core import exceptions as gexc
 
@@ -214,8 +222,7 @@ class SecretManagerForgeTokens:
             ) from None
         except gexc.PermissionDenied:
             raise IssueReadFailed(
-                f"swarm-api may not read {secret_id}: its accessor grant on the "
-                "tenant's git secret is missing (terraform/modules/secret_manager)"
+                f"swarm-api may not read {secret_id}: {grant_hint(tenant.tenant_id, provider)}"
             ) from None
         except Exception as exc:
             raise IssueReadFailed(
@@ -248,6 +255,34 @@ class SlotValue:
 
 #: The providers a git-token slot is stored under (docs/git-tokens.md §2).
 _SLOT_PROVIDER = re.compile(r"^git(-r-[0-9a-f]{16}|-u-[0-9a-f]{16})?$")
+
+
+def grant_hint(tenant_id: str, provider: str) -> str:
+    """Which grant lets swarm-api read this slot, for a PermissionDenied.
+
+    The tenant's `-git` secret: the per-secret accessor binding in
+    terraform/modules/secret_manager. A `-git-u-` user slot is NOT bound
+    there: it is read through a conditional project binding in
+    terraform/bootstrap/forge_user_slots.tf, one per infra tenant while
+    `enable_forge_user_slots` is on (a personal `u-` tenant's through the
+    personal grant). A `-git-r-` repository slot has no grant in this
+    repository's Terraform yet. Names only: no value, no project number.
+    """
+    if provider.startswith("git-u-"):
+        if tenant_id.startswith("u-"):
+            return ("the conditional project grant on personal tenants' GitHub user slots "
+                    "is missing (terraform/bootstrap/forge_user_slots.tf, forge_personal_grants "
+                    'slot_reader, condition "swarm forge user slots personal"; on only when '
+                    "enable_forge_user_slots and enable_workspace_deployer are both set)")
+        return (f"the conditional project grant on tenant {tenant_id}'s GitHub user slots is "
+                "missing (terraform/bootstrap/forge_user_slots.tf, "
+                "google_project_iam_member.forge_refresh_reader, condition "
+                f'"swarm forge user slots api {tenant_id}"; made for each infra tenant while '
+                "enable_forge_user_slots is on)")
+    if provider.startswith("git-r-"):
+        return "no Terraform in this repository grants swarm-api the -git-r- repository slots yet"
+    return ("its per-secret accessor grant on the tenant's -git secret is missing "
+            "(terraform/modules/secret_manager)")
 
 
 # --------------------------------------------------------------------------

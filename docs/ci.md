@@ -196,6 +196,23 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    all, so a later build of the same commit cannot change what is promoted.
 5. The apply pins those digests and the deploy verifies them, unchanged.
 
+**Every promote records its runner images' sizes** (#625). Right after the
+channel moves, `release-promote` runs `scripts/image-sizes.sh --manifest
+build/deployed-images-<env>.json` and appends its table to the job summary:
+for each runner image the promotion wrote (`agent-runtime-*`), the promoted
+digest, its compressed size (the linux/amd64 layer sum a node pulls) and its
+delta from the newest earlier release of that image in Artifact Registry; a
+first release reads "no earlier release", never `+0.0`. It only lists and GETs
+the registry, which the deployer already reads in the promote step itself, so
+it needs no new role. It **cannot fail or hold the release**: the step is
+`continue-on-error` and bounded by `timeout 300`, and an image it cannot
+measure is a row saying so and a failed step, nothing more. It exists because
+#625's start-time question needed every release's size, and until this step
+no release recorded its own, so the 2026-10-05 bisect had to read each one
+back out of the registry.
+`tests/unit/scripts/test_release_size_record.py` holds the step's place and
+flags; `test_image_sizes.py` holds the table.
+
 **What the release does when it cannot reuse.** Each ends in a red job whose
 last line (and a run annotation) names the reason and links the job:
 
@@ -307,6 +324,26 @@ and ages from `built_at`, never from the record's own commit. Otherwise a
 change made two builds ago could hide behind a build that reused its image.
 The job's summary lists every image as rebuilt or reused.
 
+**A reused image reports the commit that built it, not the release.** The
+`GIT_SHA` and `BUILD_TIME` build args are baked in when a digest is built, and
+re-tagging does not change a digest. So on a reused image, swarm-api's
+`/v1/version` (`git_sha`, `build_time`, from the `ENV` in
+`images/swarm-api/Dockerfile`) and the indexer's
+`org.opencontainers.image.revision` label name its `built_from` commit, which
+can be several merges behind the release that deploys it. That is the truth
+about the bytes: nothing in the image changed since `built_from`. The release
+that deploys it is the image's tag and the manifest's `commit`, and Cloud Run's
+`revision` (also on `/v1/version`) names the deploy. Read `git_sha` as "the
+code in this container is that commit's", not "this is the release".
+
+Every other value an image bakes in is recorded too: each manifest entry's
+`build_args` lists them (`VITE_SWARM_ENV=dev` for `swarm-ui`, none for the
+rest). An image whose baked values differ from its previous digest's is
+rebuilt whatever the diff says, because a value fed from outside the tree (a
+GitHub variable, say) changes no file and would otherwise ride a reused digest
+until the 7-day limit. A record from before `build_args` existed rebuilds
+`swarm-ui` once.
+
 **`uv.lock` is narrowed to each image.** When `uv.lock` is the only input of a
 Python image that changed, the script runs that image's own `uv export ...
 --prune ...` line, read from its Dockerfile (held by
@@ -323,7 +360,11 @@ summary and the manifest's `incremental.full_build`:
 * **there is no ancestor record**: the first build, a record past its 30-day
   retention, a shallow checkout (the job checks out with `fetch-depth: 0` for
   this), or a GitHub API that could not be read. A full build is the safe
-  answer to "I could not tell", only a slower one;
+  answer to "I could not tell", only a slower one, which is also why
+  `--previous` retries a failed read only once, 5 s later
+  (`CI_PREVIOUS_TRIES`=2, `CI_PREVIOUS_POLL`=5), not the release lookup's
+  5 x 30 s: two minutes of retries on every build to save one ~10-minute
+  build was the wrong trade;
 * **a reused digest is more than 7 days old** (`BUILD_REUSE_MAX_AGE_DAYS`), so
   patches to `python:3.11-slim`, node and nginx arrive within a week even in a
   corner of the tree nobody touches;
