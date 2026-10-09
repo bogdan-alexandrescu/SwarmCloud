@@ -24,6 +24,7 @@ import {
   SNAP_LABEL,
   SNAP_TEXT,
   SNAP_WIDTH,
+  listSnap,
   nearestSnap,
   setListSnap,
   toggleListSnap,
@@ -34,6 +35,7 @@ import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
 import { TaskIdLine } from './TaskIdLine'
 import { useResourceClasses } from './Blockers'
+import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
 import {
   CONCURRENCY_STATES,
@@ -56,8 +58,15 @@ import { Button, CIcon, StateMark, Tabs } from './components'
  *
  * The list on the left, the selected agent on the right: a header row (state
  * pill, the agent's name, Copy link, Stop), underline tabs with counts --
- * Details, Logs, Children when the agent has any, Attempts, Artifacts,
- * Checkpoints -- and the open tab, which fills the rest of the column.
+ * Details, Logs, Changes, Children when the agent has any, Attempts,
+ * Artifacts, Checkpoints -- and the open tab, which fills the rest of the
+ * column.
+ *
+ * CHANGES IS A TAB (docs/design/diff-viewer.md §2 variant 2, owner decision
+ * 2026-10-08): the agent's patch in the shipped viewer at the pane's full
+ * height, the open file in the address (`/changes/<path>`). Opening it folds
+ * the list to its strip so the file has the room split needs; see the fold
+ * effect below for why that is remembered and not forced.
  *
  * THE LOG IS A TAB (owner decision 2026-10-04). It was a dock along the foot
  * of this column, open across every tab, and it lay over the agent's details;
@@ -110,6 +119,7 @@ export function AgentSplit({
   taskId,
   pane,
   artifact,
+  file = null,
   closeTo,
   go,
   base,
@@ -118,6 +128,8 @@ export function AgentSplit({
   pane: TaskPane
   /** The output the address names in the Artifacts pane, or null. */
   artifact: string | null
+  /** The file the address names in the Changes pane, or null for the patch's first. */
+  file?: string | null
   /**
    * The list address this split was opened from (OV-10), so closing it
    * restores the address the list behind it is showing.
@@ -195,6 +207,23 @@ export function AgentSplit({
       delete root.dataset.agentList
     }
   }, [snap])
+
+  // OPENING CHANGES FOLDS THE LIST TO ITS STRIP (diff-viewer.md §2 variant 2:
+  // at 1280 that gives the file about 850px, and split needs 700). REMEMBERED,
+  // NOT FORCED: the fold is not written to the device (`remember` false), a
+  // reader who opens the list again with `[` or the divider keeps it open, and
+  // leaving the tab puts back the width the list had -- unless the reader
+  // moved it while on Changes, which is then theirs.
+  const onChanges = pane === 'changes'
+  useEffect(() => {
+    if (!onChanges) return
+    const was = listSnap()
+    if (was === 'strip') return
+    setListSnap('strip', false)
+    return () => {
+      if (listSnap() === 'strip') setListSnap(was, false)
+    }
+  }, [onChanges])
 
   // `[` folds the list to the strip and back, as `«`/`»` in the list header does.
   useEffect(() => {
@@ -284,6 +313,9 @@ export function AgentSplit({
   const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
     { id: 'logs', label: 'Logs', count: null, say: null, to: `${base}/logs` },
+    // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and a dash with its
+    // reason where the summary does not say it -- never a 0 nobody measured.
+    { id: 'changes', label: 'Changes', ...changesCount(task), to: `${base}/changes` },
     // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
     // other pane has one, so the tab moves the URL and a link can open it.
     ...(task !== null && offersChildren(task)
@@ -323,18 +355,21 @@ export function AgentSplit({
     },
   ]
   const selected: TaskPane = pane
+  // The file the reader opens is written into the address, so Back moves the viewer and a link names the file.
+  const openFile = useCallback((path: string) => go(`${base}/changes/${encodeURIComponent(path)}`), [base, go])
   const links = useMemo(
     () => ({
       logs: () => go(`${base}/logs`),
       attempts: () => go(`${base}/attempts`),
       artifacts: () => go(`${base}/artifacts`),
+      changes: () => go(`${base}/changes`),
     }),
     [base, go],
   )
 
   return (
     <div
-      className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}`}
+      className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
       role="dialog"
       aria-label={`Agent ${taskId}`}
       ref={panel}
@@ -438,7 +473,7 @@ export function AgentSplit({
           />
         </AgTabsEdge>
 
-        <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}`}>
+        <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}`}>
           {deciding ? (
             <p className="art-loading">
               <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
@@ -449,6 +484,13 @@ export function AgentSplit({
           ) : selected === 'logs' ? (
             <p className="art-loading">
               <Mark kind="pending" say="Reading the agent before its log. The read is in flight." />
+              <span className="ctl-pending art-loading-bar" />
+            </p>
+          ) : selected === 'changes' && task !== null ? (
+            <AgentChangesPane key={taskId} task={task} file={file} onFile={openFile} />
+          ) : selected === 'changes' ? (
+            <p className="art-loading">
+              <Mark kind="pending" say="Reading the agent before its changes. The read is in flight." />
               <span className="ctl-pending art-loading-bar" />
             </p>
           ) : selected === 'children' && task !== null ? (

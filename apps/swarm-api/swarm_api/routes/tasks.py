@@ -65,6 +65,8 @@ def _event_to_api(event, masking: TaskMasking) -> dict:
     detail can quote the agent anywhere else; every string in it is masked by
     the rules and the literals the task's input named, string by string --
     never by key, because the keys are the platform's (`TaskMasking.leaves`).
+    A lookup key's value (`task_input.LOOKUP_KEYS`) is masked by
+    `TaskMasking.name`, so a clean filename stays findable (#296).
     """
     detail, count = masking.leaves(event.detail)
     return {
