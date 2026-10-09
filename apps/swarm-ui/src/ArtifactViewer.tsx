@@ -55,6 +55,7 @@ export function ArtifactViewer({
   kind,
   absent,
   backLabel,
+  exactBytes = 'raw',
 }: {
   taskId: string
   artifact: ArtifactRef
@@ -84,6 +85,14 @@ export function ArtifactViewer({
    * a different sentence from "the manifest names a file that is not there".
    */
   absent?: { heading: string; say: string }
+  /**
+   * Which download holds this file's stored bytes exactly, for the not-utf-8
+   * mark; see `ExactBytes`. Said by the caller, never inferred from `load`: a
+   * caller's own loader is not always the checkpoint read -- the Code tab's
+   * handed-on diff passes the artifact content route's answer, and its bytes
+   * are in the artifact raw route (#207).
+   */
+  exactBytes?: ExactBytes
 }) {
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -218,6 +227,9 @@ export function ArtifactViewer({
           // Paging needs the artifact route's offsets; a caller's own loader
           // reads one window and says so through `truncated`.
           onPage={loadContent === undefined ? setOffset : null}
+          // WHERE THE EXACT BYTES ARE, for a window that showed some as
+          // U+FFFD: the caller says so (#207).
+          exactBytes={exactBytes}
           // THE WHOLE OBJECT, for a patch this read holds only a window of:
           // the artifact raw route, which the server redacts as it does this
           // one. A caller's own loader has no such route.
@@ -236,6 +248,7 @@ function Body({
   verdictByName,
   absent,
   onPage,
+  exactBytes,
   rawUrl,
   onClose,
   backLabel,
@@ -245,6 +258,7 @@ function Body({
   verdictByName: boolean
   absent?: { heading: string; say: string } | undefined
   onPage: ((offset: number | null) => void) | null
+  exactBytes: ExactBytes
   rawUrl: string | null
   onClose: () => void
   backLabel: string | undefined
@@ -353,14 +367,14 @@ function Body({
         rawUrl={rawUrl}
         onClose={onClose}
         backLabel={backLabel}
-        provenance={<Provenance data={data} onPage={onPage} />}
+        provenance={<Provenance data={data} onPage={onPage} exactBytes={exactBytes} />}
       />
     )
   }
 
   return (
     <>
-      <Provenance data={data} onPage={onPage} />
+      <Provenance data={data} onPage={onPage} exactBytes={exactBytes} />
       {content === '' ? (
         // A MEASURED ZERO. `''` is a file the agent created and left blank,
         // and it is the one thing here that is a real reading rather than an
@@ -380,6 +394,13 @@ function Body({
 }
 
 /**
+ * Which download holds a window's stored bytes exactly. `raw` is the artifact
+ * raw route; `checkpoint` is the whole-checkpoint archive, because the
+ * checkpoint per-member read has no raw route of its own (#207).
+ */
+type ExactBytes = 'raw' | 'checkpoint'
+
+/**
  * The line that says how much of the artifact this is, and what was done to it.
  *
  * Both halves are load-bearing. `truncated` stops a window being read as the
@@ -390,10 +411,13 @@ function Body({
 function Provenance({
   data,
   onPage,
+  exactBytes,
 }: {
   data: ArtifactContent
   /** Move to another window, by the server's raw offset; null when this read cannot page. */
   onPage: ((offset: number | null) => void) | null
+  /** Which download holds the stored bytes exactly; see `ExactBytes`. */
+  exactBytes: ExactBytes
 }) {
   // A WINDOW THAT STARTS PAST BYTE 0 IS NOT THE WHOLE ARTIFACT EITHER, even
   // when it runs to the end and `truncated` is false: the last window of a
@@ -438,16 +462,21 @@ function Provenance({
         {/* BYTES THAT ARE NOT UTF-8 (#188 review). JSON cannot carry them, so
             the server shows each as U+FFFD and COUNTS them; without the count
             a Latin-1 file reads as the agent's own text with odd glyphs in
-            it. The download on this strip saves what is shown, U+FFFD and all;
-            the Artifacts pane's `download` is the raw route, which serves the
-            stored bytes exactly. Absent on an older API; zero draws nothing. */}
+            it. The download on this strip saves what is shown, U+FFFD and all.
+            The mark names where the exact bytes are, and that differs by
+            route: on the Artifacts pane and the Code tab's handed-on diff it is
+            the raw route, which serves the stored object as stored; on the
+            Checkpoint browser there is no
+            per-member raw route, so it is the whole-checkpoint download --
+            the server's own `detail` says the same (#207). Absent on an older
+            API; zero draws nothing. */}
         {typeof data.invalid_utf8_bytes === 'number' && data.invalid_utf8_bytes > 0 && (
           <li className="ctl-fact is-absent">
             <b>not utf-8</b>
             {num(data.invalid_utf8_bytes)}{' '}
             <Mark
               kind="partial"
-              say={`${num(data.invalid_utf8_bytes)} bytes of this window are not UTF-8 and are shown as U+FFFD. The stored object holds them exactly; the raw download serves them as stored.`}
+              say={`${num(data.invalid_utf8_bytes)} bytes of this window are not UTF-8 and are shown as U+FFFD. ${exactBytes === 'raw' ? 'The stored object holds them exactly; the raw download serves them as stored.' : 'The checkpoint download holds them exactly: this file has no download of its own, and the whole checkpoint archive is its stored copy.'}`}
             />
           </li>
         )}

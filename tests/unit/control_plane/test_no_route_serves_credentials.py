@@ -189,6 +189,10 @@ UNREACHED_BY_THE_SWEEP = {
     # Serves `{"tenant_id", "findings_epic"}`, an issue number and nothing
     # else (#638); read back in test_findings_epic_setting.py.
     "/v1/admin/tenants/{tenant_id}/findings-epic",
+    # Serves `{"tenant_id", "issue_sweep", "platform_enabled"}`: switches,
+    # issue numbers, labels and a member address, no credential; read back
+    # whole in test_issue_sweep.py.
+    "/v1/admin/tenants/{tenant_id}/issue-sweep",
 }
 
 
