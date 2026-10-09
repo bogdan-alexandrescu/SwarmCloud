@@ -1400,12 +1400,24 @@ TOOLS: list[dict[str, Any]] = [
             "not installed on (an org the person does not own sends its owners a "
             "request). With `enable`, enables that installed owner first; an "
             "owner without the App is refused with REPO_NOT_INSTALLED and its "
-            "recovery copy."
+            "recovery copy. `approval_pending` lists each owner whose owners the "
+            "person asked to install the App and has not yet approved it, with "
+            "ORG_APPROVAL_PENDING and its recovery copy word for word; it re-checks "
+            "on its own every 15 minutes. With `request_install`, records first "
+            "that the person asked that org's owners -- only when they say they "
+            "did, or will. An org that will not install the App takes a "
+            "fine-grained token instead, which the person stores THEMSELVES in a "
+            "terminal, with sc's setup token verb for that org (/sc:setup names it): no tool takes a "
+            "token, and none may be asked for in chat."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "enable": {"type": "string", "description": "An installed owner's login to enable."},
+                "request_install": {
+                    "type": "string",
+                    "description": "An org whose owners the person asked to install the App.",
+                },
             },
         },
     },
@@ -1466,16 +1478,26 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Check what SwarmCloud can do as the caller in each granted "
             "repository (or only those named): clone, and for a write grant push "
-            "and pull request -- reads only, nothing is pushed. Per repository: "
-            "`passed`, each check's state (ok / missing / unknown / not_required) "
-            "and every failure's code and recovery copy. `unknown` with "
-            "FORGE_UNREACHABLE means GitHub did not answer, not that it failed."
+            "and pull request -- reads only by default, nothing is pushed. Per "
+            "repository: `passed`, each check's state (ok / missing / unknown / "
+            "not_required) and every failure's code and recovery copy. `unknown` "
+            "with FORGE_UNREACHABLE means GitHub did not answer, not that it "
+            "failed. `push_test: true` is the one write (D6): in each NAMED write "
+            "grant, SwarmCloud creates and deletes the branch "
+            "swarmcloud/onboarding-check-<nonce> as the person. Send it only after "
+            "asking them and hearing yes for that repository; it needs "
+            "`repositories`, and a read grant is refused."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "repositories": {"type": "array", "items": {"type": "string"},
                                  "description": "owner/repo each; default every grant."},
+                "push_test": {
+                    "type": "boolean", "default": False,
+                    "description": "Also create and delete a test branch in each named "
+                                   "write grant. Only when the person said yes.",
+                },
             },
         },
     },
@@ -2505,15 +2527,22 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                                   "the person approves in the browser"})
         if name == "swarm_setup_orgs":
             owner = args.get("enable")
-            enabled = None
+            asked = args.get("request_install")
+            enabled = requested = None
+            if asked is not None:
+                done = sc.request_install(client, _text_arg(args, "request_install", name))
+                requested = done.get("org") if isinstance(done, dict) else None
             if owner is not None:
                 done = sc.enable_owner(client, _text_arg(args, "enable", name))
                 enabled = done.get("org") if isinstance(done, dict) else None
             listing = sc.access_owners(client)
             answer = {"owners": listing.get("owners"), "install_url": listing.get("install_url"),
-                      "orgs_listed": listing.get("orgs_listed")}
+                      "orgs_listed": listing.get("orgs_listed"),
+                      "approval_pending": sc.approval_pending(listing)}
             if owner is not None:
                 answer["enabled"] = enabled
+            if asked is not None:
+                answer["install_requested"] = requested
             return reply(answer)
         if name == "swarm_setup_repos":
             page = _int_arg(args, "page", 1)
@@ -2529,7 +2558,13 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             wanted = args.get("repositories") or []
             if not isinstance(wanted, list) or not all(isinstance(r, str) for r in wanted):
                 raise SwarmError("repositories is a list of owner/repo. Nothing was verified")
-            results = sc.verify_repositories(client, wanted)
+            push_test = args.get("push_test", False)
+            if not isinstance(push_test, bool):
+                raise SwarmError("push_test is true or false. Nothing was verified")
+            if push_test and not wanted:
+                raise SwarmError("push_test needs `repositories`, each named by the person who "
+                                 "said yes to it. Nothing was verified")
+            results = sc.verify_repositories(client, wanted, push_test=push_test)
             return reply({"results": results, "text": "\n".join(sc.verify_lines(results)),
                           "passed": bool(results) and all(r.get("passed") for r in results)})
         overview = sc.access_overview(client)
