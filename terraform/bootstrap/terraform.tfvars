@@ -80,7 +80,9 @@ ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.c
 #     a get-iam-policy read-back of the deployer's roles, showing no
 #     roles/iam.roleAdmin, is how to confirm it still holds. This is route 2
 #     in docs/ci.md -- including widening one of the grantable custom roles
-#     and granting it through this condition.
+#     and granting it through this condition. This scoping by itself stops a
+#     direct grant, not one made through a custom-role update, which is why
+#     roleAdmin had to go rather than be scoped.
 #   * hasOnly limits which roles, never whose or with what condition, so CI
 #     can still grant ITSELF any of the 14 (#69); nothing above closes that.
 #

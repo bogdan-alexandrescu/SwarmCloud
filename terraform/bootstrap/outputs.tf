@@ -44,3 +44,8 @@ output "github_principals" {
   description = "<workflow file>@<ref> -> the principalSet permitted to assume the deployer SA. One per (workflow file, allowed ref), by attribute.job_workflow_ref: the binding pins the workflow file and the ref as well as the repository, so neither the provider's attribute_condition nor the repository alone holds the boundary (#457)."
   value       = local.github_principals
 }
+
+output "github_accept_service_account" {
+  description = "The account .github/workflows/accept.yml federates as (terraform/bootstrap/acceptance.tf). Set the repository variable GCP_ACCEPT_SA to this value."
+  value       = var.enable_github_wif ? google_service_account.acceptance[0].email : ""
+}
