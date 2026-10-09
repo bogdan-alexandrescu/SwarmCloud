@@ -1081,3 +1081,92 @@ def test_the_fake_github_routes_are_the_ones_the_writer_calls(github):
         writer.create_branch(ref, "swarm/new", "e" * 40, token)
     paths = {urlparse(url).path for _, url, _, _ in github.calls}
     assert "/repos/saga-xyz/widgets" in paths
+
+
+# --------------------------------------------------------------------------
+# 8. contract request 52 applied: the frozen state machine itself, no stand-in
+# --------------------------------------------------------------------------
+#
+# Every test above that publishes swaps `contract_allows` (or the scheduler's
+# `can_transition`) for a stand-in, because the code shipped before the owner
+# accepted request 52 on 2026-10-09. These read the real `swarm_common.states`,
+# so they hold what main now does.
+
+
+def test_the_frozen_contract_now_switches_the_publish_on():
+    assert can_transition(TaskState.PARKED, TaskState.SUCCEEDED) is True
+    assert verdictpublish.contract_allows() is True
+
+
+def test_merge_with_one_contributor_is_published_by_the_control_plane_and_never_leased(
+    db, objects, client, github, waker
+):
+    _workflow(db, objects)
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [FIX], body
+    assert len(github.pulls) == 1
+    fix = _fix(db)
+    assert fix["state"] == TaskState.SUCCEEDED.value
+    assert fix["result_summary"]["published_by"] == "control_plane"
+    assert fix["result_summary"]["verdict_gate"]["agent_ran"] is False
+    # Never leased (invariants 1 to 3): no lease, no attempt, no pool touched.
+    assert fix["current_lease_id"] is None
+    assert fix["attempt_count"] == 0
+    assert not [key for key in db.docs if key.startswith("leases/")]
+    assert not [key for key in db.docs if key.startswith(f"tasks/{FIX}/attempts/")]
+
+
+@pytest.mark.parametrize("case,code", [
+    ("not_yet", "agent_runs"),
+    ("two_contributors", "contributors"),
+    ("credential_in_body", "credential"),
+    ("task_id_title", "title_unusable"),
+])
+def test_every_other_case_still_takes_the_worker_path(db, objects, client, github, waker,
+                                                      case, code):
+    kwargs: dict[str, Any] = {
+        "not_yet": {"verdict": {"verdict": "NOT_YET", "findings": ["fix it"]}},
+        "two_contributors": {"integrates": [IMPL, "task_other00001"]},
+        "credential_in_body": {"body": f"token: {_credential()}"},
+        "task_id_title": {"title": f"Finish {IMPL}"},
+    }[case]
+    _workflow(db, objects, **kwargs)
+
+    body = _push(client).json()
+
+    assert body["report"]["published"] == [], body
+    assert body["report"]["declined"] == [{"task_id": FIX, "code": code}], body
+    fix = _fix(db)
+    assert fix["state"] == TaskState.PARKED.value
+    assert "published_by" not in (fix.get("result_summary") or {})
+    assert github.pulls == {}
+    # The parent's wake: the scheduler promotes the step to a worker at once.
+    assert waker.rung == [("task_finished",
+                           {"task_id": REVIEW, "tenant_id": "eng", "state": "SUCCEEDED"})]
+
+
+@pytest.mark.parametrize("claim_age,held", [
+    (10, True),
+    (299, True),
+    (301, False),
+])
+def test_the_scheduler_leaves_a_claimed_step_until_the_claim_times_out(
+    db, make_scheduler, dispatcher, claim_age, held
+):
+    from scheduler import loop
+
+    assert loop.CONTROL_PUBLISH_CLAIM_SECONDS == 300
+    _held_step(db, ended_ago=400,
+               marker={"state": "claimed", "claimed_at": NOW - timedelta(seconds=claim_age)})
+
+    report = _release(make_scheduler)
+
+    if held:
+        assert report.held_dependencies == 1, report.to_dict()
+        assert db.docs[f"tasks/{FIX}"]["state"] == "PARKED"
+        assert dispatcher.dispatched == []
+    else:
+        assert report.held_dependencies == 0, report.to_dict()
+        assert db.docs[f"tasks/{FIX}"]["state"] != "PARKED"
