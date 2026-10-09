@@ -53,6 +53,7 @@ import {
   elapsed,
   formatDuration,
   newestHeartbeat,
+  pluralise,
   reasonCopy,
   restoredFrom,
   startedOf,
@@ -436,7 +437,7 @@ export function Run({
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
       ) : lead === 'outcome' ? (
-        <Output run={run} readAt={readAt} lead={{ now, listing, links, lastLine, checkpoints }} />
+        <Output run={run} readAt={readAt} links={links} lead={{ now, listing, links, lastLine, checkpoints }} />
       ) : (
         <DtNow run={run} now={now} listing={listing} checkpoints={checkpoints} lastLine={lastLine} stop={stop} />
       )}
@@ -450,7 +451,7 @@ export function Run({
           publish the worker refused. Before that the Now card says `Output
           none yet · written when the attempt ends`. */}
       {lead !== 'outcome' && (task.result_summary != null || publishRefusals(task, run.attempts).length > 0) && (
-        <Output run={run} readAt={readAt} />
+        <Output run={run} readAt={readAt} links={links} />
       )}
       <Input run={run} readAt={readAt} />
     </div>
@@ -479,6 +480,8 @@ export interface DetailLinks {
   logs: () => void
   attempts: () => void
   artifacts: () => void
+  /** The Changes tab (diff-viewer.md §2 variant 2), where the split has one. */
+  changes?: () => void
 }
 
 /** Which card leads: the failure, the outcome, or what the agent is doing now. */
@@ -558,7 +561,7 @@ function DtMore({ href, onClick, children }: { href: string; onClick: (() => voi
 }
 
 /** The address of one of this agent's tabs. */
-function tabHref(task: Task, tab: 'attempts' | 'artifacts'): string {
+function tabHref(task: Task, tab: 'attempts' | 'artifacts' | 'changes'): string {
   return `#work/task/${encodeURIComponent(task.id)}/${tab}`
 }
 
@@ -3338,9 +3341,12 @@ function Output({
   run,
   readAt,
   lead,
+  links,
 }: {
   run: AgentRun
   readAt: number | null
+  /** The split's tab switches: the Code card's `Changes ›` is one. */
+  links?: DetailLinks | undefined
   /**
    * Set when this card LEADS a finished agent (agent-details-v3.html A3): it
    * is then headed Outcome, links to Artifacts, and carries the checkpoint
@@ -3464,7 +3470,7 @@ function Output({
         />
       ) : (
         <>
-          <GitOutcome git={summary.git} artifacts={artifacts} task={task} readAt={readAt} attempts={attempts} />
+          <GitOutcome git={summary.git} artifacts={artifacts} task={task} readAt={readAt} attempts={attempts} onChanges={links?.changes} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
@@ -3585,6 +3591,7 @@ function GitOutcome({
   task,
   readAt,
   attempts = null,
+  onChanges,
 }: {
   git: GitSummary | undefined
   artifacts: ArtifactRef[]
@@ -3592,6 +3599,8 @@ function GitOutcome({
   readAt: number | null
   /** The attempt documents, for the refusals each one recorded; null when unread. */
   attempts?: AttemptRow[] | null
+  /** Switches the split to its Changes tab; without it `Changes ›` is a plain link to that address. */
+  onChanges?: (() => void) | undefined
 }) {
   // Same untyped-dict caution as the artifact list: `GitSummary` describes what
   // `_harvest_git` writes, and the field is whatever is in Firestore.
@@ -3627,7 +3636,7 @@ function GitOutcome({
     <div className="git-outcome">
       <AgCodeLead git={git} task={task} refusals={refusals} />
       <AgBasePin git={git} />
-      {patch !== undefined && !withhold && <AgPatchDiff taskId={task.id} patch={patch} />}
+      {patch !== undefined && !withhold && <AgChangesLink task={task} git={git} patch={patch} onChanges={onChanges} />}
 
       {git.error ? (
         <p className="warn-text">
@@ -4168,26 +4177,41 @@ function AgBasePin({ git }: { git: GitSummary }) {
 }
 
 /**
- * THE PER-FILE DIFF, ON REQUEST: the approved DiffView (#310) through the
- * artifact viewer, which reads the patch by its manifest name. Behind a button
- * because it is one more read of a file that can be large, and Details
- * re-reads every 10 s.
+ * THE PER-FILE DIFF IS THE CHANGES TAB (docs/design/diff-viewer.md §2 variant
+ * 2, owner decision 2026-10-08). It was `Show the diff` here, a viewer opened
+ * inside this card at the card's width -- 580px at 1280, too narrow for split.
+ * Now the card says what changed and links to the tab, where the same viewer
+ * has the pane's full height and the list folded beside it. Still no read of
+ * the patch here: Details re-reads every 10 s, and the patch can be large.
  */
-function AgPatchDiff({ taskId, patch }: { taskId: string; patch: ArtifactRef }) {
-  const [open, setOpen] = useState(false)
-  if (!open) {
-    return (
-      <p className="ag-diff-open">
-        <Button size="sm" className="copy" onClick={() => setOpen(true)}>
-          Show the diff
-        </Button>{' '}
-        <span className="ctl-sub">
-          {patch.name} · {num(patch.bytes)} bytes
-        </span>
-      </p>
-    )
-  }
-  return <ArtifactViewer taskId={taskId} artifact={patch} onClose={() => setOpen(false)} backLabel="Code" />
+function AgChangesLink({
+  task,
+  git,
+  patch,
+  onChanges,
+}: {
+  task: Task
+  git: GitSummary
+  patch: ArtifactRef
+  onChanges: (() => void) | undefined
+}) {
+  const files = Array.isArray(git.files) ? git.files : null
+  return (
+    <p className="ag-diff-open">
+      <DtMore href={tabHref(task, 'changes')} onClick={onChanges}>
+        Changes
+      </DtMore>{' '}
+      <span className="ctl-sub">
+        {files !== null && (
+          <>
+            {pluralise(files.length, 'file')}
+            {git.files_truncated ? ' or more' : ''} ·{' '}
+          </>
+        )}
+        {patch.name} · {num(patch.bytes)} bytes
+      </span>
+    </p>
+  )
 }
 
 function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {

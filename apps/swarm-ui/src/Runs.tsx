@@ -3,7 +3,7 @@ import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
-import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, WarnMark } from './components'
+import { Banner, Button, Card, Chip, CIcon, CodeBlock, Segmented, Tabs, WarnMark } from './components'
 import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type MergeCard, type WorkflowPullRequest } from './stepviews'
@@ -16,6 +16,8 @@ import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, Plan
 import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
+import { addressToPath } from './paths'
+import { RunChangesTab } from './WorkflowChanges'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -198,6 +200,44 @@ function runOf(view: string | null): string | null {
   return id === null || id === '' ? null : id
 }
 
+/** One run's tabs: its page, and its Changes (`/runs/<id>/changes`, paths.ts `RUN_PANES`). */
+type RunTab = 'run' | 'changes'
+
+/** The tab a Runs address names (`tab=changes`); anything else is the run's page. */
+function runTabOf(view: string | null): RunTab {
+  return new URLSearchParams(view ?? '').get('tab') === 'changes' ? 'changes' : 'run'
+}
+
+/**
+ * THE RUN'S TABS (docs/design/diff-viewer.md §2 variant 2): the run's page,
+ * and Changes beside it, each its own address so a link can open either.
+ */
+function RunTabs({ runId, tab, go }: { runId: string; tab: RunTab; go: (to: string) => void }) {
+  const base = runAddress(runId)
+  const to: Readonly<Record<RunTab, string>> = { run: base, changes: `${base}&tab=changes` }
+  const href: Readonly<Record<RunTab, string>> = { run: addressToPath(to.run), changes: addressToPath(to.changes) }
+  return (
+    <Tabs
+      className="rn-tabs"
+      label="Views of this run"
+      current={tab}
+      tabs={[
+        { key: 'run', label: 'Run', href: href.run },
+        { key: 'changes', label: 'Changes', href: href.changes },
+      ]}
+      onGo={(h) => go(h === href.changes ? to.changes : to.run)}
+    />
+  )
+}
+
+/** Tells the page its title on the Changes tab too, by the rule `RunPage` uses. */
+function RunHeading({ run, onHeading }: { run: IssueRun; onHeading: (title: string) => void }) {
+  const title = run.issue_read?.title || run.issue.ref
+  // On the title alone: `onHeading` is a new function on every render of the screen.
+  useEffect(() => onHeading(title), [title])
+  return null
+}
+
 /**
  * THE META CHIP OPENS ON A TAP (owner QA F, 2026-10-04): on a phone the chip
  * `owner/repo#N · run_… · created by …` was cut to its first words, and a
@@ -254,6 +294,7 @@ function InApp({ to, href, go, children, cut = false }: {
 
 export function RunsScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const runId = runOf(view)
+  const tab = runTabOf(view)
   const [reloads, setReloads] = useState(0)
   /** Why the run was re-read, when a refusal made this page do it. */
   const [notice, setNotice] = useState<string | null>(null)
@@ -292,14 +333,22 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
           pollMs={(d) => (d === null || d.run.terminal ? null : RUN_POLL_MS)}
           summary={(d) => <RunMeta>{`${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by || '—'}`}</RunMeta>}
         >
-          {(d) => (
-            <RunPage
-              run={d.run}
-              reread={reread}
-              go={go}
-              onHeading={(title) => setHeading((was) => (was?.run === runId && was.title === title ? was : { run: runId, title }))}
-            />
-          )}
+          {(d) => {
+            const onHeading = (title: string) => setHeading((was) => (was?.run === runId && was.title === title ? was : { run: runId, title }))
+            return (
+              <>
+                <RunTabs runId={runId} tab={tab} go={go} />
+                {tab === 'changes' ? (
+                  <>
+                    <RunHeading run={d.run} onHeading={onHeading} />
+                    <RunChangesTab run={d.run} />
+                  </>
+                ) : (
+                  <RunPage run={d.run} reread={reread} go={go} onHeading={onHeading} />
+                )}
+              </>
+            )
+          }}
         </Screen>
       </div>
     )
