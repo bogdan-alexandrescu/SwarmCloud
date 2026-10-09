@@ -126,6 +126,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
+from swarm_common.config import Settings
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import (
     RESOURCE_CLASSES,
@@ -444,6 +445,14 @@ CONTROL_PLANE_OUTAGE = "control_plane_outage"
 #: mints them, and nothing that could make the derived branch name a path
 #: (`..`, `/`) or an option (a leading `-`).
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+
+#: The most steps one workflow may have, read from the FROZEN `Settings`
+#: default rather than restated. It bounds the walk back along `builds_on`
+#: (`Worker._builds_on_base`, #978): each step of the chain is a distinct
+#: step of one workflow, so a longer chain is a document nobody of ours wrote.
+_MAX_WORKFLOW_STEPS: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: How `forge.open_pull_request` words the forge's own refusal of a pull
@@ -794,6 +803,16 @@ class Worker:
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # The declared inputs NOT staged because their upstream left nothing
+        # to stage -- a no-change step's patch, anything of a skipped step --
+        # while another input of this step changed something (#978). Each is
+        # `{task_id, filename, left}`, and `result_summary` names them.
+        self._inputs_left_nothing: list[dict[str, str]] = []
+        # Where this step starts when it `builds_on` a step that left nothing
+        # (`_builds_on_base`, #978): (the task whose branch is cloned, or ""
+        # for the default branch; the no-change steps walked past). None
+        # until resolved.
+        self._builds_on_resolved: tuple[str, list[str]] | None = None
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
@@ -4277,7 +4296,11 @@ class Worker:
         pr_branch = (
             self._pr_author_branch() if self._pr_role() in ("reader", "amender") else ""
         )
-        builds_on = "" if pr_branch else self._dispatch_builds_on()
+        declared_builds_on = "" if pr_branch else self._dispatch_builds_on()
+        # A `builds_on` step that left nothing pushed no branch: this step
+        # starts from the nearest ancestor that did, or from the default
+        # branch exactly as a step with no `builds_on` does (#978).
+        builds_on = self._builds_on_base() if declared_builds_on else ""
         continued = "" if pr_branch else continuation_mod.clone_ref(
             task.get("metadata"), self.cfg.git_branch_prefix
         )
@@ -4491,8 +4514,13 @@ class Worker:
             "ref": clone.ref,
             "commit": clone.commit,
         }
-        if builds_on:
-            info["builds_on"] = builds_on
+        if declared_builds_on:
+            info["builds_on"] = declared_builds_on
+        if self._builds_on_resolved is not None and self._builds_on_resolved[1]:
+            info["builds_on_resolved"] = {
+                "task_id": builds_on or None,
+                "left_nothing": list(self._builds_on_resolved[1]),
+            }
         if pr_branch:
             info["pr_role"] = self._pr_role()
         if carried:
@@ -4709,6 +4737,30 @@ class Worker:
         declared = inputs_mod.declared_inputs(task.get("metadata"))
         if not declared:
             return []
+        # AN INPUT WHOSE UPSTREAM LEFT NOTHING IS NOT STAGED, AND IS NAMED
+        # (#978). This step was not skipped, so another of its inputs changed
+        # something (`expected_mod.nothing_to_work_on`): the review of two
+        # implementers, one of which changed nothing, reviews the one patch
+        # that exists instead of failing on the one that was never written.
+        self._inputs_left_nothing = []
+        kept: list[inputs_mod.DeclaredInput] = []
+        for item in declared:
+            left = self._upstream_left(item.upstream_task_id)
+            if expected_mod.unstaged_left_nothing(item.filename, left):
+                self._inputs_left_nothing.append({
+                    "task_id": item.upstream_task_id, "filename": item.filename,
+                    "left": str(left),
+                })
+            else:
+                kept.append(item)
+        if self._inputs_left_nothing:
+            self.log.info(
+                "declared inputs not staged: their upstream steps left nothing",
+                left_nothing=[dict(i) for i in self._inputs_left_nothing],
+            )
+        declared = kept
+        if not declared:
+            return []
         staged = inputs_mod.stage_inputs(
             declared,
             work=ws.work,
@@ -4819,6 +4871,12 @@ class Worker:
         and the signed dispatch block's `builds_on`, `pr_author` (a
         `single-pr` reader or amender clones the author's branch), merge
         target and `integrates`. A step that names none reads nothing.
+
+        `builds_on` is passed apart from the other branches (#978): a step it
+        names that left nothing does not skip a step with another changed
+        input, which then starts from `_builds_on_base`. The read-only
+        contributors (`published_nothing`, #760) are passed so a review that
+        ran is not counted as a change to integrate.
         """
         block = self._dispatch_block()
         declared = (task.get("metadata") or {}).get("input_from")
@@ -4829,8 +4887,6 @@ class Worker:
         }
         branch_from: list[str] = []
         builds_on = self._dispatch_builds_on()
-        if builds_on:
-            branch_from.append(builds_on)
         author = block.get("pr_author")
         if self._pr_role() in ("reader", "amender") and isinstance(author, str) and (
             _TASK_ID_RE.match(author.strip())
@@ -4844,13 +4900,115 @@ class Worker:
             [t for t in self._dispatch_integrates() if _TASK_ID_RE.match(t)]
             if self._integration_is_pending() else []
         )
-        upstream = list(dict.fromkeys([*input_from, *branch_from, *integrates]))
+        upstream = list(dict.fromkeys(
+            [*input_from, *branch_from, *([builds_on] if builds_on else []), *integrates]
+        ))
         if not upstream:
             return []
-        left = {task_id: self._upstream_left(task_id) for task_id in upstream}
+        summaries = {task_id: self._succeeded_upstream_summary(task_id) for task_id in upstream}
+        left = {task_id: expected_mod.left_nothing(summaries[task_id]) for task_id in upstream}
+        read_only = [t for t in integrates if published_nothing(summaries[t])]
         return expected_mod.nothing_to_work_on(
             input_from=input_from, branch_from=branch_from, integrates=integrates, left=left,
+            builds_on=builds_on, read_only=read_only,
         )
+
+    def _builds_on_base(self) -> str:
+        """The task whose pushed branch this step starts from, or "" for the
+        default branch (#978).
+
+        The signed `builds_on`, when that step changed something -- or when
+        it cannot be read, so the clone meets the refusal it always did, with
+        its words. When it left nothing (`no_change`, or skipped) it pushed no
+        branch, and this step runs only because another of its inputs changed
+        (`_nothing_to_work_on`): the walk follows that step's OWN `builds_on`
+        back to the nearest ancestor that pushed, and with none, the default
+        branch -- the base that step itself started from.
+
+        Each ancestor whose dispatch block is followed is read through the
+        tenant-checked upstream read and its signed spec verified as a step of
+        THIS workflow (`specverify.upstream_verifier`, as a worker action
+        verifies its upstreams), because its `builds_on` decides what this step
+        clones. One that does not verify, cannot be read, or names something
+        that is not a task id is a refusal naming it -- never a silent fall
+        back to the default branch. The walk is bounded by the workflow's step
+        count and refuses a cycle.
+        """
+        if self._builds_on_resolved is not None:
+            return self._builds_on_resolved[0]
+        declared = self._dispatch_builds_on()
+        walked: list[str] = []
+        base = declared
+        if declared:
+            raw_workflow = (self._task or {}).get("workflow_id")
+            verify = specverify.upstream_verifier(
+                self.cfg, raw_workflow if isinstance(raw_workflow, str) else None
+            )
+            current = declared
+            base = ""
+            for _ in range(_MAX_WORKFLOW_STEPS):
+                try:
+                    document = inputs_mod.fetch_upstream_task(
+                        self.db, upstream_task_id=current, tenant_id=self.cfg.tenant_id,
+                        call_options=self.control.call_options(),
+                    )
+                except InputUnavailable as exc:
+                    if current == declared:
+                        base = declared
+                        break
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on; its ancestor {current} could not be read ({exc}), "
+                        "so the branch to start from is unknown and nothing was cloned"
+                    ) from exc
+                summary = (
+                    document.get("result_summary")
+                    if document.get("state") == TaskState.SUCCEEDED.value else None
+                )
+                if expected_mod.left_nothing(summary) is None:
+                    base = current
+                    break
+                walked.append(current)
+                try:
+                    verify(current, document)
+                except specverify.UpstreamSpecUnverified as exc:
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on, and the signed spec of task {current} did not "
+                        f"verify ({exc.why}); its builds_on is not trusted to choose "
+                        "the branch to start from, so nothing was cloned"
+                    ) from exc
+                metadata = document.get("metadata")
+                block = metadata.get("dispatch") if isinstance(metadata, dict) else None
+                raw = block.get("builds_on") if isinstance(block, dict) else None
+                if raw is None or (isinstance(raw, str) and not raw.strip()):
+                    break
+                if not isinstance(raw, str) or not _TASK_ID_RE.match(raw.strip()):
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on, and task {current}'s dispatch block names builds_on "
+                        f"{str(raw)[:80]!r}, which is not a task id; nothing was cloned"
+                    )
+                current = raw.strip()
+                if current in walked or current == self.cfg.task_id:
+                    raise WorkerError(
+                        f"this step builds on task {declared}, and the builds_on chain "
+                        f"from it returns to task {current}; nothing was cloned"
+                    )
+            else:
+                raise WorkerError(
+                    f"this step builds on task {declared}, and the builds_on chain from "
+                    f"it is longer than a workflow's {_MAX_WORKFLOW_STEPS} steps; "
+                    "nothing was cloned"
+                )
+        self._builds_on_resolved = (base, walked)
+        if walked:
+            self.log.info(
+                "builds_on: the step this one builds on left nothing; starting from "
+                + (f"task {base}'s branch" if base else "the default branch"),
+                builds_on=declared, left_nothing=walked, base=base or None,
+            )
+        return base
 
     def _finish_nothing_to_change(self, upstream: list[str]) -> Outcome:
         """End this step SUCCEEDED, SKIPPED for "nothing to change" (2026-10-05).
@@ -5140,7 +5298,9 @@ class Worker:
         so nothing writes the `pr-title.txt` an integrator owes. In order:
 
           1. the implementer's own `pr-title.txt` and `pr-body.md` -- the
-             uploaded artifacts of the `builds_on` step, located through the
+             uploaded artifacts of the `builds_on` step (or, when that step
+             changed nothing, of the step this one started from, else the
+             first contributor that changed something; #978), located through the
              tenant-checked upstream read and its successful attempt's
              manifest (`inputs.artifact_reference`, whose key must lie under
              this tenant's prefix for that task), at most
@@ -5160,6 +5320,12 @@ class Worker:
         assert ws is not None and self._verdict is not None
         source: dict[str, str | None] = {"title": None, "body": None}
         upstream = self._dispatch_builds_on()
+        if upstream and self._upstream_left(upstream) is not None:
+            # The step this one builds on changed nothing (#978): its text,
+            # if any, describes no change. The ancestor this step started
+            # from, else the first contributor that changed something.
+            changed = self._integrates_with_changes()
+            upstream = self._builds_on_base() or (changed[0] if changed else "")
         document: dict[str, Any] | None = None
         if upstream:
             try:
@@ -11003,6 +11169,15 @@ class Worker:
             }
         if self._staged_inputs:
             summary["staged_inputs"] = [item.as_dict() for item in self._staged_inputs]
+        if self._inputs_left_nothing:
+            summary["staged_inputs_left_nothing"] = [dict(i) for i in self._inputs_left_nothing]
+        if self._builds_on_resolved is not None and self._builds_on_resolved[1]:
+            # Where a step that builds on a no-change step started (#978).
+            summary["builds_on_resolved"] = {
+                "builds_on": self._dispatch_builds_on(),
+                "task_id": self._builds_on_resolved[0] or None,
+                "left_nothing": list(self._builds_on_resolved[1]),
+            }
         # This dict becomes `task.result_summary`, a Firestore document that
         # every reader of the task can see. It is scrubbed on the way out for
         # the same reason the files above are.

@@ -186,6 +186,10 @@ def test_an_integrator_building_on_a_no_change_step_still_merges_the_changed_one
     assert integrated["merged"] == [f"swarm/{IMPL_A}"]
     assert integrated["missing"] == []
     assert integrated["no_change"] == [f"swarm/{IMPL_B}"]
+    # It started from the default branch: impl_b's own builds_on names nothing.
+    assert summary["builds_on_resolved"] == {
+        "builds_on": IMPL_B, "task_id": None, "left_nothing": [IMPL_B],
+    }
     assert len(forge.pulls) == 1
     assert forge.pulls[0]["head"] == branch
     assert summary["git"]["pull_request"]
