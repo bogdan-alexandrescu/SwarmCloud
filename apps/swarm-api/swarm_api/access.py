@@ -2,7 +2,8 @@
 verification (docs/onboarding.md §2.2, §2.4, §3.1-§3.2; #780, lane OB4).
 
 Owner decisions of 2026-10-07 on #780 this builds: D1 (the GitHub App with
-user access tokens), D6 (verification reads only), D7 (U1: a person acts
+user access tokens), D6 (verification reads only, with one opt-in branch
+write test per repository), D7 (U1: a person acts
 through their own slot only), D9 (a read grant is a read grant: SwarmCloud
 enforces it, at submission in OB7 and in the worker in OB5 -- here it is
 recorded), D10 (chooser A: owners, then the owner's repositories paged and
@@ -47,7 +48,21 @@ WHAT GITHUB IS ASKED (§2.2), each a read:
   * verify: clone is the `upload-pack` advertisement; push (write grants)
     is the `receive-pack` advertisement plus `permissions.push`; pull request
     (write grants) is the installation's `pull_requests: write` plus the
-    same push bit. D6's opt-in branch write test is not built here.
+    same push bit. Each of these is a read.
+
+THE ONE WRITE (D6 b). `push_test` is never in the default check set; it
+runs only when the caller names it, and is refused on a read grant before
+any GitHub call (D9: SwarmCloud enforces read). With the token `_as_owner`
+picks for the owner -- the App user token, or the person's fallback token
+for an owner reached through one (D5) -- it reads the default branch head
+(`GET /repos/{o}/{r}/git/ref/heads/{branch}`), creates
+`refs/heads/swarmcloud/onboarding-check-<16 hex nonce>` there
+(`POST /repos/{o}/{r}/git/refs`) and deletes it in a `finally`. A 403 or 404
+on create is `missing` with PERMISSION_MISSING copy; a 5xx, 429 or network
+error is FORGE_UNREACHABLE and `unknown`, never `missing`, and the delete is
+still tried, since an unanswered create may have been made. A delete that
+fails answers the branch name with `leftover: true` so the person can delete
+it, and logs the branch, never the token. Nothing else in verify writes.
 
 A READ THAT DID NOT COME BACK IS NOT AN ANSWER: a 5xx, a 429 or a network
 error is FORGE_UNREACHABLE (503), a check it decides stays `unknown`, and
@@ -74,6 +89,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -135,8 +151,8 @@ from .validation import _ISSUE_OWNER
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "AccessRefused", "AccessService", "CHECKS", "MODES", "NotConnected", "ORGS",
-    "grant_id_for", "org_id_for",
+    "AccessRefused", "AccessService", "CHECKS", "MODES", "NotConnected", "OPT_IN_CHECKS",
+    "ORGS", "PUSH_TEST", "grant_id_for", "org_id_for",
 ]
 
 # --------------------------------------------------------------------------
@@ -149,6 +165,15 @@ _API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version":
 
 MODES = ("read", "write")
 CHECKS = ("clone", "push", "pull_request")
+
+#: D6 (b): the one check that writes. Never in the default set; it runs only
+#: when the caller names it, and only on a write grant.
+PUSH_TEST = "push_test"
+OPT_IN_CHECKS = (PUSH_TEST,)
+
+#: The branch the push test creates and deletes, `<16 hex>` a fresh nonce so
+#: two tests, or a leftover from an earlier one, never collide.
+PUSH_TEST_PREFIX = "swarmcloud/onboarding-check-"
 OK, MISSING, UNKNOWN, NOT_REQUIRED = "ok", "missing", "unknown", "not_required"
 
 #: GitHub's page size for every list here, and the most pages one request
@@ -312,8 +337,11 @@ class _AsUser:
         return answer
 
     def get(self, path: str) -> HttpAnswer:
+        return self.api("GET", path)
+
+    def api(self, method: str, path: str, body: dict[str, Any] | None = None) -> HttpAnswer:
         return self._send(lambda token: self._github._call(
-            "GET", API + path, {**_API_HEADERS, "Authorization": f"Bearer {token}"}, None))
+            method, API + path, {**_API_HEADERS, "Authorization": f"Bearer {token}"}, body))
 
     def git(self, owner: str, repo: str, service: str) -> HttpAnswer:
         url = (f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}.git/"
@@ -1146,13 +1174,23 @@ class AccessService:
     def verify(self, caller: Caller, repo_id: str,
                checks: list[str] | None = None) -> dict[str, Any]:
         """§2.2 `access_verified` for one grant: clone, and for a write
-        grant push and pull request. Reads only (D6)."""
+        grant push and pull request. Reads only (D6), unless the caller names
+        `push_test`: then, on a write grant only, one branch is created and
+        deleted (`_push_test`)."""
         doc = self._grant(caller, repo_id)
         if doc is None:
             raise NotFound(f"you hold no grant on {repo_id[:64]!r} in this tenant")
         wanted = list(dict.fromkeys(checks or CHECKS))
         owner, repo = str(doc["repository"]).split("/", 1)
         write = doc.get("mode") == "write"
+        if PUSH_TEST in wanted and not write:
+            # D9: SwarmCloud enforces a read grant, so it never pushes where
+            # the person chose read -- not even a test branch. Refused before
+            # the token is opened: nothing reaches GitHub. Not a switch: the
+            # request let through would be the push D9 forbids.
+            raise ValidationFailed(
+                f"push_test writes a branch, and your grant on {doc['repository']} is read: "
+                "SwarmCloud enforces read. Change the grant to write first.")
         org = self._org(caller, owner) or {}
         now = self._now()
         results: dict[str, dict[str, Any]] = {}
@@ -1165,6 +1203,7 @@ class AccessService:
                                  "copy": recovery_copy(code, **fill)})
 
         token = via_token(org)
+        pushed: dict[str, Any] | None = None
         with self._as_owner(caller, org) as (github, held):
             login = held.login or ""
             try:
@@ -1222,6 +1261,10 @@ class AccessService:
                         else:
                             put("pull_request", MISSING, "PERMISSION_MISSING",
                                 repo=doc["repository"], login=login)
+                if PUSH_TEST in wanted:
+                    pushed = self._push_test(caller, repo_id, github, owner, repo,
+                                             read.default_branch, now, results, failures,
+                                             login=login)
         stored = {**(doc.get("checks") or {}), **results}
         update = {"checks": stored, "verified_at": now}
         self._db.collection(GRANTS).document(
@@ -1230,9 +1273,106 @@ class AccessService:
         log.info("access verify tenant=%s user_hash=%s repo_id=%s %s", caller.tenant_id,
                  user_hash(caller.key), repo_id,
                  " ".join(f"{k}={v['state']}" for k, v in results.items()))
-        return {"grant": grant_to_api(doc), "failures": failures,
-                "passed": not failures and all(r["state"] in (OK, NOT_REQUIRED)
-                                               for r in results.values())}
+        answer_body = {"grant": grant_to_api(doc), "failures": failures,
+                       "passed": not failures and all(r["state"] in (OK, NOT_REQUIRED)
+                                                      for r in results.values())}
+        if pushed is not None:
+            answer_body["push_test"] = pushed
+        return answer_body
+
+    def _push_test(self, caller: Caller, repo_id: str, github: _AsUser, owner: str,
+                   repo: str, default_branch: str, now: datetime,
+                   results: dict[str, dict[str, Any]], failures: list[dict[str, Any]], *,
+                   login: str) -> dict[str, Any] | None:
+        """D6 (b): the one write verify makes, with the token `_as_owner`
+        picked for the owner. Reads the default branch head, creates
+        `refs/heads/swarmcloud/onboarding-check-<nonce>` there, and deletes
+        it in a `finally`. Records `checks.push_test`; answers the branch and
+        whether it was left behind, or None when nothing was created.
+
+        A 403 or 404 on create is `missing` (PERMISSION_MISSING); a 5xx, a
+        429 or no answer is FORGE_UNREACHABLE and `unknown`, never `missing`.
+        A delete that fails leaves the push proven (`ok`) and answers
+        `leftover: true` with the branch, so the person can delete it."""
+        full = f"{owner}/{repo}"
+        base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/git"
+
+        def record(state: str, code: str | None = None, copy: str | None = None,
+                   **extra: Any) -> None:
+            results[PUSH_TEST] = {"state": state, "code": code, "checked_at": now, **extra}
+            if code is not None or copy is not None:
+                failures.append({"check": PUSH_TEST, "code": code,
+                                 "copy": copy or recovery_copy(code or "", repo=full,
+                                                               login=login)})
+
+        if not default_branch:
+            record(UNKNOWN, copy=f"{full} has no default branch to test a push from; push a "
+                                 "first commit, then run the push test again.")
+            return None
+        try:
+            head = github.get(f"{base}/ref/heads/{quote(default_branch, safe='/')}")
+        except _Unanswered:
+            record(UNKNOWN, "FORGE_UNREACHABLE")
+            return None
+        data = head.json()
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if head.status in (403, 404):
+            record(MISSING, "PERMISSION_MISSING")
+            return None
+        if head.status != 200 or not isinstance(sha, str) or not re.fullmatch(
+                r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+            record(UNKNOWN, copy=f"GitHub answered HTTP {head.status} for the head of "
+                                 f"{full}'s {default_branch}, so there is no commit to test "
+                                 "a push from; press Re-check to try again.")
+            return None
+        branch = PUSH_TEST_PREFIX + secrets.token_hex(8)
+        try:
+            created = github.api("POST", f"{base}/refs",
+                                 {"ref": f"refs/heads/{branch}", "sha": sha})
+        except _Unanswered:
+            # Not answered is not refused, and may still have been made: the
+            # delete below is tried all the same.
+            created = None
+        # A create GitHub did not answer may still have been made, so its
+        # delete is tried too; only a refused create is known to leave nothing.
+        maybe_made = created is None or created.status == 201
+        deleted = False
+        try:
+            if created is None:
+                record(UNKNOWN, "FORGE_UNREACHABLE")
+            elif created.status == 201:
+                record(OK)
+            elif created.status in (403, 404):
+                record(MISSING, "PERMISSION_MISSING")
+            else:
+                record(UNKNOWN, copy=f"GitHub answered HTTP {created.status} to the test "
+                                     f"branch in {full}; press Re-check to try again.")
+        finally:
+            if maybe_made:
+                deleted = self._delete_branch(caller, repo_id, github, base, branch,
+                                              must_exist=created is not None)
+        if not maybe_made or (created is None and deleted):
+            return None
+        results[PUSH_TEST].update({"branch": branch, "leftover": not deleted})
+        return {"branch": branch, "leftover": not deleted}
+
+    @staticmethod
+    def _delete_branch(caller: Caller, repo_id: str, github: _AsUser, base: str, branch: str,
+                       *, must_exist: bool) -> bool:
+        """Delete the push test's branch: True when GitHub says it is gone.
+        Logged by name and status, never with the token."""
+        try:
+            answer = github.api("DELETE", f"{base}/refs/heads/{quote(branch, safe='/')}")
+            status: str = str(answer.status)
+            gone = answer.status == 204 or (not must_exist and answer.status in (404, 422))
+        except _Unanswered as exc:
+            status, gone = type(exc).__name__, False
+        if not gone:
+            log.warning("access push_test left its branch tenant=%s user_hash=%s repo_id=%s "
+                        "branch=%s delete=%s", caller.tenant_id, user_hash(caller.key),
+                        repo_id, branch, status)
+        return gone
 
     @staticmethod
     def _advertised(github: _AsUser, owner: str, repo: str, service: str) -> bool | None:
