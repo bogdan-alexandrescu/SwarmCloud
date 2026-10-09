@@ -31,13 +31,14 @@
 //     rows of the same table with a name, a size and an age, not a disclosure
 //     of `name · size` spans.
 //   * THE RESTORE FACT SAYS WHAT THE WORKER WOULD DO. It printed the pointer
-//     for `missing` and `outside_this_task`, and "a retry starts from the
-//     beginning" for `unset`. `_restore_checkpoint` (agent_worker/lifecycle.py)
-//     tries the pointer, and when that resolves to nothing -- a pointer outside
-//     the task's prefix, a checkpoint no longer there, no pointer at all --
-//     falls back to `find_latest`, the newest committed checkpoint it can read.
-//     So a task with a resumable checkpoint listed never restarts from nothing
-//     because of its pointer, and the panel said it would.
+//     for `missing` and `outside_this_task`. The worker restores ONLY the
+//     checkpoint `task.latest_checkpoint` names (#347,
+//     `Worker._recorded_checkpoint` in agent_worker/lifecycle.py), and when
+//     that resolves to nothing -- a pointer outside the task's prefix, a
+//     checkpoint no longer there, no pointer at all -- restores nothing and
+//     starts from an empty workspace. There is no fallback to `find_latest`,
+//     so the fact never names a checkpoint the pointer does not (#346): one
+//     the panel named that way could be a planted one.
 //   * `live` ONLY WHILE SOMETHING IS WRITING. `source=auto` serves the live
 //     tail when the final log is absent, which is exactly what a worker killed
 //     before its upload leaves behind; the table called that tail `live` for
@@ -400,10 +401,24 @@ describe('the Checkpoints panel is one table of checkpoints', () => {
 
 describe('the restore fact says what a retry would restore from', () => {
   const OUTSIDE = 'gs://swarm-workspaces/tenants/acme/tasks/tsk_other/attempts/att_7/checkpoints/ckpt-00004/'
+  const UNSET = { pointer: null, status: 'unset', checkpoint_id: null } as const
+  const GONE = {
+    pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00009/`,
+    status: 'missing',
+    checkpoint_id: 'ckpt-00009',
+    detail: 'the pointer names a checkpoint of this task that is no longer in the bucket; it may have been reclaimed',
+  } as const
 
-  it('names the newest committed checkpoint when the pointer is outside this task, and says nothing restarts', async () => {
+  /** The fact names no checkpoint and says the retry starts empty. */
+  function expectNothingRestored(fact: HTMLElement) {
+    expect(fact.querySelector('code'), 'the fact names a checkpoint the worker would not restore').toBeNull()
+    expect(fact.textContent).toMatch(/none · empty workspace/)
+    expect(fact.textContent).not.toMatch(/newest committed/)
+  }
+
+  it('names nothing when the pointer is outside this task: the worker refuses it and restores nothing', async () => {
     const detail =
-      "the pointer does not name a checkpoint under this task's own prefix, so a resuming worker would ignore it and fall back to the newest committed checkpoint it can find"
+      "the pointer does not name a checkpoint under this task's own prefix, so a resuming worker would ignore it and start from an empty workspace"
     const s = await panel('Checkpoints', {
       checkpoints: ok(
         listing({
@@ -413,18 +428,10 @@ describe('the restore fact says what a retry would restore from', () => {
       ),
     })
     const fact = restoreFact(s)
-    expect(fact.textContent).toMatch(/newest committed/)
-    // The newest by the worker's order, named with its attempt: ids continue
-    // from the restored checkpoint, but two attempts can still share one, so
-    // `ckpt-00003` alone could be more than one attempt's.
-    expect(fact.querySelector('code')?.textContent).toBe('att_2/ckpt-00003')
+    expectNothingRestored(fact)
     expect(fact.querySelector('.ctl-mark'), 'a whole, readable listing needs no qualifier').toBeNull()
     // THE POINTER IS NOT THE RESTORE SOURCE, so it is not the fact's value.
     expect(fact.textContent).not.toContain('gs://')
-    // And nothing on the panel says the task would start over.
-    expect(s.textContent, 'the panel says a task with a resumable checkpoint restarts').not.toMatch(
-      /restart from nothing|starts? from the beginning/i,
-    )
     // The pointer is still said -- once, where it can wrap.
     const finding = s.querySelector('p.rollup')
     expect(finding?.querySelector('code')?.textContent).toBe(OUTSIDE)
@@ -434,37 +441,35 @@ describe('the restore fact says what a retry would restore from', () => {
     }
   })
 
-  it('names the newest committed checkpoint when no pointer is set, rather than a restart', async () => {
+  it('says the panel\'s own outside-prefix clause without a fallback when the server sends no detail', async () => {
     const s = await panel('Checkpoints', {
       checkpoints: ok(
         listing({
           checkpoints: resumableRows(),
-          latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
+          latest_checkpoint: { pointer: OUTSIDE, status: 'outside_this_task', checkpoint_id: null },
         }),
       ),
     })
-    const fact = restoreFact(s)
-    expect(fact.textContent).toMatch(/newest committed/)
-    expect(fact.querySelector('code')?.textContent).toBe('att_2/ckpt-00003')
-    expect(fact.textContent).not.toMatch(/beginning|unset/)
+    const finding = s.querySelector('p.rollup')?.textContent ?? ''
+    expect(finding).toMatch(/starts from an empty workspace/)
+    expect(finding).not.toMatch(/falls? back|newest/)
   })
 
-  it('names the newest committed checkpoint when the pointer names one that is gone', async () => {
+  it('names nothing when no pointer is set, however many checkpoints are listed', async () => {
     const s = await panel('Checkpoints', {
-      checkpoints: ok(
-        listing({
-          checkpoints: resumableRows(),
-          latest_checkpoint: {
-            pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00009/`,
-            status: 'missing',
-            checkpoint_id: 'ckpt-00009',
-            detail: 'the pointer names a checkpoint of this task that is no longer in the bucket; it may have been reclaimed',
-          },
-        }),
-      ),
+      checkpoints: ok(listing({ checkpoints: resumableRows(), latest_checkpoint: UNSET })),
     })
     const fact = restoreFact(s)
-    expect(fact.querySelector('code')?.textContent).toBe('att_2/ckpt-00003')
+    expectNothingRestored(fact)
+    expect(fact.textContent).not.toMatch(/unset/)
+  })
+
+  it('names nothing when the pointer names a checkpoint that is gone', async () => {
+    const s = await panel('Checkpoints', {
+      checkpoints: ok(listing({ checkpoints: resumableRows(), latest_checkpoint: GONE })),
+    })
+    const fact = restoreFact(s)
+    expectNothingRestored(fact)
     expect(fact.textContent).not.toContain('ckpt-00009')
   })
 
@@ -473,76 +478,91 @@ describe('the restore fact says what a retry would restore from', () => {
     expect(restoreFact(s).querySelector('code')?.textContent).toBe('ckpt-00002')
   })
 
-  it('says none is listed when no row is resumable, and never names a refused one', async () => {
-    const s = await panel('Checkpoints', {
+  it('NEVER NAMES A CHECKPOINT THE POINTER DOES NOT NAME, even a newer resumable one (#346)', async () => {
+    // A PLANTED CHECKPOINT: every agent of the tenant can write under this
+    // task's prefix, so a newer, committed, resumable manifest that no
+    // attempt recorded is exactly what a planter leaves. The worker restores
+    // only `task.latest_checkpoint` (#347, `Worker._recorded_checkpoint`) and
+    // nothing when that is refused, so the planted row is never the answer.
+    const planted = record('ckpt-00099', { attempt_id: 'att_9', created_at: iso(0), seq: 99 })
+    const pointed = { pointer: `gs://swarm-workspaces/${PREFIX}/ckpt-00002/`, status: 'present', checkpoint_id: 'ckpt-00002' } as const
+    const cases = [
+      { latest: pointed, rows: [planted, ...resumableRows().map((r) => (r.checkpoint_id === 'ckpt-00002' ? { ...r, is_latest_pointer: true } : r))] },
+      { latest: UNSET, rows: [planted, ...resumableRows()] },
+      { latest: GONE, rows: [planted, ...resumableRows()] },
+      { latest: { pointer: OUTSIDE, status: 'outside_this_task', checkpoint_id: null }, rows: [planted, ...resumableRows()] },
+    ] as const
+    let visited = 0
+    for (const c of cases) {
+      const s = await panel('Checkpoints', {
+        checkpoints: ok(listing({ checkpoints: [...c.rows], latest_checkpoint: c.latest })),
+      })
+      const fact = restoreFact(s)
+      const said = `${fact.textContent ?? ''} ${[...fact.querySelectorAll('.ctl-mark')].map((m) => m.getAttribute('aria-label') ?? '').join(' ')}`
+      expect(said, `${c.latest.status}: the restore fact names the planted checkpoint`).not.toContain('ckpt-00099')
+      // Nor any other row the pointer does not name.
+      expect(said, `${c.latest.status}: the restore fact names a non-pointer row`).not.toContain('ckpt-00003')
+      expect(said).not.toContain('ckpt-00001')
+      const code = fact.querySelector('code')?.textContent ?? null
+      expect(code, c.latest.status).toBe(c.latest.status === 'present' ? 'ckpt-00002' : null)
+      // The planted row carries no `latest` badge either.
+      const row = [...s.querySelectorAll('tbody tr')].find((r) => (r.querySelector('th')?.textContent ?? '').startsWith('ckpt-00099'))
+      expect(row, 'the planted row is not drawn').toBeTruthy()
+      expect(row!.textContent).not.toMatch(/latest/)
+      visited++
+    }
+    expect(visited).toBe(cases.length)
+  })
+
+  it('qualifies the pointer\'s own checkpoint when the worker would refuse it or cannot be read here', async () => {
+    const refused = await panel('Checkpoints', {
       checkpoints: ok(
         listing({
           checkpoints: [
-            record('ckpt-00001', {
+            record('ckpt-00002', {
+              is_latest_pointer: true,
               resumable: false,
-              resumable_detail: 'the manifest names acme/tsk_other, not this task; a worker would refuse to restore it',
+              resumable_detail: 'the archive named by the manifest is not in the bucket',
             }),
+            ...resumableRows().filter((r) => r.checkpoint_id !== 'ckpt-00002'),
           ],
-          latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
         }),
       ),
     })
-    const fact = restoreFact(s)
-    expect(fact.textContent).toMatch(/none listed/)
-    expect(fact.querySelector('code')).toBeNull()
-  })
+    const fact = restoreFact(refused)
+    expect(fact.querySelector('code')?.textContent).toBe('ckpt-00002')
+    const mark = fact.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'a refused pointer is vouched for as the restore source').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/empty workspace/)
+    expect(mark!.getAttribute('aria-label') ?? '').not.toMatch(/ckpt-0000[13]/)
 
-  it('qualifies the answer where the listing cannot vouch for it', async () => {
-    // CUT: a newer checkpoint may be past the cut.
-    const cut = await panel('Checkpoints', {
-      checkpoints: ok(
-        listing({
-          checkpoints: resumableRows(),
-          next_page_token: 'more',
-          latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
-        }),
-      ),
-    })
-    expect(restoreFact(cut).querySelector('.ctl-mark.is-partial'), 'a cut listing is vouched for as whole').not.toBeNull()
-
-    // UNREAD: a manifest nobody could read may be the newest a worker finds.
     const unread = await panel('Checkpoints', {
       checkpoints: ok(
         listing({
           checkpoints: [
-            ...resumableRows(),
-            record('ckpt-00004', { manifest: 'unreadable', created_at: null, seq: null, resumable: null }),
+            record('ckpt-00002', { is_latest_pointer: true, manifest: 'unreadable', created_at: null, seq: null, resumable: null }),
           ],
-          latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
         }),
       ),
     })
-    expect(restoreFact(unread).querySelector('.ctl-mark.is-unread'), 'an unread manifest is ignored').not.toBeNull()
+    expect(restoreFact(unread).querySelector('.ctl-mark.is-unread'), 'an unread pointer manifest is vouched for').not.toBeNull()
+  })
 
-    // NEWER AND NOT RESUMABLE: a worker takes the newest manifest it can read
-    // and owns, so it may try that one first.
-    const newer = await panel('Checkpoints', {
-      checkpoints: ok(
-        listing({
-          checkpoints: [
-            record('ckpt-00005', {
-              attempt_id: 'att_3',
-              created_at: iso(1),
-              seq: 5,
-              resumable: false,
-              resumable_detail: 'the archive named by the manifest is not in the bucket',
-            }),
-            ...resumableRows(),
-          ],
-          latest_checkpoint: { pointer: null, status: 'unset', checkpoint_id: null },
-        }),
-      ),
+  it('qualifies "none" where the listing cannot vouch that the pointer\'s checkpoint is gone', async () => {
+    // CUT: the pointer is looked up in the listing, so a cut listing can call
+    // a checkpoint past the cut `missing`.
+    const cut = await panel('Checkpoints', {
+      checkpoints: ok(listing({ checkpoints: resumableRows(), truncated: true, latest_checkpoint: GONE })),
     })
-    const fact = restoreFact(newer)
-    expect(fact.querySelector('code')?.textContent).toBe('att_2/ckpt-00003')
-    const mark = fact.querySelector('.ctl-mark.is-partial')
-    expect(mark, 'a newer, unresumable checkpoint is not mentioned').not.toBeNull()
-    expect(mark!.getAttribute('aria-label') ?? '').toContain('att_3/ckpt-00005')
+    const fact = restoreFact(cut)
+    expectNothingRestored(fact)
+    expect(fact.querySelector('.ctl-mark.is-partial'), 'a cut listing is vouched for as whole').not.toBeNull()
+
+    // FAILED: nothing is known.
+    const failed = await panel('Checkpoints', {
+      checkpoints: ok(listing({ checkpoints: [], listed: false, latest_checkpoint: UNSET })),
+    })
+    expect(failed.querySelector('.ctl-empty.is-failed')).not.toBeNull()
   })
 })
 

@@ -661,10 +661,10 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
+const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -681,6 +681,13 @@ export interface Route {
    * file of a patch is open is never in the address.
    */
   artifact?: string | null
+  /**
+   * The file open in the Changes tab, when the address names one:
+   * `/agents/<tab>/<id>/changes/<path>`, the path ONE encoded segment
+   * (diff-viewer.md §1 pain 3: the URL never named the file). OPTIONAL like
+   * `artifact`; absent opens the patch's first file.
+   */
+  file?: string | null
   /**
    * The agent list's tab and Recent state, when the address names them
    * (OV-10): `#work/running/recent/failed`. OPTIONAL, so every route built
@@ -810,6 +817,12 @@ export function fromAddress(full: string): Route {
       artifact = decodeSegment(rest[rest.length - 1]!)
       rest = rest.slice(0, -1)
     }
+    // ONE FILE OF THE CHANGES TAB: `<id>/changes/<path>`, the same way.
+    let file: string | null = null
+    if (artifact === null && rest.length >= 3 && rest[rest.length - 2] === 'changes') {
+      file = decodeSegment(rest[rest.length - 1]!)
+      rest = rest.slice(0, -1)
+    }
     const last = rest[rest.length - 1]
     const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
     // Task ids are opaque and may contain characters that were encoded on the
@@ -823,6 +836,7 @@ export function fromAddress(full: string): Route {
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
+        ...(file !== null && file !== '' ? { file } : {}),
       }
     }
   }
@@ -919,6 +933,7 @@ export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
     if (r.taskPane === 'artifacts' && r.artifact) return `${base}/artifacts/${encodeURIComponent(r.artifact)}`
+    if (r.taskPane === 'changes' && r.file) return `${base}/changes/${encodeURIComponent(r.file)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
@@ -967,8 +982,9 @@ function readsKey(r: Route): string {
   // inside the same scope, with the last drawing dimmed, rather than
   // beginning an empty one (#185).
   // Opening an output in the Artifacts pane is not a new screen either: the
-  // pane's reads carry on under the viewer.
-  return canonical({ ...r, list: null, view: null, artifact: null })
+  // pane's reads carry on under the viewer. So is opening a file of the
+  // Changes tab.
+  return canonical({ ...r, list: null, view: null, artifact: null, file: null })
 }
 
 /** One address segment, decoded; a malformed escape is kept as written rather than thrown. */
@@ -1228,6 +1244,7 @@ export function App() {
                 taskId={at.taskId}
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
+                file={at.file ?? null}
                 closeTo={listAddress}
                 go={go}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
