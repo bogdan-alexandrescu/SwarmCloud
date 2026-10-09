@@ -669,6 +669,92 @@ for every new person (§8). The release deployer's forgotten
 `serviceAccountAdmin` on `u-bogdan`'s account stays until the owner removes it;
 it grants nothing the release still uses.
 
+#### W9, built 2026-10-09: what the pull request does, and what the owner runs after it
+
+**Built (lane W9 of #847, 2026-10-09). Not yet applied: nothing below has run
+against the project.** The pull request must not merge before the owner's go.
+
+* `terraform/environments/dev/dev.tfvars` no longer names `u-bogdan`; a dated
+  comment in its place says why. The anthropic ceiling stays 120, above the
+  new floor of 80 (eng and smoke).
+* `terraform/infra/removed.tf` forgets u-bogdan's **33** instances: its
+  account, its Workload Identity, act-as and project grants, its three bucket
+  grants, its image-pull and broker-invoke grants, its secret and refresh
+  twin with their three authoritative bindings, its tenant document and two
+  pool documents, its four Cloud Run jobs, its five scheduler jobs and its
+  wake-topic publisher grant. `terraform/bootstrap/removed.tf` forgets the
+  **5** grants the bootstrap made for it: the release deployer's
+  `serviceAccountAdmin` on its account (`deployer_admin`), and the four
+  user-slot grants (`forge_slot_version_adder`, `forge_slot_version_manager`,
+  `forge_refresh_reader`, `forge_slot_reader`). Both sets were read from a
+  mock-provider plan with and without u-bogdan, on 2026-10-09.
+* **The `removed` blocks name no instance.** Terraform 1.16 refuses an
+  instance key in `removed` ("Resource instance keys not allowed", checked
+  2026-10-09), and a block naming a whole `for_each` resource would forget
+  every tenant's instance. So each instance is first `moved` to an address
+  nothing declares, and that address is `removed` with `destroy = false`,
+  as `terraform/infra/custom_roles_moved_to_bootstrap.tf` does for the
+  broker's grant. A plan with u-bogdan back in `dev.tfvars` fails ("Moved
+  object still exists"), which is a guard against re-adding it.
+* `tests/terraform/u_bogdan_removed.tftest.hcl` holds it: dev.tfvars names no
+  u-bogdan and the bootstrap plans no grant for it while it still plans eng's;
+  terraform/infra plans no u-bogdan resource while it still plans eng's;
+  every instance a tenant shaped like u-bogdan gets is a `moved` source; every
+  `moved` is u-bogdan's and lands on a `removed` with `destroy = false`. A
+  mock plan has no state, so it cannot show the forget itself. That is step 2.
+
+**Two things the plan will show that are not forgets.** Neither destroys
+anything:
+
+* **One in-place change: the artifact bucket's Nearline rule.**
+  `terraform/modules/storage` lists each `var.tenants` key's `tasks/` and
+  `verdicts/` prefixes in the bucket's Nearline lifecycle rule
+  (`aged_prefixes`), so the release plans **1 to change**:
+  `module.storage.google_storage_bucket.artifacts`, its `matches_prefix`
+  losing `tenants/u-bogdan/tasks/` and `tenants/u-bogdan/verdicts/`. That is
+  the cost difference §3.2 already accepts for every personal workspace; the
+  Delete rule does not change. If the owner wants a literal 0 to change, the
+  rule needs a `tenants/u-` prefix, which is a change to the storage module and
+  is not in W9's territory.
+* **u-bogdan's four forgotten Cloud Run jobs keep `managed-by=swarm-terraform`.**
+  The dispatcher refreshes the image only of jobs labelled
+  `managed-by=swarm-scheduler` (`apps/scheduler/scheduler/dispatch.py`,
+  `_refresh_image`), so these stay at the image of the last release that
+  applied them. Relabelling them `managed-by=swarm-scheduler` hands them to
+  the dispatcher. That is an owner decision, and it is not done by this PR.
+
+**The owner's steps after merge, in this order.** No agent runs them: each
+needs credentials only the owner holds.
+
+1. **The bootstrap apply of `terraform/bootstrap/removed.tf`**, from `main`,
+   as every bootstrap change is (`scripts/bootstrap.sh`). Its plan must read
+   **0 to add, 0 to change, 0 to destroy**, and list the 5 grants above under
+   "will no longer be managed by Terraform". Anything else is a stop.
+2. **The release's infra plan.** The release after merge plans
+   `terraform/infra`. For u-bogdan it must read **0 to add, 0 to change, 0 to
+   destroy**, and list the 33 instances above as forgotten. The one in-place
+   change it may carry is the bucket rule above. Any destroy or replace naming
+   `u-bogdan` is a stop: do not approve it in `dev-iam`.
+3. **The workspace record.** Write `workspaces/u-bogdan`: `tenant_id`
+   `u-bogdan`, a fresh `workspace_id` (`w-` and `secrets.token_hex(3)`),
+   `principal` `bogdan@saga.xyz`, `state` `ready`, `migrated` `true`,
+   `providers` `["anthropic"]`, `limits` with `max_active` 80 and
+   `capacity_units` 80, and `quota_pods` and `quota_cpu` as the namespace's
+   live ResourceQuota reads that day. Also write `workspace_ids/{w-id}`
+   holding `{tenant_id: "u-bogdan"}`. Every other field takes the values
+   `swarm_api/workspaces.py` gives a new record (`decision` null, `steps` empty).
+   The verify run in step 4 reads this record, so it comes first. No script
+   writes it today.
+4. **`scripts/register-tenant.sh --workspace <w-id> --mode verify`**, under the
+   call guard (§2.5): the expectation file from
+   `scripts/lib/workspace-guard.sh init --workspace-id <w-id>`, outside the
+   checkout and named by `SWARM_CALL_GUARD`, and `scripts/lib/guard-bin`
+   first on `PATH`. This is A1 and A9 only. A1 admits a `migrated` record with
+   no admin decision, and the narrowed squat inspection allows the release
+   deployer's two Terraform-era bindings on it. A9 re-reads every object.
+5. **Date the result here**: the plan counts of steps 1 and 2, the record's
+   workspace id kept private (§1.1), and the verify run's outcome.
+
 **`ensure_tenant` stops creating personal tenants.** Once the gate is on
 (WD8), `tenant_for` no longer writes `tenants/u-*` on first sight for a human
 caller. It reads, and a create path then meets the gate. A8 becomes the only
@@ -1352,8 +1438,10 @@ phases. New files are named without their root.
   IAM plan waits in `dev-iam`. Custom roles follow
   `docs/runbooks/custom-roles-to-bootstrap.md`.
 * **W5** is an owner-run `kubernetes/apply.sh --policies --confirm`.
-* **W9** is an owner-run bootstrap apply of the `removed` block; the infra half
-  is a release whose plan he checks reads 0 to add, 0 to change, 0 to destroy.
+* **W9** is an owner-run bootstrap apply of the `removed` blocks; the infra
+  half is a release whose plan he checks reads 0 to add, 0 to change, 0 to
+  destroy for u-bogdan; then the record and a `--mode verify` run. §3.3 lists
+  the five steps in order (W9 built 2026-10-09, not yet applied).
 * **If W0 needs a Cloud Build private pool** to reach the cluster, creating it
   (and its cost) is his decision then.
 
