@@ -323,11 +323,11 @@ export interface SpacingGroup {
   routes: readonly string[]
   /**
    * The slice's share of the old `> 800` floor: about half of the dark shapes
-   * the slice examined on 2026-10-09 (work 398, runs 173, submit 297, setup
-   * 184, capacity 290, accounts 328, admin 249 -- 1,919 in all), so a screen
+   * the slice examined on 2026-10-09 (work 257, runs 334, submit 297, setup
+   * 184, capacity 290, accounts 328, admin 249 -- 1,939 in all, against 2,009
+   * for the single walk; SPACING_GROUPS says where the 70 went), so a screen
    * that stops rendering its body trips it, while a screen growing or
-   * shrinking a few cards does not. They sum to 930, over the 800 the single
-   * sweep held.
+   * shrinking a few cards does not. They sum to 930, over the 800 the single sweep held.
    */
   floor: number
 }
@@ -339,10 +339,23 @@ export interface SpacingGroup {
  * `spacing.test.tsx` until somebody decides which slice measures it. Grouped
  * by what the screens are for, and balanced by measured cost so no slice
  * becomes the new long pole.
+ *
+ * A WALK CARRIES STATE FROM ONE ROUTE TO THE NEXT, AND A SLICE IS A SHORTER
+ * WALK, so the slices examine fewer shapes than the single sweep did: 1,939
+ * dark and 459 light against 2,009 and 466 (2026-10-09). Measured by diffing
+ * every route's markup between the two walks, the gap is repetition, not lost
+ * coverage. Reading Workflows fills the Work rail's "Recent" switcher
+ * (`RecentWorkflows` in Spine.tsx, `.sk-recent`), which renders on Workflows
+ * itself and then on every Work route after it in the same walk. The single
+ * sweep measured it on the eight Work routes after Workflows; the slices do on
+ * two of them, because `runs` walks Workflows first so it is also measured
+ * beside Runs and Timeline. The rest is one fixture pool row that moves
+ * between Pools' two tables with the clock. Every tag-and-class pair the
+ * single walk rendered is rendered by some slice.
  */
 export const SPACING_GROUPS: readonly SpacingGroup[] = [
-  { name: 'work', routes: ['overview/now', 'work/running', 'work/workflows'], floor: 200 },
-  { name: 'runs', routes: ['work/runs', 'work/timeline'], floor: 80 },
+  { name: 'work', routes: ['overview/now', 'work/running'], floor: 120 },
+  { name: 'runs', routes: ['work/workflows', 'work/runs', 'work/timeline'], floor: 160 },
   { name: 'submit', routes: ['work/new', 'work/new-workflow', 'work/new-issue'], floor: 140 },
   { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access'], floor: 90 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
