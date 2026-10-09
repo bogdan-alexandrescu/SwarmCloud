@@ -105,6 +105,21 @@ REFUSED = [
     ("http://[2002:a9fe:a9fe::]/", "[2002:a9fe:a9fe::]", True),  # 6to4, RFC 3056
     ("http://[::ffff:0:a9fe:a9fe]/", "[::ffff:0:a9fe:a9fe]", True),  # SIIT, RFC 6052 2.1
     ("http://[::a9fe:a9fe]/", "[::a9fe:a9fe]", True),  # IPv4-compatible, deprecated
+    # Reserved IPv6 ranges the #345 review found accepted (request 57, #349).
+    ("http://[fec0::1]/", "[fec0::1]", True),  # site-local, RFC 3879
+    (
+        "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
+        "[2001:0:4136:e378:8000:63bf:3fff:fdd2]",
+        True,
+    ),  # Teredo, RFC 4380
+    ("http://[3fff::1]/", "[3fff::1]", True),  # documentation, RFC 9637
+    ("http://[5f00::1]/", "[5f00::1]", True),  # SRv6 SIDs, RFC 9602
+    # Internal names, refused exactly (request 57).
+    ("http://metadata.goog/", "metadata.goog", True),
+    ("http://localhost.localdomain/", "localhost.localdomain", True),
+    # A trailing double dot is an empty label, as `a..b` is (request 57).
+    ("http://example.com../", "example.com..", True),
+    ("http://169.254.169.254./", "169.254.169.254", True),
     # Not a URL a browser task opens at all.
     ("file:///etc/passwd", "", True),
     ("http://example.com:99999/", None, True),
@@ -125,6 +140,15 @@ ACCEPTED = [
     ("http://[2002:808:808::]/", "[2002:808:808::]", False),
     ("http://[::ffff:0:808:808]/", "[::ffff:0:808:808]", False),
     ("http://[::808:808]/", "[::808:808]", False),
+    # Just outside each range request 57 added, so the ranges are shown not
+    # to be wider than named. fec0::/10 has no such neighbour: fe80::/10 is
+    # directly below it and ff00::/8 directly above, both already refused.
+    ("http://[2001:4860:4860::8888]/", "[2001:4860:4860::8888]", False),  # 2001::/23, not the /32
+    ("http://[2001:1::1]/", "[2001:1::1]", False),  # the /32 after Teredo's
+    ("http://[3fff:1000::1]/", "[3fff:1000::1]", False),  # first after 3fff::/20
+    ("http://[5f01::1]/", "[5f01::1]", False),  # first after 5f00::/16
+    # Only the exact names are refused, not a name that contains one.
+    ("http://metadata.goog.example.com/", "metadata.goog.example.com", False),
 ]
 
 CASES = REFUSED + ACCEPTED

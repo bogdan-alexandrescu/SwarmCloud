@@ -1265,6 +1265,24 @@ export interface GitSummary {
   dirty?: string[]
   dirty_count?: number
   dirty_truncated?: boolean
+  /**
+   * One row per file of the patch's diff (`git diff -M <base>`, committed and
+   * uncommitted work together), so counts are known before the patch is read
+   * and even when it was omitted. Capped at 500 rows (`MAX_FILES_LISTED` in
+   * `gitops.py`); `files_truncated` says the cap was hit. Absent on a summary
+   * written before the field, or when there was no base to diff against.
+   * A binary file has `binary: true` and null counts. Paths only, never content.
+   */
+  files?: Array<{
+    path: string
+    /** The path before a rename, else null. */
+    old_path: string | null
+    status: 'A' | 'M' | 'D' | 'R'
+    insertions: number | null
+    deletions: number | null
+    binary: boolean
+  }>
+  files_truncated?: boolean
   /** Artifact name of the patch, matched against `artifacts[]` to get its URI. */
   patch?: string | null
   patch_bytes?: number
@@ -5212,6 +5230,17 @@ export interface PeopleDoc {
   audit: AdminAuditEntry[]
   lendable_accounts: LendableAccount[] | null
   lendable_error: string | null
+  /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
+  admins?: AdminHolder[] | null
+  admins_error?: string | null
+}
+
+/** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */
+export interface AdminHolder {
+  email: string
+  role: 'owner' | 'admin'
+  granted_by: string | null
+  granted_at: string | null
 }
 
 /** `people._dispatch`: whether the workspace id reached Pub/Sub. A failed publish is not a failed approval. */

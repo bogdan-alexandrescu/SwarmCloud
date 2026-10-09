@@ -33,7 +33,9 @@ locals {
   # JOBS of these files can mint a token at all; this list decides which FILES
   # the deployer trusts, so a workflow added next week is refused here whatever
   # it grants itself. ci-fix.yml is not on it: it federates as its own account
-  # (ci_fix.tf).
+  # (ci_fix.tf). Nor is accept.yml, post-deploy acceptance: it federates as
+  # its own account too, which can start verification jobs and read release
+  # records and nothing else (acceptance.tf).
   #
   # The job_workflow_ref carries the ref the workflow file was read from --
   # `refs/heads/main` for a push, a schedule and a workflow_dispatch on main --
@@ -48,7 +50,7 @@ locals {
   # `Permission 'iam.serviceAccounts.getAccessToken' denied`.
   #
   # The jobs in each file that authenticate: release.yml build, promote,
-  # infrastructure, infrastructure-iam, deploy, acceptance; hotfix.yml images,
+  # infrastructure, infrastructure-iam, deploy; hotfix.yml images,
   # promote, infrastructure, deploy; application.yml
   # build; terraform.yml plan; security.yml images (scheduled);
   # iam-refusal-probe.yml probe (owner-dispatched).

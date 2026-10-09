@@ -377,6 +377,7 @@ resource "google_project_iam_member" "broker_secret_lister" {
   member = each.value
 
   lifecycle {
+    # Held by tests/unit/scripts/test_broker_secret_lister_precondition.py: terraform test cannot reach it, the role's precondition fails first.
     precondition {
       condition     = length(local.infra_states_holding_platform_roles) == 0
       error_message = "terraform/infra state ${join(", ", local.infra_states_holding_platform_roles)} has not released the broker's swarmSecretLister grant (its custom_roles_owner output does not read terraform/bootstrap). Wait for the release that applies terraform/infra/custom_roles_moved_to_bootstrap.tf, then plan again (docs/runbooks/custom-roles-to-bootstrap.md, step 2)."
