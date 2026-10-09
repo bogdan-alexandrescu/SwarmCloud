@@ -357,6 +357,10 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
         </p>
       )}
       {w.state === 'denied' && w.decision?.reason != null && <p className="ur-hint">“{w.decision.reason}”</p>}
+      {w.state === 'requested' && w.held != null && (
+        <p className="ur-hint">Being migrated by the platform owner; not approved here</p>
+      )}
+      {w.state !== 'denied' && w.decision?.auto === true && <p className="ur-hint">approved automatically (admin)</p>}
       {(IN_FLIGHT.has(w.state) || w.state === 'needs_owner') && <JobSteps record={w} />}
     </div>
   )
@@ -379,7 +383,9 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
       </td>
       <td>{row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen active" />}</td>
       <td className="pp-acts">
-        {hasRecord && w.state === 'requested' && (
+        {/* A held record predates self-service setup (§3.3): an approval
+            would be refused WORKSPACE_MIGRATING, so none is offered. */}
+        {hasRecord && w.state === 'requested' && w.held == null && (
           <span className="ob-acts">
             <Approve row={row} reload={reload} />
             <Deny row={row} reload={reload} />

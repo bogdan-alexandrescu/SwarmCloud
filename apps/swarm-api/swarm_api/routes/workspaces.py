@@ -16,6 +16,13 @@ from.
 
 The approval, denial, retry and lending routes are lane W7's, under
 `/v1/admin/`, and address a person by workspace id.
+
+AN ADMIN'S OWN REQUEST IS APPROVED HERE, AUTOMATICALLY (§1.3, owner decision
+2026-10-09): when the caller `is_admin` (§6.5), the request runs the approval
+the admin route runs (`People.request_own` -> `People._approve_in`) in the same
+transaction, and the same publish follows. Every refusal above still comes
+first; a personal tenant that predates the workspace job is left `requested`
+and never published (§3.3).
 """
 
 from __future__ import annotations
@@ -28,8 +35,10 @@ from fastapi.responses import JSONResponse
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..errors import WorkspaceIdTaken, WorkspaceNotForServiceAccounts, WorkspacePrincipalForbidden
+from ..people import People
 from ..schemas import StrictModel
 from ..workspaces import is_service_identity, personal_tenant_id, view
+from .people import people_service
 
 router = APIRouter(prefix="/v1/workspace", tags=["workspace"])
 
@@ -81,12 +90,14 @@ def post_workspace(
     body: WorkspaceRequest | None = None,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    people: People = Depends(people_service),
 ) -> JSONResponse:
     tenant_id, principal = _own(auth, ctx)
     workspaces = ctx.submissions.workspaces
     workspaces.touch_person(auth)
-    status, record = workspaces.request(
-        tenant_id=tenant_id, principal=principal, via=(body.via if body else "api"))
+    status, record = people.request_own(
+        workspaces, tenant_id=tenant_id, principal=principal,
+        via=(body.via if body else "api"), is_admin=bool(auth.is_admin))
     return JSONResponse(status_code=status,
                         content=view(record, console_url=workspaces.console_url))
 
