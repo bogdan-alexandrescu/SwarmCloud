@@ -64,7 +64,8 @@ def _submitted_steps(recorder: _Recorder) -> list[dict]:
     return payload["steps"]
 
 
-def test_a_50_kb_spec_submits_through_spec_path_with_a_matching_digest(tmp_path):
+def test_a_50_kb_spec_submits_through_spec_path_with_a_matching_digest(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path))
     spec = _big_spec(50)
     target = tmp_path / "big.json"
     target.write_text(json.dumps(spec, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -83,7 +84,8 @@ def test_a_50_kb_spec_submits_through_spec_path_with_a_matching_digest(tmp_path)
     assert len(reply["steps"]) == len(spec["steps"])
 
 
-def test_a_spec_path_whose_file_is_not_the_digested_spec_submits_nothing(tmp_path):
+def test_a_spec_path_whose_file_is_not_the_digested_spec_submits_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path))
     spec = _big_spec(12)
     changed = json.loads(json.dumps(spec))
     changed["steps"][3]["prompt"] += " (tidied)"
@@ -128,7 +130,8 @@ def test_an_unknown_spec_ref_submits_nothing_and_says_where_refs_come_from():
     [{"spec": {"steps": [{"step_id": "a", "prompt": "a"}]}}, {"spec_ref": "spec_x"}, {"steps": [{"step_id": "a", "prompt": "a"}]}],
     ids=["spec", "spec_ref", "steps"],
 )
-def test_one_spec_source_per_call(tmp_path, extra):
+def test_one_spec_source_per_call(tmp_path, monkeypatch, extra):
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path))
     target = tmp_path / "s.json"
     target.write_text(json.dumps({"steps": [{"step_id": "a", "prompt": "a"}]}))
     recorder = _Recorder()

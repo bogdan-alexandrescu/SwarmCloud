@@ -76,6 +76,8 @@ from ..issueruns import (
     territory_overlap,
 )
 from ..issuesync import sync_issue
+from ..plancontext import read_plan_context
+from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
 
@@ -223,7 +225,10 @@ def _approve(
         },
     )
     try:
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved))
+        # The review's IMPACT block from the run's own tenant's index (lane
+        # KG6); None, and today's review prompt, when there is no v3 index.
+        review = read_review_context(ctx, tenant_id, approved)
+        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved, review))
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(
@@ -606,14 +611,24 @@ def start_run(
     Options are the caller's to have checked (`refuse_auto_merge`).
     """
     run_id = new_id("run")
-    # The planner first, carrying the run's id: a planner without its run is
+    # The issue and the tenant's own index of its repository BEFORE the
+    # planner (lane KG1): the issue's words are what the planner's REPO GRAPH
+    # section is searched for, and the section is in the planner's prompt.
+    # `tenant_for` is the resolution `submit_tasks` runs again below. Neither
+    # read refuses the run: a failed issue read is `issue_read_error`, and a
+    # missing or unreadable index is today's prompt with `index_context`
+    # saying why.
+    tenant_id = ctx.submissions.tenant_for(auth).tenant_id
+    issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
+    context = read_plan_context(ctx, tenant_id, ref, run_id=run_id, issue=issue_read,
+                                open_work=open_work)
+    # The planner next, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
-    submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id, open_work)])
+    submission = ctx.submissions.submit_tasks(
+        auth, [planner_task(ref, run_id, open_work, context=context.section)]
+    )
     planner = submission.tasks[0]
-    # After the planner, in the tenant `submit_tasks` resolved: what the run
-    # page shows under "Read from the issue".
-    issue_read, issue_read_error = _read_issue(ctx, auth, planner.tenant_id, ref)
     now = ctx.now()
     run = _runs(ctx).create(
         IssueRun(
@@ -629,6 +644,9 @@ def start_run(
             fix_rounds=fix_rounds,
             planner_task_id=planner.id,
             open_work=open_work,
+            index_sha=context.index_sha,
+            index_digest=context.index_digest,
+            index_context=context.record,
             issue_read=issue_read,
             issue_read_error=issue_read_error,
             on_behalf_of=auth.email if created_by else None,

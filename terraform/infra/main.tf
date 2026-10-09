@@ -562,6 +562,21 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
   member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
 }
 
+# The schedule tick (docs/schedules.md §2.1, owner decision SD10) calls
+# swarm-api directly too, as its own account, so the edge must let it through
+# before the app's SCHEDULE_TICK_ROUTES check is reached -- the same reason,
+# and the same grant, as rollup_sweeper_invokes_api above. run.invoker on this
+# one service is the account's only grant (held by
+# tests/terraform/schedule_tick_identity.tftest.hcl); the route allow-list
+# narrows it to POST /v1/admin/schedules/tick from there.
+resource "google_cloud_run_v2_service_iam_member" "schedule_tick_invokes_api" {
+  project  = var.project_id
+  location = var.region
+  name     = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.scheduler.schedule_tick_email}"
+}
+
 # The external front door: an ALB with IAP in front of swarm-api.
 #
 # Gated by a flag rather than by the presence of a hostname, for the reason the

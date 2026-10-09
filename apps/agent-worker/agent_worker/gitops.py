@@ -702,7 +702,6 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     host = _credential_host(url)
     if host is None:
         return None
-    private_dir.mkdir(parents=True, exist_ok=True)
     cred_file = private_dir / ".git-credentials"
     entry = urlunparse(
         (
@@ -720,22 +719,39 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     # and a file created with the default mode is readable until the chmod.
     # Whatever is at the name is unlinked first -- unlink never follows a
     # link -- and O_EXCL then refuses anything that appears in between.
+    #
+    # Any OSError here is a GitError (#346): a folder the agent planted at the
+    # name fails unlink with EISDIR, and every caller lets anything but a
+    # GitError escape the publish as a crash. The message names the error
+    # class and errno only -- never the path, never what was being written.
     try:
-        cred_file.unlink()
-    except FileNotFoundError:
-        pass
-    fd = os.open(
-        cred_file,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    try:
-        data = (entry + "\n").encode()
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view):]
-    finally:
-        os.close(fd)
+        private_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            cred_file.unlink()
+        except FileNotFoundError:
+            pass
+        fd = os.open(
+            cred_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            data = (entry + "\n").encode()
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        except OSError:
+            # No caller is handed the path to remove, so a part-written
+            # token is removed here.
+            cred_file.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno or -1, "no errno")
+        raise GitError(
+            f"could not write the git credential file ({type(exc).__name__}: {code})"
+        ) from None
     return cred_file
 
 
@@ -1409,6 +1425,51 @@ class CommitSummary:
     binary_files: int
 
 
+#: The most per-file rows `summarize_work` keeps in `result_summary.git.files`.
+#: 500 because a row is about 100 bytes of JSON, so a full list stays near 50
+#: KB -- well inside a Firestore document's 1 MiB, which also carries the
+#: commits, the dirty list and everything else in the result summary -- while
+#: covering every change a reviewer reads file by file: a change past 500
+#: files is a vendored tree or a generated one, and the viewer windows the
+#: patch itself for those. `files_truncated` says when the cap was hit, so a
+#: reader never takes the first 500 for the whole change.
+MAX_FILES_LISTED = 500
+
+#: `git diff --name-status` letters, folded to the four the viewer draws.
+#: `T` (a type change, file <-> symlink) is a modification of the path; `C`
+#: never appears, because copy detection is not asked for. Anything else git
+#: may add later reads as `M` rather than as a letter no reader knows.
+_FILE_STATUS = {"A": "A", "M": "M", "D": "D", "R": "R", "T": "M"}
+
+
+@dataclass(frozen=True)
+class FileChange:
+    """One file of the harvested diff: repository paths and counts, never content."""
+
+    path: str
+    #: The path before a rename, else None.
+    old_path: str | None
+    #: One of A, M, D, R.
+    status: str
+    #: Both None on a binary file: git prints "-" for its counts, and a zero
+    #: would claim the file changed no lines rather than that lines do not apply.
+    insertions: int | None
+    deletions: int | None
+    binary: bool
+
+    def as_record(self, scrub: Any) -> dict[str, Any]:
+        """The `result_summary.git.files` row, both paths passed through `scrub`
+        -- a path is agent-chosen text bound for Firestore, like the dirty list."""
+        return {
+            "path": scrub(self.path),
+            "old_path": scrub(self.old_path) if self.old_path is not None else None,
+            "status": self.status,
+            "insertions": self.insertions,
+            "deletions": self.deletions,
+            "binary": self.binary,
+        }
+
+
 @dataclass(frozen=True)
 class WorkSummary:
     """What the agent did to the repository, as facts rather than a guess."""
@@ -1428,6 +1489,11 @@ class WorkSummary:
     patch_omitted: bool
     insertions: int
     deletions: int
+    #: One row per file of the patch's diff, at most `MAX_FILES_LISTED`. None
+    #: when there was no base to diff against, which is "not measured", not
+    #: "no files"; an empty tuple is a measured empty diff.
+    files: tuple[FileChange, ...] | None = None
+    files_truncated: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -1847,6 +1913,78 @@ def _parse_log(stream: str) -> tuple[list[CommitSummary], int, int]:
     return commits, total_add, total_del
 
 
+def _parse_file_changes(numstat: str, name_status: str) -> list[FileChange]:
+    """Join `git diff -z -M --numstat` and `--name-status` output into rows.
+
+    `-z` on both: without it git C-quotes a path holding a tab, a newline or a
+    non-ASCII byte, and a rename prints as `old => new` in one field. With it,
+    a numstat record is `adds TAB dels TAB path NUL`, or for a rename
+    `adds TAB dels TAB NUL old NUL new NUL`; a name-status record is
+    `letter NUL path NUL`, or `R<score> NUL old NUL new NUL`. The two are
+    joined on the new path rather than by position, so a reordering in some
+    future git costs a status letter, not a wrong one.
+
+    Only NUL-TERMINATED fields are read: the piece after the last NUL is
+    either empty or the tail of a capture cut at its byte cap, and reading a
+    cut path would list a file that does not exist.
+    """
+    statuses: dict[str, str] = {}
+    fields = name_status.split("\0")[:-1]
+    i = 0
+    while i + 1 < len(fields):
+        letter = fields[i]
+        if not letter:
+            break
+        if letter[0] in "RC":
+            if i + 2 >= len(fields):
+                break
+            statuses[fields[i + 2]] = letter[0]
+            i += 3
+        else:
+            statuses[fields[i + 1]] = letter[0]
+            i += 2
+
+    rows: list[FileChange] = []
+    fields = numstat.split("\0")[:-1]
+    i = 0
+    while i < len(fields):
+        head = fields[i]
+        if not head:
+            break
+        cells = head.split("\t", 2)
+        if len(cells) < 3:
+            break
+        adds, dels, path = cells
+        old_path: str | None = None
+        step = 1
+        if path == "":
+            # A rename: the two paths follow as their own NUL-ended fields.
+            if i + 2 >= len(fields):
+                break
+            old_path, path = fields[i + 1], fields[i + 2]
+            step = 3
+        i += step
+        binary = adds == "-" or dels == "-"
+        try:
+            insertions = None if binary else int(adds)
+            deletions = None if binary else int(dels)
+        except ValueError:
+            continue
+        letter = statuses.get(path, "R" if old_path is not None else "M")
+        status = _FILE_STATUS.get(letter, "M")
+        rows.append(
+            FileChange(
+                path=path,
+                old_path=old_path if status == "R" else None,
+                status=status,
+                insertions=insertions,
+                deletions=deletions,
+                binary=binary,
+            )
+        )
+    return rows
+
+
 def summarize_work(
     *,
     repo: Path,
@@ -1936,6 +2074,36 @@ def summarize_work(
             # than failing the harvest.
             logger.warning("could not list commits against the clone base", base=base)
 
+    # Per-file counts of the SAME diff the patch below is taken from, so a
+    # reader can say "12 files +886 -866" and draw the file list before it
+    # reads the patch -- and still can when the patch was over its cap and
+    # discarded. `-M` because a rename is what a reviewer wants to see rather
+    # than a delete beside an add; the same `--no-ext-diff --no-textconv` as
+    # the patch, for the same reason (#259). Paths only: neither command
+    # prints a line of content.
+    files: tuple[FileChange, ...] | None = None
+    files_truncated = False
+    if base:
+        diff_args = ["--no-color", "--no-ext-diff", "--no-textconv", "-z", "-M", base, "--"]
+        numstat_code, numstat_text, numstat_cut = _git_text_full(
+            [*g, "diff", "--numstat", *diff_args],
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="harvest-numstat",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        status_code_, status_listing = run([*g, "diff", "--name-status", *diff_args], "harvest-name-status")
+        if numstat_code == 0:
+            rows = _parse_file_changes(numstat_text, status_listing if status_code_ == 0 else "")
+            files = tuple(rows[:MAX_FILES_LISTED])
+            # A capture cut at its byte cap ends mid-list: the rows parsed are
+            # true, but they are not all of them.
+            files_truncated = len(rows) > MAX_FILES_LISTED or numstat_cut
+        else:
+            logger.warning("could not list the changed files against the clone base", base=base)
+
     patch_name: str | None = None
     patch_bytes = 0
     omitted = False
@@ -1987,6 +2155,8 @@ def summarize_work(
         patch_omitted=omitted,
         insertions=adds,
         deletions=dels,
+        files=files,
+        files_truncated=files_truncated,
     )
 
 
@@ -3281,8 +3451,12 @@ def mirror_worktree(
     and never through a link.
 
     `hidden_names` are top-level names the worker hides from git in the clone
-    (`hide_from_git`, the `./artifacts` link, #226); they are written to this
-    repository's own `.git/info/exclude`, which the worker owns, AFTER
+    (`hide_from_git`, the `./artifacts` link, #226). They are NOT COPIED: an
+    exclude pattern alone does not hide them, because the tree's own
+    `.gitignore` -- copied in, and read -- outranks `.git/info/exclude`, and a
+    `!/artifacts` there un-hid the worker's link (#346). A name that is not
+    in the tree cannot be published by any pattern. They are still written to
+    this repository's own `.git/info/exclude`, which the worker owns, AFTER
     `agent_excludes` -- the patterns of the agent's own `.git/info/exclude`
     and `core.excludesFile`, read as data by `read_agent_excludes` -- so a
     `!` pattern of the agent's cannot un-hide the worker's names (in one
@@ -3333,6 +3507,7 @@ def mirror_worktree(
 
     copied = 0
     nested = 0
+    hidden = set(hidden_names)
     stack: list[tuple[Path, Path]] = [(source, dest)]
     try:
         while stack:
@@ -3341,6 +3516,9 @@ def mirror_worktree(
                 listing = list(entries)
             for entry in listing:
                 if entry.name == ".git":
+                    continue
+                if here == source and entry.name in hidden:
+                    # The worker's own top-level names: see the docstring.
                     continue
                 src = Path(entry.path)
                 dst = there / entry.name
