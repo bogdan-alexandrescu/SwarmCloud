@@ -277,6 +277,7 @@ What the CI jobs cover, so you know what you are waiting for:
 | `terraform.yml` | fmt/validate/tflint · `terraform test` (86 assertions) · checkov · plan (main only) |
 | `security.yml` | filesystem · secrets · iac · policy · images (scheduled) |
 | `release.yml` | verify · build · infrastructure · deploy (push to main, env-gated) |
+| `accept.yml` | what dev runs · warm, smoke and GKE proof · acceptance (5 groups, two waves) · report (a red run opens or updates one `bug` issue); after `release` completes on main |
 
 `make test` is fully offline — no credentials, no emulator, nothing created. It
 runs the unit tests, `terraform test` over `tests/terraform` (86 assertions

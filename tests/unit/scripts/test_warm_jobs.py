@@ -242,8 +242,14 @@ def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
     assert step.get("continue-on-error") is True
     assert "steps.verify.outcome == 'success'" in step["if"]
     assert "!cancelled()" in step["if"]
-    # Acceptance is a later job that needs deploy, so it runs after the warm step.
-    assert "deploy" in workflow["jobs"]["acceptance"]["needs"]
+    # On dev the warm run is accept.yml's (owner decision 2026-10-08, cut A):
+    # here it is prod's alone, and accept.yml warms before it smokes and
+    # before any acceptance group (test_release_acceptance_job.py).
+    assert "github.event.inputs.environment == 'prod'" in step["if"]
+    accept = _workflow("accept.yml")["jobs"]
+    smoke = [str(s.get("run", "")) for s in accept["smoke"]["steps"]]
+    assert sum("scripts/warm-jobs.sh" in r for r in smoke) == 1
+    assert "smoke" in accept["acceptance"]["needs"] and "smoke" in accept["acceptance-2"]["needs"]
 
 
 # ---------------------------------------------------------------------------

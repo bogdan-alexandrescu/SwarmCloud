@@ -555,7 +555,7 @@ acc_events() { task_events "$1"; }
 #: A token that can read and write the sandbox, when this run has one. The
 #: swarm-verify job has none, on purpose: its identity holds no secret, and a
 #: forge token lives only in Secret Manager for the worker (CLAUDE.md). The
-#: release's acceptance job sweeps afterwards with the sandbox's own token
+#: accept.yml sweeps afterwards with the sandbox's own token
 #: (scripts/acceptance/github-cleanup.sh, secret SWARM_SANDBOX_GITHUB_TOKEN).
 ACC_GITHUB_TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
 
@@ -567,7 +567,7 @@ ACC_GITHUB_TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}
 # read it could not make, and never a PASS for one it did not. In the release
 # that is every pull-request read-back: the platform-side assertions (the
 # pull request was opened, its title is the agent's, the artifacts exist) run
-# here, and the release's acceptance job then makes the read-back ones on the
+# here, and accept.yml then makes the read-back ones on the
 # GitHub runner, with the sandbox token, before anything is closed
 # (scripts/acceptance/github-verify.sh). An operator run with
 # SWARM_ACCEPTANCE_GITHUB_TOKEN measures them here too.

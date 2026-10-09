@@ -42,7 +42,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
-| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01; #364 amendment item 1 applied with it) |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01; #364 amendment items 1-3 applied: item 1 with it, items 2-3 in `terraform/modules/secret_manager`, recorded 2026-10-08) |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
@@ -60,11 +60,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
-| 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | proposed (owner 2026-10-07: not accepted for now) |
+| 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed (owner 2026-10-07: not accepted for now), then accepted 2026-10-09) |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 | 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
+| 57 | `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349) | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 
 ---
 
@@ -6430,9 +6431,17 @@ reach it. They are listed there as rejected, not as fallbacks.
 `validation.known_providers()` leaves out every `worker_action` profile's
 provider (`APP_CREDENTIAL_PROVIDERS`: `git-merge`, `git-review`), and both
 credential routes call it, so neither route file was edited and neither
-accepts the two. **Items 2 and 3 are not applied yet** (Terraform, lane M2);
-until they are, no Job and no tenant `providers` entry may name either
-provider. Found by the
+accepts the two. **Items 2 and 3 APPLIED** (recorded 2026-10-08, #364) in
+`terraform/modules/secret_manager`: `accessor_overrides` is the complete
+reader list for a provider in `action_providers`, validated to exist for each
+such provider and to never name the worker account; and `refreshable`
+excludes `action_providers` from the `-refresh` twins and from the
+refresher's grants. Both are tested by
+`tests/terraform/merge_step_iam.tftest.hcl`. `terraform/infra/variables.tf`
+additionally refuses either provider for any tenant, since the keys were
+retired (MS0-Q4, 2026-10-06), and the credential store
+(`swarm_api.credentials.put_credential`) refuses both, and the forge token,
+itself, before any write (#364). Found by the
 security review of #351 (CR 35/36), filed as issue #364. This amendment does
 not touch this request's frozen-contract surface (`profiles.py`/`models.py`
 are unchanged by it); it closes a gap in how the design it names is *built*,
@@ -7696,8 +7705,10 @@ being fatal. Nothing under `apps/common/swarm_common/` changed.
 `post-verdict` entry (`available=False` until #342 is enforced and the review
 App exists) and `VERDICT_REFUSED`/`VERDICT_FAILED`. Its MAJOR 1 companions:
 the API routes' refusal is applied (request 33's amendment, item 1); the
-`secret_manager` accessor override and the refresh exclusion are not yet
-(lane M2). Part of #295. Recorded from
+`secret_manager` accessor override and the refresh exclusion are APPLIED
+(request 33's amendment, items 2 and 3, recorded 2026-10-08: `accessor_overrides`
+and `refreshable` in `terraform/modules/secret_manager`, tested by
+`tests/terraform/merge_step_iam.tftest.hcl`). Part of #295. Recorded from
 [merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
 the owner 2026-09-29 as the design for #295), which pointed at this as a
 separate, not-yet-filed request ([merge-step.md](merge-step.md)'s own §10
@@ -9075,14 +9086,29 @@ of the field only by reading the worker.
 
 ## 52. `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED
 
-**Status:** proposed (owner 2026-10-07: not accepted for now). Filed
-2026-10-07 with #748 (a MERGE verdict starts a container only to open the
-pull request). The code that needs it ships
-switched off by this request: `swarm_api.verdictpublish.contract_allows` and
-the scheduler's hold (`scheduler.loop.Scheduler._held_for_control_publish`)
-both read `swarm_common.states.can_transition(PARKED, SUCCEEDED)`, so until
-this line is applied neither does anything and every MERGE workflow publishes
-through a worker exactly as before.
+**Status:** ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request
+that adds this line. History: proposed (owner 2026-10-07: not accepted for
+now), then accepted 2026-10-09, in the operator session; the brief that
+applied it is the record. This edits `apps/common/swarm_common/states.py`,
+which is frozen, and is recorded here as such. Filed 2026-10-07 with #748 (a
+MERGE verdict starts a container only to open the pull request).
+
+### What was applied
+
+Exactly the PARKED row of "The requested change" below, comment included, and
+nothing else in the frozen package. The code that needed it shipped switched
+off by this request and is unchanged:
+`swarm_api.verdictpublish.contract_allows` and the scheduler's hold
+(`scheduler.loop.Scheduler._held_for_control_publish`) both read
+`swarm_common.states.can_transition(PARKED, SUCCEEDED)`, which is now true,
+so a MERGE verdict's one-contributor integrator is published by swarm-api
+without a worker. Proved by `tests/unit/common/test_parked_to_succeeded.py`
+(the edge, every other PARKED edge unchanged, PARKED -> RUNNING still
+refused) and section 8 of `tests/unit/control_plane/test_verdict_publish.py`
+(the publish and the scheduler hold on the real state machine, no stand-in),
+committed red before the change.
+
+The request as it was filed follows, unchanged.
 
 ### What is true today
 
@@ -9765,3 +9791,135 @@ upload, and the live proof needs a CLI agent to meet a real rate limit.
   tenant and prefix.
 - **Invariant 10.** Preserved: a caller names `mock` and sends a declared
   boolean, data rather than an image, a command or a resource spec.
+
+---
+
+## 57. `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349)
+
+**Status:** ACCEPTED, accepted by the owner 2026-10-08 (the approval of
+#349's SwarmCloud plan), and APPLIED 2026-10-08 by the pull request that adds
+this entry. Part of nothing else. This is the sanctioned edit to
+`apps/common/swarm_common/` for it; nothing else in the frozen package
+changes.
+
+### What is true today
+
+Request 32 put one URL rule in the catalogue, `profiles.py::url_refusal`,
+and #345 applied it. The #345 security review probed that function on
+2026-09-29 and found four gaps, filed as #349:
+
+1. **Four reserved IPv6 ranges are accepted.** `_URL_REFUSED_V6_NETWORKS`
+   lists loopback, unspecified, discard-only, `2001:db8::/32`, unique local,
+   link-local and multicast, and nothing else. So site-local `fec0::/10`,
+   Teredo `2001::/32` (whose address embeds an obfuscated IPv4 one), the
+   RFC 9637 documentation range `3fff::/20` and the SRv6 SID range
+   `5f00::/16` all pass: `url_refusal("http://[fec0::1]/")` and
+   `url_refusal("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/")` return
+   `""`.
+2. **Two internal names are accepted.** `_URL_REFUSED_SUFFIXES` refuses
+   `.internal`, `.local`, `.localhost` and `.svc`, and neither
+   `metadata.goog` (the metadata server's other name) nor
+   `localhost.localdomain` ends in one: `url_refusal("http://metadata.goog/")`
+   returns `""`.
+3. **A trailing double dot is accepted.** `url_refusal` strips the host with
+   `.rstrip(".")`, which removes every trailing dot, so `example.com..`
+   becomes `example.com` and is accepted, while `a..b.com` reaches the
+   empty-label check and is refused.
+4. **A refusal can echo a URL's userinfo.** `RunnerInput.check`'s `refuse()`
+   repeats up to 40 characters (`_SHOWN_VALUE_CHARS`) of the refused value.
+   For `http://user:<password>@169.254.169.254/` that is the whole userinfo,
+   in the 422 message the API serves -- while `url_refusal`'s docstring says a
+   URL with a password in it is "never stored with the task, served by the
+   API or shown in the UI". An `object` or `list` refusal repeats its value's
+   `repr` the same way, so a `goto` action refused for an unknown field
+   echoed `'url': 'http://user:...` from inside the object.
+
+### Why
+
+None of the four is a blocker -- the worker's NetworkPolicy drops the
+private ranges, #341 removes the search path, and the metadata server
+answers only a request carrying `Metadata-Flavor: Google` -- which is why #349
+is S2. But each is cheap to close and each is the rule saying something
+untrue: that the range is a public address, that the name is a public page,
+that `example.com..` is a different shape from `a..b`, and that a password
+URL is never served. The fourth is the one a caller can see: a 422 body is
+logged by whatever client sent the request.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`:
+
+1. `_URL_REFUSED_V6_NETWORKS` gains, each with a comment naming its RFC:
+
+   ```python
+   ipaddress.ip_network("fec0::/10"),  # site-local, deprecated by RFC 3879
+   ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
+   ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
+   ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602
+   ```
+
+   Teredo is refused outright rather than unwrapped by `_embedded_v4` the
+   way 6to4 and NAT64 are: its client IPv4 is XOR-obfuscated and its server
+   IPv4 is a second embedded address, so unwrapping it would be the rule
+   reproducing a tunnelling scheme rather than refusing it. Refusing the /32
+   is the subset-of-what-Chromium-accepts rule `url_refusal` already states.
+2. A new exact-name tuple, checked next to `_URL_REFUSED_SUFFIXES`:
+
+   ```python
+   _URL_REFUSED_HOSTS = ("metadata.goog", "localhost.localdomain")
+   ```
+
+   Exact, not a suffix: `.goog` is a real gTLD that Google serves public
+   pages on, so `.goog` as a suffix would refuse public sites.
+3. The host loses AT MOST ONE trailing dot (`host.removesuffix(".")`)
+   instead of `.rstrip(".")`. So
+   `example.com.`, a fully-qualified name, is still accepted, and
+   `example.com..` reaches the empty-label check and is refused exactly as
+   `a..b.com` is. `169.254.169.254.` is still read as the address and refused.
+4. `RunnerInput.check`'s `refuse()` never repeats a value whose `repr`
+   contains `@`, of any kind: it says `<a value of N characters, not repeated
+   because it contains '@'>` instead, and keeps the reason. Every value
+   without `@` is repeated as before, up to `_SHOWN_VALUE_CHARS`. Blunt on
+   purpose: masking only the userinfo needs a parse of exactly the URL being
+   refused -- the one a parser already disagreed about -- and
+   `http:user:pw@host` has no `//` for a pattern to anchor on. Not repeating
+   the value at all cannot leak. Applied to every kind, not only `url`,
+   because an `object` or `list` refusal repeats a `repr` that can hold a
+   nested `url` (finding 4's `goto`).
+5. `url_refusal`'s docstring lists the new refusals and cites this request.
+
+**The non-frozen half, in the same change:** tests first --
+`tests/unit/control_plane/test_url_refusal_349.py` (the issue's repro URLs,
+each range's first and last address, its neighbours just outside, and the
+userinfo never in a refusal, including `http:user:pw@host` and a nested
+`goto`), the WHATWG table in `test_url_refusal_whatwg.py` (each new refusal
+as Node's `URL` resolves it, and accepted neighbours
+`2001:4860:4860::8888`, `2001:1::1`, `3fff:1000::1`, `5f01::1`), the worker
+door in `tests/unit/worker/test_runner_input_door_checks.py` and the HTTP
+doors in `test_runner_inputs_by_declaration.py`; and docs/workflows.md's
+description of the rule. No shell, jq or TypeScript restatement of these
+lists exists: swarm-api and the plugin bridge call `check_inputs`, and
+`browser._check_url` calls `url_refusal`.
+
+### What it would break if accepted
+
+A caller that today sends a browser `url` or `goto` naming any of these hosts
+gets a 422 instead of a task -- a task that would have timed out against a
+dropped address, or opened the metadata server's name to a refused request.
+swarm-api, the plugin bridge and `browser._check_url` all call the one rule,
+so no restatement drifts. `http://example.com./` stays accepted. A 422 for a
+value containing `@` no longer quotes that value; the key, the declared bound
+and the reason are still named.
+
+### If it is declined
+
+The four gaps stay, each behind its other control, and the docstring's
+"never served by the API" stays false for a refused URL.
+
+### Invariants
+
+- **Invariant 10.** Strengthened: a caller still names a runner profile and
+  sends data; this only narrows what the `browser` profile's `url` inputs
+  accept and what a refusal repeats.
+- **Invariants 1-9.** Untouched: no state, lease, pool, fencing, checkpoint,
+  resource or tenancy rule changes.
