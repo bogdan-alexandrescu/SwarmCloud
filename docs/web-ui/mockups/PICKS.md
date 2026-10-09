@@ -122,3 +122,13 @@ From `diff-viewer.html` (lane DIFF0) and [`docs/design/diff-viewer.md`](../../de
 | Entry points | **All at once, in one lane** (not agent first, then workflow) |
 | Syntax highlighting | **Yes**, about +6 kB gz, lazy with the Changes tab, React text nodes only (no `innerHTML`) |
 | Phone | **One file at a time** with a picker and an All files sheet |
+
+## Repository graph overlays (drawn 2026-10-09, not picked yet)
+
+Mock-up page: `graph-overlays.html`, drawn by design lane KG8-MOCK for row KG8 of
+[`docs/design/knowledge-graph.md`](../../design/knowledge-graph.md) §6. The design
+is [`docs/design/graph-overlays.md`](../../design/graph-overlays.md). It has four
+variants of the community layer and the issue and lane overlays, each in
+Structure and Network: 1 Paint, 2 Regions, 3 Lens and 4 Matrix. **No variant
+has been picked.** KG8 waits for the owner's answers to that note's §5. The
+page recommends **2, Regions, with 4's per-community cards on the phone**.
