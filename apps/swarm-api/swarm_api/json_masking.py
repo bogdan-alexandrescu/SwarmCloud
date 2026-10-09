@@ -44,10 +44,23 @@ WHAT THIS DOES INSTEAD. A window that is JSON is masked by its TOKENS:
     list with a number in it, nested lists, a list of objects (the PR #378
     review), an object KEY, a value masked whole under a credential's name
     (the re-review) -- when the END is within `PEM_BLOCK_MAX_CHARS` of string
-    content, as the text path masks a block. With no END in reach, a key
-    written as a flat LIST of strings is masked to the end of that run of
-    strings, as `JsonMasker` does (`redaction._key_run_end`, restated here
-    as a running state because a window is not a decoded list);
+    content, as the text path masks a block; a KEY inside that span is masked
+    too (#385: a PEM pasted into a .properties file stores its body lines as
+    keys). With no END in reach -- missing, or beyond the page the reader
+    chose (#385) -- a key written as a flat LIST of strings is masked to the
+    end of that run of strings, as `JsonMasker` does (`redaction._key_run_end`,
+    restated here as a running state because a window is not a decoded list),
+    and the key is ALSO followed in document order across containers by
+    `JsonMasker`'s own rule (`redaction._KeyRun`, imported): every
+    body-shaped string value and key after the BEGIN is masked, counted 0;
+    blank strings, keys that are not body-shaped, numbers and literals
+    neither join nor end it; an END string ends it, masked; the first string
+    value that is not body-shaped (`"after the key"`, `"kept"`) ends it and is
+    served, as the text path stops at the first line not shaped like a key's
+    body; and `PEM_BLOCK_MAX_CHARS` of string content ends it. Body-shaped is
+    `redaction._key_body_string`, with its `KEY_BODY_MIN_CHARS` floor and the
+    residual its docstring states (a final unpadded line under the floor is
+    served);
   * everything between tokens -- whitespace, commas, brackets -- is copied as
     stored. The text is still the stored document's layout.
 
@@ -110,6 +123,11 @@ about; its strings are still masked by every rule, as they were before.
 `inside_key`: the paged route's look-back found an open private key before
 the window. Its first strings are masked as that key's lines, up to its END,
 and when the window does not scan the text path masks it as it always has.
+It opens the no-END run at the start of what is walked, so a page wholly
+inside a key in an object or a list of objects masks its body lines whether
+or not the context reaches the BEGIN; when it does, the context's walk opens
+the run there itself (#385). Either way the page counts the key once, for
+the lines it withheld, never once per line and never over clear text.
 
 A LONE SURROGATE (`\\ud800` written escaped in the stored text) decodes to a
 code point UTF-8 cannot encode. A string that held one and was masked is
@@ -117,7 +135,8 @@ re-encoded with it escaped again, never raw, so serving it cannot raise.
 
 IMPORTS. `JsonMasker`, `Redacted`, `redact_lines`, `MASK` and
 `PEM_BLOCK_MAX_CHARS` are public names of `redaction.py`. `_masks_whole`,
-`_mask_literals`, `_open_key`, `_CREDENTIAL_KEY`, `_PEM_END` and `_PEM_HINT` are private
+`_mask_literals`, `_open_key`, `_CREDENTIAL_KEY`, `_PEM_END`, `_PEM_HINT` and
+`_KeyRun` (which holds `_key_body_string` and `KEY_BODY_MIN_CHARS`) are private
 ones, imported
 rather than restated: the decision "is this value a credential" must be the
 one `/input` and `/logs` make, and a second copy of it is how the two would
@@ -140,6 +159,7 @@ from .redaction import (
     _CREDENTIAL_KEY,
     _PEM_END,
     _PEM_HINT,
+    _KeyRun,
     _mask_literals,
     _masks_whole,
     _open_key,
@@ -299,6 +319,10 @@ def _structure(text: str, *, strict: bool) -> tuple[_Spans, _Runs]:
     `PEM_BLOCK_MAX_CHARS`, the reach the text path gives a block. One pass:
     every open waits in `pending` for the next END, so the work is linear
     however many BEGIN markers a window holds.
+
+    An open with no END in reach has no entry: `_walk` follows it itself
+    (#385), and a string `runs` covers is not also a no-END run's material,
+    so no line is counted by both.
     """
     spans: _Spans = {}
     runs: _Runs = {}
@@ -386,6 +410,19 @@ def _leaves(text: str, start: int, stop: int) -> list[Any]:
             found.append(token[3])
 
 
+def _strings_in(node: Any) -> Iterable[str]:
+    """Every string and key under a decoded `node`."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, item in node.items():
+            yield key
+            yield from _strings_in(item)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _strings_in(item)
+
+
 def _encode(value: str) -> str:
     """`value` as a JSON string, non-ASCII kept as stored, a lone surrogate escaped.
 
@@ -410,9 +447,21 @@ def _walk(
 
     Learning returns what `JsonMasker` learns its literals from, as a list of
     the strings, keys and credential-named values in document order, so the
-    literals are the ones a walk of the decoded document would learn. Masking
-    returns the `Redacted` text of `text[emit_from:]`; `text[:emit_from]` is
-    the context, walked and never served.
+    literals are the ones a walk of the decoded document would learn. A
+    string or key a key run masks is learned as it is stored, as
+    `_learned_literals` reads it. Masking returns the `Redacted` text of
+    `text[emit_from:]`; `text[:emit_from]` is the context, walked and never
+    served.
+
+    THREE RUNS mask a private key split over strings, checked in this order
+    for each string, so one string is masked by one of them and counted
+    once: the END-in-reach span from `_structure` (`run_stop`), the flat
+    list (`_Frame.run`), and the no-END run across containers and keys
+    (`shape_run`, #385). The first two feed the third (`_KeyRun.through`),
+    so it carries on past a flat list that ended without its END and
+    closes at an END either of them reached. `run_at_start` (`inside_key`)
+    opens the root's flat-list run and the no-END run before the first
+    token.
     """
     scanner = _Scanner(text)
     stack = [_Frame("root")]
@@ -429,6 +478,29 @@ def _walk(
     charged: set[int] = set()
     # Every string that opens a run, in order: for a BEGIN a jump skips.
     opens = sorted(runs)
+    # A key with no END in reach (#385), followed in document order across
+    # containers and keys by the rule `JsonMasker` follows it with
+    # (`redaction._KeyRun`), opened by the string starting at `shape_open`
+    # (-1: before the look-back, `run_at_start`).
+    shape_run = _KeyRun()
+    shape_open = -1
+    if run_at_start:
+        shape_run.open = True
+
+    def shaped(value: str, start: int, *, key: bool = False) -> bool:
+        """`_KeyRun.step`: whether `value` is the open key's material."""
+        nonlocal shape_open
+        hit = shape_run.step(value, key=key)
+        if _open_key(value):
+            shape_open = start
+        return hit
+
+    def through(value: str, start: int) -> None:
+        """A string the END-in-reach or flat-list rule masked: `_KeyRun.through`."""
+        nonlocal shape_open
+        shape_run.through(value)
+        if _open_key(value):
+            shape_open = start
 
     def put(start: int, end: int, new: str, counted: int, opened: int | None = None) -> None:
         nonlocal at, count
@@ -463,7 +535,8 @@ def _walk(
             run_stop, run_open = stop, start
         elif frame.kind != "{":
             # No END in reach: a key written as a flat list runs to the end
-            # of its run of strings, as `JsonMasker` masks it.
+            # of its run of strings, as `JsonMasker` masks it. Past that run,
+            # and in an object, `shape_run` carries the key on (#385).
             frame.run = True
             frame.run_size = 0
             frame.run_open = start
@@ -486,8 +559,20 @@ def _walk(
         if kind == "s" and scanner.is_key():
             frame.run = False  # an object: not a list of a key's lines
             frame.key = value
+            # A body line stored as a KEY (`{"PRIVATE_KEY": BEGIN, "<b64>": "",
+            # ..., END: ""}`, #385): masked like a value when it lies within
+            # a run whose END is in reach, or is body-shaped inside a run
+            # whose END is not. A colliding key is still JSON: the stored
+            # text never promised unique keys.
+            if start <= run_stop:
+                through(value, start)
+                opened: int | None = run_open
+            else:
+                opened = shape_open if shaped(value, start, key=True) else None
             if masker is None:
                 learned.append({value: None})
+            elif opened is not None:
+                put(start, end, _MASKED, 0, opened)
             else:
                 name = masker.text(value)
                 if name.count:
@@ -502,6 +587,7 @@ def _walk(
         if kind == "s" and start <= run_stop:
             # Key material of the key a string above opened, in whatever
             # container: its one mask was counted where its BEGIN was.
+            through(value, start)
             if masker is None:
                 learned.append(value)
             else:
@@ -517,6 +603,7 @@ def _walk(
                     frame.run = False
                 else:
                     frame.run_size += len(value) + 1
+                through(value, start)
                 if masker is None:
                     learned.append(value)
                 else:
@@ -550,6 +637,15 @@ def _walk(
                     inside = bisect_left(opens, stop) - 1
                     if inside >= 0 and opens[inside] >= start and runs[opens[inside]] > run_stop:
                         run_stop, run_open = runs[opens[inside]], opens[inside]
+                    if close is not None:
+                        # Unread, but its strings still move the no-END run,
+                        # as `JsonMasker` scans a value it masks whole: a
+                        # BEGIN inside opens it, and the body after it is
+                        # masked. One past the window's end is never read.
+                        inner = json.loads(text[start:close])
+                        shape_run.scan(inner)
+                        if any(_open_key(string) for string in _strings_in(inner)):
+                            shape_open = start
                     scanner.seek(stop)
                     continue
             stack.append(_Frame(kind))
@@ -561,9 +657,19 @@ def _walk(
             else:
                 put(start, end, _MASKED, 1)
             if kind == "s":
+                shaped(value, start)
                 open_run(value, start, frame)
             continue
         if kind == "s":
+            if shaped(value, start):
+                # A body-shaped string after a key with no END in reach, in
+                # whatever container (#385): its one mask was counted at the
+                # BEGIN, and a page that only sees the body counts it once.
+                if masker is None:
+                    learned.append(value)
+                else:
+                    put(start, end, _MASKED, 0, shape_open)
+                continue
             if masker is None:
                 learned.append(value)
             else:
