@@ -3,6 +3,9 @@
 **When to use this.** A tenant (a Google group, or a personal `u-<user>`
 tenant) is leaving the platform and everything provisioned for it has to go:
 its identity, its keys, its jobs, its namespace, its records and its artifacts.
+A person's workspace, made by the approval flow of #847, is offboarded with
+this runbook too: there is no deprovisioning job yet, and
+[A personal workspace](#a-personal-workspace) lists what it adds.
 
 **How long.** About an hour of commands, plus however long the tenant's running
 work takes to finish (up to two hours for a `claude-code` or `codex` task).
@@ -227,7 +230,9 @@ sed -n '/^tenants = {/,/^}/p' terraform/environments/dev/dev.tfvars | grep -E '^
 Terraform-declared tenants follow steps 0 to 11. A tenant made by
 `scripts/register-tenant.sh` or created self-service by the API on first sign-in
 is not in tfvars; for those, replace step 7 with
-[the manual section](#if-the-tenant-was-never-in-terraform).
+[the manual section](#if-the-tenant-was-never-in-terraform). A person's
+workspace is one of those, and has a few more things to remove:
+[A personal workspace](#a-personal-workspace).
 
 **The tenant's data is deleted. That is decided, not asked.** Owner decision,
 2026-09-24: everything the tenant left goes at offboarding, in step 6. This
@@ -257,7 +262,11 @@ still signs in falls back to a personal `u-<user>` tenant, which the API creates
 on first sight with no GSA, no secrets and no namespace (their work parks or
 fails to dispatch with a missing identity). A personal tenant whose person keeps
 access **comes back**: `Store.ensure_tenant` recreates `tenants/u-<user>` and its
-pool on their next submission. If people must lose access too, that is a
+pool on their next submission. That holds while `WORKSPACE_GATE` is off. With
+it on, swarm-api no longer writes a person's tenant on first sight: the person
+sees "Request your workspace", their own submissions are refused, and only an
+admin's approval in People makes the tenant again
+([A personal workspace](#a-personal-workspace)). If people must lose access too, that is a
 separate change to `frontend_iap_members`, `allowed_domains` and, in prod,
 `api_invokers`.
 
@@ -1420,6 +1429,128 @@ deleted them.
 
 **Verify.** Step 8, in full: this section stands in for step 7, and step 8
 checks it the same way, down to `tenants/<id> absent` and no pool ids.
+
+---
+
+## A personal workspace
+
+**When.** The tenant is a person's `u-…` tenant and has a record
+`workspaces/<id>`: it was requested in the setup checklist, approved in
+Admin › People and made by the `swarm-workspace-apply` Cloud Build job
+([workspaces.md](../workspaces.md), #847). Check with:
+
+```bash
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh
+fs_get "workspaces/$1" | jq -r "${FS_JQ} if .fields then (doc | \"\(.workspace_id) \(.state) migrated=\(.migrated // false)\") else \"no workspace record\" end"
+SH
+```
+
+**Why this is by hand.** Deprovisioning is not built. It is a later lane with
+its own owner-approved guard mode ([workspaces.md §7](../workspaces.md#7-deprovisioning-a-follow-up-not-built-now)).
+The job that made the workspace cannot unmake it, on purpose: its call guard
+refuses every removal and every deletion, whatever the target (rule C9). Its
+identity holds account-IAM power across a project shared with another team,
+and a deletion path on that identity is the one thing the design refuses to
+give it. So a person leaves the way any tenant made outside Terraform leaves:
+an operator, with their own credentials, through this runbook.
+
+**The order.** Steps 0 to 6 as written. Then
+[the manual section](#if-the-tenant-was-never-in-terraform) in place of step 7,
+with the two blocks below added **before its account delete**. Then steps 8 to
+10, with the forge-slot block below added to step 10. Then this section's
+records, and step 11. `u-bogdan` is the exception while it is still in
+`dev.tfvars` (lane W9 moves it out): it takes the Terraform path, steps 0 to
+11, plus everything in this section except the account's own bindings, which
+Terraform removes.
+
+**1. The second bucket grant.** A workspace's worker holds two
+prefix-conditioned grants on the artifact bucket: `roles/storage.objectViewer`
+and `roles/storage.objectUser`, both on `tenants/<id>/`. The manual section's
+bucket block removes `objectUser` and the bucket-metadata role only. This
+removes the read grant:
+
+```bash
+( : "${GSA:?run step 1 in this shell}" "${ARTIFACT_BUCKET:?run step 1 in this shell}"
+  if gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+       --member "serviceAccount:${GSA}" --role roles/storage.objectViewer --all >/dev/null; then
+    echo "removed roles/storage.objectViewer"
+  else
+    echo "NOT removed: roles/storage.objectViewer (read the error above; 'not found' means it was never bound)"
+  fi
+)
+```
+
+**2. The account's own bindings** (Workload Identity for the namespace's two
+Kubernetes service accounts, and act-as for the scheduler and the reconciler)
+are on the account's own IAM policy, so the manual section's account delete
+takes them with it. Nothing to run.
+
+**3. The forge slot and its twin** (step 10). `swarm-tenant-<id>-git-u-<16 hex>`
+and its `-refresh` twin are labelled `managed-by=swarm-api`, `tenant=<id>`,
+the labels swarm-api puts on every user slot. They carry no
+`component=tenant-credential`, so step 10's provider-secret block does not list
+them, and step 10's verify would then show them. The same is true of a slot
+any member of a group tenant made by connecting GitHub. Delete them after the
+account, in step 10. Irreversible: the person reconnects GitHub if they come
+back.
+
+```bash
+( set -eu
+  : "${TENANT:?run step 1 in this shell}" "${OUT:?run step 1 in this shell}"
+  gcloud secrets list --project "$PROJECT_ID" \
+    --filter="labels.managed-by=swarm-api AND labels.tenant=${TENANT}" \
+    --format='value(name.basename())' > "$OUT/user-slots.txt"
+  cat "$OUT/user-slots.txt"
+  n=0
+  while read -r s; do
+    [ -n "$s" ] || continue
+    case "$s" in "swarm-tenant-${TENANT}-git-u-"*) ;; *) echo "skipping $s"; continue ;; esac
+    gcloud secrets delete "$s" --project "$PROJECT_ID" --quiet
+    n=$((n + 1))
+  done < "$OUT/user-slots.txt"
+  echo "$n user slot(s) deleted of $(grep -c . "$OUT/user-slots.txt" || true) listed"
+)
+```
+
+**4. The workspace's records**, after step 10. `scripts/offboard-tenant.sh`
+does not know these four collections, so step 6 left them:
+`workspaces/<id>`, `workspace_ids/<w-id>`, `loan_requests/<id>` and
+`people/<id>`. Delete the record **last**. It is what the submission gate
+reads: a `ready` record over resources that no longer exist is a workspace
+the gate believes in, and People would keep listing the person as ready.
+Once it is gone, a person who comes back starts at "Request your workspace",
+and an admin decides again. `admin_audit/` is kept: it is the record of who
+approved and who lent what, and it names the workspace only by its opaque id.
+
+```bash
+bash -s -- "${TENANT:?run step 1 in this shell}" <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh
+t="$1"
+case "$t" in u-*) ;; *) die "$t is not a personal tenant id" ;; esac
+w="$(fs_get "workspaces/$t" | jq -r "${FS_JQ} if .fields then (doc | .workspace_id // \"\") else \"\" end")"
+[[ -z "$w" ]] || [[ "$w" =~ ^w-[0-9a-f]{6}$ ]] || die "workspaces/$t carries workspace_id '$w', which is not an opaque id"
+if [[ -n "$w" ]]; then
+  owner="$(fs_get "workspace_ids/$w" | jq -r "${FS_JQ} if .fields then (doc | .tenant_id // \"\") else \"\" end")"
+  [[ -z "$owner" || "$owner" == "$t" ]] || die "workspace_ids/$w names $owner, not $t"
+  [[ -z "$owner" ]] || { fs_delete "workspace_ids/$w"; ok "removed workspace_ids/$w"; }
+fi
+for doc in "loan_requests/$t" "people/$t" "workspaces/$t"; do
+  if fs_get "$doc" | jq -e '.fields' >/dev/null; then fs_delete "$doc"; ok "removed $doc"; else info "$doc absent"; fi
+done
+SH
+```
+
+**Verify.** Step 11, then: the check at the top of this section prints
+`no workspace record`, and the person's row in Admin › People shows no
+workspace.
+
+**What this does not do.** It does not stop the person signing in. While the
+gate is on, a person who keeps access sees "Request your workspace" and can
+run nothing of their own until an admin approves a new request; their group
+tenants still admit them. Taking access away is step 0's separate change.
 
 ---
 

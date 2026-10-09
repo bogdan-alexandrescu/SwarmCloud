@@ -635,6 +635,14 @@ locals {
       # Off unless the environment's tfvars sets var.enable_issue_sweep.
       SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
 
+      # The personal-workspace submission gate (swarm_api.workspaces
+      # .gate_from_env, docs/workspaces.md §5.5, owner decision WD8): on, a
+      # person's submission into their own tenant is refused until their
+      # workspace is `ready` and has a Claude account. var.workspace_gate is
+      # "off" or "on", rendered as is, because gate_from_env refuses to start
+      # on anything it cannot read as one of the two.
+      WORKSPACE_GATE = var.workspace_gate
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in

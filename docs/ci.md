@@ -13,7 +13,9 @@ we only author code, create PRs."* `CLAUDE.md`'s
 [Before you say you are finished](../CLAUDE.md#before-you-say-you-are-finished)
 is the binding statement; this file is the map of what the remote side actually
 covers, so that "wait for CI" is a specific thing to wait for rather than a
-shrug.
+shrug. One deployment runs outside Actions, on purpose: a person's workspace
+is applied by a Cloud Build job in the project
+([below](#a-persons-workspace-is-applied-by-cloud-build-not-by-actions)).
 
 ## Why, and not just what
 
@@ -3317,6 +3319,139 @@ in the suite too.
 Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
 with the sentence that names this section, and nothing is submitted: a red
 acceptance job, not a quiet return to eng.
+
+## A person's workspace is applied by Cloud Build, not by Actions
+
+Every deployment here runs in GitHub Actions except one: making a person's
+personal workspace (#847, [workspaces.md](workspaces.md)). When an admin
+approves a request in Admin › People, swarm-api publishes
+`{"workspace_id": "w-…", "mode": "create"}` to the Pub/Sub topic
+`swarm-workspace-apply`. A Cloud Build trigger of the same name, in the
+platform's project, builds this repository's `main` and runs
+`scripts/cloudbuild/workspace-apply.yaml` as `swarm-workspace-deployer`. Its
+three steps are `validate`, `guard` and `apply`, and the last runs
+`scripts/register-tenant.sh --workspace w-…` with every `gcloud`, `kubectl`
+and `curl` passing through the call guard. A ceiling change in People
+publishes `mode: limits`, which reapplies only the namespace quota and the
+documents.
+
+**Why not a workflow.** Two reasons, both the owner's (WD2, 2026-10-08):
+
+* **The log names a person.** This repository is public, and so are its
+  Actions logs. The job reads the person's email and tenant id from Firestore,
+  and its log carries them. In Cloud Build the log stays in the project.
+* **The identity must be usable from one place only.**
+  `swarm-workspace-deployer` holds account-IAM power across the shared project
+  that IAM cannot narrow ([workspaces.md §2.4](workspaces.md#24-the-finding-that-shapes-this-and-the-accepted-risk)).
+  It has no key and no Workload Identity Federation binding, so no GitHub
+  workflow can impersonate it, and its own IAM policy is written empty by the
+  bootstrap. The trigger is the only thing that runs as it.
+
+**What a merge changes.** The trigger reads both the source and the build file
+from `refs/heads/main` at build time. So merging a change to the guard, its
+rules, the script, `common.sh` or the build file **is** deploying it to that
+identity, with no release in between. That is why `.github/CODEOWNERS` names
+the owner on exactly those paths. The image the steps run in,
+`images/workspace-apply`, is built like any other image, but the trigger runs
+it only **by digest**, from the bootstrap variable
+`workspace_apply_builder_image`. A new image reaches the identity only through
+an owner-run bootstrap apply.
+
+**What CI holds about it**, without running it. The `shell` job runs
+`scripts/lib/workspace-guard.sh self-test`, which trips each rule (C0 to C9)
+with a call built for it. The unit tests `tests/unit/scripts/test_workspace_guard.py`
+and `tests/unit/scripts/test_register_tenant_workspace.py` hold the guard and
+the script to each other. `terraform test` runs
+`tests/terraform/workspace_deployer.tftest.hcl` (the trigger builds `main`
+only, the role list, the log routing) and
+`tests/terraform/personal_workspaces_absent.tftest.hcl` (no personal resource
+in Terraform state). `security.yml` scans the `workspace-apply` image with the
+others. Nothing in CI runs the job, and no workflow can.
+
+### Where its logs are
+
+**Not in GitHub, and not in `_Default`.** The build file sets
+`options.logging: CLOUD_LOGGING_ONLY`, so the log goes to Cloud Logging and to
+no GCS bucket. The bootstrap (`terraform/bootstrap/workspace_deployer.tf`)
+routes every entry whose `resource.labels.build_trigger_id` is this trigger's
+to the log bucket **`swarm-workspace-apply`** (location `global`, kept 30
+days, `workspace_log_retention_days`). An exclusion of the same name keeps those
+entries out of `_Default`.
+
+**Why restricted.** `_Default` is readable by every holder of
+`roles/logging.viewer` in `saga-agents-staging`, which includes the other
+team. A user-defined bucket is not: reading it needs
+`logging.views.access` on its view, which `logging.viewer` does not carry.
+Its readers are the project's owners and logging admins, plus the people in
+the bootstrap's `workspace_log_readers`, each granted
+`roles/logging.viewAccessor` conditioned on this bucket's `_AllLogs` view and
+nothing else.
+
+**How to read it.** In the console: Logs Explorer › Refine scope › Log view ›
+`swarm-workspace-apply/_AllLogs`. From a terminal:
+
+```bash
+bash -s <<'SH'
+set -euo pipefail
+source scripts/lib/common.sh   # for redact
+gcloud logging read 'resource.type="build"' --project saga-agents-staging \
+  --bucket swarm-workspace-apply --location global --view _AllLogs \
+  --freshness 1d --format 'value(timestamp,textPayload)' | redact
+SH
+```
+
+Start from the workspace id: the Admin › People row shows it, and a step line
+names only it (`claimed w-3f9a2c`). When the call guard stops a run, the
+refused call and the rule it fell through to are printed in this log, already
+through `redact`. That is what the owner reads before deciding
+([workspaces.md §2.5](workspaces.md#25-the-call-guard), "What the owner does
+then").
+
+**What still reaches every log viewer.** Cloud Logging writes the Admin
+Activity audit entries of the job's IAM calls to `_Required`, whatever a sink
+says, and they name the worker account the job creates
+(`swarm-agent-worker-u-…`). That residual is accepted (workspaces.md §2.6).
+
+**Not verified live**, and each fails closed: that a build's entries carry
+`build_trigger_id` (if they do not, the log stays in `_Default`, which is the
+residual above, and the restricted bucket stays empty), and that a Pub/Sub
+trigger maps the message's fields to `_WORKSPACE_ID` and `_MODE` (if it does
+not, the `validate` step refuses the empty values and nothing runs). The first
+real approval settles both.
+
+### What has to happen before the first real approval
+
+Read on 2026-10-09 against `main` (`35db3c6`). None of the cloud side exists
+yet:
+
+1. **The owner connects this repository to Cloud Build** (a second-generation
+   connection, read only) and puts its name in the bootstrap's
+   `workspace_apply_repository`.
+2. **The owner's bootstrap apply with `enable_workspace_deployer = true`**
+   (it is unset, so `false`, in `terraform/bootstrap/terraform.tfvars`), with
+   `workspace_apply_builder_image` set to the promoted `workspace-apply` digest
+   and `workspace_log_readers` naming the admins. That creates the identity,
+   its roles, the topic, the trigger, the log bucket, the sink and the
+   exclusion. The infra half, including the alerts, is a release whose IAM
+   plan waits in `dev-iam` ([above](#a-dev-release-that-changes-iam-waits-for-the-owner)).
+3. **The owner's `kubernetes/apply.sh --policies --confirm`**, for the
+   deployer's ClusterRole and its scope admission policy.
+4. **swarm-api must be told to publish.** It publishes only while
+   `WORKSPACE_APPLY_PUBLISH` is on, and nothing in `terraform/` sets it yet.
+   Until it is on, an approval is recorded and the record stays `approved`.
+   Off is the right default while the topic does not exist: publishing into a
+   missing topic would fail every approval's dispatch.
+5. **The dispatch sweep has no caller yet.** `POST /v1/admin/workspaces/sweep`
+   exists and republishes an `approved` record that no build claimed (one
+   approved while publishing was off, or whose publish failed), but no Cloud
+   Scheduler job calls it. People's **Retry** does not help there: it accepts
+   only a `failed` or `needs_owner` record. Until a scheduler job exists, an
+   admin runs the sweep by hand: `./scripts/api.sh POST /admin/workspaces/sweep`.
+
+Items 4 and 5 are code changes, not owner steps, and are reported on the pull
+request that wrote this section. Then one real approval runs end to end, and
+only after it is `WORKSPACE_GATE` turned on
+([workspaces.md §5.5](workspaces.md#55-it-ships-switched-off-wd8)).
 
 ## The finishing sequence
 

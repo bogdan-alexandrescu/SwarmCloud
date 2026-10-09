@@ -547,6 +547,15 @@ admin_users = ["bogdan@saga.xyz"]
 # admin can remove this person's admin rights.
 platform_owner = "bogdan@saga.xyz"
 
+# The personal-workspace submission gate (docs/workspaces.md §5.5, owner
+# decision WD8). 2026-10-09: ON, in a commit that must not merge until one real
+# person has been approved in Admin > People end to end on SwarmCloud -- the
+# workspace job reached `ready`, they have a Claude account, and a task of
+# theirs ran -- and every existing personal tenant has a `ready` record. On
+# before that refuses every person's own submissions with WORKSPACE_NOT_READY.
+# Turning it back off is this value, "off".
+workspace_gate = "on"
+
 # The verification gate's ONE admin route, by owner decision on 2026-09-24.
 #
 # scripts/race-test.sh narrows runner:mock to one slot to force contention, and
