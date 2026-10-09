@@ -33,6 +33,10 @@ What these tests hold:
   7. The forge credential is trusted only as signed: a spec that does not
      verify declines before any secret is read, and a user slot's grant is
      read again and must still be `write`.
+  8. Contract request 52 applied (owner, 2026-10-09): on the real state
+     machine, with no stand-in, MERGE with one contributor is published by
+     the control plane and never leased, every other case keeps the worker
+     path, and the scheduler leaves a claimed step until the claim times out.
 
 No credentials, no network, no emulator. Every token is built at runtime.
 """

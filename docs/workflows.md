@@ -829,10 +829,19 @@ What each step does, and why each field is there:
 
 On MERGE the fix step starts **no agent** (owner decision, 2026-10-05: a fix
 agent after a MERGE was paid for and could only add unreviewed change). The
-integrator path still runs: it merges the implementer's branch and opens the
-one pull request, and the step ends SUCCEEDED with
-`result_summary.skipped_agent: "review verdict MERGE"` beside
-`verdict_gate.agent_ran: false`. NOT_YET is unchanged: the fix agent runs.
+step ends SUCCEEDED with `result_summary.skipped_agent: "review verdict
+MERGE"` beside `verdict_gate.agent_ran: false`. NOT_YET is unchanged: the fix
+agent runs.
+
+**With one contributor, the control plane now opens the pull request itself**
+(since contract request 52 was accepted by the owner on 2026-10-09): swarm-api
+creates the branch and opens the pull request with no worker, no lease and no
+clone, and the step records `published_by: "control_plane"`. That saves about
+116 s and one Cloud Run execution per MERGE workflow, the cost measured on
+2026-10-06 of starting a container only to push a branch that already exists
+(below). With several contributors, or whenever swarm-api declines, the
+integrator path runs as before: a worker merges the contributors' branches and
+opens the one pull request.
 
 What titles that pull request, since no agent wrote the `pr-title.txt` an
 integrator owes:
@@ -857,7 +866,7 @@ refused on attribution or a task id, every mention neutralised.
 label -- nothing is generated, and the missing title fails the attempt as it
 always has; a step given an `issue` input is titled from the issue instead.
 
-#### When swarm-api opens it without a worker (#748, behind contract request 52)
+#### When swarm-api opens it without a worker (#748, contract request 52)
 
 Starting a worker only to open that pull request cost 116 s from the review's
 end, and one execution and one lease, on the three MERGE workflows measured on
@@ -955,13 +964,18 @@ If swarm-api never decides (a lost push, or swarm-api down), the hold ends and
 the step goes to its worker. A claim older than 300 s is ignored too. A worker
 that then finds the pull request already open adopts it.
 
-**Off until contract request 52 is applied.** The frozen state machine has no
-PARKED -> SUCCEEDED edge (`swarm_common.states._ALLOWED`), and a step that
-never had a lease cannot honestly pass through RUNNING. Until the owner
-accepts the request, both swarm-api and the scheduler's hold read
-`can_transition(PARKED, SUCCEEDED)` as false and do nothing, and every MERGE
-workflow publishes through its worker. The ~100 s and one execution per
-MERGE workflow are not saved until then.
+**On since contract request 52 was applied.** The path shipped switched off,
+because the frozen state machine had no PARKED -> SUCCEEDED edge
+(`swarm_common.states._ALLOWED`) and a step that never had a lease cannot
+honestly pass through RUNNING. The owner accepted the request on 2026-10-09,
+and the edge is now in `_ALLOWED`. Both swarm-api (`contract_allows`) and the
+scheduler's hold still read `can_transition(PARKED, SUCCEEDED)`, so the
+switch stays the frozen contract and not a setting. The hold also needs
+`CONTROL_PUBLISH_HOLD_SECONDS` above 0 (60 s in the root; 0, the code
+default, holds nothing and every MERGE workflow goes to its worker). Taking a
+lease instead, so the step could pass through RUNNING, was rejected: it books
+capacity for work that needs none, and puts a second admission writer beside
+the scheduler (invariant 2).
 
 ### What is refused at submission
 
