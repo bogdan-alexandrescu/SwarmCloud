@@ -246,7 +246,7 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
     render(split())
     await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
     const names = [...document.querySelectorAll('.c-tabs[role="tablist"] .c-tab-label')].map((t) => t.textContent)
-    expect(names).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(names).toEqual(['Details', 'Logs', 'Changes', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(api.loadChildren).not.toHaveBeenCalled()
   })
 
