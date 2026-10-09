@@ -38,10 +38,11 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main`; accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 5, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -194,6 +195,23 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    and the `MIXED` report exactly as before. The tag `:<sha>` is not read at
    all, so a later build of the same commit cannot change what is promoted.
 5. The apply pins those digests and the deploy verifies them, unchanged.
+
+**Every promote records its runner images' sizes** (#625). Right after the
+channel moves, `release-promote` runs `scripts/image-sizes.sh --manifest
+build/deployed-images-<env>.json` and appends its table to the job summary:
+for each runner image the promotion wrote (`agent-runtime-*`), the promoted
+digest, its compressed size (the linux/amd64 layer sum a node pulls) and its
+delta from the newest earlier release of that image in Artifact Registry; a
+first release reads "no earlier release", never `+0.0`. It only lists and GETs
+the registry, which the deployer already reads in the promote step itself, so
+it needs no new role. It **cannot fail or hold the release**: the step is
+`continue-on-error` and bounded by `timeout 300`, and an image it cannot
+measure is a row saying so and a failed step, nothing more. It exists because
+#625's start-time question needed every release's size, and until this step
+no release recorded its own, so the 2026-10-05 bisect had to read each one
+back out of the registry.
+`tests/unit/scripts/test_release_size_record.py` holds the step's place and
+flags; `test_image_sizes.py` holds the table.
 
 **What the release does when it cannot reuse.** Each ends in a red job whose
 last line (and a run annotation) names the reason and links the job:
@@ -371,7 +389,13 @@ secret.
 ### What `build changed images without pushing` does
 
 `application.yml`'s `build changed images without pushing` job (`build-check`),
-on every pull request:
+on every pull request that reaches an image. **Since 2026-10-09 one that
+reaches none skips the job by its own `if:`**: `what this change reaches` runs
+the same `build-images.sh --affected-by` over the same diff (its `does the
+change reach an image` step) and says `images=false`, so the job takes no
+runner at all. It says `true` whenever it cannot tell (not a pull request, a
+diff it cannot read) and fails, failing every gate, if the script does.
+Otherwise:
 
 1. **Skips a fork's pull request in seconds**, before checking anything out,
    as the owner's brief for this job (2026-10-05) requires. A maintainer who
@@ -392,7 +416,9 @@ on every pull request:
    `tests/acceptance/fixtures/**` reach `swarm-verify`; `apps/common/**`
    reaches every Python service and the worker images. No image input changed:
    the job ends here, green, and its summary says so.
-3. **Frees runner disk.** `agent-runtime-base` is ~900 MB compressed and
+3. **Frees runner disk, for the agent-runtime family only** (since
+   2026-10-09: the deletion took a median 92 s, up to 261 s, three times the
+   median build, and a service image or `swarm-ui` does not need it). `agent-runtime-base` is ~900 MB compressed and
    several GB unpacked, and BuildKit holds its builder stage, its runtime and
    its exported layout at once before the browser image (Chromium) and the
    indexer (a Go toolchain and two compiled language servers) are built on it.
@@ -490,7 +516,7 @@ images under an approval given for "redeploy what is there".
 |---|---|
 | `verify` — unit tests, shellcheck, destroy-guard self-test | `promote` — scans again, then moves `:prod`, all or nothing |
 | `images and scan` — reuses CI's build, or for **every prod release** builds one here (Cloud Build, `<sha>` tags in Artifact Registry, **no channel tag**) | `terraform apply` — plan, shared-project guard, apply |
-| `push-images.sh --scan-only` — every digest confirmed and trivy-scanned; nothing moves | `deploy and smoke` — digest verification, the in-VPC smoke suite, the GKE proof |
+| `push-images.sh --scan-only` — every digest confirmed and trivy-scanned; nothing moves | `deploy` — digest verification; on prod also the in-VPC smoke suite and the GKE proof |
 | the digests written to the run summary, for the reviewer to read while the run waits | |
 
 A prod release **builds before the approval**: `application.yml` builds for
@@ -509,7 +535,7 @@ after the apply had already changed prod, which made it a question with no
 decision left in it. Adding a third for the promotion would have put
 promotion behind a *different* approval from the apply, not "that same" one.
 So `approval` is the only job in `release.yml` that names `prod` (or `dev`);
-`promote`, `terraform apply` and `deploy and smoke` name none. The one other
+`promote`, `terraform apply` and `deploy` name none. The one other
 environment is `dev-iam`, named by a dev-only job ([below](#a-dev-release-that-changes-iam-waits-for-the-owner)). They run only
 if it **succeeded**, and on prod only in the attempt it succeeded in (see
 "A prod approval clears one attempt" below).
@@ -531,7 +557,7 @@ two holes followed from it:
 * On a `skip_build` prod redeploy, `promote` is skipped the moment `approval`
   succeeds, so the apply is the very next job. A reviewer who approved and
   cancelled a second later still got a prod apply.
-* `deploy and smoke`'s GKE proof dispatches a browser task into the
+* `deploy`'s GKE proof (prod; dev's is accept.yml's) dispatches a browser task into the
   environment. It was `always() && steps.verify.outcome == 'success'`, so a
   cancel that landed on the smoke test still dispatched it.
 
@@ -569,7 +595,7 @@ So the approval is tied to the **attempt** it cleared:
   has not been observed here. If GitHub drops it instead, the output is
   empty: the check below then fails closed, and `stale-approval` still
   reports it.
-* On prod, `promote`, `terraform apply` and `deploy and smoke` each run only
+* On prod, `promote`, `terraform apply` and `deploy` each run only
   if `needs.approval.outputs.attempt == github.run_attempt`. Each carries the
   condition itself, because "Re-run this job" on a deploy whose smoke test
   failed keeps the apply's old `success` too.
@@ -601,7 +627,7 @@ records a deployment against a job that names an environment, and here that
 is only `approval`. So the repository's Deployments page lists prod as
 deployed at the commit once the approval passes, and it keeps saying so if
 the promotion or the apply then fails. The release run's own result is what
-says whether prod changed. Its `deploy and smoke` summary lists the digests
+says whether prod changed. Its `deploy` summary lists the digests
 the apply pinned, and that job's verify step fails unless every service runs
 them.
 
@@ -766,7 +792,7 @@ would have waved it through. Who administers a role is an IAM decision.
    if its sha256 differs from the one recorded, and applies **that file**. It
    never plans, because a new plan would be one nobody reviewed. After a
    successful apply it deletes the held plan.
-6. `deploy and smoke` runs after whichever apply ran. If the owner rejects
+6. `deploy` runs after whichever apply ran. If the owner rejects
    `dev-iam`, nothing deploys, and the run ends failed.
 
 **Why the state bucket and not a workflow artifact.** This repository is
@@ -836,6 +862,165 @@ classification can write. It checks four things:
 It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
+
+## The release timeline
+
+Owner decision 2026-10-08: cuts A, B and C of the release timing report. The
+release used to hold dev's lock through everything that only *checks* a
+deployment. Now it holds the lock only while it changes dev.
+
+### What was measured
+
+Over the 22 successful `release.yml` runs before 2026-10-08, the
+`release-dev` concurrency lock was held **100 min p50**:
+
+| stage | p50 |
+|---|---|
+| `verify` (the unit suite, shellcheck, the destroy-guard self-test) | 26.4 min |
+| `deploy and smoke` | 23.6 min: warm 11.4, smoke 9-14, GKE proof 3.5 |
+| `acceptance (dev)`, five groups one after another | 45.4 min: mock 8-12, generic 6-8, claude-code 4-7, workflow ~13, browser 2-3 |
+
+New digests were live **43 min** after the run started. The other **71 min**
+held the lock, and every later push queued behind it. `release-dev` is
+`cancel-in-progress: false`, so each new push replaced the pending run.
+
+### What changed
+
+* **A. Acceptance has its own workflow.** On dev, `release.yml` ends at
+  `deploy`, which verifies that every service, job and worker image runs the
+  pinned digests and then applies the tenant namespaces. Warming, the smoke
+  test, the GKE proof and the acceptance suite moved to
+  `.github/workflows/accept.yml`. It starts when a release completes
+  (`workflow_run`, on `main`), or by dispatch. Its deciding job
+  (`what dev runs`) has no concurrency, so a completion that accepts nothing
+  cannot cancel a real acceptance; only the accepting jobs carry
+  `accept-dev-<job>` groups with **`cancel-in-progress: true`**, because only
+  the newest deployed commit is worth accepting. A hotfix re-applying the
+  same SHA is accepted. A GitHub cancel does not stop a Cloud Run execution,
+  so a `stop an earlier acceptance` job cancels the running `swarm-verify`
+  executions before the new run's first wave.
+* **B. `verify` runs only on a dispatch.** On a push, `application.yml` runs
+  the unit suite, shellcheck, the destroy-guard self-test and the manifests
+  on the same SHA, and its `build images` job `needs: [python, shell,
+  manifests]`. The release takes that job's image record with `--reuse-ci
+  only` and refuses to build its own. So the record it ships cannot exist
+  unless those checks passed on that commit. A dispatch has no such proof: a
+  prod release, a dev dispatch that may build its own images (`or-build`), or
+  a `skip_build` redeploy. So `verify` still runs on every dispatch, prod
+  included. Each job that needs `verify` states one rule: `verify` succeeded,
+  or a push skipped it. `test_release_prod_gate.py` holds that a dispatch
+  whose `verify` did not succeed starts nothing that promotes, applies or
+  deploys. On a push, the plugin tag waits for `images and scan`, which found
+  CI's record.
+* **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
+  false`, one swarm-verify execution each.
+
+### Five at once does not fit, so it is two waves
+
+The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
+tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
+Each group's peak of tasks in flight, read from its group file:
+
+| group | peak | why |
+|---|---|---|
+| mock | ~13 | twelve tasks and a two-step workflow, submitted before it waits |
+| generic | ~8 | one task per command row |
+| workflow | ~4 | four workflow roots |
+| claude-code | ~3 | three tasks |
+| browser | ~3 | three tasks |
+
+Together that is about 31, over the ceiling. A task over the ceiling queues
+rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
+settle deadline, and time spent in the queue comes out of it. So the groups
+run in **two waves**:
+
+* **wave 1**: `mock`, `workflow` and `browser`, a peak of about 20;
+* **wave 2**: `generic` and `claude-code`, about 11. It starts when wave 1
+  ends, whatever wave 1 concluded.
+
+`test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
+`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
+would fit in one wave.
+
+### The timeline now (expected, not yet measured)
+
+| | before (p50, measured) | after (estimated from the same p50s) |
+|---|---|---|
+| `release-dev` lock, push | 100 min | about 100 − 26.4 (`verify`) − ~23 (warm, smoke, GKE proof) − 45.4 (acceptance) ≈ **5-10 min** past the wait for CI's image record |
+| new digests live, from the push | 43 min | CI's `build images` + scan, promote, apply. `verify`'s 26.4 min is no longer in front of the apply |
+| acceptance, after the deploy | 45.4 min, under the lock | warm 11.4 + smoke 9-14 + GKE proof 3.5 + wave 1 (~13) + wave 2 (~8) ≈ **45-50 min, outside the lock** |
+
+These numbers are subtraction, not a measurement. The first week of runs is
+the measurement. Re-measure the same way: the lock is the run's
+`created_at` → `updated_at`, and the stages are the jobs' own times.
+
+### It accepts exactly what dev runs
+
+`what dev runs` reads the SHA from `releases/dev/applied.json`, through
+`scripts/lib/release-order.sh deployed`. That is the record every successful
+dev apply writes, from either lane. Every later job checks out **that
+commit**, and the run's summary names it. A completed release is accepted
+only when `applied.json` names that very run:
+
+* a release that a newer commit superseded applied nothing, so it accepts
+  nothing;
+* a prod release records nothing for dev, so it accepts nothing either.
+
+A dispatch accepts whatever dev runs now, e.g. after a hotfix. A trigger that
+can accept nothing (a failed release, or a prod release, recognised by the
+`release prod <ref>` run-name that `release.yml` now sets on a dispatch) is
+put in a concurrency group of its own. It therefore cannot cancel a real
+acceptance.
+
+### A red acceptance is an issue, not a blocked deploy
+
+`report what was accepted` runs `scripts/accept-report.sh`. Every red run
+opens **one** issue labelled `bug`, or retitles and comments on the one
+already open. The issue names the SHA and every failing group, taken from
+the run's job list (`acceptance (mock)`, …). It is written in the bug form's
+sections. A green run changes nothing: the issue is closed by the change that
+fixed it. A red run against a deployment that is already gone (the hotfix
+lane applied a newer commit mid-run) is reported in the summary and not
+filed. If `what dev runs` itself fails (an identity not yet bootstrapped, an
+unreadable record), that is filed too.
+
+The trade the owner made: a red acceptance no longer stops the next commit
+reaching dev. It is reported, and the next push deploys regardless.
+
+### Prod is unchanged
+
+Acceptance never ran on prod. It spends subscription quota and opens real
+pull requests on the sandbox. So there was no acceptance-before-prod gate to
+keep, and none was added. A prod release still waits at `approval (prod)`.
+Its `deploy` still warms, smokes and proves GKE inside the release, on steps
+conditioned on `github.event.inputs.environment == 'prod'`. `dev-iam` still
+holds a dev plan that changes IAM. `test_release_prod_gate.py` and
+`test_release_dev_iam_gate.py` hold both gates.
+
+### Its identity is not the deployer
+
+`accept.yml` federates as **`vars.GCP_ACCEPT_SA`**, the account
+`terraform/bootstrap/acceptance.tf` creates and binds to `accept.yml` on
+`refs/heads/main` alone. It is **not** on `wif.tf`'s `deployer_workflows`, and
+`test_workflow_id_token_scope.py` keeps it off. What the account can do:
+
+* execute `swarm-verify` and the `swarm-job-*` worker jobs, and read their
+  executions (a custom role conditioned to those names). The suites run
+  *inside* the VPC as swarm-verify, under swarm-verify's own identity;
+* list jobs and read operations, read-only;
+* read the swarm-verify log view;
+* read `releases/` in the state bucket, and no state object.
+
+It cannot plan, apply, promote, write a release record, take the release lock
+or touch IAM. **The owner applies it** (`make bootstrap`), then sets the
+repository variable `GCP_ACCEPT_SA` to the `github_accept_service_account`
+output. Until then `what dev runs` fails at authentication, and the report
+files that as a red acceptance.
+
+What only a live run proves: that IAM evaluates the role's resource-name
+condition for Cloud Run jobs and executions as documented. A condition that
+matches nothing shows as `Permission 'run.jobs.runWithOverrides' denied` in
+`warm, smoke and GKE proof (dev)`.
 
 ## Hotfix releases
 
@@ -931,10 +1116,11 @@ the job that runs it (`_workflow` in
   tests, shellcheck and manifests passed -- and the images stage refuses to
   build anything itself.
 * **Warming the worker jobs, acceptance, the GKE proof and the plugin tag.**
-  The same push still starts the normal release, which runs all four.
-  Acceptance is **delayed, not dropped**: it runs on the normal release, and
-  if it finds a defect the hotfix put on dev, that release goes red as it
-  would have.
+  The same push still starts the normal release, which tags the plugin. When
+  that release completes, `accept.yml` warms, smokes, proves GKE and accepts
+  what dev then runs ([above](#the-release-timeline)). Acceptance is
+  **delayed, not dropped**: a defect the hotfix put on dev is filed as the
+  acceptance issue, as it would be for any commit.
 * **Any change to IAM.** A plan that changes IAM **fails** the hotfix lane
   before anything is applied, with "the change must go through release.yml
   and the dev-iam gate". The hotfix never applies IAM, so the owner's
@@ -964,8 +1150,9 @@ them. `scripts/lib/release-order.sh` does, through the state bucket:
   check runs before promote too, so `:dev` never moves backwards, and again
   at the start of the deploy; a verification or smoke test that fails
   *because* a newer commit reached dev meanwhile also ends green
-  (`release-order.sh unless-superseded`), and `acceptance` does not run for
-  a superseded release.
+  (`release-order.sh unless-superseded`). `accept.yml` accepts a completed
+  release only when `applied.json` names that run, so a superseded release
+  is never accepted.
 * A hotfix's apply waits up to 900 s for Terraform's own state lock
   (`-lock-timeout=900s`), where a release waits 180 s.
 * **Not on prod.** A prod release is a person's choice of commit behind
@@ -975,8 +1162,8 @@ them. `scripts/lib/release-order.sh` does, through the state bucket:
   guessed.
 
 In the usual case the hotfix lands first and the normal release of the same
-commit follows it -- same SHA, so it proceeds, re-applies the same digests and
-runs acceptance. The normal release of an *older* commit that reaches its
+commit follows it -- same SHA, so it proceeds, re-applies the same digests, and
+its completion starts `accept.yml`. The normal release of an *older* commit that reaches its
 promote or apply after the hotfix stops there, superseded.
 
 ### What the tests hold, and what they cannot
@@ -2285,7 +2472,12 @@ decides which of its other jobs a change can affect. The rest is skipped by its
 own `if:`.
 
 * **`application.yml`'s jobs: judged through `needs`.** `ci-gate` needs every
-  other job of the workflow (a test fails when one is left out) and passes only
+  other job of the workflow (a test fails when one is left out) except the two
+  that only keep an old check name, `format / unit tests` and `swarm-ui
+  typecheck / component tests`: each runs nothing but the judgement below over
+  jobs the gate already needs (a test holds both halves), and waiting for them
+  was one more runner queue on the critical path
+  ([measured](#where-pull-request-ci-time-goes-2026-10-09)). It passes only
   when each concluded `success` or `skipped`, and `what this change reaches`
   itself succeeded. A job skipped because something it needs failed is
   `skipped` too, but what failed is in the same list and fails the gate by
@@ -2534,6 +2726,124 @@ seconds replacing a container's is fine. `test_unit_shards.py` fails when fewer
 than 80 % of the test files have a weight, and holds the split to within 10 %
 of an even share.
 
+### Where pull-request CI time goes (2026-10-09)
+
+**Why this was measured.** Merging is the bottleneck: with strict up-to-date
+merging every merge re-runs CI on the next pull request, and the operator
+measured 15-25 minutes a run on 2026-10-09. The numbers above are 2026-10-07's
+*expected* ones; these are what the runs did.
+
+**Method.** The public REST API, unauthenticated, read on 2026-10-09 at
+~03:00 UTC: `GET /repos/{repo}/actions/workflows/application.yml/runs?event=pull_request&status=completed&per_page=30`,
+then `GET /actions/runs/{id}/jobs?filter=latest&per_page=100` for each.
+**30 runs and 540 job records read.** 12 of the 30 were `cancelled` —
+superseded by a newer push to the same branch — and are left out of the
+timings; 18 remain (16 `success`, 1 `failure`, plus 1 that reached nothing and
+ran only `changes` and `ci-gate`, 162 s). Queue is `created_at → started_at`
+(waiting for a runner); run is `started_at → completed_at`. Step times come
+from the same records. Job logs need a token, so step names, not log lines,
+are as deep as this goes.
+
+**Every job, over the 17 runs that reached the workflow** (seconds; `n` is
+how many job records ran, so the shards count four a run):
+
+| job | n | queue median | queue max | run median | run p90 | run max |
+|---|---:|---:|---:|---:|---:|---:|
+| `unit tests (k/4)` | 68 | 231 | 546 | 212 | 366 | 417 |
+| `build changed images without pushing` | 17 | 192 | 539 | 151 | 356 | 502 |
+| `integration tests (emulator)` | 17 | 182 | 396 | 149 | 157 | 161 |
+| `shellcheck` | 17 | 201 | 510 | 134 | 153 | 170 |
+| `swarm-ui component tests (k/4)` | 12 | 393 | 570 | 118 | 438 | 565 |
+| `swarm-ui typecheck / build` | 3 | 330 | 436 | 55 | 55 | 59 |
+| `lock / contract / format / bridge install` | 16 | 184 | 445 | 23 | 24 | 33 |
+| `kubernetes manifests` | 17 | 211 | 364 | 12 | 14 | 14 |
+| `release workflow wiring (actionlint)` | 17 | 225 | 408 | 6 | 7 | 7 |
+| `what this change reaches` | 18 | 73 | 375 | 8 | 8 | 8 |
+| `format / unit tests` (name-keeper) | 18 | 40 | 300 | 3 | 4 | 5 |
+| `swarm-ui typecheck / component tests` (name-keeper) | 18 | 270 | 468 | 3 | 4 | 4 |
+| `ci-gate` | 18 | 34 | 106 | 8 | 10 | 112 |
+
+**Inside the long jobs** (step medians): a unit shard is 196 s of `pytest` in
+212 s, so setup is ~15 s (uv and npm are already cached); the integration job
+is 109 s of tests and 19 s installing the emulator; `shellcheck` is 96 s of
+shellcheck; the image build spends a median **92 s (max 261 s) freeing runner
+disk** against 30 s building.
+
+**The shards are not balanced, inside or across** (test-step seconds):
+
+| shard | unit median | unit max | vitest median | vitest max |
+|---|---:|---:|---:|---:|
+| 1/4 | 190 | 234 | **469** | **555** |
+| 2/4 | 145 | 184 | 91 | 93 |
+| 3/4 | **347** | **403** | 95 | 101 |
+| 4/4 | 235 | 264 | 125 | 127 |
+
+**The critical path, run by run** — the last job before `ci-gate`, and the
+runner waits on the chain `changes → that job → its name-keeper → ci-gate`:
+
+| last to finish | runs | wall median (range) | queued on the path, median |
+|---|---:|---:|---:|
+| `unit tests (3/4)` | 8 | 983 s (569-1552) | 394 s |
+| another unit shard | 4 | 678 s (525-812) | 429 s |
+| `swarm-ui component tests (1/4)` | 3 | 1517 s (1495-1567) | 785 s |
+| `build changed images without pushing` | 2 | 889 s (843-935) | 308 s |
+
+Over all 17: wall median **935 s**, and a median **440 s of it — 47 % — is
+the critical path waiting for runners**. So, in order:
+
+1. **Runners.** A run starts 14 jobs, 19 with the UI, and pull requests arrive
+   together, so every hop on the path waits: 73 s for `changes`, ~230 s for
+   a shard, 40 s for the name-keeper, 34 s for `ci-gate`, at the median. More
+   shards would add runners to that queue and are **not** the answer here.
+2. **Shard 3/4 of the unit suite** — last in 8 of 17 runs, its tests ~2.4
+   times shard 2's and ~1.5 times the four shards' mean. The weights balance the shards' *summed* test time to the second
+   (863 s each); what is unbalanced is xdist's schedule inside the shard. Its
+   default `load` hands each worker a block up front, and shard 3 holds the
+   six sleep-bound tests of `test_startup_is_loud.py` (30-67 s each, waiting
+   out real DNS back-offs), which land together. Measured in a SwarmCloud
+   container, shard 3's files on 4 workers: **404 s under `load`, 287 s under
+   `--dist worksteal`**, against a floor of 276 s (summed test time / 4).
+3. **vitest shard 1/4** — last in every run that ran the UI, at ~4-5 times the
+   other shards. Not a split problem: `spacing.test.tsx` is one test that
+   walks every route in both themes — 1,089 s of 1,670 s for shard 1's 72
+   files in a full local run (288 files, 12 workers, so slower than CI's
+   3) — and vitest runs a file in one worker, so no assignment of files gets
+   below it.
+4. **The name-keeper hop** — `format / unit tests` waited a median 40 s, up to
+   300 s, for a runner to report three seconds of judgement that `ci-gate`
+   then repeats.
+
+**What changed, from this table:**
+
+* the unit shards run `pytest -n auto --dist worksteal` (2.);
+* `ci-gate` no longer `needs` the two name-keepers (4.). They still run and
+  report; each needs only jobs the gate needs and runs the gate's own
+  judgement step word for word, which `test_ci_gate.py` holds;
+* `build changed images without pushing` is skipped by its own `if:` when
+  `what this change reaches` finds no image input changed, so it takes no
+  runner (1.), and frees disk only for an `agent-runtime-*` image (the 92 s);
+* **not changed**: the shard counts (1. says why), the uv and npm caches (on
+  already, and setup is ~15 s), the vitest split (3.: the file is the floor;
+  splitting `spacing.test.tsx` by route is the fix, and it is the swarm-ui
+  track's file, so it is a question to the owner), and every required check,
+  the strict policy and the merge rules.
+
+**Expected, by replaying the 17 runs** with every measured queue wait kept
+as it was (so it under-counts: shorter jobs also shorten other runs' queues):
+the change cuts a median **130 s** a run (mean 143 s, up to 439 s), a median
+run going from **935 s to ~835 s**. By class:
+
+| pull request | measured median | expected | what bounds it after |
+|---|---:|---:|---|
+| docs-only | (none in the sample) | ~7.5 min (`changes` 81 s + integration's 182 s queue and 149 s run + `ci-gate` 42 s, at the medians) | `integration tests (emulator)` and `shellcheck` with their queues; the docs subset of the unit suite, and no image job |
+| UI-only | 1495 s (1 run) | ~1430 s | `spacing.test.tsx` in vitest shard 1 |
+| API / full, no UI | 828 s (14 runs) | ~790 s | the slowest unit shard (~250 s) or the image build, plus the runner queues |
+| full with UI | 1542 s (2 runs) | ~1315 s | `spacing.test.tsx` |
+| reaches nothing | 162 s (1 run) | unchanged | `ci-gate` |
+
+The first runs after this lands are the measurement: re-read them with the
+same two calls and correct this table.
+
 ## Merging through the merge queue
 
 **Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main
@@ -2780,10 +3090,13 @@ again.
 
 ## The release warms each Cloud Run worker job once on its new digest
 
-`deploy and smoke` runs `scripts/warm-jobs.sh` right after it has verified that
-every job runs the promoted digest, and before the smoke test and the
-`acceptance (dev)` job. The script executes each per-tenant worker job once
-with `--args=--self-test`.
+On dev, `accept.yml`'s `warm, smoke and GKE proof (dev)` runs
+`scripts/warm-jobs.sh` first, before its smoke test and before any
+acceptance group ([the release timeline](#the-release-timeline)). It runs
+against the digests that the release that just completed verified. On prod,
+the release's `deploy` still runs it, right after it has verified that every
+job runs the promoted digest and before the smoke test. The script executes
+each per-tenant worker job once with `--args=--self-test`.
 
 **Why.** The measurement of 2026-10-07 on #363 (874 claude-code attempts from
 09-30 to 10-07, 497 of them with Cloud Run execution conditions): the first
@@ -2815,10 +3128,13 @@ occupies a whole worker shape in the region while it starts.
 
 **It never fails the release.** If a warm execution fails, or the listing
 fails, the script prints a warning and exits 0. The cost is one slower first
-task. The step also sets `continue-on-error`. It runs only when the verify step
-succeeded, because warming the previous digest would warm nothing, and only
-under `!cancelled()`, because it executes jobs in the environment. That puts it
-under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
+task. The step also sets `continue-on-error`. In the prod release it runs
+only when the verify step succeeded, because warming the previous digest would
+warm nothing, and only under `!cancelled()`, because it executes jobs in the
+environment. That puts it under the prod gate's checks
+(`test_release_prod_gate.py` counts it as a deploy). In `accept.yml` it runs
+only after a release completed successfully, and so after that release's
+verify.
 `tests/unit/scripts/test_warm_jobs.py` and
 `tests/unit/worker/test_worker_self_test.py` hold all of this.
 
@@ -2840,8 +3156,9 @@ miss.
 
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
-The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
-deploy ([acceptance.md](acceptance.md) says what each check asserts). Until
+`accept.yml` runs `scripts/acceptance/` after every dev deploy
+([acceptance.md](acceptance.md) says what each check asserts; [the release
+timeline](#the-release-timeline) says why it is not a release job any more). Until
 2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
 and cloned and opened pull requests on this platform's own public repository.
 The history analysis of that day (#628) counted 58 fixture pull requests
@@ -2860,8 +3177,7 @@ the sweep and the sync all read it; none of them reads
 repository a CI run is for or the one the checkout was cloned from.
 [`test_acceptance_target.py`](../tests/unit/scripts/test_acceptance_target.py)
 holds the configuration to smoke and the sandbox, and fails if any file under
-`scripts/acceptance/` or the release's acceptance job names the public
-repository.
+`scripts/acceptance/`, or `accept.yml`, names the public repository.
 
 **How the suite gets into `smoke`.** It sends `X-Swarm-Tenant: smoke` on every
 API call (`SWARM_API_TENANT`, which `common.sh`'s `api_request` turns into the
@@ -2880,11 +3196,14 @@ read, and asks `GET /tenants/me` with the header and refuses any tenant but
 `smoke`, including a 403 `tenant_not_member`. It never falls back to the
 caller's default tenant: that fallback is how acceptance came to fill eng.
 
-**What the release job holds.** `contents: read` and `id-token: write`. The
-repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
-to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
-commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
-differ, and no other path) and opens or checks the fixture issue;
+**What `accept.yml` holds.** `contents: read` everywhere. `id-token: write`
+only on the jobs that start executions, as its own identity
+([above](#its-identity-is-not-the-deployer)). `issues: write` only on the
+report. The repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps
+and never to the suite. The first is `scripts/acceptance/sandbox-sync.sh`, in
+a job of its own before any group starts. It writes the deployed commit's
+`tests/acceptance/fixtures/` to the sandbox's `main` (only when they differ,
+and no other path) and opens or checks the fixture issue;
 `scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
 requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
 closes the pull requests and branches the suite opened there. The job's
@@ -2900,8 +3219,8 @@ runner instead, which does hold the sandbox token:
 
 * `github-verify.sh` runs after the suite (even a failed one) and before the
   sweep closes anything. It judges every open `swarm/task_` pull request of the
-  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
-  `started` step), and fails the job when one has an empty title or a title
+  sandbox opened since acceptance started (`SWARM_ACCEPTANCE_SINCE`, from the
+  sandbox job's `started` step), and fails the job when one has an empty title or a title
   carrying a task id, a body without its task id, a change outside
   `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
   `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body

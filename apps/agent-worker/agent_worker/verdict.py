@@ -18,6 +18,18 @@ A finding that is an object marked `"severity": "minor"` is also read out as a
 `MinorFinding`, which the gated step files on the tenant's wave epic rather
 than leaving in this file (#638, `agent_worker.findings_epic`).
 
+A finding object may also say WHERE it is: `"file"` (repository-relative),
+`"line"` (a positive int) and `"side"` (`"old"` or `"new"`, which half of the
+patch the line number counts in). Those are kept, validated, as
+`FindingLocation`s beside the text, so the console can pin the finding beside
+its line (docs/design/diff-viewer.md, variant 3). The path is DISPLAYED, never
+opened: validation is what keeps a hostile one (`../../etc/passwd`, an
+absolute path, a control character) out of the record, and nothing here or
+downstream reads a file by it. A location that fails validation is dropped and
+its finding is kept, because a pin on the wrong line is worse than none and a
+lost finding is worse than both. A verdict with no location reads exactly as
+it did before, and its record carries no new key.
+
 WHY THE GATE IS IN THE WORKER AND NOT THE SCHEDULER. The gated step is the
 one that publishes, so it has to run whatever the verdict: on NOT_YET its
 agent fixes the findings and then it publishes, on MERGE it publishes without
@@ -35,6 +47,7 @@ upstream task and the file.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -93,6 +106,48 @@ class MinorFinding:
     evidence: str = ""
 
 
+#: The two halves of a patch a finding's `line` can count in: the file before
+#: the change (`old`, a removed line) and after it (`new`).
+FINDING_SIDES = ("old", "new")
+
+#: The longest path and the highest line a location may name. Both are far
+#: past anything real; they exist so a hostile verdict cannot put a megabyte
+#: of "path" into `result_summary`, which is bounded at 1 MiB in all.
+MAX_LOCATION_PATH_CHARS = 1024
+MAX_LOCATION_LINE = 10_000_000
+
+#: What a staged input the review READ is called when it is a patch: the
+#: digest of each is recorded beside the locations, so the console can tell a
+#: pin made against one patch from the patch it is showing (lines drift after
+#: a fix round). `swarm-work.patch` is the name every step's diff is published
+#: under; `*.patch` keeps a hand-written review over another patch covered.
+PATCH_SUFFIX = ".patch"
+
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True)
+class FindingLocation:
+    """Where the review said finding number `finding` is (variant 3).
+
+    `finding` indexes `Verdict.findings`. `line` and `side` are both set or
+    both None: a line number without the half of the patch it counts in
+    cannot be placed, and a placement is never guessed.
+    """
+
+    finding: int
+    file: str
+    line: int | None = None
+    side: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        record: dict[str, Any] = {"finding": self.finding, "file": self.file}
+        if self.line is not None and self.side is not None:
+            record["line"] = self.line
+            record["side"] = self.side
+        return record
+
+
 @dataclass(frozen=True)
 class Verdict:
     """A verdict file, read and bounded."""
@@ -102,6 +157,10 @@ class Verdict:
     findings_dropped: int = 0
     minors: tuple[MinorFinding, ...] = field(default=())
     minors_dropped: int = 0
+    #: Only for kept findings that said where they are, in finding order.
+    locations: tuple[FindingLocation, ...] = field(default=())
+    #: Findings whose `file`, `line` or `side` was offered and not kept.
+    locations_dropped: int = 0
 
 
 def _normalise(value: Any) -> str | None:
@@ -230,6 +289,93 @@ def minor_findings(items: Any) -> tuple[tuple[MinorFinding, ...], int]:
     return tuple(minors[:MAX_MINORS]), max(len(minors) - MAX_MINORS, 0)
 
 
+def _repository_path(value: Any) -> str | None:
+    """`value` as a repository-relative path to display, None when it is not one.
+
+    Refused: anything but a non-blank string; one over the bound; a control
+    character or a backslash anywhere; an absolute path (`/x`, `C:x`, `~/x`);
+    and an empty, `.` or `..` segment, so the path names exactly one file
+    inside the checkout and reads the same to every renderer.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > MAX_LOCATION_PATH_CHARS:
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text) or "\\" in text:
+        return None
+    if text.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", text):
+        return None
+    if any(part in ("", ".", "..") for part in text.split("/")):
+        return None
+    return text
+
+
+def _line_number(value: Any) -> int | None:
+    # `type() is int`: a bool is an int to isinstance, and `true` is not line 1.
+    if type(value) is int and 1 <= value <= MAX_LOCATION_LINE:
+        return value
+    return None
+
+
+def _side(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text if text in FINDING_SIDES else None
+
+
+def finding_location(item: Any, index: int) -> tuple[FindingLocation | None, bool]:
+    """`(location, dropped)` for finding `index`: what is kept, and whether any was not.
+
+    A string finding, or an object that names none of `file`, `line` and
+    `side`, has no location and drops nothing. Otherwise the path must pass
+    `_repository_path` or the whole location goes (a line in no file is no
+    place); a valid path is kept with its line and side only when BOTH pass,
+    and is kept alone, as "this file", when either does not.
+    """
+    if not isinstance(item, dict):
+        return None, False
+    offered = [key for key in ("file", "line", "side") if item.get(key) not in (None, "")]
+    if not offered:
+        return None, False
+    path = _repository_path(item.get("file"))
+    if path is None:
+        return None, True
+    line, side = _line_number(item.get("line")), _side(item.get("side"))
+    if line is not None and side is not None:
+        return FindingLocation(finding=index, file=path, line=line, side=side), False
+    return FindingLocation(finding=index, file=path), offered != ["file"]
+
+
+def reviewed_patches(review_task: Any) -> list[dict[str, str]]:
+    """The patches the review step read, each with its digest, from its task document.
+
+    Read from the review's `result_summary.staged_inputs`, which its own
+    worker wrote with the sha256 of each file as staged
+    (`inputs.StagedInput.sha256`): the worker's measurement, not the agent's
+    claim, so a verdict cannot vouch for a patch it never read. An input
+    without a well-formed digest (staged before digests were kept) is left
+    out, and the console treats a finding with no digest to compare as not
+    placed.
+    """
+    summary = review_task.get("result_summary") if isinstance(review_task, dict) else None
+    staged = summary.get("staged_inputs") if isinstance(summary, dict) else None
+    patches: list[dict[str, str]] = []
+    for entry in staged if isinstance(staged, list) else ():
+        if not isinstance(entry, dict):
+            continue
+        filename, digest = entry.get("filename"), entry.get("sha256")
+        upstream = entry.get("task_id")
+        if (
+            isinstance(filename, str) and filename.endswith(PATCH_SUFFIX)
+            and isinstance(digest, str) and _SHA256_HEX.fullmatch(digest)
+            and isinstance(upstream, str)
+        ):
+            patches.append({"task_id": upstream, "filename": filename, "sha256": digest})
+    return patches
+
+
 def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
     """Read a staged verdict file, or refuse it by name."""
     where = f"the verdict file {filename!r} staged from task {task_id}"
@@ -262,7 +408,15 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
     items = raw_findings if isinstance(raw_findings, list) else (
         [raw_findings] if raw_findings not in (None, "") else []
     )
-    texts = [t for t in (_finding_text(item) for item in items) if t]
+    kept = [(item, t) for item, t in ((item, _finding_text(item)) for item in items) if t]
+    texts = [t for _item, t in kept]
+    locations: list[FindingLocation] = []
+    locations_dropped = 0
+    for index, (item, _text) in enumerate(kept[:MAX_FINDINGS]):
+        location, dropped = finding_location(item, index)
+        if location is not None:
+            locations.append(location)
+        locations_dropped += dropped
     minors, minors_dropped = minor_findings(items)
     return Verdict(
         verdict=verdict,
@@ -270,6 +424,8 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
         findings_dropped=max(len(texts) - MAX_FINDINGS, 0),
         minors=minors,
         minors_dropped=minors_dropped,
+        locations=tuple(locations),
+        locations_dropped=locations_dropped,
     )
 
 

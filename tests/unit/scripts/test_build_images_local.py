@@ -341,9 +341,9 @@ def _step(job: dict, step_id: str) -> dict:
 def test_the_job_builds_with_buildx_and_pushes_logs_in_and_authenticates_nowhere():
     job = _job()
     text = json.dumps(job)
-    # Pull requests only, and only those the `changes` job says reach this
-    # workflow -- the gate that was application.yml's path filter.
-    assert job.get("if") == "github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'", job.get("if")
+    # Pull requests only, and only those the `changes` job says reach an
+    # image (test_the_build_check_is_skipped_only_on_the_changes_jobs_no).
+    assert job.get("if") == "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'", job.get("if")
     assert job.get("needs") == "changes", job.get("needs")
     assert job.get("permissions") == {"contents": "read"}, job.get("permissions")
     assert "build-images.sh --build-only --local" in text, "the job builds on the runner"
@@ -446,8 +446,43 @@ def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expe
     assert proc.returncode == 0, proc.stderr
     assert outputs.get("images", "") == expected, outputs
     assert outputs.get("build") == ("true" if expected else "false"), outputs
+    # The disk is freed for the agent-runtime family only: a swarm-ui build
+    # does not pay the median 92 s of deleting toolchains (2026-10-09).
+    # MUTATION: set free_disk=true unconditionally, or drop it.
+    assert outputs.get("free_disk") == ("true" if "agent-runtime-" in expected else "false"), outputs
     if not expected:
         assert "no image input changed" in summary, summary
+    # The `changes` job answers the same question over the same diff, so the
+    # job is skipped exactly when this plan would build nothing. MUTATION:
+    # make the images step say false for a change that reaches an image, or
+    # true for docs/.
+    proc, gate, _ = _run_step(_changes_images_step(), root, tmp_path, EVENT="pull_request", APP="true",
+                              BASE_SHA=base, HEAD_SHA=head)
+    assert proc.returncode == 0, proc.stderr
+    assert gate.get("images") == ("true" if expected else "false"), (gate, proc.stdout)
+
+
+def _changes_images_step() -> dict:
+    (step,) = [s for s in yaml.safe_load(WORKFLOW.read_text())["jobs"]["changes"]["steps"] if s.get("id") == "images"]
+    return step
+
+
+def test_the_build_check_is_skipped_only_on_the_changes_jobs_no(tmp_path):
+    """The job's `if:` reads the `changes` job's `images` output, and that
+    output says build whenever it cannot tell. MUTATION: gate the job on `app`
+    again, or answer `false` off a pull request or on an unreadable diff."""
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    assert jobs[JOB]["if"] == "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'"
+    assert jobs["changes"]["outputs"]["images"].replace(" ", "") == "${{steps.images.outputs.images}}"
+    step = _changes_images_step()
+    empty = tmp_path / "not-a-repo"
+    empty.mkdir()
+    proc, out, _ = _run_step(step, empty, tmp_path, EVENT="push", APP="true", BASE_SHA="", HEAD_SHA="")
+    assert proc.returncode == 0 and out.get("images") == "true", (proc.stderr, out)
+    proc, out, _ = _run_step(step, empty, tmp_path, EVENT="pull_request", APP="false", BASE_SHA="a", HEAD_SHA="b")
+    assert proc.returncode == 0 and out.get("images") == "false", (proc.stderr, out)
+    proc, out, _ = _run_step(step, empty, tmp_path, EVENT="pull_request", APP="true", BASE_SHA="a", HEAD_SHA="b")
+    assert proc.returncode == 0 and out.get("images") == "true", (proc.stderr, out)
 
 
 def test_ci_gate_fails_when_the_build_check_failed(tmp_path):

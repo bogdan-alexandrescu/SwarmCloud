@@ -916,7 +916,7 @@ it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 | Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
 | Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
 | Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
-| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Relaunching the run | re-runs every agent that did not finish AND every agent that started after a failed or edited one, completed ones included | the same, and for `sc:remote` every re-run row DISPATCHES AGAIN — a second task, even when that row's first task had already completed. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
 | Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
 
 **Which checkout is inferred.** The bridge reads the git checkout of the
