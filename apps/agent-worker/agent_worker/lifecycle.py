@@ -112,11 +112,13 @@ import base64
 import dataclasses
 import fnmatch
 import functools
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -136,7 +138,9 @@ from swarm_common.profiles import (
 )
 from swarm_common.states import EventType, ParkReason, TaskState
 from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
+from swarm_redaction import MASK as CREDENTIAL_MASK
 from swarm_redaction import RULES as CREDENTIAL_RULES
+from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
@@ -735,6 +739,10 @@ class Worker:
         # kill the test runner. Returns the PIDs still alive after the reap --
         # empty means clean, non-empty means refuse to publish.
         self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
+        # The clean publish repository's `.git/config` as the worker built it,
+        # keyed by the repository (`_build_clean_repo`), re-checked after the
+        # second reap before the credential-bearing publish (#346 box 40).
+        self._publish_config_seals: dict[str, str | None] = {}
         # A worker action's seams (#295): the forge transport (None is the
         # real, no-redirect one in `forge._open`), the environment its Job's
         # forge record is read from, and the bounded pause between two
@@ -9505,6 +9513,7 @@ class Worker:
                 clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
             ),
         )
+        self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
 
     def _publish_git(
@@ -9699,6 +9708,27 @@ class Worker:
                 surviving_pids=list(survivors),
             )
             return out
+        # THE PUBLISH REPOSITORY IS STILL THE ONE THE WORKER BUILT (#346 box
+        # 40, security pass 2026-10-09). A repository the harvest built after
+        # the FIRST reap sat on disk until this second one; anything that ran
+        # in between could have written its `.git/config` -- a
+        # `core.sshCommand`, a credential helper, a remote, an `include` --
+        # which every git below reads with the tenant token in hand. No such
+        # process should exist (the first reap's escape is closed), so this
+        # is the belt: the config must be byte for byte what
+        # `_build_clean_repo` left, a regular file and not a link, or nothing
+        # is published.
+        if publish_repo is not None:
+            sealed = self._publish_config_seals.get(str(publish_repo), "unsealed")
+            if sealed == "unsealed" or _config_seal(publish_repo) != sealed:
+                out["published"] = False
+                out["publish_reason"] = (
+                    "refusing to publish: the publish repository's .git/config changed "
+                    "between the harvest and the pre-publish reap; the tenant credential "
+                    "is not put in hand with a configuration the worker did not write"
+                )
+                self.log.error("refusing to publish: the publish repository's config changed")
+                return out
 
         auto_committed = False
         folded = 0
@@ -11700,8 +11730,9 @@ LeakPredicate = Callable[[str, str], "CredentialHit | None"]
 #: The rule name a refusal gives for a task's registered secret.
 REGISTERED_SECRET_RULE = "registered_secret"
 
-#: The new-file start line of a `-U0` hunk header: `@@ -a[,b] +c[,d] @@`.
-_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)")
+#: The new-file start line, and line count, of a `-U0` hunk header:
+#: `@@ -a[,b] +c[,d] @@`.
+_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))?")
 
 
 def _first_difference(original: str, scrubbed: str) -> int:
@@ -11769,6 +11800,14 @@ class _DiffLeakScanner:
         self._buf: list[str] = []
         self._buf_len = 0
         self._carry = ""
+        # WHERE EACH FILE GAINED LINES (#361 box 79): the new file's path
+        # (unquoted) to its added line ranges, `(first line, count)`, one per
+        # hunk. `-U0` shows no line the branch kept, so an added key body
+        # between an unchanged BEGIN/END pair carries no marker here; the
+        # caller reads the new file around these ranges
+        # (`_added_inside_a_private_key`).
+        self.added: dict[str, list[tuple[int, int]]] = {}
+        self._added_key = ""
 
     def feed(self, data: bytes) -> None:
         if self.hit is None:
@@ -11855,13 +11894,20 @@ class _DiffLeakScanner:
             self._add("\n")
         elif self._mode == "header":
             name = self._header_line[4:].rstrip("\r")
-            if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+            quoted = len(name) > 1 and name.startswith('"') and name.endswith('"')
+            if quoted:
                 name = name[1:-1]
             self._path = name[2:] if name.startswith("b/") else name
+            self._added_key = _c_unquote(self._path) if quoted else self._path
         elif self._mode == "hunk":
             start = _HUNK_NEW_START.match(self._header_line)
             if start is not None:
                 self._hunks.append((self._file_lines, int(start.group(1))))
+                count = 1 if start.group(2) is None else int(start.group(2))
+                if count and self._added_key and self._added_key != "/dev/null":
+                    self.added.setdefault(self._added_key, []).append(
+                        (int(start.group(1)), count)
+                    )
         self._mode, self._head, self._header_line = None, "", ""
 
     # -- scanning ------------------------------------------------------------
@@ -11909,6 +11955,176 @@ class _DiffLeakScanner:
             self._scan(last=True)
         self._carry = ""
         self._file_lines, self._window_line, self._hunks = 0, 0, []
+        self._added_key = ""
+
+
+def _config_seal(repo: Path) -> str | None:
+    """A digest of `repo/.git/config`, read without following a link, or None
+    when it is missing or is not a regular file (#346 box 40)."""
+    try:
+        fd = os.open(Path(repo) / ".git" / "config", os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def _c_unquote(body: str) -> str:
+    """A path git C-quoted in a diff header (the quotes already removed), as
+    the path itself: `\\t`, `\\"`, `\\\\` and octal byte escapes undone."""
+    simple = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+    raw = body.encode("utf-8", "surrogateescape")
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        byte = raw[i]
+        if byte == 92 and i + 1 < len(raw):
+            following = chr(raw[i + 1])
+            if following in simple:
+                out.append(simple[following])
+                i += 2
+                continue
+            octal = raw[i + 1 : i + 4]
+            if len(octal) == 3 and all(48 <= b <= 55 for b in octal):
+                out.append(int(octal, 8) & 0xFF)
+                i += 4
+                continue
+        out.append(byte)
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _private_key_spans(text: str) -> list[tuple[int, int]]:
+    """The spans of `text` main's private-key rule masks, as `(start, end)`.
+
+    `swarm_redaction.rules.mask_private_keys` (decoded=False, not inside a
+    key), step for step and with its own helpers, so "inside a key" means
+    exactly what the private-key rule means everywhere else on the platform
+    (owner decision, 2026-10-01). A test rebuilds `mask_private_keys`'s output
+    from these spans for every shape it masks.
+    """
+    from swarm_redaction.rules import _PEM_BEGIN, _PEM_END, _PEM_HINT, _block_end, _tail_start
+
+    if _PEM_HINT not in text:
+        return []
+    ends = [(m.start(), m.end()) for m in _PEM_END.finditer(text)]
+    end_starts = [start for start, _ in ends]
+    end_ends = [end for _, end in ends]
+    spans: list[tuple[int, int]] = []
+
+    def orphans(low: int, high: int) -> None:
+        piece = text[low:high]
+        if _PEM_HINT not in piece:
+            return
+        pos = 0
+        for marker in _PEM_END.finditer(piece):
+            start = _tail_start(piece, marker.start(), pos)
+            if start < marker.start():
+                spans.append((low + start, low + marker.start()))
+                pos = marker.start()
+
+    pos = search = 0
+    while True:
+        begin = _PEM_BEGIN.search(text, search)
+        if begin is None:
+            break
+        orphans(pos, begin.start())
+        stop = _block_end(text, begin.end(), end_starts, end_ends, to_end=False)
+        spans.append((begin.end(), stop))
+        pos = stop
+        search = max(stop, begin.end())
+    orphans(pos, len(text))
+    return spans
+
+
+#: The most of one file the private-key context check reads (#361 box 79). A
+#: bigger file holding a key marker, with lines added to it, is refused: the
+#: check cannot tell, so it fails closed.
+KEY_CONTEXT_MAX_BYTES = 32 * 1024 * 1024
+#: How many paths one `git grep` is given.
+_KEY_CONTEXT_PATHS_PER_GREP = 200
+
+
+def _added_inside_a_private_key(
+    added: dict[str, list[tuple[int, int]]],
+    *,
+    git: list[str],
+    rev: str,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+) -> ScanHit | None:
+    """The first added line that falls inside a private key of the NEW file
+    `rev` holds, or None (#361 box 79, security pass 2026-10-09).
+
+    The scans read a `-U0` diff, which shows no line the branch kept: a key
+    body put between an existing, unchanged BEGIN/END pair (a test stub
+    replaced by a real key) adds no marker, so the private-key rule never saw
+    one, and the key was published. This asks the whole new file instead:
+    `git grep` names the files at `rev` holding a marker; for each that gained
+    lines, the file is streamed (never stored) and main's private-key spans
+    (`_private_key_spans`) are laid over the added ranges. An added line
+    inside a span is refused as `private_key_block`, on its line.
+    """
+    if not added:
+        return None
+    from swarm_redaction.rules import _PEM_HINT
+
+    kwargs: dict[str, Any] = {
+        "repo": repo, "private_dir": private_dir, "logs_dir": logs_dir,
+        "timeout_seconds": timeout_seconds, "logger": logger,
+    }
+    paths = sorted(added)
+    marked: list[str] = []
+    for index in range(0, len(paths), _KEY_CONTEXT_PATHS_PER_GREP):
+        chunk = paths[index : index + _KEY_CONTEXT_PATHS_PER_GREP]
+        code, listing, truncated = _git_text_full(
+            [*git, "grep", "-l", "-z", "--no-color", "--no-textconv", "-F", "-e", _PEM_HINT,
+             rev, "--", *(":(literal)" + path for path in chunk)],
+            slug="publish-key-context-grep", **kwargs,
+        )
+        # `git grep` exits 1 when nothing matched.
+        if code not in (0, 1) or truncated:
+            raise GitError("could not search the branch's files for private-key markers")
+        prefix = rev + ":"
+        for entry in listing.split("\0"):
+            if entry:
+                marked.append(entry[len(prefix):] if entry.startswith(prefix) else entry)
+    for path in marked:
+        ranges = added.get(path)
+        if not ranges:
+            continue
+        chunks: list[bytes] = []
+        size = [0]
+
+        def keep(data: bytes) -> None:
+            if size[0] <= KEY_CONTEXT_MAX_BYTES:
+                chunks.append(data)
+            size[0] += len(data)
+
+        code = _git_stream(
+            [*git, "cat-file", "blob", f"{rev}:{path}"],
+            slug="publish-key-context-read", consume=keep, **kwargs,
+        )
+        if code != 0:
+            raise GitError("could not read a file the branch adds lines to")
+        if size[0] > KEY_CONTEXT_MAX_BYTES:
+            return ScanHit(path, "private_key_block", ranges[0][0])
+        text = b"".join(chunks).decode("utf-8", "replace")
+        spans = _private_key_spans(text)
+        if not spans:
+            continue
+        for start, end in spans:
+            first = text.count("\n", 0, start) + 1
+            last = first + text.count("\n", start, max(end - 1, start))
+            for line, count in ranges:
+                if line <= last and line + count - 1 >= first:
+                    return ScanHit(path, "private_key_block", max(line, first))
+    return None
 
 
 def _scan_diff_stream(
@@ -11922,8 +12138,16 @@ def _scan_diff_stream(
     slug: str,
     timeout_seconds: int,
     logger: Any,
+    new_rev: str | None = None,
+    git: list[str] | None = None,
 ) -> tuple[int, ScanHit | None]:
-    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None)."""
+    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None).
+
+    With `new_rev` (the diff's new side) and `git` (the git argv prefix), a
+    diff that added nothing credential-shaped is also asked whether an added
+    line sits inside a private key of the new file
+    (`_added_inside_a_private_key`, #361 box 79).
+    """
     scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
     code = _git_stream(
         argv,
@@ -11935,7 +12159,13 @@ def _scan_diff_stream(
         logger=logger,
         consume=scanner.feed,
     )
-    return code, scanner.close()
+    hit = scanner.close()
+    if code == 0 and hit is None and new_rev is not None and git is not None:
+        hit = _added_inside_a_private_key(
+            scanner.added, git=git, rev=new_rev, repo=repo, private_dir=private_dir,
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        )
+    return code, hit
 
 
 # -- the tiered, path-aware publish guard (#373) ------------------------------
@@ -11959,6 +12189,12 @@ def _scan_diff_stream(
 #   found inputs main refuses and the branch published. #373's real blocker
 #   was the generic key=value rule in redaction tests, not PEM markers; a
 #   test builds its marker at runtime.
+#   SECURITY PASS, 2026-10-09 (owner decision: un-deferred): main's rule is
+#   also laid over the WHOLE new file wherever an added line falls inside a
+#   key it holds (`_added_inside_a_private_key`, #361 box 79), and a free
+#   base64 blob that is key material without any marker -- encrypted-key
+#   ciphertext or a plaintext DER key -- is refused as
+#   `headerless_private_key` (`_headerless_key_at`, #361 box 80).
 # * TIER 2, outside test paths: the generic rules refuse as before, except
 #   for a REFERENCE (owner decisions, 2026-10-02; `_is_a_reference`): a value
 #   that is wholly one `${name}` slot, or -- not under a password name and
@@ -11966,7 +12202,9 @@ def _scan_diff_stream(
 #   KNOWN reference shape. Vendor rules are not relaxed.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
-#   CODE only (`is_test_path`).
+#   CODE only (`is_test_path`), never vendored third-party code (#361 box
+#   73), and a placeholder word counts only standing alone, beside nothing
+#   credential-shaped (#361 boxes 72 and 74).
 #
 # `swarm_redaction.RULES` is unchanged: read-time masking shares it, and a
 # false positive there costs one masked word, not a refused publish.
@@ -12013,9 +12251,19 @@ CREDENTIAL_MIN_CHARS = 16
 #: (`p4ssw0rd-p4ssw0rd` is 3.0) sit below.
 CREDENTIAL_MIN_ENTROPY_BITS = 3.5
 
-#: A value holding any of these is a placeholder, not a credential: a mask,
-#: a run of x, a `<name>` or `${VAR}` slot, or a word that says so.
-_PLACEHOLDER = re.compile(r"\*|x{4,}|<[^>]*>|\$\{[^}]*\}|fake|test|dummy|example", re.IGNORECASE)
+#: What marks a value as a placeholder rather than a credential: a mask, a run
+#: of x, a `<name>` or `${VAR}` slot, or a word that says so. A WORD COUNTS
+#: ONLY STANDING ALONE (#361 box 72, security pass 2026-10-09): bounded by a
+#: character that is not a letter or digit, or by the value's edge. As a
+#: substring it let `latest`, `attest` and any real value with `test` glued
+#: into it read as a fixture in a test path. And a placeholder does not hide
+#: what stands BESIDE it: `_looks_like_a_credential` judges each segment left
+#: once it is removed, so `db-test-<24 random characters>` is a credential and
+#: `fake-unmasked-credential-000` is not.
+_PLACEHOLDER = re.compile(
+    r"\*+|x{4,}|<[^>]*>|\$\{[^}]*\}|(?<![A-Za-z0-9])(?:fake|test|dummy|example)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 #: Where a refusal names a private key: its first BEGIN or END marker.
 _PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
@@ -12037,6 +12285,14 @@ _TEST_FILE = re.compile(r"(?:test_.+\..+|.+_test\..+|.+\.(?:test|spec)\..+)")
 #: NEVER a test path, even under `tests/`: the files real credentials live in.
 #: Matched against the file name; `*credential*` also against every directory.
 _NEVER_TEST_FILES = (".env*", "*.pem", "*.key", "*credential*", "*secret*.json")
+#: Directories that hold THIRD-PARTY code (#361 box 73, security pass
+#: 2026-10-09). A `test/` inside `node_modules/` or `vendor/` is a package's
+#: tests, not the agent's: the loose tier exists so the agent's own tests can
+#: assert on fixtures, and a vendored tree is copied in, not written to that
+#: end. Anything under one of these is judged strictly (compared lower-cased).
+_THIRD_PARTY_DIRS = frozenset(
+    {"node_modules", "vendor", "third_party", "third-party", "bower_components", "site-packages"}
+)
 
 
 def is_test_path(path: str) -> bool:
@@ -12048,8 +12304,9 @@ def is_test_path(path: str) -> bool:
     and it sits under a `tests/`, `test/` or `__tests__/` directory at any
     depth (case-insensitive) or is named `test_*`, `*_test.*`, `*.test.*` or
     `*.spec.*`. A file named `*credential*` -- or under a `*credential*`
-    directory -- never is. An empty or unknown path is not one: the guard
-    falls to its stricter tier when it cannot tell.
+    directory, or under a third-party directory (`_THIRD_PARTY_DIRS`) --
+    never is. An empty or unknown path is not one: the guard falls to its
+    stricter tier when it cannot tell.
     """
     if not path:
         return False
@@ -12060,6 +12317,8 @@ def is_test_path(path: str) -> bool:
     if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NEVER_TEST_FILES):
         return False
     if any("credential" in part.lower() for part in parts[:-1]):
+        return False
+    if any(part.lower() in _THIRD_PARTY_DIRS for part in parts[:-1]):
         return False
     if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
         return True
@@ -12080,15 +12339,25 @@ def _shannon_bits(value: str) -> float:
 def _looks_like_a_credential(value: str) -> bool:
     """True when `value` is shaped like a real credential rather than a
     fixture: at least `CREDENTIAL_MIN_CHARS` characters, letters AND digits,
-    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character, and no
-    placeholder (`_PLACEHOLDER`)."""
+    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character.
+
+    A value holding a placeholder (`_PLACEHOLDER`) is a fixture only when no
+    segment beside it -- what is left once the placeholders are removed,
+    split at every character that is not a letter or digit -- is itself
+    credential-shaped (#361 box 72): `test-password-123` and
+    `fake-unmasked-credential-000` are fixtures, `db-test-<random>` is not.
+    """
     if len(value) < CREDENTIAL_MIN_CHARS:
         return False
-    if _PLACEHOLDER.search(value):
-        return False
+    if _PLACEHOLDER.search(value) is not None:
+        rest = _PLACEHOLDER.sub(" ", value)
+        return any(_looks_like_a_credential(part) for part in _NOT_ALNUM.split(rest))
     if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
         return False
     return _shannon_bits(value) >= CREDENTIAL_MIN_ENTROPY_BITS
+
+
+_NOT_ALNUM = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _decodes_as_a_jwt(token: str) -> bool:
@@ -12114,16 +12383,47 @@ def _decodes_as_a_jwt(token: str) -> bool:
     return isinstance(decoded, dict) and "alg" in decoded
 
 
-#: Words that mark a vendor-shaped fixture as one.
-_VENDOR_PLACEHOLDER = re.compile(r"example|test|fake|x{4,}", re.IGNORECASE)
+#: Words that mark a vendor-shaped fixture as one, each STANDING ALONE in the
+#: token (#361 box 74): an `sk-` key whose tail is `test-aaaa` says it is a
+#: fixture; an AWS key id ending `<12 random>TEST` only has the word glued to
+#: a real-shaped key.
+_VENDOR_PLACEHOLDER = re.compile(
+    r"(?<![A-Za-z0-9])(?:example|test|fake|dummy)(?![A-Za-z0-9])|x{4,}", re.IGNORECASE
+)
+#: The shortest segment beside a vendor placeholder that can be key material:
+#: a key's variable part is 16 to 40 random characters, and a fixture's
+#: segments are words, digit runs or a few letters (an `sk-` tail of
+#: `ant-test-0000`, a `ya29.` tail of `fake-access-token`).
+_VENDOR_SEGMENT_MIN_CHARS = 8
+#: The vendors' own documented example values, matched whole. AWS's access key
+#: id example glues EXAMPLE into the key, which box 74 no longer accepts from
+#: an arbitrary key; this value is the published one, nothing else.
+_DOCUMENTED_EXAMPLES = frozenset({"AKIA" + "IOSFODNN7" + "EXAMPLE"})
 
 
-def _is_explicit_placeholder(tail: str) -> bool:
-    """True when a vendor token's variable part says it is a fixture: it holds
-    EXAMPLE, test, fake or a run of four x, or is one repeated character."""
-    return (
-        _VENDOR_PLACEHOLDER.search(tail) is not None
-        or (len(tail) >= 4 and len(set(tail)) == 1)
+def _is_explicit_placeholder(tail: str, token: str = "") -> bool:
+    """True when a vendor token's variable part says it is a fixture: it is
+    one repeated character, the vendor's documented example (`token`), or it
+    holds a placeholder word standing alone or a run of four x AND no segment
+    left beside them is key-shaped (#361 box 74): at least
+    `_VENDOR_SEGMENT_MIN_CHARS` characters, six of them distinct, not only
+    digits, and mixing letters with digits or upper with lower case.
+    """
+    if token in _DOCUMENTED_EXAMPLES:
+        return True
+    if len(tail) >= 4 and len(set(tail)) == 1:
+        return True
+    if _VENDOR_PLACEHOLDER.search(tail) is None:
+        return False
+    return not any(
+        len(part) >= _VENDOR_SEGMENT_MIN_CHARS
+        and len(set(part)) >= 6
+        and not part.isdigit()
+        and (
+            (any(c.isdigit() for c in part) and any(c.isalpha() for c in part))
+            or (any(c.isupper() for c in part) and any(c.islower() for c in part))
+        )
+        for part in _NOT_ALNUM.split(_VENDOR_PLACEHOLDER.sub(" ", tail))
     )
 
 
@@ -12366,7 +12666,7 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
         return True
     prefix = _VENDOR_PREFIX.match(match.group(0))
     tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
-    return not _is_explicit_placeholder(tail)
+    return not _is_explicit_placeholder(tail, match.group(0))
 
 
 def _credential_in(path: str, added: str) -> CredentialHit | None:
@@ -12404,6 +12704,133 @@ def _credential_in(path: str, added: str) -> CredentialHit | None:
                 continue
             if _match_counts(rule, match, in_tests):
                 return CredentialHit(rule.name, start)
+    at = _headerless_key_at(added)
+    if at is not None:
+        return CredentialHit(HEADERLESS_KEY_RULE, at)
+    return None
+
+
+# -- key material with no marker in the added text (#361 box 80) --------------
+#
+# SECURITY PASS, 2026-10-09 (owner decision: the pass is un-deferred). The
+# private-key rule is main's `mask_private_keys`, which needs a BEGIN or END
+# marker in the text it is given. Traditional encrypted PEM ciphertext held in
+# a variable, with its `Proc-Type`/`DEK-Info` headers and markers built
+# somewhere else (another file, an unchanged line, a runtime join), carries no
+# marker, and was published. So the guard also refuses a free base64 blob
+# that IS key material on its own terms, in every path and tier:
+#
+# * ciphertext: at least `CIPHERTEXT_MIN_BYTES` decoded, a whole number of
+#   8-byte cipher blocks (DES, 3DES and AES-CBC, every cipher a traditional
+#   PEM names), random on both readings -- the base64 text at least
+#   `CIPHERTEXT_MIN_CHAR_BITS` per character, which no word, path or
+#   identifier reaches, and the bytes as varied as random bytes are -- and not
+#   a file format's magic (an image, an archive, a font);
+# * a plaintext DER private key: one DER SEQUENCE spanning the blob that opens
+#   with a key's version INTEGER (PKCS#1, SEC1, PKCS#8) or an encrypted
+#   PKCS#8's PBES algorithm. A certificate opens otherwise, and passes.
+#
+# A blob is the base64 runs a wrapped or concatenated literal is made of --
+# joined across whitespace, quotes, `+` and escaped newlines, never across a
+# `,` or `:` that separates two values -- and ends at its `=` padding.
+#
+# RESIDUAL RISK: a blob under 128 bytes, one cut by anything but those
+# joiners, base64url or any other encoding, and ciphertext deliberately padded
+# off the block size all pass. The guard stops a key committed by mistake or
+# by habit; an agent set on smuggling bytes past a pattern can always encode
+# them past it, and CI's secret scan still runs after the push.
+
+#: The rule name a refusal gives for headerless key material.
+HEADERLESS_KEY_RULE = "headerless_private_key"
+#: The smallest encrypted key: an EC P-256 key's DER is 121 bytes, padded to 128.
+CIPHERTEXT_MIN_BYTES = 128
+#: Uniform base64 over 172 characters measures about 5.7 bits a character;
+#: prose, identifiers and paths stay well under 5.
+CIPHERTEXT_MIN_CHAR_BITS = 5.2
+#: Leading bytes of formats that are high-entropy and are not keys.
+_NOT_KEY_MAGIC = (
+    b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"\x1f\x8b", b"PK\x03\x04", b"%PDF", b"wOFF",
+    b"wOF2", b"RIFF", b"\x00asm", b"BZh", b"\xfd7zXZ", b"\x28\xb5\x2f\xfd", b"OggS",
+    b"ID3", b"fLaC", b"7z\xbc\xaf", b"\x00\x00\x01\x00", b"\x1aE\xdf\xa3",
+)
+#: The DER that opens a private key's SEQUENCE: version 0 or 1 (PKCS#1, PKCS#8,
+#: SEC1), or an encrypted PKCS#8's PBES1/PBES2 (1.2.840.113549.1.5) or PKCS#12
+#: PBE (1.2.840.113549.1.12.1) algorithm.
+_DER_KEY_VERSION = (b"\x02\x01\x00", b"\x02\x01\x01")
+_DER_PBE_OIDS = (b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x05", b"\x06\x0a\x2a\x86\x48\x86\xf7\x0d\x01\x0c\x01")
+#: One run of standard base64, at least 16 characters, with its padding.
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{16,}(={1,2})?")
+#: What may join two runs of one wrapped or concatenated literal.
+_BASE64_JOIN = re.compile(r"(?:[ \t\r\n\"'`+]|\\[nr])*")
+#: How far apart two runs of one literal may be.
+_BASE64_JOIN_MAX = 64
+_HEX_ONLY = re.compile(r"[0-9A-Fa-f]+")
+
+
+def _der_total(data: bytes) -> tuple[int, int] | None:
+    """(header length, total length) of the DER SEQUENCE `data` opens, or None."""
+    if len(data) < 2 or data[0] != 0x30:
+        return None
+    first = data[1]
+    if first < 0x80:
+        return 2, 2 + first
+    width = first - 0x80
+    if width == 0 or width > 3 or len(data) < 2 + width:
+        return None
+    return 2 + width, 2 + width + int.from_bytes(data[2 : 2 + width], "big")
+
+
+def _is_key_material(blob: str) -> bool:
+    """Whether one joined base64 blob is a private key or its ciphertext (box 80)."""
+    if len(blob) < (CIPHERTEXT_MIN_BYTES * 4 + 2) // 3:
+        return False
+    if len(blob.rstrip("=")) % 4 == 1 or _HEX_ONLY.fullmatch(blob):
+        return False
+    try:
+        raw = base64.b64decode(blob + "=" * (-len(blob) % 4))
+    except ValueError:
+        return False
+    der = _der_total(raw)
+    if der is not None and der[1] == len(raw):
+        inner = raw[der[0] :]
+        if inner.startswith(_DER_KEY_VERSION):
+            return True
+        nested = _der_total(inner)
+        return nested is not None and inner[nested[0] :].startswith(_DER_PBE_OIDS)
+    if len(raw) < CIPHERTEXT_MIN_BYTES or len(raw) % 8 or raw.startswith(_NOT_KEY_MAGIC):
+        return False
+    if not (any(c.isupper() for c in blob) and any(c.islower() for c in blob)
+            and any(c.isdigit() for c in blob)):
+        return False
+    if _shannon_bits(blob.rstrip("=")) < CIPHERTEXT_MIN_CHAR_BITS:
+        return False
+    # As varied as random bytes: half the distinct values a uniform draw of
+    # this many bytes is expected to show, and no more printable ASCII than
+    # three in five (uniform bytes are 37% printable).
+    expected = 256 * (1 - math.exp(-len(raw) / 256))
+    printable = sum(32 <= b < 127 for b in raw)
+    return len(set(raw)) >= expected / 2 and printable * 5 < len(raw) * 3
+
+
+def _headerless_key_at(added: str) -> int | None:
+    """Where the first headerless key blob in `added` starts, or None (box 80)."""
+    start = end = -1
+    pieces: list[str] = []
+    for run in _BASE64_RUN.finditer(added):
+        joined = (
+            pieces
+            and run.start() - end <= _BASE64_JOIN_MAX
+            and not pieces[-1].endswith("=")
+            and _BASE64_JOIN.fullmatch(added, end, run.start()) is not None
+        )
+        if not joined:
+            if pieces and _is_key_material("".join(pieces)):
+                return start
+            start, pieces = run.start(), []
+        pieces.append(run.group())
+        end = run.end()
+    if pieces and _is_key_material("".join(pieces)):
+        return start
     return None
 
 
@@ -12538,6 +12965,8 @@ def _first_leaking_commit(
             ],
             leaks=leaks,
             overlap=overlap,
+            new_rev=sha,
+            git=git,
             repo=repo,
             private_dir=private_dir,
             logs_dir=logs_dir,
@@ -12637,6 +13066,8 @@ def final_tree_leak(
         ],
         leaks=leaks,
         overlap=overlap,
+        new_rev="HEAD",
+        git=g,
         slug="publish-final-diff",
         **run_kwargs,
     )
@@ -12644,9 +13075,41 @@ def final_tree_leak(
         raise GitError("could not diff the branch against the clone base")
     if hit is not None:
         # The rule and the line tell the retry what to remove (#373); the
-        # value is never in it, and the caller scrubs the reason anyway.
+        # value is never in it, and the caller scrubs the reason anyway. The
+        # PATH is the agent's choice, so it is shown masked and cut
+        # (`_reason_path`, #361 box 71). The literal stays whole on one line:
+        # swarm-api's outcome classifier and its test read it.
+        hit = hit._replace(path=_reason_path(hit.path))
         return f"the final tree adds a credential in {hit.path} (rule {hit.rule}, line {hit.line}); remove it"
     return None
+
+
+#: The longest a refusal shows a file's path, in characters (#361 box 71).
+REASON_PATH_MAX_CHARS = 160
+#: A run of token characters in a path, judged as a possible credential.
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9+=_\-]{16,}")
+
+
+def _reason_path(path: str) -> str:
+    """`path` as a refusal may show it (#361 box 71, security pass 2026-10-09).
+
+    The path is the AGENT's choice, and the reason reaches the task's error,
+    its result summary and the log, where the caller's scrub replaces only
+    REGISTERED secrets: a file named after a token it minted was echoed
+    whole. So the shown path has every non-printable character replaced, every
+    credential-shaped run masked -- `swarm_redaction.redact`'s rules (a
+    `ghp_` name) and any run `_looks_like_a_credential` accepts (a random
+    directory name) -- and is cut to `REASON_PATH_MAX_CHARS`, keeping the
+    end, where the file's own name is.
+    """
+    shown = "".join(c if c.isprintable() else "?" for c in path) or "a file"
+    shown = redact_text(shown).text
+    shown = _PATH_TOKEN.sub(
+        lambda m: CREDENTIAL_MASK if _looks_like_a_credential(m.group()) else m.group(), shown
+    )
+    if len(shown) > REASON_PATH_MAX_CHARS:
+        shown = "..." + shown[-(REASON_PATH_MAX_CHARS - 3) :]
+    return shown
 
 
 def replay_agent_commits(
