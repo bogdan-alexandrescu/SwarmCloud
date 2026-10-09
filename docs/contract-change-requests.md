@@ -66,6 +66,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 | 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 | 57 | `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349) | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
+| 58 | `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53) | proposed |
+| 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
+| 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
+| 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
 
 ---
 
@@ -9908,3 +9912,456 @@ The four gaps stay, each behind its other control, and the docstring's
   accept and what a refusal repeats.
 - **Invariants 1-9.** Untouched: no state, lease, pool, fencing, checkpoint,
   resource or tenancy rule changes.
+
+## 58. `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53)
+
+**Status:** proposed, filed 2026-10-09 for
+[#346 box 53](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303466)
+(the #353 security review), by the owner's decision of 2026-10-09 that the
+2026-10-09 epic triage's frozen-contract findings get requests, not edits. A
+request, not a change: nothing under `apps/common/swarm_common/` is edited by
+it, and the owner accepts or refuses it.
+
+### What is true today
+
+`apps/common/swarm_common/specsign.py::_encode` writes an `int` with
+`str(value)` and a `float` through `_number`, RFC 8785's ECMAScript form,
+which writes an integral double without a fraction. So `jcs({"a": 3600})` and
+`jcs({"a": 3600.0})` are the same bytes (probed 2026-10-09 on main at
+`e385027`: equal). That is RFC 8785 working as written -- a JSON number has no
+int/float distinction -- but a Firestore document does: it stores an
+`integerValue` and a `doubleValue` as different things and reads them back as
+`int` and `float`.
+
+So a tenant's agent, which can write any task document of its tenant
+(request 34's premise), can rewrite `timeout_seconds: 3600` to `3600.0`,
+`max_attempts: 3` to `3.0`, or `input.issue: 7` to `7.0`, and
+`apps/common/swarm_common/specsign.py::canonical_step_spec` gives the
+rewritten document the bytes the signature covers. The worker's check
+(`apps/agent-worker/agent_worker/specverify.py::_verify_signed`) passes it.
+
+What the rewrite cannot do is change a quantity: the value is numerically
+the same. What it can do is change a type a reader did not expect. The
+readers this lane read cast (`int(task.get("max_attempts", 3))` in the
+scheduler's codec and the worker's control plane) or compare with `==`
+(`apps/agent-worker/agent_worker/specverify.py::_environment_agrees`, where
+`3600 == 3600.0`), so none of them was found to act differently. That is a
+property of today's readers, not of the signature, and the signature is
+what request 34 says a worker may rely on.
+
+### Why
+
+Request 34 made the signature the worker's reason to trust the spec. A
+signed field whose stored type can change under the signature is a field
+every future reader has to defend itself against, one `isinstance` at a
+time, without knowing it has to. The two top-level fields are cheap to pin:
+every writer types them `int` (`Task.timeout_seconds: int`,
+`Task.max_attempts: int`, and swarm-api's request schemas declare both
+`int`), so the signer never meets a float there.
+
+`input` is different, and this request deliberately leaves its bytes alone.
+swarm-api stores an input **as sent** (`apps/swarm-api/swarm_api/validation.py::validate_runner_input`:
+"Values are checked, never rewritten"), and a `number` input -- `wait`'s
+`seconds`, say -- may legitimately be sent as `2.0`. Refusing an integral
+float anywhere in the spec would refuse that submission at the signer.
+Instead the input half is closed outside the frozen package, below: an
+`integer` input is read through
+`apps/common/swarm_common/profiles.py::check_inputs`, which already turns an
+integral float into an `int`, so `7.0` reads as issue 7 -- the same issue the
+signer signed.
+
+### The requested change
+
+In `apps/common/swarm_common/specsign.py`, refuse a non-integer in the two
+integer fields, at **every** format:
+
+```diff
+ #: The fields format 3 adds to format 2's projection. Formats 1 and 2 do not
+ #: cover them, so a document at either format that carries one is not
+ #: canonical (see `canonical_step_spec`): adding a forge credential to a task
+ #: signed without one must fail verification, not slip outside the bytes.
+ _FORMAT_3_FIELDS = ("forge_credential", "forge_access")
++
++#: The top-level fields every writer stores as integers (`Task`'s types).
++#: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
++#: to the other keeps the signature valid. Checked at every format: it removes
++#: a canonical form from a value no signer writes, and changes the bytes of
++#: none that has one, so it is not a new format (contract request 58).
++_INTEGER_FIELDS = ("timeout_seconds", "max_attempts")
+@@ def canonical_step_spec(
+     if spec_format < 3:
+         for key in _FORMAT_3_FIELDS:
+             if doc.get(key) is not None:
+                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
++    for key in _INTEGER_FIELDS:
++        value = doc.get(key)
++        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
++            raise SpecNotCanonical(f"{key} is a {type(value).__name__}, not an integer")
+     spec = {
+```
+
+**At every format, not as format 4.** The module's rule is that a change to
+the encoding is a new format. This changes no bytes: every value that had a
+canonical form before keeps the same one, and a float in either field had
+bytes only because JCS could not tell it from the integer. A format-4-only
+check would leave every format-1 document -- every task that names no parent
+and no forge credential, which is most of them -- exactly as rewritable as
+today.
+
+**The non-frozen half, in the same change:** tests first, in
+`tests/unit/common/test_specsign_covers.py` (a document with `3600.0` or
+`3.0` is `SpecNotCanonical` at formats 1, 2 and 3; `3600` still verifies; a
+`True` is refused), `tests/unit/worker/test_spec_signature_worker.py` (the
+rewritten document ends `SPEC_SIGNATURE_INVALID` with reason
+`not_canonical`, and no runner starts) and
+`tests/unit/control_plane/test_spec_signing_submission.py`. Then:
+
+1. `apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`'s 422 message,
+   which lists the reasons a value has no canonical form, names this one.
+2. The worker reads its inputs through `check_inputs`'s **return**, not the
+   stored map: `apps/agent-worker/agent_worker/lifecycle.py::_recheck_runner_input`
+   calls `check_inputs` today and discards what it returns, so the issue
+   number the worker uses (`apps/agent-worker/agent_worker/lifecycle.py::Worker._title_from_issue_input`
+   and the fetch) is the stored value. Returning the normalised map and
+   reading that closes `input.issue` without touching the bytes.
+
+### What it would break if accepted
+
+* **A stored task whose `timeout_seconds` or `max_attempts` is a double**
+  fails its worker's check (`not_canonical`) and ends
+  `SPEC_SIGNATURE_INVALID` instead of running. No writer this lane read
+  stores one, but this was not measured against Firestore: before applying,
+  query the non-terminal tasks for a `doubleValue` in either field.
+* **A submission that reached the signer with a float there** becomes a 422
+  `NonCanonicalInput` instead of a signed task. swarm-api's schemas declare
+  both fields `int`, so pydantic turns a JSON `3600.0` into `3600` first.
+* Nothing restates the projection: swarm-api, the worker and
+  `apps/swarm-api/swarm_api/verdictpublish.py` all call
+  `canonical_step_spec`.
+
+### If it is declined
+
+The signature keeps vouching for a numeric value, not its type, in
+`timeout_seconds`, `max_attempts` and every number under `input`. Today's
+readers cast or compare with `==`, so nothing is known to break; each new
+reader of those fields has to keep doing so, and nothing tells it to.
+
+### Invariants
+
+- **Invariant 10.** Strengthened: a caller still sends a profile name and
+  data; a rewrite of the signed spec's types after submission is refused.
+- **Invariant 5.** Untouched: a refused spec ends before any runner starts,
+  as every other `SPEC_SIGNATURE_INVALID` does; fencing is not consulted.
+- **Invariants 1-4, 6-9.** Untouched: no state, lease, pool, checkpoint,
+  resource or tenancy rule changes.
+
+## 59. `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55)
+
+**Status:** proposed, filed 2026-10-09 for
+[#346 box 55](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303857)
+(the #353 security review), by the owner's decision of 2026-10-09. A
+request, not a change: nothing under `apps/common/swarm_common/` is edited by
+it.
+
+### What is true today
+
+`apps/common/swarm_common/specsign.py::_encode` recurses once per list and
+once per map, with no depth bound, and nothing catches `RecursionError`. A
+list nested 2,000 deep raises `RecursionError`, not `SpecNotCanonical`
+(probed 2026-10-09 on main at `e385027`). Both callers catch only
+`SpecNotCanonical`: `apps/agent-worker/agent_worker/specverify.py::_verify_signed`
+turns it into `SPEC_SIGNATURE_INVALID` with reason `not_canonical`, and
+`apps/swarm-api/swarm_api/specsigning.py::sign_task_specs` into a 422
+`NonCanonicalInput`. A `RecursionError` escapes both.
+
+It **fails closed**: the worker crashes before any runner starts, and the
+signer writes nothing. And it is **unreachable today**: Firestore refuses a
+document nested deeper than 20 levels, so no stored task reaches the worker
+that deep; at swarm-api the `input` is bounded by its profile's declaration
+and the three signed metadata keys are the API's own blocks, and
+`apps/swarm-api/swarm_api/validation.py::validate_storable` already walks a
+payload with a stack for exactly this reason.
+
+### Why
+
+The function's contract is "canonical bytes or `SpecNotCanonical`", and each
+caller is written to that contract. A crash where a refusal belongs is a
+worker that ends with no end cause and an error nobody branches on, if the
+unreachable ever becomes reachable -- a store with a different limit, a
+caller that passes something other than a stored document, or a cycle
+(a map that contains itself also recurses until `RecursionError`). The bound
+costs one integer.
+
+### The requested change
+
+In `apps/common/swarm_common/specsign.py`:
+
+```diff
+ #: JCS numbers are IEEE doubles, so an integer is exact only within this bound.
+ MAX_SAFE_INTEGER = 2**53 - 1
++
++#: How deep `_encode` follows lists and maps. Firestore refuses a document
++#: nested deeper than 20 levels and the spec puts a stored field one level
++#: down, so 32 refuses nothing Firestore can hold, and stays far inside
++#: Python's recursion limit -- which `_encode` reached as `RecursionError`,
++#: not `SpecNotCanonical`, before this bound (contract request 59).
++MAX_DEPTH = 32
+@@ def jcs(value: Any) -> bytes:
+     """RFC 8785 serialisation of `value`, as UTF-8 bytes."""
+-    return _encode(value, "$").encode("utf-8")
++    return _encode(value, "$", 0).encode("utf-8")
+ 
+ 
+-def _encode(value: Any, path: str) -> str:
++def _encode(value: Any, path: str, depth: int) -> str:
+@@
+     if isinstance(value, (list, tuple)):
+-        return "[" + ",".join(_encode(v, f"{path}[{i}]") for i, v in enumerate(value)) + "]"
++        if depth >= MAX_DEPTH:
++            raise SpecNotCanonical(f"{path} is nested deeper than {MAX_DEPTH} levels")
++        return "[" + ",".join(
++            _encode(v, f"{path}[{i}]", depth + 1) for i, v in enumerate(value)
++        ) + "]"
+     if isinstance(value, Mapping):
++        if depth >= MAX_DEPTH:
++            raise SpecNotCanonical(f"{path} is nested deeper than {MAX_DEPTH} levels")
+         items = []
+@@
+         return "{" + ",".join(
+-            _string(k, path) + ":" + _encode(value[k], f"{path}.{k}") for k in items
++            _string(k, path) + ":" + _encode(value[k], f"{path}.{k}", depth + 1)
++            for k in items
+         ) + "}"
+```
+
+No new format: every value within the bound encodes to the same bytes, and
+a value beyond it had no bytes before (it raised).
+
+**The non-frozen half, in the same change:** tests first, in
+`tests/unit/common/test_specsign_covers.py` (a list and a map 2,000 deep,
+and a map that contains itself, are each `SpecNotCanonical`; 32 levels of
+containers still encode and 33 do not; a stored document 20 deep still
+verifies), and `tests/unit/worker/test_spec_signature_worker.py` (a deep
+document ends `SPEC_SIGNATURE_INVALID`, reason `not_canonical`, with no
+runner started). And
+`apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`'s 422 message
+names the depth among its reasons.
+
+### What it would break if accepted
+
+Nothing a stored document can reach: 32 is above Firestore's 20. A caller of
+`jcs` outside a stored document that nests deeper than 32 gets
+`SpecNotCanonical` instead of bytes; none exists (swarm-api, the worker and
+`apps/swarm-api/swarm_api/verdictpublish.py` all pass a stored document).
+
+### If it is declined
+
+The failure stays closed and unreachable: a deep or cyclic spec crashes the
+worker before any runner starts, with no end cause recorded, and a signer
+that met one would answer 500 rather than 422.
+
+### Invariants
+
+- **Invariant 5.** Untouched: a refused spec ends before any runner starts,
+  as today; it now ends with an end cause instead of a crash.
+- **Invariants 1-4, 6-10.** Untouched.
+
+## 60. `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87)
+
+**Status:** proposed, filed 2026-10-09 for
+[#453 box 87](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/453#issuecomment-5944064436)
+(the #462 review probe: "tighten before any worker-action profile is
+enabled"), by the owner's decision of 2026-10-09. A request, not a change:
+nothing under `apps/common/swarm_common/` is edited by it.
+
+### What is true today
+
+`apps/common/swarm_common/profiles.py::RunnerProfile.__post_init__` checks
+two things about a worker action: a profile that names one has an empty
+`runner_argv`, and a profile that names none has a non-empty one. Nothing
+else. So each of these constructs without error (read on main at
+`e385027`):
+
+1. **`secrets=("x",)` on a worker-action profile.** The catalogue's own
+   comment on `merge` and `post-verdict` is that "the credential is never
+   mounted": the worker reads it at action time. For a profile with a
+   `provider` (both have one) and a tenant not served from the account pool,
+   the Cloud Run dispatcher projects each entry of `profile.secrets` into the
+   Job's environment
+   (`apps/scheduler/scheduler/dispatch.py::CloudRunJobDispatcher._build_job`),
+   so a profile that listed one would mount it.
+2. **`backend=Backend.GKE_AUTOPILOT` (or `AUTO`).** A worker action's whole
+   isolation is its own Cloud Run Job's service account (contract requests 33
+   and 35; `swarm-<tenant>-post-verdict`). A GKE pod runs as the tenant's
+   worker KSA (`apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher.ksa_for`),
+   the identity the catalogue's comment says these profiles exist to keep
+   off the action's credential.
+3. **`worker_action="merge"`, a plain string.** `WorkerAction` is a `str`
+   enum, so the string compares equal to `WorkerAction.MERGE` and every
+   `is not None` check treats the profile as a worker action. But
+   `apps/agent-worker/agent_worker/lifecycle.py::Worker._run_worker_action`
+   logs `action.value` (an `AttributeError` on a `str`) and then picks the
+   action with `action is WorkerAction.MERGE`, which a string never is -- so
+   the string `"merge"`, past the first line, would run `post-verdict`.
+
+The two worker-action profiles in the catalogue today, `merge` and
+`post-verdict`, are each `Backend.CLOUD_RUN_JOB`, `secrets=()` and a
+`WorkerAction` member, so none of the three is live. Each is a catalogue
+edit away.
+
+### Why
+
+The catalogue is the one place a profile is declared, and every reader
+trusts `__post_init__` to have refused a profile that cannot be what it
+says. The worker-action profiles are the ones that hold a forge credential
+no agent may share; a profile that mounted it, or ran it as the tenant's
+worker identity, would undo request 33's reason for existing, and the check
+that should refuse it is three `if`s.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`, `RunnerProfile.__post_init__`:
+
+```diff
+         if self.worker_action is None and not self.runner_argv:
+             raise ValueError(
+                 f"runner {self.name}: an empty runner_argv starts nothing; only a "
+                 "worker_action profile may have one (contract request 33)"
+             )
++        if self.worker_action is not None:
++            # Contract request 60 (#453): a worker action reads its credential
++            # itself, at action time, as its own Cloud Run Job's service
++            # account, and the lifecycle dispatches on the enum by identity.
++            if not isinstance(self.worker_action, WorkerAction):
++                raise ValueError(
++                    f"runner {self.name}: worker_action must be a WorkerAction, not a "
++                    f"{type(self.worker_action).__name__} (contract request 60)"
++                )
++            if self.secrets:
++                raise ValueError(
++                    f"runner {self.name}: a worker_action profile mounts no secret; the "
++                    "worker reads its credential at action time (contract request 60)"
++                )
++            if self.backend is not Backend.CLOUD_RUN_JOB:
++                raise ValueError(
++                    f"runner {self.name}: a worker_action profile runs as its own Cloud "
++                    "Run Job's service account, so its backend is CLOUD_RUN_JOB, not "
++                    f"{self.backend.value} (contract request 60)"
++                )
+         for key, declared in self.inputs.items():
+```
+
+`AUTO` is refused with `GKE_AUTOPILOT`: it may resolve to GKE.
+
+**The non-frozen half, in the same change:** tests first, in
+`tests/unit/common/test_worker_action_profiles.py`: each of the three
+constructs raises `ValueError` naming its rule (a string `"merge"`,
+`secrets=("x",)`, `Backend.GKE_AUTOPILOT` and `Backend.AUTO`), and `merge`
+and `post-verdict` still construct. No other file restates the rule.
+
+### What it would break if accepted
+
+Nothing in today's catalogue: both worker-action profiles already satisfy
+all three. A future worker-action profile that wants a mounted secret or a
+GKE backend has to come back here, which is the point.
+
+### If it is declined
+
+The three stay one catalogue edit from live, held only by review: a
+worker-action profile that mounted its credential or ran as the tenant's
+worker identity would construct, dispatch and run.
+
+### Invariants
+
+- **Invariant 9.** Strengthened: a worker action's credential stays with its
+  own service account, never the tenant worker's identity or a mounted
+  environment.
+- **Invariant 10.** Untouched: callers still pick a profile by name; this
+  constrains what the catalogue may declare.
+- **Invariants 1-8.** Untouched.
+
+## 61. `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57
+
+**Status:** proposed, filed 2026-10-09 for
+[#346 box 42](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5895194106)
+(the #345 security review, tracked in #349), by the owner's decision of
+2026-10-09. A request, not a change: nothing under
+`apps/common/swarm_common/` is edited by it.
+
+### What is true today
+
+Request 57 (#349, applied 2026-10-08 by PR 915) closed all four gaps #349
+names, each re-read on main at `e385027` on 2026-10-09:
+
+* site-local `fec0::/10`, Teredo `2001::/32`, `3fff::/20` and `5f00::/16`
+  are in `apps/common/swarm_common/profiles.py::_URL_REFUSED_V6_NETWORKS`;
+* `metadata.goog` and `localhost.localdomain` are
+  `apps/common/swarm_common/profiles.py::_URL_REFUSED_HOSTS`, refused by
+  `apps/common/swarm_common/profiles.py::url_refusal`;
+* the host loses at most one trailing dot (`host.removesuffix(".")`), so
+  `http://example.com../` is refused for its empty label;
+* `apps/common/swarm_common/profiles.py::RunnerInput.check`'s `refuse()`
+  never repeats a value whose `repr` contains `@`.
+
+Box 42 also names "reserved IPv6 ranges" generally, and the 2026-10-09
+triage read it as `2001::/23` (IANA's IETF Protocol Assignments block).
+Teredo is the part of it request 57 refused. Two more of its assignments are
+**not globally reachable** in the IANA IPv6 Special-Purpose Address Registry
+and are still accepted (probed 2026-10-09: `url_refusal` returns `""` for
+each, and Python's `ipaddress` calls neither global):
+
+* `2001:2::/48`, benchmarking (RFC 5180): `http://[2001:2::1]/`;
+* `2001:10::/28`, the deprecated first ORCHID range (RFC 4843, obsoleted by
+  RFC 7343): `http://[2001:10::1]/`.
+
+The block's globally reachable assignments -- `2001:1::1`/`::2`/`::3`
+anycast, AMT `2001:3::/32`, AS112 `2001:4:112::/48`, ORCHIDv2
+`2001:20::/28`, Drone Remote ID `2001:30::/28` -- are public addresses and
+stay accepted, as request 57 already kept `2001:1::1`.
+
+### Why
+
+The same reason as request 57: none is a blocker (the worker's
+NetworkPolicy and the absence of routes behind both ranges stand in the
+way), but each is the rule saying a non-public range is a public address,
+and closing it is two lines.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`:
+
+```diff
+     ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
++    ipaddress.ip_network("2001:2::/48"),  # benchmarking, RFC 5180 (request 61)
++    ipaddress.ip_network("2001:10::/28"),  # ORCHID, RFC 4843, deprecated by RFC 7343 (request 61)
+     ipaddress.ip_network("2001:db8::/32"),  # documentation
+```
+
+and `url_refusal`'s docstring names the two ranges among those refused.
+
+Named ranges, not the whole `/23` with the global assignments carved out:
+that would need an accept list inside a refuse list, a second mechanism for
+two ranges, and the unassigned rest of the block routes nowhere.
+
+**The non-frozen half, in the same change:** tests first, in
+`tests/unit/control_plane/test_url_refusal_349.py` (each range's first and
+last address refused; `2001:1::1`, `2001:3::1`, `2001:4:112::1` and
+`2001:20::1` still accepted) and the WHATWG table in
+`tests/unit/control_plane/test_url_refusal_whatwg.py`.
+
+### What it would break if accepted
+
+A `browser` task whose `url` or `goto` names an address in either range gets
+a 422 instead of a task that would have timed out. swarm-api, the plugin
+bridge and the browser runner all call the one rule.
+
+### If it is declined
+
+Both ranges stay accepted behind the NetworkPolicy, and box 42 stays open
+for them alone.
+
+### Invariants
+
+- **Invariant 10.** Strengthened: it narrows what the `browser` profile's
+  `url` inputs accept.
+- **Invariants 1-9.** Untouched.
