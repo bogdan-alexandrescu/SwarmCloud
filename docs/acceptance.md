@@ -38,6 +38,31 @@ that fit the smoke tenant's ceiling, after its own warm and smoke. A `FAIL`
 fails that group's job and opens (or updates) the one acceptance issue; it no
 longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
 
+## What accept.yml's identity may run
+
+`accept.yml` starts these executions as its own account, `swarm-accept`
+(`terraform/bootstrap/acceptance.tf`; [ci.md, "Its identity is not the
+deployer"](ci.md#its-identity-is-not-the-deployer)). Its custom role
+`swarmAcceptanceRunner` — get a job, start an execution, read executions and
+tasks, cancel a running execution; no create, update, delete or IAM — is
+granted at **project level with no condition**. Owner decision 2026-10-09
+(#965).
+
+Why no condition: the grant used to be conditioned to `swarm-verify` and
+`swarm-job-*` by job name, and that condition never matched anything. Cloud
+Run does not expose `resource.name` to IAM Conditions (Google's "Resource
+attributes for IAM Conditions" lists no `run.googleapis.com` resource, and the
+IAM Policy Troubleshooter evaluated `resource.name.endsWith("/jobs/swarm-verify")`
+as false with the name supplied), so the account was denied `run.jobs.get` on
+swarm-verify and every acceptance run failed before its first check.
+
+The trade-off, accepted by the owner: `saga-agents-staging` is a shared
+project, and the unconditioned grant reaches **every Cloud Run job in it,
+present and future**, including the other team's and swarm's own merge job
+(`swarm-job-eng-merge`). It can start, read and cancel their executions; it
+cannot change, create, delete or re-permission any of them. Do not restore a
+job-name condition: Cloud Run would deny every job again.
+
 ## Where it runs: the smoke tenant and a private sandbox
 
 Every task is submitted for the **`smoke` tenant** (`X-Swarm-Tenant: smoke`)
