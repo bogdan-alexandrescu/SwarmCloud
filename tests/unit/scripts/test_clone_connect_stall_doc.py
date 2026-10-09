@@ -19,12 +19,11 @@ quietly dropped.
 
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
 
 import pytest
-
-from agent_worker import egress, gitops
 
 from .test_docs_spec_amendments import _cited_symbol
 
@@ -36,13 +35,16 @@ EGRESS = "apps/agent-worker/agent_worker/egress.py"
 GITOPS = "apps/agent-worker/agent_worker/gitops.py"
 LIFECYCLE = "apps/agent-worker/agent_worker/lifecycle.py"
 
-#: Each constant the document gives a number for, and the code's value.
+#: Each constant the document gives a number for, and the `agent_worker`
+#: module that defines it. The module is imported inside the test, not here:
+#: a top-level import makes every collection of tests/unit/scripts load the
+#: worker (test_collection_stays_cheap).
 CONSTANTS = {
-    "EGRESS_PROBE_CAP_SECONDS": egress.EGRESS_PROBE_CAP_SECONDS,
-    "EGRESS_PROBE_INTERVAL_SECONDS": egress.EGRESS_PROBE_INTERVAL_SECONDS,
-    "EGRESS_CONNECT_TIMEOUT_SECONDS": egress.EGRESS_CONNECT_TIMEOUT_SECONDS,
-    "EGRESS_CLONE_WAIT_SECONDS": gitops.EGRESS_CLONE_WAIT_SECONDS,
-    "CLONE_CONNECT_STALL_SECONDS": gitops.CLONE_CONNECT_STALL_SECONDS,
+    "EGRESS_PROBE_CAP_SECONDS": "egress",
+    "EGRESS_PROBE_INTERVAL_SECONDS": "egress",
+    "EGRESS_CONNECT_TIMEOUT_SECONDS": "egress",
+    "EGRESS_CLONE_WAIT_SECONDS": "gitops",
+    "CLONE_CONNECT_STALL_SECONDS": "gitops",
 }
 
 #: The symbols a reader of the probe needs; each must be cited, and resolve.
@@ -96,11 +98,12 @@ def test_the_document_exists():
 def test_every_number_given_for_a_constant_matches_the_code(name: str):
     """Each constant is given a number next to its name at least once, and
     every number given there is the code's: a moved constant fails here."""
+    value = getattr(importlib.import_module("agent_worker." + CONSTANTS[name]), name)
     text = _text()
     given = [float(v) for v in _value_after(name).findall(text)]
-    assert given, f"{DOC.name} gives no number next to `{name}` (want `{name}` = {CONSTANTS[name]:g} s)"
-    wrong = [v for v in given if v != float(CONSTANTS[name])]
-    assert not wrong, f"{DOC.name} gives `{name}` as {wrong} s; the code says {CONSTANTS[name]:g} s"
+    assert given, f"{DOC.name} gives no number next to `{name}` (want `{name}` = {value:g} s)"
+    wrong = [v for v in given if v != float(value)]
+    assert not wrong, f"{DOC.name} gives `{name}` as {wrong} s; the code says {value:g} s"
 
 
 def test_the_value_pattern_reads_what_it_should():
