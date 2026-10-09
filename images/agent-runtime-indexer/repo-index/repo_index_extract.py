@@ -45,6 +45,25 @@ extract() returns the facts both are cut from:
   truncated        which lists a budget cut short
   extractor        this tool's version, budget, and the history window
 
+and, since version 3 (lane KG2, docs/design/knowledge-graph.md §6), five
+graph-only lists the shard writer stores as format 3's index layers:
+
+  communities      the application files grouped by Louvain over the
+                   resolved `ast`/`lsp`/`import` edges (never a judged one),
+                   each split into connected parts; an incremental run is
+                   seeded with its base's partition and keeps its ids
+  terms            BM25 postings over application symbols' names, classes,
+                   files, signatures and first docstring sentence, with
+                   `term_stats`; repo_graph_shards.bm25_search is the reader
+  signatures       each callable's normalised signature and fingerprint
+  signature_changes  on an incremental run, the fingerprints that moved
+  flows            the bounded call flow from each route, Python
+                   `__main__` guard and Go `main`
+
+Version 3 also resolves calls through a module object (§2.2 item 6):
+`from pkg import mod; mod.f()`, `import pkg.mod; pkg.mod.f()` and
+`from mod import Cls; Cls.method()`.
+
 The agent's keys (purposes, entry_points, test_layout, territory, commands,
 notes) are not invented here. `built_at` is left null: the same commit must
 give the same bytes (the index's digest identifies its content, §2.3), so the
@@ -93,6 +112,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import gc
 import importlib.metadata
 import hashlib
 import json
@@ -122,6 +142,9 @@ import tree_sitter_typescript
 # added here (root-owned and read-only in the image, like the script).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lsp as lsp_pass  # noqa: E402
+# The shard writer's tokenizer and BM25 constants: one copy, so the index
+# and every reader split text the same way (lane KG2).
+import repo_graph_shards as srg  # noqa: E402
 
 SCHEMA = "swarm.repo-index/v1"
 # The graph's own document, for the shard writer (lane RI9). §2.2 keeps the
@@ -137,7 +160,14 @@ EXTRACTOR_NAME = "swarm-repo-index"
 # means. An incremental run carries an unchanged file's edges verbatim, so a
 # base extracted by "1" would keep the old edges until some full run; the
 # version check below refuses it instead.
-EXTRACTOR_VERSION = "2"
+#
+# "3" (lane KG2, docs/design/knowledge-graph.md §6): module-object calls
+# resolve (`issueruns.planner_prompt(...)` after `from swarm_api import
+# issueruns`, `a.b.f()` after `import a.b`, `Cls.method()` on an imported
+# class), so a version-2 graph lacks edges this version finds, and the graph
+# gains communities, a BM25 term index, signature fingerprints and
+# entry-point flows. A version-2 base is a full run, by the same check.
+EXTRACTOR_VERSION = "3"
 
 # §2.5's confidences, by evidence.
 AST_UNIQUE = 0.6
@@ -389,6 +419,17 @@ class Facts:
     # (an assertion's `module.iam.x != ""` is an operation, which `references`
     # does not walk into).
     module_refs: set[str] = field(default_factory=set)
+    # (caller id, name, line) -> `a.b` of a Python call `a.b.name()` whose
+    # object is a dotted chain of plain names: `import a.b` then `a.b.f()`
+    # (lane KG2, module-object calls).
+    dotted_calls: dict[tuple[str, str, int], str] = field(default_factory=dict)
+    # Version 3 (lane KG2): symbol id -> its normalised signature text, for
+    # callables; symbol id -> the first lines of its docstring or leading
+    # comment, for search.
+    signatures: dict[str, str] = field(default_factory=dict)
+    docs: dict[str, str] = field(default_factory=dict)
+    # Python: the line span of `if __name__ == "__main__":`, an entry point.
+    main_guard: tuple[int, int] | None = None
     package: str | None = None
     has_error: bool = False
     _ids: set[str] = field(default_factory=set)
@@ -431,6 +472,108 @@ def _text(node: Any, src: bytes) -> str:
 
 def _children(node: Any, *types: str) -> list[Any]:
     return [c for c in node.named_children if c.type in types]
+
+
+# --- signatures and docs (version 3) ------------------------------------------
+
+#: A docstring or leading comment is cut to its first sentence, and to this
+#: many characters: the search index wants what a symbol is for, which the
+#: first sentence says, not its whole manual.
+DOC_CHARS = 200
+#: A signature longer than this is stored cut; its fingerprint is of the whole.
+SIGNATURE_CHARS = 500
+_SPACE = re.compile(r"\s+")
+_COMMENT_MARKS = re.compile(r"^\s*(?:/\*\*?|\*/|\*|//+|#+)\s?", re.MULTILINE)
+
+
+def _record_signature(facts: Facts, symbol_id: str, node: Any, src: bytes,
+                      fields: tuple[str, ...]) -> None:
+    """A callable's signature: its parameter list and return type, whitespace
+    collapsed, so a reformat is not a change and a new parameter is."""
+    parts = []
+    for name in fields:
+        child = node.child_by_field_name(name)
+        if child is None:
+            continue
+        text = _SPACE.sub(" ", _text(child, src)).strip()
+        # TypeScript's return type node is the annotation, colon included.
+        if name in ("return_type", "result") and not text.startswith(":"):
+            text = "-> " + text
+        parts.append(text)
+    if parts:
+        facts.signatures[symbol_id] = _normalise_signature(" ".join(parts))
+
+
+_OPEN_SPACE = re.compile(r"([(\[{])\s+")
+_SPACE_CLOSE = re.compile(r"\s+([)\]}])")
+_TRAILING_COMMA = re.compile(r",([)\]}])")
+
+
+def _normalise_signature(text: str) -> str:
+    """One spelling per signature: no space inside brackets and no trailing
+    comma, so a parameter list split over lines fingerprints like the same
+    list on one line."""
+    text = _SPACE_CLOSE.sub(r"\1", _OPEN_SPACE.sub(r"\1", text))
+    return _TRAILING_COMMA.sub(r"\1", text)
+
+
+def _clean_doc(text: str) -> str:
+    text = _SPACE.sub(" ", _COMMENT_MARKS.sub("", text)).strip()
+    end = text.find(". ")
+    return (text if end < 0 else text[:end + 1])[:DOC_CHARS]
+
+
+def _record_doc(facts: Facts, symbol_id: str, text: str | None) -> None:
+    if text:
+        cleaned = _clean_doc(text)
+        if cleaned:
+            facts.docs[symbol_id] = cleaned
+
+
+def _py_docstring(body: Any, src: bytes) -> str | None:
+    first = next((c for c in body.named_children if c.type != "comment"), None) \
+        if body is not None else None
+    if first is None or first.type != "expression_statement" or not first.named_children:
+        return None
+    string = first.named_children[0]
+    if string.type != "string":
+        return None
+    return "".join(_text(c, src) for c in string.named_children if c.type == "string_content")
+
+
+def _leading_comment(node: Any, src: bytes) -> str | None:
+    """The comment block directly above a definition (JSDoc, Go doc comments)."""
+    anchor = node
+    while anchor.parent is not None and anchor.parent.type in (
+            "export_statement", "lexical_declaration", "variable_declaration"):
+        anchor = anchor.parent
+    lines: list[str] = []
+    previous = anchor.prev_sibling
+    expected_row = anchor.start_point[0]
+    while previous is not None and previous.type == "comment" \
+            and previous.end_point[0] >= expected_row - 1:
+        lines.insert(0, _text(previous, src))
+        expected_row = previous.start_point[0]
+        previous = previous.prev_sibling
+    return "\n".join(lines) or None
+
+
+_DOTTED_NAMES = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+_PY_MAIN_GUARD = re.compile(r"""^__name__\s*==\s*["']__main__["']$|^["']__main__["']\s*==\s*__name__$""")
+
+
+def _py_dotted(node: Any, src: bytes) -> str | None:
+    """`a.b.c` when `node` is an attribute chain of plain names, else None.
+
+    `self.x.f()` and `cls.x.f()` are the common case and never a module, so
+    the chain's root is checked before any of it is decoded."""
+    chain = node
+    while chain is not None and chain.type == "attribute":
+        chain = chain.child_by_field_name("object")
+    if chain is None or chain.type != "identifier" or _text(chain, src) in ("self", "cls"):
+        return None
+    text = _text(node, src)
+    return text if _DOTTED_NAMES.match(text) else None
 
 
 # --- Python -----------------------------------------------------------------
@@ -525,6 +668,7 @@ def _extract_python(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             is_exported = exported and not in_func and not name.startswith("_")
             if kind == "class_definition":
                 symbol_id = facts.add_symbol(qual, "class", node, is_exported, start_node=decorated)
+                _record_doc(facts, symbol_id, _py_docstring(node.child_by_field_name("body"), src))
                 bases = node.child_by_field_name("superclasses")
                 if bases is not None:
                     for base in bases.named_children:
@@ -543,6 +687,9 @@ def _extract_python(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             else:
                 symbol_kind = "function"
             symbol_id = facts.add_symbol(qual, symbol_kind, node, is_exported, start_node=decorated)
+            if symbol_kind != "test":
+                _record_signature(facts, symbol_id, node, src, ("parameters", "return_type"))
+            _record_doc(facts, symbol_id, _py_docstring(node.child_by_field_name("body"), src))
             if decorated is not None:
                 for method, route, line in _py_routes(decorated, src):
                     route_id = facts.add_symbol(f"{method} {route}", "route", decorated, True,
@@ -565,6 +712,15 @@ def _extract_python(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
                                     node.start_point[0] + 1))
                 if target[1] == "":
                     facts.attribute_calls.add((owner, target[0], node.start_point[0] + 1))
+                    obj = fn.child_by_field_name("object")
+                    dotted = _py_dotted(obj, src)
+                    if dotted is not None:
+                        facts.dotted_calls[(owner, target[0], node.start_point[0] + 1)] = dotted
+        elif kind == "if_statement" and owner == facts.path and facts.main_guard is None:
+            condition = node.child_by_field_name("condition")
+            if condition is not None and _PY_MAIN_GUARD.match(
+                    _SPACE.sub(" ", _text(condition, src)).strip()):
+                facts.main_guard = (node.start_point[0] + 1, node.end_point[0] + 1)
         elif kind == "import_statement":
             for name_node in node.named_children:
                 if name_node.type == "dotted_name":
@@ -616,7 +772,11 @@ def _extract_python(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
                 facts.wildcards.append(index)
             continue
         for child in reversed(node.named_children):
-            stack.append((child, prefix, owner, cls, in_func, exported))
+            # A leaf (a name, a number, a string's text) is none of the node
+            # types above, so it is not walked: about half of all nodes, and
+            # the time version 3's extra layers are paid for with (lane KG2).
+            if child.named_child_count:
+                stack.append((child, prefix, owner, cls, in_func, exported))
 
 
 # --- JavaScript / TypeScript ------------------------------------------------
@@ -713,6 +873,9 @@ def _extract_js(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             if name_node is not None:
                 qual = prefix + _text(name_node, src)
                 symbol_id = facts.add_symbol(qual, "function", node, exported and not in_func)
+                _record_signature(facts, symbol_id, node, src,
+                                  ("type_parameters", "parameters", "return_type"))
+                _record_doc(facts, symbol_id, _leading_comment(node, src))
                 body = node.child_by_field_name("body")
                 if body is not None:
                     stack.append((body, qual + ".", symbol_id, None, True, False, suites))
@@ -722,6 +885,7 @@ def _extract_js(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             if name_node is not None:
                 qual = prefix + _text(name_node, src)
                 symbol_id = facts.add_symbol(qual, "class", node, exported and not in_func)
+                _record_doc(facts, symbol_id, _leading_comment(node, src))
                 for name, qualifier, line in _js_heritage(node, src):
                     facts.inherits.append((symbol_id, name, qualifier, line))
                 body = node.child_by_field_name("body")
@@ -734,6 +898,9 @@ def _extract_js(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             if name_node is not None:
                 qual = prefix + _text(name_node, src)
                 symbol_id = facts.add_symbol(qual, "method", node, exported)
+                _record_signature(facts, symbol_id, node, src,
+                                  ("type_parameters", "parameters", "return_type"))
+                _record_doc(facts, symbol_id, _leading_comment(node, src))
                 body = node.child_by_field_name("body")
                 if body is not None:
                     stack.append((body, qual + ".", symbol_id, None, True, False, suites))
@@ -760,6 +927,9 @@ def _extract_js(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
                     and value.type in _JS_FUNCTION_VALUES):
                 qual = prefix + _text(name_node, src)
                 symbol_id = facts.add_symbol(qual, "function", node, exported and not in_func)
+                _record_signature(facts, symbol_id, value, src,
+                                  ("type_parameters", "parameters", "parameter", "return_type"))
+                _record_doc(facts, symbol_id, _leading_comment(node, src))
                 body = value.child_by_field_name("body")
                 if body is not None:
                     stack.append((body, qual + ".", symbol_id, None, True, False, suites))
@@ -942,6 +1112,10 @@ def _extract_go(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
                 qual = name
                 symbol_kind = "test" if facts.test_file and _GO_TEST.match(name) else "function"
             symbol_id = facts.add_symbol(qual, symbol_kind, node, _go_exported(name))
+            if symbol_kind != "test":
+                _record_signature(facts, symbol_id, node, src,
+                                  ("type_parameters", "parameters", "result"))
+            _record_doc(facts, symbol_id, _leading_comment(node, src))
             body = node.child_by_field_name("body")
             if body is not None:
                 stack.append((body, symbol_id))
@@ -950,7 +1124,8 @@ def _extract_go(facts: Facts, root: Any, src: bytes, clock: _Clock) -> None:
             name_node = node.child_by_field_name("name")
             if name_node is not None:
                 name = _text(name_node, src)
-                facts.add_symbol(name, "type", node, _go_exported(name))
+                type_id = facts.add_symbol(name, "type", node, _go_exported(name))
+                _record_doc(facts, type_id, _leading_comment(node.parent or node, src))
             continue
         if kind == "call_expression":
             fn = node.child_by_field_name("function")
@@ -1569,6 +1744,31 @@ class _Resolver:
             found = found + self._py_dotted(f"{module}.{name}", path)
         return sorted(set(found))
 
+    def python_member_module(self, path: str, imp: dict, member: str) -> list[str]:
+        """The module file `from <imp> import <member>` names, when the member
+        is a module rather than a name defined in one: `from swarm_api import
+        issueruns`. Empty when it is not a module of this repository."""
+        module, level = imp["module"], imp["level"]
+        if level:
+            base = posixpath.dirname(path)
+            for _ in range(level - 1):
+                base = posixpath.dirname(base)
+            stem = posixpath.join(base, *module.split(".")) if module else base
+            return self._py_path(posixpath.join(stem, member))
+        return self._py_dotted(f"{module}.{member}", path) if module else []
+
+    def python_dotted_module(self, fact: "Facts", dotted: str) -> list[str] | None:
+        """The module file a dotted chain `a.b` names through an `import a.b`
+        (or `import a.b as ab`, chain `ab`) of `fact`'s, or None when the
+        chain does not start at an imported module."""
+        head, _dot, rest = dotted.partition(".")
+        index = fact.aliases.get(head)
+        if index is None:
+            return None
+        imported = fact.imports[index]["module"]
+        real = head if imported.split(".")[0] == head else imported
+        return self._py_dotted(f"{real}.{rest}" if rest else real, fact.path)
+
     def _py_path(self, stem: str) -> list[str]:
         stem = posixpath.normpath(stem)
         for candidate in (stem + ".py", stem + ".pyi", posixpath.join(stem, "__init__.py")):
@@ -1722,6 +1922,24 @@ def _resolve_name(resolver: _Resolver, fact: Facts, caller: str, name: str,
     if qualifier is not None and qualifier in fact.aliases:
         index = fact.aliases[qualifier]
         return defs_in(import_targets[index], name)
+    if qualifier and qualifier in fact.bindings:
+        # Version 3 (lane KG2, knowledge-graph.md §2.2 item 6): a call through
+        # an imported name. `from swarm_api import issueruns` then
+        # `issueruns.planner_prompt(...)` is a call into the module the name
+        # is; `from m import Store` then `Store.open()` is a method of that
+        # class. Before, both fell through to "a method of this file" and
+        # resolved to nothing, which is why planner_prompt's six tests could
+        # not be selected by symbol.
+        index, real = fact.bindings[qualifier]
+        if fact.language == "python":
+            module = resolver.python_member_module(path, fact.imports[index], real)
+            if module:
+                return defs_in(module, name)
+        if real != "default":
+            owned = [s for s in defs_in(import_targets[index], name, {"method"})
+                     if s.split("#", 1)[1].split("@", 1)[0].startswith(real + ".")]
+            if owned:
+                return owned
     if qualifier is None and name in fact.bindings:
         index, real = fact.bindings[name]
         targets = import_targets[index]
@@ -1762,8 +1980,18 @@ def _build_edges(resolver: _Resolver, facts: dict[str, Facts],
         for kind, items in (("call", fact.calls), ("inherit", fact.inherits),
                             ("route_handler", fact.handlers)):
             for caller, name, qualifier, line in items:
+                dotted = fact.dotted_calls.get((caller, name, line)) if kind == "call" else None
+                module = resolver.python_dotted_module(fact, dotted) if dotted else None
                 if name.startswith("\x00"):
                     found = [name[1:]]
+                elif module is not None:
+                    # `import a.b` then `a.b.f()`: f in a/b.py and nowhere else;
+                    # a chain into a module outside the repository (`os.path`)
+                    # is no call of ours, not one to guess a target for.
+                    if not module:
+                        continue
+                    found = sorted({s for p in module if p != path
+                                    for s in resolver.defs.get(p, {}).get(name, [])})
                 else:
                     found = _resolve_name(resolver, fact, caller, name, qualifier, targets)
                 if not found and kind == "call" and path in test_side \
@@ -2011,6 +2239,447 @@ def _symbol_test_map(symbols: list[dict], edges: _Edges, test_files: set[str]) -
             out.append({"symbol": symbol, "test": test, "depth": depth,
                         "confidence": round(confidence, 3)})
     return out
+
+
+# --- version 3: communities, search, fingerprints, flows (lane KG2) ----------
+#
+# docs/design/knowledge-graph.md §3 option C, chosen as D (owner decision
+# 2026-10-08): clean-room implementations of published techniques, written
+# here from the papers, no third-party code. None of these reads an edge with
+# `declared`, `path-ref`, `naming` or `co-change` evidence: the call graph
+# holds `ast`, `lsp` and `import` only, so nothing below is built on the index
+# agent's judgement, and a gate that reads it reads facts (§7.8).
+
+#: Louvain's resolution (Blondel, Guillaume, Lambiotte and Lefebvre, "Fast
+#: unfolding of communities in large networks", 2008). 1.0 is plain
+#: modularity, which on this repository (2026-10-08, 490 application files
+#: with a cross-file edge) drew 27 communities, the two largest of 104 and 103
+#: files: all of swarm-api and all of the console, too coarse to be anyone's
+#: territory. 2.0 drew 35, the largest 61 and most 10-50 files.
+COMMUNITY_RESOLUTION = 2.0
+#: Local-moving passes per level. Each pass visits every node; a level that
+#: has not settled by then is aggregated anyway, which bounds the run on an
+#: adversarial graph without changing the result on this one (it settles in
+#: under ten).
+COMMUNITY_MAX_PASSES = 32
+#: The edges a community is drawn from: what the code says, never judgement.
+COMMUNITY_EVIDENCE = frozenset({"ast", "lsp", "import"})
+COMMUNITY_KINDS = frozenset({"call", "inherit", "route_handler", "reference", "import"})
+#: Search: a symbol's own name counts this many times over the rest of its
+#: text (its class, file, signature and docstring), a simple BM25F field
+#: weight: a query naming the symbol should find it before its callers' docs.
+TERM_NAME_WEIGHT = 3
+#: A flow follows call edges at or above this confidence: unique `ast` (0.6),
+#: `lsp`, and not the ambiguous 0.3 guesses, which fan a flow out into every
+#: same-named function in the repository.
+FLOW_MIN_CONFIDENCE = 0.4
+FLOW_MAX_DEPTH = 6
+FLOW_MAX_STEPS = 32
+#: The signature fingerprint's length in hex: 64 bits, so two signatures of
+#: one symbol collide about never, and 30k of them stay small.
+FINGERPRINT_HEX = 16
+
+
+def _file_graph(edges: Iterable[dict], test_side: set[str] | frozenset[str]
+                ) -> dict[str, dict[str, float]]:
+    """Application files and the summed confidence of the edges between each pair.
+
+    Undirected: a call either way ties two files equally. Same-file edges,
+    test-side files and edges of other evidence are left out (a test reaches
+    everything it covers and would glue unrelated modules together; the test
+    map is how a test is placed)."""
+    graph: dict[str, dict[str, float]] = {}
+    for edge in edges:
+        if edge["kind"] not in COMMUNITY_KINDS or edge["evidence"] not in COMMUNITY_EVIDENCE:
+            continue
+        a, b = _path_of(edge["from"]), _path_of(edge["to"])
+        if a == b or a in test_side or b in test_side:
+            continue
+        weight = float(edge["confidence"])
+        row_a, row_b = graph.setdefault(a, {}), graph.setdefault(b, {})
+        row_a[b] = row_a.get(b, 0.0) + weight
+        row_b[a] = row_b.get(a, 0.0) + weight
+    return graph
+
+
+def _local_moving(adjacency: list[dict[int, float]], start: list[int],
+                  resolution: float) -> list[int]:
+    """Louvain's first phase: move each node to the neighbouring community with
+    the best modularity gain until no move improves it. Nodes are visited in
+    index order and ties keep the current community, then the lowest label:
+    the same graph and start always give the same partition."""
+    degree = [sum(row.values()) for row in adjacency]
+    total = sum(degree)
+    community = list(start)
+    if total <= 0:
+        return community
+    weight_of: dict[int, float] = {}
+    for node, label in enumerate(community):
+        weight_of[label] = weight_of.get(label, 0.0) + degree[node]
+    for _pass in range(COMMUNITY_MAX_PASSES):
+        moved = False
+        for node, row in enumerate(adjacency):
+            current = community[node]
+            links: dict[int, float] = {}
+            for other, weight in row.items():
+                if other != node:
+                    links[community[other]] = links.get(community[other], 0.0) + weight
+            weight_of[current] -= degree[node]
+            scale = resolution * degree[node] / total
+            best = current
+            best_gain = links.get(current, 0.0) - scale * weight_of[current]
+            for label in sorted(links):
+                gain = links[label] - scale * weight_of[label]
+                if gain > best_gain + 1e-12:
+                    best, best_gain = label, gain
+            weight_of[best] = weight_of.get(best, 0.0) + degree[node]
+            if best != current:
+                community[node] = best
+                moved = True
+        if not moved:
+            break
+    return community
+
+
+def louvain(graph: dict[str, dict[str, float]], seed: dict[str, str] | None = None,
+            resolution: float = COMMUNITY_RESOLUTION) -> list[list[str]]:
+    """The communities of `graph` (node -> neighbour -> weight), each a sorted list.
+
+    `seed` (node -> a previous community's id) starts the first level from
+    that partition instead of from singletons: an incremental run starts from
+    its base's communities, so a small change moves a few files rather than
+    redrawing the map (the stability §6 measures). Every community is then
+    split into its connected parts, the defect Leiden (Traag, Waltman and van
+    Eck, 2019) was designed to remove: Louvain can leave a community whose
+    members are joined only through a node that has since moved away.
+    """
+    nodes = sorted(graph)
+    position = {node: i for i, node in enumerate(nodes)}
+    adjacency = [{position[o]: w for o, w in graph[node].items()} for node in nodes]
+    labels: dict[str, int] = {}
+    start = []
+    for i, node in enumerate(nodes):
+        previous = (seed or {}).get(node)
+        start.append(labels.setdefault(previous, len(labels)) if previous is not None
+                     else len(nodes) + i)
+    assign = list(range(len(nodes)))
+    level_adjacency, level_start = adjacency, start
+    while True:
+        moved = _local_moving(level_adjacency, level_start, resolution)
+        renumber: dict[int, int] = {}
+        packed = [renumber.setdefault(label, len(renumber)) for label in moved]
+        assign = [packed[a] for a in assign]
+        if len(renumber) == len(level_adjacency):
+            break  # no two nodes merged: this level is the answer
+        # Louvain's second phase: each community becomes one node, its
+        # internal weight a self-loop, and the first phase runs again on that.
+        aggregated: list[dict[int, float]] = [{} for _ in renumber]
+        for node, row in enumerate(level_adjacency):
+            for other, weight in row.items():
+                a, b = packed[node], packed[other]
+                aggregated[a][b] = aggregated[a].get(b, 0.0) + weight
+        level_adjacency, level_start = aggregated, list(range(len(aggregated)))
+    # One more first phase on the files themselves, from the partition the
+    # levels reached. Louvain's answer is optimal per community, not per file:
+    # without this a file can gain by moving, and the first seeded run after a
+    # full one moved about 4% of this repository's files though only two had
+    # changed (measured 2026-10-08). With it, full and seeded runs end in the
+    # same kind of partition, and a change moves only what it touched.
+    assign = _local_moving(adjacency, assign, resolution)
+    groups: dict[int, list[int]] = {}
+    for node, label in enumerate(assign):
+        groups.setdefault(label, []).append(node)
+    out: list[list[str]] = []
+    for members in groups.values():
+        inside = set(members)
+        unseen = set(members)
+        while unseen:
+            first = min(unseen)
+            part, frontier = [first], [first]
+            unseen.discard(first)
+            while frontier:
+                node = frontier.pop()
+                for other in adjacency[node]:
+                    if other in inside and other in unseen:
+                        unseen.discard(other)
+                        part.append(other)
+                        frontier.append(other)
+            out.append(sorted(nodes[i] for i in part))
+    return _absorb_singletons(sorted(out, key=lambda group: group[0]), graph)
+
+
+def _absorb_singletons(groups: list[list[str]], graph: dict[str, dict[str, float]]
+                       ) -> list[list[str]]:
+    """A file alone is not a community: each one joins the community it has the
+    most edge weight to (the lowest-numbered on a tie). Above 1.0 the
+    resolution can leave a heavily-called small group as single files on a
+    small graph; this repository's had none at 2.0 (2026-10-08)."""
+    label = {node: i for i, group in enumerate(groups) for node in group}
+    size = {i: len(group) for i, group in enumerate(groups)}
+    # Each move removes a community, so this ends; a file that joined another
+    # is no longer alone, so it never moves twice.
+    for node in sorted(label):
+        own = label[node]
+        if size[own] != 1:
+            continue
+        weights: dict[int, float] = {}
+        for other, weight in graph[node].items():
+            if label[other] != own:
+                weights[label[other]] = weights.get(label[other], 0.0) + weight
+        if weights:
+            target = min(weights, key=lambda j: (-weights[j], j))
+            label[node] = target
+            size[own] -= 1
+            size[target] += 1
+    merged: dict[int, list[str]] = {}
+    for node, j in label.items():
+        merged.setdefault(j, []).append(node)
+    return sorted((sorted(members) for members in merged.values()), key=lambda g: g[0])
+
+
+def _community_label(files: list[str]) -> str:
+    """The directory most of a community's files are in, the shortest on a tie."""
+    counts: dict[str, int] = {}
+    for path in files:
+        directory = posixpath.dirname(path) or "."
+        counts[directory] = counts.get(directory, 0) + 1
+    return min(counts, key=lambda d: (-counts[d], len(d), d))
+
+
+def _community_ids(groups: list[list[str]], base: dict[str, str]) -> list[str]:
+    """An id per group: the base community it shares the most files with, when
+    no other group shares more with it; otherwise the next unused number."""
+    overlaps = []
+    for index, group in enumerate(groups):
+        counts: dict[str, int] = {}
+        for path in group:
+            if path in base:
+                counts[base[path]] = counts.get(base[path], 0) + 1
+        overlaps.extend((-count, cid, index) for cid, count in counts.items())
+    ids: list[str | None] = [None] * len(groups)
+    taken: set[str] = set()
+    for _negative, cid, index in sorted(overlaps):
+        if ids[index] is None and cid not in taken:
+            ids[index] = cid
+            taken.add(cid)
+    numbers = [int(cid[1:]) for cid in set(base.values()) | taken
+               if re.match(r"^c\d+$", cid)]
+    next_number = max(numbers, default=0) + 1
+    for index in range(len(groups)):
+        if ids[index] is None:
+            ids[index] = f"c{next_number:04d}"
+            next_number += 1
+    return [str(cid) for cid in ids]
+
+
+def community_membership(communities: Iterable[dict]) -> dict[str, str]:
+    """file path -> community id, from a graph's `communities` list."""
+    return {path: str(row["id"]) for row in communities if isinstance(row, dict)
+            for path in row.get("files") or [] if isinstance(path, str)}
+
+
+def community_stability(before: Iterable[dict], after: Iterable[dict]) -> float | None:
+    """How far a partition held between two runs: for each earlier community,
+    its best Jaccard overlap with any later one, weighted by its size, over
+    the files both runs placed. 1.0 is unchanged; None when nothing is shared."""
+    old, new = community_membership(before), community_membership(after)
+    shared = set(old) & set(new)
+    if not shared:
+        return None
+    old_groups: dict[str, set[str]] = {}
+    new_groups: dict[str, set[str]] = {}
+    for path in shared:
+        old_groups.setdefault(old[path], set()).add(path)
+        new_groups.setdefault(new[path], set()).add(path)
+    total = 0.0
+    for members in old_groups.values():
+        candidates = {new[path] for path in members}
+        best = max(len(members & new_groups[c]) / len(members | new_groups[c])
+                   for c in candidates)
+        total += best * len(members)
+    return round(total / len(shared), 4)
+
+
+def communities(edges: list[dict], symbols: list[dict], test_side: set[str] | frozenset[str],
+                base: Iterable[dict] | None = None) -> list[dict]:
+    """The module communities of the application files: §6's `communities`."""
+    graph = _file_graph(edges, test_side)
+    seed = community_membership(base or [])
+    groups = louvain(graph, seed={p: c for p, c in seed.items() if p in graph} or None)
+    ids = _community_ids(groups, seed)
+    symbols_in: dict[str, int] = {}
+    for symbol in symbols:
+        symbols_in[symbol["path"]] = symbols_in.get(symbol["path"], 0) + 1
+    out = []
+    for cid, files in zip(ids, groups):
+        members = set(files)
+        inside = outside = 0.0
+        for path in files:
+            for other, weight in graph[path].items():
+                if other in members:
+                    inside += weight
+                else:
+                    outside += weight
+        out.append({
+            "id": cid,
+            "label": _community_label(files),
+            "files": files,
+            "size": len(files),
+            "symbols": sum(symbols_in.get(p, 0) for p in files),
+            # The share of its files' edge weight that stays inside: 1.0 is a
+            # community nothing outside calls or is called by.
+            "cohesion": round(inside / (inside + outside), 3) if inside + outside else 0.0,
+        })
+    return sorted(out, key=lambda row: row["id"])
+
+
+def _symbol_text(symbol: dict, fact: Facts | None) -> list[str]:
+    """A symbol's search terms, its name weighted (BM25F's field weight)."""
+    qual = symbol["id"].split("#", 1)[1].split("@", 1)[0]
+    owner, _dot, name = qual.rpartition(".") if symbol["kind"] != "route" else ("", "", qual)
+    if symbol["kind"] == "route":
+        name = f"{symbol.get('method', '')} {symbol.get('route', '')}"
+    stem = posixpath.splitext(posixpath.basename(symbol["path"]))[0]
+    terms = srg.tokenize(name) * TERM_NAME_WEIGHT
+    terms += srg.tokenize(owner) + srg.tokenize(stem)
+    if fact is not None:
+        terms += srg.tokenize(fact.signatures.get(symbol["id"], ""))
+        terms += srg.tokenize(fact.docs.get(symbol["id"], ""))
+    return terms
+
+
+def term_index(symbols: list[dict], facts: dict[str, Facts],
+               test_side: set[str] | frozenset[str] = frozenset()) -> tuple[list[dict], dict]:
+    """(`terms` rows, `term_stats`): BM25 postings over every application
+    symbol's text. Test-side files are left out: a test is found from what it
+    covers (`symbol_test_map`), and tests and their helpers were more than
+    half the postings while answering no "where is X built" question.
+
+    A row's postings map a file to `[name, tf, dl]` lists; the reader computes
+    idf from the posting count and `term_stats`, so one changed symbol
+    rewrites only the term buckets its own terms are in
+    (repo_graph_shards.term_bucket)."""
+    postings: dict[str, dict[str, list[list]]] = {}
+    lengths = 0
+    documents = 0
+    for symbol in symbols:
+        if symbol["kind"] == "test" or symbol["path"] in test_side:
+            continue
+        terms = _symbol_text(symbol, facts.get(symbol["path"]))
+        if not terms:
+            continue
+        documents += 1
+        lengths += len(terms)
+        counts: dict[str, int] = {}
+        for term in terms:
+            counts[term] = counts.get(term, 0) + 1
+        name = symbol["id"].split("#", 1)[1]
+        for term, count in counts.items():
+            postings.setdefault(term, {}).setdefault(symbol["path"], []).append(
+                [name, count, len(terms)])
+    rows = [{"term": term, "postings": {path: sorted(entries) for path, entries
+                                        in sorted(postings[term].items())}}
+            for term in sorted(postings)]
+    stats = {"documents": documents,
+             "average_length": round(lengths / documents, 4) if documents else 0.0,
+             "k1": srg.BM25_K1, "b": srg.BM25_B, "tokenizer": srg.TOKENIZER_VERSION,
+             "name_weight": TERM_NAME_WEIGHT}
+    return rows, stats
+
+
+def signature_rows(symbols: list[dict], facts: dict[str, Facts]) -> list[dict]:
+    """Each callable's signature and its fingerprint: the sha256 of the
+    normalised parameter list and return type, so a reformat is no change and
+    a parameter added, removed, renamed, retyped or re-defaulted is one."""
+    out = []
+    for symbol in symbols:
+        fact = facts.get(symbol["path"])
+        text = fact.signatures.get(symbol["id"]) if fact is not None else None
+        if text is None:
+            continue
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:FINGERPRINT_HEX]
+        out.append({"symbol": symbol["id"], "signature": text[:SIGNATURE_CHARS],
+                    "fingerprint": "sha256:" + digest})
+    return sorted(out, key=lambda row: row["symbol"])
+
+
+def _entry_points(symbols: list[dict], facts: dict[str, Facts], resolver: "_Resolver",
+                  edges: list[dict]) -> list[tuple[str, str, list[str]]]:
+    """(entry id, kind, first hops) for every route, Python `__main__` guard and
+    Go `main`. A JavaScript/TypeScript CLI has no syntactic mark this
+    extractor trusts, so it has no flow; its routes do."""
+    handlers: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge["kind"] == "route_handler":
+            handlers.setdefault(edge["from"], []).append(edge["to"])
+    entries: list[tuple[str, str, list[str]]] = []
+    for symbol in symbols:
+        if symbol["kind"] == "route":
+            entries.append((symbol["id"], "route", sorted(handlers.get(symbol["id"], []))))
+        elif symbol["kind"] == "function" and symbol["language"] == "go" \
+                and symbol["id"].endswith("#main"):
+            fact = facts.get(symbol["path"])
+            if fact is not None and fact.package == "main":
+                entries.append((symbol["id"], "main", [symbol["id"]]))
+    for path in sorted(facts):
+        fact = facts[path]
+        if fact.main_guard is None:
+            continue
+        first, last = fact.main_guard
+        targets = [resolver.resolve(path, imp) for imp in fact.imports]
+        hops: set[str] = set()
+        for caller, name, qualifier, line in fact.calls:
+            if caller == path and first <= line <= last:
+                hops.update(_resolve_name(resolver, fact, caller, name, qualifier, targets))
+        entries.append((path, "main", sorted(hops)))
+    return entries
+
+
+def flows(symbols: list[dict], edges: list[dict], facts: dict[str, Facts],
+          resolver: "_Resolver", test_side: set[str] | frozenset[str]) -> list[dict]:
+    """The bounded call flow from each entry point: breadth first over confident
+    call edges, at most FLOW_MAX_DEPTH deep and FLOW_MAX_STEPS long, each step
+    naming the step it was reached from. `truncated` says a bound cut it."""
+    forward: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge["kind"] == "call" and edge["confidence"] >= FLOW_MIN_CONFIDENCE \
+                and _path_of(edge["to"]) not in test_side:
+            forward.setdefault(edge["from"], []).append(edge["to"])
+    for targets in forward.values():
+        targets.sort()
+    out = []
+    for entry, kind, hops in _entry_points(symbols, facts, resolver, edges):
+        if _path_of(entry) in test_side:
+            continue
+        steps: list[dict] = []
+        # A Go `main` is its own first step; a route or a `__main__` guard is
+        # never a call target, so nothing else can meet the entry again.
+        seen: set[str] = set()
+        frontier: list[tuple[str, str]] = [(hop, entry) for hop in hops]
+        truncated = False
+        for depth in range(1, FLOW_MAX_DEPTH + 1):
+            following: list[tuple[str, str]] = []
+            for node, via in frontier:
+                if node in seen:
+                    continue
+                if len(steps) >= FLOW_MAX_STEPS:
+                    truncated = True
+                    break
+                seen.add(node)
+                steps.append({"symbol": node, "depth": depth, "via": via})
+                following.extend((target, node) for target in forward.get(node, []))
+            frontier = following
+            if truncated or not frontier:
+                break
+        else:
+            truncated = truncated or any(node not in seen for node, _via in frontier)
+        if not steps:
+            continue
+        out.append({"entry": entry, "kind": kind, "path": _path_of(entry), "steps": steps,
+                    "files": sorted({_path_of(step["symbol"]) for step in steps}),
+                    "truncated": truncated})
+    return sorted(out, key=lambda row: row["entry"])
+
 
 
 # --- history ----------------------------------------------------------------
@@ -2371,6 +3040,18 @@ def extract(root: Path, budget: Budget | None = None,
     edge_list = list(edges.edges.values())
     symbols, edge_list, symbol_test_map, routes, test_edges = _apply_caps(
         symbols, edge_list, symbol_test_map, routes, test_edges, truncated)
+    # Version 3's layers (lane KG2), over the edges as stored: after the LSP
+    # pass, the carry and the caps, so they describe exactly the graph a
+    # reader gets.
+    base_graph = base.graph if changes is not None and base is not None else None
+    base_communities = (base_graph or {}).get("communities") or []
+    community_rows = communities(edge_list, symbols, test_side, base=base_communities)
+    term_rows, term_stats = term_index(symbols, facts, test_side)
+    signature_list = signature_rows(symbols, facts)
+    changed_signatures = srg.signature_changes(
+        (base_graph or {}).get("signatures") or [], signature_list) if base_graph else []
+    flow_rows = flows(symbols, edge_list, facts, resolver, test_side)
+
     modules = _modules(files, truncated)
     incremental = None
     if base is not None:
@@ -2407,10 +3088,23 @@ def extract(root: Path, budget: Budget | None = None,
         "hot_spots": hot_spots,
         "languages": _languages(files, lsp_result, carried_languages),
         "files": files,
+        "communities": community_rows,
+        "terms": term_rows,
+        "term_stats": term_stats,
+        "signatures": signature_list,
+        "signature_changes": changed_signatures,
+        "flows": flow_rows,
         "truncated": sorted(truncated),
         "extractor": {
             "name": EXTRACTOR_NAME,
             "version": EXTRACTOR_VERSION,
+            "communities": {
+                "algorithm": "louvain", "resolution": COMMUNITY_RESOLUTION,
+                "split": "connected components",
+                "seeded_from_base": bool(base_communities),
+                "stability_vs_base": community_stability(base_communities, community_rows)
+                if base_communities else None,
+            },
             "grammars": {lang: f"{pkg} {_grammar_version(pkg)}" for lang, pkg in sorted(GRAMMAR_PACKAGES.items())},
             "budget": _budget_record(budget),
             "files_not_listed": not_listed,
@@ -2714,6 +3408,10 @@ def dumps(index: dict) -> bytes:
 # The keys of extract()'s result that are the graph, and go only to the graph
 # document. Everything else is small and per-list bounded.
 _GRAPH_LISTS = ("symbols", "call_edges", "symbol_test_map", "files")
+# Version 3's (lane KG2): stored by the shard writer as format 3's index
+# layers. Optional, so a version-2 facts document still makes a graph.
+_GRAPH_INDEX_KEYS = ("communities", "terms", "term_stats", "signatures",
+                     "signature_changes", "flows")
 _GRAPH_TRUNCATIONS = {"symbols", "call_edges", "symbol_test_map", "files", "file_test_map"}
 # The lists repo-index.json may cut when it is over its byte budget, least
 # load-bearing first (the tie-break when two weigh the same). `test_map` goes
@@ -2756,6 +3454,9 @@ def graph_document(facts: dict) -> dict:
     }
     for key in _GRAPH_LISTS:
         graph[key] = facts[key]
+    for key in _GRAPH_INDEX_KEYS:
+        if key in facts:
+            graph[key] = facts[key]
     tests = _file_tests(facts.get("test_map") or [])
     if tests:
         graph["files"] = [dict(row, tests=tests[row["path"]]) if row["path"] in tests else row
@@ -2792,6 +3493,8 @@ def _graph_summary(facts: dict, graph_bytes: bytes) -> dict:
         # File-level test map edges the graph's file rows carry (`files[].tests`).
         "test_map": sum(len(rows) for rows in _file_tests(facts.get("test_map") or []).values()),
         "files": len(facts["files"]),
+        # Version 3's layers, counted (lane KG2).
+        **{key: len(facts.get(key) or []) for key in _GRAPH_INDEX_KEYS if key != "term_stats"},
         "files_by_status": statuses,
         "by_language": {name: by_language[name] for name in sorted(by_language)},
         "most_called": [
@@ -3126,10 +3829,22 @@ def main(argv: list[str] | None = None) -> int:
         # never fails the run (§3.5: a less certain index, never a lost one).
         base = Base(sha=args.base_sha, graph=_read_json(args.base_graph),
                     index=_read_json(args.base_index))
-    facts = extract(root, budget, lsp=lsp_options, base=base)
-    graph_payload = dumps(graph_document(facts))
-    index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
-    payload = dumps(index)
+    # The cyclic collector off for the run (lane KG2): the pass allocates
+    # millions of small acyclic objects (facts, edges, postings) that reference
+    # counting frees, and the collector's repeated full scans of them were
+    # about 1.5 s of a 16 s run on this repository, which version 3's extra
+    # layers would otherwise have spent twice over. Nothing here builds a
+    # reference cycle worth collecting before the process exits.
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        facts = extract(root, budget, lsp=lsp_options, base=base)
+        graph_payload = dumps(graph_document(facts))
+        index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
+        payload = dumps(index)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
     if args.graph_out:
         graph_out = Path(args.graph_out)
         graph_out.parent.mkdir(parents=True, exist_ok=True)
