@@ -3178,6 +3178,41 @@ job new in this release (a new tenant or profile) has no such execution and is
 warmed even when no digest changed, which comparing manifests alone would
 miss.
 
+**That skip's premise is still unmeasured (2026-10-09, box 94 of #888).** It
+assumes the import is paid once per digest for good. #363's 2026-10-07 reading
+(497 claude-code executions over 09-30..10-07: "first execution of each job
+after a new digest 30-59 s, every later start 1-3 s") is consistent with that
+over gaps of up to a week, but it never compared a digest's start after a long
+idle gap with one after a short gap, so a cache Cloud Run evicts after some
+idle time would read the same. The lane sent to measure it on 2026-10-09
+could not read anything: from a SwarmCloud worker,
+`gcloud run jobs executions list` is denied `run.jobs.list`,
+`gcloud logging read` is denied every log view, and the API answers 401 at
+IAP. So the code is unchanged and no numbers are recorded here. The
+measurement is one read-only command for an operator, per job: it prints,
+for every execution after the first on a digest, the hours since that job's
+previous execution of the same digest, the `ContainerReady` import seconds,
+and the start time.
+
+```bash
+gcloud run jobs executions list --job swarm-job-eng-claude-code \
+  --project saga-agents-staging --region us-central1 --limit 500 --format=json \
+| jq -r 'def secs: capture("in (?:(?<m>[0-9]+)m)?(?<s>[0-9.]+)s")
+           | ((.m // "0" | tonumber) * 60 + (.s | tonumber));
+  [.[] | {t: (.metadata.creationTimestamp | sub("\\.[0-9]+Z$"; "Z") | fromdate),
+          img: ([.spec | .. | objects | .image? // empty][0]),
+          imp: ([.status.conditions[]? | select(.type == "ContainerReady")
+                 | .message | secs][0])} | select(.imp != null)]
+  | sort_by(.t) | group_by(.img)[] | . as $r | range(1; length) as $i
+  | [(($r[$i].t - $r[$i-1].t) / 3600 | floor), $r[$i].imp, ($r[$i].t | todate)]
+  | @tsv'
+```
+
+If the rows with a gap of a day or more show 1-3 s like the rest, the premise
+holds and this paragraph records the numbers. If they show the 30-59 s of a
+fresh digest, `already_started()` must count only executions newer than the
+largest gap that still read 1-3 s.
+
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
 `accept.yml` runs `scripts/acceptance/` after every dev deploy
@@ -3366,6 +3401,23 @@ deadlines so the whole stays under the ten minutes a lane allows a command. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
+
+**When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
+and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
+it). The pytest call carries `--durations=10`, so a run that ends by itself
+lists its ten slowest tests. That report never prints on an overrun: measured
+2026-10-09 under xdist, `timeout`'s SIGTERM leaves no report and SIGINT leaves
+an xdist teardown traceback. So the call also sets pytest's
+`faulthandler_timeout=60`, which dumps the stack of any test still running
+after a minute, and on exit 124 the script prints the dump's frames in a
+`test_*.py` file (file, line, function). The fixed guard set alone runs in
+about 50 s (2026-10-09), so one test past a minute is the suspect; if none
+was, the line says so and the log's durations are where to look. Its first
+reading (2026-10-09, the 30-file selection of the change that added it: 1,038
+tests in 166-181 s, under the cap): the slowest was
+`test_ui_changes_gate.py::test_the_shared_reading_of_the_list_agrees_with_the_step`
+at 80 s, then `test_release_acceptance_job.py::test_the_acceptance_scripts_are_shellcheck_clean`
+at 41 s and four `test_build_images_incremental.py` tests at 22-25 s each.
 
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run
