@@ -54,7 +54,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import swarm_api.routes as routes_package
-from swarm_api.auth import POOL_ADMIN_ROUTES, AuthContext, StaticTokenVerifier
+from swarm_api.auth import POOL_ADMIN_ROUTES, SCHEDULE_TICK_ROUTES, AuthContext, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import AppContext, admin_auth, build_context, current_auth
 from swarm_api.groups import GroupLookupError, MembershipResolver, StaticGroups
@@ -630,6 +630,13 @@ def test_a_full_admin_still_passes_the_gate_everywhere(
         f"{method} {path} failed for a full admin with {response.status_code}: "
         f"{response.text}"
     )
+    if (method, path) in SCHEDULE_TICK_ROUTES:
+        # The one exception, by owner decision SD10 (docs/schedules.md §2.1):
+        # the schedule tick admits its own identity and NOT an admin, whose
+        # token would otherwise fire every tenant's due schedules. The gate
+        # still passes the admin (above); the handler is what refuses.
+        assert response.status_code == 403 and "schedule tick" in response.text, response.text
+        return
     assert response.status_code not in (401, 403), (
         f"{method} {path} refused a full admin with {response.status_code}: "
         f"{response.text}"
