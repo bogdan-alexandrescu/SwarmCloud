@@ -16,11 +16,12 @@ hold the git half of that, with no GCS and no network:
   * `fetch_tip_onto_bundle` moves a bundle-seeded repository to a branch's
     new tip, and only the delta crosses.
 
-MUTATIONS: drop the depth check in `write_clone_bundle` -- the deep clone is
-bundled. Write `.git/shallow` after the fetch instead of before -- the round
-trip fails. Skip the head check -- the wrong-sha bundle "lands". Call
-`await_egress` in `clone_from_bundle` -- the egress test sees the call. Drop
-`--depth 1` or the seed from the delta fetch -- the 1 MB blob crosses again.
+MUTATIONS (the first two run 2026-10-09): drop the shallow-boundary and history
+checks in `write_clone_bundle` -- the deep clones are bundled. Skip writing
+`.git/shallow` before the fetch -- every bundle clone fails "did not send all
+necessary objects". Call `await_egress` or `_write_credentials` in
+`clone_from_bundle` -- the egress test sees the call. Fetch the tip into an
+unseeded repository -- the 1 MB blob crosses again.
 
 Real git against bare repositories on disk, as in test_base_pin.py.
 """
