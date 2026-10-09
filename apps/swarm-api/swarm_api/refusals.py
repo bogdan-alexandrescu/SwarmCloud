@@ -82,7 +82,16 @@ class Switch:
 
 #: Every switched refusal, by code. Empty on the day this module landed: every
 #: refusal on main then was established and stays enforced.
-SWITCHES: dict[str, Switch] = {}
+SWITCHES: dict[str, Switch] = {
+    switch.code: switch for switch in (
+        # An admin's manual approval of a workspace whose tenant predates the
+        # workspace job (docs/workspaces.md §1.3, §3.3). The People pane offers
+        # no Approve on such a record, so only a direct API call meets it.
+        Switch("WORKSPACE_MIGRATING",
+               "lane W9's migration has written the record of every tenant "
+               "Terraform made, so no admin needs to approve one by hand"),
+    )
+}
 
 
 def _value(name: str, raw: str) -> bool | None:

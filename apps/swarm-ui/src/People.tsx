@@ -398,8 +398,9 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
             group per line, every control as wide as the cell and no wider,
             so Deny and the Account select stay inside the card. */}
         <div className="pp-acts">
-          {/* A held record predates self-service setup (§3.3): an approval
-              would be refused WORKSPACE_MIGRATING, so none is offered. */}
+          {/* A held record predates self-service setup (§3.3): its job would
+              fail IDENTITY_NOT_OURS (WORKSPACE_MIGRATING once that refusal is
+              switched on), so no approval is offered. */}
           {hasRecord && w.state === 'requested' && w.held == null && (
             <span className="ob-acts">
               <Approve row={row} reload={reload} />

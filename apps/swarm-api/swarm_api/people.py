@@ -42,9 +42,11 @@ create, so an automatic one creates nothing an admin's click would not.
 A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
 `u-bogdan`'s identity was made by Terraform, whose tenant document carries
 `managed_by = swarm-terraform`, and lane W9 migrates it into a record with
-`migrated = true`. Either refuses an approval with `WORKSPACE_MIGRATING`, so
-nothing is published that the apply's squat check would fail with
-IDENTITY_NOT_OURS; an admin's own request for it stays `requested`, held.
+`migrated = true`. Either holds an admin's own request `requested`
+(`ws.MigrationHold`, not a refusal), so nothing is published that the apply's
+squat check would fail with IDENTITY_NOT_OURS. A manual approval of it is
+refused `WORKSPACE_MIGRATING` through `refusals.refuse`: a new refusal, so it
+ships report-only until its switch is on (refusals.py).
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
+from . import refusals
 from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
 from .errors import Conflict, NotFound, ValidationFailed, WorkspaceMigrating
@@ -248,12 +251,16 @@ class People:
                 "workspace can be approved",
                 detail={"workspace_id": workspace_id, "state": state})
         if self._predates_workspaces(txn, record):
-            raise WorkspaceMigrating(
+            if auto:
+                raise ws.MigrationHold(workspace_id)
+            # Report-only until REFUSAL_WORKSPACE_MIGRATING=on: past this
+            # call the admin's approval goes through.
+            refusals.refuse(WorkspaceMigrating(
                 f"workspace {workspace_id} predates self-service setup and is migrated by "
                 "the platform owner (docs/workspaces.md §3.3), not approved: its identity "
                 "was made by Terraform, so the setup job would refuse it. Nothing was "
                 "changed and nothing was started.",
-                detail={"workspace_id": workspace_id, "state": state})
+                detail={"workspace_id": workspace_id, "state": state}))
         patch: dict[str, Any] = {
             "state": ws.APPROVED,
             "decision": {"by": by, "at": self._now(), "verdict": ws.APPROVED,

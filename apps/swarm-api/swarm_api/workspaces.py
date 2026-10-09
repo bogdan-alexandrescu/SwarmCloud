@@ -60,7 +60,6 @@ from .errors import (
     Conflict,
     NoClaudeAccount,
     WorkspaceFailed,
-    WorkspaceMigrating,
     WorkspaceNotReady,
     WorkspaceNotRequested,
     WorkspaceRequestTooSoon,
@@ -191,6 +190,13 @@ _STATE_PHRASE: Mapping[str, str] = {
 #: and never published, because the apply's squat check would fail
 #: IDENTITY_NOT_OURS on the identity Terraform made. Lane W9 moves it.
 HELD_MIGRATING = "migrating"
+
+
+class MigrationHold(Exception):
+    """Raised by an automatic approval (`People._approve_in`, `auto=True`) on
+    a record whose tenant predates the workspace job. Internal, never served:
+    `request` turns it into `held`, and the request still succeeds. It is not
+    an `ApiError`, because a hold is not a refusal (refusals.py)."""
 
 MIGRATING_COPY = (
     "Your workspace already exists from before self-service setup and is being migrated "
@@ -507,7 +513,7 @@ class Workspaces:
         approval the admin route makes, and it runs here, inside this
         transaction, on the record as it stands `requested`. It writes its
         audit entry and returns the record's patch, which is written with the
-        request in one write; a `WorkspaceMigrating` from it leaves the record
+        request in one write; a `MigrationHold` from it leaves the record
         `requested` and `held` instead (§3.3)."""
         if via not in VIAS:
             raise ValueError(f"via must be one of {VIAS}")
@@ -522,7 +528,7 @@ class Workspaces:
                 return {}
             try:
                 return approve(txn, record)
-            except WorkspaceMigrating:
+            except MigrationHold:
                 return {"held": HELD_MIGRATING}
 
         @firestore.transactional

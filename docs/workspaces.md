@@ -247,8 +247,11 @@ can already read: the tenant document carries Terraform's
 `managed_by = "swarm-terraform"` (`ensure_tenant` and A8 never write it), or
 the record carries `migrated = true`. Such a request stays `requested` with
 `held = "migrating"`, and the person is told the workspace is being migrated,
-not that it waits for an admin. A manual approval of it is refused
-`WORKSPACE_MIGRATING`. Lane W9's migration writes its record instead.
+not that it waits for an admin. The People pane offers no Approve on a held
+record. A manual approval of it through the API is refused
+`WORKSPACE_MIGRATING`, a new refusal that ships report-only like every other
+(`REFUSAL_WORKSPACE_MIGRATING`, [api-refusals.md](api-refusals.md)). Lane W9's
+migration writes its record instead.
 
 After an approval, swarm-api publishes the workspace id to Pub/Sub (§2.1). A
 failed publish is not a failed approval: the record stays `approved` and the

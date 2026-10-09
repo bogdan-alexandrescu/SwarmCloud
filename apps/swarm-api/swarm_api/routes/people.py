@@ -177,7 +177,8 @@ def approve_workspace(
     decision 2026-10-09), through the same `People._approve_in`; one that is
     still `requested` (made before they were an admin) may be approved here,
     and the audit entry says so (`detail.self_approval`). A workspace whose
-    tenant predates self-service setup is refused `WORKSPACE_MIGRATING` (§3.3)."""
+    tenant predates self-service setup is refused `WORKSPACE_MIGRATING` (§3.3)
+    once that refusal's switch is on; until then it is logged (refusals.py)."""
     return people.approve(workspace_id, by=auth.email)
 
 

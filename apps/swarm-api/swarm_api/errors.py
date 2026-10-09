@@ -153,7 +153,8 @@ class WorkspaceMigrating(Conflict):
     """An approval of a workspace whose personal tenant predates the workspace
     job (docs/workspaces.md §3.3): its identity was made by Terraform, so the
     apply's squat check would fail IDENTITY_NOT_OURS. The migration (lane W9)
-    writes its record instead; nothing is published for it."""
+    writes its record instead; nothing is published for it. A new refusal:
+    raised only through `refusals.refuse`, behind its switch."""
 
     code = "WORKSPACE_MIGRATING"
 

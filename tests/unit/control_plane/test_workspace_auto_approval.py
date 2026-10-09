@@ -13,8 +13,10 @@ What is held:
 * an admin whose personal tenant predates the workspace job (Terraform's
   `managed_by = swarm-terraform`, or a record with `migrated = true`, §3.3) is
   left `requested`, told it is being migrated, and never published -- the
-  apply's squat check would fail `IDENTITY_NOT_OURS` -- and a manual approval
-  of it is refused too;
+  apply's squat check would fail `IDENTITY_NOT_OURS`. The hold is internal
+  (`ws.MigrationHold`), not an `ApiError`; a manual approval of such a record
+  is refused `WORKSPACE_MIGRATING`, a new refusal that ships report-only
+  behind its `refusals.SWITCHES` entry;
 * every refusal a request or an approval applies still applies to an admin;
 * an approval creates no task and no lease (invariant 1).
 
@@ -29,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api import people as people_mod
+from swarm_api import refusals
 from swarm_api import workspaces as ws
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
@@ -263,7 +266,34 @@ def test_an_admin_whose_terraform_tenant_exists_is_left_requested_and_never_publ
     _no_demand(db)
 
 
-def test_a_manual_approval_of_a_workspace_being_migrated_is_refused(client, db, publisher) -> None:
+def test_the_hold_is_not_an_api_error() -> None:
+    from swarm_api.errors import ApiError
+    assert not issubclass(ws.MigrationHold, ApiError)
+
+
+def test_the_manual_approval_refusal_ships_switched_off() -> None:
+    switch = refusals.SWITCHES["WORKSPACE_MIGRATING"]
+    assert switch.default is False
+    assert switch.env == "REFUSAL_WORKSPACE_MIGRATING"
+
+
+def test_a_manual_approval_of_a_workspace_being_migrated_is_only_logged_while_off(
+        client, db, publisher, monkeypatch, caplog) -> None:
+    monkeypatch.delenv("REFUSAL_WORKSPACE_MIGRATING", raising=False)
+    _tenant(db, managed_by=people_mod.TERRAFORM_MANAGED)
+    workspace_id = _request(client).json()["workspace_id"]
+    with caplog.at_level("WARNING", logger="swarm_api.refusals"):
+        response = client.post(f"/v1/admin/workspaces/{workspace_id}/approve",
+                               headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    assert "code=WORKSPACE_MIGRATING" in caplog.text
+    assert _rec(db)["state"] == "approved"
+    assert len(publisher.messages) == 1
+
+
+def test_a_manual_approval_of_a_workspace_being_migrated_is_refused_when_on(
+        client, db, publisher, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_WORKSPACE_MIGRATING", "on")
     _tenant(db, managed_by=people_mod.TERRAFORM_MANAGED)
     workspace_id = _request(client).json()["workspace_id"]
     response = client.post(f"/v1/admin/workspaces/{workspace_id}/approve",
