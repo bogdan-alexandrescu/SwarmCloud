@@ -83,7 +83,7 @@ SORT = "src/widgets/sort.py#sort_widgets"
 LIST = "src/widgets/list.py#render_list"
 ROUTE = "src/api/routes.py#list_widgets"
 FETCH = "src/store/db.py#fetch_rows"
-CHARGE = "src/billing/invoice.py#charge_widget_order"
+CHARGE = "src/billing/invoice.py#charge_order"
 TEST = "tests/widgets/test_sort.py#test_sort_widgets"
 
 
@@ -134,8 +134,9 @@ def graph_doc(writer, commit: str = ONE, *, version: str = "3", extra_symbols: i
 # the forge: registration and heads (IndexGitHub), open work, the issue
 # --------------------------------------------------------------------------
 
+# "list" is one of the tokenizer's stopwords, so render_list is found by "render".
 ISSUE_BODY = ("Sorting the widget list ignores the key: `sort_widgets` in "
-              "src/widgets/sort.py drops it. Expected the Name header to sort.")
+              "src/widgets/sort.py drops it, so render shows them unsorted.")
 
 
 class Forge:
@@ -248,10 +249,13 @@ def test_the_planner_gets_the_index_and_the_graph_and_the_run_records_the_index(
     # Candidates: the issue's words and its named path find sort_widgets first.
     candidates = graph.split("CANDIDATES", 1)[1].split("IMPACT", 1)[0]
     assert SORT in candidates and "c0001" in candidates
-    assert candidates.index(SORT) < candidates.index(CHARGE)
+    assert CHARGE not in candidates  # nothing in the issue reaches billing
     # Impact: its caller, the caller's caller, and its covering test.
     impact = graph.split("IMPACT", 1)[1].split("OVERLAPS", 1)[0]
     assert LIST in impact and ROUTE in impact and TEST in impact
+    # The test that calls sort_widgets is its test, not its fan-in.
+    assert next(li for li in impact.splitlines() if li.startswith(f"- `{SORT}`")).count(
+        "fan-in 1:") == 1
     # Overlaps: #9 edits the candidate's file; #12 touches nothing it reaches.
     overlaps = graph.split("OVERLAPS", 1)[1].split("COMMUNITIES", 1)[0]
     assert "#9" in overlaps and "src/widgets/sort.py" in overlaps
@@ -289,10 +293,10 @@ def test_the_planner_is_told_how_to_use_the_sections(client, db, objects, writer
 def test_a_symbol_nobody_calls_is_unknown_never_safe(writer, tmp_path, client, db, objects):
     repo_id = _register(client)
     _promote(client, db, objects, writer, tmp_path, repo_id, graph_doc(writer))
-    # The issue's words reach charge_widget_order too ("widget"); it has no caller.
+    # The issue's words reach list_widgets too ("widget"); the graph resolves no caller.
     _run, prompt, _stored = _create_run(client, db)
     impact = prompt.split("IMPACT", 1)[1].split("OVERLAPS", 1)[0]
-    line = next(li for li in impact.splitlines() if CHARGE in li)
+    line = next(li for li in impact.splitlines() if li.startswith(f"- `{ROUTE}`"))
     assert "UNKNOWN" in line and "safe" not in line.replace("never safe", "")
 
 
