@@ -413,6 +413,59 @@ def _leaves(text: str, start: int, stop: int) -> list[Any]:
             found.append(token[3])
 
 
+def _scan_masked(run: _KeyRun, text: str, start: int, stop: int) -> bool:
+    """`run.scan` over the value masked whole at `text[start:stop]`; whether a key opens in it.
+
+    A fragment page is read by the tolerant `_Scanner`, so the value need not
+    be JSON (`[1, 2, ]`): `json.loads` raised there and the page answered 500
+    where it had been served masked (the #385 review). It is then rebuilt
+    from the scanner's own tokens, so `scan` reads it as it reads a decoded
+    value, flat lists included.
+    """
+    try:
+        inner = json.loads(text[start:stop])
+    except ValueError:
+        inner = _tolerant_value(text, start, stop)
+    run.scan(inner)
+    return any(_open_key(string) for string in _strings_in(inner))
+
+
+def _tolerant_value(text: str, start: int, stop: int) -> Any:
+    """The container at `text[start:stop]` built from `_Scanner` tokens.
+
+    `_structure` has already paired its brackets; a stray or missing comma is
+    what `json.loads` refused, and it is skipped here.
+    """
+    scanner = _Scanner(text, start)
+    stack: list[Any] = []
+    key: list[str | None] = []
+    root: Any = None
+    while True:
+        token = scanner.next()
+        if token is None or token[1] >= stop:
+            return root
+        kind = token[0]
+        if kind in ",:":
+            continue
+        if kind in "}]":
+            stack.pop()
+            key.pop()
+            continue
+        if kind == "s" and stack and isinstance(stack[-1], dict) and scanner.is_key():
+            key[-1] = token[3]
+            continue
+        value: Any = {} if kind == "{" else [] if kind == "[" else token[3]
+        if not stack:
+            root = value
+        elif isinstance(stack[-1], dict):
+            stack[-1][key[-1]] = value
+        else:
+            stack[-1].append(value)
+        if kind in "{[":
+            stack.append(value)
+            key.append(None)
+
+
 def _strings_in(node: Any) -> Iterable[str]:
     """Every string and key under a decoded `node`."""
     if isinstance(node, str):
@@ -645,9 +698,7 @@ def _walk(
                         # as `JsonMasker` scans a value it masks whole: a
                         # BEGIN inside opens it, and the body after it is
                         # masked. One past the window's end is never read.
-                        inner = json.loads(text[start:close])
-                        shape_run.scan(inner)
-                        if any(_open_key(string) for string in _strings_in(inner)):
+                        if _scan_masked(shape_run, text, start, close):
                             shape_open = start
                     scanner.seek(stop)
                     continue

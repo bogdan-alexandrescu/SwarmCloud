@@ -408,3 +408,33 @@ def test_the_issue_repro_is_masked_through_both_routes(client, db, objects):
         assert BODY0 not in served and BODY1 not in served, (route, served)
         parsed = json.loads(served)
         assert parsed["after"] == "after the key" and parsed["a"].startswith(PEM_BEGIN[:16]), route
+
+
+@pytest.mark.parametrize(
+    "window",
+    ['{"secret": [1, 2, ], "k": 1}\n{"a":1}\n', '{"token": [1 2], "k": 1}\n'],
+    ids=["trailing-comma", "missing-comma"],
+)
+def test_a_fragment_masks_a_malformed_value_under_a_credential_name(window):
+    """A fragment page is scanned tolerantly, so a value masked whole need not
+    be JSON: it is masked and the page served, not a 500 (the #385 review)."""
+    from swarm_api import json_masking
+
+    got = json_masking.redact_json_window(window, fragment=True)
+    assert "[1" not in got.text, got.text
+    assert MASK in got.text
+    assert got.count == 1
+
+
+def test_a_begin_in_a_malformed_masked_value_still_opens_the_run():
+    """The value is rebuilt from the scanner's tokens when it does not decode,
+    and read as a decoded one is: a BEGIN inside it opens the run (the flat
+    list carrying it past `"x"`), and the body after it is masked."""
+    from swarm_api import json_masking
+
+    document = {"secret": [PEM_BEGIN, "x"], "k": BODY0, "after": "kept"}
+    window = json.dumps(document).replace('"x"]', '"x", ]') + "\n"
+    assert window != json.dumps(document) + "\n"
+    got = json_masking.redact_json_window(window, fragment=True)
+    assert BODY0 not in got.text, got.text
+    assert '"kept"' in got.text, got.text
