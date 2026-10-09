@@ -12,7 +12,8 @@ What is held here, every case offline against the access API's forge fake:
   * `push_test` on a read grant is refused before any forge call: SwarmCloud
     enforces read (D9), so it never pushes where the person chose read;
   * a 403 on create records `missing` with PERMISSION_MISSING copy, a 503
-    records `unknown` (never `missing`), and a delete that fails answers
+    records `unknown` (never `missing`) and still tries the delete, since an
+    unanswered create may have been made, and a delete that fails answers
     `leftover: true` with the branch name, so the person can delete it.
 
 Every token-shaped value is built at runtime, never written as a literal.
@@ -197,7 +198,10 @@ def test_a_create_github_did_not_answer_is_unknown_not_missing(api, github, stat
     body = _verify(api, ["push_test"]).json()
     assert body["grant"]["checks"]["push_test"]["state"] == "unknown"
     assert {f["code"] for f in body["failures"]} == {"FORGE_UNREACHABLE"}
-    assert github.deleted == []
+    # A create that was not answered may still have been made: its delete is
+    # tried, and a delete GitHub accepted leaves nothing to report.
+    assert len(github.deleted) == 1
+    assert "push_test" not in body
 
 
 def test_a_failed_delete_answers_leftover_with_the_branch_name(api, github, db, caplog):

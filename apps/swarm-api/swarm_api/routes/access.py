@@ -9,7 +9,9 @@
                                                     registered, granted, mode
     PUT    /v1/access/grants/{repo_id}              {repository, mode}: grant read or write
     DELETE /v1/access/grants/{repo_id}              revoke the grant
-    POST   /v1/access/grants/{repo_id}/verify       {checks?}: clone, push, pull_request now
+    POST   /v1/access/grants/{repo_id}/verify       {checks?}: clone, push, pull_request now;
+                                                    push_test only when named (write grants):
+                                                    creates and deletes one branch (D6)
     GET    /v1/access/members                       admin: every member's connection and
                                                     grants in the caller's tenant
 
@@ -28,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.models import Tenant
 
-from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, AccessService
+from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, OPT_IN_CHECKS, AccessService
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..forgeapp import Caller
@@ -67,8 +69,10 @@ class GrantBody(_Body):
 
 
 class VerifyBody(_Body):
-    checks: list[Literal["clone", "push", "pull_request"]] | None = Field(
-        default=None, min_length=1, max_length=len(CHECKS))
+    # `push_test` is D6's opt-in write: never in the default set, so a body
+    # that does not name it reads only.
+    checks: list[Literal["clone", "push", "pull_request", "push_test"]] | None = Field(
+        default=None, min_length=1, max_length=len(CHECKS) + len(OPT_IN_CHECKS))
 
 
 @router.get("")
