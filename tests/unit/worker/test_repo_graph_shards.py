@@ -202,7 +202,11 @@ def test_the_manifest_lives_at_the_commit_under_the_tenant_prefix(shards, tmp_pa
     assert manifest["tenant_id"] == TENANT and manifest["repo_id"] == REPO_ID
     assert manifest["commit_sha"] == _sha("one")
     assert manifest["counts"] == {"symbols": 4, "call_edges": 5, "symbol_test_map": 2,
-                                  "files": 3}
+                                  "files": 3,
+                                  # Format 3's index layers (lane KG2): none in
+                                  # a version-2 document.
+                                  "communities": 0, "terms": 0, "signatures": 0,
+                                  "signature_changes": 0, "flows": 0}
     assert manifest["languages"] == [{"language": "python", "files": 3}]
     assert manifest["truncated"] == []
 

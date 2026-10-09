@@ -191,7 +191,9 @@ def test_incremental_after_a_two_file_change_rewrites_only_those_entries(
         assert after["shards"][layer][module] == before["shards"][layer][module], (layer, module)
     assert report["shards_carried"] > 0
     assert report["shards_rewritten"] == len(rewritten)
-    assert report["blobs_written"] <= len(rewritten)
+    # Format 3's index layers (lane KG2) are new blobs too when the change
+    # touched their terms, signatures or communities; counted apart.
+    assert report["blobs_written"] <= len(rewritten) + report["index_shards_rewritten"]
 
     # The index: untouched modules keep the base's purpose and read-at commit.
     index = tool.index_document(facts)
