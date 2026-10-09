@@ -183,6 +183,8 @@ describe('the Modules view (Graph A)', () => {
     const calls = routes()
     await mount('graph')
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/api/orders.py'), WAIT)
+    // The canvas lays out in a task after the inspector opens (GR3): click what it drew.
+    await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
     fireEvent.click(node('src/core/orders.py'))
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/core/orders.py'), WAIT)
     expect(node('src/core/orders.py').getAttribute('aria-pressed')).toBe('true')

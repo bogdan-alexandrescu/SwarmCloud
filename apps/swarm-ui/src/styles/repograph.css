@@ -65,8 +65,11 @@
 .rg-node text.is-hidden { fill-opacity: 0; visibility: hidden; }
 .rg-node:hover text.is-hidden, .rg-node:focus-visible text.is-hidden, .rg-node.is-sel text.is-hidden { fill-opacity: 1; visibility: visible; }
 /* A big view is mounted a chunk a frame out of sight and shown once whole:
-   every partial frame would otherwise repaint all that was already drawn. */
-.rg-world.is-mounting { visibility: hidden; }
+   every partial frame would otherwise repaint all that was already drawn.
+   Opacity, NOT visibility: visibility is inherited, so clearing it restyled
+   every node and edge at once (a 170-204 ms task at 2,000 modules, Chromium
+   trace, 2026-10-09); opacity restyles this one group. */
+.rg-world.is-mounting { opacity: 0; }
 .rg-node:hover text { fill: var(--text); }
 .rg-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface); }
 /* The filtering legend (lane GR3): every band and cluster is a toggle,

@@ -428,7 +428,17 @@ function usePlan(gv: GraphView): PlanState & { here: () => void } {
       live = false
     }
   }, [here, mod.m])
-  const local = useMemo(() => (here && mod.m !== null ? mod.m.layoutPlan(gv, W, H) : null), [gv, here, mod.m])
+  // In place, but in a task of its own: run during the render, it shared the
+  // click's task with tearing down the view before (a 134 ms task leaving the
+  // 2,000-module flat view for an 83-node cluster, Chromium, 2026-10-09).
+  const [placed, setPlaced] = useState<{ gv: GraphView; plan: LayoutPlan } | null>(null)
+  useEffect(() => {
+    const m = mod.m
+    if (!here || m === null) return
+    const t = setTimeout(() => setPlaced({ gv, plan: m.layoutPlan(gv, W, H) }), 0)
+    return () => clearTimeout(t)
+  }, [gv, here, mod.m])
+  const local = here && placed?.gv === gv ? placed.plan : null
   const [off, setOff] = useState<{ gv: GraphView; plan: LayoutPlan | null; why: string | null } | null>(null)
   useEffect(() => {
     if (inPlace) return
@@ -478,6 +488,21 @@ function useMounted(total: number, key: unknown): number {
     return () => cancelAnimationFrame(raf)
   }, [total, key])
   return Math.min(n, total)
+}
+
+/**
+ * One key per layout, for the group that holds a drawing: a new view
+ * replaces the old one as ONE subtree. Reused, React removed the old view's
+ * nodes and edges one by one, every one a DOM call (a 137-159 ms task leaving
+ * the 2,000-module flat view, Chromium, 2026-10-09).
+ */
+const planKeys = new WeakMap<LayoutPlan, number>()
+let planSeq = 0
+function planKey(plan: LayoutPlan | null): number {
+  if (plan === null) return 0
+  let k = planKeys.get(plan)
+  if (k === undefined) planKeys.set(plan, (k = ++planSeq))
+  return k
 }
 
 function chunked<T>(xs: readonly T[]): T[][] {
@@ -643,7 +668,7 @@ function ModuleCanvas({ r, gv, colour, shown, selected, onPick, bar, legend }: {
         onPointerUp={up}
         onPointerLeave={up}
       >
-        <g className={mounting ? 'rg-world is-mounting' : 'rg-world'} transform={`translate(${round(zoom.tx)} ${round(zoom.ty)}) scale(${round(zoom.k)})`}>
+        <g key={planKey(plan)} className={mounting ? 'rg-world is-mounting' : 'rg-world'} transform={`translate(${round(zoom.tx)} ${round(zoom.ty)}) scale(${round(zoom.k)})`}>
           {plan?.boxes
             .filter((b) => drawnNodes.some((n) => n.cluster === b.cluster))
             .map((b) => (
