@@ -324,6 +324,26 @@ def test_a_retry_refuses_a_recorded_pointer_outside_this_tasks_prefix(
 # ---------------------------------------------------------------------------
 
 
+def test_a_retry_of_an_attempt_written_before_348_starts_clean(
+    db, store, tmp_path, worker_factory, log_stream
+):
+    """Contract request 51: an attempt document with no `checkpoint_sha256`
+    -- one written before #348 -- decodes to the empty map, which means "no
+    digest recorded", never "anything goes". Pointer, listing and manifest
+    all agree, so the missing digest is the only reason the retry refuses;
+    it starts from an empty workspace once, and the task still succeeds."""
+    pointer = _failed_first_attempt(db, worker_factory)
+    del db.doc("attempts/att_1")[CHECKPOINT_DIGESTS_FIELD]
+
+    assert _retry(db, worker_factory, latest_checkpoint=pointer) == ExitCode.OK
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+    summary = db.doc("tasks/task_1").get("result_summary") or {}
+    assert "restored_from" not in summary, summary.get("restored_from")
+    assert EventType.CHECKPOINT_RESTORED.value not in db.event_types("task_1")
+    assert '"digest_recorded": false' in log_stream.getvalue()
+    assert _reasons(log_stream) == ["no attempt document of this task lists the checkpoint"]
+
+
 def _reasons(log_stream: Any) -> list[str]:
     """The `reason` of every "no checkpoint is restored" line, in order."""
     found = []
