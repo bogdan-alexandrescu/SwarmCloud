@@ -53,9 +53,11 @@ from swarm_redaction.rules import (  # noqa: F401 - re-exported
     RULES,
     Redacted,
     Rule,
+    _NUMBERED,
     _PEM_BEGIN,
     _PEM_END,
     _PEM_HINT,
+    _body_line,
     mask_private_keys,
     open_key_start,
     redact,
@@ -91,6 +93,19 @@ from swarm_redaction.rules import (  # noqa: F401 - re-exported
 #     number when the credential word ends the key (`_masks_whole` says which);
 #   * a private key written as a LIST of lines is masked from the element with
 #     its BEGIN marker through the one with its END (`_key_run_end`);
+#   * a private key whose END is not in that list -- missing, or the body split
+#     across object members, a list of objects, nested lists, or the object's
+#     KEYS (#385) -- is followed in DOCUMENT ORDER across containers
+#     (`_KeyRun`): from the string or key that leaves a key open, every
+#     body-shaped string value and key (`_key_body_string`) is masked and
+#     counted 0, the BEGIN carrying the key's one count; blank strings, keys
+#     that are not body-shaped, numbers, booleans and null neither join nor end
+#     it; an END string ends it, masked; the first string VALUE that is not
+#     body-shaped ends it and is served as the other rules mask it, as the
+#     text path stops at the first line not shaped like a key's body; and
+#     `PEM_BLOCK_MAX_CHARS` of string content after the BEGIN ends it, the
+#     bound a block of text has. What the run masks over the WHOLE document is
+#     masked in every block drawn from it (`JsonMasker._key_lines`);
 #   * a literal any of those masked -- a value under a credential's name, or a
 #     value the key/value rule found beside `NAME=` -- is masked wherever else
 #     it appears in the document, the prompt included (`_learned_literals`).
@@ -301,6 +316,121 @@ def _key_run_end(items: list[Any] | tuple[Any, ...], start: int) -> int:
     return last
 
 
+#: A string shorter than this, in base64 characters, is body only when it ends
+#: in `=` padding. WHY: after a truncated key the next string is as likely an
+#: ordinary word (`"kept"`, `"done"`, `"ok"`) as a body line, and every one of
+#: those is base64-shaped; a key's body lines are 64 characters (76 in some
+#: tools) but its LAST line can be anything from 1 to 63. Sixteen keeps every
+#: short word in clear and masks every full line. The residual (#385): a final
+#: body line under 16 characters with no padding is served -- at most 11 bytes
+#: of a key's trailing DER, which ends in the key's last integer, not its
+#: modulus. A padded short line (`"AB=="`) is masked.
+KEY_BODY_MIN_CHARS = 16
+
+
+def _key_body_shape(value: str, *, headers_allowed: bool) -> str | None:
+    """`"base64"` or `"header"` for a string shaped like a key's body lines, else None.
+
+    The text path's line test (`swarm_redaction.rules._body_line`) over every
+    line of the stripped string: blank, base64 (`*` from an earlier mask and a
+    tool's line numbers included), or an RFC 1421 header before any base64.
+    `"base64"` only when the base64 is at least `KEY_BODY_MIN_CHARS` long or
+    ends in `=` padding; `"header"` for headers and blank lines alone.
+    """
+    seen_header = False
+    chars = 0
+    last = ""
+    for line in value.strip().split("\n"):
+        shape = _body_line(line, headers_allowed=headers_allowed and not chars)
+        if shape == "base64":
+            stripped = line.strip(" \t\r")
+            last = stripped[_NUMBERED_PREFIX.match(stripped).end() :]  # type: ignore[union-attr]
+            chars += len(last)
+        elif shape == "header":
+            seen_header = True
+        elif shape is None:
+            return None
+    if chars:
+        return "base64" if chars >= KEY_BODY_MIN_CHARS or last.endswith("=") else None
+    return "header" if seen_header else None
+
+
+def _key_body_string(value: str) -> bool:
+    """Whether `value` reads as a private key's body lines (`_key_body_shape`, base64)."""
+    return _key_body_shape(value, headers_allowed=True) == "base64"
+
+
+_NUMBERED_PREFIX = re.compile(_NUMBERED)
+
+
+class _KeyRun:
+    """A private key with no END in reach, followed across JSON containers (#385).
+
+    `step()` is fed every string -- value or key -- in document order and says
+    whether it is the open key's material, to be masked and counted 0. The rule
+    is in the comment block above `JsonMasker`; `PEM_BLOCK_MAX_CHARS` is the
+    bound `swarm_redaction.rules` gives a block of text.
+    """
+
+    def __init__(self) -> None:
+        self.open = False
+        self.size = 0
+        self.seen_base64 = False
+
+    def step(self, text: str, *, key: bool = False) -> bool:
+        if self.open and self.size > PEM_BLOCK_MAX_CHARS:
+            self.open = False
+        hit = False
+        if self.open:
+            self.size += len(text) + 1
+            if _PEM_END.search(text) is not None:
+                hit = True
+                self.open = False
+            elif text.strip():
+                shape = _key_body_shape(text, headers_allowed=not self.seen_base64)
+                if shape is not None:
+                    hit = True
+                    self.seen_base64 = self.seen_base64 or shape == "base64"
+                elif not key:
+                    self.open = False
+        if _open_key(text):
+            self.open, self.size, self.seen_base64 = True, 0, False
+        return hit
+
+    def through(self, text: str) -> None:
+        """An element the flat-list rule (`_key_run_end`) already masked: counted
+        toward the bound, and an END in it ends the run; nothing else does."""
+        self.size += len(text) + 1
+        if _PEM_END.search(text) is not None:
+            self.open = False
+        if _open_key(text):
+            self.open, self.size, self.seen_base64 = True, 0, False
+
+    def scan(self, node: Any, hits: set[str] | None = None) -> None:
+        """Every string under `node`, in the order `JsonMasker._walk` reads them."""
+        if isinstance(node, str):
+            if self.step(node) and hits is not None:
+                hits.add(node)
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                raw = _key_text(key)
+                if self.step(raw, key=True) and hits is not None:
+                    hits.add(raw)
+                self.scan(item, None if _masks_whole(raw, item) else hits)
+        elif isinstance(node, (list, tuple)):
+            items = list(node)
+            through = -1
+            for at, item in enumerate(items):
+                if at <= through:
+                    self.through(item)
+                    continue
+                self.scan(item, hits)
+                if isinstance(item, str) and _open_key(item):
+                    through = _key_run_end(items, at)
+        elif node is not None and not isinstance(node, (bool, int, float)):
+            self.scan(str(node), hits)
+
+
 class JsonMasker:
     """A JSON document's values as a screen may draw them, masked, with counts.
 
@@ -342,6 +472,11 @@ class JsonMasker:
         extra = tuple(v for v in literals if v not in learned)
         self._literals = tuple(sorted(learned + extra, key=len, reverse=True))
         self._memo: dict[str, Redacted] = {}
+        # The strings and keys a no-END key run masks over the WHOLE document
+        # (#385), so a block drawn without the key's BEGIN -- `/input`'s `rest`
+        # beside a prompt that opens the key -- masks them too.
+        self._key_lines: set[str] = set()
+        _KeyRun().scan(document, self._key_lines)
         # A nonce, so no key in the document can spell a stand-in.
         self._tag = secrets.token_hex(8)
 
@@ -397,10 +532,15 @@ class JsonMasker:
         and restores it in the text, `value()` numbers a collision.
         """
         total = 0
+        run = _KeyRun()
 
         def walk(node: Any) -> Any:
             nonlocal total
             if isinstance(node, str):
+                if run.step(node) or node in self._key_lines:
+                    # Key material of the key a string before it opened: its
+                    # one mask was counted at the BEGIN.
+                    return MASK
                 masked = self.text(node)
                 total += masked.count
                 return masked.text
@@ -408,12 +548,18 @@ class JsonMasker:
                 out: dict[str, Any] = {}
                 for key, item in node.items():
                     raw = _key_text(key)
-                    name = self.text(raw)
-                    total += name.count
-                    label = label_for(out, raw, name.text)
+                    if run.step(raw, key=True) or raw in self._key_lines:
+                        # A body line stored as a KEY (#385): masked like a value.
+                        label = label_for(out, raw, MASK)
+                    else:
+                        name = self.text(raw)
+                        total += name.count
+                        label = label_for(out, raw, name.text)
                     if _masks_whole(raw, item):
                         total += 1
                         out[label] = MASK
+                        # Unread, but a BEGIN inside it still opens the run.
+                        run.scan(item)
                     else:
                         out[label] = walk(item)
                 return out
@@ -425,6 +571,7 @@ class JsonMasker:
                     if at <= through:
                         # Key material of the block the element above opened:
                         # its one mask was counted there.
+                        run.through(item)
                         shaped.append(MASK)
                         continue
                     shaped.append(walk(item))
