@@ -130,6 +130,23 @@ lookup; any other cursor is a 422 with no page read. Without that, `T|0` for any
 T was a precision probe of its own. The scan for a first own row follows at most
 `OWN_PAGE_SCAN_MAX` = 5 broker pages (about 500 Firestore reads per request);
 past that the response says `scan_limited` and offers no cursor.
+
+**A borrower's cursor counts its own spans only** (#361, owner decision
+2026-10-09). The broker's cursor is `<instant>|<skip>`, and its skip counts
+every span at that instant, other tenants' included. A borrower used to be
+handed that number, which told it how many other tenants' spans shared its own
+span's exact `assigned_at`; and since the skip it sent back was not checked,
+`T|n` for each n read exactly how many other tenants' spans lay between two of
+its own. A borrower's cursor is now `<instant>|own<k>`, `k` being how many of
+its OWN spans at that instant it has been served. swarm-api turns it back into
+the broker's skip from the same lookup that checks the instant -- every span at
+that instant up to and including the borrower's k-th own one, in the broker's
+order -- and refuses a `k` outside 1..(own spans at that instant) with a 422 and
+no page read. The broker's skip never reaches a borrower. A borrower cursor from
+before the change (`<instant>|<n>`) is refused with a 422, and so is an
+own-count cursor from any other viewer; the broker is unchanged, because only
+the platform calls it and the skip it receives for a borrower is now one
+swarm-api computed.
 | admin (`?scope=platform`, `require_admin` first) | everything | everything |
 
 **A task id is checked before anyone is shown it.** The task id on a hold is
@@ -137,9 +154,13 @@ whatever the worker sent. If the hold's own tenant does not own that task
 (`Store.tasks_by_id(hold_tenant, …)`, which answers "missing" and "another
 tenant's" the same way), the hold is served as `verified: false` **without**
 the id to everyone but an admin. It might be another tenant's real task id.
-The console shows it as *unverified*. A hold that named no task is
-`recorded: false`, shown as *task not recorded*. These are two different
-facts and are kept apart.
+A hold that named no task is `recorded: false`, shown as *task not recorded*.
+These are two different facts, and **only an admin is told which is which**:
+the admin sees the foreign claim as `recorded: true`, `verified: false`
+(*unverified*). A tenant is served its own hold naming a task it does not own
+as `recorded: false`, exactly like a hold that named none, because
+`recorded: true` beside `verified: false` would tell it that a task id it does
+not own exists (#361, owner decision 2026-10-09).
 
 Nothing on this path logs a task id.
 
