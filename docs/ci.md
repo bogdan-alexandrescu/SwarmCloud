@@ -38,10 +38,11 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main`; accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 5, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -490,7 +491,7 @@ images under an approval given for "redeploy what is there".
 |---|---|
 | `verify` — unit tests, shellcheck, destroy-guard self-test | `promote` — scans again, then moves `:prod`, all or nothing |
 | `images and scan` — reuses CI's build, or for **every prod release** builds one here (Cloud Build, `<sha>` tags in Artifact Registry, **no channel tag**) | `terraform apply` — plan, shared-project guard, apply |
-| `push-images.sh --scan-only` — every digest confirmed and trivy-scanned; nothing moves | `deploy and smoke` — digest verification, the in-VPC smoke suite, the GKE proof |
+| `push-images.sh --scan-only` — every digest confirmed and trivy-scanned; nothing moves | `deploy` — digest verification; on prod also the in-VPC smoke suite and the GKE proof |
 | the digests written to the run summary, for the reviewer to read while the run waits | |
 
 A prod release **builds before the approval**: `application.yml` builds for
@@ -509,7 +510,7 @@ after the apply had already changed prod, which made it a question with no
 decision left in it. Adding a third for the promotion would have put
 promotion behind a *different* approval from the apply, not "that same" one.
 So `approval` is the only job in `release.yml` that names `prod` (or `dev`);
-`promote`, `terraform apply` and `deploy and smoke` name none. The one other
+`promote`, `terraform apply` and `deploy` name none. The one other
 environment is `dev-iam`, named by a dev-only job ([below](#a-dev-release-that-changes-iam-waits-for-the-owner)). They run only
 if it **succeeded**, and on prod only in the attempt it succeeded in (see
 "A prod approval clears one attempt" below).
@@ -531,7 +532,7 @@ two holes followed from it:
 * On a `skip_build` prod redeploy, `promote` is skipped the moment `approval`
   succeeds, so the apply is the very next job. A reviewer who approved and
   cancelled a second later still got a prod apply.
-* `deploy and smoke`'s GKE proof dispatches a browser task into the
+* `deploy`'s GKE proof (prod; dev's is accept.yml's) dispatches a browser task into the
   environment. It was `always() && steps.verify.outcome == 'success'`, so a
   cancel that landed on the smoke test still dispatched it.
 
@@ -569,7 +570,7 @@ So the approval is tied to the **attempt** it cleared:
   has not been observed here. If GitHub drops it instead, the output is
   empty: the check below then fails closed, and `stale-approval` still
   reports it.
-* On prod, `promote`, `terraform apply` and `deploy and smoke` each run only
+* On prod, `promote`, `terraform apply` and `deploy` each run only
   if `needs.approval.outputs.attempt == github.run_attempt`. Each carries the
   condition itself, because "Re-run this job" on a deploy whose smoke test
   failed keeps the apply's old `success` too.
@@ -601,7 +602,7 @@ records a deployment against a job that names an environment, and here that
 is only `approval`. So the repository's Deployments page lists prod as
 deployed at the commit once the approval passes, and it keeps saying so if
 the promotion or the apply then fails. The release run's own result is what
-says whether prod changed. Its `deploy and smoke` summary lists the digests
+says whether prod changed. Its `deploy` summary lists the digests
 the apply pinned, and that job's verify step fails unless every service runs
 them.
 
@@ -766,7 +767,7 @@ would have waved it through. Who administers a role is an IAM decision.
    if its sha256 differs from the one recorded, and applies **that file**. It
    never plans, because a new plan would be one nobody reviewed. After a
    successful apply it deletes the held plan.
-6. `deploy and smoke` runs after whichever apply ran. If the owner rejects
+6. `deploy` runs after whichever apply ran. If the owner rejects
    `dev-iam`, nothing deploys, and the run ends failed.
 
 **Why the state bucket and not a workflow artifact.** This repository is
@@ -836,6 +837,165 @@ classification can write. It checks four things:
 It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
+
+## The release timeline
+
+Owner decision 2026-10-08: cuts A, B and C of the release timing report. The
+release used to hold dev's lock through everything that only *checks* a
+deployment. Now it holds the lock only while it changes dev.
+
+### What was measured
+
+Over the 22 successful `release.yml` runs before 2026-10-08, the
+`release-dev` concurrency lock was held **100 min p50**:
+
+| stage | p50 |
+|---|---|
+| `verify` (the unit suite, shellcheck, the destroy-guard self-test) | 26.4 min |
+| `deploy and smoke` | 23.6 min: warm 11.4, smoke 9-14, GKE proof 3.5 |
+| `acceptance (dev)`, five groups one after another | 45.4 min: mock 8-12, generic 6-8, claude-code 4-7, workflow ~13, browser 2-3 |
+
+New digests were live **43 min** after the run started. The other **71 min**
+held the lock, and every later push queued behind it. `release-dev` is
+`cancel-in-progress: false`, so each new push replaced the pending run.
+
+### What changed
+
+* **A. Acceptance has its own workflow.** On dev, `release.yml` ends at
+  `deploy`, which verifies that every service, job and worker image runs the
+  pinned digests and then applies the tenant namespaces. Warming, the smoke
+  test, the GKE proof and the acceptance suite moved to
+  `.github/workflows/accept.yml`. It starts when a release completes
+  (`workflow_run`, on `main`), or by dispatch. Its deciding job
+  (`what dev runs`) has no concurrency, so a completion that accepts nothing
+  cannot cancel a real acceptance; only the accepting jobs carry
+  `accept-dev-<job>` groups with **`cancel-in-progress: true`**, because only
+  the newest deployed commit is worth accepting. A hotfix re-applying the
+  same SHA is accepted. A GitHub cancel does not stop a Cloud Run execution,
+  so a `stop an earlier acceptance` job cancels the running `swarm-verify`
+  executions before the new run's first wave.
+* **B. `verify` runs only on a dispatch.** On a push, `application.yml` runs
+  the unit suite, shellcheck, the destroy-guard self-test and the manifests
+  on the same SHA, and its `build images` job `needs: [python, shell,
+  manifests]`. The release takes that job's image record with `--reuse-ci
+  only` and refuses to build its own. So the record it ships cannot exist
+  unless those checks passed on that commit. A dispatch has no such proof: a
+  prod release, a dev dispatch that may build its own images (`or-build`), or
+  a `skip_build` redeploy. So `verify` still runs on every dispatch, prod
+  included. Each job that needs `verify` states one rule: `verify` succeeded,
+  or a push skipped it. `test_release_prod_gate.py` holds that a dispatch
+  whose `verify` did not succeed starts nothing that promotes, applies or
+  deploys. On a push, the plugin tag waits for `images and scan`, which found
+  CI's record.
+* **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
+  false`, one swarm-verify execution each.
+
+### Five at once does not fit, so it is two waves
+
+The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
+tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
+Each group's peak of tasks in flight, read from its group file:
+
+| group | peak | why |
+|---|---|---|
+| mock | ~13 | twelve tasks and a two-step workflow, submitted before it waits |
+| generic | ~8 | one task per command row |
+| workflow | ~4 | four workflow roots |
+| claude-code | ~3 | three tasks |
+| browser | ~3 | three tasks |
+
+Together that is about 31, over the ceiling. A task over the ceiling queues
+rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
+settle deadline, and time spent in the queue comes out of it. So the groups
+run in **two waves**:
+
+* **wave 1**: `mock`, `workflow` and `browser`, a peak of about 20;
+* **wave 2**: `generic` and `claude-code`, about 11. It starts when wave 1
+  ends, whatever wave 1 concluded.
+
+`test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
+`dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
+would fit in one wave.
+
+### The timeline now (expected, not yet measured)
+
+| | before (p50, measured) | after (estimated from the same p50s) |
+|---|---|---|
+| `release-dev` lock, push | 100 min | about 100 − 26.4 (`verify`) − ~23 (warm, smoke, GKE proof) − 45.4 (acceptance) ≈ **5-10 min** past the wait for CI's image record |
+| new digests live, from the push | 43 min | CI's `build images` + scan, promote, apply. `verify`'s 26.4 min is no longer in front of the apply |
+| acceptance, after the deploy | 45.4 min, under the lock | warm 11.4 + smoke 9-14 + GKE proof 3.5 + wave 1 (~13) + wave 2 (~8) ≈ **45-50 min, outside the lock** |
+
+These numbers are subtraction, not a measurement. The first week of runs is
+the measurement. Re-measure the same way: the lock is the run's
+`created_at` → `updated_at`, and the stages are the jobs' own times.
+
+### It accepts exactly what dev runs
+
+`what dev runs` reads the SHA from `releases/dev/applied.json`, through
+`scripts/lib/release-order.sh deployed`. That is the record every successful
+dev apply writes, from either lane. Every later job checks out **that
+commit**, and the run's summary names it. A completed release is accepted
+only when `applied.json` names that very run:
+
+* a release that a newer commit superseded applied nothing, so it accepts
+  nothing;
+* a prod release records nothing for dev, so it accepts nothing either.
+
+A dispatch accepts whatever dev runs now, e.g. after a hotfix. A trigger that
+can accept nothing (a failed release, or a prod release, recognised by the
+`release prod <ref>` run-name that `release.yml` now sets on a dispatch) is
+put in a concurrency group of its own. It therefore cannot cancel a real
+acceptance.
+
+### A red acceptance is an issue, not a blocked deploy
+
+`report what was accepted` runs `scripts/accept-report.sh`. Every red run
+opens **one** issue labelled `bug`, or retitles and comments on the one
+already open. The issue names the SHA and every failing group, taken from
+the run's job list (`acceptance (mock)`, …). It is written in the bug form's
+sections. A green run changes nothing: the issue is closed by the change that
+fixed it. A red run against a deployment that is already gone (the hotfix
+lane applied a newer commit mid-run) is reported in the summary and not
+filed. If `what dev runs` itself fails (an identity not yet bootstrapped, an
+unreadable record), that is filed too.
+
+The trade the owner made: a red acceptance no longer stops the next commit
+reaching dev. It is reported, and the next push deploys regardless.
+
+### Prod is unchanged
+
+Acceptance never ran on prod. It spends subscription quota and opens real
+pull requests on the sandbox. So there was no acceptance-before-prod gate to
+keep, and none was added. A prod release still waits at `approval (prod)`.
+Its `deploy` still warms, smokes and proves GKE inside the release, on steps
+conditioned on `github.event.inputs.environment == 'prod'`. `dev-iam` still
+holds a dev plan that changes IAM. `test_release_prod_gate.py` and
+`test_release_dev_iam_gate.py` hold both gates.
+
+### Its identity is not the deployer
+
+`accept.yml` federates as **`vars.GCP_ACCEPT_SA`**, the account
+`terraform/bootstrap/acceptance.tf` creates and binds to `accept.yml` on
+`refs/heads/main` alone. It is **not** on `wif.tf`'s `deployer_workflows`, and
+`test_workflow_id_token_scope.py` keeps it off. What the account can do:
+
+* execute `swarm-verify` and the `swarm-job-*` worker jobs, and read their
+  executions (a custom role conditioned to those names). The suites run
+  *inside* the VPC as swarm-verify, under swarm-verify's own identity;
+* list jobs and read operations, read-only;
+* read the swarm-verify log view;
+* read `releases/` in the state bucket, and no state object.
+
+It cannot plan, apply, promote, write a release record, take the release lock
+or touch IAM. **The owner applies it** (`make bootstrap`), then sets the
+repository variable `GCP_ACCEPT_SA` to the `github_accept_service_account`
+output. Until then `what dev runs` fails at authentication, and the report
+files that as a red acceptance.
+
+What only a live run proves: that IAM evaluates the role's resource-name
+condition for Cloud Run jobs and executions as documented. A condition that
+matches nothing shows as `Permission 'run.jobs.runWithOverrides' denied` in
+`warm, smoke and GKE proof (dev)`.
 
 ## Hotfix releases
 
@@ -931,10 +1091,11 @@ the job that runs it (`_workflow` in
   tests, shellcheck and manifests passed -- and the images stage refuses to
   build anything itself.
 * **Warming the worker jobs, acceptance, the GKE proof and the plugin tag.**
-  The same push still starts the normal release, which runs all four.
-  Acceptance is **delayed, not dropped**: it runs on the normal release, and
-  if it finds a defect the hotfix put on dev, that release goes red as it
-  would have.
+  The same push still starts the normal release, which tags the plugin. When
+  that release completes, `accept.yml` warms, smokes, proves GKE and accepts
+  what dev then runs ([above](#the-release-timeline)). Acceptance is
+  **delayed, not dropped**: a defect the hotfix put on dev is filed as the
+  acceptance issue, as it would be for any commit.
 * **Any change to IAM.** A plan that changes IAM **fails** the hotfix lane
   before anything is applied, with "the change must go through release.yml
   and the dev-iam gate". The hotfix never applies IAM, so the owner's
@@ -964,8 +1125,9 @@ them. `scripts/lib/release-order.sh` does, through the state bucket:
   check runs before promote too, so `:dev` never moves backwards, and again
   at the start of the deploy; a verification or smoke test that fails
   *because* a newer commit reached dev meanwhile also ends green
-  (`release-order.sh unless-superseded`), and `acceptance` does not run for
-  a superseded release.
+  (`release-order.sh unless-superseded`). `accept.yml` accepts a completed
+  release only when `applied.json` names that run, so a superseded release
+  is never accepted.
 * A hotfix's apply waits up to 900 s for Terraform's own state lock
   (`-lock-timeout=900s`), where a release waits 180 s.
 * **Not on prod.** A prod release is a person's choice of commit behind
@@ -975,8 +1137,8 @@ them. `scripts/lib/release-order.sh` does, through the state bucket:
   guessed.
 
 In the usual case the hotfix lands first and the normal release of the same
-commit follows it -- same SHA, so it proceeds, re-applies the same digests and
-runs acceptance. The normal release of an *older* commit that reaches its
+commit follows it -- same SHA, so it proceeds, re-applies the same digests, and
+its completion starts `accept.yml`. The normal release of an *older* commit that reaches its
 promote or apply after the hotfix stops there, superseded.
 
 ### What the tests hold, and what they cannot
@@ -1223,15 +1385,16 @@ exercised, and this is what was found, not proof that there is nothing else.
 | # | route to every log in the project | closed by a condition? |
 |---|---|---|
 | 1 | The deployer holds `roles/iam.serviceAccountUser` on `209012342332-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
-| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (#79, owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed once applied:** open until the owner's bootstrap apply destroys the live binding ([runbook](runbooks/custom-roles-to-bootstrap.md), step 2). |
+| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (#79, owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed and applied** 2026-09-28 23:21Z by the owner's bootstrap apply, which destroyed the live binding; read 2026-09-29: the deployer holds no `roles/iam.roleAdmin` ([runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates)). |
 | 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closes with the owner's bootstrap apply in [the runbook](runbooks/custom-roles-to-bootstrap.md). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closed with the owner's bootstrap apply of 2026-09-28 in [the runbook](runbooks/custom-roles-to-bootstrap.md#what-actually-happened-dates). |
 
 What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
-merged to `main` first. The same held for 2, 3, 5 and 6 until each is applied.
+merged to `main` first. The same held for 3, 5 and 6 until each is applied,
+and for 2 until the owner's bootstrap apply of 2026-09-28 closed it.
 Closing 1 means building as an account without `roles/editor`; 4 means moving
 sink management out of CI. Each changes what CI can do, none is made here,
 and which to make is the owner's decision. Route 3 was closed by the owner's
@@ -1466,12 +1629,24 @@ limited to the roles preflight could read, which is all of them before step 4
 `deployer_grantable_project_roles` is absent from every chunk, so one refusal
 still speaks for all of them. It is still one role, measured once.
 
+**It covers a self-grant of `swarmSecretLister` (#69).** #69's acceptance is
+that, with `projectIamAdmin` scoped, the deployer cannot bind itself
+`swarmSecretLister`, whose project-wide `secretmanager.secrets.setIamPolicy`
+reaches the other team's secrets. The refusal of `roles/browser` stands for that
+exactly when no live chunk lists `swarmSecretLister`, so preflight checks it --
+by role id, `.../roles/swarmSecretLister` under any project prefix, in either
+quote style -- stops with nothing attempted if a chunk does, and a pass says in
+the run summary that the refusal also covers `swarmSecretLister`. The probe
+never asks for `swarmSecretLister` itself: if the condition were broken, the
+deployer would hold `secrets.setIamPolicy` over the other team's secrets until
+the revert.
+
 **Preflight checks every chunk, not one binding (#276).**
 [`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight accepts
 one or more conditioned `projectIamAdmin` bindings on the deployer -- one per
 chunk -- and refuses unless each one's expression is exactly
 `api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...])`
-and its list does not name `roles/browser`. A grant is admitted if *any*
+and its list names neither `roles/browser` nor `swarmSecretLister`. A grant is admitted if *any*
 binding admits it, so one chunk with a broader condition (a `|| true`, a
 `hasAny`) or the probe role in its list would make a grant prove nothing; the
 whole expression is matched, and the list is parsed, for that reason. Before
@@ -1484,7 +1659,8 @@ whole expression is matched, and the list is parsed, for that reason. Before
   then authorised by that role, and the condition is never evaluated. The probe
   asks the condition a question that route never asks. If the route has already
   been used, preflight finds the permission on the role and stops. It does not
-  show that the route is shut.
+  show that the route is shut: what shuts it is the binding's absence, since
+  the owner's bootstrap apply of 2026-09-28 destroyed it.
 * **Who a listed role goes to.** `hasOnly` limits which roles change, not whose
   grant changes. CI can still grant any of the 14, unconditioned, to
   anyone.
@@ -2766,10 +2942,13 @@ again.
 
 ## The release warms each Cloud Run worker job once on its new digest
 
-`deploy and smoke` runs `scripts/warm-jobs.sh` right after it has verified that
-every job runs the promoted digest, and before the smoke test and the
-`acceptance (dev)` job. The script executes each per-tenant worker job once
-with `--args=--self-test`.
+On dev, `accept.yml`'s `warm, smoke and GKE proof (dev)` runs
+`scripts/warm-jobs.sh` first, before its smoke test and before any
+acceptance group ([the release timeline](#the-release-timeline)). It runs
+against the digests that the release that just completed verified. On prod,
+the release's `deploy` still runs it, right after it has verified that every
+job runs the promoted digest and before the smoke test. The script executes
+each per-tenant worker job once with `--args=--self-test`.
 
 **Why.** The measurement of 2026-10-07 on #363 (874 claude-code attempts from
 09-30 to 10-07, 497 of them with Cloud Run execution conditions): the first
@@ -2801,10 +2980,13 @@ occupies a whole worker shape in the region while it starts.
 
 **It never fails the release.** If a warm execution fails, or the listing
 fails, the script prints a warning and exits 0. The cost is one slower first
-task. The step also sets `continue-on-error`. It runs only when the verify step
-succeeded, because warming the previous digest would warm nothing, and only
-under `!cancelled()`, because it executes jobs in the environment. That puts it
-under the prod gate's checks (`test_release_prod_gate.py` counts it as a deploy).
+task. The step also sets `continue-on-error`. In the prod release it runs
+only when the verify step succeeded, because warming the previous digest would
+warm nothing, and only under `!cancelled()`, because it executes jobs in the
+environment. That puts it under the prod gate's checks
+(`test_release_prod_gate.py` counts it as a deploy). In `accept.yml` it runs
+only after a release completed successfully, and so after that release's
+verify.
 `tests/unit/scripts/test_warm_jobs.py` and
 `tests/unit/worker/test_worker_self_test.py` hold all of this.
 
@@ -2826,8 +3008,9 @@ miss.
 
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
-The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
-deploy ([acceptance.md](acceptance.md) says what each check asserts). Until
+`accept.yml` runs `scripts/acceptance/` after every dev deploy
+([acceptance.md](acceptance.md) says what each check asserts; [the release
+timeline](#the-release-timeline) says why it is not a release job any more). Until
 2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
 and cloned and opened pull requests on this platform's own public repository.
 The history analysis of that day (#628) counted 58 fixture pull requests
@@ -2846,8 +3029,7 @@ the sweep and the sync all read it; none of them reads
 repository a CI run is for or the one the checkout was cloned from.
 [`test_acceptance_target.py`](../tests/unit/scripts/test_acceptance_target.py)
 holds the configuration to smoke and the sandbox, and fails if any file under
-`scripts/acceptance/` or the release's acceptance job names the public
-repository.
+`scripts/acceptance/`, or `accept.yml`, names the public repository.
 
 **How the suite gets into `smoke`.** It sends `X-Swarm-Tenant: smoke` on every
 API call (`SWARM_API_TENANT`, which `common.sh`'s `api_request` turns into the
@@ -2866,11 +3048,14 @@ read, and asks `GET /tenants/me` with the header and refuses any tenant but
 `smoke`, including a 403 `tenant_not_member`. It never falls back to the
 caller's default tenant: that fallback is how acceptance came to fill eng.
 
-**What the release job holds.** `contents: read` and `id-token: write`. The
-repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
-to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
-commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
-differ, and no other path) and opens or checks the fixture issue;
+**What `accept.yml` holds.** `contents: read` everywhere. `id-token: write`
+only on the jobs that start executions, as its own identity
+([above](#its-identity-is-not-the-deployer)). `issues: write` only on the
+report. The repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps
+and never to the suite. The first is `scripts/acceptance/sandbox-sync.sh`, in
+a job of its own before any group starts. It writes the deployed commit's
+`tests/acceptance/fixtures/` to the sandbox's `main` (only when they differ,
+and no other path) and opens or checks the fixture issue;
 `scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
 requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
 closes the pull requests and branches the suite opened there. The job's
@@ -2886,8 +3071,8 @@ runner instead, which does hold the sandbox token:
 
 * `github-verify.sh` runs after the suite (even a failed one) and before the
   sweep closes anything. It judges every open `swarm/task_` pull request of the
-  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
-  `started` step), and fails the job when one has an empty title or a title
+  sandbox opened since acceptance started (`SWARM_ACCEPTANCE_SINCE`, from the
+  sandbox job's `started` step), and fails the job when one has an empty title or a title
   carrying a task id, a body without its task id, a change outside
   `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
   `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
