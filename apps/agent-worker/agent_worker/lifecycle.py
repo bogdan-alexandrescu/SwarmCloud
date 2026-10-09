@@ -173,10 +173,12 @@ from .checkpoint import (
     CheckpointBackoff,
     CheckpointManager,
     CheckpointRecord,
+    _empty_directory,
     checkpoint_prefix,
 )
 from .config import WorkerConfig
 from .control import (
+    ARCHIVE_DIGEST_RE,
     CHECKPOINT_DIGESTS_FIELD,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     ControlPlane,
@@ -2263,6 +2265,10 @@ class Worker:
         self.phases.enter("verify_spec")
         task, create_time = self.control.fetch_task_snapshot()
         self._verify_spec(task, create_time)
+        # `max_attempts` is covered: a retryable failure decides on this
+        # verified copy, never on the live field a tenant agent can rewrite
+        # (#346).
+        self.control.pin_verified_max_attempts(task.get("max_attempts"))
         # The clone host joins the egress probe (#721 (a)) as soon as the
         # document naming it is verified, the same URL `_maybe_clone` reads.
         self._add_egress_target(self.cfg.repository_url or task.get("repository_url"))
@@ -3950,7 +3956,9 @@ class Worker:
         Every refusal starts the attempt from an empty workspace, which is
         what a first attempt does anyway. The restore's own checks --
         ownership, digest, the member filter, the escaping-link skip, the
-        size caps -- still apply to whatever is accepted.
+        size caps -- still apply to whatever is accepted, and a
+        `CheckpointError` from them is a refusal like the rest: an empty
+        workspace, not a failed attempt (#346).
         """
         ws = self.ws
         assert ws is not None
@@ -3971,7 +3979,31 @@ class Worker:
         record = self._recorded_checkpoint(task)
         if record is None:
             return
-        files = self.checkpoints.restore(record, ws)
+        try:
+            files = self.checkpoints.restore(record, ws)
+        except CheckpointError as exc:
+            # A REFUSED RESTORE IS A CLEAN START, NOT A FAILED ATTEMPT (#346).
+            # The restore's own checks -- the archive's bytes against the
+            # recorded digest above all, but also ownership, the member filter
+            # and the size caps -- refuse what `_recorded_checkpoint` could
+            # not see: an archive rewritten under an unchanged manifest. That
+            # used to fail the attempt and burn a retry, where every other
+            # refusal starts from an empty workspace; the restore leaves
+            # `work/` empty on a refusal, and this makes sure of it. Not an
+            # OSError or an object-store error: those may be transient and
+            # still fail the attempt, which a retry can then resume.
+            _empty_directory(ws.work)
+            self.log.error(
+                "refusing the recorded checkpoint: the restore's own checks failed",
+                checkpoint_id=record.checkpoint_id,
+                from_attempt=record.attempt_id,
+                error=str(exc),
+            )
+            self.log.info(
+                "no checkpoint is restored; starting from an empty workspace",
+                reason="the recorded checkpoint failed the restore's own checks",
+            )
+            return
         self._restored_from = record
         self.control.emit(
             EventType.CHECKPOINT_RESTORED,
@@ -4075,6 +4107,19 @@ class Worker:
             return None
         if record.attempt_id == self.cfg.attempt_id:
             refuse(reason="the pointer names this attempt, which has recorded nothing")
+            return None
+        # A DIGEST IS A DIGEST BEFORE IT IS COMPARED (#346). A manifest is
+        # bucket data, and one carrying `archive_sha256: null` matched an
+        # attempt document with no digest for it: None == None.
+        if not isinstance(record.archive_sha256, str) or not ARCHIVE_DIGEST_RE.fullmatch(
+            record.archive_sha256
+        ):
+            self.log.error(
+                "refusing a checkpoint whose manifest carries no archive digest",
+                attempt_id=record.attempt_id,
+                checkpoint_id=record.checkpoint_id,
+            )
+            refuse(reason="the checkpoint's manifest carries no archive digest")
             return None
         try:
             attempt = self.control.fetch_attempt(record.attempt_id)

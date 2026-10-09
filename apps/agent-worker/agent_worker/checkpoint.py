@@ -1449,6 +1449,12 @@ class CheckpointManager:
 
         The refusal is the point: restoring over an existing tree produces a
         workspace that matches no checkpoint, which is worse than failing.
+
+        Every refusal raises `CheckpointError` with `work/` left empty, and
+        the caller (`Worker._restore_checkpoint`) starts the attempt from that
+        empty workspace rather than failing it (#346): an archive whose bytes
+        no longer match the recorded digest is a checkpoint not to trust, not
+        a reason to burn a retry.
         """
         if not self._owns(record):
             raise CheckpointError(
