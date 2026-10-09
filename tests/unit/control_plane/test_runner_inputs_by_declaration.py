@@ -303,6 +303,26 @@ def test_browser_and_generic_are_held_to_their_declarations_at_every_door(client
     assert not _tasks(db), "a refused submission created a task"
 
 
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("input_shape", ["url", "goto"])
+def test_a_credentialled_url_is_refused_without_its_userinfo_at_every_door(client, db, door, input_shape):
+    """Contract request 57 (#349): the 422 used to repeat 40 characters of the
+    value, which is `user:password@` for a URL that carries one. Built at
+    runtime, so no line here looks like a credential."""
+    secret = "hunter" + "2pw"
+    url = f"http://user:{secret}@example.com/"
+    if input_shape == "url":
+        input, key = {"url": url}, "url"
+    else:
+        input, key = {"actions": [{"type": "goto", "url": url}]}, "actions"
+    response = DOORS[door](client, "browser", {"prompt": "x", **input})
+    assert response.status_code == 422, response.text
+    assert key in response.json()["message"], response.text
+    assert secret not in response.text, response.text
+    assert "user:" not in response.text, response.text
+    assert not _tasks(db), "a refused submission created a task"
+
+
 def test_metadata_with_an_integer_firestore_cannot_store_is_refused(client, db):
     response = client.post(
         "/v1/tasks", headers=auth_header("alice"),
