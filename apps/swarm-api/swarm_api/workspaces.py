@@ -217,7 +217,11 @@ def gate_from_env(environ: Mapping[str, str] | None = None) -> bool:
     Read here rather than in `ApiSettings` because settings.py is lane W2's
     file in the same phase (§10); moving it there later changes no behaviour.
     """
-    raw = (os.environ if environ is None else environ).get("WORKSPACE_GATE", "")
+    # `os.environ.get("WORKSPACE_GATE", ...)` spelled out, not through a
+    # chosen mapping: scripts/lib/check-env-parity.sh finds a read by that
+    # shape, and terraform/infra/locals.tf sets this variable (W10).
+    raw = (os.environ.get("WORKSPACE_GATE", "") if environ is None
+           else environ.get("WORKSPACE_GATE", ""))
     value = raw.strip().lower()
     if value in _ON:
         return True

@@ -838,6 +838,31 @@ variable "enable_issue_sweep" {
   default     = false
 }
 
+variable "workspace_gate" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_GATE (docs/workspaces.md §5, #847): "on" refuses a
+    person's task or workflow submission into their own personal tenant until
+    their workspace record is `ready` and the tenant has a Claude account
+    (403 WORKSPACE_NOT_READY / NO_CLAUDE_ACCOUNT), and stops swarm-api writing
+    a person's tenant on first sight. Group tenants and service accounts are
+    never gated (WD7).
+  EOT
+  type        = string
+  # OFF BY DEFAULT (owner decision WD8, 2026-10-08): on, it refuses every
+  # personal tenant without a `ready` record, which until the first real
+  # approval end to end is every personal tenant there is. An environment
+  # turns it on in its own tfvars, after that approval (§5.5).
+  default = "off"
+
+  validation {
+    # Exactly the two words, lower case. swarm_api.workspaces.gate_from_env
+    # would also read "true" or "1", and refuses to start on anything else;
+    # one spelling here keeps a tfvars typo a plan error, not a crash loop.
+    condition     = contains(["off", "on"], var.workspace_gate)
+    error_message = "workspace_gate is \"off\" or \"on\"."
+  }
+}
+
 variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool

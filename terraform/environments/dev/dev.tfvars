@@ -547,6 +547,14 @@ admin_users = ["bogdan@saga.xyz"]
 # admin can remove this person's admin rights.
 platform_owner = "bogdan@saga.xyz"
 
+# The personal-workspace submission gate (docs/workspaces.md §5.5, owner
+# decision WD8). 2026-10-09: OFF, stated here so that turning it on is this one
+# value. It stays off until one real person has been approved in Admin > People
+# end to end -- the workspace job reached `ready`, they have a Claude account,
+# and a task of theirs ran -- and every existing personal tenant has a `ready`
+# record. On before that refuses every person's own submissions.
+workspace_gate = "off"
+
 # The verification gate's ONE admin route, by owner decision on 2026-09-24.
 #
 # scripts/race-test.sh narrows runner:mock to one slot to force contention, and
