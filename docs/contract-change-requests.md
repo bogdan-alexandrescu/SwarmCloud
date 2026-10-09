@@ -42,7 +42,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
-| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01; #364 amendment item 1 applied with it) |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01; #364 amendment items 1-3 applied: item 1 with it, items 2-3 in `terraform/modules/secret_manager`, recorded 2026-10-08) |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
@@ -6431,9 +6431,17 @@ reach it. They are listed there as rejected, not as fallbacks.
 `validation.known_providers()` leaves out every `worker_action` profile's
 provider (`APP_CREDENTIAL_PROVIDERS`: `git-merge`, `git-review`), and both
 credential routes call it, so neither route file was edited and neither
-accepts the two. **Items 2 and 3 are not applied yet** (Terraform, lane M2);
-until they are, no Job and no tenant `providers` entry may name either
-provider. Found by the
+accepts the two. **Items 2 and 3 APPLIED** (recorded 2026-10-08, #364) in
+`terraform/modules/secret_manager`: `accessor_overrides` is the complete
+reader list for a provider in `action_providers`, validated to exist for each
+such provider and to never name the worker account; and `refreshable`
+excludes `action_providers` from the `-refresh` twins and from the
+refresher's grants. Both are tested by
+`tests/terraform/merge_step_iam.tftest.hcl`. `terraform/infra/variables.tf`
+additionally refuses either provider for any tenant, since the keys were
+retired (MS0-Q4, 2026-10-06), and the credential store
+(`swarm_api.credentials.put_credential`) refuses both, and the forge token,
+itself, before any write (#364). Found by the
 security review of #351 (CR 35/36), filed as issue #364. This amendment does
 not touch this request's frozen-contract surface (`profiles.py`/`models.py`
 are unchanged by it); it closes a gap in how the design it names is *built*,
@@ -7697,8 +7705,10 @@ being fatal. Nothing under `apps/common/swarm_common/` changed.
 `post-verdict` entry (`available=False` until #342 is enforced and the review
 App exists) and `VERDICT_REFUSED`/`VERDICT_FAILED`. Its MAJOR 1 companions:
 the API routes' refusal is applied (request 33's amendment, item 1); the
-`secret_manager` accessor override and the refresh exclusion are not yet
-(lane M2). Part of #295. Recorded from
+`secret_manager` accessor override and the refresh exclusion are APPLIED
+(request 33's amendment, items 2 and 3, recorded 2026-10-08: `accessor_overrides`
+and `refreshable` in `terraform/modules/secret_manager`, tested by
+`tests/terraform/merge_step_iam.tftest.hcl`). Part of #295. Recorded from
 [merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
 the owner 2026-09-29 as the design for #295), which pointed at this as a
 separate, not-yet-filed request ([merge-step.md](merge-step.md)'s own §10
