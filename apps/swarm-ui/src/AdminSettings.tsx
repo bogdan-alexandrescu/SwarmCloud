@@ -1,6 +1,10 @@
-import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { loadAdminPools, loadCapacity, loadMe, setPoolLimit } from './api'
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
+import { loadAdminPools, loadCapacity, loadMe, setPoolLimit, storeOwnerToken } from './api'
+import { Button, Card } from './components'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
+import { Refusal } from './GitHubConnect'
+import { ACCESS } from './Onboarding'
+import { addressToPath } from './paths'
 import { HelpCard } from './HelpCard'
 import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
@@ -13,6 +17,7 @@ import {
   type AdminPool,
   type Capacity,
   type Me,
+  type OwnerTokenResponse,
   type Pool,
   type PoolKind,
 } from './types'
@@ -120,42 +125,45 @@ export function AdminSettingsScreen() {
   }
 
   return (
-    <Screen
-      // "Pool limits", not "Admin settings". The tab says Pool limits and it
-      // is the accurate one twice over: this screen edits concurrency ceilings
-      // and nothing else, so "Admin settings" over-claimed a settings page
-      // that does not exist, and it restated the section it already sits under
-      // ("Admin") instead of naming the thing on the screen.
-      title="Pool limits"
-      load={loadLimits}
-      // A count, not a promise. "changes take effect immediately" was a
-      // rationale in the one slot on this screen a reader cannot skip.
-      summary={(d) =>
-        `${d.pools.length} ${d.pools.length === 1 ? 'pool' : 'pools'} · ${Object.keys(d.runner_profiles).length} ${Object.keys(d.runner_profiles).length === 1 ? 'profile' : 'profiles'}`
-      }
-      empty={{
-        heading: 'No pools exist',
-        body: 'Pools are created at provisioning time.',
-      }}
-    >
-      {(d) => (
-        <Body
-          capacity={fresh !== null && fresh.over === d ? fresh.data : d}
-          admin={admin}
-          saved={saved}
-          outcomes={outcomes}
-          onSaved={(pool, outcome) => reread(d, pool, outcome)}
-          onEdit={(pool) => {
-            mark(pool, null)
-            setOutcomes((all) => {
-              const next = { ...all }
-              delete next[pool]
-              return next
-            })
-          }}
-        />
-      )}
-    </Screen>
+    <>
+      <Screen
+        // "Pool limits", not "Admin settings". The tab says Pool limits and it
+        // is the accurate one twice over: this screen edits concurrency ceilings
+        // and nothing else, so "Admin settings" over-claimed a settings page
+        // that does not exist, and it restated the section it already sits under
+        // ("Admin") instead of naming the thing on the screen.
+        title="Pool limits"
+        load={loadLimits}
+        // A count, not a promise. "changes take effect immediately" was a
+        // rationale in the one slot on this screen a reader cannot skip.
+        summary={(d) =>
+          `${d.pools.length} ${d.pools.length === 1 ? 'pool' : 'pools'} · ${Object.keys(d.runner_profiles).length} ${Object.keys(d.runner_profiles).length === 1 ? 'profile' : 'profiles'}`
+        }
+        empty={{
+          heading: 'No pools exist',
+          body: 'Pools are created at provisioning time.',
+        }}
+      >
+        {(d) => (
+          <Body
+            capacity={fresh !== null && fresh.over === d ? fresh.data : d}
+            admin={admin}
+            saved={saved}
+            outcomes={outcomes}
+            onSaved={(pool, outcome) => reread(d, pool, outcome)}
+            onEdit={(pool) => {
+              mark(pool, null)
+              setOutcomes((all) => {
+                const next = { ...all }
+                delete next[pool]
+                return next
+              })
+            }}
+          />
+        )}
+      </Screen>
+      <FallbackTokenCard />
+    </>
   )
 }
 
@@ -1341,4 +1349,122 @@ function isEditable(pool: Pool): boolean {
   if (kind === 'runner' || kind === 'backend') return true
   if (kind === 'provider') return true
   return false
+}
+
+/**
+ * GITHUB FALLBACK TOKEN (#780, D5; docs/onboarding.md §3.2). The owner's note
+ * on D5: "lets also allow it to be done via the UI admin settings page" --
+ * beside `uv run sc setup token --owner <org>`, for an org that will not
+ * install the SwarmCloud App.
+ *
+ * IT STORES THE SIGNED-IN PERSON'S OWN TOKEN, FOR ONE OWNER. The route takes
+ * the person from the verified identity and the tenant from `tenant_scope`,
+ * never the body, so there is no field here for whose token it is: an admin
+ * stores their own, as anyone does. It lands in the person's per-owner slot
+ * (`swarm-tenant-<tenant>-git-u-<16 hex>`), is used by Access and by
+ * submission for that owner only, and is revoked when the owner is removed
+ * on Access.
+ *
+ * THE VALUE IS IN THIS PAGE FOR ONE POST. The input is uncontrolled -- the
+ * value is never React state -- and is read and cleared in the same handler,
+ * before the answer, so it is cleared whatever the answer. It is posted once,
+ * never retried, never logged, never put in storage, and the answer carries
+ * the token's names, never the value. A refusal draws the server's §2.3 copy
+ * (`CLASSIC_PAT_BLOCKED`, `SSO_NOT_AUTHORISED`, ...) word for word.
+ *
+ * ITS WORDS SIT BEHIND `?`. Pool limits is held to a prose budget
+ * (`prose.operator.test.tsx`), so the fields are named by `aria-label` and a
+ * placeholder, and what the token is for opens on demand.
+ */
+export function FallbackTokenCard() {
+  const id = useId()
+  const tokenRef = useRef<HTMLInputElement>(null)
+  const inFlight = useRef(false)
+  const [owner, setOwner] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [missing, setMissing] = useState<string | null>(null)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [stored, setStored] = useState<OwnerTokenResponse | null>(null)
+  const [about, setAbout] = useState(false)
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current) return
+    const input = tokenRef.current
+    const name = owner.trim()
+    if (name === '' || input === null || input.value.trim() === '') {
+      setMissing(name === '' ? 'Name the GitHub owner the token is for.' : 'Paste the token for ' + name + '.')
+      return
+    }
+    const value = input.value.trim()
+    input.value = ''
+    inFlight.current = true
+    setMissing(null)
+    setRefused(null)
+    setStored(null)
+    setBusy(true)
+    const res = await storeOwnerToken(name, value)
+    inFlight.current = false
+    setBusy(false)
+    if (res.status === 'error') setRefused(res.error)
+    else if (res.status === 'ok') setStored(res.data)
+  }
+
+  return (
+    <Card
+      className="adm-fallback-token"
+      title="GitHub fallback token"
+      level={2}
+      action={
+        <Button kind="ghost" size="sm" aria-label="About the fallback token" aria-expanded={about} aria-controls={`${id}-about`} onClick={() => setAbout((a) => !a)}>
+          ?
+        </Button>
+      }
+    >
+      {about && (
+        <p className="ur-small" id={`${id}-about`}>
+          For an org that will not install the SwarmCloud App: a personal access token of <b>yours</b>, for one owner.
+          SwarmCloud reaches that owner with it, as you, for the repositories you choose on Access; removing the owner
+          there revokes it. Make a fine-grained token whose resource owner is the org. The same as{' '}
+          <code>uv run sc setup token --owner &lt;org&gt;</code>.
+        </p>
+      )}
+      <form className="adm-side-field" onSubmit={(e) => void submit(e)} autoComplete="off">
+        <input
+          id={`${id}-owner`}
+          type="text"
+          className="mono"
+          aria-label="Owner"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="owner, e.g. example-org"
+          value={owner}
+          disabled={busy}
+          onChange={(e) => setOwner(e.target.value)}
+        />
+        <input
+          id={`${id}-token`}
+          ref={tokenRef}
+          type="password"
+          aria-label="Personal access token"
+          placeholder="personal access token"
+          autoComplete="new-password"
+          spellCheck={false}
+          disabled={busy}
+        />
+        <Button type="submit" kind="primary" size="sm" busy={busy}>
+          Store token
+        </Button>
+      </form>
+      {missing !== null && <p className="warn-text">{missing}</p>}
+      {refused !== null && <Refusal error={refused} title="The token was not stored" />}
+      {stored !== null && (
+        <p className="ur-small" role="status">
+          {stored.org.owner} is enabled through your token
+          {stored.token.forge_login !== null ? `, as @${stored.token.forge_login}` : ''}. Its value is in Secret Manager
+          and is not shown again. Choose its repositories on <a className="c-link" href={addressToPath(ACCESS)}>Access</a>.
+        </p>
+      )}
+    </Card>
+  )
 }
