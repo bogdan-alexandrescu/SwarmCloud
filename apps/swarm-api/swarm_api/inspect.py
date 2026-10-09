@@ -145,9 +145,10 @@ _UNDECODABLE = re.compile("[\udc80-\udcff]")
 def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
     """The ONLY prefix a checkpoint of this task can live under.
 
-    Identical to `agent_worker.checkpoint.attempts_prefix`, which is what
-    `CheckpointManager.find_latest` scans -- so "what this route lists" and
-    "what a resuming worker would consider" are the same set by construction.
+    Identical to `agent_worker.checkpoint.attempts_prefix`, the prefix
+    `CheckpointManager.find_by_uri` confines `task.latest_checkpoint` to -- so
+    every checkpoint a resuming worker could restore is one this route lists,
+    by construction. A worker restores only the one the pointer names (#347).
     """
     return f"{TENANTS_ROOT}{tenant_id}/tasks/{task_id}/attempts/"
 
@@ -405,12 +406,14 @@ class InspectionService:
     ) -> dict[str, Any]:
         """Every checkpoint of one task, newest attempt first.
 
-        ACROSS ATTEMPTS, not just the current one, because that is what a
-        resume actually considers: `CheckpointManager.find_latest` scans the
-        whole `.../attempts/` prefix and takes the newest committed manifest,
-        so a checkpoint written by the attempt that died is the one a retry
-        restores from. A screen that showed only the live attempt's checkpoints
-        would omit the only one that matters after a crash.
+        ACROSS ATTEMPTS, not just the current one, because a resume is a new
+        attempt: the checkpoint it restores is the one `task.latest_checkpoint`
+        names, written by the attempt that died, so a screen that showed only
+        the live attempt's checkpoints would omit the only one that matters
+        after a crash. The worker restores THAT checkpoint or nothing -- it does
+        not scan the prefix for the newest manifest (#347) -- so the listing is
+        not a list of restore candidates: a row the pointer does not name is
+        never restored, however new or `resumable` it is.
 
         WHAT `resumable` MEANS. Exactly what `CheckpointManager._owns` plus
         `restore` would accept: a manifest exists and parses, it names THIS
@@ -510,9 +513,12 @@ class InspectionService:
         Four outcomes, and they are not interchangeable. `outside_this_task` in
         particular is a real finding rather than a formatting detail: it is a
         pointer a resuming worker would REFUSE (`find_by_uri` resolves only
-        inside this task's own prefix and falls back to `find_latest`), so a
-        UI that rendered it as the current checkpoint would show a restore
-        source that will never be used.
+        inside this task's own prefix), so a UI that rendered it as the current
+        checkpoint would show a restore source that will never be used. The
+        worker has no fallback (#347): a refused pointer, like a `missing` or
+        `unset` one, restores nothing and the attempt starts from an empty
+        workspace, so no other checkpoint of the listing is the restore source
+        either.
         """
         raw = task.latest_checkpoint
         if not raw:
@@ -524,8 +530,8 @@ class InspectionService:
                 "checkpoint_id": None,
                 "detail": (
                     "the pointer does not name a checkpoint under this task's own "
-                    "prefix, so a resuming worker would ignore it and fall back to "
-                    "the newest committed checkpoint it can find"
+                    "prefix, so a resuming worker would ignore it and start from "
+                    "an empty workspace"
                 ),
             }
         if pointer_prefix not in known:
