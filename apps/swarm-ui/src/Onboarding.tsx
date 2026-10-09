@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import { ConnectButton, connectionOf } from './GitHubConnect'
+import { WorkspaceStepDetail } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -44,6 +45,8 @@ const SUBMIT_TASK = 'work/new'
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
 export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
   signed_in: 'Sign in',
+  workspace: 'Request your workspace',
+  claude_account: 'Add a Claude account',
   github_connected: 'Connect GitHub',
   app_installed: 'Install the App',
   orgs_enabled: 'Enable orgs',
@@ -141,7 +144,21 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const parts = [`${n('passed')} passed`]
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
-      return parts.join(' · ')
+      // Name the repositories still to verify, so a person knows which
+      // grant's Verify to press on Access (#896).
+      const open = repos
+        .filter((r) => r.result === 'failed' || r.result === 'pending')
+        .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
+      if (open.length === 0) return parts.join(' · ')
+      const shown = open.slice(0, 3).join(', ') + (open.length > 3 ? `, +${open.length - 3} more` : '')
+      return (
+        <>
+          {parts.join(' · ')} · {shown}: press Verify on{' '}
+          <a className="c-link" href={addressToPath(ACCESS)}>
+            Access
+          </a>
+        </>
+      )
     }
     case 'ready': {
       const first = str(ev.first_repository)
@@ -257,6 +274,7 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              <WorkspaceStepDetail step={s} reload={reload} />
               {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
                 <p className="ur-hint ob-help">
                   Connecting authorised the App to act as you; installing it on your account or an org is what lets it

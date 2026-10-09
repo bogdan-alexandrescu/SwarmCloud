@@ -8,7 +8,19 @@
 #         -> APPROVAL: the one job that names an environment. prod waits here
 #            for its required reviewer; dev has none and passes straight on
 #         -> promote those DIGESTS, all or nothing (scanning them again)
-#         -> plan, apply, deploy, smoke
+#         -> plan, apply, deploy (prod: and warm, smoke, the GKE proof)
+#
+# ON DEV THE RELEASE ENDS AT THE DEPLOY (owner decision 2026-10-08, cuts A, B
+# and C of the release timing report; docs/ci.md, "The release timeline").
+# Warming the worker jobs, the smoke test, the GKE proof and acceptance run in
+# .github/workflows/accept.yml, which starts when this run completes and
+# judges whatever dev runs then -- the SHA in releases/dev/applied.json
+# (scripts/lib/release-order.sh). They used to hold this workflow's
+# `release-dev` lock for 70 of its 100 min p50 (deploy and smoke 23.6,
+# acceptance 45.4, measured over 22 runs), and every later push queued behind
+# them. A red acceptance now opens an issue; it no longer stands between the
+# next commit and dev. PROD IS UNCHANGED: it never ran acceptance, and its
+# deploy still warms, smokes and proves GKE inside this run.
 #
 # THE STEPS OF EACH STAGE ARE IN .github/actions/release-*, composite actions
 # this file and hotfix.yml -- the hotfix lane, owner decision 2026-10-08,
@@ -89,6 +101,13 @@
 
 name: release
 
+# A DISPATCH SAYS WHICH ENVIRONMENT IN ITS NAME, because the name is the only
+# part of a dispatch's inputs a `workflow_run` event carries: accept.yml reads
+# it so a completed PROD release cannot cancel, or start, dev's acceptance.
+# A push (always dev) renders '' and keeps GitHub's own name, the commit's
+# headline -- an empty run-name is the documented "use the default".
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('release {0} {1}', inputs.environment, github.ref_name) || '' }}
+
 on:
   push:
     branches: [main]
@@ -115,8 +134,8 @@ on:
 # Least privilege at workflow level (epic #352 item 9, docs/merge-step.md M4/R4).
 # `id-token: write` lets a job mint a Google identity token through workload
 # identity federation, so it is declared only on the jobs that authenticate to
-# Google (build, promote, infrastructure, infrastructure-iam, deploy,
-# acceptance). `verify` runs the merged repository's own tests and must not be
+# Google (build, promote, infrastructure, infrastructure-iam, deploy).
+# `verify` runs the merged repository's own tests and must not be
 # able to mint one. A job-level `permissions:` block REPLACES this one.
 permissions:
   contents: read
@@ -142,10 +161,27 @@ jobs:
   # -------------------------------------------------------------------------
   # Gate. Nothing is built or applied until the cheap checks pass -- a release
   # that fails its unit tests after deploying is a rollback, not a release.
+  #
+  # ON A PUSH THIS JOB IS SKIPPED, AND THAT IS NOT A WEAKER GATE (owner
+  # decision 2026-10-08, cut B of the release timing report). A push to main
+  # starts application.yml on the same SHA, which runs the unit suite
+  # (`python`, sharded, every file on main), shellcheck and the destroy-guard
+  # self-test (`shell`, `python-checks`) and the manifests -- and its `build
+  # images` job `needs: [python, shell, manifests]`. On a push `build` below
+  # takes CI's image record with `--reuse-ci only` and refuses to build its
+  # own, so the record this release ships CANNOT EXIST unless those checks
+  # passed on this very commit. Running them again here was 26.4 min p50 of
+  # the `release-dev` lock (22 successful runs, measured 2026-10-08) proving
+  # what CI had already proven. On a workflow_dispatch -- every prod release,
+  # and a dev dispatch that may build its own images (`or-build`), or redeploy
+  # with `skip_build` and no CI record at all -- nothing upstream has proven
+  # the commit, so it runs. Every job that needs it states the same rule:
+  # `verify` succeeded, or it was skipped on a push.
   # -------------------------------------------------------------------------
   verify:
     name: verify
     runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
 
@@ -172,8 +208,9 @@ jobs:
   # already pinned it, and every fresh install of that version failed to
   # fetch its bridge. This job creates it, on the commit being released.
   #
-  # After `verify`, because a tag is what users' installs resolve: a commit
-  # whose unit tests fail is not one to hand them. On main only -- a
+  # After `verify` (on a push, after `build` found CI's record), because a tag
+  # is what users' installs resolve: a commit whose unit tests fail is not one
+  # to hand them. On main only -- a
   # workflow_dispatch can name another branch, and a tag made from it would
   # pin users to a commit main never had.
   #
@@ -185,9 +222,8 @@ jobs:
   #
   # `contents: write` is granted on THIS job, not the workflow, whose default
   # stays `contents: read`: the jobs that build, plan and deploy run a great
-  # deal of code and none of it needs to write to the repository. (The other
-  # job holding it is `acceptance`, for its own sweep; see its header.) This
-  # job runs nothing but checkout, jq and git.
+  # deal of code and none of it needs to write to the repository. This job is
+  # the only one here holding it, and runs nothing but checkout, jq and git.
   #
   # A bump that touches ONLY plugin/ starts no release (plugin/** is not in
   # `on.push.paths`). It is tagged by the next release whose commit descends
@@ -197,7 +233,13 @@ jobs:
   plugin-tag:
     name: tag the plugin's bridge (sc-v<version>)
     runs-on: ubuntu-24.04
-    needs: [verify]
+    needs: [verify, build]
+    # AFTER A PROVEN COMMIT. On a dispatch that is `verify`. On a push `verify`
+    # is skipped (see its header) and the proof is `build`: it found CI's image
+    # record for this SHA, which application.yml writes only after its unit
+    # tests, shellcheck and manifests passed. `!cancelled()` only so the job
+    # can run past that skip; each branch still demands a success.
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (github.event_name == 'push' && needs.verify.result == 'skipped' && needs.build.result == 'success')) }}
     # MAIN ONLY, said on each STEP rather than on the job. A job-level
     # `github.ref` is outside what tests/unit/scripts/test_release_prod_gate.py
     # can evaluate (its release contexts carry no ref), and a job-level `if:`
@@ -291,7 +333,9 @@ jobs:
     name: images and scan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify]
-    if: github.event.inputs.skip_build != 'true'
+    # !cancelled() only to run past the `verify` a push skips (see its header):
+    # on a push the CI record this job demands IS the proof of verify.
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && github.event.inputs.skip_build != 'true' }}
     # actions: read is what lets this job see application.yml's run of the
     # same commit and download its record (scripts/lib/ci-built-images.sh).
     # A job-level block REPLACES the workflow's, so the other two are restated.
@@ -349,7 +393,8 @@ jobs:
     needs: [verify, build]
     # !cancelled(), not always(): it runs past a `build` that skip_build
     # skipped, and a cancelled run asks nobody to approve anything.
-    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
+    # `verify` succeeded, or a push skipped it (see its header).
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
     environment: ${{ github.event.inputs.environment || 'dev' }}
     # THE ATTEMPT THIS APPROVAL CLEARED. A partial re-run keeps this job, and
     # this output with it, from the attempt it ran in; every prod job after
@@ -392,11 +437,15 @@ jobs:
       contents: read
       id-token: write
     needs: [build, approval]
-    # No status function, so GitHub also requires every job upstream to have
-    # succeeded; the explicit test is what a reader checks. A `skip_build`
-    # redeploy skips `build`, and with it this job: it promotes nothing. On
-    # prod, only in the attempt the approval cleared (see the header).
-    if: needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt)
+    # !cancelled() and not the default success(): success() looks at every
+    # job upstream, transitively, and on a push that includes the `verify` a
+    # push skips (see its header), so a bare condition never promoted on a
+    # push. `build` and `approval` must each have SUCCEEDED, said explicitly,
+    # and `approval` itself required `verify` (or the push skip). A
+    # `skip_build` redeploy skips `build`, and with it this job: it promotes
+    # nothing. On prod, only in the attempt the approval cleared (see the
+    # header).
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -468,7 +517,8 @@ jobs:
     # it runs only in the attempt the approval cleared: "Re-run failed jobs"
     # after a lock timeout skips it, and `stale-approval` says to re-run all
     # jobs (see the header).
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
+    # `verify` succeeded, or a push skipped it (see its header).
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     # Read by `infrastructure-iam` and `deploy`. On prod the classification
     # does not run and all three are empty.
     outputs:
@@ -601,7 +651,7 @@ jobs:
       - name: is a newer commit already out
         # The owner may approve hours later. If a newer commit has been
         # applied since (the hotfix lane), this plan would roll dev back: it
-        # is not applied, the job ends green, and `deploy and smoke` finds the
+        # is not applied, the job ends green, and `deploy` finds the
         # same answer.
         id: order
         run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
@@ -647,10 +697,14 @@ jobs:
         run: ./scripts/lib/release-order.sh unlock --environment "${ENVIRONMENT}" --generation "${GENERATION}"
 
   # -------------------------------------------------------------------------
-  # Deploy and prove it works.
+  # Deploy and prove it is what was promoted. On prod, also prove it works:
+  # warm, smoke and the GKE proof, as before. On dev those three moved to
+  # .github/workflows/accept.yml with acceptance (see the header), so this
+  # job ends once the digests are verified and the tenant namespaces applied,
+  # and the `release-dev` lock goes with it.
   # -------------------------------------------------------------------------
   deploy:
-    name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
+    name: deploy (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
@@ -677,8 +731,9 @@ jobs:
     # !cancelled() rather than always(), for the reason on `infrastructure`:
     # it runs past a `build` that skip_build skipped, and a cancel stops it.
     if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment == 'prod' || needs.infrastructure.outputs.iam == 'false' || needs.infrastructure-iam.result == 'success') && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
-    # Read by `acceptance`: a release a newer commit superseded during this
-    # job does not accept a deployment that is no longer its own.
+    # Whether a newer commit reached dev during this job (the hotfix lane). No
+    # job here reads it now that acceptance is accept.yml's, which asks
+    # releases/dev/applied.json instead; it stays for the run's own record.
     outputs:
       superseded: ${{ steps.verify.outputs.superseded == 'true' || steps.smoke.outputs.superseded == 'true' }}
     env:
@@ -715,8 +770,8 @@ jobs:
         # .github/actions/release-verify, shared with hotfix.yml. The apply IS
         # the deploy; this proves it, digest to digest, against the manifest
         # the apply pinned (`deploy.sh --verify-only --no-health`: the /readyz
-        # probe cannot run from this runner -- the smoke test below proves
-        # health INSIDE the VPC). On dev it first asks whether a newer commit
+        # probe cannot run from this runner -- the smoke test proves health
+        # INSIDE the VPC: below on prod, in accept.yml on dev). On dev it first asks whether a newer commit
         # has reached dev since, and a verification that fails because one
         # arrived meanwhile ends green with superseded=true, which stops every
         # step below: the newer release proves itself.
@@ -733,13 +788,16 @@ jobs:
         # on that flag before reading its configuration: no lease, no Firestore,
         # no task state (agent_worker.__main__.self_test).
         #
+        # PROD ONLY HERE. On dev accept.yml warms, as its first step, the same
+        # digests this run verified (see the header).
+        #
         # ONLY AFTER the verify step proved every job runs the promoted digest:
         # warming the old digest would warm nothing. A failed warm run is a
         # slower first task, not a broken release, so the script warns and
         # exits 0; continue-on-error keeps even a refused name (the only
         # non-zero exit) from failing the release. !cancelled(), not always():
         # it executes jobs in the environment, and a cancel stops it.
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         continue-on-error: true
         timeout-minutes: 30
         run: ./scripts/warm-jobs.sh
@@ -784,12 +842,11 @@ jobs:
         # path -- submit, admit, dispatch, run, release -- without depending on
         # any tenant's credential. verify-remote.sh executes scripts/smoke-test.sh
         # in the swarm-verify Cloud Run job, which IS in the VPC, and exits with
-        # the job's exit code. `release-order.sh unless-superseded`: on dev, a
-        # smoke test that fails because a newer commit reached dev meanwhile
-        # ends green with superseded=true (see the verify step); on prod it is
-        # the command alone.
+        # the job's exit code. PROD ONLY HERE: on dev accept.yml runs it,
+        # against the SHA releases/dev/applied.json names. On prod
+        # `release-order.sh unless-superseded` is the command alone.
         id: smoke
-        if: steps.verify.outputs.superseded != 'true'
+        if: github.event.inputs.environment == 'prod' && steps.verify.outputs.superseded != 'true'
         run: ./scripts/lib/release-order.sh unless-superseded --environment "${ENVIRONMENT}" -- ./scripts/verify-remote.sh smoke-test
 
       - name: prove GKE dispatch with one browser task
@@ -820,7 +877,9 @@ jobs:
         # every release teaches everyone to ignore the release. Set the repository
         # variable PROVE_GKE_DISPATCH=true in the same change that restores the
         # browser limit. When it is off the step still runs and SAYS it skipped.
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && steps.smoke.outputs.superseded != 'true' }}
+        #
+        # PROD ONLY HERE, like the smoke test: on dev accept.yml runs it.
+        if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && steps.smoke.outputs.superseded != 'true' }}
         run: |
           if [ "${{ vars.PROVE_GKE_DISPATCH }}" != "true" ]; then
             echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this release."
@@ -845,111 +904,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
-  # ACCEPTANCE: real tasks, judged by what they produced (owner decision,
-  # 2026-09-29). Smoke proves a task reaches SUCCEEDED; every browser task that
-  # screenshotted about:blank did that. scripts/acceptance/run.sh asserts the
-  # OUTPUTS -- pixels, patch lines, staged bytes, a pull request's title -- and
-  # docs/acceptance.md says why each check asserts what it does.
-  #
-  # DEV ONLY, as its name says: it spends subscription quota on six small
-  # claude-code tasks and opens real pull requests on the sandbox, which is a
-  # price for dev's confidence, not a step of a prod release. It never starts
-  # on prod (tests/unit/scripts/test_release_acceptance_job.py).
-  #
-  # THE SMOKE TENANT AND THE PRIVATE SANDBOX (owner decision 2026-10-05,
-  # #628). The suite submits for the `smoke` tenant (X-Swarm-Tenant) and its
-  # tasks clone, and open their pull requests on, the private sandbox
-  # repository -- both from scripts/acceptance/config.sh, never from this
-  # workflow's own repository, which it used to fill with fixture pull
-  # requests (58 since 09-30, each running full CI). The suite refuses to run
-  # in any other tenant or against a publicly readable repository.
-  # tests/unit/scripts/test_acceptance_target.py holds all of that, and that
-  # nothing here or in scripts/acceptance/ names this repository.
-  #
-  # Its own job, after `deploy`, so a red acceptance is re-run alone with
-  # "Re-run failed jobs" -- without redeploying -- and so it cannot hide a
-  # smoke failure: it starts only when `deploy` (which runs smoke) succeeded.
-  #
-  # SAME CREDENTIALS AS SMOKE: the suite runs inside the VPC as the swarm-verify
-  # job, through verify-remote.sh, one execution per group (the job's timeout
-  # is 30 minutes, and the groups together would not fit). A FAIL in any group
-  # fails this job, and so the release.
-  #
-  # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
-  # handed to three steps only, and never to the suite: the swarm-verify job
-  # holds no GitHub credential. Before the suite, sandbox-sync.sh writes this
-  # commit's tests/acceptance/fixtures/ to the sandbox's main and checks the
-  # fixture issue; after it, github-verify.sh reads the pull requests the
-  # suite opened back (title, body, diff, merged branches -- the assertions
-  # the suite itself cannot make without a token) and fails the job on any
-  # defect, and then github-cleanup.sh closes the pull requests and
-  # branches the direct-pr and integrate checks opened there (only swarm/task_
-  # branches whose changes lie entirely under tests/acceptance/fixtures/). The
-  # job's own GITHUB_TOKEN reaches only this repository, so it is read-only
-  # here: nothing in this job writes to it. A missing secret fails the sync
-  # step loudly, and the suite never starts against an unsynced sandbox.
-  # -------------------------------------------------------------------------
-  acceptance:
-    name: acceptance (dev)
-    runs-on: ubuntu-24.04
-    needs: [deploy]
-    # Not on a release a newer commit superseded during its deploy (`deploy`'s
-    # `superseded` output): that commit's own release accepts what is
-    # actually deployed.
-    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.superseded != 'true' && github.event.inputs.environment != 'prod' }}
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      REGION: ${{ vars.GCP_REGION }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
-
-      - uses: google-github-actions/setup-gcloud@v3
-
-      - name: put this commit's fixtures on the sandbox
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-        run: ./scripts/acceptance/sandbox-sync.sh
-
-      # When the suite starts, so github-verify.sh judges only the pull
-      # requests this run opened, not one an earlier, unswept run left.
-      - name: note when the suite starts
-        id: started
-        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: acceptance suite (inside the VPC)
-        id: suite
-        # Every group runs even when an earlier one failed: verify-remote.sh
-        # runs all its targets and exits non-zero at the end naming the ones
-        # that failed.
-        run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
-
-      # The suite cannot read the private sandbox back (swarm-verify holds no
-      # GitHub token) and SKIPs those assertions; this step makes them here,
-      # with the sandbox token, before the sweep closes anything. A failure
-      # here fails the job; the sweep still runs after it.
-      - name: read the suite's pull requests back from the sandbox
-        if: ${{ !cancelled() && steps.started.outputs.at != '' }}
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-          SWARM_ACCEPTANCE_SINCE: ${{ steps.started.outputs.at }}
-        run: ./scripts/acceptance/github-verify.sh
-
-      - name: close the pull requests and branches the suite opened on the sandbox
-        if: ${{ !cancelled() }}
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-        run: ./scripts/acceptance/github-cleanup.sh
-
-  # -------------------------------------------------------------------------
   # A PARTIAL RE-RUN OF PROD GOES RED, AND SAYS WHY. On prod, `promote`,
   # `infrastructure` and `deploy` run only in the attempt `approval` cleared
   # (see the header), so "Re-run failed jobs" or "Re-run this job" skips
@@ -965,7 +919,7 @@ jobs:
   stale-approval:
     name: prod approval is from an earlier attempt
     runs-on: ubuntu-24.04
-    needs: [approval, promote, infrastructure, deploy, acceptance]
+    needs: [approval, promote, infrastructure, deploy]
     if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
     env:
       APPROVED_ATTEMPT: ${{ needs.approval.outputs.attempt }}

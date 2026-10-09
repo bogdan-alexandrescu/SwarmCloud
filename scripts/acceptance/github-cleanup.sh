@@ -10,7 +10,7 @@
 # token, but in the release it runs in the swarm-verify job, which holds none
 # -- on purpose: that job's identity is read-only everywhere else, and a forge
 # token lives only in Secret Manager for the worker to read (CLAUDE.md). So
-# the release's acceptance job runs this afterwards with the sandbox's own
+# accept.yml's read-back-and-sweep job runs this afterwards with the sandbox's own
 # token, the repository secret SWARM_SANDBOX_GITHUB_TOKEN. The job's
 # GITHUB_TOKEN reaches only the repository the workflow runs in, which is
 # exactly the one acceptance must never touch (#628).

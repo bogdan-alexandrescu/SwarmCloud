@@ -684,7 +684,9 @@ in the default build. `tofu`, `tflint` and `trivy` were held back: no
 published release of them passed the promote gate's fixable-HIGH/CRITICAL scan
 that day. `trivy` joined the default build at 0.75.0, which scanned clean on
 2026-10-06 (#442); `tofu` and `tflint` are still installed only with
-`--build-arg INSTALL_TOFU_TFLINT=1`. The pinned versions,
+`--build-arg INSTALL_TOFU=1` and `--build-arg INSTALL_TFLINT=1`, one argument
+per tool so either can join the default build alone (re-scanned 2026-10-09:
+neither has a clean release yet). The pinned versions,
 and why two of them differ from the operator pins quoted below, are in
 [`versions.md`](versions.md#agent-image-toolbox). The image still runs every
 tool as uid 10001; it does not provide root.

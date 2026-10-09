@@ -673,6 +673,9 @@ function Listing({
           onClose={() => setSelected(null)}
           // Opened from the checkpoint's file list, not the Artifacts list.
           backLabel="‹ Files"
+          // The per-member read has no raw route of its own: the bytes it
+          // shows as U+FFFD are held exactly by the whole-checkpoint download.
+          exactBytes="checkpoint"
         />
       )}
     </>
@@ -1015,6 +1018,9 @@ async function fixtureFile(
       redacted: false,
       redaction_count: 0,
       redaction: { applied_at_read_time: true, rules: 11 },
+      // The server's current shape (#207): 0 for a window measured clean,
+      // null when no window was read.
+      invalid_utf8_bytes: binary ? null : 0,
     },
   }
 }

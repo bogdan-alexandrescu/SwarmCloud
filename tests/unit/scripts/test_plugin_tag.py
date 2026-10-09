@@ -313,17 +313,21 @@ def test_only_the_tag_job_may_write_contents_and_only_after_verify_on_main():
     writers = sorted(
         j for j, other in release["jobs"].items() if (other.get("permissions") or {}).get("contents") == "write"
     )
-    # `acceptance` had it first, for its own reason: its sweep closes the pull
-    # requests the acceptance suite opened (see its header in release.yml).
-    assert [j for j in writers if j != "acceptance"] == [job_id], f"jobs with contents: write in release.yml: {writers}"
+    assert writers == [job_id], f"jobs with contents: write in release.yml: {writers}"
     needs = job.get("needs")
     needs = [needs] if isinstance(needs, str) else list(needs or [])
-    assert "verify" in needs, needs
-    # Main only: on the job, or on every one of its steps (release.yml says
-    # why it is the steps). Never with a status function that would run it
-    # past a red verify.
-    conditions = [str(job["if"])] if job.get("if") else [str(s.get("if", "")) for s in job.get("steps") or []]
-    for condition in conditions:
+    assert "verify" in needs and "build" in needs, needs
+    # After a proven commit: `verify` on a dispatch; on a push, which skips
+    # verify (cut B, owner decision 2026-10-08), `build`, which found CI's
+    # record of this SHA. `!cancelled()` runs past that skip only; never
+    # always() or failure(), which would run it past a red verify.
+    job_if = str(job.get("if", ""))
+    assert "needs.verify.result == 'success'" in job_if, job_if
+    assert "github.event_name == 'push' && needs.verify.result == 'skipped' && needs.build.result == 'success'" in job_if
+    assert not re.search(r"\b(always|failure)\(\s*\)", job_if), job_if
+    # Main only, on every one of its steps (release.yml says why it is the
+    # steps), with no status function at all.
+    for condition in [str(s.get("if", "")) for s in job.get("steps") or []]:
         assert "refs/heads/main" in condition, f"{job_id} runs something off main: {condition!r}"
         assert not re.search(r"\b(always|failure|cancelled)\(\s*\)", condition), condition
 
