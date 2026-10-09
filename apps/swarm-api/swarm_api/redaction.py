@@ -435,12 +435,14 @@ class JsonMasker:
             if node is None or isinstance(node, bool):
                 return node
             if isinstance(node, (int, float)):
-                # A decoded number is looked for in its `json.dumps` text, which
-                # writes a float as `48261937.0` however it was stored (`N.0`,
-                # `Ne0`, `Ne7` all decode to a float whose text holds `N`), so
-                # it is found here exactly where the artifact path finds it in
-                # the stored token (#387).
-                found = self.number(json.dumps(node))
+                # A number decoded from a log line is looked for in the token
+                # as the line wrote it (`_StoredFloat`), exactly where the
+                # artifact path looks: its `json.dumps` text is not that token
+                # once the exponent leaves positional form -- `Ne9` re-encodes
+                # as `4.8261937e+16`, `Ne-3` as `48261.937` -- and the digits
+                # were served (#387 review). A number with no stored token (a
+                # Firestore value) is looked for in its `json.dumps` text.
+                found = self.number(getattr(node, "token", None) or json.dumps(node))
                 if found:
                     total += found
                     return MASK
@@ -543,13 +545,32 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
+class _StoredFloat(float):
+    """A JSON float that keeps the token it was decoded from.
+
+    `json.dumps` writes it as any float (`float.__repr__`), so a line served
+    re-encoded is unchanged by it; `JsonMasker._walk` reads `token` to decide
+    whether the number holds a learned literal as WRITTEN, the way the
+    artifact path (`json_masking`) reads the stored token (#387). An int needs
+    no such type: `json.dumps` of an int is its token.
+    """
+
+    token: str
+
+    def __new__(cls, token: str) -> "_StoredFloat":
+        number = super().__new__(cls, token)
+        number.token = token
+        return number
+
+
 def _json_document(line: str) -> Any | None:
     """The object or list `line` holds, when the whole line is one; else None.
 
     `object_pairs_hook=_reject_duplicate_keys`: a line whose JSON has a
     repeated key anywhere is treated as not-a-document, so it is masked by
     the text rule instead of being decoded down to the surviving key and
-    served as if that were the whole truth.
+    served as if that were the whole truth. `parse_float=_StoredFloat`: a
+    float keeps the token the line wrote it as (#387).
     """
     body = line.strip()
     if len(body) < 2 or len(body) > JSON_LINE_MAX_CHARS:
@@ -557,7 +578,7 @@ def _json_document(line: str) -> Any | None:
     if not ((body[0] == "{" and body[-1] == "}") or (body[0] == "[" and body[-1] == "]")):
         return None
     try:
-        document = json.loads(body, object_pairs_hook=_reject_duplicate_keys)
+        document = json.loads(body, object_pairs_hook=_reject_duplicate_keys, parse_float=_StoredFloat)
     except (ValueError, _DuplicateKey):
         return None
     return document if isinstance(document, (dict, list)) else None

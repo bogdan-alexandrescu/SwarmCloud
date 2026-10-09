@@ -32,7 +32,9 @@ WHAT IS PINNED.
 MUTATIONS that turn this red: return numbers untouched in `JsonMasker._walk`
 (every route test and the parity test); compare `str(node)` without the
 float form (the `N.0` case is still found, `Ne0` is the same float -- the
-parity test pins both); test `int` before `bool` and mask `True` (the
+parity test pins both); look in `json.dumps(node)` instead of the stored
+token (`Ne9`, `Ne-3` and a long float re-encode without the digits -- the
+parity test pins each, alone and beside a masked string); test `int` before `bool` and mask `True` (the
 control); put `_mask_literals` back inline in `json_masking._walk` (the
 one-rule test).
 
@@ -139,6 +141,15 @@ PARITY = [
     "[" + DIGITS + "]",
     '{"a":[{"b":' + DIGITS + "}]}",
     '{"note":"export PASSWORD=' + DIGITS + '","n":' + DIGITS + "}",
+    # Floats whose `json.dumps` text is not the token as written: the walk
+    # must look in the token, as the artifact path does (#387 review). Alone,
+    # and beside a string the walk masks, where `redact_lines` skips its text
+    # pass.
+    *(
+        line
+        for written in (DIGITS + "e9", DIGITS + "e-3", DIGITS + "0000000000000000000.5")
+        for line in ('{"n":' + written + "}", '{"note":"export PASSWORD=' + DIGITS + '","n":' + written + "}")
+    ),
 ]
 
 
