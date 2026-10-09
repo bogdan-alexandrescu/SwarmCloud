@@ -181,6 +181,39 @@ describe('a listing', () => {
     expect(l.file).toHaveBeenCalledWith('task_a', 'att_1', 'ckpt-00001', 'state.json')
   })
 
+  // #207: the member read counts the bytes it showed as U+FFFD, as the
+  // Artifacts tab's read does, and the viewer draws the count here too. Its
+  // mark must name the download that HOLDS those bytes: this route has no
+  // per-member raw download, only the whole-checkpoint archive.
+  const notUtf8 = (viewer: HTMLElement) =>
+    [...viewer.querySelectorAll('li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'not utf-8')
+
+  it('draws a member\'s not-utf-8 count, and names the checkpoint download as what holds the bytes (#207)', async () => {
+    const l = loaders(ok(listing()), (p) =>
+      ok(content(p, 'caf\uFFFD au lait \uFFFD\n', { invalid_utf8_bytes: 2 })),
+    )
+    mount(l)
+    fireEvent.click(await screen.findByRole('button', { name: 'state.json' }))
+    const viewer = await screen.findByRole('region', { name: 'Artifact state.json' })
+    await waitFor(() => expect(notUtf8(viewer), 'bytes shown as U+FFFD are not counted').toBeTruthy())
+    const fact = notUtf8(viewer)!
+    expect(fact.textContent).toContain('not utf-8')
+    // The <b> label, then the count: `not utf-8` `2` `partial`.
+    expect(fact.textContent!.replace('not utf-8', '').trim()).toMatch(/^2\b/)
+    const say = fact.querySelector('.ctl-mark.is-partial')?.getAttribute('aria-label') ?? ''
+    expect(say).toMatch(/checkpoint download/)
+    expect(say, 'there is no per-member raw download on this route').not.toMatch(/raw download/)
+  })
+
+  it('draws no not-utf-8 fact for a member whose window measured zero', async () => {
+    const l = loaders(ok(listing()), (p) => ok(content(p, '{"completed_steps": 1}\n', { invalid_utf8_bytes: 0 })))
+    mount(l)
+    fireEvent.click(await screen.findByRole('button', { name: 'state.json' }))
+    const viewer = await screen.findByRole('region', { name: 'Artifact state.json' })
+    await within(viewer).findByText('{"completed_steps": 1}')
+    expect(notUtf8(viewer), 'a zero count is drawn as a finding').toBeUndefined()
+  })
+
   it('reads a file ONCE, however often the browser re-renders', async () => {
     // ArtifactViewer re-reads when its loader changes identity; a fresh
     // closure per render would be a fresh request per render.
