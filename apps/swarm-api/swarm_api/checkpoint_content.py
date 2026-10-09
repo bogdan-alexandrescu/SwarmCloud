@@ -1215,13 +1215,16 @@ class CheckpointContent:
                 handle, head, row, size=size, offset=offset, masking=masking, chunk=self._chunk
             )
 
-        # THE LOOK-BACK, exactly as `read_artifact` takes it (#207): up to
-        # `KEY_LOOKBACK_BYTES` before `offset`, whose last byte tells `_align`
-        # whether the window starts on a token boundary or inside one, and
-        # whose whole tells `_enter_key` whether it starts inside a private
-        # key. With one byte of overlap and no look-back, a page in the middle
-        # of a key longer than a page held neither marker and was served in
-        # clear.
+        # THE LOOK-BACK, SHARED, NOT RESTATED (#207): the same
+        # `KEY_LOOKBACK_BYTES` and the same `_align`, `_enter_key` and
+        # `_decode_window` that `read_artifact` and `read_logs` use, imported
+        # from `inspect`, so a change to how a window is cut or decoded there
+        # is a change here. The look-back reads up to `KEY_LOOKBACK_BYTES`
+        # before `offset`: its last byte tells `_align` whether the window
+        # starts on a token boundary or inside one, and its whole tells
+        # `_enter_key` whether the window starts inside a private key. With
+        # one byte of overlap and no look-back, a page in the middle of a key
+        # longer than a page held neither marker and was served in clear.
         probe = min(offset, KEY_LOOKBACK_BYTES)
         start = min(offset - probe, size)
         end = min(size, offset + window)
