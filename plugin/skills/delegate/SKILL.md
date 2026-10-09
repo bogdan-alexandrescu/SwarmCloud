@@ -584,8 +584,10 @@ each is a way the same prompt does different work:
   remote agent's; the remote spend is the outcome's `cost_usd`, from the
   shared pool;
 * **stopping a row does not cancel its task** — `swarm_cancel` or
-  `swarm workflow-cancel` does — and relaunching a run re-dispatches an
-  `sc:remote` row that had not finished, which is a second task.
+  `swarm workflow-cancel` does — and relaunching a run re-runs every row
+  that did not finish and every row that started after a failed or edited
+  one, completed ones included: each re-run `sc:remote` row dispatches a
+  second task, even when its first task had already completed.
 
 ## The honesty constraint
 
