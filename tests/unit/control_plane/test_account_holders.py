@@ -12,7 +12,8 @@ the four viewers the approved design names:
 For every viewer, every response, every log line and every error is searched
 for the task ids of tenants that viewer is not, and none may appear. A hold
 that names a task its own tenant does not own is `verified: false` and carries
-no id; a hold with no task is `recorded: false`. No response anywhere carries
+no id; a hold with no task is `recorded: false`, and to a tenant the two read
+alike -- only the admin is told which is which. No response anywhere carries
 an assignment id (it authorises a release) or a secret name.
 
 The broker is a fake implementing the `AccountPool` protocol; the tasks and
@@ -261,8 +262,34 @@ def test_a_borrower_sees_a_count_and_no_tenant_name(client):
     assert all("tenant" not in h for h in body["holders"])
     mine = sorted(body["holders"], key=lambda h: h["since"])
     assert mine[0]["task_id"] == "research-task-1" and mine[0]["attempt"] == 1
-    # Its own worker named eng's task. Shown as unverified, without the id.
-    assert mine[1] == {"since": mine[1]["since"], "recorded": True, "verified": False}
+    # Its own worker named eng's task. Served WITHOUT the id and exactly as a
+    # hold that named no task at all (#361): `recorded: true` beside
+    # `verified: false` told research that a task id it does not own exists.
+    assert mine[1] == {"since": mine[1]["since"], "recorded": False, "verified": False}
+
+
+def test_a_borrowers_own_span_naming_a_foreign_task_reads_as_no_task(client):
+    # The history half of #361: research's own span whose worker named eng's
+    # task is served exactly as a span that named no task, so the response
+    # does not say "a task id you do not own was sent here".
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    mine = sorted((s for s in body["spans"] if s["mine"]), key=lambda s: s["since"])
+    assert mine[-1]["task_id"] == "research-task-1" and mine[-1]["verified"] is True
+    foreign = mine[0]
+    assert (foreign["recorded"], foreign["verified"]) == (False, False)
+    assert "task_id" not in foreign and "attempt" not in foreign
+
+
+def test_the_admin_still_tells_a_foreign_task_from_no_task(client):
+    # The platform keeps the distinction: it is the one viewer that may see
+    # whose task the id is, and the one investigating a worker that sends it.
+    body = client.get(f"/v1/accounts/{SHARED}/holders", params={"scope": "platform"},
+                      headers=auth_header("root")).json()
+
+    by_task = {h.get("task_id"): h for h in body["holders"]}
+    assert (by_task["eng-task-2"]["recorded"], by_task["eng-task-2"]["verified"]) == (True, False)
+    assert (by_task[None]["recorded"], by_task[None]["verified"]) == (False, False)
 
 
 def test_the_admin_sees_every_hold_with_the_unverified_claim_flagged(client):
@@ -339,7 +366,7 @@ def test_a_borrowers_cursor_points_only_at_its_own_row(client, broker):
 
     body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
 
-    assert _raw(body["next_cursor"]) == f"{rows[0]['assigned_at']}|1"
+    assert _raw(body["next_cursor"]) == f"{rows[0]['assigned_at']}|own1"
 
 
 def test_a_borrower_counts_the_others_in_the_window_and_pages_past_them(client, broker):
@@ -506,11 +533,11 @@ def test_a_borrower_cursor_built_from_a_foreign_span_is_a_422_and_costs_one_look
     foreign = SPANS[SHARED][2]["assigned_at"]  # an eng span; bob is research
 
     response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
-                          params={"cursor": f"{foreign}|0"})
+                          params={"cursor": f"{foreign}|own1"})
 
     assert response.status_code == 422, response.text[:200]
     # The one bounded lookup that refused it, and no page read after.
-    assert [c for c in broker.calls if c[0] == "hold_history" and c[4] == f"{foreign}|0"] == []
+    assert [c for c in broker.calls if c[0] == "hold_history" and c[4] is not None] == []
     assert len([c for c in broker.calls if c[0] == "hold_history"]) <= 1
 
 
@@ -518,7 +545,7 @@ def test_a_borrower_cursor_at_an_arbitrary_instant_is_a_422_and_reads_no_page(cl
     arbitrary = _iso(NOW - timedelta(minutes=17, seconds=3))
 
     response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
-                          params={"cursor": f"{arbitrary}|0"})
+                          params={"cursor": f"{arbitrary}|own1"})
 
     assert response.status_code == 422, response.text[:200]
     assert [c for c in broker.calls if c[0] == "hold_history" and c[4] is not None] == []
@@ -528,9 +555,10 @@ def test_a_borrower_cursor_this_service_issued_pages_normally(client, broker):
     own = SPANS[SHARED][0]["assigned_at"]  # research's own span
 
     response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
-                          params={"cursor": f"{own}|1"})
+                          params={"cursor": f"{own}|own1"})
 
     assert response.status_code == 200, response.text[:200]
+    # Research's span is the only row at that instant: the broker skips one.
     assert any(c[0] == "hold_history" and c[4] == f"{own}|1" for c in broker.calls)
 
 
@@ -652,9 +680,10 @@ def test_a_borrower_continuation_page_serves_no_count(client, broker):
     own = SPANS[SHARED][0]["assigned_at"]
 
     body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
-                      params={"cursor": f"{own}|1"}).json()
+                      params={"cursor": f"{own}|own1"})
 
-    assert "others" not in body
+    assert body.status_code == 200, body.text[:200]
+    assert "others" not in body.json()
 
 
 # -- F12: the cursor this route serves is opaque --------------------------------
@@ -689,6 +718,7 @@ def test_a_borrowers_opaque_cursor_round_trips_through_the_own_row_check(client,
         None: {"spans": rows, "next_cursor": f"{rows[-1]['assigned_at']}|1"},
         raw: {"spans": [], "next_cursor": None},
     }
+    # Served as research's own count; the broker's skip reaches the broker.
     served = client.get(f"/v1/accounts/{SHARED}/history",
                         headers=auth_header("bob")).json()["next_cursor"]
 
@@ -770,7 +800,7 @@ def test_own_page_with_a_readable_last_own_row_still_mints_a_cursor():
 
     served = own_page(payload, tenant_id="research", cursor=None, fetch=lambda _c: {"spans": []})
 
-    assert served["next_cursor"] == f"{rows[1]['assigned_at']}|1"
+    assert served["next_cursor"] == f"{rows[1]['assigned_at']}|own1"
 
 
 def test_a_borrower_page_ending_at_a_malformed_row_is_a_500_not_a_truncated_200(client, broker):
@@ -782,3 +812,112 @@ def test_a_borrower_page_ending_at_a_malformed_row_is_a_500_not_a_truncated_200(
 
     assert response.status_code == 500, response.text[:200]
     assert "unpageable" in response.text
+
+
+# --------------------------------------------------------------------------
+# Epic #361 boxes 68 and 76: a borrower's cursor counts ITS OWN rows only
+# --------------------------------------------------------------------------
+#
+# The broker's skip counts EVERY row at the cursor's instant, other tenants'
+# included. A borrower's cursor used to carry that number: minted, it told the
+# borrower how many other tenants' spans shared its own span's exact instant
+# (box 68); sent back with any `n`, it was a probe of that count, one request
+# per value (box 76). A borrower's cursor is now `<instant>|own<k>`, where `k`
+# counts only the borrower's own rows at that instant, and the route turns it
+# into the broker's skip from the one binding lookup, refusing a `k` that
+# names more own rows than exist there.
+
+
+def _tied(tenants: list[str], *, hours_ago: int = 2) -> list[dict]:
+    """Rows sharing ONE exact `assigned_at`, in the broker's order."""
+    return [_row(t, f"{t}-task-1", hours_ago=hours_ago) for t in tenants]
+
+
+def test_a_borrowers_minted_cursor_counts_only_its_own_rows_at_a_shared_instant(client, broker):
+    tied = _tied(["eng", "research", "eng"])
+    older = _row("eng", "eng-task-1", hours_ago=5)
+    broker.history_script = {None: {"spans": [*tied, older], "next_cursor": "more"}}
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    stamp = tied[0]["assigned_at"]
+    # One own row at the instant, and the eng row before it is not counted.
+    assert _raw(body["next_cursor"]) == f"{stamp}|own1"
+
+
+def test_a_borrower_cursor_becomes_the_broker_skip_past_its_own_row(client, broker):
+    broker.history_rows = _tied(["eng", "research", "eng"])
+    stamp = broker.history_rows[0]["assigned_at"]
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{stamp}|own1"})
+
+    assert response.status_code == 200, response.text[:200]
+    # The broker is asked to skip both rows up to and including research's
+    # own one -- a number computed here and never served to the borrower.
+    paged = [c for c in broker.calls if c[0] == "hold_history" and c[4] is not None]
+    assert [c[4] for c in paged] == [f"{stamp}|2"]
+
+
+@pytest.mark.parametrize("k", [0, 2, 3])
+def test_a_borrower_cursor_naming_more_own_rows_than_its_instant_holds_is_a_422(client, broker, k):
+    # Three rows at the instant, ONE of them research's: `own2` and `own3`
+    # were the probe of how many other tenants' rows share it.
+    broker.history_rows = _tied(["eng", "research", "eng"])
+    stamp = broker.history_rows[0]["assigned_at"]
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{stamp}|own{k}"})
+
+    assert response.status_code == 422, response.text[:200]
+    assert [c for c in broker.calls if c[0] == "hold_history" and c[4] is not None] == []
+    assert len([c for c in broker.calls if c[0] == "hold_history"]) <= 1
+
+
+def test_a_borrower_with_two_own_rows_at_an_instant_may_name_both(client, broker):
+    # The control for the bound: `own2` is refused above only because
+    # research has one row there, not because 2 is refused outright.
+    broker.history_rows = _tied(["research", "eng", "research"])
+    stamp = broker.history_rows[0]["assigned_at"]
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{stamp}|own2"})
+
+    assert response.status_code == 200, response.text[:200]
+    assert any(c[0] == "hold_history" and c[4] == f"{stamp}|3" for c in broker.calls)
+
+
+def test_an_old_format_borrower_cursor_is_refused_with_no_broker_call(client, broker):
+    own = SPANS[SHARED][0]["assigned_at"]  # research's own span
+    old = f"{own}|1"
+    opaque = base64.urlsafe_b64encode(old.encode()).decode().rstrip("=")
+
+    for cursor in (old, opaque):
+        response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                              params={"cursor": cursor})
+        assert response.status_code == 422, response.text[:200]
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+def test_an_own_count_cursor_from_an_owner_is_refused_with_no_broker_call(client, broker):
+    own = SPANS[SHARED][2]["assigned_at"]  # an eng span; alice is eng
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
+                          params={"cursor": f"{own}|own1"})
+
+    assert response.status_code == 422, response.text[:200]
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+def test_own_page_continuing_at_the_same_instant_adds_only_own_rows():
+    from swarm_api.accountholds import own_page
+
+    tied = _tied(["research", "eng"])
+    stamp = tied[0]["assigned_at"]
+    payload = {"spans": [*tied, _row("eng", "eng-task-1", hours_ago=5)], "next_cursor": "more"}
+
+    served = own_page(payload, tenant_id="research", cursor=f"{stamp}|own1",
+                      fetch=lambda _c: {"spans": []})
+
+    # One own row served before, one on this page; the eng row between is not.
+    assert served["next_cursor"] == f"{stamp}|own2"

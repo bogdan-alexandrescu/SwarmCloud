@@ -1509,6 +1509,9 @@ function givenAt(iso: string, now: number): string {
  * What a hold was running, in the three cases that must not read alike:
  * a task the hold's tenant owns (a link), a task it named and does NOT own
  * (`unverified`, no id), and no task named at all (`task not recorded`).
+ * Only the platform view is told the second apart from the third: a tenant's
+ * own hold naming a task it does not own arrives as `recorded: false` (#361),
+ * so to a tenant it reads as `task not recorded`.
  */
 function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recorded?: boolean; verified?: boolean } }) {
   if (h.task_id) {
@@ -1535,7 +1538,7 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
   return (
     <span
       className="ctl-mark is-absent"
-      aria-label="The worker that took this hold did not say which task it was running."
+      aria-label="No task of this tenant's was recorded on this hold."
     >
       task not recorded
     </span>
