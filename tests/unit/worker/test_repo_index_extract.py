@@ -746,8 +746,14 @@ def test_the_script_has_no_dependency_outside_its_pins() -> None:
         "tree_sitter_typescript", "tree_sitter_go", "tree_sitter_hcl", "__future__",
         # The LSP pass (RI10), shipped beside the script in the image.
         "lsp",
+        # The shard writer's tokenizer (KG2), shipped beside the script too.
+        "repo_graph_shards",
     }
     assert third_party <= allowed, third_party - allowed
+    writer = TOOL_DIR / "repo_graph_shards.py"
+    names = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)",
+                           writer.read_text(encoding="utf-8"), re.MULTILINE))
+    assert {n for n in names if n not in sys.stdlib_module_names} <= {"__future__"}
     # And the LSP package itself is standard library only: its servers are
     # child processes, not Python dependencies.
     for module in sorted((TOOL_DIR / "lsp").glob("*.py")):
