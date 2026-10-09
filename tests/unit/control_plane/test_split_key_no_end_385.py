@@ -237,3 +237,174 @@ def test_input_and_logs_mask_a_split_no_end_key(client, db, input_doc):
     for line in (BODY0, BODY1):
         assert line not in text, text
     assert count == 1
+
+
+# --------------------------------------------------------------------------
+# The artifact token path (`json_masking`): a window, a page, both routes
+# --------------------------------------------------------------------------
+
+
+def _no_end_layouts() -> dict[str, Any]:
+    """Each split layout the issue names, with no END and an ordinary string after."""
+    return {
+        "object": {"a": PEM_BEGIN, "b": BODY0, "c": BODY1, "after": "after the key"},
+        "list-of-objects": {
+            "k": [{"line": PEM_BEGIN}, {"line": BODY0}, {"line": BODY1}],
+            "after": "kept",
+        },
+        "nested-lists": {"k": [[PEM_BEGIN], [BODY0], [BODY1]], "after": "kept"},
+        "list-with-a-number": {"k": [PEM_BEGIN, 1, BODY0, BODY1], "after": "kept"},
+        "keys-as-body": {"env": {"KEY": PEM_BEGIN, BODY0: "", BODY1: "", "after": "kept"}},
+    }
+
+
+@pytest.mark.parametrize("indent", [2, None], ids=["pretty", "one-line"])
+@pytest.mark.parametrize("layout", list(_no_end_layouts()))
+def test_a_window_masks_a_no_end_key_in_every_split_layout(layout, indent):
+    from swarm_api import json_masking
+
+    document = _no_end_layouts()[layout]
+    got = json_masking.redact_json_window(json.dumps(document, indent=indent) + "\n")
+    _assert_masked(got.text)
+    parsed = json.loads(got.text)  # still JSON
+    served = json.dumps(parsed)
+    assert '"after the key"' in served or '"kept"' in served, got.text
+    assert got.count == 1, "one key, one count: its body lines count 0"
+
+
+def _a_finished_task(db, objects, name: str, body: str) -> None:
+    """A terminal task with one artifact (`test_json_artifact_masking.py`'s shape)."""
+    from datetime import datetime, timezone
+
+    from .conftest import PROJECT
+
+    seed_tenant(db, "eng")
+    doc = seed_task(db, task_id="task_a", tenant_id="eng", state="SUCCEEDED")
+    doc["metadata"] = {}
+    key = f"tenants/eng/tasks/task_a/attempts/att_1/artifacts/{name}"
+    data = body.encode("utf-8")
+    objects.put(key, data)
+    doc["result_summary"] = {
+        "artifacts": [{"name": name, "bytes": len(data), "uri": f"gs://swarm-artifacts-{PROJECT}/{key}"}],
+        "artifact_bytes": len(data),
+        "logs": {},
+    }
+    doc["completed_at"] = datetime.now(timezone.utc)
+
+
+def _content(client, name: str, **params: Any) -> dict[str, Any]:
+    response = client.get(
+        "/v1/tasks/task_a/artifacts/content",
+        params={"name": name, **params},
+        headers=auth_header("alice"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok", body
+    return body
+
+
+def _both_routes(client, name: str) -> dict[str, str]:
+    """The whole artifact as the content route and the raw download serve it."""
+    body = _content(client, name)
+    assert body["truncated"] is False, "the fixture must fit one content window"
+    response = client.get(
+        "/v1/tasks/task_a/artifacts/raw", params={"name": name}, headers=auth_header("alice")
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["x-swarm-redaction"] == "applied"
+    return {"content": body["content"], "raw": response.text}
+
+
+def _pages(client, name: str, *, limit_bytes: int = 4096) -> list[dict[str, Any]]:
+    """Every content window in order (the loop of `test_a_page_inside_a_masked_value_reports_it_redacted`)."""
+    pages: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        body = _content(client, name, offset=offset, limit_bytes=limit_bytes)
+        pages.append(body)
+        following = body.get("next_offset")
+        if not body["truncated"] or not isinstance(following, int) or following <= offset:
+            return pages
+        offset = following
+
+
+#: Enough 64-character lines that a key spans three 4096-byte pages.
+LONG_BODY = [_body(100 + n) for n in range(160)]
+
+
+def _paged_transcript(layout: str) -> str:
+    """A pretty-printed transcript holding one long key, END present, then an ordinary string."""
+    lines = [PEM_BEGIN, *LONG_BODY, PEM_END]
+    if layout == "object":
+        key: Any = {f"l{n:03d}": line for n, line in enumerate(lines)}
+    else:
+        key = [{"line": line} for line in lines]
+    events = [{"type": "text", "text": "before"}, {"type": "tool_result", "key": key}]
+    events.append({"type": "text", "text": "after the key"})
+    return json.dumps({"type": "transcript", "events": events}, indent=2) + "\n"
+
+
+def _key_pages(client, db, objects, layout: str) -> tuple[str, list[dict[str, Any]]]:
+    stored = _paged_transcript(layout)
+    _a_finished_task(db, objects, "claude-transcript.json", stored)
+    pages = _pages(client, "claude-transcript.json")
+    for page in pages:
+        for line in LONG_BODY:
+            assert line not in page["content"], (page["offset"], line)
+        assert PEM_END not in page["content"], page["offset"]
+    assert "".join(p["content"] for p in pages).count("after the key") == 1, "served after the key"
+    return stored, pages
+
+
+@pytest.mark.parametrize("layout", ["object", "list-of-objects"])
+def test_a_page_holding_begin_but_not_end_masks_its_body_lines(client, db, objects, layout):
+    stored, pages = _key_pages(client, db, objects, layout)
+    begin_at, end_at = stored.index(PEM_BEGIN), stored.index(PEM_END)
+    opening = [
+        p for p in pages if p["offset"] <= begin_at < p["offset"] + p["returned_bytes"] <= end_at
+    ]
+    assert len(opening) == 1, "control: one page holds the BEGIN and not the END"
+    page = opening[0]
+    assert PEM_BEGIN in page["content"], "the BEGIN marker is kept"
+    assert page["content"].count(json.dumps(MASK)) >= 8, "control: the page holds body lines"
+    assert page["redaction_count"] == 1, "one key, one count"
+
+
+@pytest.mark.parametrize("layout", ["object", "list-of-objects"])
+def test_the_middle_page_of_a_three_page_key_masks_its_lines_and_says_so(client, db, objects, layout):
+    stored, pages = _key_pages(client, db, objects, layout)
+    begin_at, end_at = stored.index(PEM_BEGIN), stored.index(PEM_END)
+    middle = [p for p in pages if begin_at < p["offset"] and p["offset"] + p["returned_bytes"] <= end_at]
+    assert middle, "control: a page lies wholly inside the key"
+    for page in middle:
+        assert page["redacted"] is True, page["offset"]
+        assert page["redaction_count"] == 1, "it withheld one key's lines: counted once"
+        assert PEM_BEGIN not in page["content"], "control: neither marker is on the page"
+    closing = [p for p in pages if p["offset"] <= end_at < p["offset"] + p["returned_bytes"]]
+    assert len(closing) == 1 and closing[0]["offset"] > begin_at, "control: END on its own page"
+    assert closing[0]["redacted"] is True
+    assert closing[0]["redaction_count"] >= 1
+
+
+def test_body_lines_stored_as_keys_are_masked_through_both_routes(client, db, objects):
+    # A PEM pasted into a .properties file, then converted to JSON: with and without END.
+    with_end = {"PRIVATE_KEY": PEM_BEGIN, BODY0: "", BODY1: "", PEM_END: ""}
+    no_end = {"KEY": PEM_BEGIN, BODY0: "", BODY1: "", "after": "kept"}
+    stored = json.dumps({"type": "transcript", "env": [with_end, no_end]}, indent=2) + "\n"
+    _a_finished_task(db, objects, "claude-transcript.json", stored)
+    for route, served in _both_routes(client, "claude-transcript.json").items():
+        for line in (BODY0, BODY1, PEM_END):
+            assert line not in served, (route, line)
+        parsed = json.loads(served)
+        assert parsed["env"][1]["after"] == "kept", route
+
+
+def test_the_issue_repro_is_masked_through_both_routes(client, db, objects):
+    # #385's reproduction: BEGIN in one member, the body in the next ones, no END.
+    stored = json.dumps({"a": PEM_BEGIN, "b": BODY0, "c": BODY1, "after": "after the key"}) + "\n"
+    _a_finished_task(db, objects, "out.json", stored)
+    for route, served in _both_routes(client, "out.json").items():
+        assert BODY0 not in served and BODY1 not in served, (route, served)
+        parsed = json.loads(served)
+        assert parsed["after"] == "after the key" and parsed["a"].startswith(PEM_BEGIN[:16]), route
