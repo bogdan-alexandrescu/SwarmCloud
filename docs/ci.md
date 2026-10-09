@@ -3343,6 +3343,18 @@ prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
 
+**When it runs past 540 s it names the test** (box 102 of #888: lanes SPEC-GKE
+and BRIDGE-BACKEND hit the cap on 2026-10-08 and nothing said which test held
+it). The pytest call carries `--durations=10`, so a run that ends by itself
+lists its ten slowest tests. That report never prints on an overrun: measured
+2026-10-09 under xdist, `timeout`'s SIGTERM leaves no report and SIGINT leaves
+an xdist teardown traceback. So the call also sets pytest's
+`faulthandler_timeout=60`, which dumps the stack of any test still running
+after a minute, and on exit 124 the script prints the dump's frames in a
+`test_*.py` file (file, line, function). The fixed guard set alone runs in
+about 50 s (2026-10-09), so one test past a minute is the suspect; if none
+was, the line says so and the log's durations are where to look.
+
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run
 vitest, `terraform test` or anything needing credentials, and a green run proves
