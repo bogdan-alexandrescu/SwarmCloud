@@ -12019,11 +12019,12 @@ def _private_key_spans(text: str) -> list[tuple[int, int]]:
         if _PEM_HINT not in piece:
             return
         pos = 0
+        # An orphan END is a key's tail even with nothing before it to take
+        # (`_mask_orphan_ends`, #361 box 82): its span may be empty.
         for marker in _PEM_END.finditer(piece):
             start = _tail_start(piece, marker.start(), pos)
-            if start < marker.start():
-                spans.append((low + start, low + marker.start()))
-                pos = marker.start()
+            spans.append((low + start, low + marker.start()))
+            pos = marker.start()
 
     pos = search = 0
     while True:
