@@ -108,3 +108,15 @@
   .ac-typed-row > * { flex-basis: 100%; }
   .ac-install .c-btn, .ac-owner-acts .c-btn { min-height: 44px; }
 }
+
+/* #847 W8: the workspace and Claude-account steps' bodies, and Admin › People. */
+.ob-ws { display: grid; gap: 4px; margin-top: 4px; }
+.ob-ws-steps { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }
+.ob-ws-steps li { display: flex; align-items: center; gap: 6px; }
+.ob-ws-reason { margin: 2px 0; padding-left: 8px; border-left: 2px solid var(--line); color: var(--text-dim); }
+.pp-table td { vertical-align: top; }
+.pp-acts { display: grid; gap: 6px; }
+.pp-deny, .pp-ceiling, .pp-loan { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pp-deny textarea { display: block; width: 100%; min-width: 220px; }
+.pp-ceiling input { width: 5em; }
+.pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }

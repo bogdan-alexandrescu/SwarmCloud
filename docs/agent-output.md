@@ -69,9 +69,14 @@ is not UTF-8 passes through exactly as stored and only a credential-shaped run
 changes. It used to be decoded with `errors="replace"`, so a Latin-1 CSV came
 down with every such byte turned into U+FFFD, and nothing said so. A JSON
 string cannot carry such a byte, so the paged routes (`/artifacts/content`,
-`/logs`) still show it as U+FFFD, but they now count it: `invalid_utf8_bytes`
-on every window read, with a sentence in `detail` when it is not 0, and null
-when nothing was read.
+`/logs`, and the checkpoint member read
+`/v1/tasks/{id}/checkpoints/{n}/files/{path}`) still show it as U+FFFD, but
+they now count it: `invalid_utf8_bytes` on every window read, with a sentence
+in `detail` when it is not 0, and null when nothing was read. The checkpoint
+member read decoded with `errors="replace"` and counted nothing until #207;
+it now cuts, looks back and decodes each window with the same `inspect`
+helpers as the other two, imported rather than copied, because a second copy
+of the window logic is how this route fell behind them in the first place.
 
 ## Private keys are masked as blocks, not lines
 

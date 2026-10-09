@@ -20,6 +20,22 @@ counts them; `.` for the root) of one layer, as JSON lines:
   files     the module's files, with status and reason (a file that was not
             parsed is listed with why, never silently dropped)
 
+FORMAT 3 (lane KG2, extractor version 3). The manifest also carries
+`format_version: 3` and `index_shards`, five more layers kept OUT of
+`shards` so a reader that knows only the five above still reads the
+manifest (swarm-api refuses unknown layers under `shards`):
+
+  communities        the module communities, one shard keyed `*`
+  terms              the BM25 postings over symbols, by term bucket
+  signatures         each callable's signature fingerprint, by module
+  signature_changes  fingerprints that moved since an incremental run's base
+  flows              bounded call flows from each entry point, by module
+
+`term_stats` (documents, average length, k1, b, tokenizer) sits beside them.
+A manifest without `format_version` is format 2 and is read with those lists
+empty; `tokenize` and `bm25_search` below are the one implementation the
+extractor indexes with and readers query with.
+
 CONTENT-ADDRESSED. A blob is named by the sha256 of its stored bytes, so a
 reader checks a blob BEFORE it decompresses it, and an unchanged shard of the
 next commit is the same blob: an incremental commit writes the shards whose
@@ -114,9 +130,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import gzip
 import hashlib
 import json
+import math
 import os
 import posixpath
 import re
@@ -132,7 +150,18 @@ MANIFEST_SCHEMA = "swarm.repo-graph-manifest/v1"
 COMPRESSION = "gzip"
 BLOB_SUFFIX = ".jsonl.gz"
 TOOL_NAME = "swarm-repo-graph"
-TOOL_VERSION = "1"
+# "2" (lane KG2): the manifest carries `format_version` and `index_shards`.
+TOOL_VERSION = "2"
+#: The shard format (lane KG2, docs/design/knowledge-graph.md §6). Format 2 is
+#: what extractor version 2's graph was stored as: the five `LAYERS` under
+#: `shards`, and no `format_version` key. Format 3 adds `INDEX_LAYERS` under
+#: a SEPARATE key, `index_shards`, and leaves `shards` exactly as format 2 had
+#: it, because swarm-api's reader (`swarm_api/repograph.py::parse_manifest`)
+#: refuses a manifest whose `shards` names any layer outside its own five: a
+#: new layer there would make every graph unreadable to the explorer and the
+#: impact route until swarm-api moved too. Readers here take either format;
+#: a format-2 manifest simply has no index layers.
+FORMAT_VERSION = 3
 
 #: §2.5's hard ceiling per commit, on the stored bytes of every blob a
 #: manifest names (reused blobs included: it bounds what one commit's reader
@@ -154,6 +183,29 @@ INDEX_NAME = "repo-index.json"
 
 #: The layers a manifest names, in the order they are written.
 LAYERS = ("symbols", "callers", "callees", "tests", "files")
+#: Format 3's layers (`index_shards`), and the graph list each one holds:
+#:
+#:   communities        the module communities, one shard keyed `WHOLE`: a
+#:                      reader wants the whole partition or one community, and
+#:                      the table is a few hundred rows
+#:   terms              the BM25 term index over application symbols (a test is
+#:                      found through the test map, not by search), sharded by
+#:                      `term_bucket(term)`, so a
+#:                      query reads the buckets of its own terms and nothing else
+#:   signatures         each callable's signature and fingerprint, by module
+#:   signature_changes  on an incremental run, the callables whose fingerprint
+#:                      differs from the base's, by module
+#:   flows              the bounded call flow from each entry point, by the
+#:                      entry's module
+INDEX_LAYERS = {"communities": "communities", "terms": "terms", "signatures": "signatures",
+                "signature_changes": "signature_changes", "flows": "flows"}
+#: The key of a layer stored as one shard. Not a directory `module_of` can
+#: produce: a module is a path or `.`.
+WHOLE = "*"
+#: Term buckets are the first TERM_BUCKET_CHARS hex characters of the term's
+#: sha256: 256 buckets. A query of a handful of terms reads that many shards,
+#: and a one-file change rewrites only the buckets of the terms it touched.
+TERM_BUCKET_CHARS = 2
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -208,6 +260,124 @@ def module_of(symbol_id: str) -> str:
     """The module a symbol or file id lives in: its file's directory, `.` at the root."""
     path = symbol_id.split("#", 1)[0]
     return posixpath.dirname(path) or "."
+
+
+# --- symbol search (format 3's `terms` layer) ---------------------------------
+#
+# BM25 (Robertson and Zaragoza, "The Probabilistic Relevance Framework: BM25
+# and Beyond", 2009), written here from the published formula. The extractor
+# builds the postings with `tokenize` and every reader scores with it, so the
+# two can never split a word differently: this module is the one copy.
+
+#: Bumped whenever `tokenize` changes what it returns; the manifest records it,
+#: and a reader with another tokenizer must not query the postings.
+TOKENIZER_VERSION = "1"
+BM25_K1 = 1.2
+BM25_B = 0.75
+_WORD = re.compile(r"[A-Za-z0-9]+")
+# camelCase, PascalCase and HTTPServer-style acronyms, then digits; a word's
+# trailing digits stay with it (`v2`, `sha256`, `base64`).
+_CAMEL = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+[0-9]*|[A-Z]+[0-9]*|[0-9]+")
+#: English function words and the keywords every symbol shares; a term in
+#: nearly every document scores nothing and only grows the index.
+STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "if", "in", "into",
+    "is", "it", "its", "of", "on", "or", "that", "the", "this", "to", "was", "were",
+    "where", "which", "with", "what", "when", "how", "def", "self", "cls", "none",
+    "return", "returns", "true", "false", "str", "int", "dict", "list", "any",
+    "not", "no", "so", "one", "every", "but", "than", "then", "there", "these", "those",
+    "has", "have", "can", "may", "must", "do", "does", "here", "only", "also", "all",
+})
+
+
+def _stem(token: str) -> str:
+    """A plural's `s`, and nothing else: `runs` finds `run`. Same on both sides."""
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _word_terms(word: str) -> tuple[str, ...]:
+    out = []
+    for part in _CAMEL.findall(word):
+        lowered = part.lower()
+        if lowered in STOPWORDS:
+            continue
+        token = _stem(lowered)
+        if len(token) >= 2 and token not in STOPWORDS:
+            out.append(token)
+    return tuple(out)
+
+
+def tokenize(text: str) -> list[str]:
+    """Lower-case terms of identifiers and prose: `planner_prompt`, `plannerPrompt`
+    and "the planner's prompt" all give `planner`, `prompt`."""
+    out: list[str] = []
+    for word in _WORD.findall(text or ""):
+        out.extend(_word_terms(word))
+    return out
+
+
+def term_bucket(term: str) -> str:
+    """The `terms` shard a term's postings live in."""
+    return hashlib.sha256(term.encode("utf-8")).hexdigest()[:TERM_BUCKET_CHARS]
+
+
+def bm25_search(rows: Iterable[dict], stats: dict, query: str,
+                limit: int = 20) -> list[tuple[str, float]]:
+    """(symbol id, score), best first, for `query` over `terms` rows.
+
+    `rows` may be every row or only the query's buckets; `stats` is the
+    manifest's (or graph document's) `term_stats`. A row's `postings` maps a
+    file to `[name, tf, dl]` lists, the symbol being `<file>#<name>`: the
+    term's weighted count in the symbol's text and that text's length, so the
+    score needs no other table, and a file's path is stored once per term
+    rather than once per symbol.
+    """
+    wanted = set(tokenize(query))
+    documents = max(int(stats.get("documents") or 0), 1)
+    average = float(stats.get("average_length") or 1.0) or 1.0
+    k1 = float(stats.get("k1") or BM25_K1)
+    b = float(stats.get("b") if stats.get("b") is not None else BM25_B)
+    scores: dict[str, float] = {}
+    for row in rows:
+        if row.get("term") not in wanted:
+            continue
+        postings = [(f"{path}#{name}", tf, dl)
+                    for path, entries in sorted((row.get("postings") or {}).items())
+                    for name, tf, dl in entries]
+        df = len(postings)
+        idf = math.log(1.0 + (documents - df + 0.5) / (df + 0.5))
+        for symbol, tf, dl in postings:
+            norm = tf + k1 * (1.0 - b + b * dl / average)
+            scores[symbol] = scores.get(symbol, 0.0) + idf * tf * (k1 + 1.0) / norm
+    ranked = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
+    return [(symbol, round(score, 4)) for symbol, score in ranked[:max(limit, 0)]]
+
+
+def signature_changes(before: Iterable[dict], after: Iterable[dict]) -> list[dict]:
+    """The callables whose signature fingerprint differs between two `signatures` lists.
+
+    `changed`: the fingerprint moved, so every caller is a candidate for
+    change; `removed`: the symbol is gone; `added`: new. A symbol in neither
+    list is not mentioned.
+    """
+    old = {str(r.get("symbol")): r for r in before if isinstance(r, dict)}
+    new = {str(r.get("symbol")): r for r in after if isinstance(r, dict)}
+    out: list[dict] = []
+    for symbol in sorted(set(old) | set(new)):
+        a, b = old.get(symbol), new.get(symbol)
+        if a is not None and b is not None:
+            if a.get("fingerprint") == b.get("fingerprint"):
+                continue
+            change = "changed"
+        else:
+            change = "removed" if b is None else "added"
+        out.append({"symbol": symbol, "change": change,
+                    "before": None if a is None else a.get("signature"),
+                    "after": None if b is None else b.get("signature")})
+    return out
 
 
 def canonical(value: Any) -> bytes:
@@ -506,6 +676,11 @@ def _check_graph(document: Any) -> None:
     for key in ("symbols", "call_edges", "symbol_test_map", "files"):
         if not isinstance(document.get(key), list):
             raise ValueError(f"the graph has no {key} list")
+    # Version 3's lists are optional: a version-2 graph (no index layers) is
+    # still a graph, stored as format 3 with empty index layers.
+    for key in INDEX_LAYERS.values():
+        if document.get(key) is not None and not isinstance(document.get(key), list):
+            raise ValueError(f"the graph's {key} is not a list")
 
 
 _ORDER: dict[str, Callable[[dict], tuple]] = {
@@ -514,7 +689,27 @@ _ORDER: dict[str, Callable[[dict], tuple]] = {
     "callees": lambda e: (str(e.get("from")), str(e.get("to")), str(e.get("kind"))),
     "tests": lambda t: (str(t.get("symbol")), str(t.get("test"))),
     "files": lambda f: (str(f.get("path")),),
+    "communities": lambda c: (str(c.get("id")),),
+    "terms": lambda t: (str(t.get("term")),),
+    "signatures": lambda r: (str(r.get("symbol")),),
+    "signature_changes": lambda r: (str(r.get("symbol")),),
+    "flows": lambda f: (str(f.get("entry")),),
 }
+
+
+def _index_layers(document: dict) -> dict[str, dict[str, list[dict]]]:
+    """Format 3's layers: each graph list by the key its readers look it up by."""
+    grouped: dict[str, dict[str, list[dict]]] = {layer: {} for layer in INDEX_LAYERS}
+    for row in document.get("communities") or []:
+        grouped["communities"].setdefault(WHOLE, []).append(row)
+    for row in document.get("terms") or []:
+        grouped["terms"].setdefault(term_bucket(str(row.get("term"))), []).append(row)
+    for layer in ("signatures", "signature_changes"):
+        for row in document.get(layer) or []:
+            grouped[layer].setdefault(module_of(str(row.get("symbol"))), []).append(row)
+    for row in document.get("flows") or []:
+        grouped["flows"].setdefault(module_of(str(row.get("entry"))), []).append(row)
+    return grouped
 
 
 def _layers(document: dict, edges: list[dict]) -> dict[str, dict[str, list[dict]]]:
@@ -540,11 +735,10 @@ def encode_shard(layer: str, rows: Iterable[dict]) -> tuple[bytes, int, int]:
     return gzip.compress(raw, compresslevel=9, mtime=0), len(raw), len(lines)
 
 
-def _shard_all(document: dict, edges: list[dict]) -> tuple[dict, dict[str, bytes], int, int]:
-    """(manifest shards, blobs by hex digest, stored bytes, raw bytes)."""
+def _encode_layers(grouped: dict[str, dict[str, list[dict]]], blobs: dict[str, bytes]
+                   ) -> dict[str, dict[str, dict]]:
     table: dict[str, dict[str, dict]] = {}
-    blobs: dict[str, bytes] = {}
-    for layer, modules in _layers(document, edges).items():
+    for layer, modules in grouped.items():
         table[layer] = {}
         for module in sorted(modules):
             stored, raw_bytes, records = encode_shard(layer, modules[module])
@@ -552,9 +746,19 @@ def _shard_all(document: dict, edges: list[dict]) -> tuple[dict, dict[str, bytes
             blobs[hexdigest] = stored
             table[layer][module] = {"blob": "sha256:" + hexdigest, "records": records,
                                     "bytes": len(stored), "raw_bytes": raw_bytes}
+    return table
+
+
+def _shard_all(document: dict, edges: list[dict]
+               ) -> tuple[dict, dict, dict[str, bytes], int, int]:
+    """(manifest shards, index shards, blobs by hex digest, stored bytes, raw bytes)."""
+    blobs: dict[str, bytes] = {}
+    table = _encode_layers(_layers(document, edges), blobs)
+    index_table = _encode_layers(_index_layers(document), blobs)
     stored_total = sum(len(b) for b in blobs.values())
-    raw_total = sum(entry["raw_bytes"] for layer in table.values() for entry in layer.values())
-    return table, blobs, stored_total, raw_total
+    raw_total = sum(entry["raw_bytes"] for tab in (table, index_table)
+                    for layer in tab.values() for entry in layer.values())
+    return table, index_table, blobs, stored_total, raw_total
 
 
 def build(document: dict, *, tenant_id: str, repo_id: str,
@@ -569,16 +773,16 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
     key = manifest_key(tenant_id, repo_id, document["commit_sha"])
     edges = list(document["call_edges"])
     truncated = set(str(t) for t in document.get("truncated") or [])
-    table, blobs, stored, raw = _shard_all(document, edges)
+    table, index_table, blobs, stored, raw = _shard_all(document, edges)
     if stored > max_commit_bytes:
         edges = [e for e in edges if e.get("kind") == "import"
                  or float(e.get("confidence") or 0) >= CEILING_MIN_CONFIDENCE]
         truncated.add("call_edges:below_0.4")
-        table, blobs, stored, raw = _shard_all(document, edges)
+        table, index_table, blobs, stored, raw = _shard_all(document, edges)
     if stored > max_commit_bytes:
         edges = [e for e in edges if e.get("kind") == "import"]
         truncated.add("call_edges:symbol")
-        table, blobs, stored, raw = _shard_all(document, edges)
+        table, index_table, blobs, stored, raw = _shard_all(document, edges)
     if stored > max_commit_bytes:
         raise ValueError(
             f"the graph of {document['commit_sha']} is {stored} bytes stored with only "
@@ -596,15 +800,20 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
         "languages": document.get("languages") or [],
         "extractor": document.get("extractor") or {},
         "writer": {"name": TOOL_NAME, "version": TOOL_VERSION},
+        "format_version": FORMAT_VERSION,
         "counts": {"symbols": len(document["symbols"]), "call_edges": len(edges),
                    "symbol_test_map": len(document["symbol_test_map"]),
-                   "files": len(document["files"])},
+                   "files": len(document["files"]),
+                   **{key: len(document.get(key) or []) for key in INDEX_LAYERS.values()}},
+        # What a `terms` reader needs besides the postings (`bm25_search`).
+        "term_stats": document.get("term_stats") or {},
         "truncated": sorted(truncated),
         "compression": COMPRESSION,
         "blob_suffix": BLOB_SUFFIX,
         "max_commit_bytes": max_commit_bytes,
         "bytes": {"stored": stored, "raw": raw},
         "shards": table,
+        "index_shards": index_table,
     }
     return key, canonical(manifest) + b"\n", blobs
 
@@ -656,8 +865,9 @@ def _check_present(store: Store, expected: dict[str, bytes], listed: dict[str, s
 
 
 def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: str,
-                    base_commit: str) -> tuple[int, int, set[str]]:
-    """(shards carried, shards rewritten, the base's blob digests) against a base commit.
+                    base_commit: str) -> tuple[dict[str, tuple[int, int]], set[str]]:
+    """({key: (shards carried, shards rewritten)}, the base's blob digests)
+    against a base commit, for `shards` and `index_shards` apart.
 
     A shard is CARRIED when the base manifest names the same blob for the
     same layer and module: an incremental run's unchanged modules (§2.5).
@@ -668,17 +878,20 @@ def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: s
         base = json.loads(store.get(manifest_key(tenant_id, repo_id, base_commit)))
         base_blobs = referenced_blobs(base)
     except (StoreError, ValueError):
-        return 0, 0, set()
-    ours = json.loads(manifest)["shards"]
-    carried = rewritten = 0
-    for layer, modules in ours.items():
-        before = base["shards"].get(layer) or {}
-        for module, entry in modules.items():
-            if (before.get(module) or {}).get("blob") == entry["blob"]:
-                carried += 1
-            else:
-                rewritten += 1
-    return carried, rewritten, base_blobs
+        return {}, set()
+    ours = json.loads(manifest)
+    counts: dict[str, tuple[int, int]] = {}
+    for key in ("shards", "index_shards"):
+        carried = rewritten = 0
+        for layer, modules in (ours.get(key) or {}).items():
+            before = (base.get(key) or {}).get(layer) or {}
+            for module, entry in modules.items():
+                if (before.get(module) or {}).get("blob") == entry["blob"]:
+                    carried += 1
+                else:
+                    rewritten += 1
+        counts[key] = (carried, rewritten)
+    return counts, base_blobs
 
 
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
@@ -703,10 +916,10 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
     blob_prefix = f"{graph_root(tenant_id, repo_id)}/blobs/"
     expected = {blob_key(tenant_id, repo_id, hexdigest): data
                 for hexdigest, data in blobs.items()}
-    carried = rewritten = 0
+    counts: dict[str, tuple[int, int]] = {}
     base_blobs: set[str] = set()
     if base_commit is not None:
-        carried, rewritten, base_blobs = _carried_shards(
+        counts, base_blobs = _carried_shards(
             store, manifest, tenant_id=tenant_id, repo_id=repo_id, base_commit=base_commit)
     listed = _md5s(store, blob_prefix)
     known = {blob_key(tenant_id, repo_id, hexdigest) for hexdigest in base_blobs}
@@ -744,8 +957,14 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
         "manifest_bytes": len(manifest),
     }
     if base_commit is not None:
+        # `shards_*` count the five format-2 layers, as they did before format
+        # 3; the index layers are counted apart, so neither number changes
+        # meaning for a reader of the report.
+        carried, rewritten = counts.get("shards", (0, 0))
+        index_carried, index_rewritten = counts.get("index_shards", (0, 0))
         report.update(base_commit=base_commit, shards_carried=carried,
-                      shards_rewritten=rewritten)
+                      shards_rewritten=rewritten, index_shards_carried=index_carried,
+                      index_shards_rewritten=index_rewritten)
     return report
 
 
@@ -802,6 +1021,11 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
         for entry in (manifest["shards"].get(layer) or {}).values():
             hexdigest = entry["blob"].split(":", 1)[1]
             wanted.setdefault(layer, []).append(hexdigest)
+    # Format 3's layers; a format-2 manifest has none, and its graph is read
+    # with those lists empty.
+    for layer, entries in _index_shards(manifest).items():
+        for entry in entries.values():
+            wanted.setdefault("index:" + layer, []).append(entry["blob"].split(":", 1)[1])
     keys = sorted({blob_key(tenant_id, repo_id, h) for hs in wanted.values() for h in hs})
     fetched = _get_many(store, keys)
     document: dict[str, Any] = {
@@ -811,7 +1035,11 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
         "truncated": list(manifest.get("truncated") or []),
         "extractor": manifest.get("extractor") or {},
     }
-    for layer, target in READ_LAYERS.items():
+    if manifest_format(manifest) >= 3:
+        document["term_stats"] = manifest.get("term_stats") or {}
+    targets = [(layer, target) for layer, target in READ_LAYERS.items()]
+    targets += [("index:" + layer, target) for layer, target in INDEX_LAYERS.items()]
+    for layer, target in targets:
         rows: list[dict] = []
         for hexdigest in wanted.get(layer, []):
             data = fetched.get(blob_key(tenant_id, repo_id, hexdigest))
@@ -826,7 +1054,28 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
                                                str(e.get("kind"))))
     document["symbol_test_map"].sort(key=lambda t: (str(t.get("symbol")), str(t.get("test"))))
     document["files"].sort(key=lambda f: str(f.get("path")))
+    for layer, target in INDEX_LAYERS.items():
+        document[target].sort(key=_ORDER[layer])
     return document
+
+
+def manifest_format(manifest: dict) -> int:
+    """The shard format a manifest was written in: 2 when it does not say."""
+    value = manifest.get("format_version")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 2
+
+
+def _index_shards(manifest: dict) -> dict[str, dict]:
+    """Format 3's layers, checked; `{}` for a format-2 manifest."""
+    table = manifest.get("index_shards")
+    if table is None:
+        return {}
+    if not isinstance(table, dict):
+        raise ValueError("the manifest's index_shards is not an object")
+    for layer, entries in table.items():
+        if layer not in INDEX_LAYERS or not isinstance(entries, dict):
+            raise ValueError(f"the manifest names an unknown index layer {layer!r}")
+    return table
 
 
 # --- the sweep ----------------------------------------------------------------
@@ -839,7 +1088,9 @@ def referenced_blobs(manifest: dict) -> set[str]:
     if not isinstance(shards, dict):
         raise ValueError("the manifest has no shards")
     found: set[str] = set()
-    for layer in shards.values():
+    # The sweep deletes what no manifest names: an index layer's blob left out
+    # here would be deleted under a live manifest.
+    for layer in [*shards.values(), *_index_shards(manifest).values()]:
         if not isinstance(layer, dict):
             raise ValueError("a manifest layer is not an object")
         for entry in layer.values():
@@ -991,14 +1242,18 @@ def self_test() -> int:
         "call_edges": [{"from": "a/b.py#f", "to": "c.py#g", "kind": "call",
                         "confidence": 0.6}],
         "symbol_test_map": [], "files": [{"path": "a/b.py"}, {"path": "c.py"}],
+        "terms": [{"term": "self", "postings": {"a/b.py": [["f", 1, 1]]}}],
+        "term_stats": {"documents": 2, "average_length": 1.0, "k1": BM25_K1, "b": BM25_B,
+                       "tokenizer": TOKENIZER_VERSION},
     }
     with tempfile.TemporaryDirectory(prefix="repo-graph-self-test-") as scratch:
         store = LocalStore(scratch)
         first = write_graph(document, store, tenant_id="t", repo_id="r")
         second = write_graph(document, store, tenant_id="t", repo_id="r")
         swept = sweep(store, tenant_id="t", repo_id="r", grace=timedelta(0))
+        back = read_graph(store, tenant_id="t", repo_id="r", commit_sha=commit)
     if (first["manifest_digest"] != second["manifest_digest"] or second["blobs_written"]
-            or swept["deleted"] or swept["refused"]):
+            or swept["deleted"] or swept["refused"] or back["terms"] != document["terms"]):
         print("repo-graph self-test: failed", file=sys.stderr)
         return 1
     print("repo-graph self-test: ok")
@@ -1130,7 +1385,8 @@ def main(argv: list[str] | None = None) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(canonical(graph) + b"\n")
             report = {"read": args.commit, "symbols": len(graph["symbols"]),
-                      "call_edges": len(graph["call_edges"]), "files": len(graph["files"])}
+                      "call_edges": len(graph["call_edges"]), "files": len(graph["files"]),
+                      "communities": len(graph["communities"])}
         else:
             raw = Path(args.graph).read_bytes()
             document = json.loads(raw)

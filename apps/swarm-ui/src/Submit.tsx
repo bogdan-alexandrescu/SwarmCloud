@@ -10,6 +10,7 @@ import {
   verdictNeedsAPerson,
 } from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
+import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
@@ -933,7 +934,11 @@ function Form({ capacity }: { capacity: Capacity }) {
     <form className="sbf" onSubmit={submit}>
       <div className="sbf-build">
         {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
-        {outcome.kind === 'failed' && (
+        {/* The submission gate's refusal (#847): why, in the API's words, and the
+            setup step that fixes it. It is the one failure that proves nothing
+            was created, so the warning below is not drawn under it. */}
+        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) !== null && <WorkspaceRefusalBanner error={outcome.error} />}
+        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
           <>
             <FailedPanel error={outcome.error} onRetry={() => void submit()} />
             {/* A write is not a read: a failure after the request left the browser
