@@ -268,7 +268,7 @@ spec:
           # the Job (restartPolicy Never) fails it; a live-but-wedged agent is
           # the stall guard's case; and activeDeadlineSeconds bounds the rest.
           # Readiness gates Service traffic, and no Service selects a worker.
-          # test_every_exec_probe_runs_a_binary_some_image_installs holds any
+          # test_every_command_a_worker_template_runs_is_a_binary_some_image_installs holds any
           # probe added back to a binary an image actually ships.
           volumeMounts:
             - name: workspace
