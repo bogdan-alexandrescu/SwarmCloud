@@ -1265,6 +1265,24 @@ export interface GitSummary {
   dirty?: string[]
   dirty_count?: number
   dirty_truncated?: boolean
+  /**
+   * One row per file of the patch's diff (`git diff -M <base>`, committed and
+   * uncommitted work together), so counts are known before the patch is read
+   * and even when it was omitted. Capped at 500 rows (`MAX_FILES_LISTED` in
+   * `gitops.py`); `files_truncated` says the cap was hit. Absent on a summary
+   * written before the field, or when there was no base to diff against.
+   * A binary file has `binary: true` and null counts. Paths only, never content.
+   */
+  files?: Array<{
+    path: string
+    /** The path before a rename, else null. */
+    old_path: string | null
+    status: 'A' | 'M' | 'D' | 'R'
+    insertions: number | null
+    deletions: number | null
+    binary: boolean
+  }>
+  files_truncated?: boolean
   /** Artifact name of the patch, matched against `artifacts[]` to get its URI. */
   patch?: string | null
   patch_bytes?: number
