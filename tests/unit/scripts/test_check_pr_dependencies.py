@@ -67,7 +67,8 @@ def test_the_script_has_the_house_shape():
 # ---------------------------------------------------------------------------
 
 # `api repos/<R>/pulls/<n>` answers from pull.json; `api repos/<R>/issues/<n>`
-# from issues/<n>.json, a missing one being GitHub's 404, and FAKE_GH_REST_FAIL
+# from issues/<n>.json (issues/<owner>/<name>/<n>.json for a repository other
+# than GH_REPO), a missing one being GitHub's 404, and FAKE_GH_REST_FAIL
 # naming a number whose read fails like a 502. Every call is logged.
 FAKE_GH = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -84,12 +85,20 @@ if [[ "${1:-}" == "api" ]]; then
       ;;
     repos/*/issues/*)
       number="${path##*/}"
+      owner_repo="${path#repos/}"
+      owner_repo="${owner_repo%/issues/*}"
       if [[ " ${FAKE_GH_REST_FAIL:-} " == *" ${number} "* ]]; then
         echo "gh: Server Error (HTTP 502)" >&2
         exit 1
       fi
-      if [[ -f "${FAKE_GH_ISSUES}/${number}.json" ]]; then
-        cat "${FAKE_GH_ISSUES}/${number}.json"
+      # This repository's items are issues/<n>.json; another repository's
+      # are issues/<owner>/<name>/<n>.json, so a number in each is distinct.
+      item="${FAKE_GH_ISSUES}/${number}.json"
+      if [[ "${owner_repo}" != "${GH_REPO}" ]]; then
+        item="${FAKE_GH_ISSUES}/${owner_repo}/${number}.json"
+      fi
+      if [[ -f "${item}" ]]; then
+        cat "${item}"
         exit 0
       fi
       echo '{"message":"Not Found","status":"404"}'
@@ -107,8 +116,14 @@ def _pull(body: str | None) -> dict:
     return {"number": SELF, "title": "A fact-style headline", "state": "open", "body": body}
 
 
-def _issue(number: int, *, state: str = "open", pull: bool = False, merged: bool = False) -> dict:
+def _issue(
+    number: int, *, state: str = "open", pull: bool = False, merged: bool = False, repo: str | None = None
+) -> dict:
+    """`repo` files the item under another repository in the fake; the key is
+    the fake's, and the script never reads it."""
     item: dict = {"number": number, "state": state, "title": f"item {number}"}
+    if repo is not None:
+        item["repo"] = repo
     if pull:
         item["pull_request"] = {
             "url": f"https://api.github.com/repos/{THIS_REPO}/pulls/{number}",
@@ -139,10 +154,12 @@ def run_check(tmp_path: Path):
         pull_exit: int = 0,
         rest_fail: str = "",
     ):
-        for old in issues_dir.iterdir():
-            old.unlink()
+        shutil.rmtree(issues_dir)
+        issues_dir.mkdir()
         for item in items or []:
-            (issues_dir / f"{item['number']}.json").write_text(json.dumps(item))
+            folder = issues_dir / item["repo"] if "repo" in item else issues_dir
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"{item['number']}.json").write_text(json.dumps(item))
         pull_file = tmp_path / "pull.json"
         pull_file.write_text(pull if isinstance(pull, str) else json.dumps(pull))
         log = tmp_path / "gh.log"
@@ -225,6 +242,119 @@ def test_text_that_is_not_the_phrase_names_no_dependency(run_check, body):
     proc, looked_up, _calls = run_check(_pull(body), [_issue(840, pull=True)])
     assert proc.returncode == 0, f"{body!r}\n{proc.stdout}{proc.stderr}"
     assert looked_up == []
+
+
+# Box 95 (#888): the phrase QUOTED is an example, not a dependency. A pull
+# request that explains this rule, or quotes another's body, must not wait on
+# the number in its example.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Write `depends on #840` in the body.",
+        "Write ``depends on PR 840`` in the body.",
+        "```text\ndepends on PR 840\n```",
+        "Example:\n\n~~~\ndepends on #840\n~~~\n",
+        "   ```\r\ndepends on #840\r\n   ```",
+        "> depends on #840",
+        "Quoting the other body:\n  > > Depends on PR #840.\n",
+    ],
+    ids=["inline-code", "double-backtick-code", "backtick-fence", "tilde-fence", "indented-crlf-fence",
+         "quote", "nested-quote"],
+)
+def test_the_phrase_in_code_or_a_quote_names_no_dependency(run_check, body: str):
+    """MUTATION: scan the raw body, or strip only one of fence, span or quote."""
+    proc, looked_up, _calls = run_check(_pull(body), [_issue(840, pull=True)])
+    assert proc.returncode == 0, f"{body!r}\n{proc.stdout}{proc.stderr}"
+    assert looked_up == []
+
+
+def test_the_phrase_outside_code_still_counts_beside_a_quoted_example(run_check):
+    """The control: stripping the example must not strip the real line, nor
+    the text after a closed fence. MUTATION: drop everything after the first
+    fence or backtick."""
+    body = (
+        "Write `depends on #841` to wait.\n\n```\ndepends on #842\n```\n> depends on #843\n\n"
+        "This one depends on PR 840."
+    )
+    proc, looked_up, _calls = run_check(_pull(body), [_issue(840, pull=True)])
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert looked_up == [840]
+
+
+def test_an_unclosed_fence_hides_the_rest_of_the_body(run_check):
+    """GitHub renders an unclosed fence to the end as code, so the scan does
+    too. MUTATION: reset the fence at the end of each line."""
+    proc, looked_up, _calls = run_check(_pull("```\nexample\n\ndepends on #840"), [_issue(840, pull=True)])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert looked_up == []
+
+
+# Box 96 (#888): a dependency in ANOTHER repository is looked up there. A
+# bare #N stays this repository's.
+
+OTHER_REPO = "saga-org/saga-prompt-lab"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"depends on {OTHER_REPO}#840",
+        f"Depends on PR {OTHER_REPO}#840.",
+        f"depends on https://github.com/{OTHER_REPO}/pull/840",
+        f"depends on PR https://github.com/{OTHER_REPO}/pull/840/files",
+    ],
+    ids=["owner-repo", "pr-owner-repo", "url", "pr-url-files"],
+)
+def test_a_dependency_in_another_repository_is_read_there(run_check, body: str):
+    """This repository's #840 is merged; the other repository's is open, so
+    only a read of the other repository refuses. MUTATION: resolve every
+    number against --repo, or leave `owner/repo#N` unmatched."""
+    proc, _looked_up, calls = run_check(_pull(body), [_merged(840), _issue(840, pull=True, repo=OTHER_REPO)])
+    assert proc.returncode == REFUSED, body + "\n" + proc.stdout + proc.stderr
+    assert re.findall(r"^api repos/(\S+)/issues/(\d+)", calls, re.MULTILINE) == [(OTHER_REPO, "840")], calls
+    assert f"{OTHER_REPO}#840 is an open pull request that has not merged" in proc.stdout, proc.stdout
+
+
+def test_a_merged_dependency_in_another_repository_passes(run_check):
+    """The control: the same line, the other repository's 840 merged."""
+    proc, _looked_up, calls = run_check(
+        _pull(f"depends on {OTHER_REPO}#840"), [_issue(840, pull=True), _merged(840) | {"repo": OTHER_REPO}]
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"api repos/{OTHER_REPO}/issues/840" in calls, calls
+
+
+def test_a_bare_number_stays_this_repository_beside_another_repositorys(run_check):
+    proc, _looked_up, calls = run_check(
+        _pull(f"depends on #840\ndepends on {OTHER_REPO}#840"),
+        [_issue(840, pull=True), _merged(840) | {"repo": OTHER_REPO}],
+    )
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert sorted(re.findall(r"^api repos/(\S+)/issues/(\d+)", calls, re.MULTILINE)) == sorted(
+        [(THIS_REPO, "840"), (OTHER_REPO, "840")]
+    ), calls
+    assert "#840 is an open pull request" in proc.stdout and f"{OTHER_REPO}#840" not in proc.stdout
+
+
+def test_this_repository_named_in_full_is_this_repository(run_check):
+    """`owner/repo#N` naming this repository is the bare `#N`, its own number
+    included. MUTATION: compare the repository case-sensitively."""
+    proc, _looked_up, calls = run_check(
+        _pull(f"depends on {THIS_REPO.upper()}#840\ndepends on https://github.com/{THIS_REPO}/pull/{SELF}"),
+        [_issue(840, pull=True)],
+    )
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert re.findall(r"^api repos/(\S+)/issues/(\d+)", calls, re.MULTILINE) == [(THIS_REPO, "840")], calls
+    assert "#840 is an open pull request" in proc.stdout, proc.stdout
+    assert THIS_REPO.lower() not in proc.stdout.lower(), "this repository's own number reads as #N: " + proc.stdout
+
+
+def test_a_number_another_repository_does_not_have_refuses_naming_it(run_check):
+    proc, _looked_up, _calls = run_check(_pull(f"depends on {OTHER_REPO}#99999"))
+    assert proc.returncode == REFUSED, proc.stdout + proc.stderr
+    assert f"{OTHER_REPO}#99999 does not exist in {OTHER_REPO}" in proc.stdout, proc.stdout
 
 
 def test_a_closed_issue_passes_and_an_open_one_refuses(run_check):
@@ -404,15 +534,21 @@ def _script_refusal(run_check) -> str:
     return proc.stdout.strip()
 
 
-def test_on_the_label_a_refusal_comments_fails_and_arms_nothing(run_check, run_gate_with_dependency):
-    """Like the gate's other label-time refusals: `ready` kept, run failed.
-    MUTATION: drop the 0b block, and the gate reads the rules and says merge."""
+def test_on_the_label_a_refusal_drops_ready_comments_fails_and_arms_nothing(run_check, run_gate_with_dependency):
+    """Box 99 (#888): `ready` comes off at the refusal, the way item 0 takes
+    it off, and the comment says so. Kept, a later CI-finish re-evaluation
+    removed it, with a second comment, long after the author had read the
+    first. MUTATION: drop the 0b block, and the gate reads the rules and says
+    merge; or keep `ready` on the label path."""
     refusal = _script_refusal(run_check)
     proc, calls, comments, output = run_gate_with_dependency("pull_request_target", refusal)
     assert proc.returncode != 0
-    assert comments.startswith("**Not queued for auto-merge.** " + refusal), comments
+    assert comments.startswith("**Not queued for auto-merge, and `ready` removed.** " + refusal), comments
+    assert "add the `ready` label again" in comments, comments
     assert "decision=refused" in output and "decision=merge" not in output, output
-    assert "api " not in calls and "--remove-label" not in calls, calls
+    assert "disarm=true" not in output, "nothing was armed on the label: " + output
+    assert "api " not in calls, calls
+    assert calls.splitlines()[0] == f"pr edit {SELF} --remove-label ready", calls
 
 
 def test_on_a_re_evaluation_a_refusal_drops_ready_and_disarms(run_check, run_gate_with_dependency):

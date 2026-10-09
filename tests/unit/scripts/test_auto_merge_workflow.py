@@ -89,6 +89,13 @@ def close_job(workflow: dict) -> dict:
 
 
 @pytest.fixture(scope="module")
+def requeue_edited_job(workflow: dict) -> dict:
+    jobs = workflow.get("jobs") or {}
+    assert "requeue-edited" in jobs, f"expected a job keyed 'requeue-edited', found {sorted(jobs)}"
+    return jobs["requeue-edited"]
+
+
+@pytest.fixture(scope="module")
 def requeue_job(workflow: dict) -> dict:
     jobs = workflow.get("jobs") or {}
     assert "requeue" in jobs, f"expected a job keyed 'requeue', found {sorted(jobs)}"
@@ -96,8 +103,9 @@ def requeue_job(workflow: dict) -> dict:
 
 
 def test_the_workflow_has_exactly_the_enable_requeue_disable_and_close_issues_jobs(workflow: dict):
+    """`requeue-edited` is the body-edit re-evaluation (#888 box 97)."""
     jobs = workflow.get("jobs") or {}
-    assert set(jobs) == {"enable", "requeue", "disable", "close-issues"}, sorted(jobs)
+    assert set(jobs) == {"enable", "requeue", "requeue-edited", "disable", "close-issues"}, sorted(jobs)
 
 
 def _step(job: dict, step_id: str) -> dict:
@@ -486,6 +494,7 @@ def run_gate(job: dict, tmp_path: Path):
         check_runs: list[dict] | None = None,
         rules: list[dict] | None = None,
         event_name: str = "pull_request_target",
+        dependency_refusal: str = "",
     ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
@@ -513,6 +522,7 @@ def run_gate(job: dict, tmp_path: Path):
             "HEAD_SHA": head_sha,
             "MERGE_APP_ID": app_id,
             "HAS_MERGE_APP_KEY": has_key,
+            "DEPENDENCY_REFUSAL": dependency_refusal,
             "GITHUB_STEP_SUMMARY": str(summary),
             "GITHUB_OUTPUT": str(output),
             "FAKE_GH_LOG": str(log),
@@ -1573,6 +1583,110 @@ def test_requeue_dispatches_nothing_when_no_ready_pull_request_is_at_the_head(ru
     assert "dispatched 0" in proc.stdout, proc.stdout
 
 
+# ---------------------------------------------------------------------------
+# A body edit on a `ready` pull request is re-evaluated (#888 box 97)
+# ---------------------------------------------------------------------------
+
+
+def test_a_body_edit_on_a_ready_pull_request_dispatches_a_re_evaluation(requeue_edited_job: dict):
+    """Adding or removing `depends on` changes the gate's answer, and nothing
+    looked again until the next label or finishing CI run. MUTATION: drop the
+    `changes.body` guard (every title edit would re-evaluate too), the
+    `ready` guard, or the MERGE_APP_ID guard."""
+    condition = " ".join(str(requeue_edited_job.get("if") or "").split())
+    assert "github.event_name == 'pull_request_target'" in condition, condition
+    assert "github.event.action == 'edited'" in condition, condition
+    assert "github.event.changes.body != null" in condition, condition
+    assert "github.event.pull_request.state == 'open'" in condition, condition
+    assert re.search(
+        r"contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*'ready'\s*\)", condition
+    ), condition
+    assert "vars.MERGE_APP_ID != ''" in condition, condition
+
+
+def test_the_disable_job_still_ignores_a_body_edit(disable_job: dict):
+    """The control: a body edit moves no head, so `ready` stays and the
+    re-evaluation above decides. MUTATION: let `edited` reach disable."""
+    condition = str(disable_job.get("if") or "")
+    assert "(github.event.action != 'edited' || github.event.changes.base.ref.from != null)" in condition
+
+
+def test_the_body_edit_re_evaluation_holds_no_app_token_and_least_privilege(requeue_edited_job: dict):
+    """It merges nothing and reads nothing: it dispatches. The number is the
+    event's, through env; the body never reaches a shell."""
+    assert requeue_edited_job.get("permissions") == {"actions": "write"}, requeue_edited_job.get("permissions")
+    text = json.dumps(requeue_edited_job)
+    assert "app-token" not in text and "MERGE_APP_PRIVATE_KEY" not in text, text
+    assert "pull_request.body" not in text, text
+    env = requeue_edited_job.get("env") or {}
+    assert env.get("PR_NUMBER") == "${{ github.event.pull_request.number }}", env
+    steps = requeue_edited_job.get("steps") or []
+    assert len(steps) == 1, steps
+    for step in steps:
+        assert "checkout" not in str(step.get("uses") or "")
+        assert "${{" not in str(step.get("run") or ""), step
+
+
+def test_the_body_edit_re_evaluation_dispatches_exactly_that_pull_request(requeue_edited_job: dict, tmp_path: Path):
+    """RUN, against the requeue job's fake `gh`. MUTATION: dispatch on the
+    pull request's head ref, or for every ready pull request."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_REQUEUE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "gh.log"
+    summary = tmp_path / "summary.md"
+    for path in (log, summary):
+        path.write_text("")
+    env = {
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "PR_NUMBER": "4242",
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "FAKE_GH_LOG": str(log),
+    }
+    proc = subprocess.run(
+        ["bash", "-c", requeue_edited_job["steps"][0]["run"]],
+        env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().splitlines() == ["workflow run auto-merge.yml --ref main -f pr=4242"], log.read_text()
+    assert "#4242" in summary.read_text(), summary.read_text()
+
+
+@pytest.mark.parametrize("number", ["", "0", "12; touch x"])
+def test_the_body_edit_re_evaluation_refuses_a_number_that_is_not_one(requeue_edited_job: dict, tmp_path: Path,
+                                                                      number: str):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    log = tmp_path / "gh.log"
+    log.write_text("")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "gh"
+    fake.write_text(FAKE_GH_REQUEUE)
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    env = {
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "PR_NUMBER": number,
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "FAKE_GH_LOG": str(log),
+    }
+    proc = subprocess.run(
+        ["bash", "-c", requeue_edited_job["steps"][0]["run"]],
+        env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode != 0
+    assert log.read_text() == "", log.read_text()
+
+
 FAKE_GH_VIEW = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
@@ -1764,6 +1878,41 @@ def test_a_label_time_refusal_is_unchanged_and_keeps_the_label(run_gate, tmp_pat
     assert proc.returncode != 0
     assert "Not queued for auto-merge" in comments, comments
     assert "pr edit" not in calls and "--disable-auto" not in calls, calls
+
+
+DEPENDENCY_REFUSAL = (
+    "This pull request's body says it depends on something that has not landed: "
+    "#840 is an open pull request that has not merged."
+)
+
+
+def test_a_label_time_dependency_refusal_removes_ready_then_and_says_so(run_gate, tmp_path: Path):
+    """#888 box 99. The dependency refusal (item 0b) used to keep `ready` on
+    the label, like the refusals above; the next CI-finish re-evaluation then
+    removed it with a second comment, which read as the gate changing its
+    mind. Now it comes off at the refusal, like item 0's, and one comment says
+    so. MUTATION: route 0b back through `refuse` on the label path."""
+    proc, calls, comments = run_gate("A fact-style headline", PROTECTED, dependency_refusal=DEPENDENCY_REFUSAL)
+    assert proc.returncode != 0
+    assert "pr edit 4242 --remove-label ready" in calls, calls
+    assert "--disable-auto" not in calls and "api " not in calls, calls
+    assert comments.count("**Not queued") == 1, comments
+    assert "**Not queued for auto-merge, and `ready` removed.** " + DEPENDENCY_REFUSAL in comments, comments
+    outputs = _outputs(tmp_path / "output.txt")
+    assert outputs.get("decision") == "refused" and "disarm" not in outputs, outputs
+
+
+def test_a_re_evaluation_dependency_refusal_still_drops_ready_and_disarms(run_gate, tmp_path: Path):
+    """The control: on a re-evaluation an earlier run may have armed it, so
+    the refusal also says `disarm`, as before."""
+    proc, calls, comments = run_gate(
+        "A fact-style headline", PROTECTED, event_name="workflow_dispatch", dependency_refusal=DEPENDENCY_REFUSAL
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "pr edit 4242 --remove-label ready" in calls, calls
+    assert DEPENDENCY_REFUSAL in comments, comments
+    outputs = _outputs(tmp_path / "output.txt")
+    assert outputs.get("decision") == "refused" and outputs.get("disarm") == "true", outputs
 
 
 FAKE_GH_MERGE = r"""#!/usr/bin/env bash
