@@ -449,10 +449,24 @@ BUILD_LOGIC=(scripts/build-images.sh scripts/lib/common.sh scripts/lib/ci-built-
 # even on a part of the tree nobody touches.
 REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 
-# The values an image bakes in beyond GIT_SHA and BUILD_TIME, one KEY=VALUE a
-# line: what target_build_args passes as --build-arg, and what the manifest
-# records per image as `build_args`. Only swarm-ui takes one -- see
-# target_build_args for why it cannot be a runtime variable.
+# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
+# arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
+# when the bundle is compiled, so by the time a container starts, a static
+# bundle has already decided what environment it thinks it is in.
+#
+# ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
+# build and prod to a prod one without a second place to keep in step.
+# Defined here, above plan_incremental, because baked_build_args reads it.
+target_build_args() {
+  if [[ "$1" == "swarm-ui" ]]; then
+    printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}"
+  fi
+}
+
+# target_build_args' values, one KEY=VALUE a line: what an image bakes in
+# beyond GIT_SHA and BUILD_TIME, and what the manifest records per image as
+# `build_args`. Read from target_build_args' own output, so an arg added there
+# is compared without a second list to keep in step.
 #
 # The reuse decision compares these with the previous record's, so a reused
 # digest is never one built with a different value (#888 box 91). No file
@@ -462,9 +476,7 @@ REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 # which the record's own environment check already covers; the comparison is
 # for the next one, whatever feeds it.
 baked_build_args() {
-  if [[ "$1" == "swarm-ui" ]]; then
-    printf '%s\n' "VITE_SWARM_ENV=${ENVIRONMENT}"
-  fi
+  target_build_args "$1" | sed -n 's/^      - \([A-Za-z_][A-Za-z0-9_]*=.*\)$/\1/p'
 }
 
 # baked_build_args as a JSON array, the form the manifest records.
@@ -778,20 +790,6 @@ fi
 
 # A Dockerfile with no cloudbuild.yaml gets a generated one. It is written to
 # build/ and kept, so a failed build can be reproduced exactly.
-# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
-  # arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
-  # when the bundle is compiled, so by the time a container starts, a static
-  # bundle has already decided what environment it thinks it is in.
-  #
-# ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
-# build and prod to a prod one without a second place to keep in step.
-target_build_args() {
-  local arg
-  while IFS= read -r arg; do
-    printf '%s\n' "      - --build-arg" "      - ${arg}"
-  done < <(baked_build_args "$1")
-}
-
 generate_config() {
   local dockerfile="$1" image="$2" out="$3" target="${4:-}"
   # --build-only lists no `images:`, so Cloud Build pushes nothing; the image
