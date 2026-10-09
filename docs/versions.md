@@ -69,7 +69,9 @@ The versions were chosen **against the promote gate**, not by recency: on
 2026-10-01 each artifact was scanned with trivy 0.74.0 using the release's own
 filter (fixable HIGH/CRITICAL). That is why two of them differ from the
 operator pins in the table at the top. tofu, tflint and trivy were re-scanned
-on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z) for #442.
+on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z) for #442, and
+tofu and tflint again on 2026-10-09 (DB updated 2026-10-08T19:05Z): no newer
+release of either, and the same findings.
 
 | Tool | In the image | Default build | Why this version |
 |---|---|---|---|
@@ -81,8 +83,8 @@ on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z) for #442.
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
 | `docker` | **29.8.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket |
 | `trivy` | **0.75.0** | yes | newest; scan clean on 2026-10-06 (0.74.0 had grpc 1.82.1; #442) |
-| `tofu` | **1.13.1** | **no** | no release scans clean: x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
-| `tflint` | **0.64.0** | **no** | no release scans clean: Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
+| `tofu` | **1.13.1** | **no** | no release scans clean (2026-10-09): x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
+| `tflint` | **0.64.0** | **no** | no release scans clean (2026-10-09): Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
 
 The last two are installed only with `--build-arg INSTALL_TOFU=1` and
 `--build-arg INSTALL_TFLINT=1` respectively. Each install path is complete and

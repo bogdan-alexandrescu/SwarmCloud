@@ -119,8 +119,8 @@ it costs every agent start its 51 MB layer (measured as above: the pinned
 tarball, sha256-checked, unpacked, `gzip -6`). tofu and tflint stay held, each
 behind its own build argument, `INSTALL_TOFU` and `INSTALL_TFLINT`, so whichever
 ships a clean release first can join the default build alone, as trivy did.
-Turning both on adds about 52 MB (tofu 1.13.1 34.7, tflint 0.64.0 16.8). Why each still fails the scan is recorded beside its pin in the
-Dockerfile.
+Turning both on adds about 52 MB (tofu 1.13.1 34.7, tflint 0.64.0 16.8). Why each still fails the scan (last re-scanned 2026-10-09) is recorded beside
+its pin in the Dockerfile.
 
 ## Adding to a worker image
 

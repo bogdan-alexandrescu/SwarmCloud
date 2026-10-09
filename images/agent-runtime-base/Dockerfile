@@ -589,20 +589,29 @@ ARG TERRAFORM_VERSION=1.16.4
 ARG TERRAFORM_SHA256=dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
 # INSTALL_TOFU and INSTALL_TFLINT are each OFF by default because no published
 # release of tofu, and none of tflint, passes the promote gate, and the gate
-# refuses the whole image, not just the tool. Re-scanned on 2026-10-06 with trivy 0.75.0, the gate's filter
-# (`trivy rootfs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed`,
-# vulnerability DB updated 2026-10-05T19:07Z), at each newest release:
+# refuses the whole image, not just the tool. Re-scanned on 2026-10-09 with
+# trivy 0.75.0 (still the newest), the gate's filter (`trivy rootfs --scanners
+# vuln --severity HIGH,CRITICAL --ignore-unfixed`, vulnerability DB updated
+# 2026-10-08T19:05Z), at each newest release, on the executable binary after a
+# sha256 match against the vendor's checksum file. The releases API, read
+# 2026-10-09T00:01Z, lists no newer tofu or tflint release than the ones
+# below; the findings are the same as the 2026-10-06 scan's:
 #
 #   tofu 1.13.1 (2026-10-01)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
 #                              CVE-2026-56865; fixed 0.40.0), google.golang.org/
 #                              grpc 1.83.1 (CVE-2026-84445; fixed 1.83.2). The
 #                              same two as 1.13.0 (2026-10-01 scan). The 1.12
-#                              line's newest, 1.12.7, has eight: otel/sdk
-#                              1.42.0, x/mod 0.38.0, grpc 1.79.3, oras-go 2.6.1.
+#                              line's newest, 1.12.7 (2026-10-01), has eight:
+#                              otel/sdk 1.42.0, x/mod 0.38.0, grpc 1.79.3,
+#                              oras-go 2.6.1.
 #   tflint 0.64.0 (2026-07-17) Go stdlib 1.26.3 (eleven CVEs, fixed 1.26.6),
 #                              x/crypto 0.53.0 (CVE-2026-56854), x/mod 0.37.0,
 #                              grpc 1.82.0 (CVE-2026-84304, CVE-2026-84445,
-#                              GHSA-hrxh-6v49-42gf). Still no newer release.
+#                              GHSA-hrxh-6v49-42gf), seventeen in all. Still
+#                              no newer release.
+#
+# Control, same scan and DB: the trivy 0.75.0 binary installed below reports
+# its target and zero findings, so the filter can come out clean.
 #
 # trivy WAS held here too (0.74.0: grpc 1.82.1, CVE-2026-84304 and
 # CVE-2026-84445). 0.75.0 (2026-10-01) carries grpc 1.83.2, x/mod 0.41.0,

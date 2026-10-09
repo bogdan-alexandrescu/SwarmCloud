@@ -28,7 +28,7 @@ WHAT IS ASSERTED, and why each one is a test and not a review comment:
     urllib3 2.7.0, msgpack 1.1.2, setuptools 70.3.0 in google-cloud-cli
     587.0.0) carries fixable HIGH advisories the promote scan refuses;
   * tools held back from the default build are only the ones that had no
-    clean release when last scanned (tofu and tflint, 2026-10-06; trivy left
+    clean release when last scanned (tofu and tflint, 2026-10-09; trivy left
     the hold at 0.75.0, #442), each held tool has its OWN build argument whose
     install path is real, not a TODO -- so whichever vendor ships a clean
     release first leaves the hold alone, as trivy did -- and no tool is
@@ -72,7 +72,7 @@ REQUIRED_TOOLS = (
 
 #: The only tools allowed behind the default-off build argument. Each had a
 #: fixable HIGH advisory in every published release when last scanned
-#: (2026-10-06, see the Dockerfile). trivy left this set when 0.75.0 scanned
+#: (2026-10-09, see the Dockerfile). trivy left this set when 0.75.0 scanned
 #: clean (#442). Anything else added here is a tool quietly dropped.
 MAY_BE_HELD = {"tofu", "tflint"}
 
