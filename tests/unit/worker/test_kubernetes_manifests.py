@@ -1765,12 +1765,12 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     that is exactly the shape of the defect.
 
     SCOPED TO THE `worker` CONTAINER, which this test did NOT do when it was
-    written, and that gap was already a live defect. `worker-job-v2.yaml` has an
-    init container (`install-credential`) as well, and the commit that fixed the
-    Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container -- which writes
-    one credential file and never touches an artifacts directory -- while the
-    `worker` container, the one that runs the agent and creates the directory,
-    had none. Reading the template as one document sees the name present and
+    written, and that gap was already a live defect. `worker-job-v2.yaml` had an
+    init container (`install-credential`, since removed) as well, and the commit
+    that fixed the Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container --
+    which wrote one credential file and never touched an artifacts directory --
+    while the `worker` container, the one that runs the agent and creates the
+    directory, had none. Reading the template as one document sees the name present and
     passes. "Set" and "set on the wrong container" are different facts, and on
     v2 the second one is not even loud: v2 leaves `readOnlyRootFilesystem`
     false on purpose, so `mkdir /artifacts` succeeds, the artifact tree lands on
@@ -1781,9 +1781,10 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     MUTATION: delete `SWARM_ARTIFACTS_DIR` from `worker_env` in dispatch.py, or
     from any one of the three templates. This names the variable and the side it
     is missing from. MUTATION FOR THE SCOPING: move `SWARM_ARTIFACTS_DIR` in
-    `worker-job-v2.yaml` from the `worker` container up into the
-    `install-credential` init container -- which is where it actually was --
-    and this fails naming v2. Before the scoping it passed.
+    `worker-job-v2.yaml` from the `worker` container into an init container
+    added for the purpose -- where it actually was, on `install-credential`,
+    before that container was removed -- and this fails naming v2. Before the
+    scoping it passed.
     """
     import re as _re
 

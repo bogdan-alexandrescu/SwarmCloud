@@ -115,9 +115,10 @@ state simply goes stale, while every health check stays green.
 ### The fourth instance, found by the sweep
 
 `kubernetes/worker-templates/worker-job-v2.yaml` carried `SWARM_ARTIFACTS_DIR`
-on its **init container** — `install-credential`, which writes one credential
-file and never touches an artifacts directory — while the `worker` container had
-none. The commit that fixed defect 3 put it there, and the assertion added with
+on its **init container** — `install-credential`, which wrote one credential
+file and never touched an artifacts directory — while the `worker` container had
+none. (That init container is gone since: its binary was never in any image, and
+the worker installs the credential itself, per `docs/BUILD_PROMPT_V2.md` §2.6.3.) The commit that fixed defect 3 put it there, and the assertion added with
 that fix read each template as one document, so it saw the name present and
 passed.
 

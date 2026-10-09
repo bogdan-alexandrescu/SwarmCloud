@@ -102,49 +102,22 @@ spec:
         fsGroup: 0
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        # Installs the credential for the account the broker assigned, so the
-        # agent is authenticated before its first request and never sees a login
-        # prompt -- a prompt in a non-interactive container is a hang, not a
-        # safety feature.
-        #
-        # An init container, not a step inside the worker: if the credential
-        # cannot be installed the pod must fail HERE, visibly, rather than start
-        # an agent that will fail its first API call for reasons that read as a
-        # model problem.
-        - name: install-credential
-          image: __IMAGE__
-          command: ["/usr/local/bin/swarm-install-credential"]
-          securityContext:
-            runAsUser: 0
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          env:
-            # SWARM_ARTIFACTS_DIR IS DELIBERATELY NOT HERE. It used to be, and
-            # that was the bug: this init container runs
-            # `swarm-install-credential`, which writes one file under
-            # /work/.claude and never touches an artifacts directory, while the
-            # `worker` container below -- the one that actually runs the agent
-            # and creates the directory -- had no such variable at all. The
-            # variable is set on the worker container, beside WORKSPACE_ROOT,
-            # where the process that reads it lives.
-            - name: TENANT_ID
-              value: __TENANT_ID__
-            - name: ACCOUNT_LABEL
-              value: __ACCOUNT_LABEL__
-            - name: PROJECT_ID
-              value: __PROJECT_ID__
-            - name: CLAUDE_CONFIG_DIR
-              value: /work/.claude
-          # Reads the credential from Secret Manager as the TENANT's own GSA
-          # through Workload Identity, exactly as v1's worker does. No
-          # secretKeyRef: that would name a Kubernetes Secret, which nothing in
-          # this repository creates, and would put the credential in the pod
-          # spec where anyone with read access to the namespace can see it.
-          volumeMounts:
-            - name: work
-              mountPath: /work
+      # NO INIT CONTAINER, deliberately (docs/BUILD_PROMPT_V2.md §2.6.3,
+      # amended 2026-10-01). There used to be one, `install-credential`, and it
+      # ran /usr/local/bin/swarm-install-credential -- which no Dockerfile under
+      # images/ installs, so every pod rendered with `--runtime gvisor` failed
+      # at init before the worker ever started. The design it stood for was
+      # never built: the worker process itself asks the broker for an account
+      # at start, reads the credential under the tenant's own GSA through
+      # Workload Identity, and hands it only to the agent child's environment
+      # (agent_worker/lifecycle.py::Worker._lease_account and
+      # ::_account_credential_env). That is the same on Cloud Run and on GKE,
+      # which is why it lives in the worker rather than in a pod spec only one
+      # backend has. No account to lease is the worker's to decide, too: it
+      # falls back to the tenant secret or parks the attempt, rather than a pod
+      # dying at init over the pool.
+      # test_every_command_a_worker_template_runs_is_a_binary_some_image_installs
+      # holds any container added back to a binary an image actually ships.
       containers:
         - name: worker
           image: __IMAGE__
@@ -225,9 +198,10 @@ spec:
             # volume -- which carries `sizeLimit: __DISK__` -- rather than on
             # the container's writable layer.
             #
-            # It belongs on THIS container, not on `install-credential`, where
-            # it once sat by mistake (see the note there): a variable that
-            # decides where a process writes is set on the process that writes.
+            # It belongs on THIS container. It once sat by mistake on the
+            # since-removed `install-credential` init container, which never
+            # wrote an artifact: a variable that decides where a process writes
+            # is set on the process that writes.
             - name: SWARM_ARTIFACTS_DIR
               value: /workspace/artifacts
             # Points Claude Code at a directory this pod owns. Verified against
@@ -245,11 +219,10 @@ spec:
               value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
             - name: TASK_TIMEOUT_SECONDS
               value: "__TIMEOUT_SECONDS__"
-            # The metadata server BY ADDRESS; see worker-job.yaml. On the
-            # worker container only: `install-credential` above runs a binary
-            # this repository does not contain, so whether it uses google-auth
-            # at all is unknown, and a variable set there on a guess is a
-            # second copy nobody can check.
+            # The metadata server BY ADDRESS; see worker-job.yaml. This is the
+            # pod's only container, and the worker is the process that talks to
+            # the metadata server -- including to read the account credential,
+            # which no init container installs any more.
             - name: GCE_METADATA_HOST
               value: "169.254.169.254"
             - name: GCE_METADATA_IP
