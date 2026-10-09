@@ -200,8 +200,10 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const params = new URLSearchParams(query)
     const run = params.get('run')
     const tab = params.get('tab')
-    const pane = tab !== null && RUN_PANES.includes(tab) ? `/${tab}` : ''
-    if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}${pane}`
+    if (run !== null && run !== '' && tab !== null && RUN_PANES.includes(tab)) return `/runs/${encodeURIComponent(run)}/${tab}`
+    // The run's page: the worker's issue comment links here (swarm_api
+    // `run_console_url`, held to this line by test_issue_writeback.py).
+    if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
