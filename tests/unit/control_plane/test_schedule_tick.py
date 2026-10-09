@@ -80,12 +80,14 @@ CAROL = "carol@saga.xyz"
 # ---------------------------------------------------------------------------
 
 
-def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppContext:
+def _context(
+    db, tokens, group_map, objects, *, verified: Any = True, tick_users: tuple[str, ...] = (TICK,)
+) -> AppContext:
     tokens = dict(tokens)
     tokens["token-tick"] = {"email": TICK, "email_verified": verified, "sub": "sub-tick"}
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
     context = build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,)),
+        settings=api_settings(rollup_sweeper_users=(SWEEPER,), schedule_tick_users=tick_users),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -100,7 +102,9 @@ def _context(db, tokens, group_map, objects, *, verified: Any = True) -> AppCont
 
 @pytest.fixture
 def tick_env(monkeypatch):
-    monkeypatch.setenv("SCHEDULE_TICK_USERS", TICK)
+    # The tick's address itself is `ApiSettings.schedule_tick_users` (see
+    # `_context`): with that field present, `schedule_tick_users` reads it and
+    # not the environment, so an env var set here would configure nothing.
     monkeypatch.delenv("SCHEDULES_ENABLED", raising=False)
     for code in ("BUDGET_EXHAUSTED", "RUN_OVER_BUDGET", "CONSECUTIVE_FAILURES"):
         monkeypatch.delenv(f"REFUSAL_{code}", raising=False)
@@ -260,9 +264,10 @@ def test_the_rollup_sweeper_is_refused(client) -> None:
 
 
 def test_unset_the_tick_admits_nobody_and_says_so(db, tokens, group_map, objects, monkeypatch) -> None:
-    monkeypatch.delenv("SCHEDULE_TICK_USERS", raising=False)
     seed_tenant(db, "eng")
-    client = TestClient(create_app(_context(db, tokens, group_map, objects)), raise_server_exceptions=False)
+    client = TestClient(
+        create_app(_context(db, tokens, group_map, objects, tick_users=())), raise_server_exceptions=False
+    )
     admin = client.post("/v1/admin/schedules/tick", headers=auth_header("root"))
     assert admin.status_code == 403
     assert "SCHEDULE_TICK_USERS is not configured" in admin.text
@@ -300,14 +305,14 @@ def test_the_tick_is_neither_an_admin_nor_a_member(ctx) -> None:
 
 @pytest.mark.parametrize("other", ["rollup_sweeper_users", "admin_users", "allowed_users"])
 def test_an_address_on_two_lists_is_refused_at_start(other) -> None:
-    settings = api_settings(**{other: (TICK,)})
+    settings = api_settings(schedule_tick_users=(TICK,), **{other: (TICK,)})
     with pytest.raises(ValueError, match="SCHEDULE_TICK_USERS"):
-        schedule_tick_users(settings, {"SCHEDULE_TICK_USERS": TICK})
+        schedule_tick_users(settings)
 
 
 def test_a_persons_address_is_refused_as_the_tick() -> None:
     with pytest.raises(ValueError, match="service-account"):
-        schedule_tick_users(api_settings(), {"SCHEDULE_TICK_USERS": ALICE})
+        schedule_tick_users(api_settings(schedule_tick_users=(ALICE,)))
 
 
 def test_unset_is_nobody() -> None:
