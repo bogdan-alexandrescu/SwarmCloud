@@ -1396,7 +1396,7 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
     return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
 
 
-def compile_plan(run: "IssueRun") -> WorkflowCreate:
+def compile_plan(run: "IssueRun", review_context: str | None = None) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
@@ -1404,14 +1404,16 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
     compiles to this same shape with one implementer step: the mode is the
     planner's statement, and the shape is fixed here. Each step's prompt
     carries its planned files and tests; the review's carries the plan's
-    requirements, in both shapes.
+    requirements, in both shapes, and `review_context` when there is one:
+    `reviewcontext.read_review_context`'s IMPACT block (lane KG6), already
+    delimited and bounded. None is today's review prompt.
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan))
+        return _workflow(run, _compile_staged(run, plan, review_context))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -1458,6 +1460,7 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
             "prompt": (
                 f"Review the change on this branch for GitHub issue {ref.short} against the "
                 f"approved plan: {plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_impact(review_context)
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
@@ -1500,7 +1503,13 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
     )
 
 
-def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _review_impact(review_context: str | None) -> str:
+    """The review's IMPACT block (lane KG6) and a blank line, or nothing."""
+    return f"{review_context.rstrip()}\n\n" if review_context else ""
+
+
+def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
+                    review_context: str | None = None) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -1588,6 +1597,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
             "prompt": (
                 f"Review the change for GitHub issue {ref.short} against the approved plan: "
                 f"{plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_impact(review_context)
                 + f"The plan's steps ran in {len(plan_stages(plan))} stages, "
                 "some side by side on separate branches, and the pull request will carry ALL "
                 "of their work together. This branch holds the last step's line of work; "
