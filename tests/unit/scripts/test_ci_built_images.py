@@ -390,6 +390,7 @@ def _fakes(tmp_path: Path, world: dict) -> tuple[Path, dict]:
         "CI_BUILD_WAIT": "30",
         "CI_BUILD_APPEAR": "1",
         "CI_BUILD_API_TRIES": "3",
+        "CI_PREVIOUS_POLL": "0.05",
         "ALLOW_DIRTY_BUILD": "1",
         "BUILD_PARALLELISM": "8",
         "BUILD_POLL_INTERVAL": "0.05",
@@ -799,6 +800,65 @@ def test_previous_with_an_unreadable_api_exits_1_not_3(tmp_path):
     assert proc.returncode == 1, proc.stderr[-3000:]
     assert not out.exists()
     assert "could not read" in _last_line(proc), _last_line(proc)
+
+
+def test_previous_gives_up_after_its_own_two_tries_not_the_release_wait_budget(tmp_path):
+    """#888 box 93: --previous's fallback is a full build, not a wrong answer,
+    so a failing read is retried twice, briefly, and never with the 5 x 30 s
+    budget a release's lookup has. CI_BUILD_POLL=600 would outlast the
+    subprocess timeout if --previous still slept it."""
+    proc, out, events, _ = previous(
+        tmp_path, lambda c, s: {"runs": [ci_run(361, sha=c[1])]}, FAKE_GH_FAIL="always",
+        CI_BUILD_API_TRIES="5", CI_BUILD_POLL="600")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    assert len([e for e in events if e["event"] == "api-failed"]) == 2, "not CI_PREVIOUS_TRIES' default of 2"
+    assert "after 2 tries" in _last_line(proc), _last_line(proc)
+
+
+def test_previous_retry_is_its_own_knob(tmp_path):
+    proc, _, events, _ = previous(
+        tmp_path, lambda c, s: {"runs": [ci_run(371, sha=c[1])]}, FAKE_GH_FAIL="always",
+        CI_PREVIOUS_TRIES="3")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert len([e for e in events if e["event"] == "api-failed"]) == 3
+
+
+def test_previous_recovers_from_one_failed_read(tmp_path):
+    def world(commits, stranger):
+        return {"runs": [ci_run(381, sha=commits[1])]}
+
+    proc, out, _, commits = previous(tmp_path, world, FAKE_GH_FAIL="1")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text())["commit"] == commits[1]
+
+
+def _header(script: Path) -> str:
+    """Every line after the shebang up to the first that is not a comment."""
+    lines = script.read_text().splitlines()[1:]
+    end = next(i for i, line in enumerate(lines) if not line.startswith("#"))
+    return "\n".join(lines[:end]) + "\n"
+
+
+@pytest.mark.parametrize("script", ["scripts/lib/ci-built-images.sh", "scripts/build-images.sh"])
+def test_help_prints_the_whole_header_however_long_it_grows(tmp_path, script):
+    """#888 box 92: --help printed a hand-kept `sed -n '2,Np'` range, which
+    drifts as the header grows. It now prints up to the first non-comment
+    line, so a line added to the header is printed without anyone editing N."""
+    root = tmp_path / "repo"
+    shutil.copytree(REPO / "scripts", root / "scripts")
+    target = root / script
+    lines = target.read_text().splitlines(keepends=True)
+    end = next(i for i, line in enumerate(lines) if i > 0 and not line.startswith("#"))
+    lines[end:end] = [f"# a line added to the header, number {i}\n" for i in range(30)]
+    target.write_text("".join(lines))
+    _, env = _fakes(tmp_path, {"runs": []})
+    for path in (REPO / script, target):
+        proc = subprocess.run(["bash", str(path), "--help"], env=env, capture_output=True, text=True,
+                              timeout=60, check=False)
+        assert proc.returncode == 0, proc.stderr[-3000:]
+        assert proc.stdout == _header(path), f"{path}: --help is not the header, whole"
+    assert "number 29" in proc.stdout
 
 
 def test_previous_takes_no_if_absent(tmp_path):
