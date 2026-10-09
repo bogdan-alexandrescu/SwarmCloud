@@ -36,6 +36,7 @@ import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
+import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -660,10 +661,10 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
+const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -680,6 +681,13 @@ export interface Route {
    * file of a patch is open is never in the address.
    */
   artifact?: string | null
+  /**
+   * The file open in the Changes tab, when the address names one:
+   * `/agents/<tab>/<id>/changes/<path>`, the path ONE encoded segment
+   * (diff-viewer.md §1 pain 3: the URL never named the file). OPTIONAL like
+   * `artifact`; absent opens the patch's first file.
+   */
+  file?: string | null
   /**
    * The agent list's tab and Recent state, when the address names them
    * (OV-10): `#work/running/recent/failed`. OPTIONAL, so every route built
@@ -809,6 +817,12 @@ export function fromAddress(full: string): Route {
       artifact = decodeSegment(rest[rest.length - 1]!)
       rest = rest.slice(0, -1)
     }
+    // ONE FILE OF THE CHANGES TAB: `<id>/changes/<path>`, the same way.
+    let file: string | null = null
+    if (artifact === null && rest.length >= 3 && rest[rest.length - 2] === 'changes') {
+      file = decodeSegment(rest[rest.length - 1]!)
+      rest = rest.slice(0, -1)
+    }
     const last = rest[rest.length - 1]
     const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
     // Task ids are opaque and may contain characters that were encoded on the
@@ -822,6 +836,7 @@ export function fromAddress(full: string): Route {
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
+        ...(file !== null && file !== '' ? { file } : {}),
       }
     }
   }
@@ -918,6 +933,7 @@ export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
     if (r.taskPane === 'artifacts' && r.artifact) return `${base}/artifacts/${encodeURIComponent(r.artifact)}`
+    if (r.taskPane === 'changes' && r.file) return `${base}/changes/${encodeURIComponent(r.file)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
@@ -966,8 +982,9 @@ function readsKey(r: Route): string {
   // inside the same scope, with the last drawing dimmed, rather than
   // beginning an empty one (#185).
   // Opening an output in the Artifacts pane is not a new screen either: the
-  // pane's reads carry on under the viewer.
-  return canonical({ ...r, list: null, view: null, artifact: null })
+  // pane's reads carry on under the viewer. So is opening a file of the
+  // Changes tab.
+  return canonical({ ...r, list: null, view: null, artifact: null, file: null })
 }
 
 /** One address segment, decoded; a malformed escape is kept as written rather than thrown. */
@@ -1227,6 +1244,7 @@ export function App() {
                 taskId={at.taskId}
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
+                file={at.file ?? null}
                 closeTo={listAddress}
                 go={go}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
@@ -1845,11 +1863,12 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
         // A REAL ZERO, and the one screen in the product where that is true by
         // construction: this page issues no reads of its own. `.is-partial`
         // and `.is-failed` would both be claims; the default variant is the
-        // one that means "we looked and there is nothing".
+        // one that means "we looked and there is nothing". Drawn by `Mark`, not
+        // by hand, so the two words carry their sentence as an accessible name.
         <div className="ctl-empty">
           <h3>
-            <i className="ctl-mark is-zero">real zero</i> Nothing has been read
-            yet in this tab
+            <Mark kind="zero" say="Nothing has been read yet in this tab: this page issues no reads of its own." />{' '}
+            Nothing has been read yet in this tab
           </h3>
           <p>Nothing failed. Open any section and each read registers here.</p>
         </div>

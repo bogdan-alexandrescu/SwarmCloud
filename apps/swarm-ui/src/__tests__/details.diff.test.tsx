@@ -1,11 +1,12 @@
-// #310 THROUGH AGENT › DETAILS: the Code card's `Show the diff` opens the task's
+// #310 THROUGH AGENT › CHANGES: the agent's Changes tab (diff-viewer.md §2
+// variant 2, which replaced the Code card's `Show the diff`) opens the task's
 // `swarm-work.patch` in the in-house viewer, and the issue's "how would you
 // know it worked" holds THERE, not only on a bare <DiffView>.
 //
 // The viewer's own behaviour is pinned in `__tests__/diff/*`; `code.card` only
-// checks that a region appears. This file drives the whole path a reviewer
-// takes -- the card, the artifact read by the patch's manifest name, the
-// viewer inside the drawer -- and asserts on what is drawn:
+// checks the card's link. This file drives the whole path a reviewer takes --
+// the tab, the artifact read by the patch's manifest name, the viewer at the
+// pane's full height -- and asserts on what is drawn:
 //
 //   * every file listed with its own +/- counts, unified and split;
 //   * find counts a string across files and moves the open file;
@@ -19,14 +20,13 @@
 // rewrote the served text or parsed it as HTML.
 //
 // MUTATION, run once by hand: search only the first file in `findMatches`
-// (find.ts), or drop `backLabel="Code"` from `AgPatchDiff` -- the counts and
-// find cases go red.
+// (find.ts), or read `git.patch` from the wrong field in `sourceOf`
+// (WorkflowChanges.tsx) -- the counts and find cases go red.
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AgentRun } from '../api'
-import type { ArtifactContent, AttemptRow, GitSummary, Task } from '../types'
+import type { ArtifactContent, GitSummary, Task } from '../types'
 import { attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
@@ -42,7 +42,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { Run } = await import('../AgentDetail')
+const { AgentChanges } = await import('../WorkflowChanges')
 
 const MASK = '***REDACTED***'
 
@@ -122,28 +122,14 @@ function served(): ArtifactContent {
   }
 }
 
-function run(t: Task, attempts: AttemptRow[] = [attempt(1)]): AgentRun {
-  return {
-    task: t,
-    events: [],
-    eventsDetail: null,
-    attempts,
-    attemptsDetail: null,
-    classes: null,
-    classesDetail: null,
-    classesRouteMissing: false,
-  }
-}
-
 function finished(): Task {
   const git: GitSummary = { base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'swarm-work.patch' }
   return runTask({ state: 'SUCCEEDED', repository_url: 'https://github.com/example/swarm', result_summary: { git, artifacts: [REF] } })
 }
 
-/** Render the agent, press `Show the diff`, and wait for the viewer's lines. */
+/** Render the agent's Changes tab and wait for the viewer's lines. */
 async function openDiff(): Promise<void> {
-  render(<Run run={run(finished())} />)
-  fireEvent.click(screen.getByRole('button', { name: 'Show the diff' }))
+  render(<AgentChanges task={finished()} attempts={[attempt(1)]} file={null} onFile={() => {}} />)
   await waitFor(() => expect(screen.getByRole('region', { name: 'Diff lines' })).toBeTruthy())
 }
 
@@ -183,7 +169,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('Agent › Details opens swarm-work.patch in the in-app diff viewer', () => {
+describe('Agent › Changes opens swarm-work.patch in the in-app diff viewer', () => {
   it('reads the patch by its manifest name and lists every file with its own counts', async () => {
     await openDiff()
     expect(api.loadArtifactContent).toHaveBeenCalledWith(expect.any(String), 'swarm-work.patch')
@@ -193,9 +179,11 @@ describe('Agent › Details opens swarm-work.patch in the in-app diff viewer', (
     expect(counts('src/app/gone.ts')).toMatch(/\+0\s*−2/)
     expect(counts('docs/notes.md')).toMatch(/\+2\s*−0/)
     expect(listRow('assets/logo.png')).toBeTruthy()
-    // The bar names the patch and goes back to the Code card, not to a list
-    // of artifacts that is not on screen.
-    expect(screen.getByRole('button', { name: /Code/ })).toBeTruthy()
+    // A TAB HAS NO WAY BACK TO DRAW: the bar offers no `‹ Artifacts` or
+    // `‹ Code`, which would name a list that is not on screen. It does say
+    // the masked count the server's redaction left.
+    expect(screen.queryByRole('button', { name: /Code|Artifacts/ })).toBeNull()
+    expect(document.querySelector('.chg-sum .art-masked')?.textContent).toBe('1')
   })
 
   it('switches between unified and split', async () => {

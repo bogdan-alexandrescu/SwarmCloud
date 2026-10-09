@@ -252,9 +252,13 @@ _NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
-#: things up by, served as stored (`TaskMasking.leaves`): an artifact's `name`
-#: and `uri`, a staged input's `filename` and `path` (the workflow graph matches
-#: them against what was declared), and ids. Every other string is masked.
+#: things up by: an artifact's `name` and `uri`, a staged input's `filename`
+#: and `path` (the workflow graph matches them against what was declared), and
+#: ids. `TaskMasking.leaves` masks these by `TaskMasking.name`, not by the
+#: masker's text rules (#296): a clean name stays byte for byte and findable,
+#: and a credential-shaped one masks exactly as its declared copy under
+#: `NAME_METADATA_KEYS` does, so the two still pair. Every other string is
+#: masked as text.
 LOOKUP_KEYS = frozenset(
     {"name", "uri", "key", "filename", "path", "attempt_id", "task_id", "checkpoint_id"}
 )
@@ -452,11 +456,18 @@ class TaskMasking:
     def leaves(self, value: Any) -> tuple[Any, int]:
         """A platform-written value with every string in it masked; keys and shape as stored.
 
-        Except a string directly under one of `LOOKUP_KEYS`: those are the
-        names and locations a client matches EXACTLY (an artifact's `name`
-        against a staged file, a `uri`), which the artifact listing serves as
-        stored anyway. The rules would take `eye-tracking-summary.md` for a
-        JWT, and a masked name is an artifact nobody can find.
+        A string directly under one of `LOOKUP_KEYS` is masked by `name`
+        instead: those are the names and locations a client matches EXACTLY
+        (a staged input's `filename` against `metadata.input_from`, an
+        artifact's `name` against `metadata.expected_outputs`, a `uri`). The
+        text rules would take `eye-tracking-summary.md` for a JWT, and a
+        masked clean name is an artifact nobody can find; `name` leaves it
+        byte for byte. But serving these as stored (as before #296) served a
+        credential-shaped filename, or one carrying a literal the task named,
+        in clear beside its masked declared copy -- and the API never serves
+        a credential-shaped string back (owner decision 2026-09-26). `name`
+        is deterministic and is what masks the declared copy, so mask-then-
+        match still pairs them. Each mask is counted.
         """
         total = 0
 
@@ -464,7 +475,9 @@ class TaskMasking:
             nonlocal total
             if isinstance(node, str):
                 if key in LOOKUP_KEYS:
-                    return node
+                    named, found = self.name(node)
+                    total += found
+                    return named
                 masked = self.masker.text(node, remember=False)
                 total += masked.count
                 return masked.text

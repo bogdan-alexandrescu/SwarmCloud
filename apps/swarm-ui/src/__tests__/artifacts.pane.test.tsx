@@ -372,16 +372,16 @@ async function openTranscriptOfNoCliRunner(): Promise<void> {
 // The tabs and the address
 // ---------------------------------------------------------------------------
 
-describe('the drawer has five panes: Details, Logs, Attempts, Artifacts, Checkpoints', () => {
-  it('names them so, and #work/task/<id>/artifacts opens the fourth of five', async () => {
+describe('the drawer has six panes: Details, Logs, Changes, Attempts, Artifacts, Checkpoints', () => {
+  it('names them so, and #work/task/<id>/artifacts opens the fifth of six', async () => {
     await openPane(finishedRoutes())
     const tabs = await waitFor(() => {
       const list = drawer().querySelector('[role="tablist"][aria-label="Agent panes"]')
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     })
-    expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
-    expect(tabs[3]!.getAttribute('aria-selected')).toBe('true')
+    expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Logs', 'Changes', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(tabs[4]!.getAttribute('aria-selected')).toBe('true')
     for (const title of ['Inputs', 'Outputs', 'Log']) await sectionReady(title, /./)
   })
 

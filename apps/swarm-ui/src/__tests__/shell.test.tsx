@@ -143,8 +143,9 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
     const panes = [...drawer!.querySelectorAll('[role="tab"] .c-tab-label')].map((b) => b.textContent?.trim())
     // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
-    // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
-    expect(panes).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
+    // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth, and
+    // the diff viewer (diff-viewer.md §2 variant 2, 2026-10-08) `Changes` after Logs.
+    expect(panes).toEqual(['Details', 'Logs', 'Changes', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
       drawer!.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent?.trim(),
     ).toBe('Attempts')

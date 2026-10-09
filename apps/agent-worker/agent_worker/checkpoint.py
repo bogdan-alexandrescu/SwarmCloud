@@ -62,6 +62,25 @@ from .errors import CheckpointError
 from .objectstore import ObjectStore
 from .workspace import Workspace, walk_tree
 
+
+class RestoreResourceError(CheckpointError):
+    """A restore that failed for want of LOCAL room, not for anything in the archive.
+
+    ENOSPC on the memory-backed workspace, EIO, out of file handles or memory
+    (`_LOCAL_RESOURCE_ERRNOS`). Every other `CheckpointError` out of `restore`
+    is a refusal of the checkpoint, and the worker starts clean on it (#346);
+    this one says nothing against the checkpoint, so the attempt fails as it
+    always did and a retry resumes the same one. Starting clean on it would
+    let the attempt's first checkpoint move `latest_checkpoint` off the
+    earlier attempt's work for good.
+    """
+
+
+#: What makes an extraction failure the worker's, not the archive's.
+_LOCAL_RESOURCE_ERRNOS = frozenset(
+    {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
+)
+
 #: How many folders deep a checkpoint archives. The archive walk holds one
 #: open descriptor per level (it opens each child relative to its parent so
 #: that no link is followed, #227), so an unbounded depth is an unbounded
@@ -229,6 +248,13 @@ RESTORE_CHAIN_MAX = 200
 #: reason. File times come from the kernel's coarse clock, a tick or so
 #: behind `time.time_ns()`; a second is far past that on tmpfs.
 RACY_WINDOW_NS = 1_000_000_000
+
+#: A file's bytes are read before its tar member is written (`_add_entry`), so
+#: one that shrinks under the read is archived as read rather than failing the
+#: checkpoint. Up to this much is held in memory; a larger file spills to a
+#: temporary file. 8 MiB keeps the common source file off the disk without
+#: letting one checkpoint hold a large file in memory.
+CHECKPOINT_SPOOL_BYTES = 8 * 1024 * 1024
 
 #: A checkpoint id as `create` writes it; a base named in a header is used to
 #: build a key only when it is one.
@@ -1353,7 +1379,30 @@ class CheckpointManager:
                         f"the checkpoint's files passed {expanded_cap} bytes before "
                         f"compression; refusing it"
                     )
-            tar.addfile(info, handle if info.isreg() else None)
+            if not info.isreg():
+                tar.addfile(info)
+                return 1
+            # A FILE THAT SHRINKS UNDER THE READ IS ARCHIVED AS READ. The header
+            # carries the size, so `tar.addfile` straight from `handle` raised
+            # "unexpected end of data" when the runner truncated the file after
+            # the fstat -- an agent rewriting its state with `write_text` -- and
+            # the whole checkpoint failed. The control-plane-outage checkpoint
+            # (#70) is taken with the runner alive and is never retried, so that
+            # lost the attempt's work. The bytes are read first, at most the
+            # size the fstat saw, and the member is the size actually read. Its
+            # signature is the stat's, recent, so the next checkpoint takes it
+            # again (`RACY_WINDOW_NS`).
+            with tempfile.SpooledTemporaryFile(max_size=CHECKPOINT_SPOOL_BYTES) as spool:
+                remaining = info.size
+                while remaining > 0:
+                    chunk = handle.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        break
+                    spool.write(chunk)
+                    remaining -= len(chunk)
+                info.size -= remaining
+                spool.seek(0)
+                tar.addfile(info, spool)
         return 1
 
     # -- ownership ---------------------------------------------------------
@@ -1460,6 +1509,13 @@ class CheckpointManager:
 
         The refusal is the point: restoring over an existing tree produces a
         workspace that matches no checkpoint, which is worse than failing.
+
+        Every refusal raises `CheckpointError` with `work/` left empty, and
+        the caller (`Worker._restore_checkpoint`) starts the attempt from that
+        empty workspace rather than failing it (#346): an archive whose bytes
+        no longer match the recorded digest is a checkpoint not to trust, not
+        a reason to burn a retry. The one exception is `RestoreResourceError`,
+        an extraction that ran out of local room: it fails the attempt.
         """
         if not self._owns(record):
             raise CheckpointError(
@@ -1645,7 +1701,12 @@ class CheckpointManager:
                     f"refuses: {type(exc).__name__}"
                 ) from exc
             except OSError as exc:
-                raise CheckpointError(
+                error = (
+                    RestoreResourceError
+                    if exc.errno in _LOCAL_RESOURCE_ERRNOS
+                    else CheckpointError
+                )
+                raise error(
                     f"checkpoint {checkpoint_id} could not be extracted: {type(exc).__name__}"
                 ) from exc
         _unmake_escaped_links(work, members, on_skip)

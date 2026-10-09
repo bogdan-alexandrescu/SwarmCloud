@@ -102,6 +102,29 @@ runs:
       shell: bash
       run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what promoted
 
+    - name: record each runner image's size in the job summary
+      # #625: the worker image's size is measured for EVERY release, not only
+      # when an operator runs scripts/image-sizes.sh. One markdown row per
+      # runner image (agent-runtime-*) the promotion just wrote into
+      # build/deployed-images-<env>.json: its compressed size (the linux/amd64
+      # layer sum a node pulls) and its delta from the newest earlier release
+      # of that image, so a growth is on the release's own page.
+      #
+      # IT CANNOT FAIL OR HOLD THE RELEASE. continue-on-error, so an
+      # unreadable registry or an unmeasured row shows as a failed step and
+      # nothing more; and `timeout`, because a composite step has no
+      # timeout-minutes and on dev the release lock is still held here.
+      #
+      # NO NEW IAM. It only lists and GETs Artifact Registry, which the
+      # deployer already does in the step above: push-images.sh makes the same
+      # `gcloud artifacts docker images list` call, and the deployer holds
+      # roles/artifactregistry.admin (terraform/bootstrap/variables.tf). The
+      # access token reaches curl on stdin, and nothing prints it.
+      if: steps.promote.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      run: timeout 300 ./scripts/image-sizes.sh --manifest "build/deployed-images-${ENVIRONMENT}.json" >> "$GITHUB_STEP_SUMMARY"
+
     - uses: actions/upload-artifact@v6
       if: steps.promote.outcome == 'success'
       with:
