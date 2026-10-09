@@ -4891,6 +4891,15 @@ class Worker:
             "findings": list(read.findings),
             "findings_dropped": read.findings_dropped,
         }
+        # Variant 3 of the diff viewer: where each finding is, and the digest
+        # of the patch the review read, so a pin is shown only against that
+        # patch. Added only when a finding said where it is: a verdict with no
+        # location keeps exactly the record it always had.
+        if read.locations:
+            self._verdict["finding_locations"] = [loc.as_dict() for loc in read.locations]
+            self._verdict["reviewed_patches"] = self._reviewed_patches(gate.task_id)
+        if read.locations_dropped:
+            self._verdict["locations_dropped"] = read.locations_dropped
         self._verdict_minors = read.minors
         self._verdict_minors_dropped = read.minors_dropped
         self.log.info(
@@ -4902,6 +4911,31 @@ class Worker:
             findings=len(read.findings) + read.findings_dropped,
         )
         return runs
+
+    def _reviewed_patches(self, review_task_id: str) -> list[dict[str, str]]:
+        """The patches the review read, with digests (`verdict.reviewed_patches`).
+
+        One more tenant-checked read of the review's task document. A failure
+        records no digest rather than failing the step: the findings and the
+        gate are already read, and a finding with no digest to compare is
+        shown as not placed, never pinned on a guess.
+        """
+        try:
+            review = inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=review_task_id,
+                tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+        except Exception as exc:  # a digest is never worth the step
+            self.log.warning(
+                "verdict gate: the review's task could not be read, so its findings' "
+                "locations carry no patch digest",
+                verdict_task_id=review_task_id,
+                error=type(exc).__name__,
+            )
+            return []
+        return verdict_mod.reviewed_patches(review)
 
     def _file_review_minors(self) -> dict[str, Any]:
         """File the verdict's minor findings on the tenant's wave epic (#638).
@@ -9295,6 +9329,11 @@ class Worker:
                 "patch_omitted": work.patch_omitted,
             }
         )
+        if work.files is not None:
+            # Absent rather than [] when there was no base to diff against:
+            # [] would claim a measured empty diff.
+            out["files"] = [f.as_record(self._scrub) for f in work.files]
+            out["files_truncated"] = work.files_truncated
         if work.patch_omitted:
             out["patch_note"] = (
                 f"the diff was {work.patch_bytes} bytes, over the "

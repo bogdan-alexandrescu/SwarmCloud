@@ -35,6 +35,11 @@ output "rollup_sweeper_email" {
   value       = local.rollup_sweeper_email
 }
 
+output "schedule_tick_email" {
+  description = "The identity the schedule tick presents (docs/schedules.md SD10). The root sets swarm-api's SCHEDULE_TICK_USERS to it, which is what lets it call POST /v1/admin/schedules/tick and nothing else, and grants it run.invoker on swarm-api and nothing else."
+  value       = local.schedule_tick_email
+}
+
 output "safety_tick_schedule" {
   description = "Exposed so a test can assert the safety tick really is every minute."
   value       = google_cloud_scheduler_job.safety_tick.schedule

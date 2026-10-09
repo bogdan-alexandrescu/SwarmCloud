@@ -13,9 +13,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  COLLAPSE_AT, DEPTH_MAX, callColumns, clampDepth, degree, edgeLook, forceLayout, fullSuiteWords, graphView, heatOf,
+  COLLAPSE_AT, DEPTH_MAX, callColumns, clampDepth, degree, edgeLook, fullSuiteWords, graphView, heatOf,
   leafOf, normCallGraph, normImpact, normModuleGraph, packageOf, stalenessPill, type ModuleGraph,
 } from '../RepoGraphData'
+import { forceLayout } from '../RepoGraphLayout'
 
 function graph(modules: string[], edges: [string, string, number][] = []): ModuleGraph {
   return normModuleGraph({
