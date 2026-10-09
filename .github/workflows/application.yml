@@ -362,7 +362,9 @@ jobs:
     #
     # hotfix.yml likewise runs only on main, and it and release.yml run the
     # stages in .github/actions/release-*, whose inputs actionlint checks at
-    # each `uses:` (owner decision 2026-10-08, observer proposal H).
+    # each `uses:` (owner decision 2026-10-08, observer proposal H). So does
+    # accept.yml, which runs only when a release completes on main (cuts A
+    # and C of the release timing report, the same day).
     #
     # iam-refusal-probe.yml is linted here for the same reason as release.yml,
     # more so: it runs only when the owner dispatches it, once, so a broken
@@ -377,7 +379,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, hotfix.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
+      - name: actionlint release.yml, hotfix.yml, accept.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -386,7 +388,7 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/hotfix.yml \
-            .github/workflows/application.yml \
+            .github/workflows/accept.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
             .github/workflows/auto-merge.yml
 
@@ -487,6 +489,10 @@ jobs:
             # pull request.
             .github/workflows/hotfix.yml
             .github/actions/**
+            # Post-deploy acceptance runs only after a release completes on main,
+            # so a pull request is the only place it is linted (actionlint below)
+            # and held to its shape (tests/unit/scripts/test_release_acceptance_job.py).
+            .github/workflows/accept.yml
             # tests/unit/scripts/test_issue_forms.py validates the issue forms and
             # the label declaration. Without these a PR editing only a form would run
             # nothing -- and a form GitHub rejects fails nowhere a reviewer looks.
