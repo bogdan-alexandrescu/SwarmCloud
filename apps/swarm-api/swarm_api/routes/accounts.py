@@ -506,7 +506,9 @@ def account_holders(
 
 #: What the broker's history cursor looks like -- `<instant>|<skip>`, the skip
 #: at most three digits (the broker's page is at most 500). The broker enforces
-#: the value; this refuses a forged one before a broker call is made.
+#: the value; this refuses a forged one before a broker call is made. A
+#: borrower's skip is bounded tighter, by the rows at its instant
+#: (`_require_own_cursor`, #361 box 77).
 _CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
 _CURSOR_RE = re.compile(_CURSOR_SHAPE)
 #: A BORROWER's cursor -- `<instant>|own<k>`, `k` its own spans at that instant
