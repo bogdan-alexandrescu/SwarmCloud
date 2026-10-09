@@ -4,7 +4,13 @@
     GET    /v1/access                               connection, enabled owners, grants
     GET    /v1/access/orgs                          reachable owners, install_state, sso
     POST   /v1/access/orgs                          {owner}: enable an installed owner
-    DELETE /v1/access/orgs/{owner}                  disable it, and delete its grants
+    DELETE /v1/access/orgs/{owner}                  disable it, and delete its grants (or
+                                                    withdraw an install request)
+    POST   /v1/access/orgs/{owner}/install-request  record that the person asked {owner}'s
+                                                    owners to install the App: the owner
+                                                    shows ORG_APPROVAL_PENDING until GitHub
+                                                    lists the installation, re-checked on
+                                                    every read and by the 15-minute sweep
     GET    /v1/access/orgs/{owner}/repositories     ?page=N&q=text: one page, each with
                                                     registered, granted, mode
     PUT    /v1/access/grants/{repo_id}              {repository, mode}: grant read or write
@@ -111,6 +117,17 @@ def disable_owner(
     service: AccessService = Depends(get_access),
 ) -> dict:
     return {**service.disable(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
+
+
+@router.post("/orgs/{owner}/install-request")
+def request_install(
+    owner: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    service: AccessService = Depends(get_access),
+) -> dict:
+    # No body: the owner is the path's, the person the verified identity's.
+    return {**service.request_install(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
 
 
 @router.get("/orgs/{owner}/repositories")

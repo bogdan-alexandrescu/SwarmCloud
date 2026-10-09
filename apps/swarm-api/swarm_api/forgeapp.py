@@ -66,6 +66,15 @@ contract or IAM change. The owner's `forge_orgs` document says `method: pat`;
 removing the owner or disconnecting disables every version of the slot and
 revokes its record (`revoke_owner_token`).
 
+THE SWEEP ALSO RE-CHECKS INSTALL REQUESTS (§2.3 ORG_APPROVAL_PENDING). After
+its refreshes, and inside the same time budget, the sweep calls the hook the
+access service hangs on it (`on_sweep`; `access.AccessService.
+recheck_requested`): for every person holding a `requested` owner, one `GET
+/user/installations` with their own token, and an owner GitHub now lists
+becomes installed and enabled. The sweep runs every 15 minutes
+(terraform/modules/scheduler `forge_refresh_schedule`), which is the
+interval §2.3's copy promises; the counts are in the report, never a value.
+
 NOT CONFIGURED IS AN ANSWER. The App is registered by hand
 (docs/runbooks/github-app.md); until its client id is in swarm-api's
 environment and its client secret has a version, every route answers 503
@@ -754,13 +763,31 @@ class RefreshReport:
     #: False while the App is not configured and no connection is active.
     configured: bool = True
     message: str | None = None
+    #: ORG_APPROVAL_PENDING's re-check (`ForgeApp.on_sweep`): the people
+    #: holding a requested owner whose installations were read, the owners
+    #: found installed and enabled, and the reads that did not come back or
+    #: were refused.
+    installs_rechecked: int = 0
+    installs_found: int = 0
+    installs_unreachable: int = 0
+    installs_refused: int = 0
 
     def to_api(self) -> dict[str, Any]:
         return {"configured": self.configured, "message": self.message,
                 "considered": self.considered, "due": self.due, "refreshed": self.refreshed,
                 "failed": self.failed, "unreachable": self.unreachable,
                 "leased_elsewhere": self.leased_elsewhere, "errors": list(self.errors),
-                "out_of_time": self.out_of_time}
+                "out_of_time": self.out_of_time,
+                "installs_rechecked": self.installs_rechecked,
+                "installs_found": self.installs_found,
+                "installs_unreachable": self.installs_unreachable,
+                "installs_refused": self.installs_refused}
+
+
+#: What the sweep calls after its refreshes, with the report to count into
+#: and whether the sweep's time is spent: the access service's re-check of
+#: install requests (`AccessService.recheck_requested`).
+SweepHook = Callable[[RefreshReport, Callable[[], bool]], None]
 
 
 class TokenRefresher(Protocol):
@@ -811,6 +838,15 @@ class ForgeApp:
         self._now = now
         self._clock = clock
         self._budget = budget_seconds
+        self._after_sweep: SweepHook | None = None
+
+    def on_sweep(self, hook: SweepHook) -> None:
+        """Run `hook` at the end of every sweep, inside its time budget. The
+        access service hangs its re-check of install requests here
+        (ORG_APPROVAL_PENDING: §2.3's copy promises one every 15 minutes, the
+        sweep's schedule). One hook: the latest service built over this
+        connection store is the one that answers."""
+        self._after_sweep = hook
 
     # -- configuration ------------------------------------------------------
 
@@ -1046,10 +1082,20 @@ class ForgeApp:
                 self._refresh_one(doc, client_id, client_secret, report)
             if len(due) > MAX_REFRESHES_PER_SWEEP:
                 report.out_of_time = True
+        if self._after_sweep is not None and not report.out_of_time:
+            try:
+                self._after_sweep(report, lambda: self._clock() - started > self._budget)
+            except Exception as exc:
+                # The refreshes above are done and stored; a re-check that
+                # broke is said, never allowed to fail them.
+                report.errors.append(f"install re-check: {type(exc).__name__}")
+                log.warning("forge refresh sweep install re-check failed (%s)",
+                            type(exc).__name__)
         log.info("forge refresh sweep considered=%d due=%d refreshed=%d failed=%d "
-                 "unreachable=%d leased_elsewhere=%d errors=%d", report.considered, report.due,
-                 report.refreshed, report.failed, report.unreachable, report.leased_elsewhere,
-                 len(report.errors))
+                 "unreachable=%d leased_elsewhere=%d errors=%d installs_rechecked=%d "
+                 "installs_found=%d", report.considered, report.due, report.refreshed,
+                 report.failed, report.unreachable, report.leased_elsewhere, len(report.errors),
+                 report.installs_rechecked, report.installs_found)
         return report
 
     def _take_lease(self, conn_id: str, holder: str) -> dict[str, Any] | None:
