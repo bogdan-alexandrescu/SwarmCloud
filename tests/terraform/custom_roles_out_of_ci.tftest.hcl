@@ -179,6 +179,75 @@ run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
   }
 }
 
+# #69's acceptance is "swarmSecretLister (or whatever role then carries
+# project-wide secrets.setIamPolicy)". The run above holds the NAME; this one
+# holds the PERMISSION, so moving setIamPolicy onto another role CI may grant --
+# or putting a predefined role that carries it on the list -- fails too.
+# resourcemanager.projects.setIamPolicy is refused alongside it: a project-wide
+# setIamPolicy reaches every secret's policy by inheritance, and grants anything
+# else besides.
+run "no_role_ci_may_grant_carries_secret_set_iam_policy" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  # Every platform custom role on the grantable list, by key, matched on the
+  # full name the list holds (projects/<project>/roles/<id>).
+  assert {
+    condition = !anytrue(flatten([
+      for key, role in local.platform_roles : [
+        for p in role.permissions : contains([
+          "secretmanager.secrets.setIamPolicy",
+          "resourcemanager.projects.setIamPolicy",
+        ], p)
+      ] if contains(local.deployer_grantable_project_roles, "projects/${var.project_id}/roles/${google_project_iam_custom_role.platform[key].role_id}")
+    ]))
+    error_message = "a custom role on deployer_grantable_project_roles carries secretmanager.secrets.setIamPolicy or resourcemanager.projects.setIamPolicy: the scoped projectIamAdmin would let CI grant it to itself, unconditioned, and reach the other team's 63 secrets in saga-agents-staging (#69)"
+  }
+
+  # Predefined roles that carry secretmanager.secrets.setIamPolicy or
+  # resourcemanager.projects.setIamPolicy. A list READ FROM Google's predefined
+  # roles reference (cloud.google.com/iam/docs/understanding-roles), not
+  # measured live: the mock provider cannot expand a predefined role, so a role
+  # Google later widens is not caught here.
+  assert {
+    condition = length(setintersection(toset(local.deployer_grantable_project_roles), toset([
+      "roles/owner",
+      "roles/secretmanager.admin",
+      "roles/iam.securityAdmin",
+      "roles/resourcemanager.projectIamAdmin",
+    ]))) == 0
+    error_message = "a predefined role that carries secretmanager.secrets.setIamPolicy or project setIamPolicy is on deployer_grantable_project_roles: CI could grant it to itself and reach the other team's 63 secrets in saga-agents-staging (#69)"
+  }
+
+  # The control: the custom-role assert above examined the five roles infra
+  # grants at the project level, so an empty match cannot pass it.
+  assert {
+    condition = length([
+      for key, role in local.platform_roles : key
+      if contains(local.deployer_grantable_project_roles, "projects/${var.project_id}/roles/${google_project_iam_custom_role.platform[key].role_id}")
+    ]) == 5
+    error_message = "the permission check examined other than the five platform custom roles on deployer_grantable_project_roles (job/gke dispatcher and reaper, worker_firestore): either it matched nothing and proved nothing, or a sixth platform role -- swarmSecretLister among them -- became grantable by CI (#69, the other team's 63 secrets)"
+  }
+
+  # And every custom role on the list is one the first assert could read: a
+  # custom role defined outside platform_roles (forge_user_slots.tf,
+  # workspace_deployer.tf) put on the list would otherwise go unexamined.
+  assert {
+    condition = length([
+      for r in local.deployer_grantable_project_roles : r if startswith(r, "projects/")
+    ]) == 5
+    error_message = "deployer_grantable_project_roles holds a custom role outside local.platform_roles, whose permissions this run cannot see; check it carries no secrets.setIamPolicy (#69, the other team's 63 secrets) and extend this run to read it"
+  }
+}
+
 # Putting it back by hand is refused at plan, not discovered in a review.
 #
 # LAST IN THE FILE ON PURPOSE: an unmet expect_failures is an error, not an
