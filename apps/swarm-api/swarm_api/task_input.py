@@ -31,7 +31,9 @@ found the claim "nothing serves the raw input" false as first written):
   * `input.json` inside a checkpoint: no longer archived (`agent_worker.
     checkpoint`, which the worker rewrites at every attempt's prepare anyway),
     and one in an archive written before that is served by the file view
-    through this masker (`checkpoint_content`);
+    through this masker (`checkpoint_content`). That does NOT take the
+    prompt out of the archive: the CLI's transcript carries it -- see ONE
+    PATH STILL SERVES IT AS STORED below;
   * the runner's `child started` line, which logged the prompt inside argv:
     it logs the prompt's length now (`runners/cliagent.py`), and `/logs`
     masks this task's literals in every window (`redaction.redact_lines`).

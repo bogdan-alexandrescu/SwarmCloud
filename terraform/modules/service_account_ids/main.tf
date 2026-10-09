@@ -54,6 +54,13 @@ locals {
   # swarm-api grants this one address one route (auth.ROLLUP_SWEEPER_ROUTES),
   # and the tick reaches the scheduler and the reconciler.
   rollup_sweeper_id = "swarm-rollup-sweeper"
+  # The identity the one schedule tick presents to swarm-api
+  # (docs/schedules.md §2.1, owner decision SD10, 2026-10-08). Its own account
+  # rather than the rollup sweeper's: the tick reads due schedules across every
+  # tenant, a different reach from the sweeper's per-tenant routes, so swarm-api
+  # admits this address to POST /v1/admin/schedules/tick alone
+  # (auth.SCHEDULE_TICK_ROUTES) and the sweeper's route set is not widened.
+  schedule_tick_id = "swarm-schedule-tick"
 
   # scripts/register-tenant.sh and kubernetes/render.py spell this too; they
   # are not Terraform and cannot read it.
@@ -63,7 +70,7 @@ locals {
 
   infra_managed = sort(concat(
     keys(local.platform),
-    [local.tick_id, local.verify_id, local.rollup_sweeper_id],
+    [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id],
     values(local.worker_ids),
   ))
 }

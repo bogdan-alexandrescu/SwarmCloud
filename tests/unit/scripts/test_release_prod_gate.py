@@ -95,7 +95,7 @@ import re
 
 import pytest
 
-from .test_release_reuses_ci_images import _code, _evaluate, _needs, _render, _upstream, _workflow
+from .test_release_reuses_ci_images import REPO as REPO_ROOT, _code, _evaluate, _needs, _render, _upstream, _workflow
 
 PROD_RELEASES = {
     "prod": {
@@ -567,11 +567,12 @@ def _expected(ctx: dict) -> list[str]:
 DEV_IAM_ENVIRONMENT = "dev-iam"
 
 
-# Jobs that exist for dev only and dispatch into it: the acceptance suite
-# (owner decision, 2026-09-29), which spends subscription quota and opens real
-# pull requests, so a prod release is not expected to reach it.
-# test_release_acceptance_job.py holds it to never starting on prod.
-DEV_ONLY_JOBS = ("acceptance",)
+# Jobs that exist for dev only and dispatch into it, so a prod release is not
+# expected to reach them. There are none now: the acceptance suite (owner
+# decision, 2026-09-29) was the one, and it moved out of release.yml into
+# .github/workflows/accept.yml on 2026-10-08 (cut A of the release timing
+# report); test_release_acceptance_job.py holds release.yml to not having it.
+DEV_ONLY_JOBS: tuple[str, ...] = ()
 
 
 def _reachable_holders(jobs: dict, ctx: dict, what: str) -> list[str]:
@@ -727,3 +728,69 @@ def test_a_dev_release_never_names_the_prod_environment(release):
     jobs = _workflow("release.yml")["jobs"]
     named = {j: _environment(job, ctx) for j, job in jobs.items() if job.get("environment") is not None}
     assert set(named.values()) <= {"dev", DEV_IAM_ENVIRONMENT}, f"a {release} release names {named}"
+
+
+# ---------------------------------------------------------------------------
+# `verify` runs on a dispatch and is skipped on a push (owner decision
+# 2026-10-08, cut B of the release timing report). On a push, application.yml
+# proved the same SHA, and `build` takes only CI's record of it.
+# ---------------------------------------------------------------------------
+
+DISPATCHES = {**PROD_RELEASES, **{k: v for k, v in DEV_RELEASES.items() if k != "push"}}
+
+
+def test_verify_is_skipped_on_a_push_and_its_reason_is_written_beside_it():
+    jobs = _workflow("release.yml")["jobs"]
+    ctx = {**DEV_RELEASES["push"], "github.run_attempt": "1"}
+    assert not _runs(jobs, "verify", {}, ctx), "verify still runs on a push: 26.4 min p50 of the lock, proving what CI proved"
+    text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
+    header = text[text.index("ON A PUSH THIS JOB IS SKIPPED") : text.index("  verify:\n")]
+    for reason in ("needs: [python, shell, manifests]", "--reuse-ci only"):
+        assert reason in header, f"the reasoning beside verify's condition no longer says {reason!r}"
+
+
+@pytest.mark.parametrize("release", sorted(DISPATCHES))
+def test_verify_runs_on_every_dispatch_prod_included(release):
+    jobs = _workflow("release.yml")["jobs"]
+    assert _runs(jobs, "verify", {}, {**DISPATCHES[release], "github.run_attempt": "1"})
+
+
+@pytest.mark.parametrize("what", sorted(PROD_FACING))
+@pytest.mark.parametrize("release", sorted(DISPATCHES))
+def test_on_a_dispatch_nothing_prod_facing_runs_unless_verify_succeeded(release, what):
+    """The push exemption must not become a dispatch exemption: a dispatched
+    release -- every prod release -- has no CI record proving its commit. On
+    a `skip_build` dispatch `build` is skipped by design, so `approval` and
+    `terraform apply` must each read `verify` themselves. MUTATION: drop the
+    verify clause from `approval`'s and `infrastructure`'s conditions."""
+    ctx = DISPATCHES[release]
+    jobs = _workflow("release.yml")["jobs"]
+    holders = _holders(jobs, what)
+    assert holders
+    tried = 0
+    for results in _schedules(jobs, ctx):
+        if results["verify"] == "success":
+            continue
+        tried += 1
+        started = sorted(j for j in holders if results[j] != "skipped")
+        assert not started, f"a {release} release whose verify ended {results['verify']} still starts {started}: {results}"
+    assert tried, "no schedule had verify end other than success, so this checked nothing"
+
+
+def test_on_a_push_everything_still_runs_without_verify():
+    """The other half: a push whose `verify` is skipped still promotes,
+    applies, deploys and tags. MUTATION: drop the push-skip clause from
+    `approval`'s condition."""
+    jobs = _workflow("release.yml")["jobs"]
+    clean = [r for r, _ in _attempts(jobs, DEV_RELEASES["push"], endings=("success",))]
+    assert clean and all(r["verify"] == "skipped" for r in clean)
+    for job_id in ("build", "approval", "promote", "infrastructure", "deploy", "plugin-tag"):
+        assert any(r[job_id] == "success" for r in clean), f"{job_id} never runs on a push: {clean[0]}"
+
+
+@pytest.mark.parametrize("release", sorted(PROD_RELEASES))
+def test_the_prod_gate_is_still_one_approval_after_verify(release):
+    jobs = _workflow("release.yml")["jobs"]
+    gate = _prod_gate(jobs, PROD_RELEASES[release])
+    assert gate == "approval"
+    assert "verify" in _upstream(jobs, gate)

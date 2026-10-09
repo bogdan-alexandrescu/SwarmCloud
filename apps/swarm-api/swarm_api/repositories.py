@@ -36,6 +36,16 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     before. A source yields a `HeldCredential` naming its scope and secret;
     the value lives inside the `with` and nowhere else. No source given is
     the tenant token, so every other caller is unchanged.
+  * THE HARD STOPS' TWO FIELDS (docs/schedules.md §4.4, lane S11).
+    `platform` marks a repository as the platform's own; its holds then need
+    the owner. Only a platform admin may set or clear it -- clearing it would
+    loosen the owner's holds -- and each change is an `admin_audit` entry
+    written in the same transaction as the change, so the record and its
+    audit cannot disagree. `hard_stop_paths` is the tenant's protected paths:
+    a member may add patterns but never remove the four defaults, which are
+    its floor, and what the hard stops read (`hard_stop_paths_of`) re-applies
+    the floor rather than trusting a stored list to hold it. Nothing reads
+    either field before lane S5.
   * OPT-IN CONTEXT, NOT A GATE. Nothing here changes what a task may run
     against; `allowed_profiles` narrows by NAME (invariant 10) and is not yet
     a submission check (repo-index.md §1, "How it relates to today").
@@ -69,7 +79,8 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 from swarm_common.profiles import RUNNER_PROFILES
 
-from .errors import Conflict, NotFound, ValidationFailed
+from .admins import AUDIT_COLLECTION
+from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .forge import (
     GIT_PROVIDER,
     PAGE_SIZE,
@@ -125,6 +136,31 @@ FULL_EVERY_DAYS_RANGE = (1, 30)
 # here, because nothing reads them until the graph exists.
 GRAPH_DEPTH_DEFAULT = 3
 GRAPH_MIN_CONFIDENCE_DEFAULT = 0.2
+
+#: The protected paths every registration carries (docs/schedules.md §4.4),
+#: and the floor of `hard_stop_paths`: a member may add patterns but cannot
+#: remove these. Workflow files are refused at plan anyway (the forge
+#: credential cannot push them); bootstrap and IAM files change who may do
+#: what; CODEOWNERS changes who must review. Each is a change no automated
+#: run should land unheld, so no tenant can opt out of holding it.
+HARD_STOP_PATHS_DEFAULT: tuple[str, ...] = (
+    ".github/workflows/**",
+    "terraform/bootstrap/**",
+    "**/iam*.tf",
+    "CODEOWNERS",
+)
+#: Bounds on what a tenant may declare: enough for any real list, small
+#: enough that matching every changed file against it at plan and at merge
+#: (lane S5) stays cheap, and a pattern is a path, not a document.
+HARD_STOP_PATHS_MAX = 64
+HARD_STOP_PATH_MAX_CHARS = 256
+#: A pattern relative to the repository root: no control character (a newline
+#: would split one pattern into two in any log or comment that names it).
+_HARD_STOP_PATH = re.compile(r"^[^\x00-\x1f\x7f]+$")
+
+#: `admin_audit` actions for a change of `platform`.
+AUDIT_PLATFORM_SET = "repository_platform_set"
+AUDIT_PLATFORM_CLEARED = "repository_platform_cleared"
 
 #: A branch name, conservatively: git's own ref rules (`git check-ref-format`)
 #: narrowed to the characters a GitHub branch name is seen with. The value is
@@ -242,6 +278,65 @@ def check_profiles(value: list[str]) -> list[str]:
     return value
 
 
+def check_hard_stop_paths(value: list[str]) -> list[str]:
+    """`value` as stored: each pattern checked, repeats dropped, the four
+    defaults required. A missing default is named, so the 422 says which."""
+    for pattern in value:
+        shown = pattern[:64]
+        if not 1 <= len(pattern) <= HARD_STOP_PATH_MAX_CHARS:
+            raise ValueError(
+                f"hard_stop_paths entry {shown!r} must be 1-{HARD_STOP_PATH_MAX_CHARS} characters")
+        if pattern != pattern.strip() or not _HARD_STOP_PATH.match(pattern):
+            raise ValueError(
+                f"hard_stop_paths entry {shown!r} has surrounding space or a control character")
+        if pattern.startswith("/"):
+            raise ValueError(
+                f"hard_stop_paths entry {shown!r} must be relative to the repository root")
+    paths = list(dict.fromkeys(value))
+    missing = [default for default in HARD_STOP_PATHS_DEFAULT if default not in paths]
+    if missing:
+        raise ValueError(
+            "hard_stop_paths cannot remove the defaults, which are its floor; missing: "
+            + ", ".join(missing))
+    return paths
+
+
+def hard_stop_paths_of(data: Mapping[str, Any]) -> list[str]:
+    """The protected paths a registration's hard stops read: the stored list,
+    then any default it lacks. A registration stored before lane S11 has none
+    and reads as the four defaults; a stored list is never trusted to hold
+    the floor on its own."""
+    stored = data.get("hard_stop_paths")
+    paths = [p for p in stored if isinstance(p, str)] if isinstance(stored, list) else []
+    return list(dict.fromkeys([*paths, *HARD_STOP_PATHS_DEFAULT]))
+
+
+def platform_of(data: Mapping[str, Any]) -> bool:
+    """Whether a registration is the platform's own. Only a stored `True` is:
+    a missing or malformed value is the default, false."""
+    return data.get("platform") is True
+
+
+def _platform_audit(
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: bool, by: str, at: datetime,
+) -> None:
+    """One `admin_audit` entry for a change of `platform`, inside `txn`, so the
+    change and its audit commit together or not at all. Created, never
+    updated (admins.py: the audit is append-only)."""
+    ref = db.collection(AUDIT_COLLECTION).document()
+    txn.set(ref, {
+        "action": AUDIT_PLATFORM_SET if to else AUDIT_PLATFORM_CLEARED,
+        "target_repo_id": data.get("repo_id"),
+        "by": by,
+        "at": at,
+        "detail": {
+            "tenant_id": data.get("tenant_id"),
+            "repository": f"{data.get('owner')}/{data.get('repo')}",
+            "platform": {"from": platform_of(data), "to": to},
+        },
+    })
+
+
 # --------------------------------------------------------------------------
 # the request bodies: no field a token, an image or a command could go in
 # --------------------------------------------------------------------------
@@ -285,6 +380,9 @@ class RepositoryCreate(_Body):
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
     allowed_profiles: list[str] | None = Field(default=None, max_length=len(RUNNER_PROFILES))
     index: IndexSettings | None = None
+    #: A platform admin's only (the route refuses a member's with a 403).
+    platform: StrictBool | None = None
+    hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
 
     @field_validator("repository")
     @classmethod
@@ -302,16 +400,25 @@ class RepositoryCreate(_Body):
     def _profiles(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else check_profiles(value)
 
+    @field_validator("hard_stop_paths")
+    @classmethod
+    def _hard_stops(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else check_hard_stop_paths(value)
+
 
 class RepositoryPatch(_Body):
     """What repo-index.md §6.1 lets a PATCH change: schedule, trigger,
-    `allowed_profiles`, `default_branch`, `paused`. Never the repository, the
-    tenant or anything an index run writes."""
+    `allowed_profiles`, `default_branch`, `paused`; and the hard stops'
+    `platform` (a platform admin's only) and `hard_stop_paths`
+    (docs/schedules.md §4.4). Never the repository, the tenant or anything an
+    index run writes."""
 
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
     allowed_profiles: list[str] | None = Field(default=None, max_length=len(RUNNER_PROFILES))
     paused: StrictBool | None = None
     index: IndexSettings | None = None
+    platform: StrictBool | None = None
+    hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
 
     @field_validator("default_branch")
     @classmethod
@@ -323,9 +430,15 @@ class RepositoryPatch(_Body):
     def _profiles(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else check_profiles(value)
 
+    @field_validator("hard_stop_paths")
+    @classmethod
+    def _hard_stops(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else check_hard_stop_paths(value)
+
     @model_validator(mode="after")
     def _changes_something(self) -> "RepositoryPatch":
-        top = (self.default_branch, self.allowed_profiles, self.paused)
+        top = (self.default_branch, self.allowed_profiles, self.paused, self.platform,
+               self.hard_stop_paths)
         if all(value is None for value in top) and (
             self.index is None or not self.index.changes()
         ):
@@ -390,6 +503,10 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
         "index": index,
         "graph": dict(data.get("graph") or {}),
         "selection_policy": dict(data.get("selection_policy") or {}),
+        "platform": platform_of(data),
+        "hard_stop_paths": hard_stop_paths_of(data),
+        # Served so the console marks the floor without restating it.
+        "hard_stop_paths_floor": list(HARD_STOP_PATHS_DEFAULT),
         "created_by": data.get("created_by"),
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at")),
@@ -457,9 +574,17 @@ class Repositories:
             raise self.not_found((repo_id or "")[:64])
         return data
 
-    def create(self, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    def create(
+        self, record: dict[str, Any], *, platform_by: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         """Store `record` unless its id exists. (stored, created) -- in one
-        transaction, so two registrations racing store one document."""
+        transaction, so two registrations racing store one document.
+
+        A record marked `platform` is stored only with the admin who marked
+        it (`platform_by`, the route has checked the role), and its
+        `admin_audit` entry is written in the same transaction."""
+        if platform_of(record) and not platform_by:
+            raise ValueError("a platform registration needs the admin who marked it, for the audit")
         ref = self._ref(record["repo_id"])
         transaction = self._db.transaction()
 
@@ -474,6 +599,9 @@ class Repositories:
                     raise Conflict("repository id collision; registration refused")
                 return existing, False
             txn.set(ref, record)
+            if platform_of(record) and platform_by:
+                _platform_audit(txn, self._db, {**record, "platform": False}, to=True,
+                                by=platform_by, at=self._now())
             return record, True
 
         return _apply(transaction)
@@ -514,8 +642,16 @@ class Repositories:
                 found.add(snap.id)
         return found
 
-    def patch(self, tenant_id: str, repo_id: str, body: RepositoryPatch) -> dict[str, Any]:
-        """The settings a PATCH may change, in one transaction, tenant re-checked."""
+    def patch(
+        self, tenant_id: str, repo_id: str, body: RepositoryPatch, *,
+        platform_by: str | None = None,
+    ) -> dict[str, Any]:
+        """The settings a PATCH may change, in one transaction, tenant re-checked.
+
+        `platform` changes only with `platform_by`, the admin the route
+        checked, and its `admin_audit` entry is written in this transaction."""
+        if body.platform is not None and not platform_by:
+            raise Forbidden("only a platform admin may set or clear platform")
         if not _REPO_ID.match(repo_id or ""):
             raise self.not_found((repo_id or "")[:64])
         ref = self._ref(repo_id)
@@ -538,6 +674,12 @@ class Repositories:
                 changes["default_branch_source"] = "override"
             if body.allowed_profiles is not None:
                 changes["allowed_profiles"] = list(body.allowed_profiles)
+            if body.hard_stop_paths is not None:
+                changes["hard_stop_paths"] = list(body.hard_stop_paths)
+            if body.platform is not None and body.platform != platform_of(data):
+                changes["platform"] = body.platform
+                _platform_audit(txn, self._db, data, to=body.platform,
+                                by=str(platform_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
@@ -667,6 +809,7 @@ def register(
     forge: GitHubIssues,
     now: Callable[[], datetime],
     credential: CredentialSource | None = None,
+    platform_by: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Register `body.repository` for `tenant`. (record, created).
 
@@ -685,7 +828,7 @@ def register(
         evidence=lambda: store.token_evidence(tenant.tenant_id))
     record = registration_record(body, tenant, read, repo_id=repo_id, created_by=created_by,
                                  at=now(), token_scope=scope, secret_name=secret_name)
-    return store.create(record)
+    return store.create(record, platform_by=platform_by)
 
 
 def registration_record(
@@ -739,6 +882,11 @@ def registration_record(
         # P3 with X2, is not enabled here: §2.5 and RI14 put request B and the
         # carved `graph/` prefix before any merge gate reads the graph.
         "selection_policy": {"policy": None, "mode": None, "inherited_from_tenant": True},
+        # docs/schedules.md §4.4. `platform` is true only when an admin's
+        # request said so (the route checked the role, `create` audits it).
+        "platform": body.platform is True,
+        "hard_stop_paths": list(
+            HARD_STOP_PATHS_DEFAULT if body.hard_stop_paths is None else body.hard_stop_paths),
         "created_by": created_by,
         "created_at": at,
         "updated_at": at,
