@@ -55,6 +55,9 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
 
   # Every account terraform/infra manages today, by name. A control that the
   # modules and dev.tfvars were read at all; the exact set is the fixture run's.
+  # swarm-agent-worker-u-bogdan left this list with lane W9 (#847,
+  # 2026-10-09): u-bogdan is a workspace now, and its grant is forgotten by
+  # terraform/bootstrap/removed.tf (u_bogdan_removed.tftest.hcl).
   assert {
     condition = alltrue([
       for id in [
@@ -67,7 +70,6 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
         "swarm-rollup-sweeper",
         "swarm-agent-worker-eng",
         "swarm-agent-worker-smoke",
-        "swarm-agent-worker-u-bogdan",
       ] : contains(keys(google_service_account_iam_member.deployer_admin), id)
     ])
     error_message = "an account terraform/infra manages has no per-account serviceAccountAdmin grant, so the release cannot set its IAM policy"
