@@ -30,6 +30,12 @@
 #     already out, and this lane is SUPERSEDED: it changes nothing and ends
 #     GREEN, because the newer commit contains everything this one had.
 #
+# WHAT IS DEPLOYED, READ BACK. applied.json is also the answer to "which
+# commit does dev run": .github/workflows/accept.yml asks `deployed` for it,
+# so acceptance judges exactly that SHA and says so, rather than the commit
+# whose release happened to finish last (owner decision 2026-10-08, cut A of
+# the release timing report). It takes no lock: it reads one object.
+#
 # It is not used for prod. A prod release is dispatched by a person at a
 # commit they chose, behind `approval (prod)`, and may be a deliberate
 # rollback; ordering it here would refuse exactly that. `unless-superseded`
@@ -51,6 +57,9 @@
 #   release-order.sh unless-superseded --environment ENV [--sha SHA] -- COMMAND...
 #       runs COMMAND; if it fails and the release has since been superseded,
 #       says so, writes superseded=true to $GITHUB_OUTPUT and exits 0
+#   release-order.sh deployed --environment dev
+#       prints `sha=<sha>`, `run_id=<id>` and `workflow=<name>` from
+#       applied.json (append them to $GITHUB_OUTPUT); no record is an error
 #
 # --sha defaults to $GITHUB_SHA. The bucket is $TF_STATE_BUCKET (load_env's
 # default when unset). Exit 0 = done (for check, the verdict is on stdout);
@@ -291,6 +300,28 @@ cmd_record() {
   ok "recorded ${ORDER_WHAT} ${ORDER_ENV} = ${ORDER_SHA}"
 }
 
+# The applied record, validated, as GITHUB_OUTPUT lines. An absent record is
+# an error, not an empty answer: acceptance of "nothing" would be green.
+cmd_deployed() {
+  local rc=0 seen="${WORK}/record" sha run_id workflow
+  gcs_read "${ORDER_PREFIX}/applied.json" "${seen}" || rc=$?
+  case "${rc}" in
+    0) ;;
+    1) die "${ORDER_PREFIX}/applied.json does not exist: no release has recorded what ${ORDER_ENV} runs, so there is nothing to judge" ;;
+    *) exit 1 ;;
+  esac
+  sha="$(jq -r '.sha // empty' "${seen}.body" 2>/dev/null || true)"
+  [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "${ORDER_PREFIX}/applied.json names no commit SHA; refusing to guess what ${ORDER_ENV} runs"
+  run_id="$(jq -r '.run_id // empty' "${seen}.body")"
+  [[ -z "${run_id}" || "${run_id}" =~ ^[0-9]+$ ]] || run_id=""
+  # One line, nothing a GITHUB_OUTPUT reader could take for a second key.
+  workflow="$(jq -r '.workflow // empty' "${seen}.body" | tr -cd 'A-Za-z0-9 ._-')"
+  workflow="${workflow:0:100}"
+  info "${ORDER_ENV} runs ${sha} (applied by ${workflow:-?} run ${run_id:-?})"
+  printf 'sha=%s\nrun_id=%s\nworkflow=%s\n' "${sha}" "${run_id}" "${workflow}"
+}
+
 cmd_unless_superseded() {
   [[ ${#WRAPPED[@]} -gt 0 ]] || die "release-order.sh unless-superseded: give the command after --"
   if [[ "${ORDER_ENV}" == "prod" ]]; then
@@ -317,5 +348,6 @@ case "${COMMAND}" in
   check)  cmd_check ;;
   record) cmd_record ;;
   unless-superseded) cmd_unless_superseded ;;
-  *) die "release-order.sh: unknown command '${COMMAND}' (lock, unlock, check, record, unless-superseded)" ;;
+  deployed) cmd_deployed ;;
+  *) die "release-order.sh: unknown command '${COMMAND}' (lock, unlock, check, record, unless-superseded, deployed)" ;;
 esac

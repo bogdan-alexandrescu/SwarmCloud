@@ -31,6 +31,7 @@ import type {
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
@@ -5376,6 +5377,77 @@ export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<G
 /** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
 export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
   return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspaces (#847, lane W8; docs/workspaces.md §6.3).
+//
+// The person's routes are swarm_api/routes/workspaces.py and are ALWAYS THE
+// CALLER'S OWN: no route takes a tenant, an email or a workspace id, so the
+// console cannot ask for anyone else's. The admin routes are
+// routes/people.py and address a person by WORKSPACE ID, never an email, so
+// a URL names nobody -- bar the admins routes, which the API defines by
+// email. None takes or answers a credential, an image, a command or a
+// resource spec (invariant 10). The fixture build answers each as not served.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/workspace`: the caller's own record, or `{state: "none"}`. */
+export async function loadWorkspace(): Promise<Result<WorkspaceView>> {
+  return readAs(route('/v1/workspace'), (raw) => raw as WorkspaceView)
+}
+
+/** `POST /v1/workspace`: request it. 202 made or re-opened, 200 already standing; the record either way. */
+export async function requestWorkspace(): Promise<Result<WorkspaceView>> {
+  return writeTo(route('/v1/workspace'), 'POST', { via: 'console' }) as Promise<Result<WorkspaceView>>
+}
+
+/** `POST /v1/workspace/loan-request`: ask an admin to lend a Claude account. Idempotent. */
+export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
+  return writeTo(route('/v1/workspace/loan-request'), 'POST', { via: 'console' }) as Promise<Result<LoanRequestAnswer>>
+}
+
+/** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
+export async function loadPeople(): Promise<Result<PeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/approve` (admin): approve, then publish the workspace id. */
+export async function approveWorkspace(workspaceId: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/approve', { workspace_id: workspaceId }), 'POST') as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/deny` (admin): the reason is shown to the person. */
+export async function denyWorkspace(workspaceId: string, reason: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/deny', { workspace_id: workspaceId }), 'POST', { reason }) as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/retry` (admin): from failed or needs_owner, publishes again. */
+export async function retryWorkspace(workspaceId: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/retry', { workspace_id: workspaceId }), 'POST') as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `PUT /v1/admin/workspaces/{workspace_id}/limits` (admin): the ceiling, `{max_active}` and nothing else. */
+export async function setWorkspaceCeiling(workspaceId: string, maxActive: number): Promise<Result<WorkspaceLimitsAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/limits', { workspace_id: workspaceId }), 'PUT', { max_active: maxActive }) as Promise<
+    Result<WorkspaceLimitsAnswer>
+  >
+}
+
+/** `PUT /v1/admin/people/{workspace_id}/loan` (admin): lend an account to the person (`lend: true`) or reclaim it. */
+export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
+  return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
+    Result<WorkspaceLoanAnswer>
+  >
+}
+
+/** `PUT /v1/admin/admins/{email}` (admin): grant admin. Idempotent (`changed: false`). */
+export async function grantAdmin(email: string): Promise<Result<AdminGrantAnswer>> {
+  return writeTo(route('/v1/admin/admins/{email}', { email }), 'PUT') as Promise<Result<AdminGrantAnswer>>
+}
+
+/** `DELETE /v1/admin/admins/{email}` (admin): refused for the owner and for the last admin, with the API's message. */
+export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnswer>> {
+  return writeTo(route('/v1/admin/admins/{email}', { email }), 'DELETE') as Promise<Result<AdminRemoveAnswer>>
 }
 
 // ---------------------------------------------------------------------------

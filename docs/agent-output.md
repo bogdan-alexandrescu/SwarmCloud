@@ -69,9 +69,14 @@ is not UTF-8 passes through exactly as stored and only a credential-shaped run
 changes. It used to be decoded with `errors="replace"`, so a Latin-1 CSV came
 down with every such byte turned into U+FFFD, and nothing said so. A JSON
 string cannot carry such a byte, so the paged routes (`/artifacts/content`,
-`/logs`) still show it as U+FFFD, but they now count it: `invalid_utf8_bytes`
-on every window read, with a sentence in `detail` when it is not 0, and null
-when nothing was read.
+`/logs`, and the checkpoint member read
+`/v1/tasks/{id}/checkpoints/{n}/files/{path}`) still show it as U+FFFD, but
+they now count it: `invalid_utf8_bytes` on every window read, with a sentence
+in `detail` when it is not 0, and null when nothing was read. The checkpoint
+member read decoded with `errors="replace"` and counted nothing until #207;
+it now cuts, looks back and decodes each window with the same `inspect`
+helpers as the other two, imported rather than copied, because a second copy
+of the window logic is how this route fell behind them in the first place.
 
 ## Private keys are masked as blocks, not lines
 
@@ -910,7 +915,7 @@ which found "nothing serves the raw input" false as first written):
 | `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
 | `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids are served as stored (`task_input.LOOKUP_KEYS`): a client matches them exactly, and the rules would take `eye-tracking-summary.md` for a JWT. |
 | `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
-| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker. The prompt is still in the archive, in the CLI's session transcript: see the #244 paragraph below |
 | the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
 
 **One path still serves it as stored, and the owner has ruled** (issue #244,
@@ -938,6 +943,20 @@ does, as a JSON value rather than its text, with the same count. A client that
 reads `input.prompt` gets the masked prompt. Where two keys of one object mask
 to the same text, the second is served as `<masked key> (2)`, because an
 object cannot hold a key twice.
+
+A literal the task named is masked when it comes back as a JSON **number**,
+on every route, by one rule: `JsonMasker.number`. A task that submits
+eight or more digits as a string under a credential's name, and whose agent
+echoes `{"n": <the same digits>}`, gets the number served as the JSON string `"********"` and counted,
+whether it is the number itself, inside a longer one, or `N.0`. Before #387
+the artifact routes masked it (PR #378) through their own copy of the rule,
+while `JsonMasker` returned every number untouched, so `/input`, `GET
+/v1/tasks/{id}` and `/logs` served the digits in clear: on a log line the
+structural walk masked anything else in, `redact_lines` skips its text pass
+(owner decision, 2026-09-30), and nothing else looked at a number. Two
+copies of one rule had already drifted once; `json_masking` now calls the
+same method, and `tests/unit/control_plane/test_learned_number_literal_387.py`
+holds the routes to one answer.
 
 The CLI and the MCP tools say `masked N`: `swarm status` ends each line with
 it, `swarm result` prints `masked 3  (input 2 · metadata 1)`, `swarm

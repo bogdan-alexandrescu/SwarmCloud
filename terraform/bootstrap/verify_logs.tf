@@ -165,7 +165,9 @@
 #      (deployer_grantable_project_roles). CLOSED IN CODE 2026-09-25 (#79):
 #      roleAdmin is off deployer_roles, and every custom role is defined in
 #      this root (platform_roles.tf), so CI can change no role's permissions.
-#      Open until the owner's bootstrap apply destroys the live binding.
+#      APPLIED 2026-09-28 23:21Z: the owner's bootstrap apply destroyed the
+#      live binding, and on 2026-09-29 the deployer held no roles/iam.roleAdmin
+#      (docs/runbooks/custom-roles-to-bootstrap.md, "What actually happened").
 #   3. roles/iam.serviceAccountAdmin (UNSCOPABLE) carries
 #      iam.serviceAccounts.setIamPolicy. CI can grant itself
 #      roles/iam.serviceAccountTokenCreator on any account that reads logs --

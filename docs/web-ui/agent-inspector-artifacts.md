@@ -177,12 +177,23 @@ not serve yet (an API older than #184) reads `not served by this API`, never
 of a JSON document does not parse, so it is shown as served and marked
 `partial, not pretty-printed`.
 
-Bytes that are not UTF-8 cannot travel in JSON. `/artifacts/content` and
-`/logs` show each one as U+FFFD and count them in `invalid_utf8_bytes`, with a
-sentence in `detail`. The file viewer draws the count as `not utf-8 N` with the
-`partial` mark, and draws nothing at zero. The log rows already draw the
-server's `detail`. The raw route serves those bytes exactly as stored, so a
-file's `download` is the one to use.
+Bytes that are not UTF-8 cannot travel in JSON. `/artifacts/content`, `/logs`
+and the checkpoint member read (`/v1/tasks/{id}/checkpoints/{n}/files/{path}`,
+since #207) show each one as U+FFFD and count them in `invalid_utf8_bytes`,
+with a sentence in `detail`. The file viewer draws the count as `not utf-8 N`
+with the `partial` mark, and draws nothing at zero. The log rows already draw
+the server's `detail`. On the Artifacts tab the raw route serves those bytes
+exactly as stored, so a file's `download` is the one to use.
+
+The Checkpoint browser draws the same count through the same viewer, but its
+mark names a different download: **the whole-checkpoint download**. There is no
+per-member raw route. The stored object is the checkpoint's one `tar.gz`, and
+a member is not an object in the bucket: the per-member read extracts a window
+from inside the archive. The only thing served byte for byte is the archive
+itself (`CheckpointContent.download`), and the server's `detail` says the same
+("the checkpoint download holds them exactly"). A mark that pointed at "the
+raw download" here would send the reader looking for a button that does not
+exist.
 
 ## The input, masked
 
