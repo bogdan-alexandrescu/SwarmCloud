@@ -16,6 +16,16 @@ The bridge finds run.js through `SWARM_SC_PLUGIN_ROOT`, which the plugin's
 manifest sets to `${CLAUDE_PLUGIN_ROOT}`: the bridge itself runs from a `uv
 tool` install of `apps/swarm-mcp` and has no plugin directory of its own.
 
+THE REPO-LOCAL BRIDGE (#888 box 101, observed 2026-10-08). This checkout's
+`.mcp.json` starts the bridge with `SWARM_MCP_CONFIG_FROM=repo` and no
+`SWARM_SC_PLUGIN_ROOT`, so every launch there failed with "not set". In repo
+mode the root therefore defaults to the checkout's own `plugin/`, and the
+copies go under the checkout (REPO_RUN_DIR) rather than the system temp
+directory: the Workflow tool refused a `/var/folders/...` script path until
+it was copied into the repository. That folder carries a `.gitignore` of `*`
+it writes itself, so the copies never show up as changes to commit. An
+explicit `SWARM_SC_PLUGIN_ROOT` still wins in either mode.
+
 `{attach: "all"}` is one run PER WORKFLOW (owner, 2026-10-04): a workflow
 script cannot start a separate run -- `workflow()` nests the child inside the
 caller's run, sharing its agent counter -- so the bridge writes one copy per
@@ -39,8 +49,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import workflows
-from .client import SwarmClient, SwarmError
+from . import config, workflows
+from .client import SwarmClient, SwarmError, _repo_root
 
 PLUGIN_ROOT_ENV = "SWARM_SC_PLUGIN_ROOT"
 RUN_SCRIPT = Path("workflows") / "run.js"
@@ -67,23 +77,45 @@ MAX_ATTACHED_TASKS = 10
 
 #: Where the copies go: the system's temporary directory, one file per run.
 RUN_DIR = "sc-swarmcloud-runs"
+#: Where they go on the repo-local bridge (SWARM_MCP_CONFIG_FROM=repo),
+#: relative to the checkout: the Workflow tool refuses a script path in the
+#: system temp directory there (#888 box 101).
+REPO_RUN_DIR = Path(".claude") / RUN_DIR
 #: A per-run copy older than this is removed when the next one is written, so
 #: the folder does not grow without bound. A week: Claude Code reads a copy at
 #: launch and again only to resume that run, which happens within a session.
 RUN_COPY_MAX_AGE_S = 7 * 24 * 3600
 
 
-def template() -> str:
+def _checkout() -> Path:
+    return Path(_repo_root())
+
+
+def plugin_root() -> Path:
+    """The sc plugin's directory: SWARM_SC_PLUGIN_ROOT, else this checkout's
+    `plugin/` on the repo-local bridge. Raises when neither applies."""
     root = os.environ.get(PLUGIN_ROOT_ENV, "").strip()
-    if not root:
-        raise SwarmError(
-            f"{PLUGIN_ROOT_ENV} is not set, so this bridge cannot find the plugin's run.js to "
-            "title a run with. The sc plugin's manifest sets it to ${CLAUDE_PLUGIN_ROOT}; a "
-            "bridge started some other way has none. Launch the /sc:swarmcloud workflow by "
-            "name instead -- its run is then titled `swarmcloud`. Nothing was written"
-        )
-    path = Path(root).expanduser() / RUN_SCRIPT
+    if root:
+        return Path(root).expanduser()
+    if config.repo_mode():
+        return _checkout() / "plugin"
+    raise SwarmError(
+        f"{PLUGIN_ROOT_ENV} is not set, so this bridge cannot find the plugin's run.js to "
+        "title a run with. The sc plugin's manifest sets it to ${CLAUDE_PLUGIN_ROOT}, and the "
+        "repo-local bridge (SWARM_MCP_CONFIG_FROM=repo) uses its checkout's plugin/; a "
+        "bridge started some other way has none. Launch the /sc:swarmcloud workflow by "
+        "name instead -- its run is then titled `swarmcloud`. Nothing was written"
+    )
+
+
+def template() -> str:
+    path = plugin_root() / RUN_SCRIPT
     if not path.is_file():
+        if not os.environ.get(PLUGIN_ROOT_ENV, "").strip():
+            raise SwarmError(
+                f"{path} is not a file: {PLUGIN_ROOT_ENV} is not set and this repo-local bridge "
+                f"found no sc plugin in its checkout ({path.parent.parent}). Nothing was written"
+            )
         raise SwarmError(f"{path} is not a file: {PLUGIN_ROOT_ENV} does not point at the sc plugin")
     return path.read_text(encoding="utf-8")
 
@@ -105,12 +137,26 @@ def write_script(title: str, description: str) -> Path:
         )
     lines[1] = "  name: " + json.dumps(title, ensure_ascii=False) + ","
     lines[2] = "  description: " + json.dumps(_clip(description, DESCRIPTION_CHARS), ensure_ascii=False) + ","
-    folder = Path(tempfile.gettempdir()) / RUN_DIR
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = _run_folder()
     _prune(folder)
     target = folder / f"swarmcloud-{secrets.token_hex(6)}.js"
     target.write_text("\n".join(lines), encoding="utf-8")
     return target
+
+
+def _run_folder() -> Path:
+    """The system temp dir's RUN_DIR, or the checkout's REPO_RUN_DIR on the
+    repo-local bridge, created on first use."""
+    if not config.repo_mode():
+        folder = Path(tempfile.gettempdir()) / RUN_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+    folder = _checkout() / REPO_RUN_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder / ".gitignore"
+    if not ignore.is_file():
+        ignore.write_text("*\n", encoding="utf-8")
+    return folder
 
 
 def _prune(folder: Path) -> None:

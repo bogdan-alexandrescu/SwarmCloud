@@ -765,7 +765,7 @@ class Scheduler:
             return False
 
         if task.depends_on:
-            parents = self._store.parent_ends(task.depends_on)
+            parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
             states = {tid: end.state for tid, end in parents.items()}
             failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
             if failed:
@@ -1243,7 +1243,7 @@ class Scheduler:
             return self._promote(
                 task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
             )
-        parents = self._store.parent_ends(task.depends_on)
+        parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
         states = {tid: end.state for tid, end in parents.items()}
         failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
         if failed:
