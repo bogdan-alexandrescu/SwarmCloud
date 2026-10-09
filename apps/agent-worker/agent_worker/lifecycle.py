@@ -173,6 +173,7 @@ from .checkpoint import (
     CheckpointBackoff,
     CheckpointManager,
     CheckpointRecord,
+    RestoreResourceError,
     _empty_directory,
     checkpoint_prefix,
 )
@@ -3981,6 +3982,10 @@ class Worker:
             return
         try:
             files = self.checkpoints.restore(record, ws)
+        except RestoreResourceError:
+            # Out of local room, not a refusal: the attempt fails and a retry
+            # resumes this same checkpoint (see `RestoreResourceError`).
+            raise
         except CheckpointError as exc:
             # A REFUSED RESTORE IS A CLEAN START, NOT A FAILED ATTEMPT (#346).
             # The restore's own checks -- the archive's bytes against the
@@ -3989,9 +3994,11 @@ class Worker:
             # not see: an archive rewritten under an unchanged manifest. That
             # used to fail the attempt and burn a retry, where every other
             # refusal starts from an empty workspace; the restore leaves
-            # `work/` empty on a refusal, and this makes sure of it. Not an
-            # OSError or an object-store error: those may be transient and
-            # still fail the attempt, which a retry can then resume.
+            # `work/` empty on a refusal, and this makes sure of it. Not a
+            # download's object-store error, nor an extraction that ran out of
+            # local room (`RestoreResourceError`, above): those say nothing
+            # against the checkpoint, so they still fail the attempt, and a
+            # retry resumes it.
             _empty_directory(ws.work)
             self.log.error(
                 "refusing the recorded checkpoint: the restore's own checks failed",

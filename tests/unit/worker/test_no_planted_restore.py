@@ -27,6 +27,7 @@ own final checkpoint holds that file if and only if the restore brought it.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import tarfile
@@ -489,6 +490,28 @@ def test_an_archive_rewritten_under_an_unchanged_manifest_starts_clean(
     _assert_nothing_restored(db, store, tmp_path, "att_2")
     assert _reasons(log_stream)[-1] == "the recorded checkpoint failed the restore's own checks"
     assert "failed integrity check" in log_stream.getvalue()
+
+
+def test_a_restore_that_ran_out_of_room_fails_the_attempt_and_keeps_the_pointer(
+    db, store, tmp_path, worker_factory, log_stream, monkeypatch
+):
+    """The other side of the clean start: a restore that failed for want of
+    local room (ENOSPC on the memory-backed workspace, EIO, out of file
+    handles) says nothing against the checkpoint. Starting clean there would
+    let this attempt's first checkpoint move the pointer off the earlier
+    attempt's work for good, so the attempt fails as before and a retry
+    resumes the same checkpoint."""
+    pointer = _failed_first_attempt(db, worker_factory)
+
+    def full(*_a: Any, **_k: Any) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", full)
+
+    assert _retry(db, worker_factory, latest_checkpoint=pointer) != ExitCode.OK
+    assert db.doc("tasks/task_1")["state"] != TaskState.SUCCEEDED.value
+    assert db.doc("tasks/task_1")["latest_checkpoint"] == pointer
+    assert "the recorded checkpoint failed the restore's own checks" not in _reasons(log_stream)
 
 
 # ---------------------------------------------------------------------------
