@@ -504,7 +504,9 @@ def account_holders(
 
 #: What the broker's history cursor looks like -- `<instant>|<skip>`, the skip
 #: at most three digits (the broker's page is at most 500). The broker enforces
-#: the value; this refuses a forged one before a broker call is made.
+#: the value; this refuses a forged one before a broker call is made. A
+#: borrower's skip is bounded tighter, by the rows at its instant
+#: (`_require_own_cursor`, #361 box 77).
 _CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
 _CURSOR_RE = re.compile(_CURSOR_SHAPE)
 
@@ -608,7 +610,9 @@ def _ceil_hour(value: datetime) -> datetime:
     return floor if floor == value else floor + timedelta(hours=1)
 
 
-def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime) -> None:
+def _require_own_cursor(
+    pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime, skip: int
+) -> None:
     """A borrower's cursor must be the `assigned_at` of one of ITS OWN spans.
 
     Otherwise `T|0` for any T is a probe: the page it opens counts the other
@@ -616,6 +620,14 @@ def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | Non
     another tenant held the account. This service mints a borrower cursor only
     from the borrower's own row (`own_page`), so that is the only kind it
     accepts back. One lookup, of exactly the instant, no page walk.
+
+    THE SKIP IS BOUNDED BY THE ROWS AT T (#361 box 77). It counts rows at T
+    already served, so a genuine one is never more than this lookup finds. The
+    broker caps it only at HISTORY_PAGE_MAX and reads `limit + skip + 1` rows
+    on each of up to OWN_PAGE_SCAN_MAX pages, so an own instant with `|500`
+    cost about 1,100 reads instead of the ~500 that bound was set for. A
+    lookup page with a next cursor (more rows at one microsecond than a page
+    holds) is a lower bound only and refuses nothing.
     """
     page = pool.hold_history(
         account_id,
@@ -623,10 +635,14 @@ def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | Non
         end=(at + timedelta(microseconds=1)).isoformat(),
         cursor=None,
     )
-    for r in page.get("spans") or []:
-        if isinstance(r, dict) and r.get("tenant_id") == tenant_id and _utc(r.get("assigned_at")) == at:
-            return
-    raise ValidationFailed("the cursor is not one this route issued to you")
+    at_t = [
+        r for r in page.get("spans") or []
+        if isinstance(r, dict) and _utc(r.get("assigned_at")) == at
+    ]
+    if not any(r.get("tenant_id") == tenant_id for r in at_t):
+        raise ValidationFailed("the cursor is not one this route issued to you")
+    if skip > len(at_t) and not page.get("next_cursor"):
+        raise ValidationFailed("the cursor is not one this route issued to you")
 
 
 @router.get("/{account_id}/history")
@@ -662,7 +678,7 @@ def account_history(
     if viewer == "borrower" and cursor:
         if at_cursor is None:
             raise ValidationFailed("the cursor is not one this route issued to you")
-        _require_own_cursor(pool, account_id, tenant_id, at_cursor)
+        _require_own_cursor(pool, account_id, tenant_id, at_cursor, int(cursor.rpartition("|")[2]))
 
     if viewer == "borrower":
         # THE UTC HOUR GRID. A borrower is told how many other agents held the
