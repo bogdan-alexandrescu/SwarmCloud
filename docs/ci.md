@@ -3388,7 +3388,12 @@ an xdist teardown traceback. So the call also sets pytest's
 after a minute, and on exit 124 the script prints the dump's frames in a
 `test_*.py` file (file, line, function). The fixed guard set alone runs in
 about 50 s (2026-10-09), so one test past a minute is the suspect; if none
-was, the line says so and the log's durations are where to look.
+was, the line says so and the log's durations are where to look. Its first
+reading (2026-10-09, the 30-file selection of the change that added it: 1,038
+tests in 166-181 s, under the cap): the slowest was
+`test_ui_changes_gate.py::test_the_shared_reading_of_the_list_agrees_with_the_step`
+at 80 s, then `test_release_acceptance_job.py::test_the_acceptance_scripts_are_shellcheck_clean`
+at 41 s and four `test_build_images_incremental.py` tests at 22-25 s each.
 
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run
