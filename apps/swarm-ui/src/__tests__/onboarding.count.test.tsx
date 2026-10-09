@@ -94,7 +94,7 @@ describe('the setup count counts required steps only', () => {
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
     expect(screen.getByText('Setup is complete')).toBeTruthy()
-    expect(screen.getByText('8 of 8 required done · 1 optional (workspace)')).toBeTruthy()
+    expect(screen.getByText('8 of 8 required done · 1 optional (Request your workspace)')).toBeTruthy()
     expect(screen.queryByText(/8 of 9/)).toBeNull()
     expect(screen.getByRole('img', { name: '8 of 8 required setup steps done' })).toBeTruthy()
   })
@@ -114,14 +114,14 @@ describe('the setup count counts required steps only', () => {
     const { OnboardingScreen } = await load()
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
-    expect(screen.getByText('7 of 8 required done · 1 optional (workspace)')).toBeTruthy()
+    expect(screen.getByText('7 of 8 required done · 1 optional (Request your workspace)')).toBeTruthy()
   })
 
   it('counts the same on the Overview card', async () => {
     answer(NULL_REQUIRED_UNDONE)
     const { SetupCard } = await load()
     render(<SetupCard />)
-    expect(await screen.findByText('7 of 8 required done · 1 optional (workspace)')).toBeTruthy()
+    expect(await screen.findByText('7 of 8 required done · 1 optional (Request your workspace)')).toBeTruthy()
   })
 })
 

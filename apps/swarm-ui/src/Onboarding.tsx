@@ -107,7 +107,7 @@ export function doneCount(doc: OnboardingDoc): number {
 
 /**
  * The count as one line. Required steps only, with the optional ones named
- * apart: "8 of 8 required done · 1 optional (workspace)". With no optional
+ * apart: "8 of 8 required done · 1 optional (Request your workspace)". With no optional
  * step it reads as it always did, "7 of 7 done". Before 2026-10-08 the
  * denominator was every step, so a complete checklist read "8 of 9 done".
  */
