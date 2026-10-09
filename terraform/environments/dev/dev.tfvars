@@ -482,6 +482,20 @@ github_app_slug      = "swarmcloud-saga"
 # (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
 enable_forge_refresh = true
 
+# D4's refusal is ON in dev (#780 OB10, the migration step). A PERSON's task on
+# a GitHub repository they have not chosen under Access is refused with 403
+# REPOSITORY_NOT_GRANTED ("choose it under Access") instead of running with the
+# tenant token; a person with a grant runs as themselves, through their App
+# slot or their fallback token for that owner. A service submission (repository
+# indexing, schedules, the release's acceptance suite in the smoke tenant) is
+# never refused: it keeps the tenant token and the task says so ("tenant token,
+# service submission"). On here because dev is where people connect: the App
+# above is registered and the refresh sweep runs. BEFORE THIS APPLIES, every
+# person who submits in dev grants the repositories they work in (Work ›
+# Access, or `uv run sc access grant owner/repo --write`), or their tasks are
+# refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
+repository_grants_enforced = true
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
