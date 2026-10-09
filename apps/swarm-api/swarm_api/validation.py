@@ -21,9 +21,11 @@ from __future__ import annotations
 import json
 import math
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from swarm_common.profiles import (
     INT64_MAX,
@@ -801,6 +803,15 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 #: the strings equal.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 
+#: The mark a schedule's firing puts on the work it creates (docs/schedules.md
+#: §1.5, §2.7, lane S2): `{schedule_id, firing_id, slot, type}`. A caller who
+#: could set it would forge "made by schedule X" on any task, and could plant
+#: a task a schedule's finisher would ADOPT as its own firing's work (§2.2),
+#: so the firing would create nothing and report someone else's outcome.
+#: Written only by `schedulefire`, through `schedule_mark_allowed`. Unsigned:
+#: no worker acts on it, only swarm-api reads it.
+SCHEDULE_METADATA_KEY = "schedule"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -816,6 +827,7 @@ RESERVED_METADATA_KEYS = (
     CHILD_CASCADE_METADATA_KEY,
     MERGE_WAIT_METADATA_KEY,
     DISK_EVICTIONS_METADATA_KEY,
+    SCHEDULE_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1474,12 +1486,50 @@ _RESERVED_BECAUSE = {
         "step waiting for its pull request's checks, by the worker that parked it "
         "and the tick that wakes it. Drop the key from metadata."
     ),
+    SCHEDULE_METADATA_KEY: (
+        f"metadata.{SCHEDULE_METADATA_KEY} is reserved: it is set only by a "
+        "schedule's firing, on the work that firing created (docs/schedules.md "
+        "§2.7). Drop the key from metadata."
+    ),
     DISK_EVICTIONS_METADATA_KEY: (
         f"metadata.{DISK_EVICTIONS_METADATA_KEY} is reserved: it is set only by "
         "the reconciler, to count attempts lost to the pod passing its own disk "
         "limit (#893). Drop the key from metadata."
     ),
 }
+
+
+#: The one `metadata.schedule` value the CURRENT submission may carry, set
+#: only by `schedule_mark_allowed`. None everywhere else, which is every
+#: request a caller makes.
+_SCHEDULE_MARK: ContextVar[Mapping[str, Any] | None] = ContextVar("schedule_mark", default=None)
+
+
+@contextmanager
+def schedule_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
+    """Let THIS submission carry `metadata.schedule == mark`, and nothing else.
+
+    WHY A SCOPED VALUE AND NOT ORDER. Every other reserved key gets past
+    `reject_reserved_metadata` by order: `SubmissionService` adds it after
+    the caller's metadata was checked. The schedule's firing submits through
+    the SAME service methods a person uses (docs/schedules.md §2.7) and
+    service.py is not lane S2's file, so the mark has to travel in the
+    spec's metadata. It is inside the stored task from the one write that
+    creates it -- which is what makes the finisher's
+    lookup by `firing_id` (§2.2) sound: work created and not yet recorded
+    is found, never created twice.
+
+    THE EXEMPTION IS THE EXACT VALUE. Only metadata whose `schedule` equals
+    `mark` passes, and only inside this block, which `schedulefire` alone
+    enters around its own submission call. A request never runs inside it:
+    a ContextVar set in one call is not visible to another request's thread.
+    Anything else under the key is refused as before.
+    """
+    token = _SCHEDULE_MARK.set(dict(mark))
+    try:
+        yield
+    finally:
+        _SCHEDULE_MARK.reset(token)
 
 
 def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
@@ -1514,6 +1564,9 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     refusal.
     """
     present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    allowed = _SCHEDULE_MARK.get()
+    if allowed is not None and metadata.get(SCHEDULE_METADATA_KEY) == allowed:
+        present.remove(SCHEDULE_METADATA_KEY)
     if not present:
         return
     raise DispatchOptionError(
