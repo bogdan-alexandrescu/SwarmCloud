@@ -53,6 +53,19 @@ git token record revoked. The local half does not wait on GitHub: a revoke
 GitHub did not answer still disconnects here, and the answer says so with
 the page where the user can revoke it themselves.
 
+A FALLBACK TOKEN FOR ONE OWNER (D5). An org whose admin will not install the
+App is reached with a personal access token the person posts once to `POST
+/v1/onboarding/github/token` (`store_owner_token`). It is probed first -- the
+account, its orgs, one page of the owner's repositories and the ones the
+person already chose there, SSO and the classic-token policy read from
+GitHub's answers -- and stored only when it reaches the owner, as a version
+of the person's per-owner slot `git-u-<16 hex of sha256(email|owner)>`
+(`gittokens.owner_suffix`), created here like the App slot. That name is
+`FORGE_CREDENTIAL`'s shape and under the bootstrap's `-git-u-` prefix, so no
+contract or IAM change. The owner's `forge_orgs` document says `method: pat`;
+removing the owner or disconnecting disables every version of the slot and
+revokes its record (`revoke_owner_token`).
+
 NOT CONFIGURED IS AN ANSWER. The App is registered by hand
 (docs/runbooks/github-app.md); until its client id is in swarm-api's
 environment and its client secret has a version, every route answers 503
@@ -87,20 +100,27 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
 
-from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable
+from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, ValidationFailed
 from .forge import MAX_RESPONSE_BYTES, _OPENER
 from .gittokens import (
     COLLECTION as TOKENS_COLLECTION,
     FORGE,
+    PAT_KINDS,
     GitTokens,
+    OwnerReach,
     Scope,
     TokenState,
     _hex16,
     _user_key,
+    owner_record,
+    owner_suffix,
+    owner_token_id,
+    probe_owner,
     provider_suffix,
     record_for_slot,
     redaction_literal,
     secret_name_for,
+    token_kind,
 )
 from .onboarding import recovery_copy
 
@@ -119,6 +139,9 @@ __all__ = [
 PENDING_COLLECTION = "forge_authorizations"
 CONNECTIONS = "forge_connections"
 GRANTS = "forge_grants"
+#: `forge_orgs/{tenant_id}__{user_hash}__{owner}`: an owner a person enabled,
+#: through the App's installation or (D5) through a token for that owner.
+ORGS = "forge_orgs"
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -180,6 +203,13 @@ AUTHORIZATIONS_PAGE = "https://github.com/settings/apps/authorizations"
 
 SURFACES = ("console", "plugin")
 METHOD_APP_USER = "app_user"
+#: A `forge_orgs` document's `method` when the owner is reached through the
+#: person's fallback token for it (D5), not the App.
+METHOD_PAT = "pat"
+#: The org's SAML sign-in page: what SSO_NOT_AUTHORISED's copy sends a person to.
+SSO_URL = "https://github.com/orgs/{owner}/sso"
+#: Where a person deletes a personal access token at GitHub.
+TOKENS_PAGE = "https://github.com/settings/tokens"
 
 ACTIVE = "active"
 REFRESH_FAILED = "refresh_failed"
@@ -210,9 +240,10 @@ class AuthorisationRefused(ApiError):
     status_code = 400
     code = "authorisation_refused"
 
-    def __init__(self, failure_code: str, message: str, *, status: int | None = None) -> None:
+    def __init__(self, failure_code: str, message: str, *, status: int | None = None,
+                 **fill: str) -> None:
         super().__init__(message, detail={"failure_code": failure_code,
-                                          "recovery": recovery_copy(failure_code)})
+                                          "recovery": recovery_copy(failure_code, **fill)})
         if status is not None:
             self.status_code = status
 
@@ -775,6 +806,7 @@ class ForgeApp:
         self.config = config
         self._secrets = secrets
         self._slots = slots
+        self._send = send
         self._github = _GitHub(send)
         self._now = now
         self._clock = clock
@@ -1161,13 +1193,22 @@ class ForgeApp:
     # -- disconnect ---------------------------------------------------------
 
     def disconnect(self, caller: Caller) -> dict[str, Any]:
-        client_id = self._require_client_id()
-        client_secret = self._client_secret()
+        owner_docs = self.owner_token_docs(caller)
         conn_id = connection_id_for(caller.tenant_id, caller.key)
         ref = self._db.collection(CONNECTIONS).document(conn_id)
         snap = ref.get()
         doc = snap.to_dict() if snap.exists else None
-        if doc is None or doc.get("tenant_id") != caller.tenant_id or doc.get("user") != caller.key:
+        if doc is not None and (doc.get("tenant_id") != caller.tenant_id
+                                or doc.get("user") != caller.key):
+            doc = None
+        if doc is None and owner_docs:
+            # D5: a person who reached GitHub only through owner tokens has
+            # no App authorisation to revoke, so the App need not be
+            # configured for them to disconnect.
+            return self._disconnect_tokens_only(caller, owner_docs)
+        client_id = self._require_client_id()
+        client_secret = self._client_secret()
+        if doc is None:
             raise NotFound("you have no GitHub connection in this tenant")
         suffix = provider_suffix(Scope.USER, user=caller.key)
         holder = uuid.uuid4().hex
@@ -1194,6 +1235,7 @@ class ForgeApp:
                           type(exc).__name__)
                 disabled[secret_name_for(caller.tenant_id, slot)] = (
                     f"not disabled ({type(exc).__name__})")
+        owners = self._revoke_owner_tokens(caller, owner_docs, disabled)
         grants = self._delete_grants(caller)
         now = self._now()
         fields = {"state": REVOKED, "refresh_lease": None, "failure": None}
@@ -1210,7 +1252,33 @@ class ForgeApp:
                  github_revoked, grants)
         return {"connection": connection_to_api(doc), "github_revoked": github_revoked,
                 "github": github_said, "slot_versions_disabled": disabled,
-                "grants_deleted": grants}
+                "grants_deleted": grants, "owner_tokens_revoked": owners}
+
+    def _disconnect_tokens_only(self, caller: Caller,
+                                owner_docs: list[dict[str, Any]]) -> dict[str, Any]:
+        disabled: dict[str, Any] = {}
+        owners = self._revoke_owner_tokens(caller, owner_docs, disabled)
+        grants = self._delete_grants(caller)
+        log.info("github disconnected tenant=%s user_hash=%s owner_tokens=%d grants_deleted=%d",
+                 caller.tenant_id, user_hash(caller.key), len(owners), grants)
+        return {"connection": None, "github_revoked": False,
+                "github": ("no GitHub App connection to revoke; each owner token was disabled "
+                           f"in SwarmCloud -- delete it at GitHub too, at {TOKENS_PAGE}"),
+                "slot_versions_disabled": disabled, "grants_deleted": grants,
+                "owner_tokens_revoked": owners}
+
+    def _revoke_owner_tokens(self, caller: Caller, owner_docs: list[dict[str, Any]],
+                             disabled: dict[str, Any]) -> list[str]:
+        """Disable each owner token's slot, revoke its record and delete its
+        `forge_orgs` document: the owner is no longer enabled through it."""
+        owners: list[str] = []
+        for org in owner_docs:
+            owner = str(org.get("owner") or "").lower()
+            disabled.update(self.revoke_owner_token(caller, owner))
+            self._db.collection(ORGS).document(
+                f"{caller.tenant_id}__{user_hash(caller.key)}__{owner}").delete()
+            owners.append(owner)
+        return sorted(owners)
 
     def _lease_for_disconnect(self, conn_id: str, holder: str) -> bool:
         """Take the refresh lease whatever the connection's state; False
@@ -1304,6 +1372,195 @@ class ForgeApp:
             snap.reference.delete()
             count += 1
         return count
+
+    # -- D5: a fallback token for one owner ----------------------------------
+
+    def owner_token_docs(self, caller: Caller) -> list[dict[str, Any]]:
+        """The caller's owners enabled through a token, in their tenant only."""
+        hashed = user_hash(caller.key)
+        query = self._db.collection(ORGS).where(
+            filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
+            filter=FieldFilter("user_hash", "==", hashed)).limit(MAX_CONNECTIONS)
+        docs = [snap.to_dict() or {} for snap in query.stream()]
+        return [d for d in docs if d.get("tenant_id") == caller.tenant_id
+                and d.get("user") == caller.key and d.get("method") == METHOD_PAT]
+
+    def _granted_under(self, caller: Caller, owner: str) -> list[tuple[str, str]]:
+        """`(repo_id, owner/repo)` of the caller's grants under `owner`."""
+        hashed = user_hash(caller.key)
+        query = self._db.collection(GRANTS).where(
+            filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
+            filter=FieldFilter("user_hash", "==", hashed)).limit(MAX_CONNECTIONS)
+        rows = []
+        for snap in query.stream():
+            data = snap.to_dict() or {}
+            if data.get("tenant_id") != caller.tenant_id or data.get("user_hash") != hashed \
+                    or str(data.get("owner") or "").lower() != owner:
+                continue
+            rows.append((str(data.get("repo_id")), str(data.get("repository"))))
+        return sorted(rows)
+
+    def _probe_send(self, url: str, headers: dict[str, str], timeout: float) -> HttpAnswer:
+        """The probe's transport (`gittokens._Forge`) over this service's own."""
+        return self._send("GET", url, headers, None, timeout)
+
+    def store_owner_token(self, caller: Caller, owner: str, value: str) -> dict[str, Any]:
+        """D5 (#780; §3.2 `POST /v1/onboarding/github/token`): probe a
+        person's personal access token against one owner and, only when it
+        reaches it, store it ONCE as a new version of their per-owner slot
+        (created on first use, as D3 creates the App slot) and enable the
+        owner through it. Answers the org document and the token's names,
+        never the value.
+
+        The probe runs BEFORE the value is stored, so a refused token never
+        has an enabled version -- and the owner's earlier, working token, if
+        there is one, stays exactly as it was."""
+        kind = token_kind(value)
+        if kind not in PAT_KINDS:
+            raise ValidationFailed(
+                "a fallback token is a personal access token: a fine-grained one "
+                "(github_pat_...) or a classic one (ghp_...). Nothing was stored.",
+                detail={"field": "token"})
+        owner_key = owner.strip().lower()
+        suffix = owner_suffix(caller.key, owner_key)
+        granted = self._granted_under(caller, owner_key)
+        now = self._now()
+        with redaction_literal(value):
+            reach = probe_owner(value, owner, [name for _, name in granted],
+                                send=self._probe_send, now=now)
+            self._refuse_owner_token(caller, reach, kind)
+            try:
+                if self._slots.ensure(caller.tenant_id, suffix):
+                    log.info("owner slot created tenant=%s secret=%s", caller.tenant_id,
+                             secret_name_for(caller.tenant_id, suffix))
+                version = self._slots.add_version(caller.tenant_id, suffix, value)
+            except ApiError:
+                raise
+            except Exception as exc:
+                log.error("owner token not stored tenant=%s user_hash=%s owner=%s (%s)",
+                          caller.tenant_id, user_hash(caller.key), owner_key,
+                          type(exc).__name__)
+                raise UpstreamUnavailable(
+                    f"the token for {owner_key} could not be stored ({type(exc).__name__}); "
+                    "nothing changed, try again") from None
+        result = reach.result
+        result.read_value = True
+        result.version = version or None
+        tokens_db = GitTokens(self._db, now=lambda: now)
+        record, _ = tokens_db.register(owner_record(
+            caller.tenant_id, user=caller.key, owner=owner_key,
+            repo_ids=[repo_id for repo_id, _ in granted], registered_by=caller.key, now=now))
+        stored = tokens_db._store_probe(record, result, scoped=None)
+        doc_id = f"{caller.tenant_id}__{user_hash(caller.key)}__{owner_key}"
+        ref = self._db.collection(ORGS).document(doc_id)
+        snap = ref.get()
+        previous = snap.to_dict() if snap.exists else None
+        if previous is not None and (previous.get("tenant_id") != caller.tenant_id
+                                     or previous.get("user") != caller.key):
+            raise NotFound(f"{owner_key} not found")
+        login = stored.forge_login or ""
+        doc = {
+            "tenant_id": caller.tenant_id,
+            "user": caller.key,
+            "user_hash": user_hash(caller.key),
+            "owner": owner_key,
+            "owner_login": owner.strip(),
+            "owner_type": "User" if reach.own_account else "Organization",
+            "installation_id": None,
+            "repository_selection": None,
+            "pull_requests": None,
+            "install_state": "token",
+            "sso": "ok",
+            "method": METHOD_PAT,
+            "token_kind": kind,
+            "token_id": stored.token_id,
+            "provider_suffix": suffix,
+            "secret_name": stored.secret_name,
+            "forge_login": login or None,
+            "enabled_at": (previous or {}).get("enabled_at") or now,
+            "enabled_by": caller.key,
+            "checked_at": now,
+        }
+        ref.set(doc)
+        log.info("owner token stored tenant=%s user_hash=%s owner=%s secret=%s kind=%s "
+                 "login=%s version=%s", caller.tenant_id, user_hash(caller.key), owner_key,
+                 stored.secret_name, kind, login, version)
+        return {"org": doc, "token": {
+            "token_id": stored.token_id, "secret_name": stored.secret_name, "kind": kind,
+            "forge_login": login or None, "state": stored.state.value,
+            "expires_at": _iso(stored.expires_at)}}
+
+    def _refuse_owner_token(self, caller: Caller, reach: OwnerReach, kind: str) -> None:
+        """Raise when the token does not reach the owner, with §2.3's code
+        and copy where one names the cause. Nothing has been stored."""
+        owner = reach.owner
+        result = reach.result
+        said = (f"tenant={caller.tenant_id} user_hash={user_hash(caller.key)} "
+                f"owner={owner.lower()}")
+        if result.rejected:
+            log.info("owner token refused %s cause=rejected", said)
+            raise ValidationFailed(
+                "GitHub does not accept this token (HTTP 401 on GET /user): it is mistyped, "
+                "expired or revoked. Nothing was stored.", detail={"field": "token"})
+        if reach.unanswered or not result.account_complete:
+            log.info("owner token unverified %s cause=unanswered", said)
+            raise _unreachable("GitHub did not answer the token's check; nothing was stored")
+        lowered = owner.lower()
+        if lowered in {o.lower() for o in result.sso_required_orgs}:
+            log.info("owner token refused %s cause=sso", said)
+            raise AuthorisationRefused(
+                "SSO_NOT_AUTHORISED",
+                f"{owner} uses SAML single sign-on and this token is not authorised for it; "
+                "nothing was stored", status=403, owner=owner,
+                url=SSO_URL.format(owner=quote(owner, safe="")))
+        if lowered in {o.lower() for o in result.classic_blocked_orgs}:
+            log.info("owner token refused %s cause=classic_blocked", said)
+            raise AuthorisationRefused(
+                "CLASSIC_PAT_BLOCKED",
+                f"{owner} does not accept classic personal access tokens; nothing was stored",
+                status=403, owner=owner)
+        reaches_nothing = reach.listing_status == 200 and reach.listed == 0
+        if kind == "fine_grained_pat" and not reach.own_account \
+                and (reach.hidden or reaches_nothing):
+            # A fine-grained token an org has not approved yet sees only its
+            # public repositories: the person's chosen repository answers
+            # 404, or the org lists nothing at all (§2.3).
+            log.info("owner token refused %s cause=fine_grained_pending", said)
+            raise AuthorisationRefused(
+                "FINE_GRAINED_PAT_PENDING",
+                f"this fine-grained token cannot see {owner}'s private repositories yet; "
+                "nothing was stored", status=403, owner=owner)
+        if reach.listing_status != 200 or reaches_nothing:
+            log.info("owner token refused %s cause=cannot_read status=%s", said,
+                     reach.listing_status)
+            raise ValidationFailed(
+                f"this token cannot read {owner}'s repositories (GitHub answered HTTP "
+                f"{reach.listing_status} and listed {reach.listed}): create a token whose "
+                f"resource owner is {owner}, with access to the repositories you mean to "
+                "choose. Nothing was stored.", detail={"field": "owner"})
+
+    def revoke_owner_token(self, caller: Caller, owner: str) -> dict[str, Any]:
+        """Disable every enabled version of the caller's slot for `owner` and
+        mark its record revoked. The slot is named from the caller and the
+        owner, never from a document. Answers `{secret name: versions
+        disabled}`; a failure is named by type."""
+        suffix = owner_suffix(caller.key, owner)
+        name = secret_name_for(caller.tenant_id, suffix)
+        try:
+            disabled: Any = self._slots.disable(caller.tenant_id, suffix)
+        except Exception as exc:
+            log.error("owner slot versions not disabled tenant=%s secret=%s (%s)",
+                      caller.tenant_id, name, type(exc).__name__)
+            disabled = f"not disabled ({type(exc).__name__})"
+        try:
+            GitTokens(self._db, now=self._now).revoke(
+                caller.tenant_id, owner_token_id(caller.tenant_id, caller.key, owner),
+                by=caller.key, allowed=lambda _record: None)
+        except NotFound:
+            pass
+        log.info("owner token revoked tenant=%s user_hash=%s owner=%s secret=%s disabled=%s",
+                 caller.tenant_id, user_hash(caller.key), owner.lower(), name, disabled)
+        return {name: disabled}
 
     # -- the private key's self-check (admin) ------------------------------
 

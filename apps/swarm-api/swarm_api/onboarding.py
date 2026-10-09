@@ -345,6 +345,10 @@ def _connection(caller: Caller, records: list[GitTokenRecord], tenant_lists_git:
     mine = [r for r in records if r.tenant_id == caller.tenant_id and r.scope is Scope.USER
             and (r.user or "").lower() == caller.key and r.state is not TokenState.REVOKED]
     if mine:
+        # The person's own slot before a token they keep for one owner (D5):
+        # that is a second user record, and never their connection while the
+        # first exists.
+        mine.sort(key=lambda r: r.provider_suffix != _user_suffix(caller))
         return mine[0], "user"
     tenant = [r for r in records if r.tenant_id == caller.tenant_id
               and r.scope is Scope.TENANT]
