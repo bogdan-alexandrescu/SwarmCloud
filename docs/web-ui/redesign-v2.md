@@ -1121,8 +1121,9 @@ list in `RunFiles.tsx`:
 The constraints behind the shape, so they are not quietly undone:
 
 - **`{n}` is the checkpoint id the listing returns (`ckpt-00001`), plus `attempt_id`.**
-  Ids restart per attempt, so `ckpt-00001` exists once for every attempt that
-  checkpointed. Without `attempt_id` the server resolves the id across attempts and
+  Ids continue from the restored checkpoint, but two attempts can still share one:
+  an attempt that resumed from an older checkpoint reuses ids a later attempt
+  already wrote, and an attempt that restored nothing starts again at `ckpt-00001`. Without `attempt_id` the server resolves the id across attempts and
   refuses (422, naming the candidates) when more than one matches, rather than guess
   and serve another attempt's working tree under the right name. A bare sequence
   number was rejected for the same reason, and because it would have meant restating

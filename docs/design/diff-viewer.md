@@ -279,7 +279,25 @@ stay separate: they touch different files from it and from each other.
 | **DIFF2 · entry points (agents, workflows, issue runs)** | `AgentSplit.tsx`, `AgentDetail.tsx` (Code card), `Workflows.tsx`, `WorkflowViews.tsx`, `Runs.tsx`, `RunSteps.tsx`, `paths.ts`, `App.tsx`, plus a new `WorkflowChanges.tsx` | the Changes tab on all three: route `/agents/<tab>/<id>/changes` (list folded on open, "Changes ›" in the Code card), `/workflows/<id>/changes` and `/runs/<id>/changes` holding variant 5's files × steps matrix, the step inspector link, and the withheld/zero/omitted states | DIFF1; **waits for PRs 910 (`App.tsx`) and 898 (`Runs.tsx`) to merge** |
 | **DIFF4 · data** | `apps/agent-worker/agent_worker/gitops.py`, `apps/swarm-ui/src/types.ts` (`GitSummary`) | keep per-file numstat as `git.files` (path, old_path, status, insertions, deletions, binary), capped with `files_truncated`. `result_summary` is `dict[str, Any]` in the frozen contract (`models.py:334`), so this is **not a contract change** | none; DIFF2 uses it once it lands, and falls back to a dash |
 | **GR1 · graph** (not part of this design) | `Workflows.tsx`, `dag.ts` | the graph lane | **runs after DIFF2**, because both edit `Workflows.tsx` |
-| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | a later owner go-ahead |
+| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | owner go-ahead 2026-10-09; the worker half is built (below), the `wfreview.ts` half waits for DIFF1 and DIFF2 |
+
+**Findings by line, worker half (built).** A finding object in `verdict.json`
+may carry `file`, `line` and `side` (`old` | `new`). The worker keeps them in
+`result_summary.verdict_gate.finding_locations` as `{finding, file, line?,
+side?}`, where `finding` indexes `findings`, which stays text exactly as
+before. The path is displayed, never opened, so it is validated rather than
+trusted: repository-relative, no `.`/`..`/empty segment, no backslash or
+control character. A line is kept only with a valid side, because a line
+counted in an unknown half of the patch cannot be placed. A location that
+fails is dropped, the finding is kept, and `locations_dropped` counts it.
+Beside the locations, `reviewed_patches` lists `{task_id, filename, sha256}`
+for each patch the review step staged. That digest is the review's own
+worker's measurement (`staged_inputs[].sha256`), not the agent's claim, and
+it is what lets the console refuse to pin a finding on a patch that a fix
+round has since changed. A verdict with no location records no new key. The
+compiled issue-run review is asked for this shape (`issueruns.FINDINGS_SHAPE`).
+The control plane's own MERGE publish (`verdictpublish.py`) still records text
+only. That is enough for now, because a MERGE has no fix round to pin against.
 
 Every lane runs `scripts/changed-guards.sh`. DIFF1 keeps the existing
 50,000-line windowing test and the no-`innerHTML` test green.

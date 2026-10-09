@@ -16,6 +16,7 @@ agent's current directory") made against evidence that outlives the run.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tarfile
@@ -138,6 +139,10 @@ def test_declared_artifact_reaches_the_agents_working_directory(
             "uri": store.uri(
                 f"tenants/{TENANT}/tasks/task_up/attempts/att_up/artifacts/summary.md"
             ),
+            # What landed, measured by this worker: a review's findings are
+            # pinned against the digest of the patch it read (diff viewer
+            # variant 3, `verdict.reviewed_patches`).
+            "sha256": hashlib.sha256(UPSTREAM_TEXT.encode("utf-8")).hexdigest(),
         }
     ]
 

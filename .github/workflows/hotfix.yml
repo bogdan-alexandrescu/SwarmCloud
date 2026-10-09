@@ -32,8 +32,9 @@
 #     needs [python, shell, manifests] -- and the images stage refuses to
 #     build anything of its own.
 #   * warming the worker jobs, acceptance, the GKE proof and the plugin tag:
-#     the SAME push still starts the normal release, which runs all of them.
-#     Acceptance is delayed, not dropped.
+#     the SAME push still starts the normal release, which tags the plugin,
+#     and whose completion starts accept.yml, which warms, proves GKE and
+#     accepts what dev then runs. Acceptance is delayed, not dropped.
 #   * any change to IAM: a plan that changes IAM FAILS this lane, which never
 #     applies it, so the owner's dev-iam gate is untouched. The normal release
 #     holds that plan for dev-iam as it always has.
@@ -115,7 +116,7 @@ jobs:
             if [ "${PROCEED}" = "true" ]; then
               echo "### Hotfix: #${PR} ships to dev on this lane"
               echo
-              echo "The normal release of the same push still runs verify, acceptance and the rest."
+              echo "The normal release of the same push still runs, and accept.yml accepts what it leaves dev running."
             else
               echo "### Not a hotfix"
               echo
@@ -296,8 +297,8 @@ jobs:
         with:
           environment: ${{ env.ENVIRONMENT }}
 
-      # No warm step: the normal release of the same push warms the same
-      # digests minutes later.
+      # No warm step: accept.yml, after the normal release of the same push,
+      # warms the same digests.
 
       - uses: hashicorp/setup-terraform@v4
         with:
