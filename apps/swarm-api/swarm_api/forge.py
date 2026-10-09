@@ -427,6 +427,11 @@ class SweepIssue:
     labels: tuple[str, ...]
     #: GitHub's `updated_at`; None when it did not say, or said it unreadably.
     updated_at: datetime | None
+    #: GitHub's `author_association`: what the issue's author is to the
+    #: repository (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). ""
+    #: when GitHub did not say. The sweep starts work only for the first three
+    #: (`issuesweep.TRUSTED_AUTHORS`, security review 2026-10-09).
+    author_association: str = ""
 
 
 @dataclass(frozen=True)
@@ -831,6 +836,10 @@ class GitHubIssues:
                     number=int(entry["number"]), title=str(entry.get("title") or ""),
                     labels=_label_names(entry.get("labels")),
                     updated_at=_github_time(entry.get("updated_at")),
+                    author_association=(
+                        entry["author_association"]
+                        if isinstance(entry.get("author_association"), str) else ""
+                    ),
                 )
                 for entry in issues
             ),
