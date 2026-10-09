@@ -181,6 +181,21 @@ def test_an_unwritable_credential_folder_is_a_git_error(tmp_path):
         )
 
 
+def test_a_failed_write_leaves_no_part_written_credential_file(tmp_path, monkeypatch):
+    """A write that fails after the file was created is a GitError, and the
+    file is gone: no caller is handed its path to remove it."""
+    def full(fd, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(gitops.os, "write", full)
+    with pytest.raises(GitError) as raised:
+        gitops._write_credentials(
+            "https://github.com/saga/repo.git", "tok" + "z" * 30, tmp_path
+        )
+    assert "ENOSPC" in str(raised.value)
+    assert not (tmp_path / ".git-credentials").exists()
+
+
 def test_the_credential_file_is_removed_even_when_the_clone_fails(tmp_path, monkeypatch):
     """A file that outlives the clone is a token available to the agent for the
     whole attempt, so removal happens in a `finally`, on the failure path too."""

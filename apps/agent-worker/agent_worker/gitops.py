@@ -740,6 +740,11 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view):]
+        except OSError:
+            # No caller is handed the path to remove, so a part-written
+            # token is removed here.
+            cred_file.unlink(missing_ok=True)
+            raise
         finally:
             os.close(fd)
     except OSError as exc:
