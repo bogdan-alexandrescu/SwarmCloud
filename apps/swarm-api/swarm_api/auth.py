@@ -857,6 +857,14 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # finished task's own tenant's token, for that tenant's gated
         # integrator, and moves only a step it claimed (`verdictpublish`).
         ("POST", "/v1/admin/tasks/finished"),
+        # The issue sweeper (owner decisions 2026-10-08, jobs.tf
+        # `issue_sweep`): lists one tenant's registered repositories' open
+        # issues with that tenant's token and starts issue runs for the
+        # candidates, each as its registration's creator
+        # (`routes.admin.registration_owner_auth`), never as the sweeper.
+        # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
+        # Like the repository poll, the sweeper alone may call it.
+        ("POST", "/v1/admin/issues/sweep"),
     }
 )
 
