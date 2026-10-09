@@ -19,8 +19,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from swarm_api.workspaces import gate_from_env
-
 REPO = Path(__file__).resolve().parents[3]
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
 VARIABLES = REPO / "terraform" / "infra" / "variables.tf"
@@ -47,6 +45,10 @@ def test_dev_runs_the_decided_value():
 
 
 def test_the_value_dev_sets_is_one_the_gate_reads_as_meant():
+    # Imported here, not at module top: swarm_api pulls google and grpc, and
+    # test_collection_stays_cheap holds every tests/unit/scripts module to that.
+    from swarm_api.workspaces import gate_from_env
+
     (value,) = _dev_values()
     assert gate_from_env({"WORKSPACE_GATE": value}) is (DEV_VALUE == "on")
 
