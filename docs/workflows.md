@@ -289,7 +289,9 @@ recorded by `ControlPlane._record_parked_uploads` and read back through
 attempt's prefix. B then stages `notes.md` from that first attempt's object:
 its `result_summary.staged_inputs` names `notes.md` with a `uri` under A's
 `attempts/<first attempt>/`. `tests/unit/worker/test_parked_uploads_carry.py`
-holds the same run offline.
+holds the same run offline. accept.yml's `workflow` group runs this recipe
+against dev after every release, as `workflow: carry`
+(scripts/acceptance/groups/workflow.sh `_wf_check_carry`).
 
 ## Artifacts pass by reference
 
