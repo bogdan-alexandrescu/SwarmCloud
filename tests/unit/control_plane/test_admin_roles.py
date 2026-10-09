@@ -323,3 +323,43 @@ def test_a_firestore_admin_is_an_admin_without_any_config(db):
     client = _client(db, admin_groups=())
     assert client.get(ADMIN_ROUTE, headers=auth_header("dave")).status_code == 200
     assert client.get(ADMIN_ROUTE, headers=auth_header("alice")).status_code == 403
+
+
+# -- who the admins are: the People read's `admins` section ------------------
+
+
+class FailingHolders(AdminRoles):
+    """Firestore does not answer the holders' read; the role check still does."""
+
+    def holders(self) -> list[dict[str, Any]]:
+        raise RuntimeError("firestore unavailable")
+
+
+def test_the_people_read_lists_the_admins_with_the_owner_first(db):
+    client = _client(db, platform_owner=OWNER)
+    assert client.put("/v1/admin/admins/carol@saga.xyz",
+                      headers=auth_header("owner")).status_code == 200
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    assert body["admins_error"] is None
+    assert [(a["email"], a["role"]) for a in body["admins"]] == [
+        (OWNER, "owner"), ("carol@saga.xyz", "admin")]
+    carol = body["admins"][1]
+    assert carol["granted_by"] == OWNER and carol["granted_at"] is not None
+    assert "changed" not in carol, "a listing is not a change"
+
+
+def test_the_configured_owner_is_listed_before_their_document_exists():
+    roles = AdminRoles(FakeFirestore(), owner=OWNER)
+    roles._migrated = True  # the seed has not run: no document at all
+    assert roles.holders() == [{"email": OWNER, "role": "owner",
+                                "granted_by": "config:PLATFORM_OWNER", "granted_at": None}]
+
+
+def test_the_people_read_is_served_when_the_admins_are_not_read(db):
+    client = _client(db, platform_owner=OWNER)
+    client.app.state.ctx.authenticator.admin_roles = FailingHolders(db, owner=OWNER)
+    response = client.get("/v1/admin/people", headers=auth_header("owner"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["admins"] is None and body["admins_error"] == "RuntimeError"
+    assert "people" in body

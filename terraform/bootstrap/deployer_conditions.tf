@@ -401,8 +401,9 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 14 deployer_grantable_project_roles in one list (15 until #150 took
-  # swarmSecretLister off -- still over the limit either way), and GCP's linter
+  # the 14 deployer_grantable_project_roles in one list (15 until #69's owner
+  # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
+  # still over the limit either way), and GCP's linter
   # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10
   # elements -- found only at apply, since the mock provider never lints (#275,
   # apply 2026-09-28: "The list argument to hasOnly() cannot have more than 10

@@ -151,13 +151,231 @@ compared with them.
   read on 2026-10-08: its route `POST /v1/admin/issues/sweep`, its module
   `swarm_api/issuesweep.py`, its tenant-document settings and its
   `issue_sweep` scheduler job. The build lane re-reads SWEEP's merged code
-  before it starts.
+  before it starts. **SWEEP has since merged** (`ce68220`, #898). Lane S0
+  read its names from `main` on 2026-10-08 and lists where they differ from
+  §8.1 in §0.1, check 3.
 * **The console's Work section has ten tabs:** Agents, Workflows, Runs,
   Timeline, Repositories, Setup, Access and the three Submit screens
   (`apps/swarm-ui/src/App.tsx` `SECTIONS`).
   `tests/unit/scripts/test_issue_forms.py` binds the issue forms' "Where" list
   to that array.
 * **No cron library is a dependency** of any app.
+
+### 0.1 Lane S0's results, 2026-10-08, against `main` (`ce68220`)
+
+Lane S0 (§9) ran in a SwarmCloud container. The container had no GitHub
+credential, no `gh` and no `gcloud`. So **every result below is read from the
+repository, not measured live**, except check 3, which is a reading of the
+code itself. Each result names the command the operator runs to measure it
+live, and a control showing that the reading could have come out the other
+way. The clone holds one commit, `ce68220` (#898, SWEEP), so nothing older
+could be compared.
+
+**Check 1. `actions: read` and `checks: read` (§3.7, §3.9).** From the
+repository, not measured live.
+
+* **The GitHub App** (onboarding's App, whose user tokens are the tenants'
+  `app_user` connections) holds **`checks: read` and no `actions` permission
+  at all**. `docs/runbooks/github-app.md` step 3 is the record GitHub was
+  configured from. It lists `Checks: Read-only` (line 135), lists
+  `Workflows: No access`, and says "everything not listed: No access". It does
+  not list Actions. `docs/onboarding.md` §3.4 (step 1) and D8 (a) give the same
+  set. A user-to-server token can never hold more than the App's own
+  permissions, so a tenant connected through onboarding has no `actions: read`.
+* **Tenant tokens** (`swarm-tenant-<t>-git`) are whatever each tenant
+  stored. The repository records what they **must** hold, not what they do
+  hold: `docs/multi-tenancy.md` lists `Checks: Read` (line 311) and
+  `Actions: Read` (line 313) for the issue run's CI loop. A classic token's
+  `repo` scope carries both. swarm-api already probes `read_checks` per token
+  and repository (`gittokens.CAPABILITIES`, `read_read_checks`). **It has no
+  `actions: read` probe.** `forgewrite.job_log_tail` turns a missing
+  `actions: read` into `None`, so nothing records its absence.
+* **Control.** The same grep of the runbook's permission bullets
+  (`grep -n -E '^\* (Actions|Checks|Workflows):' docs/runbooks/github-app.md`)
+  finds two lines, Checks and Workflows. So the pattern matches a permission
+  that is listed, and finds no Actions line because there is none.
+  `docs/multi-tenancy.md` lines 311 and 313 match `Actions: Read`, so the
+  word is spelled the way the grep looks for it.
+* **Consequence.** `ci-flake-hunter` (§3.7) can find a flake from check
+  runs alone (`checks: read`, held). Its `workflow_run` reads and
+  `release-health` (§3.9, which needs `actions: read`) are
+  `available: false` for every onboarding-connected tenant until the App gains
+  `Actions: Read`. Adding it is an org-admin approval, which is the owner's,
+  and every installation must then accept the new permission.
+* **To measure live.** For the App: open GitHub › Settings › Developer
+  settings › GitHub Apps › SwarmCloud › Permissions & events, and read the
+  Actions and Checks rows, or read `.permissions` of an installation
+  (`GET /app/installations/{id}` with the App's JWT). For a tenant token,
+  without printing it: `GH_TOKEN="$(gcloud secrets versions access latest
+  --secret=swarm-tenant-<t>-git --project=saga-agents-staging)" gh api
+  'repos/<owner>/<repo>/actions/runs?per_page=1' --jq .total_count`. A
+  number means `actions: read` is held. `HTTP 403` or `HTTP 404` means it is
+  not. The same call to
+  `repos/<owner>/<repo>/commits/<default branch>/check-runs?per_page=1`
+  answers for `checks: read`. Control: the same calls on a repository the token
+  cannot see answer 404.
+
+**Check 2. Update-branch when the base brings `.github/workflows/` changes
+(§3.6).** From the repository, not measured live. **No dated measurement of
+it exists in the repository.**
+
+* `docs/merge-step.md` line 328 states it as a rule: Workflows: write is
+  needed "when the pull request, or the base merged in by `update-branch`,
+  changes `.github/workflows/`: GitHub refuses any token without it". No PR,
+  log or test is cited for it. The refusal measured on 2026-10-08 (§0) was of
+  the worker's **push** of workflow files, which is a different call.
+* The onboarding App holds `Workflows: No access` (check 1). So if the rule
+  holds, `pr-shepherd`'s update-branch is refused for exactly the pull requests
+  whose base changed a workflow.
+* **What the code would do with the refusal.** The merge step's
+  `_update_branch` (`apps/agent-worker/agent_worker/merge.py`) reads 401, 403
+  and 404 as `token_lacks_rights`. It reads **any 422 that does not name a
+  conflict as `head_moved`**. If GitHub answers this refusal with a 422, the
+  step would misreport it, and `pr-shepherd` must not reuse that
+  classification as is. S10's `pr-shepherd` lane matches on the measured
+  answer.
+* **To measure live** (in a scratch repository with the App installed, not in
+  `saga-agents-staging`): open pull request A, then push to its base a commit
+  that changes `.github/workflows/x.yml`. Mint an installation token
+  (Workflows: none) and call
+  `PUT /repos/<o>/<r>/pulls/<A>/update-branch` with `expected_head_sha`.
+  Record the status and `message`. **Control:** pull request B, behind a
+  base commit that changes only a non-workflow file, called the same way,
+  should answer 202. If both answer 202, the rule in merge-step.md is wrong.
+
+**Check 3. SWEEP's merged names (§8.1, PR 898).** Read from `main` at
+`ce68220`, which is #898 squash-merged, on 2026-10-08. Not branch
+`swarm/task_3804051834a74239a9e8`: SWEEP had already merged. These names are
+in the code, so they are measured here:
+
+| §8.1 says | `main` has |
+|---|---|
+| module `swarm_api/issuesweep.py` | the same |
+| `POST /v1/admin/issues/sweep?tenant_id=`, in `ROLLUP_SWEEPER_ROUTES` | the same (`auth.py`, `routes/admin.py::sweep_issues`) |
+| `SWEEP_ENABLED`, `var.enable_issue_sweep` | the same (`settings.py` `sweep_enabled`, `terraform/infra/locals.tf`) |
+| the tenant document's `issue_sweep.enabled` | `issue_sweep` (`TENANT_FIELD`), a `SweepConfig` of `enabled` (default off), `max_live_runs` (default 8, 1-50), `exclude_issues`, `exclude_labels` and **`submit_as`**, read and written by `GET`/`PUT /v1/admin/tenants/{tenant_id}/issue-sweep` |
+| runs `plan_approval: auto`, `auto_merge: true`, `fix_rounds: 2` | the same (`SWEEP_PLAN_APPROVAL`, `SWEEP_AUTO_MERGE`, `SWEEP_FIX_ROUNDS`), with `created_by: issue-sweep` (`SWEEP_CREATOR`) |
+| skip labels | `SKIP_LABELS = {epic, blocked, security}`, a constant, plus the tenant's `exclude_labels` |
+| the `NOT_READY` verdict and run state | `RunState.NOT_READY` in `issueruns.py`, a terminal state |
+| territory guard `routes/runs.py` `territory_conflict` | the same, with `_territory_hold` writing the hold `territory_overlap: <run id>`, and `issueruns.territory_overlap` |
+| job `google_cloud_scheduler_job.issue_sweep` | the same: one per tenant in `var.rollup_tenant_ids`, named `<prefix>-issue-sweep-<t>`, at `var.issue_sweep_schedule` (default `7,37 * * * *`), as the rollup sweeper's OIDC identity |
+
+Where the code differs from §8.1, S6 and S9 follow the code (§8.1's rule):
+
+* **The submitter is the tenant's `issue_sweep.submit_as`, not a
+  registration's creator.** A tenant whose `submit_as` is unset or is not a
+  current member is skipped with that reason (`SweepSubmitterNotMember`,
+  code `submit_as_not_member`). S6 maps `submit_as` onto the schedule's
+  `owner` (§2.7). The comment above the route in
+  `apps/swarm-api/swarm_api/auth.py` still says "each as its registration's
+  creator". That comment is stale, and it is an out-of-territory finding for
+  the wave epic.
+* **The job cannot be paused on its own.** Its `paused` is the module-wide
+  `var.paused`, shared by every scheduler job. §8.1 step 3 ("`paused = true`
+  in Terraform") therefore needs a per-job variable, or SWEEP's off switches
+  instead. S9 names which.
+* The cap, the exclusion lists and `submit_as` live on the tenant document,
+  not in constants. They become §3.1's parameters as §8.1 step 1 says.
+
+Control: `git grep -c registration_owner_auth -- apps/swarm-api/swarm_api/issuesweep.py`
+finds nothing, and the same count for `submit_as` finds 18. So the grep
+separates the name §8.1 implied from the one SWEEP uses.
+
+**Check 4. The composite index for the tick query (§2.1, S4).** From the
+repository, not measured live.
+
+* The query is `schedules where state == "enabled" and next_run_at <= now
+  order by next_run_at`. It has an equality on one field and a range and order
+  on another, so Firestore serves it only from a composite index. The index
+  is **collection `schedules`, `query_scope = "COLLECTION"`, fields
+  `state` ASCENDING then `next_run_at` ASCENDING**. That is the shape S4
+  lists.
+* It is the same shape as the existing `tasks-state-next-eligible` (`state`,
+  `next_eligible_at`) in `terraform/modules/firestore/indexes.tf`, which is
+  declared as one entry of `local.indexes`. S4 adds `schedules` there the
+  same way.
+* `schedules` is a top-level collection (§1.1), not a per-tenant
+  subcollection, so `COLLECTION` scope covers every tenant, `u-*` included.
+  `COLLECTION_GROUP` would be needed only if that changed.
+* Today **no `schedules` index is declared**: `grep -c '"schedules"'
+  terraform/modules/firestore/indexes.tf` is 0. Control: the same count for
+  `"tasks"` is 14.
+* **To measure live** (read-only):
+  `gcloud firestore indexes composite list --project=saga-agents-staging --database=swarm --format='table(name,queryScope,fields)' | grep -i schedules`.
+  It should print nothing until S4's release. After it, one `COLLECTION`
+  index with `state` and `next_run_at` should appear. Control: the same command
+  with `grep -i tasks` lists the task indexes, so an empty answer is not a
+  wrong database. A query that runs without its index fails with
+  `FAILED_PRECONDITION` and the console link to create it. That is the other
+  live test, in a dev tick.
+
+**Check 5. The bootstrap file for `swarm-schedule-tick` (SD10, S13).** From
+the repository, not measured live.
+
+* **The file is `terraform/bootstrap/deployer_service_accounts.tf`.** It
+  grants the release deployer `roles/iam.serviceAccountAdmin` on each account
+  in `module.service_account_ids.infra_managed`, minus the CI accounts. It
+  restates no account. The list is spelled once, in
+  `terraform/modules/service_account_ids/main.tf` (`infra_managed`: the
+  `platform` map, `tick_id`, `verify_id`, `rollup_sweeper_id` and the tenant
+  workers), and both roots read it.
+* So S13 adds `swarm-schedule-tick` as a new id in
+  `modules/service_account_ids/main.tf` (and its `outputs.tf`), the way
+  `rollup_sweeper_id` was added, and **does not edit the bootstrap file**. The
+  owner then applies `terraform/bootstrap` from `main`. The plan's
+  `deployer_admin_accounts` output gains exactly
+  `swarm-schedule-tick` and its summary is "1 to add, 0 to change,
+  0 to destroy" (docs/ci.md, "The deployer's service-account grants").
+  `terraform/infra/deployer.tf` `deployer_acts_as` is where the
+  `serviceAccountUser` (actAs) grant goes, beside `swarm-rollup-sweeper`.
+* **The ordering is S13's to plan.** A grant needs its account to exist
+  first. The rollup sweeper's account is created by the release
+  (`modules/scheduler/jobs.tf` `google_service_account.rollup_sweeper`,
+  without `create_ignore_already_exists`). docs/ci.md's "A new account exists
+  before the release that adds it" covers only tenant workers. Its account
+  table also omits `swarm-rollup-sweeper`, which is an out-of-territory
+  finding.
+* Control: `git grep -n rollup_sweeper_id -- terraform/bootstrap` finds
+  nothing, and the same id is found in `modules/service_account_ids`. So
+  bootstrap really does take its list from the module rather than restating
+  it.
+* **To measure live:** the owner runs
+  `terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=../environments/dev/dev.tfvars`
+  from `main` after S13 merges, and reads `deployer_admin_accounts`.
+
+**Check 6. Where onboarding stores a member's verified GitHub login (SD9,
+S12).** From the repository, not measured live.
+
+* **`forge_connections/{connection_id}`**, field **`forge_login`**, beside
+  **`forge_user_id`** (GitHub's numeric user id), `tenant_id`, `user` (the
+  member's email) and `state`. `forgeapp.py` writes them in `_store` from
+  `_GitHub.user`, the `GET /user` that it makes with the access token
+  that the member's own authorisation code just bought. So the login is one
+  GitHub returned for that member's authorisation, as §4.9 requires. The
+  `connection_id` is `conn_` and 16 hex digits of tenant, email and forge
+  (`connection_id_for`).
+* **What S12 must not use instead.** `git_tokens.forge_login`
+  (`gittokens.py`) is the login of whatever token was stored, a PAT included,
+  so it is not a member's verified login. `issue_runs.forge_login`
+  (`issuesync.py`) is a comment's author, so it is not one either.
+* **Two cautions for S12.** First, a revoked connection keeps its
+  `forge_login` with `state: revoked` (`forgeapp.py` writes only the state,
+  `refresh_lease` and `failure`). The mapping must require
+  `state == "active"`. Second, a GitHub login can be renamed and reused, but a
+  user id cannot. Matching a comment's `user.id` against `forge_user_id`, and
+  falling back to the case-insensitive login only where the id is null, is
+  stricter than §4.9's login match. S12 asks if it wants to change §4.9's
+  rule. No new field is needed, so S12's "stop and ask" condition does not
+  fire.
+* Control: `git grep -n '"forge_login"' -- apps/swarm-api/swarm_api/forgeapp.py`
+  finds 4 lines, two of them writes in `_store`. The same grep over
+  `onboarding.py` finds only a read of a token record. So the writer is
+  `forgeapp.py` and not the onboarding checklist.
+* **To measure live** (read-only, in a dev session with Firestore read):
+  read one active connection document in database `swarm`, collection
+  `forge_connections`, and confirm that `forge_login` and `forge_user_id`
+  are set. Print only those two fields and `state`, never `token_id` or
+  `secret_name`.
 
 ---
 
