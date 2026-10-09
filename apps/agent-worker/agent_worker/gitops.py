@@ -702,7 +702,6 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     host = _credential_host(url)
     if host is None:
         return None
-    private_dir.mkdir(parents=True, exist_ok=True)
     cred_file = private_dir / ".git-credentials"
     entry = urlunparse(
         (
@@ -720,22 +719,34 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     # and a file created with the default mode is readable until the chmod.
     # Whatever is at the name is unlinked first -- unlink never follows a
     # link -- and O_EXCL then refuses anything that appears in between.
+    #
+    # Any OSError here is a GitError (#346): a folder the agent planted at the
+    # name fails unlink with EISDIR, and every caller lets anything but a
+    # GitError escape the publish as a crash. The message names the error
+    # class and errno only -- never the path, never what was being written.
     try:
-        cred_file.unlink()
-    except FileNotFoundError:
-        pass
-    fd = os.open(
-        cred_file,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    try:
-        data = (entry + "\n").encode()
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view):]
-    finally:
-        os.close(fd)
+        private_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            cred_file.unlink()
+        except FileNotFoundError:
+            pass
+        fd = os.open(
+            cred_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            data = (entry + "\n").encode()
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno or -1, "no errno")
+        raise GitError(
+            f"could not write the git credential file ({type(exc).__name__}: {code})"
+        ) from None
     return cred_file
 
 
@@ -3435,8 +3446,12 @@ def mirror_worktree(
     and never through a link.
 
     `hidden_names` are top-level names the worker hides from git in the clone
-    (`hide_from_git`, the `./artifacts` link, #226); they are written to this
-    repository's own `.git/info/exclude`, which the worker owns, AFTER
+    (`hide_from_git`, the `./artifacts` link, #226). They are NOT COPIED: an
+    exclude pattern alone does not hide them, because the tree's own
+    `.gitignore` -- copied in, and read -- outranks `.git/info/exclude`, and a
+    `!/artifacts` there un-hid the worker's link (#346). A name that is not
+    in the tree cannot be published by any pattern. They are still written to
+    this repository's own `.git/info/exclude`, which the worker owns, AFTER
     `agent_excludes` -- the patterns of the agent's own `.git/info/exclude`
     and `core.excludesFile`, read as data by `read_agent_excludes` -- so a
     `!` pattern of the agent's cannot un-hide the worker's names (in one
@@ -3487,6 +3502,7 @@ def mirror_worktree(
 
     copied = 0
     nested = 0
+    hidden = set(hidden_names)
     stack: list[tuple[Path, Path]] = [(source, dest)]
     try:
         while stack:
@@ -3495,6 +3511,9 @@ def mirror_worktree(
                 listing = list(entries)
             for entry in listing:
                 if entry.name == ".git":
+                    continue
+                if here == source and entry.name in hidden:
+                    # The worker's own top-level names: see the docstring.
                     continue
                 src = Path(entry.path)
                 dst = there / entry.name
