@@ -5230,6 +5230,17 @@ export interface PeopleDoc {
   audit: AdminAuditEntry[]
   lendable_accounts: LendableAccount[] | null
   lendable_error: string | null
+  /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
+  admins?: AdminHolder[] | null
+  admins_error?: string | null
+}
+
+/** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */
+export interface AdminHolder {
+  email: string
+  role: 'owner' | 'admin'
+  granted_by: string | null
+  granted_at: string | null
 }
 
 /** `people._dispatch`: whether the workspace id reached Pub/Sub. A failed publish is not a failed approval. */

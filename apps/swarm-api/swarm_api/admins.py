@@ -190,6 +190,31 @@ class AdminRoles:
             return True
         return self.role_of(email) is not None
 
+    def holders(self) -> list[dict[str, Any]]:
+        """Every `admin_roles/` holder, the owner first, then by email: what
+        Admin › People lists. The configured owner is listed even before
+        their seeded document exists, because configuration, not the
+        document, makes them the owner. ADMIN_GROUPS members hold admin
+        through a group, which has no document, so they are not here.
+
+        Raises whatever Firestore raises, as `role_of` does: the route turns
+        that into a null list with the reason, never an empty one."""
+        self.ensure_migrated()
+        query = self._db.collection(ROLES_COLLECTION).where(
+            filter=FieldFilter("role", "in", list(ROLES))
+        )
+        found: dict[str, dict[str, Any]] = {}
+        for snap in query.stream():
+            body = snap.to_dict() or {}
+            if body.get("role") in ROLES:
+                row = _to_api(snap.id, body, changed=False)
+                del row["changed"]
+                found[snap.id] = row
+        if self.owner:
+            found.setdefault(self.owner, {"email": self.owner, "granted_by": CONFIG_OWNER,
+                                          "granted_at": None})["role"] = ROLE_OWNER
+        return sorted(found.values(), key=lambda r: (r["role"] != ROLE_OWNER, r["email"]))
+
     def _forget(self, email: str) -> None:
         self._cache.pop(email, None)
 

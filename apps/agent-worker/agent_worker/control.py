@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -118,6 +119,15 @@ from .startup import StartupInterrupted
 #: (`Worker._recorded_checkpoint`, #347): the manifest carrying the digest sits
 #: in the bucket, which every agent of the tenant can write.
 CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
+
+#: What an archive digest is: `hashlib.sha256(...).hexdigest()`, 64 lowercase
+#: hex characters. `record_checkpoint` writes nothing else, and a restore
+#: refuses a manifest carrying anything else (#346): a missing digest on both
+#: sides would otherwise compare equal, None == None.
+ARCHIVE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+
+#: `ControlPlane._verified_max_attempts` before a verified spec pinned it.
+_UNPINNED = object()
 
 #: Child tasks (docs/design/child-tasks.md §6.4), restated from
 #: `swarm_api.validation`, which this image does not carry;
@@ -692,6 +702,24 @@ class ControlPlane:
         # report inside that window is the same event and is not sent again;
         # see `update_quota_state`.
         self._rate_limit_known_until: dict[str, datetime] = {}
+        # The task's `max_attempts` as the VERIFIED spec carries it, once the
+        # lifecycle has verified one (`pin_verified_max_attempts`, #346).
+        # `fail_retryably` decides on it rather than on the live document.
+        self._verified_max_attempts: Any = _UNPINNED
+
+    def pin_verified_max_attempts(self, value: Any) -> None:
+        """Decide retries on `value`, the verified task document's `max_attempts`.
+
+        `max_attempts` is covered by the spec signature (`specsign`), so after
+        `Worker._verify_spec` the verified copy is the one to trust: a tenant
+        agent can write the live field (Firestore has no document-level IAM),
+        and lowering it would end a task its signer gave more attempts, raising
+        it would retry past them (#346). `attempt_count` is NOT covered and is
+        still read live, inside the transaction. Absent or None means the
+        signer set none, which is the default of 3, not whatever is written
+        there later.
+        """
+        self._verified_max_attempts = 3 if value is None else value
 
     @property
     def quota_reporter(self) -> QuotaReporter | None:
@@ -1385,8 +1413,18 @@ class ControlPlane:
         uri: str,
         size_bytes: int,
         seq: int,
-        archive_sha256: str | None = None,
+        archive_sha256: str,
     ) -> None:
+        # THE DIGEST IS REQUIRED (#346). It used to default to None, and a
+        # caller that forgot it recorded a checkpoint no restore would accept.
+        # Refused before anything is written: a record without it is no record.
+        if not isinstance(archive_sha256, str) or not ARCHIVE_DIGEST_RE.fullmatch(
+            archive_sha256
+        ):
+            raise ValueError(
+                f"checkpoint {checkpoint_id} has no archive digest to record "
+                "(a SHA-256 hex digest is required)"
+            )
         # Read-modify-write rather than ArrayUnion: exactly one worker owns an
         # attempt document, so there is no contention to serialise, and this
         # keeps the Firestore sentinel types out of the worker's hot path.
@@ -1404,17 +1442,23 @@ class ControlPlane:
                 digests = dict(recorded)
         if checkpoint_id not in existing:
             existing.append(checkpoint_id)
-        fields: dict[str, Any] = {"checkpoints": existing, "tenant_id": self.tenant_id}
-        if archive_sha256:
-            # What the next attempt binds the archive's bytes to (#347): the
-            # manifest that also carries this digest sits in the bucket, which
-            # every agent of the tenant can write; this document does not.
-            digests[checkpoint_id] = archive_sha256
-            fields[CHECKPOINT_DIGESTS_FIELD] = digests
+        # What the next attempt binds the archive's bytes to (#347): the
+        # manifest that also carries this digest sits in the bucket, which
+        # every agent of the tenant can write; this document does not.
+        digests[checkpoint_id] = archive_sha256
+        fields: dict[str, Any] = {
+            "checkpoints": existing,
+            CHECKPOINT_DIGESTS_FIELD: digests,
+            "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
+            "attempt_id": self.attempt_id,
+        }
         # merge-set, not update: an attempt cancelled before it started has no
         # attempt document yet, and losing the record would be worse than
-        # creating it late. `tenant_id` goes in every merge so a document this
-        # path creates is never one the tenant check would later refuse.
+        # creating it late. `tenant_id`, `task_id` and `attempt_id` go in every
+        # merge so a document this path creates is never one the tenant check,
+        # or the retry's `_recorded_checkpoint` (which requires this task's
+        # id, #346), would later refuse.
         self._attempt_ref().set(fields, merge=True, **options)
 
         # FENCED LIKE A TRANSITION. `latest_checkpoint` is what the next
@@ -2082,7 +2126,10 @@ class ControlPlane:
         The count is read from the DOCUMENT inside the transaction, never from
         the task this worker fetched when it started. The scheduler's
         dispatch-failure path decided from its own snapshot and was one attempt
-        behind (`task_b568a623be8645eb87c6`, 2026-09-24).
+        behind (`task_b568a623be8645eb87c6`, 2026-09-24). `max_attempts` is the
+        other way round: it is covered by the spec signature, so once the spec
+        is verified it comes from the verified copy
+        (`pin_verified_max_attempts`, #346), never from the live field.
 
         Then the attempt's end, one event and the lease release, in the order
         `finish` uses. The task leaves the concurrency states before the pools
@@ -2099,7 +2146,12 @@ class ControlPlane:
             task = self._fenced_task(txn, write=write)
             current = _as_state(task.get("state"))
             attempt_count = int(task.get("attempt_count", 0))
-            max_attempts = int(task.get("max_attempts", 3))
+            # The verified spec's value once there is one (#346); before the
+            # spec is verified, the document is all there is.
+            pinned = self._verified_max_attempts
+            max_attempts = int(
+                task.get("max_attempts", 3) if pinned is _UNPINNED else pinned
+            )
             if task.get("cancel_requested"):
                 target = TaskState.CANCELLED
             elif retries_exhausted(attempt_count, max_attempts):

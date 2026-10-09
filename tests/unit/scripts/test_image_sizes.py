@@ -165,12 +165,15 @@ RELEASES = {
 }
 
 
-def _registry() -> tuple[dict, dict, dict[str, str]]:
+def _registry(image: str = "agent-runtime-base",
+              releases: dict | None = None) -> tuple[dict, dict, dict[str, str]]:
     served: dict[str, dict] = {}
     listing = []
     digests: dict[str, str] = {}
-    prefix = f"{PROJECT}/swarm-images/agent-runtime-base"
-    for name, (created, tags, layers, as_index) in RELEASES.items():
+    prefix = f"{PROJECT}/swarm-images/{image}"
+    for short, (created, tags, layers, as_index) in (releases or RELEASES).items():
+        # The image in every seed, so two images' releases never share a digest.
+        name = short if image == "agent-runtime-base" else f"{image}-{short}"
         manifest, config, config_digest = _image(name, layers)
         manifest_digest = _digest("manifest-" + name)
         served[f"{prefix}/blobs/{config_digest}"] = {"status": 200, "body": config}
@@ -196,16 +199,16 @@ def _registry() -> tuple[dict, dict, dict[str, str]]:
             manifest_digest = top
         else:
             served[f"{prefix}/manifests/{manifest_digest}"] = {"status": 200, "body": manifest}
-        digests[name] = manifest_digest
+        digests[short] = manifest_digest
         listing.append({
-            "package": PACKAGE, "version": manifest_digest, "tags": tags,
+            "package": f"{HOST}/{prefix}", "version": manifest_digest, "tags": tags,
             "createTime": created, "updateTime": created,
             "metadata": {"imageSizeBytes": str(sum(size for _, size, _ in layers))},
         })
     # The listing arrives newest first, as the registry's default order does
     # not promise one; the script must sort.
     listing.reverse()
-    return served, {PACKAGE: listing}, digests
+    return served, {f"{HOST}/{prefix}": listing}, digests
 
 
 @pytest.fixture()
@@ -307,9 +310,8 @@ def test_a_diff_naming_a_release_that_does_not_exist_fails(world):
     assert not [line for line in done.stdout.splitlines() if line.startswith("+")]
 
 
-def test_it_only_reads(world):
-    assert _run(world, "--layers").returncode == 0
-    assert _run(world, "--diff", "aaa111", "dev").returncode == 0
+def _assert_only_read(world: dict) -> None:
+    """Every call the runs so far made was a read: the listing, the token, GETs."""
     events = _events(world)
     gcloud = {tuple(e["args"][:4]) for e in events if e["tool"] == "gcloud"}
     assert gcloud <= {("auth", "print-access-token"), ("artifacts", "docker", "images", "list")}, gcloud
@@ -322,14 +324,24 @@ def test_it_only_reads(world):
         assert not writes & set(call["flags"]), call["argv"]
 
 
-def test_the_token_never_reaches_argv_or_output(world):
-    done = _run(world, "--layers")
-    assert done.returncode == 0, done.stderr
+def _assert_token_hidden(world: dict, done: subprocess.CompletedProcess) -> None:
     token = world["token"]
     assert token not in done.stdout and token not in done.stderr
     for call in _events(world):
         if call["tool"] == "curl":
             assert token not in json.dumps(call["argv"])
+
+
+def test_it_only_reads(world):
+    assert _run(world, "--layers").returncode == 0
+    assert _run(world, "--diff", "aaa111", "dev").returncode == 0
+    _assert_only_read(world)
+
+
+def test_the_token_never_reaches_argv_or_output(world):
+    done = _run(world, "--layers")
+    assert done.returncode == 0, done.stderr
+    _assert_token_hidden(world, done)
 
 
 def test_an_unreadable_registry_fails_loudly_and_prints_no_table(world):
@@ -361,6 +373,164 @@ def test_an_image_name_is_one_path_segment(world):
     done = _run(world, "--image", "../other-repo/x")
     assert done.returncode != 0
     assert not [e for e in _events(world) if e["tool"] == "curl"]
+
+
+# --- --manifest: what every promote writes to its job summary -----------------
+#
+# release-promote runs `--manifest build/deployed-images-<env>.json` after the
+# channel moves (.github/actions/release-promote/action.yml), so each release
+# records its runner images' sizes without anyone running the bisect by hand.
+
+BROWSER_RELEASES = {
+    "b1": ("2026-09-30T10:00:00Z", ["aaa111"], [("chromium", 300 * MB, "RUN apt-get chromium")], False),
+    "b2": ("2026-10-05T10:00:00Z", ["ccc333", "dev"],
+           [("chromium", 300 * MB, "RUN apt-get chromium"), ("fonts", 25 * MB, "RUN fonts")], False),
+}
+INDEXER_FIRST = {
+    "i1": ("2026-10-06T10:00:00Z", ["ddd444", "dev"], [("go", 70 * MB, "COPY /usr/local/go")], False),
+}
+
+
+def _add_image(world: dict, image: str, releases: dict) -> dict[str, str]:
+    served, listing, digests = _registry(image, releases)
+    for name, extra in (("registry.json", served), ("listing.json", listing)):
+        path = world["tmp"] / name
+        path.write_text(json.dumps({**json.loads(path.read_text()), **extra}))
+    return digests
+
+
+def _deployed(world: dict, images: list[tuple[str, str]], **override: str) -> Path:
+    """The deployed-images record push-images.sh writes, for IMAGES (name, digest)."""
+    entries = []
+    for name, digest in images:
+        image = override.get(name, f"{HOST}/{PROJECT}/swarm-images/{name}")
+        entries.append({"name": name, "image": image, "tag": "ccc333", "channel": "dev",
+                        "digest": digest, "ref": f"{image}@{digest}"})
+    path = world["tmp"] / "deployed-images-dev.json"
+    path.write_text(json.dumps({"tag": "ccc333", "channel": "dev", "promoted_at": "2026-10-05T11:00:00Z",
+                                "environment": "dev", "images": entries}))
+    return path
+
+
+def _table(stdout: str) -> dict[str, dict]:
+    """The markdown table's rows, by image."""
+    lines = [line for line in stdout.splitlines() if line.startswith("|")]
+    header = [cell.strip() for cell in lines[0].strip("|").split("|")]
+    assert header[:4] == ["image", "digest", "compressed_mb", "delta_mb"], lines[0]
+    rows = {}
+    for line in lines[2:]:
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        rows[cells[0]] = dict(zip(header, cells))
+    return rows
+
+
+def test_manifest_prints_each_runner_image_with_its_size_and_delta(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_RELEASES)
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"]),
+                               ("agent-runtime-browser", browser["b2"]),
+                               ("swarm-api", _digest("api"))])
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode == 0, done.stderr
+    rows = _table(done.stdout)
+    # Runner images only: swarm-api is promoted too, but no task starts in it.
+    assert sorted(rows) == ["agent-runtime-base", "agent-runtime-browser"], done.stdout
+    base, chrome = rows["agent-runtime-base"], rows["agent-runtime-browser"]
+    assert world["digests"]["r3"] in base["digest"]
+    # Measured as the default mode measures it: the linux/amd64 manifest's
+    # layers, never the arm64 one in r3's index.
+    assert (base["compressed_mb"], base["delta_mb"]) == ("412.0", "+132.0")
+    assert world["digests"]["r2"][:19] in base["against"]
+    assert (chrome["compressed_mb"], chrome["delta_mb"]) == ("325.0", "+25.0")
+    assert "2 runner images measured" in done.stderr
+    assert not [e for e in _events(world) if e["tool"] == "gcloud" and "swarm-api" in " ".join(e["args"])]
+
+
+def test_manifest_delta_is_against_the_newest_EARLIER_release(world):
+    # A hotfix or a redeploy can promote a digest older than the newest one in
+    # the registry; its delta is from the release before IT, not from r3.
+    done = _run(world, "--manifest", str(_deployed(world, [("agent-runtime-base", world["digests"]["r2"])])))
+    assert done.returncode == 0, done.stderr
+    base = _table(done.stdout)["agent-runtime-base"]
+    assert (base["compressed_mb"], base["delta_mb"]) == ("280.0", "+200.0")
+    assert world["digests"]["r1"][:19] in base["against"]
+
+
+def test_a_first_release_reads_as_having_no_previous_release_not_delta_0(world):
+    indexer = _add_image(world, "agent-runtime-indexer", INDEXER_FIRST)
+    done = _run(world, "--manifest", str(_deployed(world, [("agent-runtime-indexer", indexer["i1"])])))
+    assert done.returncode == 0, done.stderr
+    row = _table(done.stdout)["agent-runtime-indexer"]
+    assert row["compressed_mb"] == "70.0"
+    assert row["delta_mb"] == "no earlier release"
+    assert "0.0" not in row["delta_mb"]
+
+
+def test_an_image_missing_from_the_registry_fails_its_row_loudly(world):
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"]),
+                               ("agent-runtime-indexer", _digest("never-pushed"))])
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode != 0
+    rows = _table(done.stdout)
+    # The row is there, saying it was not measured -- not absent, not 0.
+    assert rows["agent-runtime-indexer"]["compressed_mb"] == "**not measured**", done.stdout
+    assert "agent-runtime-indexer" in rows["agent-runtime-indexer"]["against"]
+    assert "agent-runtime-indexer" in done.stderr and "not measured" in done.stderr
+    # One failed row does not cost the others theirs.
+    assert rows["agent-runtime-base"]["compressed_mb"] == "412.0"
+    assert "1 of 2 runner images not measured" in done.stderr
+    assert "2 runner images measured" not in done.stderr
+
+
+def test_a_digest_the_registry_does_not_list_fails_its_row(world):
+    done = _run(world, "--manifest", str(_deployed(world, [("agent-runtime-base", _digest("elsewhere"))])))
+    assert done.returncode != 0
+    assert _table(done.stdout)["agent-runtime-base"]["compressed_mb"] == "**not measured**"
+
+
+def test_a_record_from_another_repository_is_refused_without_a_read(world):
+    other = f"{HOST}/another-project/swarm-images/agent-runtime-base"
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"])], **{"agent-runtime-base": other})
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode != 0
+    assert _table(done.stdout)["agent-runtime-base"]["compressed_mb"] == "**not measured**"
+    assert not [e for e in _events(world) if e["tool"] == "curl"]
+
+
+def test_a_record_that_is_not_a_deployed_images_record_fails(world):
+    path = world["tmp"] / "deployed-images-dev.json"
+    path.write_text('{"images": "nope"}')
+    done = _run(world, "--manifest", str(path))
+    assert done.returncode != 0
+    assert "|" not in done.stdout
+
+
+def test_manifest_mode_only_reads_and_never_exposes_the_token(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_RELEASES)
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"]),
+                               ("agent-runtime-browser", browser["b2"])])
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode == 0, done.stderr
+    _assert_only_read(world)
+    _assert_token_hidden(world, done)
+
+
+def test_manifest_cannot_be_combined_with_a_single_image_mode(world):
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"])])
+    done = _run(world, "--manifest", str(record), "--diff", "aaa111", "dev")
+    assert done.returncode != 0
+    assert not _events(world)
+
+
+def test_help_prints_the_whole_header_and_nothing_else():
+    done = subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True, text=True,
+                          timeout=30, check=False)
+    assert done.returncode == 0
+    header = []
+    for line in SCRIPT.read_text().splitlines()[1:]:
+        if not line.startswith("#"):
+            break
+        header.append(line)
+    assert done.stdout.splitlines() == header
 
 
 @pytest.mark.parametrize("name", ["mapfile", "readarray", "declare -A", "${x,,}"])
