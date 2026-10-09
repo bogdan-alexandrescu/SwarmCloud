@@ -65,6 +65,7 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
         "swarm-tick",
         "swarm-verify",
         "swarm-rollup-sweeper",
+        "swarm-schedule-tick",
         "swarm-agent-worker-eng",
         "swarm-agent-worker-smoke",
         "swarm-agent-worker-u-bogdan",
@@ -82,12 +83,12 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
     error_message = "a per-account grant names another role, or another account than its key"
   }
 
-  # Nothing outside what infra manages: the platform accounts, the three
+  # Nothing outside what infra manages: the platform accounts, the four
   # singletons, and tenant workers.
   assert {
     condition = alltrue([
       for id in keys(google_service_account_iam_member.deployer_admin) :
-      contains(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-tick", "swarm-verify", "swarm-rollup-sweeper"], id) || startswith(id, "swarm-agent-worker-")
+      contains(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-tick", "swarm-verify", "swarm-rollup-sweeper", "swarm-schedule-tick"], id) || startswith(id, "swarm-agent-worker-")
     ])
     error_message = "the deployer is granted serviceAccountAdmin on an account terraform/infra does not manage"
   }

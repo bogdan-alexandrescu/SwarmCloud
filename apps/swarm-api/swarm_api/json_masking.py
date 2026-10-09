@@ -37,7 +37,9 @@ WHAT THIS DOES INSTEAD. A window that is JSON is masked by its TOKENS:
   * a NUMBER that holds one of the learned literals -- the number itself,
     inside a longer one, `N.0`, `Ne0` -- is replaced by `"********"` (the
     PR #378 review): a PIN the task named, echoed by the agent as a number,
-    was served in clear because only strings were compared;
+    was served in clear because only strings were compared. The rule is
+    `JsonMasker.number`, the one every other route masks a decoded number
+    with (#387), not a copy of it here;
   * a private key split over several strings is masked from the string
     holding its BEGIN marker through the one holding its END, whatever
     containers those strings sit in -- a flat list, an object's values, a
@@ -117,11 +119,13 @@ re-encoded with it escaped again, never raw, so serving it cannot raise.
 
 IMPORTS. `JsonMasker`, `Redacted`, `redact_lines`, `MASK` and
 `PEM_BLOCK_MAX_CHARS` are public names of `redaction.py`. `_masks_whole`,
-`_mask_literals`, `_open_key`, `_CREDENTIAL_KEY`, `_PEM_END` and `_PEM_HINT` are private
-ones, imported
-rather than restated: the decision "is this value a credential" must be the
-one `/input` and `/logs` make, and a second copy of it is how the two would
-drift (the PR description says so too).
+`_open_key`, `_CREDENTIAL_KEY`, `_PEM_END` and `_PEM_HINT` are private ones,
+imported rather than restated: the decision "is this value a credential"
+must be the one `/input` and `/logs` make, and a second copy of it is how the
+two would drift (the PR description says so too). A number holding a learned
+literal is decided by `JsonMasker.number` for the same reason: this module
+kept its own copy of that rule until #387 found `/input` and `/logs` serving
+in clear what the copy masked here.
 """
 
 from __future__ import annotations
@@ -140,7 +144,6 @@ from .redaction import (
     _CREDENTIAL_KEY,
     _PEM_END,
     _PEM_HINT,
-    _mask_literals,
     _masks_whole,
     _open_key,
     redact_lines,
@@ -576,7 +579,8 @@ def _walk(
             # itself, inside a longer number, `N.0`, `Ne0` -- is masked as a
             # string is (the PR #378 review); the number becomes the JSON
             # string `"********"`, as a number under a credential's name does.
-            _, found = _mask_literals(text[start:end], masker.literals)
+            # `JsonMasker.number` is the rule every route uses (#387).
+            found = masker.number(text[start:end])
             if found:
                 put(start, end, _MASKED, found)
 

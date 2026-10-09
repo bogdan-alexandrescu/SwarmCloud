@@ -29,7 +29,9 @@ from __future__ import annotations
 from .test_release_reuses_ci_images import _workflow
 from .test_workflow_id_token_scope import ID_TOKEN_REQUEST_VARS, _auth_steps
 
-NEEDS_ID_TOKEN = {"build", "promote", "infrastructure", "infrastructure-iam", "deploy", "acceptance"}
+# `acceptance` held it until 2026-10-08; it is accept.yml's now, under its own
+# identity (test_workflow_id_token_scope.py).
+NEEDS_ID_TOKEN = {"build", "promote", "infrastructure", "infrastructure-iam", "deploy"}
 
 
 def _jobs() -> dict:
