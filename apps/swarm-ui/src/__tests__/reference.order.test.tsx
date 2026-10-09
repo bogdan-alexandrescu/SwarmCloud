@@ -13,7 +13,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../App'
-import { noteFixtureProbe, route } from '../fetch'
+import { forgetProbes, noteFixtureProbe, route } from '../fetch'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -95,5 +95,28 @@ describe('API reads orders routes by what went wrong (#140)', () => {
     expect(screen.queryByRole('heading', { name: 'Routes called in this tab' })).toBeNull()
     expect(document.body.textContent ?? '').not.toMatch(/since this tab loaded/)
     expect(document.querySelector('.ctl-table caption')).toBeNull()
+  })
+})
+
+describe('API reads with nothing read draws its real zero with the Mark primitive (#76)', () => {
+  it('gives the empty state\'s mark an accessible sentence', async () => {
+    forgetProbes()
+    window.location.hash = '#reference'
+    render(<App />)
+    const empty = await waitFor(() => {
+      const e = document.querySelector('.ctl-empty')
+      expect(e, 'API reads drew no empty state').not.toBeNull()
+      return e as HTMLElement
+    })
+    // A hand-drawn `<i className="ctl-mark is-zero">` says the two words with
+    // nothing behind them. MUTATION: draw it by hand again; the role and the
+    // name are gone and this fails.
+    const marks = empty.querySelectorAll('.ctl-mark')
+    expect(marks).toHaveLength(1)
+    const mark = marks[0] as HTMLElement
+    expect(mark.classList.contains('is-zero')).toBe(true)
+    expect(mark.textContent).toBe('real zero')
+    expect(mark.getAttribute('role')).toBe('img')
+    expect(mark.getAttribute('aria-label') ?? '').toMatch(/nothing has been read/i)
   })
 })

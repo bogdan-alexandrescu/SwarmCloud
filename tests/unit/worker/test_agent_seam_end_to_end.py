@@ -45,6 +45,7 @@ tests are meant to be checking.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -372,6 +373,7 @@ def test_step_two_reads_the_bytes_step_ones_agent_wrote(
                 f"tenants/{TENANT}/tasks/task_produce/attempts/att_produce/"
                 f"artifacts/{FINDING_NAME}"
             ),
+            "sha256": hashlib.sha256(FINDING_TEXT.encode("utf-8")).hexdigest(),
         }
     ]
 

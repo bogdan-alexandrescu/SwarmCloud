@@ -60,7 +60,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
 | 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
-| 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | proposed (owner 2026-10-07: not accepted for now) |
+| 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed (owner 2026-10-07: not accepted for now), then accepted 2026-10-09) |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
@@ -9090,14 +9090,29 @@ of the field only by reading the worker.
 
 ## 52. `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED
 
-**Status:** proposed (owner 2026-10-07: not accepted for now). Filed
-2026-10-07 with #748 (a MERGE verdict starts a container only to open the
-pull request). The code that needs it ships
-switched off by this request: `swarm_api.verdictpublish.contract_allows` and
-the scheduler's hold (`scheduler.loop.Scheduler._held_for_control_publish`)
-both read `swarm_common.states.can_transition(PARKED, SUCCEEDED)`, so until
-this line is applied neither does anything and every MERGE workflow publishes
-through a worker exactly as before.
+**Status:** ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request
+that adds this line. History: proposed (owner 2026-10-07: not accepted for
+now), then accepted 2026-10-09, in the operator session; the brief that
+applied it is the record. This edits `apps/common/swarm_common/states.py`,
+which is frozen, and is recorded here as such. Filed 2026-10-07 with #748 (a
+MERGE verdict starts a container only to open the pull request).
+
+### What was applied
+
+Exactly the PARKED row of "The requested change" below, comment included, and
+nothing else in the frozen package. The code that needed it shipped switched
+off by this request and is unchanged:
+`swarm_api.verdictpublish.contract_allows` and the scheduler's hold
+(`scheduler.loop.Scheduler._held_for_control_publish`) both read
+`swarm_common.states.can_transition(PARKED, SUCCEEDED)`, which is now true,
+so a MERGE verdict's one-contributor integrator is published by swarm-api
+without a worker. Proved by `tests/unit/common/test_parked_to_succeeded.py`
+(the edge, every other PARKED edge unchanged, PARKED -> RUNNING still
+refused) and section 8 of `tests/unit/control_plane/test_verdict_publish.py`
+(the publish and the scheduler hold on the real state machine, no stand-in),
+committed red before the change.
+
+The request as it was filed follows, unchanged.
 
 ### What is true today
 

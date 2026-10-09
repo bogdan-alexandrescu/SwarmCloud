@@ -36,6 +36,7 @@ import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
+import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -1845,11 +1846,12 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
         // A REAL ZERO, and the one screen in the product where that is true by
         // construction: this page issues no reads of its own. `.is-partial`
         // and `.is-failed` would both be claims; the default variant is the
-        // one that means "we looked and there is nothing".
+        // one that means "we looked and there is nothing". Drawn by `Mark`, not
+        // by hand, so the two words carry their sentence as an accessible name.
         <div className="ctl-empty">
           <h3>
-            <i className="ctl-mark is-zero">real zero</i> Nothing has been read
-            yet in this tab
+            <Mark kind="zero" say="Nothing has been read yet in this tab: this page issues no reads of its own." />{' '}
+            Nothing has been read yet in this tab
           </h3>
           <p>Nothing failed. Open any section and each read registers here.</p>
         </div>
