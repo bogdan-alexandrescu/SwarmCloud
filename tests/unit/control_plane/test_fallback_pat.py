@@ -565,3 +565,70 @@ def test_a_person_with_only_owner_tokens_can_disconnect(api, github, db, slots):
     assert answer.json()["owner_tokens_revoked"] == [PAT_ORG]
     assert answer.json()["grants_deleted"] == 1
     assert slots.latest("eng", _slot()) is None and _org_doc(db) is None
+
+
+# -- failures never leave an enabled version nothing names (review, credentials) ----
+
+
+class _DisableFails:
+    """Wraps FakeSlots: `disable` fails while `failing` is set."""
+
+    def __init__(self, slots: FakeSlots) -> None:
+        self.failing = True
+        self._real = slots.disable
+        slots.disable = self  # type: ignore[method-assign]
+
+    def __call__(self, tenant_id: str, suffix: str) -> int:
+        if self.failing:
+            raise RuntimeError("secret manager unavailable")
+        return self._real(tenant_id, suffix)
+
+
+def test_a_disable_that_fails_keeps_the_owner_so_removing_it_again_finds_the_token(
+        api, github, db, slots):
+    assert _store(api, github.pat()).status_code == 200
+    token_id = _org_doc(db)["token_id"]
+    seed_grant(db, "eng", ALICE, REPO)
+    failing = _DisableFails(slots)
+
+    answer = api.delete(f"/v1/access/orgs/{PAT_ORG}", headers=auth_header("alice"))
+    assert answer.status_code == 503, answer.text
+    assert _org_doc(db) is not None, "the document that finds the slot again was removed"
+    assert db.docs[f"git_tokens/{token_id}"]["state"] == "active"
+
+    failing.failing = False
+    answer = api.delete(f"/v1/access/orgs/{PAT_ORG}", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert slots.latest("eng", _slot()) is None and _org_doc(db) is None
+    assert db.docs[f"git_tokens/{token_id}"]["state"] == "revoked"
+
+
+def test_a_disconnect_whose_disable_fails_keeps_the_owner_for_the_next_one(
+        api, github, db, slots):
+    assert _store(api, github.pat()).status_code == 200
+    failing = _DisableFails(slots)
+    answer = api.delete("/v1/onboarding/github", headers=auth_header("alice"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["owner_tokens_revoked"] == []
+    assert _org_doc(db) is not None
+    failing.failing = False
+    answer = api.delete("/v1/onboarding/github", headers=auth_header("alice"))
+    assert answer.json()["owner_tokens_revoked"] == [PAT_ORG]
+    assert slots.latest("eng", _slot()) is None and _org_doc(db) is None
+
+
+def test_a_store_that_fails_after_the_version_disables_it_again(
+        api, github, db, slots, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    def broken(self, *args, **kwargs):  # noqa: ANN001
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(gittokens.GitTokens, "_store_probe", broken)
+    token = github.pat()
+    answer = _store(api, token)
+    assert answer.status_code == 503, answer.text
+    assert slots.versions("eng", _slot()) == 1
+    assert slots.latest("eng", _slot()) is None, "a stored value is left enabled, unnamed"
+    assert _org_doc(db) is None
+    _no_value_anywhere(db, github, [answer.text, caplog.text])
