@@ -1562,8 +1562,7 @@ TOOLS: list[dict[str, Any]] = [
             "confirms it: the bridge asks them, through this host's own prompt, "
             "to type the account's label, and nothing the caller passes counts "
             "as that answer. A host that cannot ask its human sends nothing, and "
-            "the reply names the `sc account remove` command to run in a "
-            "terminal instead. The broker removes the pool entry and KEEPS the "
+            "the reply names the terminal command that asks there instead. The broker removes the pool entry and KEEPS the "
             "account's secret (its answer, returned verbatim, says so). Drain it "
             "first if agents are running on it."
         ),
