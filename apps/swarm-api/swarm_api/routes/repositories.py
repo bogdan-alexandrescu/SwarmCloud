@@ -18,6 +18,15 @@ Who may register: any member of the tenant, as for issue runs. The design's
 this API does not have yet; a platform admin acts in a tenant only as a member
 of it, like everywhere else here.
 
+`platform` (docs/schedules.md §4.4, lane S11) is the one exception to "any
+member": a create or PATCH that CARRIES it -- true or false -- passes
+`require_admin` first, before the forge is read or anything is written, so a
+member's answers 403 and an unresolved directory 503. Even then the admin
+acts as a member of the tenant they are in: the registration is read with
+`tenant_scope`, so an admin marks only their own tenant's repositories, which
+is where §4.6 puts the platform's. The change and its `admin_audit` entry
+commit in one transaction (`repositories.Repositories.patch` and `create`).
+
 THE INDEX ROUTES (lane RI2, repo-index.md §6.1) are below the registration
 routes: `GET/POST /{repo_id}/index` (and `POST /{repo_id}/index:run`, the
 design's name for "Index now"), `GET /{repo_id}/index/runs` and
@@ -49,7 +58,7 @@ from fastapi.responses import JSONResponse
 
 from swarm_common.models import Tenant
 
-from ..auth import AuthContext
+from ..auth import AuthContext, require_admin
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..forgeapp import Caller
 from .access import get_access
@@ -118,6 +127,16 @@ def _tenant(ctx: AppContext, tenant_id: str, auth: AuthContext) -> Tenant:
     )
 
 
+def _platform_admin(fields: set[str], auth: AuthContext) -> str | None:
+    """The admin's email when the body carries `platform`, None when it does
+    not. A member's answers 403 here (503 when the directory did not say),
+    before anything is read or written."""
+    if "platform" not in fields:
+        return None
+    require_admin(auth)
+    return auth.email
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_repository(
     body: RepositoryCreate,
@@ -127,6 +146,7 @@ def create_repository(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    platform_by = _platform_admin(body.model_fields_set, auth)
     tenant = _tenant(ctx, tenant_id, auth)
     # The caller's own GitHub connection when they have one (lane OB4).
     credential = get_access(request).credential_for(
@@ -135,6 +155,7 @@ def create_repository(
         record, created = register(
             body, tenant, created_by=auth.email, store=_store(ctx),
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now, credential=credential,
+            platform_by=platform_by,
         )
     except ForgeReadError as refused:
         log.info("repository register tenant=%s outcome=%s", tenant_id, refused.code)
@@ -209,7 +230,8 @@ def patch_repository(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    record = _store(ctx).patch(tenant_id, repo_id, body)
+    platform_by = _platform_admin(body.model_fields_set, auth)
+    record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
