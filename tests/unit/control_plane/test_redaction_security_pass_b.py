@@ -170,6 +170,12 @@ def test_every_literal_in_one_call_is_masked():
         '{"token": null, "other": "value"}',
         '{"token": count(1), "other": "value"}',
         "token == 'abc'",
+        # Code a served patch has to keep (#370): a regular expression, a
+        # format string, a short code string.
+        '_TOKEN = re.compile(r"[a-z0-9]+")',
+        'token = stamp.strftime("%Y-%m-%d")',
+        '_MASK_TOKEN = json.dumps("mask")',
+        'token = raw.decode("utf-8")',
     ],
 )
 def test_a_name_inside_code_is_served(line):
