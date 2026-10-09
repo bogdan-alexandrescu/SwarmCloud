@@ -45,7 +45,9 @@ ACCEPTANCE = ROOT / "scripts" / "acceptance"
 CONFIG = ACCEPTANCE / "config.sh"
 LIB = ACCEPTANCE / "lib.sh"
 COMMON = ROOT / "scripts" / "lib" / "common.sh"
-RELEASE = ROOT / ".github" / "workflows" / "release.yml"
+#: Where acceptance runs since 2026-10-08 (cut A of the release timing
+#: report): a workflow of its own, after release.yml completes.
+ACCEPT = ROOT / ".github" / "workflows" / "accept.yml"
 
 #: The repository the owner created for acceptance on 2026-10-05: private,
 #: default branch main.
@@ -179,13 +181,9 @@ def _acceptance_files() -> list[Path]:
 
 
 def _acceptance_job_text() -> str:
-    """The `acceptance:` job of release.yml as written, comments included."""
-    text = RELEASE.read_text()
-    match = re.search(r"(?m)^  acceptance:\n", text)
-    assert match, "release.yml has no `acceptance` job"
-    rest = text[match.end():]
-    end = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n|^  # -{10,}", rest)
-    return rest[: end.start()] if end else rest
+    """accept.yml as written, comments included: every job in it drives the
+    suite, the sandbox or the report."""
+    return ACCEPT.read_text()
 
 
 def test_the_guard_pattern_catches_every_spelling_and_not_the_sandbox():
@@ -405,16 +403,17 @@ def test_no_acceptance_group_fetches_from_raw_githubusercontent():
 
 
 # ---------------------------------------------------------------------------
-# The release's wiring
+# accept.yml's wiring (acceptance left release.yml on 2026-10-08)
 # ---------------------------------------------------------------------------
 
 
-def _job() -> dict:
-    return yaml.safe_load(RELEASE.read_text())["jobs"]["acceptance"]
+def _jobs() -> dict:
+    data = yaml.safe_load(ACCEPT.read_text())
+    return data["jobs"]
 
 
 def _steps_running(script: str) -> list[dict]:
-    return [s for s in _job()["steps"] if script in str(s.get("run", ""))]
+    return [s for job in _jobs().values() for s in job.get("steps") or [] if script in str(s.get("run", ""))]
 
 
 def test_the_release_sweeps_the_sandbox_with_the_sandbox_token_not_the_github_token():
@@ -425,19 +424,27 @@ def test_the_release_sweeps_the_sandbox_with_the_sandbox_token_not_the_github_to
 
 
 def test_the_release_syncs_the_fixtures_into_the_sandbox_before_the_suite():
-    steps = _job()["steps"]
-    sync = next(i for i, s in enumerate(steps) if "sandbox-sync.sh" in str(s.get("run", "")))
-    suite = next(i for i, s in enumerate(steps) if "verify-remote.sh" in str(s.get("run", "")))
-    assert sync < suite
-    env = steps[sync].get("env", {})
+    jobs = _jobs()
+    (sync,) = _steps_running("sandbox-sync.sh")
+    env = sync.get("env", {})
     assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    syncing = [j for j, job in jobs.items() if sync in (job.get("steps") or [])]
+    suites = [j for j, job in jobs.items() if any("verify-remote.sh \"acceptance/" in str(s.get("run", "")) for s in job.get("steps") or [])]
+    assert suites, "no job runs the suite"
+    for job_id in suites:
+        needs = jobs[job_id].get("needs") or []
+        assert syncing[0] in needs, f"{job_id} can start before the fixtures are on the sandbox"
 
 
 def test_the_acceptance_job_cannot_write_to_the_public_repository():
-    perms = _job().get("permissions", {})
-    assert perms.get("contents") in (None, "read"), perms
-    assert perms.get("pull-requests") in (None, "read", "none"), perms
-    assert perms.get("id-token") == "write", "the suite still runs through verify-remote.sh"
+    for job_id, job in _jobs().items():
+        perms = job.get("permissions", {})
+        assert perms.get("contents") in (None, "read"), (job_id, perms)
+        assert perms.get("pull-requests") in (None, "read", "none"), (job_id, perms)
+    for job_id in ("acceptance", "acceptance-2"):
+        assert _jobs()[job_id]["permissions"].get("id-token") == "write", "the suite still runs through verify-remote.sh"
+    top = yaml.safe_load(ACCEPT.read_text())["permissions"]
+    assert top == {"contents": "read"}, top
 
 
 def test_the_sandbox_sync_script_is_wired_as_an_entry_script():
@@ -701,23 +708,31 @@ def test_verify_writes_nothing_to_github():
 
 
 def test_the_release_reads_the_pull_requests_back_with_the_sandbox_token_before_the_sweep():
-    steps = _job()["steps"]
+    jobs = _jobs()
+    results = jobs["sandbox-results"]
+    steps = results["steps"]
 
     def at(script: str) -> int:
         return next(i for i, s in enumerate(steps) if script in str(s.get("run", "")))
 
-    suite, verify, sweep = at("verify-remote.sh"), at("github-verify.sh"), at("github-cleanup.sh")
-    assert suite < verify < sweep, "the read-back runs after the suite and before anything is closed"
+    verify, sweep = at("github-verify.sh"), at("github-cleanup.sh")
+    assert verify < sweep, "the read-back runs before anything is closed"
+    # After every group, whatever they concluded: a failed suite's pull
+    # requests are read back too.
+    assert {"acceptance", "acceptance-2"} <= set(results.get("needs") or [])
+    assert "!cancelled()" in str(results.get("if", ""))
     step = steps[verify]
-    assert "!cancelled()" in str(step.get("if", "")), "a failed suite's pull requests are read back too"
     env = step.get("env", {})
     assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
     assert "github.token" not in str(step)
     # It judges only what this run opened: SINCE comes from a step that ran
-    # before the suite started.
-    started = next(i for i, s in enumerate(steps) if s.get("id") == "started")
-    assert started < suite
-    assert "steps.started.outputs.at" in str(env.get("SWARM_ACCEPTANCE_SINCE", ""))
+    # before the fixtures were synced, and so before any group started.
+    sandbox = jobs["sandbox"]["steps"]
+    started = next(i for i, s in enumerate(sandbox) if s.get("id") == "started")
+    sync = next(i for i, s in enumerate(sandbox) if "sandbox-sync.sh" in str(s.get("run", "")))
+    assert started < sync
+    assert "needs.sandbox.outputs.since" in str(env.get("SWARM_ACCEPTANCE_SINCE", ""))
+    assert jobs["sandbox"]["outputs"]["since"] == "${{ steps.started.outputs.at }}"
     # The sweep is not skipped when the read-back fails.
     assert "!cancelled()" in str(steps[sweep].get("if", ""))
 

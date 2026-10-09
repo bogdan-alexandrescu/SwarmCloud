@@ -42,6 +42,19 @@ the test plan), and the graph explorer's reads `GET /{repo_id}/graph`,
 registration first, with the caller's tenant. Everything else is
 `swarm_api.impact`'s; these routes log counts and codes, never a token,
 a path or a symbol name.
+
+THE KNOWLEDGE-GRAPH READS (lane KG3, docs/design/knowledge-graph.md §6) close
+the file: `POST /{repo_id}/search` (BM25 over KG2's term index),
+`GET /{repo_id}/communities` and `POST /{repo_id}/territory` (files ->
+callers, tests, seams, communities, and the overlap with the repository's
+open pull requests and the tenant's live issue runs). Same rule again: the
+registration first, with the caller's tenant, so another tenant's `repo_id`
+is a 404 before any shard or forge read. Every answer carries an ETag over
+its body and answers a matching `If-None-Match` with 304, POSTs included:
+the body is a function of the request, the graph's digest and the
+freshness, and the metric middleware's `swarm_api_requests_total{status=
+"3xx"}` over the route's total is the hit rate. Everything else is
+`swarm_api.territory`'s.
 """
 
 from __future__ import annotations
@@ -79,6 +92,21 @@ from ..impact import (
     symbol_tests,
 )
 from ..repograph import NoGraph
+from ..territory import (
+    SearchRequest,
+    TerritoryRequest,
+    check_community_id,
+    communities_table,
+    expand,
+    format_version,
+    live_lanes,
+    open_pull_requests,
+    overlap_lanes,
+    overlap_pull_requests,
+    search,
+    seam_table,
+    territory_paths,
+)
 from ..repoindex import (
     MAX_CURSOR_CHARS,
     RUNS_PAGE_MAX,
@@ -622,3 +650,135 @@ def repository_test_map(
              tenant_id, repo_id, graph is not None, len(page["edges"]), page["total"])
     return {**answer, **_staleness(version, fresh),
             "graph_digest": graph.digest if graph is not None else None, **page}
+
+
+# --------------------------------------------------------------------------
+# the knowledge-graph reads (lane KG3)
+# --------------------------------------------------------------------------
+
+def _tagged(request: Request, body: dict, route: str, tenant_id: str, repo_id: str) -> Response:
+    """`body` with its ETag, or a 304 when the caller already holds it."""
+    etag = _etag_of(body)
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    hit = _matches(request.headers.get("if-none-match"), etag)
+    log.info("repository %s tenant=%s repo_id=%s etag=%s", route, tenant_id, repo_id,
+             "hit" if hit else "miss")
+    if hit:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return JSONResponse(body, headers=headers)
+
+
+@router.post("/{repo_id}/search")
+def repository_search(
+    repo_id: str,
+    body: SearchRequest,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> Response:
+    """The symbols that best match a query: BM25 over KG2's term index (§4.1)."""
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, body.sha)
+    if version is None:
+        raise NoGraph("no index has been promoted for this repository, so it has no graph")
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is None:
+        raise NoGraph(f"the index of commit {version.get('commit_sha')} has no graph")
+    # Not cached: a query reads its own few term buckets, and a cache of
+    # every distinct query would evict the module drawings and seam tables
+    # that `graphs.view` exists to keep.
+    found = search(graph, body.q, body.limit)
+    answer = {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+              "graph_digest": graph.digest, "format_version": format_version(graph),
+              "q": body.q, **found}
+    log.info("repository search tenant=%s repo_id=%s method=%s hits=%d", tenant_id, repo_id,
+             found["method"], len(found["symbols"]))
+    return _tagged(request, answer, "search", tenant_id, repo_id)
+
+
+@router.get("/{repo_id}/communities")
+def repository_communities(
+    repo_id: str,
+    request: Request,
+    id: str | None = Query(default=None, min_length=1, max_length=200),
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> Response:
+    """KG2's module communities, each with its files; `?id=` one of them (§4.7)."""
+    community = check_community_id(id) if id is not None else None
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    if version is None:
+        raise NoGraph("no index has been promoted for this repository, so it has no graph")
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is None:
+        raise NoGraph(f"the index of commit {version.get('commit_sha')} has no graph")
+    table = communities_table(graph, community)
+    answer = {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+              "graph_digest": graph.digest, **table}
+    return _tagged(request, answer, "communities", tenant_id, repo_id)
+
+
+@router.post("/{repo_id}/territory")
+def repository_territory(
+    repo_id: str,
+    body: TerritoryRequest,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> Response:
+    """Files -> their expanded territory, its seams, and who else holds it (§4.6, §4.8).
+
+    The graph's part (callers, tests, seams, communities) is computed once
+    per graph digest, index digest and request. The overlap is read on every
+    request: the open pull requests (kept `territory.OPEN_PULLS_TTL_SECONDS`)
+    and the tenant's live issue runs. Without a promoted graph the named
+    files are still checked for overlap, and `graph_digest` is null.
+    """
+    service = _impact(ctx)
+    record, version, fresh = service.version_and_freshness(tenant_id, repo_id, body.sha)
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is not None and version is not None:
+        # The seam ranks read the whole repository: once per digest. The
+        # expansion reads only the named modules' shards and is not cached,
+        # for the reason the search is not.
+        def seams() -> dict:
+            return seam_table(graph, service.index.read_version(tenant_id, version))
+        table = service.graphs.view(
+            (tenant_id, repo_id, graph.digest, version.get("digest"), "seams"), seams)
+        expanded = expand(graph, body.files, depth=body.depth, seams=table)
+        staleness = _staleness(version, fresh)
+    else:
+        expanded = {"named": body.files, "unknown": [], "callers": [], "tests": [],
+                    "seams": [], "communities": [], "cut": {"below_floor": 0, "judged": 0},
+                    "truncated": []}
+        staleness = {"index_sha": None, "head_sha": fresh["head_sha"],
+                     "behind_by": fresh["behind_by"], "stale": fresh["stale"],
+                     "freshness": fresh}
+    paths = territory_paths(expanded)
+    seams = {s["path"] for s in expanded["seams"]}
+    overlap: dict = {"pull_requests_read": None, "pull_requests": [],
+                     "pull_requests_unread": [], "pull_requests_truncated": False,
+                     "lanes": [], "lanes_undeclared": [], "lanes_truncated": False}
+    if body.pull_requests:
+        snapshot = open_pull_requests(ctx, record, _tenant(ctx, tenant_id, auth),
+                                      ctx.store.get_tenant(tenant_id))
+        overlap["pull_requests_read"] = {"ok": snapshot["ok"], "code": snapshot["code"],
+                                         "read_at": snapshot["read_at"]}
+        overlap.update(overlap_pull_requests(snapshot, paths, seams, body.exclude_pull_requests))
+    if body.lanes:
+        lanes, more = live_lanes(ctx.db, tenant_id, str(record["owner"]), str(record["repo"]),
+                                 now=ctx.now, exclude=body.exclude_runs)
+        overlap.update(overlap_lanes(lanes, paths, seams), lanes_truncated=more)
+    answer = {"repo_id": repo_id, "tenant_id": tenant_id, **staleness,
+              "graph_digest": graph.digest if graph is not None else None,
+              "format_version": format_version(graph) if graph is not None else None,
+              "depth": body.depth, **expanded, "overlap": overlap}
+    # Counts only: a path, a title or a run's plan is the tenant's.
+    log.info("repository territory tenant=%s repo_id=%s named=%d callers=%d tests=%d seams=%d "
+             "pulls=%d lanes=%d", tenant_id, repo_id, len(body.files), len(expanded["callers"]),
+             len(expanded["tests"]), len(expanded["seams"]), len(overlap["pull_requests"]),
+             len(overlap["lanes"]))
+    return _tagged(request, answer, "territory", tenant_id, repo_id)

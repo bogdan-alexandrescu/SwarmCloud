@@ -1051,6 +1051,9 @@ with the section that carries the detail:
   the owner decided it is not** — recorded as an accepted residual, R4 (§7,
   §11 open question (b)). **Status, 2026-10-01: closed for every workflow
   once #457 is merged and the bootstrap root is applied** — see R4.
+  The bootstrap apply, and the check that it took effect, is
+  [runbooks/deployer-trust-pin.md](runbooks/deployer-trust-pin.md). It is still
+  pending.
 * **M5.** A required check with no `app_id` is refused, never satisfied by a
   legacy commit status (§5.2, §6).
 * Minors, round 1–2: worker-action profiles skip checkpoint restore (§1.3);
@@ -2542,6 +2545,13 @@ review**, or **the merge credential**.
   which only the owner applies; until that apply, a workflow file that is not
   on the list and grants itself `id-token` (for example `ci-fix.yml`, which
   does at workflow level) can still present a token the deployer accepts.
+  The owner applies it, and checks the result against the live IAM policy, with
+  [runbooks/deployer-trust-pin.md](runbooks/deployer-trust-pin.md):
+  `scripts/verify-deployer-trust.sh` before (it fails, naming the `repo_ref`
+  member), `scripts/bootstrap.sh --target
+  'google_service_account_iam_member.deployer_wif'`, then the verifier again
+  (`checked N members, all pinned to workflow files`) and the next run on `main`.
+  This closes only when that runbook's log has a row.
   What remains by design: every job that legitimately authenticates runs
   merged code as the deployer, which is what `touches_protected_paths` (T6)
   is for. Release `verify` does not authenticate; these do, each from a

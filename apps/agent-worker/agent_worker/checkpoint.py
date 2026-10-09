@@ -144,7 +144,9 @@ MANIFEST_NAME = "manifest.json"
 #: rebuildable by `npm ci` and never the agent's work, wherever it sits. The
 #: other entries are HOME's, so a `.cache` inside the checkout is kept. What
 #: stays in regardless: the CLIs' session transcripts (`.claude/`, `.codex/`),
-#: which are not caches.
+#: which are not caches -- and which carry the task's prompt, word for word,
+#: as their first user message. They stay by the owner's decision on #244
+#: (2026-09-27); see `create()`.
 TOOL_CACHES: tuple[str, ...] = (
     ".cache",
     ".npm",
@@ -922,6 +924,15 @@ class CheckpointManager:
         # `_prepare` writes it from the task document at every attempt, AFTER
         # the restore (STEP 4) and before the runner starts, so a resumed
         # attempt reads the one it wrote, never an archived one.
+        #
+        # Leaving `input.json` out does NOT keep the prompt out of the archive
+        # (issue #244). HOME is `work/`, so the CLI's own session transcript --
+        # `work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
+        # `work/.codex/sessions/.../*.jsonl` for Codex -- is archived too, and
+        # it holds the prompt as its first user message. It stays, by the
+        # owner's decision on #244 (2026-09-27), and the archive download
+        # serves it as stored. See `swarm_api.task_input`'s module docstring
+        # and docs/agent-output.md.
         #
         # The tool caches under HOME (`TOOL_CACHES`, #286) are left out by
         # `_write_archive` itself, which matches them as it walks.
