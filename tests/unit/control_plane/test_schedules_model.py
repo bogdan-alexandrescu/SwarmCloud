@@ -601,6 +601,28 @@ def test_patch_refuses_merge_auto_and_a_type_change(root):
         _patch(revision=1, type="observer")
 
 
+def test_a_scope_edit_meets_the_same_creator_rule_as_a_create(root, monkeypatch):
+    observer = _build(root, type="observer", cron="0 6 * * *")
+    to_platform = _patch(revision=1, scope={"mode": "platform"})
+    for kw in ({}, {"is_admin": True}):
+        with pytest.raises(Forbidden) as caught:
+            _edit(root, observer, to_platform, **kw)
+        assert _code(caught) == "owner_required"
+    assert _edit(root, observer, to_platform, is_owner=True)["scope"] == {"mode": "platform", "repo_ids": []}
+    # A member's edit that leaves the scope as it is, or keeps it member-level, is not refused.
+    assert _edit(root, observer, _patch(revision=1, scope={"mode": "repos", "repo_ids": ["repo_a"]}))["revision"] == 2
+    assert _edit(root, observer, _patch(revision=1, scope={"mode": "all"}))["scope"]["mode"] == "all"
+    (root / "cost_report.py").write_text("")
+    module = types.ModuleType(scheduletypes.get("cost-report").module)
+    module.BUDGET_CAPS = BudgetCaps(1, 2, 1)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    report = _build(root, type="cost-report", cron="0 6 * * *")
+    with pytest.raises(Forbidden) as caught:
+        _edit(root, report, to_platform)
+    assert _code(caught) == "admin_required"
+    assert _edit(root, report, to_platform, is_admin=True)["scope"]["mode"] == "platform"
+
+
 def test_a_member_edit_keeps_an_admins_territory_guard_choice(root):
     stored = _build(root, params={"territory_guard": False}, is_admin=True)
     edited = _edit(root, stored, _patch(revision=1, params={"cooldown_hours": 24}))

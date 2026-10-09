@@ -702,9 +702,17 @@ def apply_edit(
     registered_repo_ids: Iterable[str],
     existing_names: Iterable[str] = (),
     is_admin: bool = False,
+    is_owner: bool = False,
+    platform_repository: bool = False,
     root: Path = EXECUTOR_DIR,
 ) -> dict[str, Any]:
     """The document after `PATCH` (§7.1). A stale revision is 409 `schedule_changed`.
+
+    A changed scope is held to the creator rule a create meets (§3, §3.13):
+    otherwise a member could create `observer` on `repos` and edit it to the
+    owner-only `platform` scope, which reads every tenant's aggregates.
+    `platform_repository` is whether the new scope names a repository
+    registered `platform: true` (S11); the caller resolves it.
 
     The stored gate, budget and policy are the base the patch is laid over,
     not the type's current defaults: an edit of one field never resets
@@ -726,6 +734,15 @@ def apply_edit(
         doc["name"] = patch.name
     if patch.scope is not None:
         doc["scope"] = resolve_scope(entry, patch.scope, registered_repo_ids)
+        if doc["scope"] != stored["scope"]:
+            check_creator(
+                entry,
+                doc["scope"]["mode"],
+                is_admin=is_admin,
+                is_owner=is_owner,
+                platform_repository=platform_repository,
+                merge_auto=stored["gate"].get("merge") == "auto",
+            )
     if patch.cron is not None:
         doc["cron"] = " ".join(patch.cron.split())
     if patch.timezone is not None:
