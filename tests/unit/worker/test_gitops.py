@@ -149,6 +149,38 @@ def test_a_token_with_url_metacharacters_is_percent_encoded(tmp_path):
     assert line.count("@") == 1
 
 
+@pytest.mark.parametrize("planted", ["directory", "non-empty directory"])
+def test_a_directory_at_the_credential_files_name_is_a_git_error(tmp_path, planted):
+    """`private/` shares a uid with the agent, so it can plant a folder at
+    `.git-credentials`. unlink refuses a folder with EISDIR, an OSError that
+    every caller let escape the publish as a crash (#346). It is a GitError,
+    naming the errno and never the path or the token."""
+    token = "tok" + "x" * 30
+    target = tmp_path / ".git-credentials"
+    target.mkdir()
+    if planted == "non-empty directory":
+        (target / "inside").write_text("planted\n")
+
+    with pytest.raises(GitError) as raised:
+        gitops._write_credentials("https://github.com/saga/repo.git", token, tmp_path)
+
+    message = str(raised.value)
+    assert token not in message
+    assert str(tmp_path) not in message
+    assert "IsADirectoryError" in message or "EISDIR" in message or "EPERM" in message
+    assert target.is_dir(), "the planted folder was not the worker's to remove"
+
+
+def test_an_unwritable_credential_folder_is_a_git_error(tmp_path):
+    """The folder the file goes in failing to be made is the same failure."""
+    blocker = tmp_path / "private"
+    blocker.write_text("a file where the folder should be\n")
+    with pytest.raises(GitError):
+        gitops._write_credentials(
+            "https://github.com/saga/repo.git", "tok" + "y" * 30, blocker
+        )
+
+
 def test_the_credential_file_is_removed_even_when_the_clone_fails(tmp_path, monkeypatch):
     """A file that outlives the clone is a token available to the agent for the
     whole attempt, so removal happens in a `finally`, on the failure path too."""
