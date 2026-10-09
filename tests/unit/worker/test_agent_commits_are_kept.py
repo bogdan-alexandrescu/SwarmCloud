@@ -1197,13 +1197,17 @@ def test_an_ey_run_that_is_not_a_jwt_passes(worker_factory, path):
         ("aaaaaaaa11111111", False),  # low entropy
         ("p4ssw0rd-p4ssw0rd", False),  # low entropy
         ("********", False),
-        (_shape("xxxx", _random_token(16)), False),
         (_shape("<", _random_token(16), ">"), False),
         (_shape("${", _random_token(16), "}"), False),
-        (_shape("fake", _random_token(16)), False),
-        (_shape(_random_token(16), "Test"), False),
-        (_shape("dummy", _random_token(16)), False),
-        (_shape(_random_token(16), "EXAMPLE"), False),
+        ("test-token-value-1", False),
+        ("fake-" + "a1b2" * 3, False),
+        # A placeholder only removes what it covers; a credential-shaped rest
+        # is still one, and a word glued to it is no placeholder (#361 box 72).
+        (_shape("xxxx", _random_token(16)), True),
+        (_shape("fake", _random_token(16)), True),
+        (_shape(_random_token(16), "Test"), True),
+        (_shape("dummy-", _random_token(16)), True),
+        (_shape(_random_token(16), "EXAMPLE"), True),
     ],
 )
 def test_what_counts_as_credential_shaped(value, shaped):
