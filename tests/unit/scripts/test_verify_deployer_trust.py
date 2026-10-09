@@ -259,6 +259,7 @@ def test_an_empty_expected_set_fails(tmp_path):
     proc = Verifier(tmp_path, _policy(), expected={}).run()
     assert proc.returncode != 0, proc.output
     assert "all pinned" not in proc.output, proc.output
+    assert "no github_principals" in proc.output, proc.output
 
 
 @pytest.mark.parametrize(
@@ -272,9 +273,13 @@ def test_an_empty_expected_set_fails(tmp_path):
 def test_a_provider_condition_admitting_pull_requests_or_nothing_fails(tmp_path, condition):
     """The boundary tests/terraform/bootstrap.tftest.hcl asserts on the rendered
     condition, read live. MUTATION: skip the provider read."""
-    proc = Verifier(tmp_path, _policy(*_expected().values()), condition=condition).run()
+    verifier = Verifier(tmp_path, _policy(*_expected().values()), condition=condition)
+    proc = verifier.run()
     assert proc.returncode != 0, proc.output
     assert "all pinned" not in proc.output, proc.output
+    assert any(call[:4] == ["iam", "workload-identity-pools", "providers", "describe"]
+               for call in verifier.calls("gcloud")), "the provider was never read"
+    assert ("refs/pull/" if condition else "NO attribute condition") in proc.output, proc.output
 
 
 def test_an_unreadable_policy_fails_and_is_not_read_as_empty(tmp_path):
@@ -285,6 +290,8 @@ def test_an_unreadable_policy_fails_and_is_not_read_as_empty(tmp_path):
     proc = verifier.run()
     assert proc.returncode != 0, proc.output
     assert "all pinned" not in proc.output, proc.output
+    assert "get-iam-policy failed" in proc.output, proc.output
+    assert "PERMISSION_DENIED" in proc.output, "gcloud's own error must reach the operator, redacted"
 
 
 # ---------------------------------------------------------------------------
