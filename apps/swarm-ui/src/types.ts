@@ -5148,7 +5148,10 @@ export interface WorkspaceView {
   request_id?: string | null
   requested_at?: string | null
   requested_via?: string | null
-  decision?: { verdict: string | null; reason: string | null; at: string | null } | null
+  /** `auto` is true when nobody clicked: the requester is an admin, whose own request is approved automatically (docs/workspaces.md §1.3, owner 2026-10-09). */
+  decision?: { verdict: string | null; reason: string | null; at: string | null; auto?: boolean } | null
+  /** Set on a `requested` record that is not approved automatically because the person's tenant predates self-service setup and is being migrated (§3.3); `copy` is the server's sentence. */
+  held?: { reason: string; copy: string } | null
   limits?: Record<string, number>
   steps?: Record<string, WorkspaceJobStep>
   /** `copy` is §4.3's, served from the code, word for word. */

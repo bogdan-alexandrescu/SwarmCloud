@@ -172,8 +172,12 @@ def approve_workspace(
     auth: AuthContext = Depends(admin_auth),
     people: People = Depends(people_service),
 ) -> dict:
-    """From `requested`, or `denied` at any time. An admin may approve their
-    own request; the audit entry says so (`detail.self_approval`)."""
+    """From `requested`, or `denied` at any time. An admin's OWN request is
+    approved automatically when they make it (`POST /v1/workspace`, owner
+    decision 2026-10-09), through the same `People._approve_in`; one that is
+    still `requested` (made before they were an admin) may be approved here,
+    and the audit entry says so (`detail.self_approval`). A workspace whose
+    tenant predates self-service setup is refused `WORKSPACE_MIGRATING` (§3.3)."""
     return people.approve(workspace_id, by=auth.email)
 
 

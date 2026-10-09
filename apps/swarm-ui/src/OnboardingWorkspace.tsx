@@ -170,10 +170,14 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
       break
     case 'requested':
       body = (
-        <p className="ur-hint ob-line">
-          Workspace requested{id !== null && <> (<code>{id}</code>)</>} — waiting for an admin to approve
-          {requestedAt !== null && <span className="ob-at"> · {timeAgo(requestedAt, now)}</span>}
-        </p>
+        <>
+          <p className="ur-hint ob-line">
+            Workspace requested{id !== null && <> (<code>{id}</code>)</>}
+            {record.held != null ? ' — being migrated' : ' — waiting for an admin to approve'}
+            {requestedAt !== null && <span className="ob-at"> · {timeAgo(requestedAt, now)}</span>}
+          </p>
+          {record.held != null && <p className="ur-small">{record.held.copy}</p>}
+        </>
       )
       break
     case 'approved':
@@ -193,6 +197,9 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
               </>
             )}
           </p>
+          {record.decision?.auto === true && (
+            <p className="ur-small">Approved automatically, because you are an admin.</p>
+          )}
           {record.state === 'needs_owner' && (
             <p className="ur-small">Approved. A change needs the platform owner&apos;s review before it can finish.</p>
           )}
