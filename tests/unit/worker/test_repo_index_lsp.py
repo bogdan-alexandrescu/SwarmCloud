@@ -294,8 +294,12 @@ def test_requests_that_time_out_mark_the_language_timed_out(tool: Any, lsp: Any,
     repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
     spec = _fake(lsp, tmp_path, {"mode": "hang"})
     started = time.monotonic()
+    # The warm-up window covers `initialize`, which the fake does answer: 0.2s
+    # lost that race to a cold interpreter start on a loaded runner, and the
+    # language failed on initialize instead of on the hung queries. The first
+    # query then waits out this window too, so it stays well inside 30s.
     index = tool.extract(repo, tool.Budget(), lsp=_options(
-        lsp, spec, request_timeout_seconds=0.2, warmup_timeout_seconds=0.2))
+        lsp, spec, request_timeout_seconds=0.2, warmup_timeout_seconds=5))
     assert time.monotonic() - started < 30
     python = _language(index, "python")
     assert python["status"] == "timed_out"
@@ -504,8 +508,10 @@ def test_lsp_edges_come_only_from_ok_languages(tool: Any, lsp: Any, tmp_path: Pa
     hcl = _fake(lsp, tmp_path, {"mode": "hang"}, name="tf", languages=("hcl",),
                 ids={".tf": "terraform"}, call_hierarchy=False, references=True,
                 reference_kinds=("variable",))
+    # Wide enough that the answering python fake never times out on a loaded
+    # runner (0.2s did, and python came back timed_out); hcl still hangs.
     index = tool.extract(repo, tool.Budget(), lsp=_options(
-        lsp, python, hcl, request_timeout_seconds=0.2, warmup_timeout_seconds=0.2))
+        lsp, python, hcl, request_timeout_seconds=1, warmup_timeout_seconds=5))
     language_of = {s["id"]: s["language"] for s in index["symbols"]}
     status = {entry["language"]: entry["status"] for entry in index["languages"]}
     assert status["python"] == "ok" and status["hcl"] == "timed_out"

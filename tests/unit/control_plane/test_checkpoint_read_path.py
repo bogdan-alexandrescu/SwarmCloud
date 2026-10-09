@@ -443,6 +443,13 @@ def test_a_pointer_outside_this_task_is_a_finding_not_a_current_checkpoint(clien
     assert pointer["status"] == "outside_this_task"
     assert pointer["checkpoint_id"] is None
     assert "would ignore it" in pointer["detail"]
+    # The worker has no fallback (#347, `CheckpointManager.find_by_uri`): a
+    # refused pointer restores NOTHING. A detail that named "the newest
+    # committed checkpoint" told the UI to present a checkpoint no attempt
+    # recorded -- a planted one -- as the restore source (#346).
+    assert "empty workspace" in pointer["detail"]
+    assert "fall back" not in pointer["detail"]
+    assert "newest" not in pointer["detail"]
 
 
 def test_a_pointer_at_a_reclaimed_checkpoint_says_missing(client, db, objects):

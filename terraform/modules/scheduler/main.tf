@@ -206,3 +206,43 @@ resource "google_pubsub_subscription_iam_member" "dlq_subscriber" {
   role         = "roles/pubsub.subscriber"
   member       = local.pubsub_agent
 }
+
+# The schedule tick's identity (docs/schedules.md §2.1, owner decision SD10,
+# 2026-10-08): the account the one every-minute POST /v1/admin/schedules/tick
+# job presents to swarm-api. Its own account, not the rollup sweeper's. The
+# tick reads due schedules across every tenant, personal ones included, which
+# is a different reach from the sweeper's per-tenant routes. So swarm-api
+# admits this address to that one route (auth.SCHEDULE_TICK_ROUTES, through
+# the SCHEDULE_TICK_USERS the root renders) and the sweeper's route set is not
+# widened. It submits nothing as itself: a firing is submitted as the
+# schedule's stored owner (§2.7).
+#
+# Its one grant is run.invoker on swarm-api (terraform/infra main.tf,
+# schedule_tick_invokes_api), so Cloud Run's edge lets it reach the route
+# check. No project role and no other resource grant:
+# tests/terraform/schedule_tick_identity.tftest.hcl reads every IAM resource
+# in terraform/ and fails on a second one.
+#
+# The account id is spelled in modules/service_account_ids, so
+# terraform/bootstrap grants the release deployer serviceAccountAdmin on it
+# (bootstrap/deployer_service_accounts.tf). NO create_ignore_already_exists,
+# for the reason modules/iam gives for swarm-tick (#334). The release creates
+# the account, and its deployer.tf actAs on it 403s until the owner applies
+# bootstrap's grant from main. Then the release is re-run (docs/ci.md, "A new
+# account exists before the release that adds it").
+#
+# The job itself is lane S4's (jobs.tf); this lane makes only the identity, so
+# the IAM change is held at dev-iam alone, with no job riding on it.
+resource "google_service_account" "schedule_tick" {
+  project      = var.project_id
+  account_id   = module.service_account_ids.schedule_tick_id
+  display_name = "Swarm Schedule Tick"
+  description  = "managed-by=swarm-terraform; OIDC identity of the schedule tick. swarm-api admits it to POST /v1/admin/schedules/tick only. run.invoker on swarm-api; no project roles."
+}
+
+locals {
+  # Built from the account id rather than read from `.email`, which a mock
+  # provider (tests/terraform) leaves unknown at plan, as rollup_sweeper_email
+  # is in jobs.tf.
+  schedule_tick_email = "${google_service_account.schedule_tick.account_id}@${var.project_id}.iam.gserviceaccount.com"
+}

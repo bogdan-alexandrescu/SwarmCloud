@@ -60,6 +60,7 @@ it.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -134,6 +135,11 @@ class StagedInput:
     #: True when a restored checkpoint already contained the file, so this
     #: attempt did not fetch it again. See `stage_inputs`.
     from_checkpoint: bool = False
+    #: The hex sha256 of the file as it was staged: what this step READ,
+    #: measured by the worker. A review's findings are pinned to lines of the
+    #: patch it read, and this is how the console tells that patch from the
+    #: one it is showing (`verdict.reviewed_patches`, diff viewer variant 3).
+    sha256: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         record: dict[str, Any] = {
@@ -144,6 +150,8 @@ class StagedInput:
         }
         if self.uri:
             record["uri"] = self.uri
+        if self.sha256:
+            record["sha256"] = self.sha256
         if self.from_checkpoint:
             record["from_checkpoint"] = True
         return record
@@ -536,6 +544,15 @@ def artifact_key(
 # ---------------------------------------------------------------------------
 
 
+def _sha256(path: Path) -> str:
+    """The hex sha256 of a staged file, read in blocks: inputs reach 16 MiB."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def stage_inputs(
     declared: list[DeclaredInput],
     *,
@@ -582,6 +599,7 @@ def stage_inputs(
                     path=destination.relative_to(work).as_posix(),
                     size_bytes=destination.stat().st_size,
                     from_checkpoint=True,
+                    sha256=_sha256(destination),
                 )
             )
             logger.info(
@@ -667,6 +685,7 @@ def stage_inputs(
                 path=destination.relative_to(work).as_posix(),
                 size_bytes=size,
                 uri=reference.uri,
+                sha256=_sha256(destination),
             )
         )
         logger.info(

@@ -501,120 +501,104 @@ function Lost({ lost }: { lost: Recorded[] }) {
 }
 
 /**
- * WHAT A RETRY WOULD RESTORE FROM, as the strip's `restore` fact -- which is
- * not always what `task.latest_checkpoint` points at.
+ * WHAT A RETRY WOULD RESTORE FROM, as the strip's `restore` fact -- the
+ * checkpoint `task.latest_checkpoint` names, or nothing.
  *
- * THE WORKER'S RULE (`_restore_checkpoint`, agent_worker/lifecycle.py): try
- * the pointer with `find_by_uri`, and when that resolves to nothing -- no
- * pointer, a pointer outside this task's prefix, a checkpoint no longer in
- * the bucket -- fall back to `find_latest`, the newest committed checkpoint
- * whose manifest it can read and owns. So:
+ * THE WORKER'S RULE (`Worker._recorded_checkpoint`, agent_worker/lifecycle.py,
+ * since #347): restore ONLY the checkpoint the pointer names, resolved by
+ * `find_by_uri` inside this task's own prefix and bound to the attempt
+ * document that recorded it. When that resolves to nothing -- no pointer, a
+ * pointer outside this task's prefix, a checkpoint no longer in the bucket --
+ * it restores NOTHING and starts from an empty workspace. There is no
+ * fallback to `find_latest`, the newest committed checkpoint under the
+ * prefix: every agent of the tenant can write there, so "the newest" is
+ * whatever was last planted. So:
  *
  *   present   the pointer's own checkpoint, and its table row says `latest`;
- *   otherwise `newest committed` and the listing's newest resumable row,
- *             ordered as the worker orders them (the manifest's `created_at`,
- *             then `seq`), or `none listed`.
+ *   otherwise `none · empty workspace`, and never another row's id.
  *
- * THIS SAID SOMETHING ELSE, and both were false (fix-up on #170). For
- * `missing` and `outside_this_task` it printed the pointer, which the server
- * itself warns is "a restore source that will never be used" (inspect.py
- * `_pointer_status`) -- and for `outside_this_task` that was a raw `gs://`
- * path in a `span` nothing lets wrap. For `unset` it said "a retry starts
- * from the beginning", which is true only when no committed checkpoint is
- * listed at all: `find_latest` runs whether or not a pointer was ever set.
+ * THIS SAID SOMETHING ELSE TWICE. Before #170's fix-up it printed the pointer
+ * for `missing` and `outside_this_task`, which the server itself warns is "a
+ * restore source that will never be used" (inspect.py `_pointer_status`).
+ * Then, until #346, it named "newest committed" and the listing's newest
+ * resumable row -- the fallback #347 removed -- so a checkpoint planted under
+ * this task's prefix was presented as what a retry would restore.
  *
  * THE ANSWER IS QUALIFIED WHERE THE LISTING CANNOT VOUCH FOR IT, with the
- * kit's marks and never a sentence on the glass: `partial` for a cut listing
- * and for a newer row that is committed but not resumable here (a worker
- * skips one it refuses, but would try one whose archive has gone, and fail);
- * `not read` for a manifest nobody could read, which may be the newest a
- * worker finds.
+ * kit's marks and never a sentence on the glass: `partial` for a pointer
+ * whose checkpoint is listed but would be refused, and for `missing` on a cut
+ * listing (the server looks the pointer up in what it listed); `not read`
+ * for a pointer whose manifest nobody could read, and for a listing that did
+ * not complete.
  */
 function PointerFact({ page }: { page: CheckpointsPage }) {
   const p = page.latest_checkpoint
+  const q = restoreQualifiers(page)
+  const marks = (
+    <>
+      {q.partial.length > 0 && (
+        <>
+          {' '}
+          <Mark kind="partial" say={q.partial.join(' ')} />
+        </>
+      )}
+      {q.unread.length > 0 && (
+        <>
+          {' '}
+          <Mark kind="unread" say={q.unread.join(' ')} />
+        </>
+      )}
+    </>
+  )
   if (p.status === 'present' && p.checkpoint_id !== null) {
     return (
       <li className="ctl-fact">
         <b>restore</b>
         <code className="mono">{p.checkpoint_id}</code>
+        {marks}
       </li>
     )
   }
-  const f = restoreFallback(page)
   return (
     <li className="ctl-fact">
       <b>restore</b>
-      newest committed ·{' '}
-      {f.row === null ? 'none listed' : <code className="mono">{idOf(f.row)}</code>}
-      {f.partial.length > 0 && (
-        <>
-          {' '}
-          <Mark kind="partial" say={f.partial.join(' ')} />
-        </>
-      )}
-      {f.unread.length > 0 && (
-        <>
-          {' '}
-          <Mark kind="unread" say={f.unread.join(' ')} />
-        </>
-      )}
+      none · empty workspace
+      {marks}
     </li>
   )
 }
 
-/** A checkpoint named with its attempt: two attempts can share an id. */
-function idOf(c: CheckpointRecord): string {
-  return `${c.attempt_id}/${c.checkpoint_id}`
-}
-
 /**
- * `find_latest`'s answer, as far as this listing can give it.
- *
- * The worker compares `(created_at, seq)` from each manifest -- `created_at`
- * as the ISO string it is -- so this does exactly that, over the rows whose
- * manifest was read. A row whose manifest was not read has no key and no
- * resumability; it is counted into the `not read` qualifier instead of being
- * ordered by a guess.
+ * Where this listing cannot vouch for the restore fact. Every sentence is
+ * about the POINTER's checkpoint; none names another row, because no other
+ * row is ever restored.
  */
-function restoreFallback(page: CheckpointsPage): {
-  row: CheckpointRecord | null
-  partial: string[]
-  unread: string[]
-} {
-  const read = page.checkpoints
-    .filter((c) => c.resumable !== null)
-    .sort((a, b) => {
-      const at = (b.created_at ?? '').localeCompare(a.created_at ?? '')
-      return at !== 0 ? at : (b.seq ?? -1) - (a.seq ?? -1)
-    })
-  const i = read.findIndex((c) => c.resumable === true)
-  const row = i === -1 ? null : read[i]!
-  const skipped = (i === -1 ? read : read.slice(0, i)).filter((c) => c.resumable === false)
-
+function restoreQualifiers(page: CheckpointsPage): { partial: string[]; unread: string[] } {
+  const p = page.latest_checkpoint
   const partial: string[] = []
-  if (page.truncated) {
-    partial.push('The scan limit cut this listing short, so a newer committed checkpoint may be past the cut.')
-  }
-  if (page.next_page_token !== null) {
-    partial.push('More pages of this listing remain unread, and a newer committed checkpoint may be on one of them.')
-  }
-  if (skipped.length > 0) {
-    const names = skipped.map(idOf).join(', ')
-    partial.push(
-      `${names} ${skipped.length === 1 ? 'is' : 'are'} ${row === null ? '' : 'newer and '}not resumable here. A resuming worker takes the newest checkpoint whose manifest it can read and owns, so it may try ${skipped.length === 1 ? 'that one' : 'one of those'} first.`,
-    )
-  }
   const unread: string[] = []
   if (!page.listed) {
-    unread.push('The listing did not complete, so which checkpoint a retry would restore from is unknown.')
+    unread.push('The listing did not complete, so whether the recorded checkpoint is in the bucket is unknown.')
   }
-  const blind = page.checkpoints.filter((c) => c.resumable === null).length
-  if (blind > 0) {
-    unread.push(
-      `${blind} checkpoint manifest${blind === 1 ? '' : 's'} could not be read here, and a worker that can read ${blind === 1 ? 'it' : 'one'} may restore from ${blind === 1 ? 'it' : 'that one'} instead.`,
+  if (p.status === 'present') {
+    // The pointer's row may be on another page; it is qualified only when
+    // this page holds it.
+    const row = page.checkpoints.find((c) => c.is_latest_pointer)
+    if (row?.resumable === false) {
+      partial.push(
+        `A worker would refuse ${p.checkpoint_id ?? 'the recorded checkpoint'} and start from an empty workspace${row.resumable_detail ? `: ${row.resumable_detail.replace(/\.$/, '')}` : ''}.`,
+      )
+    } else if (row?.resumable === null) {
+      unread.push(
+        `The manifest of ${p.checkpoint_id ?? 'the recorded checkpoint'} could not be read here, so whether a worker would restore it or start from an empty workspace is unknown.`,
+      )
+    }
+  } else if (p.status === 'missing' && page.truncated) {
+    partial.push(
+      'The scan limit cut this listing short, so the recorded checkpoint may be past the cut rather than gone, and a retry may restore it.',
     )
   }
-  return { row, partial, unread }
+  return { partial, unread }
 }
 
 /**
@@ -622,11 +606,11 @@ function restoreFallback(page: CheckpointsPage): {
  * about what a resume would DO, which no cell can say.
  *
  * `outside_this_task` is a FINDING, not a formatting case: a resuming worker
- * ignores such a pointer and falls back to the newest committed checkpoint it
- * can find, so the pointer is not the restore source. The strip's `restore`
- * fact names what is. This sentence said the task "would restart from
- * nothing", in the same sentence as the server's detail saying it falls back
- * -- and that is false whenever a resumable checkpoint is listed.
+ * refuses such a pointer and, with no fallback since #347, starts from an
+ * empty workspace -- whatever else is listed. The strip's `restore` fact says
+ * the same. This sentence used to say the worker "falls back to the newest
+ * committed checkpoint it can find", which is the fallback #347 removed
+ * (#346).
  *
  * THE SERVER'S DETAIL CONTINUES THE CLAUSE, AFTER A DASH. It is written
  * lowercase ("the pointer names a checkpoint of this task that is no longer
@@ -671,8 +655,8 @@ function PointerFinding({ page, finished }: { page: CheckpointsPage; finished: b
             tail
           ) : (
             <>
-              , which is not under this task&apos;s prefix, so a resuming worker ignores it and falls back to the newest
-              committed checkpoint it can find.
+              , which is not under this task&apos;s prefix, so a resuming worker refuses it and starts from an empty
+              workspace.
             </>
           )}
         </p>

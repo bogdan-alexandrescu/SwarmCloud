@@ -89,7 +89,9 @@ def test_each_job_runs_only_on_the_gates_output():
         "workflows": "needs.changes.outputs.app == 'true'",
         "integration": "needs.changes.outputs.app == 'true'",
         "manifests": "needs.changes.outputs.app == 'true'",
-        "build-check": "github.event_name == 'pull_request' && needs.changes.outputs.app == 'true'",
+        # `images` is false when app is (the images step says so first), and
+        # test_build_images_local.py runs that step against the plan's answer.
+        "build-check": "github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'",
     }
     for job_id, condition in expected_if.items():
         assert "changes" in _needs(jobs[job_id]), f"{job_id} does not need changes"

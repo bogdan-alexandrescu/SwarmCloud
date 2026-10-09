@@ -160,6 +160,7 @@ import {
   WfStepMark,
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
+import { WorkflowChangesTab } from './WorkflowChanges'
 import './styles/workflows.css'
 import './styles/names.css'
 import {
@@ -1137,7 +1138,11 @@ export function WorkflowCard({
   // always passes both, so on the real screen these are never read.
   const [localView, setLocalView] = useState<WorkflowView>(viewProp ?? 'graph')
   const [localPick, setLocalPick] = useState<string | null>(null)
-  const view: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
+  const asked: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
+  // A CARD DRAWS THE GRAPH, THE TABLE OR THE TIMELINE. Changes is a tab of the
+  // workflow's page, drawn there in place of the board (WorkflowChanges.tsx),
+  // so a card that is somehow asked for it draws its graph.
+  const view = asked === 'changes' ? 'graph' : asked
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
@@ -1945,7 +1950,7 @@ function WorkflowSteps({
   usage: UsageRead
   /** The table's head-row title, where it sits under the Graph. */
   title?: string | null
-  view: Exclude<WorkflowView, 'graph'>
+  view: Exclude<WorkflowView, 'graph' | 'changes'>
   picked: string | null
   onPick: (stepId: string) => void
   /** The inspector, drawn under the picked row or track (#110); null when it is docked or closed. */
@@ -5063,7 +5068,14 @@ function WorkflowPage({
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
       <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
-      <Board board={board} stores={stores} focus={focus} usage={usage} />
+      {/* THE CHANGES TAB (diff-viewer.md §2 variants 2 + 5) is drawn in
+          place of the board: it is a reading of the steps' patches, not a
+          drawing of the steps. */}
+      {query.tab === 'changes' ? (
+        <WorkflowChangesTab workflow={workflow} taskById={board.taskById} />
+      ) : (
+        <Board board={board} stores={stores} focus={focus} usage={usage} />
+      )}
     </div>
   )
 }
@@ -5113,8 +5125,8 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
   )
 }
 
-/** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline. */
-const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
+/** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline, Changes. */
+const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline', 'changes']
 
 /**
  * UNDERLINE TABS UNDER THE TITLE (workflows.html B; components.html A

@@ -11,6 +11,7 @@ from it" are different claims.
 from __future__ import annotations
 
 import json
+import tarfile
 
 import pytest
 
@@ -161,3 +162,43 @@ def test_checkpoints_are_recorded_on_the_attempt_document(db, store, tmp_path, w
     attempt = db.doc("attempts/att_1")
     assert attempt["checkpoints"], "the final checkpoint must be recorded on the attempt"
     assert EventType.CHECKPOINT_COMPLETED.value in db.event_types("task_1")
+
+
+def test_a_file_that_shrinks_under_the_read_is_archived_as_read(
+    store, tmp_path, log_stream, monkeypatch
+):
+    """A runner rewriting a file mid-checkpoint does not fail the checkpoint.
+
+    The control-plane-outage checkpoint (#70) is taken with the runner alive,
+    and the mock runner rewrites `state.json` with `write_text` every step.
+    Truncated after the fstat, the file came up short of the size in its tar
+    header, `tarfile` raised "unexpected end of data", and the one checkpoint
+    that exit takes was lost (PR #942's red run). The truncation is made here
+    deterministically, right after `gettarinfo`'s fstat.
+    """
+    logger = build_logger(
+        task_id="task_1", attempt_id="att_1", tenant_id=TENANT, generation=1,
+        runner_profile="mock", stream=log_stream,
+    )
+    ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    state = ws.work / "state.json"
+    state.write_text(json.dumps({"completed_steps": 1, "pad": "x" * 4000}))
+    (ws.work / "steady.txt").write_text("unchanged\n")
+
+    real = tarfile.TarFile.gettarinfo
+
+    def gettarinfo(self, name=None, arcname=None, fileobj=None):
+        info = real(self, name, arcname, fileobj)
+        if arcname == "state.json":
+            state.write_text("{}")  # the runner's rewrite lands after the fstat
+        return info
+
+    monkeypatch.setattr(tarfile.TarFile, "gettarinfo", gettarinfo)
+    _manager(store, logger).create(ws, label="control_plane_outage")
+    monkeypatch.undo()
+
+    resumed = workspace_mod.create(tmp_path / "ws2", "att_2")
+    manager2 = _manager(store, logger, attempt_id="att_2", generation=2)
+    manager2.restore(manager2.find_latest(), resumed)
+    assert (resumed.work / "steady.txt").read_text() == "unchanged\n"
+    assert (resumed.work / "state.json").read_text() == "{}"

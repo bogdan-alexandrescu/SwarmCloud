@@ -518,8 +518,10 @@ export async function loadResourceClasses(): Promise<Result<{ resource_classes: 
  * A task's checkpoints, across every attempt.
  *
  * `GET /v1/tasks/{id}/checkpoints`. Newest attempt first, newest checkpoint
- * first within an attempt -- which is the order a resume would consider them
- * in, because `CheckpointManager.find_latest` scans the whole task prefix.
+ * first within an attempt. That is a reading order, not a resume order: a
+ * resume restores only the checkpoint `task.latest_checkpoint` names (the
+ * page's `latest_checkpoint`, and the row with `is_latest_pointer`), or
+ * nothing -- there is no fallback to the newest one listed (#347).
  *
  * NO EMPTY PREDICATE IS PASSED, deliberately. `checkpoints: []` with
  * `listed: true` is a real answer -- this task has written none -- and the
@@ -5189,9 +5191,41 @@ export async function loadRepositories(): Promise<Result<RepoRecord[]>> {
   return readAs(route('/v1/repositories'), normRepoList, (d) => d.length === 0)
 }
 
-/** `GET /v1/repositories/{repo_id}`: one registration, its last index runs and who used its index. */
-export async function loadRepository(repoId: string): Promise<Result<RepoDetail | null>> {
-  return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), normRepoDetail)
+/**
+ * The registration fields the hard stops read (docs/schedules.md §4.4, lane
+ * S11): `platform`, set and cleared by a platform admin only, and
+ * `hard_stop_paths`, whose `floor` (the four defaults, served by the API so
+ * this file does not restate them) a member cannot remove.
+ */
+export interface RepoHardStops {
+  platform: boolean
+  hard_stop_paths: string[]
+  floor: string[]
+}
+
+/**
+ * The hard-stop fields of a registration, or null when the API did not serve
+ * them (one older than S11): an absent list is not an empty one, and an
+ * absent `platform` is not a confident "no".
+ */
+export function normRepoHardStops(raw: unknown): RepoHardStops | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  if (typeof rec.platform !== 'boolean' || !Array.isArray(rec.hard_stop_paths)) return null
+  const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  return { platform: rec.platform, hard_stop_paths: strings(rec.hard_stop_paths), floor: strings(rec.hard_stop_paths_floor) }
+}
+
+/** A registration's detail with its hard-stop fields, read from the one answer. */
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+
+/** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
+export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
+  return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
+    const d = normRepoDetail(raw)
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+  })
 }
 
 /** `GET /v1/repositories/{repo_id}/index?format=json`: the current index's structured document. */
