@@ -60,7 +60,10 @@
 #   * per listed job: a job whose image is pinned by digest and which already
 #     has a successful execution on that same image is skipped, by name, in
 #     the output. That is the per-digest import already paid, by the previous
-#     release's warm run or by a tenant task. A job new in this release (a new
+#     release's warm run or by a tenant task -- a premise still UNMEASURED on
+#     2026-10-09 (box 94, #888): docs/ci.md gives the one read-only command
+#     that settles whether an import survives a long idle gap, and what to
+#     change here if it does not. A job new in this release (a new
 #     tenant or profile) has none, and is warmed even when no digest changed,
 #     which a comparison of manifests alone would miss. A listing of
 #     executions that fails warms the job, as before. A job named on the

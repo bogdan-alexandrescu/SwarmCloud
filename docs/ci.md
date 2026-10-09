@@ -3154,6 +3154,41 @@ job new in this release (a new tenant or profile) has no such execution and is
 warmed even when no digest changed, which comparing manifests alone would
 miss.
 
+**That skip's premise is still unmeasured (2026-10-09, box 94 of #888).** It
+assumes the import is paid once per digest for good. #363's 2026-10-07 reading
+(497 claude-code executions over 09-30..10-07: "first execution of each job
+after a new digest 30-59 s, every later start 1-3 s") is consistent with that
+over gaps of up to a week, but it never compared a digest's start after a long
+idle gap with one after a short gap, so a cache Cloud Run evicts after some
+idle time would read the same. The lane sent to measure it on 2026-10-09
+could not read anything: from a SwarmCloud worker,
+`gcloud run jobs executions list` is denied `run.jobs.list`,
+`gcloud logging read` is denied every log view, and the API answers 401 at
+IAP. So the code is unchanged and no numbers are recorded here. The
+measurement is one read-only command for an operator, per job: it prints,
+for every execution after the first on a digest, the hours since that job's
+previous execution of the same digest, the `ContainerReady` import seconds,
+and the start time.
+
+```bash
+gcloud run jobs executions list --job swarm-job-eng-claude-code \
+  --project saga-agents-staging --region us-central1 --limit 500 --format=json \
+| jq -r 'def secs: capture("in (?:(?<m>[0-9]+)m)?(?<s>[0-9.]+)s")
+           | ((.m // "0" | tonumber) * 60 + (.s | tonumber));
+  [.[] | {t: (.metadata.creationTimestamp | sub("\\.[0-9]+Z$"; "Z") | fromdate),
+          img: ([.spec | .. | objects | .image? // empty][0]),
+          imp: ([.status.conditions[]? | select(.type == "ContainerReady")
+                 | .message | secs][0])} | select(.imp != null)]
+  | sort_by(.t) | group_by(.img)[] | . as $r | range(1; length) as $i
+  | [(($r[$i].t - $r[$i-1].t) / 3600 | floor), $r[$i].imp, ($r[$i].t | todate)]
+  | @tsv'
+```
+
+If the rows with a gap of a day or more show 1-3 s like the rest, the premise
+holds and this paragraph records the numbers. If they show the 30-59 s of a
+fresh digest, `already_started()` must count only executions newer than the
+largest gap that still read 1-3 s.
+
 ## Release acceptance runs in the smoke tenant, against a private sandbox
 
 `accept.yml` runs `scripts/acceptance/` after every dev deploy
