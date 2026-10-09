@@ -332,11 +332,8 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
-<<<<<<< HEAD
               <WorkspaceStepDetail step={s} reload={reload} />
-=======
               {probeErrorLine(s) !== null && <p className="ur-hint ob-probe">{probeErrorLine(s)}</p>}
->>>>>>> 2215e9d5 (fix: count required setup steps, re-probe an errored token after the retry, name a user slot's grant)
               {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
                 <p className="ur-hint ob-help">
                   Connecting authorised the App to act as you; installing it on your account or an org is what lets it

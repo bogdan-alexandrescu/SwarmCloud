@@ -67,7 +67,7 @@ const NULL_REQUIRED_UNDONE = doc([
 const DENIED = "swarm-api may not read swarm-tenant-eng-git-u-0123456789abcdef: its conditional project grant on tenant eng's GitHub user slots is missing"
 
 function probed(evidence: Record<string, unknown>) {
-  return doc([{ step: 'signed_in', state: 'done' }, { ...REST[0], state: 'in_progress', evidence: { ...CONNECTED, ...evidence } }, ...REST.slice(1)])
+  return doc([{ step: 'signed_in', state: 'done' }, { step: 'github_connected', state: 'in_progress', required: true, evidence: { ...CONNECTED, ...evidence } }, ...REST.slice(1)])
 }
 
 async function load() {
