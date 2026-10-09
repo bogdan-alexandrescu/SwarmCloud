@@ -67,6 +67,16 @@ GENERIC_BASENAMES=" __init__.py conftest.py README.md main.py app.py config.py m
 PYTEST_SECONDS=540
 PARITY_SECONDS=60
 
+# NAMING THE SLOW TEST (box 102, #888). Lanes hit the 540 s cap with nothing
+# saying which test held it. `--durations=10` lists the ten slowest on any run
+# that ends by itself; it does NOT print when `timeout` kills pytest (measured
+# 2026-10-09 under -n 2: SIGTERM leaves no report, SIGINT leaves an xdist
+# teardown traceback). So pytest's faulthandler also dumps the stack of any
+# test still running after FAULTHANDLER_SECONDS, which names its file, line and
+# function, and an overrun prints those frames. 60 s because the whole fixed
+# guard set runs in about 50 s: a single test past a minute is the suspect.
+FAULTHANDLER_SECONDS=60
+
 usage() {
   sed -n '4p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2
 }
@@ -200,10 +210,19 @@ failed=0
 step "pytest: ${#selected[@]} file(s), -n auto"
 pytest_status=0
 (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" -m pytest -q -n auto -p no:warnings \
+  --durations=10 -o "faulthandler_timeout=${FAULTHANDLER_SECONDS}" \
   ${selected[@]+"${selected[@]}"}) >"${log}" 2>&1 || pytest_status=$?
 tail -n 25 "${log}" | redact
 if [[ "${pytest_status}" -eq 124 ]]; then
   err "pytest ran past ${PYTEST_SECONDS} s"
+  # The dumps sit far above the tail; print only their frames in a test file.
+  if grep -E '^ *File ".*/test_[^/"]*\.py", line [0-9]+ in ' "${log}" | sort -u >"${work}/stuck" \
+      && [[ -s "${work}/stuck" ]]; then
+    err "still running after ${FAULTHANDLER_SECONDS} s (faulthandler):"
+    redact <"${work}/stuck" >&2
+  else
+    err "no test ran past ${FAULTHANDLER_SECONDS} s: many moderate tests filled the cap; read the log's durations"
+  fi
 fi
 if [[ "${pytest_status}" -ne 0 ]]; then
   err "pytest failed (exit ${pytest_status}); full output: ${log}"

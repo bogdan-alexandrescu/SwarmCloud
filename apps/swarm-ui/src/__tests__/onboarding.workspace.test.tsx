@@ -11,8 +11,10 @@
 //     it stops at ready, and on unmount;
 //   * the claude_account step's [Request a loan] posts and then reads "Loan
 //     requested"; [Add key] goes to Capacity › Accounts;
-//   * a count of zero accounts is drawn as a measured zero (the `real zero`
-//     mark), never as a blank, and nothing is drawn the API did not send.
+//   * a count of zero accounts is prose, so it reads as words -- `none of your
+//     own` -- with "measured" in its accessible name, never the `real zero`
+//     mark and never a blank (owner, 2026-10-09); a count the API did not send
+//     is the `not measured` mark, never `none`.
 //
 // The step evidence is what `onboarding._workspace_step` and `_claude_step`
 // serve (tests/unit/control_plane/test_onboarding_workspace_steps.py).
@@ -308,14 +310,15 @@ describe('the record is read every 5 s until it is ready', () => {
 })
 
 describe('the claude_account step', () => {
-  it('draws zero accounts as measured zeros and offers Add key and a loan', async () => {
+  it('writes zero accounts as words, measured, and offers Add key and a loan', async () => {
     const r = withId({ state: 'ready' })
     await mount(doc(r), () => r)
     const el = stepEl('claude_account')
     expect(within(el).getByText('Add a Claude account')).toBeTruthy()
-    const zeros = el.querySelectorAll('.ctl-mark.is-zero')
-    expect(zeros).toHaveLength(2)
-    expect([...zeros].map((z) => z.textContent)).toEqual(['real zero', 'real zero'])
+    expect(visible(el)).toContain('none of your own · none lent to you')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
+    expect(within(el).getByLabelText('none of your own (measured)')).toBeTruthy()
+    expect(within(el).getByLabelText('none lent to you (measured)')).toBeTruthy()
     expect(visible(el)).toContain('Your workspace runs nothing until it has a Claude account to run on.')
     expect(within(el).getByRole('link', { name: 'Add key' }).getAttribute('href')).toBe('/capacity/accounts')
     expect(el.querySelector('#claude-account')).not.toBeNull()
@@ -339,9 +342,23 @@ describe('the claude_account step', () => {
     await mount(doc(r, { own: 2, lent: 0, provider_key: false, loan_request: null }), () => r)
     const el = stepEl('claude_account')
     expect(el.dataset.state).toBe('done')
-    expect(visible(el)).toContain('your own 2')
-    expect(el.querySelectorAll('.ctl-mark.is-zero')).toHaveLength(1)
+    expect(visible(el)).toContain('2 of your own · none lent to you')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
     expect(within(el).queryByRole('button')).toBeNull()
     expect(within(el).queryByRole('link', { name: 'Add key' })).toBeNull()
+  })
+
+  it('a count the API did not send is the not-measured mark, never "none"', async () => {
+    const r = withId({ state: 'ready' })
+    await mount(doc(r, { own: 1, provider_key: true, loan_request: null }), () => r)
+    const el = stepEl('claude_account')
+    expect(visible(el)).toContain('1 of your own')
+    const absent = el.querySelectorAll('.ctl-mark.is-absent')
+    expect(absent).toHaveLength(1)
+    expect(absent[0]!.textContent).toBe('not measured')
+    expect(visible(el)).toContain('lent to you')
+    expect(visible(el)).not.toContain('none lent to you')
+    expect(visible(el)).toContain('a provider key')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 })

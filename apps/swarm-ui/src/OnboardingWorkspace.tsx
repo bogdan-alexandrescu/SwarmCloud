@@ -267,10 +267,31 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
   )
 }
 
-/** A count from the server: a measured zero is drawn as one, never as a blank. */
-function Count({ n, what }: { n: unknown; what: string }) {
-  if (typeof n !== 'number') return <Dash why={`The checklist did not say how many ${what}`} />
-  return n === 0 ? <Mark kind="zero" say={`No ${what}: a count of zero`} /> : <b>{n}</b>
+/**
+ * A count from the server, as the phrase it is part of.
+ *
+ * A ZERO IN A SENTENCE READS AS WORDS (owner, 2026-10-09). This line is prose,
+ * and `your own [real zero]` made a reader parse a table mark mid-sentence;
+ * `none of your own` says the same measured zero. The mark stays where a zero
+ * sits in a table, figure or fact card (design-system.md §8.6). That it was
+ * measured survives in the accessible name, `none of your own (measured)`.
+ * A count the checklist did not send is NOT a zero, so it keeps the
+ * `not measured` mark and never the word `none`.
+ */
+function Count({ n, label, of }: { n: unknown; label: string; of: string }) {
+  if (typeof n !== 'number') {
+    return (
+      <>
+        {label} <Mark kind="absent" say={`Not measured: the checklist did not say how many accounts ${of}`} />
+      </>
+    )
+  }
+  if (n === 0) return <span aria-label={`none ${of} (measured)`}>none {of}</span>
+  return (
+    <span>
+      <b>{n}</b> {of}
+    </span>
+  )
 }
 
 /** The `claude_account` step's body. `reload` reads the checklist again. */
@@ -298,7 +319,7 @@ export function ClaudeAccountStepBody({ step, reload }: { step: OnboardingStep; 
   return (
     <div id="claude-account" className="ob-ws" data-claude-state={step.state}>
       <p className="ur-hint ob-line">
-        your own <Count n={ev.own} what="accounts of your own" /> · lent to you <Count n={ev.lent} what="accounts lent to you" />
+        <Count n={ev.own} label="your own" of="of your own" /> · <Count n={ev.lent} label="lent to you" of="lent to you" />
         {ev.provider_key === true && ' · a provider key'}
       </p>
       {step.state !== 'done' && (

@@ -77,6 +77,7 @@ from ..issueruns import (
 )
 from ..issuesync import sync_issue
 from ..plancontext import read_plan_context
+from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
 
@@ -224,7 +225,10 @@ def _approve(
         },
     )
     try:
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved))
+        # The review's IMPACT block from the run's own tenant's index (lane
+        # KG6); None, and today's review prompt, when there is no v3 index.
+        review = read_review_context(ctx, tenant_id, approved)
+        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved, review))
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(
