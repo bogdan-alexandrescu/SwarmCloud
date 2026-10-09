@@ -178,7 +178,7 @@ def collect(docs: Iterable[dict[str, Any]], cutoff: datetime | None) -> dict[str
     visited = {"tasks": len(tasks), "egress_ready_marks": 0, "clone_timed_marks": 0}
     for event in events.values():
         detail = event.get("detail")
-        if event.get("type") != "RUNNING" or not isinstance(detail, dict):
+        if str(event.get("type") or "").upper() != "RUNNING" or not isinstance(detail, dict):
             continue
         cause = detail.get("cause")
         if cause not in ("egress_ready", "clone_timed"):
