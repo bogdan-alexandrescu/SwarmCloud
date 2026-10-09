@@ -3,6 +3,7 @@ import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, asSentence, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
@@ -965,6 +966,9 @@ function Outcome({ sub }: { sub: Submission }) {
   }
   if (sub.kind !== 'rejected' && sub.kind !== 'uncertain') return null
   const { error } = sub
+  // The submission gate's refusal (#847): refused whole before any step was
+  // compiled (docs/workspaces.md §5.3), with the setup step that fixes it.
+  if (sub.kind === 'rejected' && workspaceRefusal(error) !== null) return <WorkspaceRefusalBanner error={error} />
   const uncertain = sub.kind === 'uncertain'
   // A 403 is information -- you may not submit -- not a broken platform, so it gets
   // the gate treatment rather than the red one, exactly as FailedPanel does.
