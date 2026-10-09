@@ -65,6 +65,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 | 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
+| 57 | `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349) | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 
 ---
 
@@ -9765,3 +9766,135 @@ upload, and the live proof needs a CLI agent to meet a real rate limit.
   tenant and prefix.
 - **Invariant 10.** Preserved: a caller names `mock` and sends a declared
   boolean, data rather than an image, a command or a resource spec.
+
+---
+
+## 57. `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349)
+
+**Status:** ACCEPTED, accepted by the owner 2026-10-08 (the approval of
+#349's SwarmCloud plan), and APPLIED 2026-10-08 by the pull request that adds
+this entry. Part of nothing else. This is the sanctioned edit to
+`apps/common/swarm_common/` for it; nothing else in the frozen package
+changes.
+
+### What is true today
+
+Request 32 put one URL rule in the catalogue, `profiles.py::url_refusal`,
+and #345 applied it. The #345 security review probed that function on
+2026-09-29 and found four gaps, filed as #349:
+
+1. **Four reserved IPv6 ranges are accepted.** `_URL_REFUSED_V6_NETWORKS`
+   lists loopback, unspecified, discard-only, `2001:db8::/32`, unique local,
+   link-local and multicast, and nothing else. So site-local `fec0::/10`,
+   Teredo `2001::/32` (whose address embeds an obfuscated IPv4 one), the
+   RFC 9637 documentation range `3fff::/20` and the SRv6 SID range
+   `5f00::/16` all pass: `url_refusal("http://[fec0::1]/")` and
+   `url_refusal("http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/")` return
+   `""`.
+2. **Two internal names are accepted.** `_URL_REFUSED_SUFFIXES` refuses
+   `.internal`, `.local`, `.localhost` and `.svc`, and neither
+   `metadata.goog` (the metadata server's other name) nor
+   `localhost.localdomain` ends in one: `url_refusal("http://metadata.goog/")`
+   returns `""`.
+3. **A trailing double dot is accepted.** `url_refusal` strips the host with
+   `.rstrip(".")`, which removes every trailing dot, so `example.com..`
+   becomes `example.com` and is accepted, while `a..b.com` reaches the
+   empty-label check and is refused.
+4. **A refusal can echo a URL's userinfo.** `RunnerInput.check`'s `refuse()`
+   repeats up to 40 characters (`_SHOWN_VALUE_CHARS`) of the refused value.
+   For `http://user:<password>@169.254.169.254/` that is the whole userinfo,
+   in the 422 message the API serves -- while `url_refusal`'s docstring says a
+   URL with a password in it is "never stored with the task, served by the
+   API or shown in the UI". An `object` or `list` refusal repeats its value's
+   `repr` the same way, so a `goto` action refused for an unknown field
+   echoed `'url': 'http://user:...` from inside the object.
+
+### Why
+
+None of the four is a blocker -- the worker's NetworkPolicy drops the
+private ranges, #341 removes the search path, and the metadata server
+answers only a request carrying `Metadata-Flavor: Google` -- which is why #349
+is S2. But each is cheap to close and each is the rule saying something
+untrue: that the range is a public address, that the name is a public page,
+that `example.com..` is a different shape from `a..b`, and that a password
+URL is never served. The fourth is the one a caller can see: a 422 body is
+logged by whatever client sent the request.
+
+### The requested change
+
+In `apps/common/swarm_common/profiles.py`:
+
+1. `_URL_REFUSED_V6_NETWORKS` gains, each with a comment naming its RFC:
+
+   ```python
+   ipaddress.ip_network("fec0::/10"),  # site-local, deprecated by RFC 3879
+   ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
+   ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
+   ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602
+   ```
+
+   Teredo is refused outright rather than unwrapped by `_embedded_v4` the
+   way 6to4 and NAT64 are: its client IPv4 is XOR-obfuscated and its server
+   IPv4 is a second embedded address, so unwrapping it would be the rule
+   reproducing a tunnelling scheme rather than refusing it. Refusing the /32
+   is the subset-of-what-Chromium-accepts rule `url_refusal` already states.
+2. A new exact-name tuple, checked next to `_URL_REFUSED_SUFFIXES`:
+
+   ```python
+   _URL_REFUSED_HOSTS = ("metadata.goog", "localhost.localdomain")
+   ```
+
+   Exact, not a suffix: `.goog` is a real gTLD that Google serves public
+   pages on, so `.goog` as a suffix would refuse public sites.
+3. The host loses AT MOST ONE trailing dot (`host.removesuffix(".")`)
+   instead of `.rstrip(".")`. So
+   `example.com.`, a fully-qualified name, is still accepted, and
+   `example.com..` reaches the empty-label check and is refused exactly as
+   `a..b.com` is. `169.254.169.254.` is still read as the address and refused.
+4. `RunnerInput.check`'s `refuse()` never repeats a value whose `repr`
+   contains `@`, of any kind: it says `<a value of N characters, not repeated
+   because it contains '@'>` instead, and keeps the reason. Every value
+   without `@` is repeated as before, up to `_SHOWN_VALUE_CHARS`. Blunt on
+   purpose: masking only the userinfo needs a parse of exactly the URL being
+   refused -- the one a parser already disagreed about -- and
+   `http:user:pw@host` has no `//` for a pattern to anchor on. Not repeating
+   the value at all cannot leak. Applied to every kind, not only `url`,
+   because an `object` or `list` refusal repeats a `repr` that can hold a
+   nested `url` (finding 4's `goto`).
+5. `url_refusal`'s docstring lists the new refusals and cites this request.
+
+**The non-frozen half, in the same change:** tests first --
+`tests/unit/control_plane/test_url_refusal_349.py` (the issue's repro URLs,
+each range's first and last address, its neighbours just outside, and the
+userinfo never in a refusal, including `http:user:pw@host` and a nested
+`goto`), the WHATWG table in `test_url_refusal_whatwg.py` (each new refusal
+as Node's `URL` resolves it, and accepted neighbours
+`2001:4860:4860::8888`, `2001:1::1`, `3fff:1000::1`, `5f01::1`), the worker
+door in `tests/unit/worker/test_runner_input_door_checks.py` and the HTTP
+doors in `test_runner_inputs_by_declaration.py`; and docs/workflows.md's
+description of the rule. No shell, jq or TypeScript restatement of these
+lists exists: swarm-api and the plugin bridge call `check_inputs`, and
+`browser._check_url` calls `url_refusal`.
+
+### What it would break if accepted
+
+A caller that today sends a browser `url` or `goto` naming any of these hosts
+gets a 422 instead of a task -- a task that would have timed out against a
+dropped address, or opened the metadata server's name to a refused request.
+swarm-api, the plugin bridge and `browser._check_url` all call the one rule,
+so no restatement drifts. `http://example.com./` stays accepted. A 422 for a
+value containing `@` no longer quotes that value; the key, the declared bound
+and the reason are still named.
+
+### If it is declined
+
+The four gaps stay, each behind its other control, and the docstring's
+"never served by the API" stays false for a refused URL.
+
+### Invariants
+
+- **Invariant 10.** Strengthened: a caller still names a runner profile and
+  sends data; this only narrows what the `browser` profile's `url` inputs
+  accept and what a refusal repeats.
+- **Invariants 1-9.** Untouched: no state, lease, pool, fencing, checkpoint,
+  resource or tenancy rule changes.
