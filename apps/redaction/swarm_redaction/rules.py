@@ -831,8 +831,11 @@ _CODE_NAME_MARK = re.compile(
     re.MULTILINE,
 )
 _CODE_CHAR = r"[A-Za-z0-9_.,:=*+/% \t\\" + _CODE_SQ + _CODE_DQ + r"-]"
-_CODE_ARG = r"(" + _CODE_CHAR + r"|\(" + _CODE_CHAR + r"{0,64}\)|\[" + _CODE_CHAR + r"{0,64}\])"
-_CODE_OPEN = r"[A-Za-z_][A-Za-z0-9_.]{0,128}[(\[]" + _CODE_ARG + r"{0,160}"
+#: The bounds are small on purpose: the shell's copy is compiled by sed
+#: every time `redact` starts, and `{0,160}` of a group holding `{0,64}` cost
+#: 0.25 s of compile per expression (measured 2026-10-09); this costs 0.03.
+_CODE_ARG = r"(" + _CODE_CHAR + r"|\(" + _CODE_CHAR + r"{0,16}\)|\[" + _CODE_CHAR + r"{0,16}\])"
+_CODE_OPEN = r"[A-Za-z_][A-Za-z0-9_.]{0,128}[(\[]" + _CODE_ARG + r"{0,64}"
 _CODE_TYPED = r"[A-Za-z_][A-Za-z0-9_.,\[\]| ]{0,96}[ \t]*=[ \t]*"
 _CODE = r"(" + _CODE_TYPED + r"(" + _CODE_OPEN + r")?|" + _CODE_OPEN + r")"
 _CODE_VALUE = r"[^'\"\s\\()\[\]{}<>|,;%" + _CODE_SQ + _CODE_DQ + _CODE_MARK + r"]{6,128}"

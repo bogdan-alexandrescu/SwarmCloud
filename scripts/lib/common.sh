@@ -2154,8 +2154,8 @@ redact() {
   local c_words='[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww]|[Pp][Aa][Ss][Ss][Pp][Hh][Rr][Aa][Ss][Ee]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh]|[Aa][Pp][Ii]'
   local c_qname="([A-Z_][A-Z0-9_]{0,63}|[A-Za-z_-]{0,32}(${c_words})[A-Za-z_-]{0,32}|[*]{8})?"
   local c_char="[A-Za-z0-9_.,:=*+/%[:blank:]\\\\${c_sq}${c_dq}-]"
-  local c_arg="(${c_char}|\\(${c_char}{0,64}\\)|\\[${c_char}{0,64}\\])"
-  local c_open="[A-Za-z_][A-Za-z0-9_.]{0,128}[([]${c_arg}{0,160}"
+  local c_arg="(${c_char}|\\(${c_char}{0,16}\\)|\\[${c_char}{0,16}\\])"
+  local c_open="[A-Za-z_][A-Za-z0-9_.]{0,128}[([]${c_arg}{0,64}"
   local c_code="([A-Za-z_][]A-Za-z0-9_.,[| ]{0,96}[[:blank:]]*=[[:blank:]]*(${c_open})?|${c_open})"
   local c_value="[^]'\"[:space:]\\\\(){}<>|,;%${c_sq}${c_dq}${c_mark}[]{6,128}"
   # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
