@@ -249,8 +249,20 @@ def test_the_graph_renders_an_svg_path_for_every_edge():
     assert "then ${level.length} in parallel" not in source
 
     package = (UI / ".." / "package.json").resolve().read_text()
-    for library in ("d3", "recharts", "reactflow", "react-flow", "cytoscape", "vis-network"):
+    for library in ("d3", "recharts", "reactflow", "react-flow", "cytoscape"):
         assert f'"{library}' not in package, f"{library} was added to draw six boxes"
+    # vis-network is a dependency, but of the repository graph's Network view
+    # (force physics over up to 2,000 modules), not of this DAG. It may reach
+    # the bundle through RepoGraphNetwork.tsx alone, and never this view.
+    importers = sorted(
+        path.name
+        for path in UI.rglob("*.ts*")
+        if "__tests__" not in path.parts
+        and re.search(r"""(from|import\()\s*['"]vis-network""", path.read_text())
+    )
+    assert importers in ([], ["RepoGraphNetwork.tsx"]), (
+        f"vis-network is imported from {importers}: only the repository graph's Network view may draw with it"
+    )
 
 
 

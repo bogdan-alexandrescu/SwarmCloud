@@ -220,6 +220,12 @@ class ApiSettings:
     #: ADMIN_POOL_USERS, ALLOWED_USERS or TENANT_SERVICE_ACCOUNTS: two roles on
     #: one address make which applies depend on the order auth.py asks.
     rollup_sweeper_users: tuple[str, ...] = ()
+    #: The identity the schedule tick presents (terraform/modules/scheduler,
+    #: `swarm-schedule-tick`, docs/schedules.md SD10). Terraform renders it
+    #: (lane S13) before any route admits it: lane S2 admits it to
+    #: `POST /v1/admin/schedules/tick` alone (`auth.SCHEDULE_TICK_ROUTES`).
+    #: Until then nothing consults it, so reading it grants nothing.
+    schedule_tick_users: tuple[str, ...] = ()
     #: Authorise these exact addresses, regardless of their domain.
     #:
     #: WHY THIS EXISTS, and it is not the same idea as `admin_users` above.
@@ -553,6 +559,7 @@ class ApiSettings:
             platform_owner=platform_owner,
             admin_pool_users=admin_pool_users,
             rollup_sweeper_users=rollup_sweeper_users,
+            schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
             allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),

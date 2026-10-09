@@ -297,6 +297,17 @@ def test_a_shard_left_with_no_file_runs_no_pytest(tmp_path):
     assert (unit.get("env") or {}).get("SWARM_REQUIRE_REAL_REAP") == "1"
 
 
+def test_a_shards_workers_steal_rather_than_split_up_front():
+    """xdist's default `load` schedule left shard 3 ~45 % over its floor: its
+    long sleep-bound tests landed on one worker (docs/ci.md, "Where
+    pull-request CI time goes (2026-10-09)"). MUTATION: drop `--dist
+    worksteal`, or let a second pytest run in the job without it."""
+    runs = [str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"]]
+    pytests = [r for r in runs if "uv run pytest" in r]
+    assert len(pytests) == 1, pytests
+    assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", pytests[0]), pytests[0]
+
+
 @pytest.mark.parametrize("mode, areas", [("none", ""), ("subset", ""), ("subset", "terraform"), ("bogus", "")])
 def test_the_pick_refuses_what_it_does_not_model(tmp_path, mode, areas):
     """A mode or area it does not know is a broken gate, never "run nothing"."""

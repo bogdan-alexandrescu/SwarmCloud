@@ -412,7 +412,9 @@ def test_a_launch_removes_run_copies_older_than_a_week_and_nothing_else(_plugin_
     assert fresh.exists() and other.exists() and script.exists()
 
 
-def test_a_launch_by_spec_path_reads_the_title_from_the_file(_plugin_root, tmp_path):
+def test_a_launch_by_spec_path_reads_the_title_from_the_file(_plugin_root, tmp_path, monkeypatch):
+    # A spec file is read only from under the checkout (finding 25).
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(tmp_path))
     target = tmp_path / "spec.json"
     target.write_text(json.dumps({**_FIXTURE["chain"], "title": "nightly"}))
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec_path": str(target)}))

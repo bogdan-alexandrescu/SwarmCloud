@@ -87,7 +87,7 @@ run "infra_manages_no_account_beyond_the_platforms_and_the_workers" {
   assert {
     condition = output.infra_managed == sort([
       "swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler",
-      "swarm-tick", "swarm-verify", "swarm-rollup-sweeper",
+      "swarm-tick", "swarm-verify", "swarm-rollup-sweeper", "swarm-schedule-tick",
       "swarm-agent-worker-eng", "swarm-agent-worker-research",
     ])
     error_message = "infra_managed is the platform accounts and one worker account per tenant, nothing else"

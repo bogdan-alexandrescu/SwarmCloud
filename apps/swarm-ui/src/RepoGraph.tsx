@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { loadRepositoryGraph, loadSymbolGraph, loadSymbolTests, searchRepositorySymbols } from './api'
 import { Button, Card, Chip, Dash, EmptyState } from './components'
 import type { Result } from './fetch'
+import { Mark } from './primitives'
 import {
-  DEPTH_DEFAULT, DEPTH_MAX, DEPTH_MIN, EVIDENCE_LEGEND, LEGEND, callColumns, clampDepth, degree, edgeLook, edgeWords, fmt,
-  forceLayout, graphView, heatOf, linesWord, placeLabels, short,
-  type CallGraph, type ColourBy, type GraphView, type ModuleGraph, type SymbolRow, type ViewNode,
+  DEPTH_DEFAULT, DEPTH_MAX, DEPTH_MIN, EVIDENCE_LEGEND, LEGEND, callColumns, clampDepth, degree, displayLabel, edgeLook, edgeWords, fmt,
+  graphView, heatOf, linesWord, neighbours, short,
+  type CallGraph, type ColourBy, type GraphView, type Heat, type ModuleGraph, type Neighbour, type SymbolRow, type ViewEdge, type ViewNode,
 } from './RepoGraphData'
+// Types only: the layout itself is a lazy import (see `loadLayout`), so it stays out of the main bundle.
+import type { LayoutPlan, LayoutRequest } from './RepoGraphLayout'
 import { repoName, type RepoRecord } from './RepositoriesData'
 import { UrRadio, UrRegion, useUrRead } from './RepositoriesParts'
 import './styles/repograph.css'
@@ -14,7 +17,7 @@ import './styles/repograph.css'
 /**
  * ONE REPOSITORY › GRAPH, pick A (repositories.html screen 8): a
  * force-directed canvas with a side inspector. Three views on one surface,
- * switched by the toolbar: the MODULE dependency graph (clustered by package,
+ * switched by the toolbar: the MODULE dependency graph (clustered by directory,
  * coloured by hot-spots or test reach, zoom and pan), a symbol's CALL GRAPH
  * (callers left, callees right, a depth control, each edge's evidence and
  * confidence), and the TESTS REACHING A SYMBOL. That view was once called
@@ -30,9 +33,15 @@ import './styles/repograph.css'
  * The lines of a module are not served by the graph route, so the inspector
  * says so rather than counting them.
  *
- * NO GRAPH LIBRARY. The force layout is RepoGraphData.ts's, seeded by module
- * path, so the picture is the same on every read. The canvas starts clustered
- * past COLLAPSE_AT modules and opens a package on click.
+ * TWO DRAWINGS OF ONE VIEW (lane GR3, docs/design/graph-rendering.md §3 and
+ * §8). STRUCTURE, the default, is the console's own SVG: the force layout is
+ * RepoGraphData.ts's, seeded by module path so the picture is the same on
+ * every read, run in a Web Worker past IN_PLACE_MAX nodes, with soft bounds
+ * and labels unique within the view. NETWORK is vis-network with Graphify's
+ * physics, in a chunk loaded only when first opened (RepoGraphNetwork.tsx).
+ * Both draw the same GraphView: clustered by directory, folded to a cluster
+ * meta-graph past COLLAPSE_AT modules and opened on click, filtered by the
+ * same legend, picked into the same inspector with its neighbour list.
  *
  * Classes are `rg-`, local to this section, so a later pass can swap each for
  * lane U0's canonical components by name.
@@ -107,20 +116,65 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
   const [symbol, setSymbol] = useState<SymbolRow | null>(null)
   const [depth, setDepth] = useState(DEPTH_DEFAULT)
   const [direction, setDirection] = useState<Direction>('both')
+  const [hiddenHeat, setHiddenHeat] = useState<ReadonlySet<Heat>>(new Set())
+  const [hiddenClusters, setHiddenClusters] = useState<ReadonlySet<string>>(new Set())
+  const [drawing, setDrawing] = useState<Drawing>(readDrawing)
+  const [net, setNet] = useState<{ mod: NetworkModule | null; failed: string | null }>({ mod: null, failed: null })
 
   const gv = useMemo(() => graphView(g, open, cluster), [g, open, cluster])
+  const phone = usePhoneWidth()
   const selected = gv.nodes.find((n) => n.id === picked) ?? hottest(gv.nodes)
+  const shown = useMemo(
+    () => new Set(gv.nodes.filter((n) => !hiddenHeat.has(heatOf(n, colour)) && !hiddenClusters.has(n.cluster)).map((n) => n.id)),
+    [gv, colour, hiddenHeat, hiddenClusters],
+  )
+
+  // The Network view's chunk loads the first time it is opened, and only then.
+  useEffect(() => {
+    if (view !== 'modules' || drawing !== 'network' || net.mod !== null || net.failed !== null) return
+    let live = true
+    loadNetwork().then(
+      (mod) => live && setNet({ mod, failed: null }),
+      (e: unknown) => {
+        if (!live) return
+        // The switch says so in words and the canvas stays on Structure. The
+        // remembered choice is kept: a chunk that failed once may load next visit.
+        setNet({ mod: null, failed: e instanceof Error ? e.message : String(e) })
+        setDrawing('structure')
+      },
+    )
+    return () => {
+      live = false
+    }
+  }, [view, drawing, net])
+
+  function choose(d: Drawing) {
+    setDrawing(d)
+    rememberDrawing(d)
+  }
+
+  function select(n: ViewNode) {
+    setPicked(n.id)
+    setSeed(null)
+    setSymbol(null)
+  }
 
   function pick(n: ViewNode) {
     if (n.isPackage) {
-      // Clustered past COLLAPSE_AT: a package opens into its modules on click.
+      // Folded past COLLAPSE_AT: a cluster opens into its modules (or its own clusters) on click.
       setOpen(new Set([...open, n.cluster]))
       setPicked(null)
+      setSeed(null)
+      setSymbol(null)
     } else {
-      setPicked(n.id)
+      select(n)
     }
-    setSeed(null)
-    setSymbol(null)
+  }
+
+  function setColourBy(c: ColourBy) {
+    setColour(c)
+    // The bands are the colouring's own: a band hidden under hot-spots means nothing under test reach.
+    setHiddenHeat(new Set())
   }
 
   const tools = (
@@ -137,13 +191,13 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
       />
       {view === 'modules' && (
         <>
-          <Chip onClick={() => setCluster(!cluster)} pressed={cluster} title="Draw a soft rectangle around each package's modules">
-            Cluster: package
+          <Chip onClick={() => setCluster(!cluster)} pressed={cluster} title="Group modules by the directory they sit in, and fold a large repository into those groups">
+            Cluster: directory
           </Chip>
           <UrRadio
             label="Colour"
             value={colour}
-            onChange={setColour}
+            onChange={setColourBy}
             options={[
               { key: 'hot-spots', label: 'hot-spots' },
               { key: 'test-reach', label: 'test reach' },
@@ -151,7 +205,7 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
           />
           {open.size > 0 && (
             <Button size="sm" onClick={() => setOpen(new Set())}>
-              Fold packages
+              Fold clusters
             </Button>
           )}
         </>
@@ -159,7 +213,55 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
     </div>
   )
 
+  // The drawing switch sits in the canvas card's own control bar, opposite
+  // zoom and Fit: it changes how THIS card draws, so it lives on the card.
+  const bar = (
+    <UrRadio
+      label="Graph view: Structure / Network"
+      value={drawing}
+      onChange={choose}
+      options={[
+        { key: 'structure', label: 'Structure', title: 'Clusters, labels and soft bounds, drawn by the console' },
+        net.failed === null
+          ? { key: 'network', label: 'Network', title: 'The same graph drawn with force physics (vis-network)' }
+          : { key: 'network', label: 'Network unavailable', title: `The network view could not load: ${net.failed}`, disabled: true },
+      ]}
+    />
+  )
+
+  const legend = (
+    <GraphLegend
+      gv={gv}
+      g={g}
+      colour={colour}
+      shown={shown}
+      hiddenHeat={hiddenHeat}
+      hiddenClusters={hiddenClusters}
+      onHeat={(h) => setHiddenHeat(toggled(hiddenHeat, h))}
+      onCluster={(c) => setHiddenClusters(toggled(hiddenClusters, c))}
+      onAll={() => {
+        setHiddenHeat(new Set())
+        setHiddenClusters(new Set())
+      }}
+    />
+  )
+
   const depthControl = <DepthControl depth={depth} onDepth={(d) => setDepth(clampDepth(d))} />
+
+  const canvas =
+    drawing === 'network' && net.mod !== null ? (
+      <net.mod.NetworkCanvas name={repoName(r)} gv={gv} colour={colour} shown={shown} selected={selected?.id ?? null} onPick={pick} bar={bar} legend={legend} />
+    ) : drawing === 'network' ? (
+      <div className="rg-canvas" data-drawing="network">
+        <div className="rg-bar">{bar}</div>
+        <div className="rg-net rg-wait" role="status">
+          Loading the network view…
+        </div>
+        {legend}
+      </div>
+    ) : (
+      <ModuleCanvas r={r} gv={gv} colour={colour} shown={shown} selected={selected?.id ?? null} onPick={pick} bar={bar} legend={legend} />
+    )
 
   return (
     <>
@@ -167,8 +269,8 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
       {view === 'modules' && (
         <div className="rg-split">
           <div className="rg-main">
-            <ModuleCanvas r={r} g={g} gv={gv} colour={colour} selected={selected?.id ?? null} onPick={pick} />
-            <PhoneList gv={gv} colour={colour} selected={selected?.id ?? null} onPick={pick} />
+            {canvas}
+            {phone && <PhoneList gv={gv} colour={colour} selected={selected?.id ?? null} onPick={pick} />}
           </div>
           <Inspector
             r={r}
@@ -180,6 +282,7 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
             depthControl={depthControl}
             direction={direction}
             onOpen={(n) => pick(n)}
+            onSelect={select}
           />
         </div>
       )}
@@ -201,6 +304,13 @@ function GraphSurface({ r, g, open: opened }: { r: RepoRecord; g: ModuleGraph; o
   )
 }
 
+function toggled<T>(set: ReadonlySet<T>, v: T): ReadonlySet<T> {
+  const next = new Set(set)
+  if (next.has(v)) next.delete(v)
+  else next.add(v)
+  return next
+}
+
 /** The node the inspector opens on before any click: the hottest module, served counts first. */
 function hottest(nodes: readonly ViewNode[]): ViewNode | null {
   let best: ViewNode | null = null
@@ -212,12 +322,60 @@ function hottest(nodes: readonly ViewNode[]): ViewNode | null {
 }
 
 // ---------------------------------------------------------------------------
+// Structure | Network: which drawing the card shows, remembered per browser
+// ---------------------------------------------------------------------------
+
+type Drawing = 'structure' | 'network'
+export const DRAWING_KEY = 'swarm.repograph.drawing'
+
+function readDrawing(): Drawing {
+  try {
+    return window.localStorage.getItem(DRAWING_KEY) === 'network' ? 'network' : 'structure'
+  } catch {
+    // Storage refused (a private window, a sandboxed frame): Structure, the default.
+    return 'structure'
+  }
+}
+
+function rememberDrawing(d: Drawing) {
+  try {
+    window.localStorage.setItem(DRAWING_KEY, d)
+  } catch {
+    // Not remembered; the choice still holds for this page.
+  }
+}
+
+type NetworkModule = typeof import('./RepoGraphNetwork')
+let networkChunk: Promise<NetworkModule> | null = null
+
+/**
+ * vis-network arrives ONLY through this dynamic import, so its ~159 kB gz is
+ * a chunk of its own and the main bundle stays inside GR3's +5 kB gz. A
+ * failed load is forgotten, so the next visit tries again.
+ */
+function loadNetwork(): Promise<NetworkModule> {
+  networkChunk ??= import('./RepoGraphNetwork').catch((e: unknown) => {
+    networkChunk = null
+    throw e
+  })
+  return networkChunk
+}
+
+// ---------------------------------------------------------------------------
 // The module canvas
 // ---------------------------------------------------------------------------
 
 const W = 640
 const H = 440
 const ZOOM_STEP = 1.25
+/**
+ * At or under this many nodes the layout runs in place: about 15 ms, less
+ * than a worker takes to start. Above it, it runs in a Web Worker
+ * (repoGraphLayout.worker.ts), so the page never freezes on a big view.
+ */
+export const IN_PLACE_MAX = 120
+/** Nodes (or edges) per chunk: a big view mounts one chunk a frame, so no frame holds the page for long. */
+const CHUNK = 100
 
 interface Zoom {
   k: number
@@ -226,30 +384,246 @@ interface Zoom {
 }
 const FIT: Zoom = { k: 1, tx: 0, ty: 0 }
 
-function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
-  r: RepoRecord
-  g: ModuleGraph
-  gv: GraphView
+type PlanState = { status: 'ready'; plan: LayoutPlan } | { status: 'laying'; where: 'here' | 'worker' } | { status: 'failed'; why: string }
+
+type LayoutModule = typeof import('./RepoGraphLayout')
+let layoutModule: LayoutModule | null = null
+let layoutChunk: Promise<LayoutModule> | null = null
+
+/**
+ * The layout code, loaded once and then held: a small view is laid out in
+ * place from it, synchronously after the first load. A dynamic import keeps
+ * it out of the main bundle (measured: it put GR3 0.4 kB gz over its +5 kB).
+ */
+function loadLayout(): Promise<LayoutModule> {
+  layoutChunk ??= import('./RepoGraphLayout').then(
+    (m) => (layoutModule = m),
+    (e: unknown) => {
+      layoutChunk = null
+      throw e
+    },
+  )
+  return layoutChunk
+}
+
+/**
+ * The layout of a view: in place for a small one, in a worker for a big one.
+ * A worker that cannot start or fails says so, and the reader may lay the
+ * view out on the page instead -- the page pauses while it does, and is told
+ * so first. Never a guessed position in the meantime.
+ */
+function usePlan(gv: GraphView): PlanState & { here: () => void } {
+  const inPlace = gv.nodes.length <= IN_PLACE_MAX || typeof Worker === 'undefined'
+  const [forced, setForced] = useState<GraphView | null>(null)
+  const here = inPlace || forced === gv
+  const [mod, setMod] = useState<{ m: LayoutModule | null; why: string | null }>({ m: layoutModule, why: null })
+  useEffect(() => {
+    if (!here || mod.m !== null) return
+    let live = true
+    loadLayout().then(
+      (m) => live && setMod({ m, why: null }),
+      (e: unknown) => live && setMod({ m: null, why: e instanceof Error ? e.message : String(e) }),
+    )
+    return () => {
+      live = false
+    }
+  }, [here, mod.m])
+  // In place, but in a task of its own: run during the render, it shared the
+  // click's task with tearing down the view before (a 134 ms task leaving the
+  // 2,000-module flat view for an 83-node cluster, Chromium, 2026-10-09).
+  const [placed, setPlaced] = useState<{ gv: GraphView; plan: LayoutPlan } | null>(null)
+  useEffect(() => {
+    const m = mod.m
+    if (!here || m === null) return
+    const t = setTimeout(() => setPlaced({ gv, plan: m.layoutPlan(gv, W, H) }), 0)
+    return () => clearTimeout(t)
+  }, [gv, here, mod.m])
+  const local = here && placed?.gv === gv ? placed.plan : null
+  const [off, setOff] = useState<{ gv: GraphView; plan: LayoutPlan | null; why: string | null } | null>(null)
+  useEffect(() => {
+    if (inPlace) return
+    let worker: Worker
+    try {
+      worker = new Worker(new URL('./repoGraphLayout.worker.ts', import.meta.url), { type: 'module' })
+    } catch (e) {
+      setOff({ gv, plan: null, why: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    worker.onmessage = (e: MessageEvent<{ plan: LayoutPlan }>) => setOff({ gv, plan: e.data.plan, why: null })
+    worker.onerror = (e: ErrorEvent) => setOff({ gv, plan: null, why: e.message || 'the layout worker stopped' })
+    const req: LayoutRequest = { view: gv, width: W, height: H }
+    worker.postMessage(req)
+    // A newer view (a cluster opened, clustering turned off) drops the old job.
+    return () => worker.terminate()
+  }, [gv, inPlace])
+  const again = () => setForced(gv)
+  if (local !== null) return { status: 'ready', plan: local, here: again }
+  if (here && mod.why !== null) return { status: 'failed', why: `the layout did not load: ${mod.why}`, here: again }
+  if (!here && off?.gv === gv && off.plan !== null) return { status: 'ready', plan: off.plan, here: again }
+  if (!here && off?.gv === gv && off.why !== null) return { status: 'failed', why: off.why, here: again }
+  return { status: 'laying', where: here ? 'here' : 'worker', here: again }
+}
+
+/**
+ * How many of `total` chunks to mount: one more every frame, so no frame
+ * builds more than one chunk. All at once where there is no frame clock (jsdom).
+ */
+function useMounted(total: number, key: unknown): number {
+  const [s, setS] = useState({ key, n: Math.min(total, 1) })
+  const n = s.key === key ? s.n : Math.min(total, 1)
+  useEffect(() => {
+    if (total <= 1 || typeof requestAnimationFrame === 'undefined') {
+      setS({ key, n: total })
+      return
+    }
+    let at = 1
+    let raf = 0
+    const step = () => {
+      at = Math.min(total, at + 1)
+      setS({ key, n: at })
+      if (at < total) raf = requestAnimationFrame(step)
+    }
+    setS({ key, n: at })
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [total, key])
+  return Math.min(n, total)
+}
+
+/**
+ * One key per layout, for the group that holds a drawing: a new view
+ * replaces the old one as ONE subtree. Reused, React removed the old view's
+ * nodes and edges one by one, every one a DOM call (a 137-159 ms task leaving
+ * the 2,000-module flat view, Chromium, 2026-10-09).
+ */
+const planKeys = new WeakMap<LayoutPlan, number>()
+let planSeq = 0
+function planKey(plan: LayoutPlan | null): number {
+  if (plan === null) return 0
+  let k = planKeys.get(plan)
+  if (k === undefined) planKeys.set(plan, (k = ++planSeq))
+  return k
+}
+
+function chunked<T>(xs: readonly T[]): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < xs.length; i += CHUNK) out.push(xs.slice(i, i + CHUNK))
+  return out
+}
+
+/**
+ * A chunk of nodes, memoised: a frame that mounts the next chunk, or a click
+ * that moves the selection, re-renders only the chunks it changes. (Each
+ * frame re-rendering every node mounted so far measured 90-132 ms tasks at
+ * 2,000 nodes.) `selected` is passed only to the chunk that holds it.
+ */
+const NodeChunk = memo(function NodeChunk({ nodes, plan, colour, selected, onPick }: {
+  nodes: readonly ViewNode[]
+  plan: LayoutPlan
   colour: ColourBy
   selected: string | null
   onPick: (n: ViewNode) => void
 }) {
-  const layout = useMemo(() => forceLayout(gv, W, H), [gv])
-  const labels = useMemo(
-    () =>
-      placeLabels(
-        gv.nodes.flatMap((n) => {
-          const p = layout.pos.get(n.id)
-          if (p === undefined) return []
-          const d = degree(gv, n.id)
-          return [{ id: n.id, x: p.x, y: p.y, r: p.r, text: nodeLabel(n), weight: d.callers + d.callees }]
-        }),
-      ),
-    [gv, layout],
+  return (
+    <>
+      {nodes.map((n) => {
+        const p = plan.pos.get(n.id)
+        if (p === undefined) return null
+        const heat = heatOf(n, colour)
+        const on = n.id === selected
+        const label = plan.labels.get(n.id)
+        return (
+          <g
+            key={n.id}
+            className={on ? 'rg-node is-sel' : 'rg-node'}
+            data-id={n.id}
+            data-heat={heat}
+            role="button"
+            tabIndex={0}
+            aria-pressed={on}
+            aria-label={n.isPackage ? `${n.label}, ${n.members} modules: open the cluster` : n.id}
+            onClick={() => onPick(n)}
+            onKeyDown={(e: KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onPick(n)
+              }
+            }}
+          >
+            <circle cx={p.x} cy={p.y} r={p.r} />
+            <text
+              x={p.x}
+              y={label?.y ?? p.y + p.r + 13}
+              textAnchor="middle"
+              data-label={label?.side ?? 'below'}
+              className={label?.side === 'hidden' ? 'is-hidden' : undefined}
+            >
+              {displayLabel(n)}
+            </text>
+          </g>
+        )
+      })}
+    </>
   )
+})
+
+const EdgeChunk = memo(function EdgeChunk({ edges, plan, selected, maxWeight }: {
+  edges: readonly ViewEdge[]
+  plan: LayoutPlan
+  selected: string | null
+  maxWeight: number
+}) {
+  return (
+    <>
+      {edges.map((e) => {
+        const a = plan.pos.get(e.from)
+        const b = plan.pos.get(e.to)
+        if (a === undefined || b === undefined) return null
+        const on = selected !== null && (e.from === selected || e.to === selected)
+        return (
+          <line
+            key={`${e.from}>${e.to}`}
+            className={on ? 'rg-edge is-on' : 'rg-edge'}
+            x1={a.x}
+            y1={a.y}
+            x2={b.x}
+            y2={b.y}
+            strokeWidth={round(1 + (2.5 * e.weight) / maxWeight)}
+          >
+            <title>{`${e.from} → ${e.to} · ${fmt(e.weight)} resolved ${e.weight === 1 ? 'call' : 'calls'}`}</title>
+          </line>
+        )
+      })}
+    </>
+  )
+})
+
+function ModuleCanvas({ r, gv, colour, shown, selected, onPick, bar, legend }: {
+  r: RepoRecord
+  gv: GraphView
+  colour: ColourBy
+  shown: ReadonlySet<string>
+  selected: string | null
+  onPick: (n: ViewNode) => void
+  bar: ReactNode
+  legend: ReactNode
+}) {
+  const state = usePlan(gv)
+  const plan = state.status === 'ready' ? state.plan : null
   const [zoom, setZoom] = useState<Zoom>(FIT)
   const drag = useRef<{ x: number; y: number; z: Zoom } | null>(null)
-  const maxWeight = Math.max(1, ...gv.edges.map((e) => e.weight))
+  const drawnNodes = useMemo(() => (plan === null ? [] : gv.nodes.filter((n) => shown.has(n.id))), [plan, gv, shown])
+  const drawnEdges = useMemo(() => (plan === null ? [] : gv.edges.filter((e) => shown.has(e.from) && shown.has(e.to))), [plan, gv, shown])
+  const maxWeight = drawnEdges.reduce((m, e) => Math.max(m, e.weight), 1)
+  const nodeChunks = useMemo(() => chunked(drawnNodes), [drawnNodes])
+  const edgeChunks = useMemo(() => chunked(drawnEdges), [drawnEdges])
+  const mounted = useMounted(nodeChunks.length, plan)
+  // Edges follow once every node is down, a chunk a frame of their own.
+  const mountedEdges = useMounted(mounted === nodeChunks.length ? edgeChunks.length : 0, plan)
+  const latestPick = useRef(onPick)
+  latestPick.current = onPick
+  const pickNode = useCallback((n: ViewNode) => latestPick.current(n), [])
+  const mounting = plan !== null && (mounted < nodeChunks.length || mountedEdges < edgeChunks.length)
 
   function zoomBy(f: number) {
     const k = Math.max(0.4, Math.min(4, zoom.k * f))
@@ -269,9 +643,10 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
     drag.current = null
   }
 
-  const touches = (id: string) => selected !== null && id === selected
+  const clustered = gv.clusters.length > 0
   return (
-    <div className="rg-canvas">
+    <div className="rg-canvas" data-drawing="structure">
+      <div className="rg-bar">{bar}</div>
       <div className="rg-zoom">
         <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(1 / ZOOM_STEP)}>
           −
@@ -287,99 +662,134 @@ function ModuleCanvas({ r, g, gv, colour, selected, onPick }: {
         className="rg-svg"
         viewBox={`0 0 ${W} ${H}`}
         role="img"
-        aria-label={`Module dependency graph of ${repoName(r)}${gv.clusters.length > 0 && gv.clusters[0] !== '' ? ', clustered by package' : ''}`}
+        aria-label={`Module dependency graph of ${repoName(r)}${clustered ? ', clustered by directory' : ''}`}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}
         onPointerLeave={up}
       >
-        <g className="rg-world" transform={`translate(${round(zoom.tx)} ${round(zoom.ty)}) scale(${round(zoom.k)})`}>
-          {layout.boxes.map((b) => (
-            <g key={b.cluster}>
-              <rect className="rg-cluster" data-cluster={b.cluster} x={b.x} y={b.y} width={b.w} height={b.h} rx={14} />
-              <text className="rg-clabel" x={b.x + 10} y={b.y + 16}>
-                {b.cluster}
-              </text>
-            </g>
-          ))}
-          {gv.edges.map((e) => {
-            const a = layout.pos.get(e.from)
-            const b = layout.pos.get(e.to)
-            if (a === undefined || b === undefined) return null
-            const on = touches(e.from) || touches(e.to)
-            return (
-              <line
-                key={`${e.from}>${e.to}`}
-                className={on ? 'rg-edge is-on' : 'rg-edge'}
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-                strokeWidth={round(1 + (2.5 * e.weight) / maxWeight)}
-              >
-                <title>{`${e.from} → ${e.to} · ${fmt(e.weight)} resolved ${e.weight === 1 ? 'call' : 'calls'}`}</title>
-              </line>
-            )
-          })}
-          {gv.nodes.map((n) => {
-            const p = layout.pos.get(n.id)
-            if (p === undefined) return null
-            const heat = heatOf(n, colour)
-            const on = n.id === selected
-            const label = labels.get(n.id)
-            return (
-              <g
-                key={n.id}
-                className={on ? 'rg-node is-sel' : 'rg-node'}
-                data-id={n.id}
-                data-heat={heat}
-                role="button"
-                tabIndex={0}
-                aria-pressed={on}
-                aria-label={n.isPackage ? `${n.label}, ${n.members} modules: open the package` : n.id}
-                onClick={() => onPick(n)}
-                onKeyDown={(e: KeyboardEvent) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onPick(n)
-                  }
-                }}
-              >
-                <circle cx={p.x} cy={p.y} r={p.r} />
-                <text
-                  x={p.x}
-                  y={label?.y ?? p.y + p.r + 13}
-                  textAnchor="middle"
-                  data-label={label?.side ?? 'below'}
-                  className={label?.side === 'hidden' ? 'is-hidden' : undefined}
-                >
-                  {nodeLabel(n)}
+        <g key={planKey(plan)} className={mounting ? 'rg-world is-mounting' : 'rg-world'} transform={`translate(${round(zoom.tx)} ${round(zoom.ty)}) scale(${round(zoom.k)})`}>
+          {plan?.boxes
+            .filter((b) => drawnNodes.some((n) => n.cluster === b.cluster))
+            .map((b) => (
+              <g key={b.cluster}>
+                <rect className="rg-cluster" data-cluster={b.cluster} x={b.x} y={b.y} width={b.w} height={b.h} rx={14} />
+                <text className="rg-clabel" x={b.x + 10} y={b.y + 16}>
+                  {b.cluster}
                 </text>
               </g>
-            )
-          })}
+            ))}
+          {plan !== null &&
+            edgeChunks.slice(0, mountedEdges).map((es, i) => (
+              <EdgeChunk key={i} edges={es} plan={plan} maxWeight={maxWeight} selected={selected !== null && es.some((e) => e.from === selected || e.to === selected) ? selected : null} />
+            ))}
+          {plan !== null &&
+            nodeChunks.slice(0, mounted).map((ns, i) => (
+              <NodeChunk key={i} nodes={ns} plan={plan} colour={colour} onPick={pickNode} selected={selected !== null && ns.some((n) => n.id === selected) ? selected : null} />
+            ))}
         </g>
       </svg>
-      <div className="rg-legend">
-        {LEGEND[colour].map((l) => (
-          <span key={l.heat} className="rg-lg">
-            <b data-heat={l.heat} />
-            {l.label}
-          </span>
-        ))}
-        <span>edge width = resolved calls between modules</span>
-        {gv.collapsed && <span>{`${fmt(g.modules.length)} modules: each package is one node until it is opened`}</span>}
-      </div>
+      {state.status === 'laying' && state.where === 'worker' && (
+        <p className="rg-wait" role="status">
+          {`Laying out ${fmt(gv.nodes.length)} nodes off the page…`}
+        </p>
+      )}
+      {mounting && (
+        <p className="rg-wait" role="status">
+          {`Drawing ${fmt(drawnNodes.length)} nodes…`}
+        </p>
+      )}
+      {state.status === 'failed' && (
+        <div className="rg-wait" role="alert">
+          <p>{`The layout could not run off the page (${state.why}). Laying out ${fmt(gv.nodes.length)} nodes here pauses the page for a moment.`}</p>
+          <Button size="sm" onClick={state.here}>
+            Lay out here
+          </Button>
+        </div>
+      )}
+      {plan !== null && drawnNodes.length === 0 && (
+        <p className="rg-wait" role="status">
+          The legend hides every node. Show all to draw them again.
+        </p>
+      )}
+      {legend}
     </div>
   )
 }
 
-function nodeLabel(n: ViewNode): string {
-  return n.isPackage ? `${n.label} (${n.members})` : n.label
+/**
+ * THE FILTERING LEGEND (§3.2 defect 11, Graphify's checkbox per community).
+ * Each colour band and each cluster is a toggle: pressed is shown. Hiding is
+ * drawing-only -- the layout keeps its places, the inspector and the phone
+ * list keep every node -- and the legend says how many it hides.
+ */
+function GraphLegend({ gv, g, colour, shown, hiddenHeat, hiddenClusters, onHeat, onCluster, onAll }: {
+  gv: GraphView
+  g: ModuleGraph
+  colour: ColourBy
+  shown: ReadonlySet<string>
+  hiddenHeat: ReadonlySet<Heat>
+  hiddenClusters: ReadonlySet<string>
+  onHeat: (h: Heat) => void
+  onCluster: (c: string) => void
+  onAll: () => void
+}) {
+  const hidden = gv.nodes.length - shown.size
+  return (
+    <div className="rg-legend">
+      <div className="rg-lgrow" role="group" aria-label="Show by colour">
+        {LEGEND[colour].map((l) => (
+          <button key={l.heat} type="button" className="rg-lg" aria-pressed={!hiddenHeat.has(l.heat)} onClick={() => onHeat(l.heat)}>
+            <b data-heat={l.heat} />
+            {l.label}
+          </button>
+        ))}
+      </div>
+      <span>edge width = resolved calls between modules</span>
+      {gv.collapsed && <span>{`${fmt(g.modules.length)} modules: each cluster is one node until it is opened`}</span>}
+      {gv.clusters.length > 1 && (
+        <div className="rg-lgrow" role="group" aria-label="Show clusters">
+          {gv.clusters.map((c) => (
+            <button key={c} type="button" className="rg-lgc" aria-pressed={!hiddenClusters.has(c)} onClick={() => onCluster(c)}>
+              {c}
+            </button>
+          ))}
+        </div>
+      )}
+      {hidden > 0 && (
+        <span className="rg-lghid">
+          {`${fmt(hidden)} of ${fmt(gv.nodes.length)} nodes hidden by the legend`}
+          <Button size="sm" onClick={onAll}>
+            Show all
+          </Button>
+        </span>
+      )}
+    </div>
+  )
 }
 
 function round(n: number): number {
   return Math.round(n * 1000) / 1000
+}
+
+const PHONE_WIDTH = '(max-width: 640px)'
+
+/**
+ * Whether the phone's module list is on screen. Off it, the list is not even
+ * mounted: hidden by CSS it was still 2,000 buttons built on the main thread
+ * (measured, a 123 ms task). Where `matchMedia` is missing (jsdom) it is
+ * mounted and the stylesheet alone decides, as before.
+ */
+function usePhoneWidth(): boolean {
+  const mq = useMemo(() => (typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_WIDTH) : null), [])
+  const [on, setOn] = useState(mq === null || mq.matches)
+  useEffect(() => {
+    if (mq === null) return
+    const again = () => setOn(mq.matches)
+    mq.addEventListener?.('change', again)
+    return () => mq.removeEventListener?.('change', again)
+  }, [mq])
+  return on
 }
 
 /** The phone's view (390px): the canvas is hidden there and the inspector reads from this list. */
@@ -443,7 +853,7 @@ function pctWord(r: number): string {
   return `${Math.round(r * 100)}%`
 }
 
-function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, direction, onOpen }: {
+function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, direction, onOpen, onSelect }: {
   r: RepoRecord
   gv: GraphView
   node: ViewNode | null
@@ -453,6 +863,7 @@ function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, directi
   depthControl: ReactNode
   direction: Direction
   onOpen: (n: ViewNode) => void
+  onSelect: (n: ViewNode) => void
 }) {
   if (node === null) {
     return (
@@ -463,7 +874,7 @@ function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, directi
   }
   const deg = degree(gv, node.id)
   return (
-    <Card className="rg-inspector" title={node.id} action={<Chip>{node.isPackage ? `package · ${node.members} modules` : 'module'}</Chip>}>
+    <Card className="rg-inspector" title={node.isPackage ? node.cluster : node.id} action={<Chip>{node.isPackage ? `cluster · ${node.members} modules` : 'module'}</Chip>}>
       <p className="rg-meta">
         <span>
           {node.symbols === null ? <Dash why="Its symbol count was not served" /> : <b>{fmt(node.symbols)}</b>} symbols
@@ -493,14 +904,63 @@ function Inspector({ r, gv, node, symbol, onSymbol, depth, depthControl, directi
         </span>
         {node.languages.length > 0 && <span>{node.languages.join(', ')}</span>}
       </p>
+      <Neighbours key={node.id} gv={gv} node={node} onSelect={onSelect} />
       {node.isPackage ? (
         <Button size="sm" onClick={() => onOpen(node)}>
-          Open the package
+          Open the cluster
         </Button>
       ) : (
         <SymbolSection r={r} module={node.id} symbol={symbol} onSymbol={onSymbol} depth={depth} depthControl={depthControl} direction={direction} />
       )}
     </Card>
+  )
+}
+
+/** Neighbours listed before "show all": enough to read at a glance, never a silent cut. */
+export const NEIGHBOURS_SHOWN = 8
+
+/**
+ * THE NEIGHBOUR LIST (§3.2 defect 11, Graphify's inspector): the drawn nodes
+ * that call this one and that it calls, as buttons, heaviest first. A click
+ * moves the inspector to that node, so a reader walks the graph by name
+ * instead of hunting for a dot. A measured none is the real-zero mark.
+ */
+function Neighbours({ gv, node, onSelect }: { gv: GraphView; node: ViewNode; onSelect: (n: ViewNode) => void }) {
+  const nb = useMemo(() => neighbours(gv, node.id), [gv, node.id])
+  return (
+    <div className="rg-nbs">
+      <NeighbourList heading="Called from" rows={nb.callers} none="No node drawn here calls it" onSelect={onSelect} />
+      <NeighbourList heading="Calls" rows={nb.callees} none="It calls no node drawn here" onSelect={onSelect} />
+    </div>
+  )
+}
+
+function NeighbourList({ heading, rows, none, onSelect }: { heading: string; rows: readonly Neighbour[]; none: string; onSelect: (n: ViewNode) => void }) {
+  const [all, setAll] = useState(false)
+  const list = all ? rows : rows.slice(0, NEIGHBOURS_SHOWN)
+  return (
+    <section className="rg-nb" aria-label={heading}>
+      <h3>
+        {heading} {rows.length === 0 ? <Mark kind="zero" say={none} /> : <small>{fmt(rows.length)}</small>}
+      </h3>
+      {rows.length > 0 && (
+        <ul>
+          {list.map((x) => (
+            <li key={x.node.id}>
+              <button type="button" className="rg-nbrow" title={x.node.id} onClick={() => onSelect(x.node)}>
+                <code>{displayLabel(x.node)}</code>
+                <small>{`${fmt(x.weight)} ${x.weight === 1 ? 'call' : 'calls'}`}</small>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rows.length > NEIGHBOURS_SHOWN && (
+        <button type="button" className="ri-more" onClick={() => setAll(!all)}>
+          {all ? 'Show fewer' : `Show all ${fmt(rows.length)}`}
+        </button>
+      )}
+    </section>
   )
 }
 

@@ -414,8 +414,9 @@ describe('the restore fact says what a retry would restore from', () => {
     })
     const fact = restoreFact(s)
     expect(fact.textContent).toMatch(/newest committed/)
-    // The newest by the worker's order, named with its attempt: ids restart
-    // per attempt, so `ckpt-00003` alone could be any attempt's.
+    // The newest by the worker's order, named with its attempt: ids continue
+    // from the restored checkpoint, but two attempts can still share one, so
+    // `ckpt-00003` alone could be more than one attempt's.
     expect(fact.querySelector('code')?.textContent).toBe('att_2/ckpt-00003')
     expect(fact.querySelector('.ctl-mark'), 'a whole, readable listing needs no qualifier').toBeNull()
     // THE POINTER IS NOT THE RESTORE SOURCE, so it is not the fact's value.

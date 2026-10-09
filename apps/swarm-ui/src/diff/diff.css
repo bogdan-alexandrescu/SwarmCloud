@@ -1,0 +1,89 @@
+/* THE DIFF VIEWER'S ADDITIONS FOR THE CHANGES TAB (lane DIFF1, design
+   docs/design/diff-viewer.md §5). The viewer's first sheet is the `.diff*`
+   block in styles.css; this one holds what the 2026-10-08 decisions added,
+   and lives beside the component because that lane's territory is
+   `src/diff/`. It is held to the section sheets' gates by
+   src/__tests__/diff/sheet.test.ts, which reads it the way those gates read
+   styles/*.css. Every rule is scoped to `.diff*`.
+
+   NO RULE HERE SETS A ROW'S HEIGHT, AND A TOKEN IS COLOUR ONLY. The rows are
+   windowed by offset at a fixed height set inline (rows.ts), so a token span
+   that changed a glyph's size or a `from step` row that grew by a pixel would
+   draw every row below it away from where the window thinks it is. */
+
+/* FULL HEIGHT: the viewer fills its route's pane, list left and file right,
+   each scrolling inside it instead of stopping at 70vh. The parent gives the
+   height; `min-height: 0` down the chain lets the scrollers shrink to it. */
+.diff.is-full { height: 100%; min-height: 0; }
+.diff.is-full .diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+.diff.is-full.is-narrow .diff-body { grid-template-rows: auto minmax(0, 1fr); }
+.diff.is-full .diff-files { max-height: none; }
+.diff.is-full .diff-main { min-height: 0; }
+.diff.is-full .diff-scroll { flex: 1 1 auto; max-height: none; min-height: 0; }
+
+/* The pull request, in the bar: a link in the accent, like `‹ Artifacts`. */
+.diff-pr { color: var(--sk-ac); font: 600 var(--t-meta)/var(--lh-meta) var(--font); text-decoration: none; }
+.diff-pr:hover { text-decoration: underline; }
+.diff-pr:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+
+/* `from step <name>`: one row above a step's run of hunks, the hunk header's
+   fill, the step's name in the accent so it reads apart from the `@@` line. */
+.diff-row.is-source {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s1);
+  padding: 0 var(--ctl-s2);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+}
+.diff-source-step { color: var(--sk-ac); font-weight: 600; font-family: var(--mono); }
+
+/* THE PHONE'S PICKER AND ITS `All files` SHEET. The sheet rises from the
+   bottom over the lines, the Sky popover's surface and shadow, and scrolls
+   inside itself; the picker stays where it was above it. */
+.diff-picker-wrap { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
+.diff.is-narrow .diff-picker { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+.diff-all {
+  padding: 2px var(--ctl-s2);
+  border: 1px solid var(--sk-ln);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--bg);
+  color: var(--sk-ac);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.diff-all:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.diff-sheet {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ctl-s2);
+  max-height: 70vh;
+  padding: var(--ctl-s2) 0;
+  border-top: 1px solid var(--sk-ln);
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--surface);
+  box-shadow: var(--sk-sh);
+}
+.diff-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); padding-right: var(--ctl-s2); }
+.diff-sheet-list { display: flex; flex-direction: column; min-height: 0; margin: 0; padding: 0; overflow: auto; list-style: none; }
+
+/* SYNTAX COLOUR (highlight.ts). Hues the state tokens already tune for both
+   themes, kept off --s-live and --s-bad: those are the added and removed
+   ink, and a string drawn in the add colour would read as a change. */
+.diff-tk.is-kw { color: var(--s-park); }
+.diff-tk.is-str { color: var(--s-warn); }
+.diff-tk.is-com { color: var(--text-faint); }
+.diff-tk.is-num { color: var(--sk-ac); }
+.diff-tk.is-key { color: var(--sk-ac); }

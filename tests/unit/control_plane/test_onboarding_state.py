@@ -609,3 +609,122 @@ def test_nothing_but_a_read_is_served(db, client, method) -> None:
     _seed_eng(db)
     response = getattr(client, method)("/v1/onboarding", headers=auth_header("alice"))
     assert response.status_code == 405
+
+
+# -- an App connection's repositories are its own grants (#896) -----------------------
+
+INSTALLED = {"read": True, "source": "enabled", "installed": ["example-org"],
+             "not_installed": [], "install_url": INSTALL_URL}
+
+
+def grant(repository: str, *, mode: str = "write", user: str = "alice@saga.xyz",
+          tenant_id: str = "eng", verified: bool = True, **states) -> dict:
+    """A `forge_grants` document as `AccessService.verify` leaves it: checks
+    named clone, push and pull_request, each with state, code, checked_at."""
+    owner, repo = repository.split("/")
+    at = T0 - timedelta(hours=2)
+    names = ("clone", "push", "pull_request")
+    cells = {name: {"state": "ok" if mode == "write" or name == "clone" else "not_required",
+                    "code": None, "checked_at": at} for name in names}
+    for name, value in states.items():
+        state, code = value
+        cells[name] = {"state": state, "code": code, "checked_at": at}
+    return {"tenant_id": tenant_id, "user": user, "user_hash": "0" * 16,
+            "repo_id": onboarding.repo_id_for(tenant_id, owner, repo),
+            "repository": repository, "owner": owner.lower(), "mode": mode,
+            "can_push": mode == "write", "archived": False,
+            "checks": cells if verified else {}, "verified_at": at if verified else None}
+
+
+def run_app(grants, *, regs=(), pairs=()) -> dict:
+    return derive(ALICE, records=[app_token()], pair_docs=list(pairs),
+                  registrations=list(regs), tenant_lists_git=True, now=T0,
+                  installations=INSTALLED, grants=list(grants))
+
+
+def test_verified_grants_complete_access_verified_for_an_app_connection() -> None:
+    # No registration and no git_token_checks at all: the grants answer.
+    view = run_app([grant("example-org/api"), grant("example-org/docs", mode="read")])
+    assert states(view)["repos_chosen"] == "done"
+    assert {r["repository"]: r["mode"]
+            for r in step(view, "repos_chosen")["evidence"]["repositories"]} == {
+        "example-org/api": "write", "example-org/docs": "read"}
+    verified = step(view, "access_verified")
+    assert verified["state"] == "done", verified
+    rows = {r["repository"]: r for r in verified["evidence"]["repositories"]}
+    # The grant's `pull_request` is the checklist's `open_pull_requests`.
+    assert rows["example-org/api"]["checks"] == {
+        "clone": "ok", "push": "ok", "open_pull_requests": "ok"}
+    assert rows["example-org/docs"]["checks"] == {"clone": "ok"}
+    assert verified["evidence"]["unverified"] == []
+    assert step(view, "ready")["state"] == "done"
+
+
+def test_a_failed_grant_check_fails_naming_the_repository_and_capability() -> None:
+    view = run_app([grant("example-org/api", pull_request=("missing", "PERMISSION_MISSING")),
+                    grant("example-org/docs")])
+    verified = step(view, "access_verified")
+    assert verified["state"] == "failed"
+    [issue] = verified["issues"]
+    assert issue["code"] == "PERMISSION_MISSING"
+    assert issue["repository"] == "example-org/api"
+    assert issue["capability"] == "open_pull_requests"
+    assert issue["copy"] == onboarding.recovery_copy(
+        "PERMISSION_MISSING", repo="example-org/api", login="example-user")
+    assert verified["code"] == "PERMISSION_MISSING"
+
+
+def test_a_grant_never_verified_is_pending_and_named() -> None:
+    view = run_app([grant("example-org/api"), grant("example-org/new", verified=False)])
+    verified = step(view, "access_verified")
+    assert verified["state"] == "in_progress" and verified["code"] is None
+    assert [u["repository"] for u in verified["evidence"]["unverified"]] == ["example-org/new"]
+    assert verified["evidence"]["unverified"][0]["verified_at"] is None
+    assert view["next_step"] == "access_verified"
+
+
+def test_ok_checks_without_verified_at_are_still_pending() -> None:
+    unstamped = grant("example-org/api") | {"verified_at": None}
+    assert step(run_app([unstamped]), "access_verified")["state"] == "in_progress"
+
+
+def test_an_unanswered_grant_check_is_forge_unreachable_not_failed() -> None:
+    view = run_app([grant("example-org/api", push=("unknown", "FORGE_UNREACHABLE"))])
+    verified = step(view, "access_verified")
+    assert verified["state"] == "in_progress" and verified["code"] == "FORGE_UNREACHABLE"
+    assert verified["evidence"]["unverified"][0]["checks"] == ["push"]
+
+
+def test_an_app_connection_with_no_grant_has_chosen_nothing() -> None:
+    # A registration the tenant holds is not this person's grant.
+    view = run_app([], regs=[registration("example-org/api")])
+    assert states(view)["repos_chosen"] == "todo"
+    assert step(view, "access_verified")["evidence"] == {"waiting_for": "repos_chosen"}
+
+
+def test_another_members_or_tenants_grant_is_not_the_callers() -> None:
+    view = run_app([grant("example-org/api", user="bob@saga.xyz"),
+                    grant("example-org/api", tenant_id="research")])
+    assert states(view)["repos_chosen"] == "todo"
+
+
+def test_the_legacy_token_path_still_reads_registrations_and_stored_checks() -> None:
+    # A tenant token or a PAT of one's own ignores grants entirely.
+    for record in (tenant_token(), user_token()):
+        api = registration("example-org/api")
+        view = derive(ALICE, records=[record], pair_docs=[checks(record, api)],
+                      registrations=[api], tenant_lists_git=True, now=T0,
+                      grants=[grant("example-org/other", verified=False)])
+        assert states(view)["access_verified"] == "done", record.kind
+        assert [r["repository"] for r in step(view, "repos_chosen")["evidence"]["repositories"]] \
+            == ["example-org/api"]
+        assert "source" not in step(view, "access_verified")["evidence"]
+        unchecked = derive(ALICE, records=[record], pair_docs=[], registrations=[api],
+                           tenant_lists_git=True, now=T0,
+                           grants=[grant("example-org/api")])
+        assert states(unchecked)["access_verified"] == "in_progress", record.kind
+
+
+def test_the_restated_grants_collection_is_forgeapps() -> None:
+    from swarm_api import forgeapp
+    assert onboarding.GRANTS == forgeapp.GRANTS

@@ -419,3 +419,81 @@ def test_a_file_that_is_not_a_spec_is_refused_without_echoing_what_it_holds(tmp_
     with pytest.raises(SwarmError) as caught:
         server._call(_Nothing(), "swarm_workflow_spec", {"path": "other.json"})
     assert "SECRET-IMAGE" not in str(caught.value), str(caught.value)
+
+
+# Finding 25 (epic #227): only a file under the checkout is read. The path
+# arrives through a relay, and the bridge can read every file its user can.
+
+
+def _outside_and_checkout(tmp_path):
+    """A checkout, and a valid spec beside it -- outside it -- that a reader
+    with no confinement would happily return."""
+    work = tmp_path / "checkout"
+    (work / "specs").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "spec.json").write_text(json.dumps(_SPEC))
+    (outside / "private.json").write_text(json.dumps({"OUTSIDE-CONTENT-7": 1}))
+    return work, outside
+
+
+def _refused_outside(path, **expect):
+    with pytest.raises(SwarmError) as caught:
+        server._call(_Nothing(), "swarm_workflow_spec", {"path": path})
+    text = str(caught.value)
+    assert "outside this bridge's checkout" in text and "Nothing was read" in text, text
+    assert "OUTSIDE-CONTENT-7" not in text and '"steps"' not in text, text
+    return text
+
+
+@pytest.mark.parametrize("name", ["spec.json", "private.json", "missing.json"])
+def test_an_absolute_path_outside_the_checkout_is_refused_before_it_is_read(tmp_path, monkeypatch, name):
+    work, outside = _outside_and_checkout(tmp_path)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(work))
+    # The same refusal whether or not the file exists: nothing about a file
+    # outside the checkout is looked at.
+    _refused_outside(str(outside / name))
+
+
+def test_a_dotdot_escape_from_the_checkout_is_refused(tmp_path, monkeypatch):
+    work, _ = _outside_and_checkout(tmp_path)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(work))
+    _refused_outside("../elsewhere/spec.json")
+    _refused_outside("specs/../../elsewhere/spec.json")
+
+
+def test_a_symlink_in_the_checkout_that_leads_outside_is_refused(tmp_path, monkeypatch):
+    work, outside = _outside_and_checkout(tmp_path)
+    (work / "specs" / "link.json").symlink_to(outside / "spec.json")
+    (work / "away").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(work))
+    _refused_outside("specs/link.json")
+    _refused_outside(str(work / "away" / "spec.json"))
+
+
+def test_a_symlinked_checkout_still_reads_its_own_files(tmp_path, monkeypatch):
+    """Both sides are resolved before the check, so a checkout reached through
+    a symlink (macOS's /tmp is one) is not refused its own files."""
+    work, _ = _outside_and_checkout(tmp_path)
+    (work / "specs" / "scan.json").write_text(json.dumps(_SPEC))
+    (work / "specs" / "alias.json").symlink_to(work / "specs" / "scan.json")
+    via = tmp_path / "via"
+    via.symlink_to(work, target_is_directory=True)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(via))
+
+    for path in ("specs/scan.json", str(via / "specs" / "scan.json"), str(work / "specs" / "scan.json"),
+                 "specs/alias.json"):
+        reply = json.loads(server._call(_Nothing(), "swarm_workflow_spec", {"path": path}))
+        assert reply["spec"] == _SPEC, path
+
+
+def test_spec_path_on_the_other_tools_is_held_to_the_checkout_too(tmp_path, monkeypatch):
+    work, outside = _outside_and_checkout(tmp_path)
+    monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(work))
+    target = str(outside / "spec.json")
+    for tool, args in (
+        ("swarm_workflow", {"spec_path": target, "spec_digest": workflows.spec_digest(_SPEC)}),
+        ("swarm_workflow_launch", {"spec_path": target}),
+    ):
+        with pytest.raises(SwarmError, match="outside this bridge's checkout"):
+            server._call(_Nothing(), tool, args)

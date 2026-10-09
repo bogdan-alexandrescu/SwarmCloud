@@ -2,7 +2,8 @@
 
 SINCE 2026-10-07 IT IS THE LAST JOB OF application.yml, not a workflow of its
 own (owner request: ci-gate.yml held a runner for the whole of CI while it
-polled). It `needs:` every other job there and judges their results itself
+polled). It `needs:` every other job there but the two that only keep an old
+check name, and judges their results itself
 (test_unit_shards.py runs that step), then runs scripts/ci-gate.sh for
 terraform.yml alone -- `CI_GATE_WORKFLOWS`, read below from the workflow, so
 the script is tested here in the configuration CI runs it in.
@@ -544,14 +545,39 @@ def test_the_gate_job_is_named_ci_gate_and_always_runs():
     assert producers == [("application.yml", "ci-gate")], producers
 
 
+#: The jobs that only keep an old check name: each judges its `needs` and runs
+#: nothing else. The gate does not wait for them (2026-10-09: one runner queue
+#: fewer on the critical path, docs/ci.md "Where pull-request CI time goes").
+NAME_KEEPERS = {"python", "ui"}
+
+
 def test_the_gate_needs_every_other_job_of_its_workflow():
     """A job left out of `needs` is one the gate passes without waiting for.
     MUTATION: drop any job from the gate's `needs`, e.g. `build-check`."""
     jobs = _workflow(GATE_WORKFLOW)["jobs"]
     needs = gate_job()["needs"]
     assert isinstance(needs, list), needs
-    assert set(needs) == set(jobs) - {"ci-gate"}, set(jobs) - {"ci-gate"} ^ set(needs)
+    expected = set(jobs) - {"ci-gate"} - NAME_KEEPERS
+    assert set(needs) == expected, expected ^ set(needs)
     assert len(needs) == len(set(needs)), needs
+
+
+@pytest.mark.parametrize("job_id", sorted(NAME_KEEPERS))
+def test_a_name_keeper_judges_nothing_the_gate_does_not(job_id):
+    """Leaving a name-keeper out of the gate's `needs` loses nothing only while
+    it runs no check of its own: every job it needs is one the gate needs, and
+    its one step is the gate's own judgement, word for word.
+    MUTATION: give `python` a step that tests something, make it need a job
+    the gate does not, or let its judgement drift from the gate's."""
+    job = _workflow(GATE_WORKFLOW)["jobs"][job_id]
+    needs = job["needs"]
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    assert set(needs) <= set(gate_job()["needs"]), set(needs) - set(gate_job()["needs"])
+    assert job.get("if") == "always()", job.get("if")
+    (step,) = job["steps"]
+    (judgement,) = [s for s in gate_job()["steps"] if s.get("env", {}).get("NEEDS")]
+    assert step["run"] == judgement["run"], job_id
+    assert step["env"] == judgement["env"], job_id
 
 
 def test_the_gate_holds_read_permissions_only():
