@@ -71,7 +71,16 @@ happened."
    5. Re-running step 3 showed exactly **two** bindings: chunk 1 of 2 and
       chunk 2 of 2, nothing else.
    6. The next release's `terraform apply (dev)` is the proof of the admitted
-      side (still pending as of this PR).
+      side. It is release run
+      [36514377555](https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/36514377555)
+      (`main` at `77014f0`, this PR's merge), created 2026-09-29 02:49Z, the
+      first successful release after this apply: its `terraform apply (dev)`
+      job ran 03:29:55–03:32:26Z with its `plan`, `shared-project guard` and
+      `apply` steps all successful, so no `google_project_iam_custom_role`
+      was planned or refused. Read 2026-10-08 from the public Actions API
+      (run list, job and step conclusions). The job's log needs an
+      authenticated read and was not grepped for `Error 403`; the evidence
+      is the steps' success, not a log search.
 
    **Result:** the deployer now holds exactly the two chunked conditional
    `projectIamAdmin` grants and no `roles/iam.roleAdmin`. The 8 custom roles
