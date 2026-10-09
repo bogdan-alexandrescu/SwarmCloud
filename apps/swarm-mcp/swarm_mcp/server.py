@@ -805,7 +805,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "In place of `spec`: the path of a JSON workflow spec file, "
-                        "relative to this checkout or absolute. The bridge reads the "
+                        "relative to this checkout or absolute, and under the checkout "
+                        "either way (a path outside it is refused). The bridge reads the "
                         "bytes itself -- checked as swarm_workflow_spec checks them -- "
                         "so a long spec reaches the API without being retyped."
                     ),
@@ -1037,7 +1038,9 @@ TOOLS: list[dict[str, Any]] = [
             "For /sc:swarmcloud given a path: a workflow script has no filesystem, so "
             "the bridge reads the file, and the script checks the spec relayed "
             "back against this digest before it submits. `path` is relative to "
-            "the checkout, or absolute; the reply's `path` is the file actually "
+            "the checkout, or absolute; either way the file must be UNDER the "
+            "checkout once symlinks are resolved -- anything outside it is "
+            "refused and not read. The reply's `path` is the file actually "
             "read. A file that is not JSON, or not a workflow spec, is refused "
             "without its content being repeated.\n"
             "\n"
@@ -1051,7 +1054,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The spec file: relative to this checkout, or absolute.",
+                    "description": "The spec file, under this checkout: relative to it, or absolute.",
                 },
             },
             "required": ["path"],
@@ -1079,7 +1082,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
-                "spec_path": {"type": "string", "description": "Its file, relative to this checkout or absolute."},
+                "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
             },
         },
@@ -1555,9 +1558,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "swarm_account_remove",
         "description": (
-            "REMOVE one of YOUR accounts from the pool. Destructive, so it needs "
-            "`confirm_label` equal to the account's label, typed back; anything "
-            "else sends nothing. The broker removes the pool entry and KEEPS the "
+            "REMOVE one of YOUR accounts from the pool. Destructive, so the HUMAN "
+            "confirms it: the bridge asks them, through this host's own prompt, "
+            "to type the account's label, and nothing the caller passes counts "
+            "as that answer. A host that cannot ask its human sends nothing, and "
+            "the reply names the `sc account remove` command to run in a "
+            "terminal instead. The broker removes the pool entry and KEEPS the "
             "account's secret (its answer, returned verbatim, says so). Drain it "
             "first if agents are running on it."
         ),
@@ -1565,12 +1571,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "account": {"type": "string", "description": "The account's label or id."},
-                "confirm_label": {
-                    "type": "string",
-                    "description": "The account's label, exactly. Nothing is sent unless it matches.",
-                },
             },
-            "required": ["account", "confirm_label"],
+            "required": ["account"],
         },
     },
     {
@@ -2226,13 +2228,30 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
     relay and may name any file this user can read; only a file that parses
     and passes `read_spec` is returned, and every refusal names the path and
     what is wrong, never what the file holds.
+
+    ONLY A FILE UNDER THE CHECKOUT IS READ (epic #227, finding 25). The path
+    arrives through a relay, so a reader that took any absolute path, or a
+    `../` or a symlink out of the checkout, would read any file this user can
+    -- an SSH key, a cloud credential -- and only a refusal that happened to
+    hide the content stood between that file and a tool reply. Both the
+    checkout and the target are resolved, symlinks included, BEFORE the check,
+    and the check comes before anything about the target (whether it exists,
+    its size) is looked at, so a refusal says nothing about a file outside.
     """
+    root = base.expanduser().resolve()
     target = Path(path).expanduser()
     if not target.is_absolute():
-        target = base / target
+        target = root / target
     target = target.resolve()
+    if not target.is_relative_to(root):
+        raise SwarmError(
+            f"{path} is outside this bridge's checkout, {root}; a workflow spec is read "
+            f"only from a file under the checkout ({checkout.CHECKOUT_DIR_ENV}, else the "
+            "directory the bridge runs in), after symlinks are resolved. Nothing was read: "
+            "move the spec into the checkout, or pass the spec object as `spec`"
+        )
     if not target.is_file():
-        raise SwarmError(f"{path} is not a file in {base} (looked for {target})")
+        raise SwarmError(f"{path} is not a file in {root} (looked for {target})")
     size = target.stat().st_size
     if size > MAX_SPEC_FILE_BYTES:
         raise SwarmError(
@@ -3185,19 +3204,24 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
 
     if name == "swarm_account_remove":
-        # DESTRUCTIVE, so the label is typed back: `confirm_label` must be the
-        # resolved account's label exactly, or nothing is sent. A tool cannot
-        # prompt the way `sc account remove` does; this argument is that
-        # prompt's answer, given by whoever made the call.
+        # DESTRUCTIVE, so a HUMAN types the label (#453, finding 83). This
+        # took `confirm_label` as an argument, and its refusal named the label
+        # it wanted: a typo guard, since the agent that made the call could
+        # repeat it with that label -- which `swarm_accounts` lists anyway --
+        # and confirm its own removal. So no argument is the answer any more.
+        # The bridge asks the host's human (MCP elicitation), the way `sc
+        # account remove` asks at a terminal, and a refusal never says what
+        # the answer should have been.
         from .sc import remove_account, resolve_account
 
         account = resolve_account(client, str(args["account"]))
         label = str(account.get("label") or "")
-        if not label or str(args.get("confirm_label") or "").strip() != label:
+        if not label:
             raise SwarmError(
-                f"`confirm_label` must be this account's label, {label!r}, exactly; nothing "
-                "was removed"
+                f"account {account.get('account_id')} has no label to type back, so it cannot "
+                "be confirmed here; nothing was removed"
             )
+        _human_typed_label(account, label)
         return json.dumps(
             {
                 "account_id": account.get("account_id"),
@@ -3360,6 +3384,114 @@ def _error(message_id: Any, code: int, message: str) -> None:
         sys.stdout.flush()
 
 
+#: WHETHER THE HOST CAN ASK ITS HUMAN A QUESTION (MCP elicitation), as its
+#: `initialize` declared. Read only by `swarm_account_remove`: a host that
+#: cannot ask gets a refusal naming the terminal command, never a confirmation
+#: the calling agent could supply itself.
+_HOST_CAN_ELICIT = threading.Event()
+
+#: How long `swarm_account_remove` waits for the human's answer. A person reads
+#: the prompt and types a label; five minutes is ample for that, and a prompt
+#: left unanswered removes nothing.
+ELICIT_TIMEOUT_SECONDS = 300.0
+
+#: Elicitations in flight, by the id of the request this bridge sent: the host
+#: answers on stdin, which `serve` reads, while the asking call waits in its
+#: worker thread.
+_ELICITING: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
+_ELICIT_LOCK = threading.Lock()
+
+
+def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask the host's human through the host (`elicitation/create`).
+
+    The host's whole JSON-RPC response, or None when none came within
+    `ELICIT_TIMEOUT_SECONDS`. The answer is typed by the person at the host,
+    into the host's own prompt: the model that made the tool call neither sees
+    the request nor writes its answer.
+    """
+    request_id = f"swarm-elicit-{secrets.token_hex(8)}"
+    answered = threading.Event()
+    box: list[dict[str, Any]] = []
+    with _ELICIT_LOCK:
+        _ELICITING[request_id] = (answered, box)
+    try:
+        line = json.dumps({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "elicitation/create",
+            "params": {"message": message, "requestedSchema": schema},
+        }) + "\n"
+        with _WRITE_LOCK:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        if not answered.wait(ELICIT_TIMEOUT_SECONDS):
+            return None
+        return box[0]
+    finally:
+        with _ELICIT_LOCK:
+            _ELICITING.pop(request_id, None)
+
+
+def _deliver_elicitation(message: dict[str, Any]) -> None:
+    """Hand the host's response to the call waiting on it; any other is dropped."""
+    message_id = message.get("id")
+    if not isinstance(message_id, str):
+        return
+    with _ELICIT_LOCK:
+        waiting = _ELICITING.get(message_id)
+    if waiting is None:
+        return
+    answered, box = waiting
+    box.append(message)
+    answered.set()
+
+
+def _human_typed_label(account: dict[str, Any], label: str) -> None:
+    """Return only when the host's human typed `label`; otherwise refuse.
+
+    EVERY REFUSAL LEAVES THE LABEL OUT. The one this replaced named it, which
+    told the caller exactly what to send next.
+    """
+    command = terminal_command(f"sc account remove {account.get('account_id')}")
+    if not _HOST_CAN_ELICIT.is_set():
+        raise SwarmError(
+            "removing an account needs its label typed by a person, and this host did not "
+            "say it can ask one (MCP elicitation); nothing was removed. Run "
+            f"`{command}` in a terminal: it asks for the label there"
+        )
+    reply = _elicit(
+        f"An agent asked to REMOVE the SwarmCloud account {label} "
+        f"({account.get('account_id')}) from the pool. The broker keeps its secret. "
+        "Type the account's label to confirm; anything else removes nothing.",
+        {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "title": "Account label",
+                    "description": "The label of the account to remove, exactly.",
+                },
+            },
+            "required": ["label"],
+        },
+    )
+    if reply is None:
+        raise SwarmError(
+            f"nobody answered the confirmation within {int(ELICIT_TIMEOUT_SECONDS)}s; "
+            "nothing was removed"
+        )
+    result = reply.get("result")
+    if not isinstance(result, dict) or result.get("action") != "accept":
+        raise SwarmError(
+            "the removal was not confirmed (declined, cancelled, or the host could not "
+            f"ask); nothing was removed. `{command}` asks at a terminal instead"
+        )
+    typed = (result.get("content") or {}).get("label") if isinstance(result.get("content"), dict) else None
+    if not isinstance(typed, str) or typed.strip() != label:
+        raise SwarmError("the label typed was not this account's; nothing was removed")
+
+
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
@@ -3435,6 +3567,11 @@ def serve(stdin=None, stdout=None) -> int:
             message_id = message.get("id")
 
             if method == "initialize":
+                capabilities = (message.get("params") or {}).get("capabilities") or {}
+                if isinstance(capabilities, dict) and isinstance(capabilities.get("elicitation"), dict):
+                    _HOST_CAN_ELICIT.set()
+                else:
+                    _HOST_CAN_ELICIT.clear()
                 _respond(
                     message_id,
                     {
@@ -3449,6 +3586,10 @@ def serve(stdin=None, stdout=None) -> int:
                 _respond(message_id, {"tools": TOOLS})
             elif method == "tools/call":
                 calls.submit(_answer, message_id, message.get("params") or {})
+            elif method is None and message_id is not None:
+                # A RESPONSE, to a request this bridge sent (an elicitation).
+                # A response is never answered, whatever it matches.
+                _deliver_elicitation(message)
             elif message_id is not None:
                 _error(message_id, -32601, f"method not found: {method}")
         # Leaving the `with` waits for every call still running, so a host
