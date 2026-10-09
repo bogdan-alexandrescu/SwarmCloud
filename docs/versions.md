@@ -84,10 +84,12 @@ on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z) for #442.
 | `tofu` | **1.13.1** | **no** | no release scans clean: x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
 | `tflint` | **0.64.0** | **no** | no release scans clean: Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
 
-The last two are installed only with `--build-arg INSTALL_TOFU_TFLINT=1`.
-The install path is complete and covered by the build's smoke step. It is off
-because the gate refuses the whole image over one tool's dependency. Turn it on
-once both vendors ship a release that scans clean, re-scanning first. The
+The last two are installed only with `--build-arg INSTALL_TOFU=1` and
+`--build-arg INSTALL_TFLINT=1` respectively. Each install path is complete and
+covered by the build's smoke step. Each is off because the gate refuses the
+whole image over one tool's dependency. The two arguments are independent, so
+turn each on once its own vendor ships a release that scans clean, re-scanning
+first; one tool does not wait for the other. The
 owner ruled out a `.trivyignore.yaml` waiver for them (#442).
 
 ---
