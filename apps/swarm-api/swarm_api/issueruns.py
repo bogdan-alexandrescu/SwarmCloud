@@ -221,6 +221,23 @@ REVIEW_STEP = "review"
 FIX_STEP = "fix"
 IMPLEMENT_PREFIX = "impl-"
 
+#: How the compiled review is told to write a finding. Objects, each saying
+#: where its blocker is, so the console can pin it beside its line (diff
+#: viewer variant 3, docs/design/diff-viewer.md). The worker reads `summary`
+#: as the finding's text exactly as it read a string, and keeps `file`,
+#: `line` and `side` only after validating them (`agent_worker.verdict`);
+#: a finding that gives none of them is a finding as before.
+FINDINGS_SHAPE = (
+    '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
+    'path", "line": <its line number>, "side": "new" or "old"}]'
+)
+FINDINGS_LOCATION_NOTE = (
+    "Give file, line and side only for a blocker at one line of the diff: side is new "
+    "when the line number counts in the changed file, old when it counts in the file "
+    "before the change (a removed line). Leave them out otherwise; a blocker with no "
+    "line is still a blocker. "
+)
+
 #: The review rounds `compile_plan` emits, whatever the cap (module docstring).
 COMPILED_REVIEW_ROUNDS = 1
 
@@ -1272,8 +1289,9 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]'
-                + _requirements_shape(plan) + "}. " + NO_CLOSING_KEYWORD
+                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + NO_CLOSING_KEYWORD
             ),
         },
     })
@@ -1408,8 +1426,9 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
                 "the integrated change -- every diff together, including where "
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]'
-                + _requirements_shape(plan) + "}. " + NO_CLOSING_KEYWORD
+                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + NO_CLOSING_KEYWORD
             ),
         },
     })
