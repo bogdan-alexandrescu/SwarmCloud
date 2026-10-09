@@ -341,7 +341,8 @@ def test_a_retry_of_an_attempt_written_before_348_starts_clean(
     assert "restored_from" not in summary, summary.get("restored_from")
     assert EventType.CHECKPOINT_RESTORED.value not in db.event_types("task_1")
     assert '"digest_recorded": false' in log_stream.getvalue()
-    assert _reasons(log_stream) == ["no attempt document of this task lists the checkpoint"]
+    # The last reason is the retry's; attempt 1 logged its own first.
+    assert _reasons(log_stream)[-1] == "no attempt document of this task lists the checkpoint"
 
 
 def _reasons(log_stream: Any) -> list[str]:
