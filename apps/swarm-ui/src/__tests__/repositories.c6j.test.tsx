@@ -23,7 +23,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { liveIndex, repo, serve, sha, visible } from './repofixture'
-import { placeLabels, type LabelSpot } from '../RepoGraphData'
+import { placeLabels, type LabelSpot } from '../RepoGraphLayout'
 import { globParts, pathsOf } from '../RepositoriesData'
 import { stripFade, scrollToShow } from '../RepositoriesParts'
 
